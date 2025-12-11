@@ -2,9 +2,9 @@
   <Card class="p-4">
     <div class="flex items-center justify-between mb-3">
       <p class="text-sm font-semibold">{{ title }}</p>
-      <div v-if="legendItems.length > 0" class="flex items-center gap-2 flex-wrap justify-end text-[11px]">
+      <div v-if="displayLegendItems.length > 0" class="flex items-center gap-2 flex-wrap justify-end text-[11px]">
         <div
-          v-for="item in legendItems"
+          v-for="item in displayLegendItems"
           :key="item.id"
           class="flex items-center gap-1"
         >
@@ -14,6 +14,9 @@
           />
           <span class="text-muted-foreground">{{ item.name }}</span>
         </div>
+        <span v-if="hiddenLegendCount > 0" class="text-muted-foreground">
+          +{{ hiddenLegendCount }} 更多
+        </span>
       </div>
     </div>
     <div v-if="loading" class="h-[160px] flex items-center justify-center">
@@ -92,6 +95,9 @@ const hasMultipleGroups = computed(() => {
   }
 })
 
+// 图例最多显示数量
+const MAX_LEGEND_ITEMS = 6
+
 // 图例项（管理员显示用户，普通用户显示模型）
 const legendItems = computed(() => {
   if (props.isAdmin && timelineData.value?.users) {
@@ -112,6 +118,16 @@ const legendItems = computed(() => {
     }))
   }
   return []
+})
+
+// 显示的图例项（限制数量）
+const displayLegendItems = computed(() => {
+  return legendItems.value.slice(0, MAX_LEGEND_ITEMS)
+})
+
+// 隐藏的图例数量
+const hiddenLegendCount = computed(() => {
+  return Math.max(0, legendItems.value.length - MAX_LEGEND_ITEMS)
 })
 
 // 格式化模型名称，使其更简洁
