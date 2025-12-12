@@ -19,6 +19,7 @@ const DOMPURIFY_CONFIG = {
     'class', 'id'
   ],
   // 允许的URI协议
+  // eslint-disable-next-line no-useless-escape
   ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
 }
 

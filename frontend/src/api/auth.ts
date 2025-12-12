@@ -1,4 +1,5 @@
 import apiClient from './client'
+import { log } from '@/utils/logger'
 
 export interface LoginRequest {
   email: string
@@ -65,7 +66,7 @@ export const authApi = {
       await apiClient.post('/api/auth/logout', {})
     } catch (error) {
       // 即使后端登出失败，也要清除本地认证信息
-      console.warn('后端登出失败，仅清除本地认证信息:', error)
+      log.warn('后端登出失败，仅清除本地认证信息:', error)
     } finally {
       // 清除本地认证信息
       apiClient.clearAuth()

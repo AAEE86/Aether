@@ -1571,7 +1571,7 @@ registerDynamicRoute('GET', '/api/admin/providers/:providerId/available-source-m
 })
 
 // 分配 GlobalModels 到 Provider
-registerDynamicRoute('POST', '/api/admin/providers/:providerId/assign-global-models', async (config, params) => {
+registerDynamicRoute('POST', '/api/admin/providers/:providerId/assign-global-models', async (config, _params) => {
   await delay()
   requireAdmin()
   const body = JSON.parse(config.data || '{}')
@@ -1620,7 +1620,7 @@ registerDynamicRoute('DELETE', '/api/admin/models/global/:modelId', async (_conf
 })
 
 // GlobalModel 批量分配到 Providers
-registerDynamicRoute('POST', '/api/admin/models/global/:modelId/assign-to-providers', async (config, params) => {
+registerDynamicRoute('POST', '/api/admin/models/global/:modelId/assign-to-providers', async (config, _params) => {
   await delay()
   requireAdmin()
   const body = JSON.parse(config.data || '{}')

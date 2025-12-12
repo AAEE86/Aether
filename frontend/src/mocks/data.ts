@@ -6,7 +6,7 @@
 import type { User, LoginResponse } from '@/api/auth'
 import type { DashboardStatsResponse, RecentRequest, ProviderStatus, DailyStatsResponse } from '@/api/dashboard'
 import type { User as AdminUser, ApiKey } from '@/api/users'
-import type { AdminApiKey, AdminApiKeysResponse } from '@/api/admin'
+import type { AdminApiKeysResponse } from '@/api/admin'
 import type { Profile, UsageResponse } from '@/api/me'
 import type { ProviderWithEndpointsSummary, GlobalModelResponse } from '@/api/endpoints/types'
 
