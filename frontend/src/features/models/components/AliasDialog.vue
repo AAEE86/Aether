@@ -218,7 +218,6 @@
 import { ref, computed } from 'vue'
 import { Loader2, Tag, SquarePen } from 'lucide-vue-next'
 import { Dialog, Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui'
-import Badge from '@/components/ui/badge.vue'
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
 import Label from '@/components/ui/label.vue'
@@ -262,7 +261,7 @@ const emit = defineEmits<{
   'submit': [data: CreateModelAliasRequest | UpdateModelAliasRequest, isEdit: boolean]
 }>()
 
-const { success, error: showError } = useToast()
+const { error: showError } = useToast()
 
 // 状态
 const submitting = ref(false)
@@ -336,20 +335,6 @@ const dialogDescription = computed(() => {
 
 // 对话框图标
 const dialogIcon = computed(() => isEditMode.value ? SquarePen : Tag)
-
-// 作用范围描述
-const scopeDescription = computed(() => {
-  if (props.fixedProvider) {
-    return `仅对 ${props.fixedProvider.display_name || props.fixedProvider.name} 生效。`
-  }
-  if (form.value.provider_id) {
-    const provider = props.providers.find(p => p.id === form.value.provider_id)
-    if (provider) {
-      return `仅对 ${provider.display_name || provider.name} 生效。`
-    }
-  }
-  return '全局生效。'
-})
 
 // 映射模式下可选的源模型（排除已选择的目标模型）
 const availableSourceModels = computed(() => {

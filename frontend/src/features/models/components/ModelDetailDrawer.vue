@@ -52,7 +52,7 @@
                   variant="ghost"
                   size="icon"
                   title="编辑模型"
-                  @click="$emit('edit-model', model)"
+                  @click="$emit('editModel', model)"
                 >
                   <Edit class="w-4 h-4" />
                 </Button>
@@ -60,7 +60,7 @@
                   variant="ghost"
                   size="icon"
                   :title="model.is_active ? '点击停用' : '点击启用'"
-                  @click="$emit('toggle-model-status', model)"
+                  @click="$emit('toggleModelStatus', model)"
                 >
                   <Power class="w-4 h-4" />
                 </Button>
@@ -435,7 +435,7 @@
                         size="icon"
                         class="h-8 w-8"
                         title="添加关联"
-                        @click="$emit('add-provider')"
+                        @click="$emit('addProvider')"
                       >
                         <Plus class="w-3.5 h-3.5" />
                       </Button>
@@ -444,7 +444,7 @@
                         size="icon"
                         class="h-8 w-8"
                         title="刷新"
-                        @click="$emit('refresh-providers')"
+                        @click="$emit('refreshProviders')"
                       >
                         <RefreshCw
                           class="w-3.5 h-3.5"
@@ -563,7 +563,7 @@
                             size="icon"
                             class="h-7 w-7"
                             title="编辑此关联"
-                            @click="$emit('edit-provider', provider)"
+                            @click="$emit('editProvider', provider)"
                           >
                             <Edit class="w-3.5 h-3.5" />
                           </Button>
@@ -572,7 +572,7 @@
                             size="icon"
                             class="h-7 w-7"
                             :title="provider.is_active ? '停用此关联' : '启用此关联'"
-                            @click="$emit('toggle-provider-status', provider)"
+                            @click="$emit('toggleProviderStatus', provider)"
                           >
                             <Power class="w-3.5 h-3.5" />
                           </Button>
@@ -581,7 +581,7 @@
                             size="icon"
                             class="h-7 w-7"
                             title="删除此关联"
-                            @click="$emit('delete-provider', provider)"
+                            @click="$emit('deleteProvider', provider)"
                           >
                             <Trash2 class="w-3.5 h-3.5" />
                           </Button>
@@ -604,7 +604,7 @@
                     size="sm"
                     variant="outline"
                     class="mt-4"
-                    @click="$emit('add-provider')"
+                    @click="$emit('addProvider')"
                   >
                     <Plus class="w-4 h-4 mr-1" />
                     添加第一个关联
@@ -630,7 +630,7 @@
                         size="icon"
                         class="h-8 w-8"
                         title="添加别名/映射"
-                        @click="$emit('add-alias')"
+                        @click="$emit('addAlias')"
                       >
                         <Plus class="w-3.5 h-3.5" />
                       </Button>
@@ -639,7 +639,7 @@
                         size="icon"
                         class="h-8 w-8"
                         title="刷新"
-                        @click="$emit('refresh-aliases')"
+                        @click="$emit('refreshAliases')"
                       >
                         <RefreshCw
                           class="w-3.5 h-3.5"
@@ -723,7 +723,7 @@
                             size="icon"
                             class="h-7 w-7"
                             title="编辑"
-                            @click="$emit('edit-alias', alias)"
+                            @click="$emit('editAlias', alias)"
                           >
                             <Edit class="w-3.5 h-3.5" />
                           </Button>
@@ -732,7 +732,7 @@
                             size="icon"
                             class="h-7 w-7"
                             :title="alias.is_active ? '停用' : '启用'"
-                            @click="$emit('toggle-alias-status', alias)"
+                            @click="$emit('toggleAliasStatus', alias)"
                           >
                             <Power class="w-3.5 h-3.5" />
                           </Button>
@@ -741,7 +741,7 @@
                             size="icon"
                             class="h-7 w-7"
                             title="删除"
-                            @click="$emit('delete-alias', alias)"
+                            @click="$emit('deleteAlias', alias)"
                           >
                             <Trash2 class="w-3.5 h-3.5" />
                           </Button>
@@ -764,7 +764,7 @@
                     size="sm"
                     variant="outline"
                     class="mt-4"
-                    @click="$emit('add-alias')"
+                    @click="$emit('addAlias')"
                   >
                     <Plus class="w-4 h-4 mr-1" />
                     添加别名/映射
@@ -800,28 +800,6 @@ import {
   Layers
 } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
-
-const props = withDefaults(defineProps<Props>(), {
-  loadingProviders: false,
-  loadingAliases: false,
-  hasBlockingDialogOpen: false
-})
-const emit = defineEmits<{
-  'update:open': [value: boolean]
-  'edit-model': [model: GlobalModelResponse]
-  'toggle-model-status': [model: GlobalModelResponse]
-  'add-provider': []
-  'edit-provider': [provider: any]
-  'delete-provider': [provider: any]
-  'toggle-provider-status': [provider: any]
-  'refresh-providers': []
-  'add-alias': []
-  'edit-alias': [alias: ModelAlias]
-  'toggle-alias-status': [alias: ModelAlias]
-  'delete-alias': [alias: ModelAlias]
-  'refresh-aliases': []
-}>()
-const { success: showSuccess, error: showError } = useToast()
 import Card from '@/components/ui/card.vue'
 import Badge from '@/components/ui/badge.vue'
 import Button from '@/components/ui/button.vue'
@@ -838,6 +816,28 @@ import type { GlobalModelResponse } from '@/api/global-models'
 import type { ModelAlias } from '@/api/endpoints/aliases'
 import type { TieredPricingConfig, PricingTier } from '@/api/endpoints/types'
 import type { CapabilityDefinition } from '@/api/endpoints'
+
+const props = withDefaults(defineProps<Props>(), {
+  loadingProviders: false,
+  loadingAliases: false,
+  hasBlockingDialogOpen: false,
+})
+const emit = defineEmits<{
+  'update:open': [value: boolean]
+  'editModel': [model: GlobalModelResponse]
+  'toggleModelStatus': [model: GlobalModelResponse]
+  'addProvider': []
+  'editProvider': [provider: any]
+  'deleteProvider': [provider: any]
+  'toggleProviderStatus': [provider: any]
+  'refreshProviders': []
+  'addAlias': []
+  'editAlias': [alias: ModelAlias]
+  'toggleAliasStatus': [alias: ModelAlias]
+  'deleteAlias': [alias: ModelAlias]
+  'refreshAliases': []
+}>()
+const { success: showSuccess, error: showError } = useToast()
 
 interface Props {
   model: GlobalModelResponse | null
