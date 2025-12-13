@@ -194,7 +194,8 @@ class StatsAggregatorService:
             db.add(stats)
         db.commit()
 
-        logger.info(f"[StatsAggregator] 聚合日期 {day_start.date()} 完成: {total_requests} 请求")
+        # 日志使用业务日期（输入参数），而不是 UTC 日期
+        logger.info(f"[StatsAggregator] 聚合日期 {date.date()} 完成: {total_requests} 请求")
         return stats
 
     @staticmethod

@@ -162,8 +162,6 @@ class CleanupScheduler:
             app_tz = ZoneInfo(APP_TIMEZONE)
             now_local = datetime.now(app_tz)
             today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-            # 转换为 UTC 用于数据库查询（stats_daily.date 存储的是 UTC）
-            today = today_local.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
 
             if backfill:
                 # 启动时检查并回填缺失的日期
@@ -190,40 +188,49 @@ class CleanupScheduler:
                 )
 
                 if latest_stat:
-                    latest_date = latest_stat.date.replace(tzinfo=timezone.utc)
-                    # 计算缺失的天数（从最新记录的下一天到昨天）
-                    yesterday = today - timedelta(days=1)
-                    missing_start = latest_date + timedelta(days=1)
+                    latest_date_utc = latest_stat.date
+                    if latest_date_utc.tzinfo is None:
+                        latest_date_utc = latest_date_utc.replace(tzinfo=timezone.utc)
+                    else:
+                        latest_date_utc = latest_date_utc.astimezone(timezone.utc)
 
-                    if missing_start <= yesterday:
-                        missing_days = (yesterday - missing_start).days + 1
+                    # 使用业务日期计算缺失区间（避免用 UTC 年月日导致日期偏移，且对 DST 更安全）
+                    latest_business_date = latest_date_utc.astimezone(app_tz).date()
+                    yesterday_business_date = (today_local.date() - timedelta(days=1))
+                    missing_start_date = latest_business_date + timedelta(days=1)
+
+                    if missing_start_date <= yesterday_business_date:
+                        missing_days = (yesterday_business_date - missing_start_date).days + 1
                         logger.info(
                             f"检测到缺失 {missing_days} 天的统计数据 "
-                            f"({missing_start.date()} ~ {yesterday.date()})，开始回填..."
+                            f"({missing_start_date} ~ {yesterday_business_date})，开始回填..."
                         )
 
-                        current_date = missing_start
+                        current_date = missing_start_date
                         users = db.query(DBUser.id).filter(DBUser.is_active.is_(True)).all()
 
-                        while current_date <= yesterday:
+                        while current_date <= yesterday_business_date:
                             try:
-                                StatsAggregatorService.aggregate_daily_stats(db, current_date)
+                                current_date_local = datetime.combine(
+                                    current_date, datetime.min.time(), tzinfo=app_tz
+                                )
+                                StatsAggregatorService.aggregate_daily_stats(db, current_date_local)
                                 # 聚合用户数据
                                 for (user_id,) in users:
                                     try:
                                         StatsAggregatorService.aggregate_user_daily_stats(
-                                            db, user_id, current_date
+                                            db, user_id, current_date_local
                                         )
                                     except Exception as e:
                                         logger.warning(
-                                            f"回填用户 {user_id} 日期 {current_date.date()} 失败: {e}"
+                                            f"回填用户 {user_id} 日期 {current_date} 失败: {e}"
                                         )
                                         try:
                                             db.rollback()
                                         except Exception:
                                             pass
                             except Exception as e:
-                                logger.warning(f"回填日期 {current_date.date()} 失败: {e}")
+                                logger.warning(f"回填日期 {current_date} 失败: {e}")
                                 try:
                                     db.rollback()
                                 except Exception:
@@ -239,15 +246,16 @@ class CleanupScheduler:
                 return
 
             # 定时任务：聚合昨天的数据
-            yesterday = (today - timedelta(days=1))
+            # 注意：aggregate_daily_stats 期望业务时区的日期，不是 UTC
+            yesterday_local = today_local - timedelta(days=1)
 
-            StatsAggregatorService.aggregate_daily_stats(db, yesterday)
+            StatsAggregatorService.aggregate_daily_stats(db, yesterday_local)
 
             # 聚合所有用户的昨日数据
             users = db.query(DBUser.id).filter(DBUser.is_active.is_(True)).all()
             for (user_id,) in users:
                 try:
-                    StatsAggregatorService.aggregate_user_daily_stats(db, user_id, yesterday)
+                    StatsAggregatorService.aggregate_user_daily_stats(db, user_id, yesterday_local)
                 except Exception as e:
                     logger.warning(f"聚合用户 {user_id} 统计数据失败: {e}")
                     # 回滚当前用户的失败操作，继续处理其他用户

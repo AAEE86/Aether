@@ -107,11 +107,18 @@ class AdminDashboardStatsAdapter(AdminApiAdapter):
     @cache_result(key_prefix="dashboard:admin:stats", ttl=60, user_specific=False)
     async def handle(self, context):  # type: ignore[override]
         """管理员仪表盘统计 - 使用预聚合数据优化性能"""
+        from zoneinfo import ZoneInfo
+        from src.services.system.stats_aggregator import APP_TIMEZONE
+
         db = context.db
-        now = datetime.now(timezone.utc)
-        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        yesterday = today - timedelta(days=1)
-        last_month = today - timedelta(days=30)
+        # 使用业务时区计算日期，与 stats_daily 表保持一致
+        app_tz = ZoneInfo(APP_TIMEZONE)
+        now_local = datetime.now(app_tz)
+        today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 转换为 UTC 用于与 stats_daily.date 比较（存储的是业务日期对应的 UTC 开始时间）
+        today = today_local.astimezone(timezone.utc)
+        yesterday = (today_local - timedelta(days=1)).astimezone(timezone.utc)
+        last_month = (today_local - timedelta(days=30)).astimezone(timezone.utc)
 
         # ==================== 使用预聚合数据 ====================
         # 从 stats_summary + 今日实时数据获取全局统计
@@ -428,12 +435,19 @@ class AdminDashboardStatsAdapter(AdminApiAdapter):
 class UserDashboardStatsAdapter(DashboardAdapter):
     @cache_result(key_prefix="dashboard:user:stats", ttl=30, user_specific=True)
     async def handle(self, context):  # type: ignore[override]
+        from zoneinfo import ZoneInfo
+        from src.services.system.stats_aggregator import APP_TIMEZONE
+
         db = context.db
         user = context.user
-        now = datetime.now(timezone.utc)
-        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        last_month = today - timedelta(days=30)
-        yesterday = today - timedelta(days=1)
+        # 使用业务时区计算日期，确保与用户感知的"今天"一致
+        app_tz = ZoneInfo(APP_TIMEZONE)
+        now_local = datetime.now(app_tz)
+        today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 转换为 UTC 用于数据库查询
+        today = today_local.astimezone(timezone.utc)
+        yesterday = (today_local - timedelta(days=1)).astimezone(timezone.utc)
+        last_month = (today_local - timedelta(days=30)).astimezone(timezone.utc)
 
         user_api_keys = db.query(func.count(ApiKey.id)).filter(ApiKey.user_id == user.id).scalar()
         active_keys = (
@@ -688,16 +702,23 @@ class DashboardDailyStatsAdapter(DashboardAdapter):
 
     @cache_result(key_prefix="dashboard:daily:stats", ttl=300, user_specific=True)
     async def handle(self, context):  # type: ignore[override]
+        from zoneinfo import ZoneInfo
+        from src.services.system.stats_aggregator import APP_TIMEZONE
+
         db = context.db
         user = context.user
         is_admin = user.role == UserRole.ADMIN
 
-        now = datetime.now(timezone.utc)
-        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = (end_date - timedelta(days=self.days - 1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        # 使用业务时区计算日期，确保每日统计与业务日期一致
+        app_tz = ZoneInfo(APP_TIMEZONE)
+        now_local = datetime.now(app_tz)
+        today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 转换为 UTC 用于数据库查询
+        today = today_local.astimezone(timezone.utc)
+        end_date_local = now_local.replace(hour=23, minute=59, second=59, microsecond=999999)
+        end_date = end_date_local.astimezone(timezone.utc)
+        start_date_local = (today_local - timedelta(days=self.days - 1))
+        start_date = start_date_local.astimezone(timezone.utc)
 
         # ==================== 使用预聚合数据优化 ====================
         if is_admin:
@@ -708,8 +729,10 @@ class DashboardDailyStatsAdapter(DashboardAdapter):
                 .order_by(StatsDaily.date.asc())
                 .all()
             )
+            # stats_daily.date 存储的是业务日期对应的 UTC 开始时间
+            # 需要转回业务时区再取日期，才能与日期序列匹配
             stats_map = {
-                stat.date.replace(tzinfo=timezone.utc).date().isoformat(): {
+                stat.date.replace(tzinfo=timezone.utc).astimezone(app_tz).date().isoformat(): {
                     "requests": stat.total_requests,
                     "tokens": stat.input_tokens + stat.output_tokens + stat.cache_creation_tokens + stat.cache_read_tokens,
                     "cost": stat.total_cost,
@@ -723,7 +746,7 @@ class DashboardDailyStatsAdapter(DashboardAdapter):
 
             # 今日实时数据
             today_stats = StatsAggregatorService.get_today_realtime_stats(db)
-            today_str = today.date().isoformat()
+            today_str = today_local.date().isoformat()
             if today_stats["total_requests"] > 0:
                 # 今日平均响应时间需要单独查询
                 today_avg_rt = (
@@ -800,10 +823,11 @@ class DashboardDailyStatsAdapter(DashboardAdapter):
                 for stat in user_daily_stats
             }
 
-        # 构建完整日期序列
-        current_date = start_date.date()
+        # 构建完整日期序列（使用业务时区日期）
+        current_date = start_date_local.date()
+        end_date_date = end_date_local.date()
         formatted: List[dict] = []
-        while current_date <= end_date.date():
+        while current_date <= end_date_date:
             date_str = current_date.isoformat()
             stat = stats_map.get(date_str)
             if stat:
