@@ -3,7 +3,7 @@ RPM (Requests Per Minute) 限流服务
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Tuple
 
 from sqlalchemy.orm import Session
@@ -72,11 +72,7 @@ class RPMLimiter:
         # 获取当前分钟窗口
         now = datetime.now(timezone.utc)
         window_start = now.replace(second=0, microsecond=0)
-        window_end = (
-            window_start.replace(minute=window_start.minute + 1)
-            if window_start.minute < 59
-            else window_start.replace(hour=window_start.hour + 1, minute=0)
-        )
+        window_end = window_start + timedelta(minutes=1)
 
         # 查找或创建追踪记录
         tracking = (

@@ -5,6 +5,7 @@
 import time
 from typing import AsyncGenerator, Generator, Optional
 
+from starlette.requests import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
@@ -150,9 +151,22 @@ def _log_pool_capacity():
     theoretical = config.db_pool_size + config.db_max_overflow
     workers = max(1, config.worker_processes)
     total_estimated = theoretical * workers
-    logger.info("数据库连接池配置")
-    if total_estimated > config.db_pool_warn_threshold:
-        logger.warning("数据库连接需求可能超过阈值，请调小池大小或减少 worker 数")
+    safe_limit = config.pg_max_connections - config.pg_reserved_connections
+    logger.info(
+        "数据库连接池配置: pool_size=%s, max_overflow=%s, workers=%s, total_estimated=%s, safe_limit=%s",
+        config.db_pool_size,
+        config.db_max_overflow,
+        workers,
+        total_estimated,
+        safe_limit,
+    )
+    if total_estimated > safe_limit:
+        logger.warning(
+            "数据库连接池总需求可能超过 PostgreSQL 限制: %s > %s (pg_max_connections - reserved)，"
+            "建议调整 DB_POOL_SIZE/DB_MAX_OVERFLOW 或减少 worker 数",
+            total_estimated,
+            safe_limit,
+        )
 
 
 def _ensure_async_engine() -> AsyncEngine:
@@ -185,7 +199,7 @@ def _ensure_async_engine() -> AsyncEngine:
     # 创建异步引擎
     _async_engine = create_async_engine(
         ASYNC_DATABASE_URL,
-        poolclass=QueuePool,  # 使用队列连接池
+        # AsyncEngine 不能使用 QueuePool；默认使用 AsyncAdaptedQueuePool
         pool_size=config.db_pool_size,
         max_overflow=config.db_max_overflow,
         pool_timeout=config.db_pool_timeout,
@@ -220,16 +234,39 @@ async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-def get_db() -> Generator[Session, None, None]:
+def get_db(request: Request = None) -> Generator[Session, None, None]:  # type: ignore[assignment]
     """获取数据库会话
 
     注意：事务管理由业务逻辑层显式控制（手动调用 commit/rollback）
     这里只负责会话的创建和关闭，不自动提交
+
+    在 FastAPI 请求上下文中通过 Depends(get_db) 调用时，会自动注入 Request 对象，
+    支持中间件管理的 session 复用；在非请求上下文中直接调用 get_db() 时，
+    request 为 None，退化为独立 session 模式。
     """
+    # FastAPI 请求上下文：优先复用中间件绑定的 request.state.db
+    if request is not None:
+        existing_db = getattr(getattr(request, "state", None), "db", None)
+        if isinstance(existing_db, Session):
+            yield existing_db
+            return
+
     # 确保引擎已初始化
     _ensure_engine()
 
     db = _SessionLocal()
+
+    # 如果中间件声明会统一管理会话生命周期，则把 session 绑定到 request.state，
+    # 并由中间件负责 commit/rollback/close（这里不关闭，避免流式响应提前释放会话）。
+    managed_by_middleware = bool(
+        request is not None
+        and hasattr(request, "state")
+        and getattr(request.state, "db_managed_by_middleware", False)
+    )
+    if managed_by_middleware:
+        request.state.db = db
+        db.info["managed_by_middleware"] = True
+
     try:
         yield db
         # 不再自动 commit，由业务代码显式管理事务
@@ -241,12 +278,13 @@ def get_db() -> Generator[Session, None, None]:
             logger.debug(f"回滚事务时出错（可忽略）: {rollback_error}")
         raise
     finally:
-        try:
-            db.close()  # 确保连接返回池
-        except Exception as close_error:
-            # 记录关闭错误（如 IllegalStateChangeError）
-            # 连接池会处理连接的回收
-            logger.debug(f"关闭数据库连接时出错（可忽略）: {close_error}")
+        if not managed_by_middleware:
+            try:
+                db.close()  # 确保连接返回池
+            except Exception as close_error:
+                # 记录关闭错误（如 IllegalStateChangeError）
+                # 连接池会处理连接的回收
+                logger.debug(f"关闭数据库连接时出错（可忽略）: {close_error}")
 
 
 def create_session() -> Session:
@@ -336,7 +374,7 @@ def init_admin_user(db: Session):
         admin.set_password(config.admin_password)
 
         db.add(admin)
-        db.commit()  # 刷新以获取ID，但不提交
+        db.flush()  # 分配ID，但不提交事务（由外层 init_db 统一 commit）
 
         logger.info(f"创建管理员账户成功: {admin.email} ({admin.username})")
     except Exception as e:

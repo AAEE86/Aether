@@ -46,6 +46,11 @@ class BatchCommitter:
 
     def mark_dirty(self, session: Session):
         """标记 Session 有待提交的更改"""
+        # 请求级事务由中间件统一 commit/rollback；避免后台任务在请求中途误提交。
+        if session is None:
+            return
+        if session.info.get("managed_by_middleware"):
+            return
         self._pending_sessions.add(session)
 
     async def _batch_commit_loop(self):

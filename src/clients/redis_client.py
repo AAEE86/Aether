@@ -267,6 +267,9 @@ async def get_redis_client(require_redis: bool = False) -> Optional[aioredis.Red
 
     if _redis_manager is None:
         _redis_manager = RedisClientManager()
+    # 如果尚未连接（例如启动时降级、或 close() 后），尝试重新初始化。
+    # initialize() 内部包含熔断器逻辑，避免频繁重试导致抖动。
+    if _redis_manager.get_client() is None:
         await _redis_manager.initialize(require_redis=require_redis)
 
     return _redis_manager.get_client()

@@ -211,7 +211,7 @@ class AuthRefreshAdapter(AuthPublicAdapter):
 
 class AuthRegisterAdapter(AuthPublicAdapter):
     async def handle(self, context):  # type: ignore[override]
-        from ..models.database import SystemConfig
+        from src.models.database import SystemConfig
 
         db = context.db
         payload = context.ensure_json_body()
