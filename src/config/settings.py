@@ -122,9 +122,9 @@ class Config:
 
         # 并发控制配置
         # CONCURRENCY_SLOT_TTL: 并发槽位 TTL（秒），防止死锁
-        # CACHE_RESERVATION_RATIO: 缓存用户预留比例（默认 30%）
+        # CACHE_RESERVATION_RATIO: 缓存用户预留比例（默认 10%，新用户可用 90%）
         self.concurrency_slot_ttl = int(os.getenv("CONCURRENCY_SLOT_TTL", "600"))
-        self.cache_reservation_ratio = float(os.getenv("CACHE_RESERVATION_RATIO", "0.3"))
+        self.cache_reservation_ratio = float(os.getenv("CACHE_RESERVATION_RATIO", "0.1"))
 
         # HTTP 请求超时配置（秒）
         self.http_connect_timeout = float(os.getenv("HTTP_CONNECT_TIMEOUT", "10.0"))

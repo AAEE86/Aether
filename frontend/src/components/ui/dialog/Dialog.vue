@@ -22,7 +22,7 @@
         />
       </Transition>
 
-      <div class="relative flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
+      <div class="relative flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0 pointer-events-none">
         <!-- 对话框内容 -->
         <Transition
           enter-active-class="duration-300 ease-out"

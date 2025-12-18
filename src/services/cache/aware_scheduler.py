@@ -59,7 +59,6 @@ from src.services.health.monitor import health_monitor
 from src.services.provider.format import normalize_api_format
 from src.services.rate_limit.adaptive_reservation import (
     AdaptiveReservationManager,
-    ReservationResult,
     get_adaptive_reservation_manager,
 )
 from src.services.rate_limit.concurrency_manager import get_concurrency_manager
@@ -112,8 +111,6 @@ class CacheAwareScheduler:
     - 健康度监控
     """
 
-    # 静态常量作为默认值（实际由 AdaptiveReservationManager 动态计算）
-    CACHE_RESERVATION_RATIO = 0.3
     # 优先级模式常量
     PRIORITY_MODE_PROVIDER = "provider"  # 提供商优先模式
     PRIORITY_MODE_GLOBAL_KEY = "global_key"  # 全局 Key 优先模式
@@ -1320,7 +1317,6 @@ class CacheAwareScheduler:
 
         return {
             "scheduler": "cache_aware",
-            "cache_reservation_ratio": self.CACHE_RESERVATION_RATIO,
             "dynamic_reservation": {
                 "enabled": True,
                 "config": reservation_stats["config"],

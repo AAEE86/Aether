@@ -69,24 +69,29 @@ class ErrorClassifier:
     # 这些错误是由用户请求本身导致的，换 Provider 也无济于事
     # 注意：标准 API 返回的 error.type 已在 CLIENT_ERROR_TYPES 中处理
     # 这里主要用于匹配非标准格式或第三方代理的错误消息
+    #
+    # 重要：不要在此列表中包含 Provider Key 配置问题（如 invalid_api_key）
+    # 这类错误应该触发故障转移，而不是直接返回给用户
     CLIENT_ERROR_PATTERNS: Tuple[str, ...] = (
         "could not process image",  # 图片处理失败
         "image too large",  # 图片过大
         "invalid image",  # 无效图片
         "unsupported image",  # 不支持的图片格式
         "content_policy_violation",  # 内容违规
-        "invalid_api_key",  # 无效的 API Key（不同于认证失败）
         "context_length_exceeded",  # 上下文长度超限
         "content_length_limit",  # 请求内容长度超限 (Claude API)
+        "content_length_exceeds",  # 内容长度超限变体 (AWS CodeWhisperer)
         "max_tokens",  # token 数超限
         "invalid_prompt",  # 无效的提示词
         "content too long",  # 内容过长
+        "input is too long",  # 输入过长 (AWS)
         "message is too long",  # 消息过长
         "prompt is too long",  # Prompt 超长（第三方代理常见格式）
         "image exceeds",  # 图片超出限制
         "pdf too large",  # PDF 过大
         "file too large",  # 文件过大
         "tool_use_id",  # tool_result 引用了不存在的 tool_use（兼容非标准代理）
+        "validationexception",  # AWS 验证异常
     )
 
     def __init__(
@@ -110,18 +115,124 @@ class ErrorClassifier:
     # 表示客户端错误的 error type（不区分大小写）
     # 这些 type 表明是请求本身的问题，不应重试
     CLIENT_ERROR_TYPES: Tuple[str, ...] = (
-        "invalid_request_error",  # Claude/OpenAI 标准客户端错误类型
-        "invalid_argument",  # Gemini 参数错误
-        "failed_precondition",  # Gemini 前置条件错误
+        # Claude/OpenAI 标准
+        "invalid_request_error",
+        # Gemini
+        "invalid_argument",
+        "failed_precondition",
+        # AWS
+        "validationexception",
+        # 通用
+        "validation_error",
+        "bad_request",
     )
+
+    # 表示客户端错误的 reason/code 字段值
+    CLIENT_ERROR_REASONS: Tuple[str, ...] = (
+        "CONTENT_LENGTH_EXCEEDS_THRESHOLD",
+        "CONTEXT_LENGTH_EXCEEDED",
+        "MAX_TOKENS_EXCEEDED",
+        "INVALID_CONTENT",
+        "CONTENT_POLICY_VIOLATION",
+    )
+
+    def _parse_error_response(self, error_text: Optional[str]) -> Dict[str, Any]:
+        """
+        解析错误响应为结构化数据
+
+        支持多种格式:
+        - {"error": {"type": "...", "message": "..."}}  (Claude/OpenAI)
+        - {"error": {"message": "...", "__type": "..."}}  (AWS)
+        - {"errorMessage": "..."}  (Lambda)
+        - {"error": "..."}
+        - {"message": "...", "reason": "..."}
+
+        Returns:
+            结构化的错误信息: {
+                "type": str,      # 错误类型
+                "message": str,   # 错误消息
+                "reason": str,    # 错误原因/代码
+                "raw": str,       # 原始文本
+            }
+        """
+        result = {"type": "", "message": "", "reason": "", "raw": error_text or ""}
+
+        if not error_text:
+            return result
+
+        try:
+            data = json.loads(error_text)
+
+            # 格式 1: {"error": {"type": "...", "message": "..."}}
+            if isinstance(data.get("error"), dict):
+                error_obj = data["error"]
+                result["type"] = str(error_obj.get("type", ""))
+                result["message"] = str(error_obj.get("message", ""))
+
+                # AWS 格式: {"error": {"__type": "...", "message": "...", "reason": "..."}}
+                # __type 直接在 error 对象中，而不是嵌套在 message 里
+                if "__type" in error_obj:
+                    result["type"] = result["type"] or str(error_obj.get("__type", ""))
+                if "reason" in error_obj:
+                    result["reason"] = str(error_obj.get("reason", ""))
+                if "code" in error_obj:
+                    result["reason"] = result["reason"] or str(error_obj.get("code", ""))
+
+                # 嵌套 JSON 格式: message 字段本身是 JSON 字符串
+                # 支持多种嵌套格式：
+                # - AWS: {"__type": "...", "message": "...", "reason": "..."}
+                # - 第三方代理: {"error": {"type": "...", "message": "..."}}
+                if result["message"].startswith("{"):
+                    try:
+                        nested = json.loads(result["message"])
+                        if isinstance(nested, dict):
+                            # AWS 格式
+                            if "__type" in nested:
+                                result["type"] = result["type"] or str(nested.get("__type", ""))
+                                result["message"] = str(nested.get("message", result["message"]))
+                                result["reason"] = str(nested.get("reason", ""))
+                            # 第三方代理格式: {"error": {"message": "..."}}
+                            elif isinstance(nested.get("error"), dict):
+                                inner_error = nested["error"]
+                                inner_msg = str(inner_error.get("message", ""))
+                                if inner_msg:
+                                    result["message"] = inner_msg
+                            # 简单格式: {"message": "..."}
+                            elif "message" in nested:
+                                result["message"] = str(nested["message"])
+                    except json.JSONDecodeError:
+                        pass
+
+            # 格式 2: {"error": "..."}
+            elif isinstance(data.get("error"), str):
+                result["message"] = str(data["error"])
+
+            # 格式 3: {"errorMessage": "..."}  (Lambda)
+            elif "errorMessage" in data:
+                result["message"] = str(data["errorMessage"])
+
+            # 格式 4: {"message": "...", "reason": "..."}
+            elif "message" in data:
+                result["message"] = str(data["message"])
+                result["reason"] = str(data.get("reason", ""))
+
+            # 提取顶层的 reason/code
+            if not result["reason"]:
+                result["reason"] = str(data.get("reason", data.get("code", "")))
+
+        except (json.JSONDecodeError, TypeError, KeyError):
+            result["message"] = error_text[:500] if len(error_text) > 500 else error_text
+
+        return result
 
     def _is_client_error(self, error_text: Optional[str]) -> bool:
         """
         检测错误响应是否为客户端错误（不应重试）
 
-        判断逻辑：
+        判断逻辑（按优先级）：
         1. 检查 error.type 是否为已知的客户端错误类型
-        2. 检查错误文本是否包含已知的客户端错误模式
+        2. 检查 reason/code 是否为已知的客户端错误原因
+        3. 回退到关键词匹配
 
         Args:
             error_text: 错误响应文本
@@ -132,67 +243,53 @@ class ErrorClassifier:
         if not error_text:
             return False
 
-        # 尝试解析 JSON 并检查 error type
-        try:
-            data = json.loads(error_text)
-            if isinstance(data.get("error"), dict):
-                error_type = data["error"].get("type", "")
-                if error_type and any(
-                    t.lower() in error_type.lower() for t in self.CLIENT_ERROR_TYPES
-                ):
-                    return True
-        except (json.JSONDecodeError, TypeError, KeyError):
-            pass
+        parsed = self._parse_error_response(error_text)
 
-        # 回退到关键词匹配
-        error_lower = error_text.lower()
-        return any(pattern.lower() in error_lower for pattern in self.CLIENT_ERROR_PATTERNS)
+        # 1. 检查 error type
+        if parsed["type"]:
+            error_type_lower = parsed["type"].lower()
+            if any(t.lower() in error_type_lower for t in self.CLIENT_ERROR_TYPES):
+                return True
+
+        # 2. 检查 reason/code
+        if parsed["reason"]:
+            reason_upper = parsed["reason"].upper()
+            if any(r in reason_upper for r in self.CLIENT_ERROR_REASONS):
+                return True
+
+        # 3. 回退到关键词匹配（合并 message 和 raw）
+        search_text = f"{parsed['message']} {parsed['raw']}".lower()
+        return any(pattern.lower() in search_text for pattern in self.CLIENT_ERROR_PATTERNS)
 
     def _extract_error_message(self, error_text: Optional[str]) -> Optional[str]:
         """
         从错误响应中提取错误消息
 
-        支持格式：
-        - {"error": {"message": "..."}}  (OpenAI/Claude)
-        - {"error": {"type": "...", "message": "..."}}
-        - {"error": "..."}
-        - {"message": "..."}
-
         Args:
             error_text: 错误响应文本
 
         Returns:
-            提取的错误消息，如果无法解析则返回原始文本
+            提取的错误消息
         """
         if not error_text:
             return None
 
-        try:
-            data = json.loads(error_text)
+        parsed = self._parse_error_response(error_text)
 
-            # {"error": {"message": "..."}} 或 {"error": {"type": "...", "message": "..."}}
-            if isinstance(data.get("error"), dict):
-                error_obj = data["error"]
-                message = error_obj.get("message", "")
-                error_type = error_obj.get("type", "")
-                if message:
-                    if error_type:
-                        return f"{error_type}: {message}"
-                    return str(message)
+        # 构建可读的错误消息
+        parts = []
+        if parsed["type"]:
+            parts.append(parsed["type"])
+        if parsed["reason"]:
+            parts.append(f"[{parsed['reason']}]")
+        if parsed["message"]:
+            parts.append(parsed["message"])
 
-            # {"error": "..."}
-            if isinstance(data.get("error"), str):
-                return str(data["error"])
-
-            # {"message": "..."}
-            if isinstance(data.get("message"), str):
-                return str(data["message"])
-
-        except (json.JSONDecodeError, TypeError, KeyError):
-            pass
+        if parts:
+            return ": ".join(parts) if len(parts) > 1 else parts[0]
 
         # 无法解析，返回原始文本（截断）
-        return error_text[:500] if len(error_text) > 500 else error_text
+        return parsed["raw"][:500] if len(parsed["raw"]) > 500 else parsed["raw"]
 
     def classify(
         self,

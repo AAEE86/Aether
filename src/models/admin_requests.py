@@ -107,20 +107,6 @@ class CreateProviderRequest(BaseModel):
         if not re.match(r"^https?://", v, re.IGNORECASE):
             v = f"https://{v}"
 
-        # 防止 SSRF 攻击：禁止内网地址
-        forbidden_patterns = [
-            r"localhost",
-            r"127\.0\.0\.1",
-            r"0\.0\.0\.0",
-            r"192\.168\.",
-            r"10\.",
-            r"172\.(1[6-9]|2[0-9]|3[0-1])\.",
-            r"169\.254\.",
-        ]
-        for pattern in forbidden_patterns:
-            if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError("不允许使用内网地址")
-
         return v
 
     @field_validator("billing_type")
@@ -194,19 +180,6 @@ class CreateEndpointRequest(BaseModel):
         """验证 API URL"""
         if not re.match(r"^https?://", v, re.IGNORECASE):
             raise ValueError("URL 必须以 http:// 或 https:// 开头")
-
-        # 防止 SSRF
-        forbidden_patterns = [
-            r"localhost",
-            r"127\.0\.0\.1",
-            r"0\.0\.0\.0",
-            r"192\.168\.",
-            r"10\.",
-            r"172\.(1[6-9]|2[0-9]|3[0-1])\.",
-        ]
-        for pattern in forbidden_patterns:
-            if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError("不允许使用内网地址")
 
         return v.rstrip("/")  # 移除末尾斜杠
 

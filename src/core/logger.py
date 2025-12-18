@@ -9,7 +9,7 @@
 
 输出策略:
 - 控制台: 开发环境=DEBUG, 生产环境=INFO (通过 LOG_LEVEL 控制)
-- 文件: 始终保存 DEBUG 级别，保留30天，每日轮转
+- 文件: 始终保存 DEBUG 级别，保留30天，按大小轮转 (100MB)
 
 使用方式:
     from src.core.logger import logger
@@ -72,12 +72,15 @@ def _log_filter(record: dict) -> bool:  # type: ignore[type-arg]
 
 
 if IS_DOCKER:
+    # 生产环境：禁用 backtrace 和 diagnose，减少日志噪音
     logger.add(
         sys.stdout,
         format=CONSOLE_FORMAT_PROD,
         level=LOG_LEVEL,
         filter=_log_filter,  # type: ignore[arg-type]
         colorize=False,
+        backtrace=False,
+        diagnose=False,
     )
 else:
     logger.add(
@@ -92,30 +95,37 @@ if not DISABLE_FILE_LOG:
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
 
+    # 文件日志通用配置
+    file_log_config = {
+        "format": FILE_FORMAT,
+        "filter": _log_filter,
+        "rotation": "100 MB",
+        "retention": "30 days",
+        "compression": "gz",
+        "enqueue": True,
+        "encoding": "utf-8",
+        "catch": True,
+    }
+
+    # 生产环境禁用详细堆栈
+    if IS_DOCKER:
+        file_log_config["backtrace"] = False
+        file_log_config["diagnose"] = False
+
     # 主日志文件 - 所有级别
     logger.add(
         log_dir / "app.log",
-        format=FILE_FORMAT,
         level="DEBUG",
-        filter=_log_filter,  # type: ignore[arg-type]
-        rotation="00:00",
-        retention="30 days",
-        compression="gz",
-        enqueue=True,
-        encoding="utf-8",
+        **file_log_config,  # type: ignore[arg-type]
     )
 
     # 错误日志文件 - 仅 ERROR 及以上
+    error_log_config = file_log_config.copy()
+    error_log_config["rotation"] = "50 MB"
     logger.add(
         log_dir / "error.log",
-        format=FILE_FORMAT,
         level="ERROR",
-        filter=_log_filter,  # type: ignore[arg-type]
-        rotation="00:00",
-        retention="30 days",
-        compression="gz",
-        enqueue=True,
-        encoding="utf-8",
+        **error_log_config,  # type: ignore[arg-type]
     )
 
 # ============================================================================

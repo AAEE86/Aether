@@ -411,9 +411,10 @@ class BaseMessageHandler:
             QuotaExceededException,
             RateLimitException,
             ModelNotSupportedException,
+            UpstreamClientException,
         )
 
-        if isinstance(error, (ProviderException, QuotaExceededException, RateLimitException, ModelNotSupportedException)):
+        if isinstance(error, (ProviderException, QuotaExceededException, RateLimitException, ModelNotSupportedException, UpstreamClientException)):
             # 业务异常：简洁日志，不打印堆栈
             logger.error(f"{message}: [{type(error).__name__}] {error}")
         else:

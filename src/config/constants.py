@@ -41,8 +41,8 @@ class CacheSize:
 class ConcurrencyDefaults:
     """并发控制默认值"""
 
-    # 自适应并发初始限制（保守值）
-    INITIAL_LIMIT = 3
+    # 自适应并发初始限制（宽松起步，遇到 429 再降低）
+    INITIAL_LIMIT = 50
 
     # 429错误后的冷却时间（分钟）- 在此期间不会增加并发限制
     COOLDOWN_AFTER_429_MINUTES = 5
@@ -67,13 +67,14 @@ class ConcurrencyDefaults:
     MIN_SAMPLES_FOR_DECISION = 5
 
     # 扩容步长 - 每次扩容增加的并发数
-    INCREASE_STEP = 1
+    INCREASE_STEP = 2
 
-    # 缩容乘数 - 遇到 429 时的缩容比例
-    DECREASE_MULTIPLIER = 0.7
+    # 缩容乘数 - 遇到 429 时基于当前并发数的缩容比例
+    # 0.85 表示降到触发 429 时并发数的 85%
+    DECREASE_MULTIPLIER = 0.85
 
     # 最大并发限制上限
-    MAX_CONCURRENT_LIMIT = 100
+    MAX_CONCURRENT_LIMIT = 200
 
     # 最小并发限制下限
     MIN_CONCURRENT_LIMIT = 1
@@ -84,6 +85,11 @@ class ConcurrencyDefaults:
 
     # 探测性扩容最小请求数 - 在探测间隔内至少需要这么多请求
     PROBE_INCREASE_MIN_REQUESTS = 10
+
+    # === 缓存用户预留比例 ===
+    # 缓存用户槽位预留比例（新用户可用 1 - 此值）
+    # 0.1 表示缓存用户预留 10%，新用户可用 90%
+    CACHE_RESERVATION_RATIO = 0.1
 
 
 class CircuitBreakerDefaults:

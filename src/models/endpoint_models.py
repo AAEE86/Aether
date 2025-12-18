@@ -45,23 +45,8 @@ class ProviderEndpointCreate(BaseModel):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, v: str) -> str:
-        """验证 API URL（SSRF 防护）"""
         if not re.match(r"^https?://", v, re.IGNORECASE):
             raise ValueError("URL 必须以 http:// 或 https:// 开头")
-
-        # 防止 SSRF 攻击：禁止内网地址
-        forbidden_patterns = [
-            r"localhost",
-            r"127\.0\.0\.1",
-            r"0\.0\.0\.0",
-            r"192\.168\.",
-            r"10\.",
-            r"172\.(1[6-9]|2[0-9]|3[0-1])\.",
-            r"169\.254\.",
-        ]
-        for pattern in forbidden_patterns:
-            if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError("不允许使用内网地址")
 
         return v.rstrip("/")  # 移除末尾斜杠
 
@@ -83,26 +68,12 @@ class ProviderEndpointUpdate(BaseModel):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, v: Optional[str]) -> Optional[str]:
-        """验证 API URL（SSRF 防护）"""
+        """验证 API URL"""
         if v is None:
             return v
 
         if not re.match(r"^https?://", v, re.IGNORECASE):
             raise ValueError("URL 必须以 http:// 或 https:// 开头")
-
-        # 防止 SSRF 攻击：禁止内网地址
-        forbidden_patterns = [
-            r"localhost",
-            r"127\.0\.0\.1",
-            r"0\.0\.0\.0",
-            r"192\.168\.",
-            r"10\.",
-            r"172\.(1[6-9]|2[0-9]|3[0-1])\.",
-            r"169\.254\.",
-        ]
-        for pattern in forbidden_patterns:
-            if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError("不允许使用内网地址")
 
         return v.rstrip("/")  # 移除末尾斜杠
 
