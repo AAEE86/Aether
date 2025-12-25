@@ -234,7 +234,14 @@ class EndpointHealthService:
                 for api_format in format_key_mapping.keys()
             }
 
-        # 计算时间范围（使用秒级精度避免整除导致的除零错误）
+        # 参数校验（API 层已通过 Query(ge=1) 保证，这里做防御性检查）
+        if lookback_hours <= 0 or segments <= 0:
+            raise ValueError(
+                f"lookback_hours and segments must be positive, "
+                f"got lookback_hours={lookback_hours}, segments={segments}"
+            )
+
+        # 计算时间范围
         segment_seconds = (lookback_hours * 3600) / segments
         start_time = now - timedelta(hours=lookback_hours)
 
