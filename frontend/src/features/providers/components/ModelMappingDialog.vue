@@ -154,16 +154,25 @@
                     <div
                       v-for="model in group.models"
                       :key="model.id"
-                      class="flex items-center gap-2 p-2 rounded-lg border transition-colors hover:bg-muted/30"
+                      class="flex items-center gap-2 p-2 rounded-lg border transition-colors hover:bg-muted/30 cursor-pointer"
                       :title="model.id"
                     >
                       <div class="flex-1 min-w-0">
                         <p class="font-medium text-sm truncate">
                           {{ model.id }}
                         </p>
-                        <p class="text-xs text-muted-foreground truncate font-mono">
-                          {{ model.owned_by || model.id }}
-                        </p>
+                        <div class="flex items-center gap-2">
+                          <p class="text-xs text-muted-foreground truncate font-mono">
+                            {{ model.owned_by || model.id }}
+                          </p>
+                          <Badge
+                            v-if="model.is_redirected"
+                            variant="secondary"
+                            class="text-[10px] px-1.5 py-0.5 h-4"
+                          >
+                            已存在重定向
+                          </Badge>
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -337,7 +346,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Tag, Loader2, GripVertical, Zap, Search, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Plus } from 'lucide-vue-next'
+import { Tag, Loader2, GripVertical, Zap, Search, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Plus, Check } from 'lucide-vue-next'
 import {
   Button,
   Input,
@@ -348,6 +357,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Badge,
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import {

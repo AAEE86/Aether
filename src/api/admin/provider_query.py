@@ -16,7 +16,7 @@ from src.api.handlers.base.cli_adapter_base import get_cli_adapter_class
 from src.core.crypto import crypto_service
 from src.core.logger import logger
 from src.database.database import get_db
-from src.models.database import Provider, ProviderEndpoint, User
+from src.models.database import Model, Provider, ProviderEndpoint, User
 from src.utils.auth_utils import get_current_user
 
 router = APIRouter(prefix="/api/admin/provider-query", tags=["Provider Query"])
@@ -203,6 +203,28 @@ async def query_available_models(
         if model_id and unique_key not in seen_keys:
             seen_keys.add(unique_key)
             unique_models.append(model)
+
+    # 查询该 Provider 下所有已存在的 Model，用于标记已重定向的模型
+    existing_models = db.query(Model).filter(Model.provider_id == request.provider_id).all()
+    
+    # 收集所有已重定向的模型名称（包括 provider_model_name 和 provider_model_mappings）
+    redirected_model_names: set[str] = set()
+    for model in existing_models:
+        # 添加主模型名称
+        redirected_model_names.add(model.provider_model_name)
+        # 添加映射名称
+        if model.provider_model_mappings:
+            for mapping in model.provider_model_mappings:
+                if isinstance(mapping, dict) and mapping.get("name"):
+                    redirected_model_names.add(mapping["name"])
+    
+    # 标记已重定向的模型
+    for model in unique_models:
+        model_id = model.get("id")
+        if model_id in redirected_model_names:
+            model["is_redirected"] = True
+        else:
+            model["is_redirected"] = False
 
     error = "; ".join(errors) if errors else None
     if not unique_models and not error:
