@@ -13,8 +13,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  BASE_IMAGE_NAME: fawney19/aether-base
-  APP_IMAGE_NAME: fawney19/aether
+  BASE_IMAGE_NAME: aaee86/aether-base
+  APP_IMAGE_NAME: aaee86/aether
   # Files that affect base image - used for hash calculation
   BASE_FILES: "Dockerfile.base pyproject.toml frontend/package.json frontend/package-lock.json"
 
