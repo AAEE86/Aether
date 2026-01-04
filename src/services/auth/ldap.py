@@ -7,6 +7,32 @@ from sqlalchemy.orm import Session
 from src.core.logger import logger
 from src.models.database import LDAPConfig
 
+# LDAP 连接超时时间（秒）
+LDAP_CONNECT_TIMEOUT = 10
+
+
+def escape_ldap_filter(value: str) -> str:
+    """
+    转义 LDAP 过滤器中的特殊字符，防止 LDAP 注入攻击
+
+    Args:
+        value: 需要转义的字符串
+
+    Returns:
+        转义后的安全字符串
+    """
+    # LDAP 过滤器特殊字符: \ * ( ) NUL
+    escape_chars = {
+        "\\": r"\5c",
+        "*": r"\2a",
+        "(": r"\28",
+        ")": r"\29",
+        "\x00": r"\00",
+    }
+    for char, escaped in escape_chars.items():
+        value = value.replace(char, escaped)
+    return value
+
 
 class LDAPService:
     """LDAP 认证服务"""
@@ -57,7 +83,12 @@ class LDAPService:
         try:
             # 创建服务器连接
             use_ssl = config.server_url.startswith("ldaps://")
-            server = Server(config.server_url, use_ssl=use_ssl, get_info=ldap3.ALL)
+            server = Server(
+                config.server_url,
+                use_ssl=use_ssl,
+                get_info=ldap3.ALL,
+                connect_timeout=LDAP_CONNECT_TIMEOUT,
+            )
 
             # 使用管理员账号连接
             bind_password = config.get_bind_password()
@@ -70,8 +101,9 @@ class LDAPService:
                 logger.error(f"LDAP 管理员绑定失败: {admin_conn.result}")
                 return None
 
-            # 搜索用户
-            search_filter = config.user_search_filter.replace("{username}", username)
+            # 搜索用户（转义用户名防止 LDAP 注入）
+            safe_username = escape_ldap_filter(username)
+            search_filter = config.user_search_filter.replace("{username}", safe_username)
             admin_conn.search(
                 search_base=config.base_dn,
                 search_filter=search_filter,
@@ -140,7 +172,12 @@ class LDAPService:
 
         try:
             use_ssl = config.server_url.startswith("ldaps://")
-            server = Server(config.server_url, use_ssl=use_ssl, get_info=ldap3.ALL)
+            server = Server(
+                config.server_url,
+                use_ssl=use_ssl,
+                get_info=ldap3.ALL,
+                connect_timeout=LDAP_CONNECT_TIMEOUT,
+            )
             bind_password = config.get_bind_password()
             conn = Connection(server, user=config.bind_dn, password=bind_password)
 

@@ -200,7 +200,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/composables/useToast'
 import { useLogger } from '@/composables/useLogger'
-import { adminApi } from '@/api/admin'
+import { adminApi, type LdapConfigUpdateRequest } from '@/api/admin'
 
 const { success, error } = useToast()
 const log = useLogger('LdapSettings')
@@ -257,7 +257,7 @@ async function loadConfig() {
 async function handleSave() {
   saveLoading.value = true
   try {
-    const payload: Record<string, unknown> = {
+    const payload: LdapConfigUpdateRequest = {
       server_url: ldapConfig.value.server_url,
       bind_dn: ldapConfig.value.bind_dn,
       base_dn: ldapConfig.value.base_dn,
@@ -268,9 +268,7 @@ async function handleSave() {
       is_enabled: ldapConfig.value.is_enabled,
       is_exclusive: ldapConfig.value.is_exclusive,
       use_starttls: ldapConfig.value.use_starttls,
-    }
-    if (ldapConfig.value.bind_password) {
-      payload.bind_password = ldapConfig.value.bind_password
+      ...(ldapConfig.value.bind_password && { bind_password: ldapConfig.value.bind_password }),
     }
     await adminApi.updateLdapConfig(payload)
     success('LDAP 配置保存成功')

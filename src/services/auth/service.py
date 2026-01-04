@@ -117,6 +117,12 @@ class AuthService:
 
             # 获取或创建本地用户
             user = await AuthService._get_or_create_ldap_user(db, ldap_user)
+            if not user:
+                # 已有本地账号但来源不匹配等情况
+                return None
+            if not user.is_active:
+                logger.warning(f"登录失败 - 用户已禁用: {email}")
+                return None
             return user
 
         # 本地认证
@@ -154,7 +160,7 @@ class AuthService:
         return user
 
     @staticmethod
-    async def _get_or_create_ldap_user(db: Session, ldap_user: dict) -> User:
+    async def _get_or_create_ldap_user(db: Session, ldap_user: dict) -> Optional[User]:
         """获取或创建 LDAP 用户
 
         Args:
@@ -166,17 +172,33 @@ class AuthService:
         if user:
             # 更新 auth_source（如果是首次 LDAP 登录）
             if user.auth_source != AuthSource.LDAP:
-                user.auth_source = AuthSource.LDAP
+                # 避免覆盖已有本地账户（不同来源时拒绝登录）
+                logger.warning(
+                    f"LDAP 登录拒绝 - 账户来源不匹配(现有:{user.auth_source}, 请求:LDAP): {ldap_user['email']}"
+                )
+                return None
             user.last_login_at = datetime.now(timezone.utc)
             db.commit()
             await UserCacheService.invalidate_user_cache(user.id, user.email)
             logger.info(f"LDAP 用户登录成功: {ldap_user['email']} (ID: {user.id})")
             return user
 
+        # 检查 username 是否已被占用
+        username = ldap_user["username"]
+        existing_user_with_username = db.query(User).filter(User.username == username).first()
+        if existing_user_with_username:
+            # 如果 username 已存在，添加后缀使其唯一
+            base_username = username
+            counter = 1
+            while db.query(User).filter(User.username == username).first():
+                username = f"{base_username}_ldap_{counter}"
+                counter += 1
+            logger.info(f"LDAP 用户名冲突，使用新用户名: {base_username} -> {username}")
+
         # 创建新用户
         user = User(
             email=ldap_user["email"],
-            username=ldap_user["username"],
+            username=username,
             password_hash="",  # LDAP 用户无本地密码
             auth_source=AuthSource.LDAP,
             role=UserRole.USER,

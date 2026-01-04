@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..core.enums import UserRole
 
@@ -15,18 +15,9 @@ from ..core.enums import UserRole
 class LoginRequest(BaseModel):
     """登录请求"""
 
-    email: str = Field(..., min_length=3, max_length=255, description="邮箱地址")
+    email: str = Field(..., min_length=1, max_length=255, description="邮箱/用户名")
     password: str = Field(..., min_length=1, max_length=128, description="密码")
     auth_type: Literal["local", "ldap"] = Field(default="local", description="认证类型")
-
-    @classmethod
-    @field_validator("email")
-    def validate_email(cls, v):
-        """验证邮箱格式"""
-        email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-        if not re.match(email_pattern, v):
-            raise ValueError("邮箱格式无效")
-        return v.lower()
 
     @classmethod
     @field_validator("password")
@@ -36,6 +27,23 @@ class LoginRequest(BaseModel):
         if not v:
             raise ValueError("密码不能为空")
         return v
+
+    @model_validator(mode="after")
+    def validate_login(self):
+        """根据认证类型校验并规范化登录标识"""
+        identifier = self.email.strip()
+
+        if self.auth_type == "local":
+            email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+            if not re.match(email_pattern, identifier):
+                raise ValueError("邮箱格式无效")
+            self.email = identifier.lower()
+        else:
+            if not identifier:
+                raise ValueError("用户名/邮箱不能为空")
+            self.email = identifier
+
+        return self
 
 
 class LoginResponse(BaseModel):

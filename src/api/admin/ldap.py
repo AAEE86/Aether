@@ -132,8 +132,12 @@ class AdminUpdateLDAPConfigAdapter(AdminApiAdapter):
             raise InvalidRequestException("请求数据验证失败")
 
         config = db.query(LDAPConfig).first()
+        is_new_config = config is None
 
-        if not config:
+        if is_new_config:
+            # 首次创建配置时必须提供密码
+            if not config_update.bind_password:
+                raise InvalidRequestException("首次配置 LDAP 时必须设置绑定密码")
             config = LDAPConfig()
             db.add(config)
 
