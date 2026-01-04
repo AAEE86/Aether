@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 import jwt
 from fastapi import HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
 
 from src.config import config
@@ -111,7 +112,8 @@ class AuthService:
                 logger.warning("登录失败 - LDAP 认证未启用")
                 return None
 
-            ldap_user = LDAPService.authenticate(db, email, password)
+            # 在线程池中执行阻塞的 LDAP 网络请求，避免阻塞事件循环
+            ldap_user = await run_in_threadpool(LDAPService.authenticate, db, email, password)
             if not ldap_user:
                 return None
 
