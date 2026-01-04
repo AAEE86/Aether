@@ -46,6 +46,7 @@ def upgrade() -> None:
         sa.Column('is_enabled', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('is_exclusive', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('use_starttls', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('connect_timeout', sa.Integer(), nullable=False, server_default='10'),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')),
         sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')),
         sa.PrimaryKeyConstraint('id')

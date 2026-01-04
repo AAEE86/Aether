@@ -292,6 +292,10 @@ onMounted(async () => {
     localEnabled.value = authSettings.local_enabled
     ldapEnabled.value = authSettings.ldap_enabled
     ldapExclusive.value = authSettings.ldap_exclusive
+    // 若仅允许 LDAP 登录，则禁用本地注册入口
+    if (ldapExclusive.value) {
+      allowRegistration.value = false
+    }
 
     // Set default auth type based on settings
     if (authSettings.ldap_exclusive) {

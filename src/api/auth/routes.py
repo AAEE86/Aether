@@ -349,6 +349,12 @@ class AuthRegisterAdapter(AuthPublicAdapter):
                 detail=f"注册请求过于频繁，请在 {reset_after} 秒后重试",
             )
 
+        # 仅允许 LDAP 登录时拒绝本地注册
+        if LDAPService.is_ldap_exclusive(db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="系统已启用 LDAP 专属登录，禁止本地注册"
+            )
+
         allow_registration = db.query(SystemConfig).filter_by(key="enable_registration").first()
         if allow_registration and not allow_registration.value:
             AuditService.log_event(

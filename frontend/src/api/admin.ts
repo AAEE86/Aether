@@ -167,6 +167,7 @@ export interface LdapConfigResponse {
   is_enabled: boolean
   is_exclusive: boolean
   use_starttls: boolean
+  connect_timeout: number
 }
 
 // LDAP 配置更新请求
@@ -182,6 +183,7 @@ export interface LdapConfigUpdateRequest {
   is_enabled?: boolean
   is_exclusive?: boolean
   use_starttls?: boolean
+  connect_timeout?: number
 }
 
 // LDAP 连接测试响应
@@ -527,11 +529,8 @@ export const adminApi = {
   },
 
   // 测试 LDAP 连接
-  async testLdapConnection(): Promise<LdapTestResponse> {
-    const response = await apiClient.post<LdapTestResponse>(
-      '/api/admin/ldap/test',
-      {}
-    )
+  async testLdapConnection(config: LdapConfigUpdateRequest): Promise<LdapTestResponse> {
+    const response = await apiClient.post<LdapTestResponse>('/api/admin/ldap/test', config)
     return response.data
   }
 }

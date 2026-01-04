@@ -459,6 +459,7 @@ class LDAPConfig(Base):
         Boolean, default=False, nullable=False
     )  # 是否仅允许 LDAP 登录（禁用本地认证）
     use_starttls = Column(Boolean, default=False, nullable=False)  # 是否使用 STARTTLS
+    connect_timeout = Column(Integer, default=10, nullable=False)  # 连接超时时间（秒）
 
     # 时间戳
     created_at = Column(

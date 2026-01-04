@@ -112,8 +112,16 @@ class AuthService:
                 logger.warning("登录失败 - LDAP 认证未启用")
                 return None
 
+            # 预取配置，避免将 Session 传递到线程池
+            config_data = LDAPService.get_config_data(db)
+            if not config_data:
+                logger.warning("登录失败 - 无法获取 LDAP 配置或解密失败")
+                return None
+
             # 在线程池中执行阻塞的 LDAP 网络请求，避免阻塞事件循环
-            ldap_user = await run_in_threadpool(LDAPService.authenticate, db, email, password)
+            ldap_user = await run_in_threadpool(
+                LDAPService.authenticate_with_config, config_data, email, password
+            )
             if not ldap_user:
                 return None
 
@@ -128,16 +136,19 @@ class AuthService:
             return user
 
         # 本地认证
-        if LDAPService.is_ldap_exclusive(db):
-            logger.warning("登录失败 - 仅允许 LDAP 登录")
-            return None
-
         # 登录校验必须读取密码哈希，不能使用不包含 password_hash 的缓存对象
         user = db.query(User).filter(User.email == email).first()
 
         if not user:
             logger.warning(f"登录失败 - 用户不存在: {email}")
             return None
+
+        # 检查 LDAP exclusive 模式：仅允许本地管理员登录（紧急恢复通道）
+        if LDAPService.is_ldap_exclusive(db):
+            if user.role != UserRole.ADMIN or user.auth_source != AuthSource.LOCAL:
+                logger.warning(f"登录失败 - 仅允许 LDAP 登录（管理员除外）: {email}")
+                return None
+            logger.info(f"LDAP exclusive 模式下允许本地管理员登录: {email}")
 
         # 检查用户认证来源
         if user.auth_source == AuthSource.LDAP:

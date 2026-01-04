@@ -153,6 +153,24 @@
               class="mt-1"
             />
           </div>
+
+          <div>
+            <Label for="connect-timeout" class="block text-sm font-medium">
+              连接超时 (秒)
+            </Label>
+            <Input
+              id="connect-timeout"
+              v-model.number="ldapConfig.connect_timeout"
+              type="number"
+              min="1"
+              max="60"
+              placeholder="10"
+              class="mt-1"
+            />
+            <p class="mt-1 text-xs text-muted-foreground">
+              LDAP 服务器连接超时时间 (1-60秒)
+            </p>
+          </div>
         </div>
 
         <div class="mt-6 space-y-4">
@@ -222,6 +240,7 @@ const ldapConfig = ref({
   is_enabled: false,
   is_exclusive: false,
   use_starttls: false,
+  connect_timeout: 10,
 })
 
 onMounted(async () => {
@@ -244,6 +263,7 @@ async function loadConfig() {
       is_enabled: response.is_enabled || false,
       is_exclusive: response.is_exclusive || false,
       use_starttls: response.use_starttls || false,
+      connect_timeout: response.connect_timeout || 10,
     }
     hasPassword.value = !!response.server_url
   } catch (err) {
@@ -268,6 +288,7 @@ async function handleSave() {
       is_enabled: ldapConfig.value.is_enabled,
       is_exclusive: ldapConfig.value.is_exclusive,
       use_starttls: ldapConfig.value.use_starttls,
+      connect_timeout: ldapConfig.value.connect_timeout,
       ...(ldapConfig.value.bind_password && { bind_password: ldapConfig.value.bind_password }),
     }
     await adminApi.updateLdapConfig(payload)
@@ -285,7 +306,21 @@ async function handleSave() {
 async function handleTestConnection() {
   testLoading.value = true
   try {
-    const response = await adminApi.testLdapConnection()
+    const payload: LdapConfigUpdateRequest = {
+      server_url: ldapConfig.value.server_url,
+      bind_dn: ldapConfig.value.bind_dn,
+      base_dn: ldapConfig.value.base_dn,
+      user_search_filter: ldapConfig.value.user_search_filter,
+      username_attr: ldapConfig.value.username_attr,
+      email_attr: ldapConfig.value.email_attr,
+      display_name_attr: ldapConfig.value.display_name_attr,
+      is_enabled: ldapConfig.value.is_enabled,
+      is_exclusive: ldapConfig.value.is_exclusive,
+      use_starttls: ldapConfig.value.use_starttls,
+      connect_timeout: ldapConfig.value.connect_timeout,
+      ...(ldapConfig.value.bind_password && { bind_password: ldapConfig.value.bind_password }),
+    }
+    const response = await adminApi.testLdapConnection(payload)
     if (response.success) {
       success('LDAP 连接测试成功')
     } else {
