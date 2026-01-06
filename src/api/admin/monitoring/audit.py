@@ -107,6 +107,9 @@ class AdminGetAuditLogsAdapter(AdminApiAdapter):
     limit: int
     offset: int
 
+    # 查看审计日志本身不应该产生审计记录，避免刷新页面时产生大量无意义的日志
+    audit_log_enabled: bool = False
+
     async def handle(self, context):  # type: ignore[override]
         db = context.db
         cutoff_time = datetime.now(timezone.utc) - timedelta(days=self.days)

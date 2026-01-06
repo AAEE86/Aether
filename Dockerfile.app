@@ -39,7 +39,18 @@ COPY alembic.ini ./
 COPY alembic/ ./alembic/
 
 # Nginx 配置模板
+# 智能处理 IP：有外层代理头就透传，没有就用直连 IP
 RUN printf '%s\n' \
+'map $http_x_real_ip $real_ip {' \
+'    default $http_x_real_ip;' \
+'    ""      $remote_addr;' \
+'}' \
+'' \
+'map $http_x_forwarded_for $forwarded_for {' \
+'    default $http_x_forwarded_for;' \
+'    ""      $remote_addr;' \
+'}' \
+'' \
 'server {' \
 '    listen 80;' \
 '    server_name _;' \
@@ -70,8 +81,8 @@ RUN printf '%s\n' \
 '        proxy_pass http://127.0.0.1:PORT_PLACEHOLDER;' \
 '        proxy_http_version 1.1;' \
 '        proxy_set_header Host $host;' \
-'        proxy_set_header X-Real-IP $remote_addr;' \
-'        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
+'        proxy_set_header X-Real-IP $real_ip;' \
+'        proxy_set_header X-Forwarded-For $forwarded_for;' \
 '        proxy_set_header X-Forwarded-Proto $scheme;' \
 '        proxy_set_header Connection "";' \
 '        proxy_set_header Accept $http_accept;' \
