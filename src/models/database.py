@@ -30,7 +30,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship
 
 from ..config import config
-from ..core.enums import ProviderBillingType, UserRole
+from ..core.enums import AuthSource, ProviderBillingType, UserRole
 
 Base = declarative_base()
 
@@ -54,6 +54,20 @@ class User(Base):
         default=UserRole.USER,
         nullable=False,
     )
+    auth_source = Column(
+        Enum(
+            AuthSource,
+            name="authsource",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=AuthSource.LOCAL,
+        nullable=False,
+    )
+
+    # LDAP 标识（仅 auth_source=ldap 时使用，用于在邮箱变更/用户名冲突时稳定关联本地账户）
+    ldap_dn = Column(String(512), nullable=True, index=True)
+    ldap_username = Column(String(255), nullable=True, index=True)
 
     # 访问限制（NULL 表示不限制，允许访问所有资源）
     allowed_providers = Column(JSON, nullable=True)  # 允许使用的提供商 ID 列表
@@ -426,6 +440,68 @@ class SystemConfig(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class LDAPConfig(Base):
+    """LDAP认证配置表 - 单行配置"""
+
+    __tablename__ = "ldap_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    server_url = Column(String(255), nullable=False)  # ldap://host:389 或 ldaps://host:636
+    bind_dn = Column(String(255), nullable=False)  # 绑定账号 DN
+    bind_password_encrypted = Column(Text, nullable=True)  # 加密的绑定密码（允许 NULL 表示已清除）
+    base_dn = Column(String(255), nullable=False)  # 用户搜索基础 DN
+    user_search_filter = Column(
+        String(500), default="(uid={username})", nullable=False
+    )  # 用户搜索过滤器
+    username_attr = Column(String(50), default="uid", nullable=False)  # 用户名属性 (uid/sAMAccountName)
+    email_attr = Column(String(50), default="mail", nullable=False)  # 邮箱属性
+    display_name_attr = Column(String(50), default="cn", nullable=False)  # 显示名称属性
+    is_enabled = Column(Boolean, default=False, nullable=False)  # 是否启用 LDAP 认证
+    is_exclusive = Column(
+        Boolean, default=False, nullable=False
+    )  # 是否仅允许 LDAP 登录（禁用本地认证）
+    use_starttls = Column(Boolean, default=False, nullable=False)  # 是否使用 STARTTLS
+    connect_timeout = Column(Integer, default=10, nullable=False)  # 连接超时时间（秒）
+
+    # 时间戳
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    def set_bind_password(self, password: str) -> None:
+        """
+        设置并加密绑定密码
+
+        Args:
+            password: 明文密码
+        """
+        from src.core.crypto import crypto_service
+
+        self.bind_password_encrypted = crypto_service.encrypt(password)
+
+    def get_bind_password(self) -> str:
+        """
+        获取解密后的绑定密码
+
+        Returns:
+            str: 解密后的明文密码
+
+        Raises:
+            DecryptionException: 解密失败时抛出异常
+        """
+        from src.core.crypto import crypto_service
+
+        if not self.bind_password_encrypted:
+            return ""
+        return crypto_service.decrypt(self.bind_password_encrypted)
 
 
 class Provider(Base):

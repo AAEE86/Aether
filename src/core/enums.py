@@ -30,3 +30,10 @@ class ProviderBillingType(Enum):
     MONTHLY_QUOTA = "monthly_quota"  # 月卡额度
     PAY_AS_YOU_GO = "pay_as_you_go"  # 按量付费
     FREE_TIER = "free_tier"  # 免费额度
+
+
+class AuthSource(str, Enum):
+    """认证来源枚举"""
+
+    LOCAL = "local"  # 本地认证
+    LDAP = "ldap"  # LDAP 认证

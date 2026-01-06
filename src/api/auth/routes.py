@@ -33,6 +33,7 @@ from src.models.api import (
 )
 from src.models.database import AuditEventType, User, UserRole
 from src.services.auth.service import AuthService
+from src.services.auth.ldap import LDAPService
 from src.services.rate_limit.ip_limiter import IPRateLimiter
 from src.services.system.audit import AuditService
 from src.services.system.config import SystemConfigService
@@ -96,6 +97,13 @@ pipeline = ApiRequestPipeline()
 async def registration_settings(request: Request, db: Session = Depends(get_db)):
     """公开获取注册相关配置"""
     adapter = AuthRegistrationSettingsAdapter()
+    return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)
+
+
+@router.get("/settings")
+async def auth_settings(request: Request, db: Session = Depends(get_db)):
+    """公开获取认证设置（用于前端判断显示哪些登录选项）"""
+    adapter = AuthSettingsAdapter()
     return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)
 
 
@@ -193,7 +201,9 @@ class AuthLoginAdapter(AuthPublicAdapter):
                 detail=f"登录请求过于频繁，请在 {reset_after} 秒后重试",
             )
 
-        user = await AuthService.authenticate_user(db, login_request.email, login_request.password)
+        user = await AuthService.authenticate_user(
+            db, login_request.email, login_request.password, login_request.auth_type
+        )
         if not user:
             AuditService.log_login_attempt(
                 db=db,
@@ -305,6 +315,21 @@ class AuthRegistrationSettingsAdapter(AuthPublicAdapter):
         ).model_dump()
 
 
+class AuthSettingsAdapter(AuthPublicAdapter):
+    async def handle(self, context):  # type: ignore[override]
+        """公开返回认证设置"""
+        db = context.db
+
+        ldap_enabled = LDAPService.is_ldap_enabled(db)
+        ldap_exclusive = LDAPService.is_ldap_exclusive(db)
+
+        return {
+            "local_enabled": not ldap_exclusive,
+            "ldap_enabled": ldap_enabled,
+            "ldap_exclusive": ldap_exclusive,
+        }
+
+
 class AuthRegisterAdapter(AuthPublicAdapter):
     async def handle(self, context):  # type: ignore[override]
         from src.models.database import SystemConfig
@@ -322,6 +347,12 @@ class AuthRegisterAdapter(AuthPublicAdapter):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"注册请求过于频繁，请在 {reset_after} 秒后重试",
+            )
+
+        # 仅允许 LDAP 登录时拒绝本地注册
+        if LDAPService.is_ldap_exclusive(db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="系统已启用 LDAP 专属登录，禁止本地注册"
             )
 
         allow_registration = db.query(SystemConfig).filter_by(key="enable_registration").first()

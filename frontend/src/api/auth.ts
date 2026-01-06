@@ -4,6 +4,7 @@ import { log } from '@/utils/logger'
 export interface LoginRequest {
   email: string
   password: string
+  auth_type?: 'local' | 'ldap'
 }
 
 export interface LoginResponse {
@@ -79,6 +80,12 @@ export interface RegisterResponse {
 export interface RegistrationSettingsResponse {
   enable_registration: boolean
   require_email_verification: boolean
+}
+
+export interface AuthSettingsResponse {
+  local_enabled: boolean
+  ldap_enabled: boolean
+  ldap_exclusive: boolean
 }
 
 export interface User {
@@ -172,6 +179,11 @@ export const authApi = {
       '/api/auth/verification-status',
       { email }
     )
+    return response.data
+  },
+
+  async getAuthSettings(): Promise<AuthSettingsResponse> {
+    const response = await apiClient.get<AuthSettingsResponse>('/api/auth/settings')
     return response.data
   }
 }

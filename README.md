@@ -51,7 +51,7 @@ Aether 是一个自托管的 AI API 网关，为团队和个人提供多租户�
 ```bash
 # 1. 克隆代码
 git clone https://github.com/fawney19/Aether.git
-cd aether
+cd Aether
 
 # 2. 配置环境变量
 cp .env.example .env
@@ -72,7 +72,7 @@ docker compose pull && docker compose up -d && ./migrate.sh
 ```bash
 # 1. 克隆代码
 git clone https://github.com/fawney19/Aether.git
-cd aether
+cd Aether
 
 # 2. 配置环境变量
 cp .env.example .env

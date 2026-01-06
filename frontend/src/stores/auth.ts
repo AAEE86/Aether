@@ -31,12 +31,12 @@ export const useAuthStore = defineStore('auth', () => {
   }
   const isAdmin = computed(() => user.value?.role === 'admin')
 
-  async function login(email: string, password: string) {
+  async function login(email: string, password: string, authType: 'local' | 'ldap' = 'local') {
     loading.value = true
     error.value = null
 
     try {
-      const response = await authApi.login({ email, password })
+      const response = await authApi.login({ email, password, auth_type: authType })
       token.value = response.access_token
 
       // 获取用户信息

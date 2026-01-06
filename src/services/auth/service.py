@@ -2,21 +2,25 @@
 认证服务
 """
 
-import os
 import hashlib
 import secrets
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import jwt
 from fastapi import HTTPException, status
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from src.config import config
-from src.core.crypto import crypto_service
 from src.core.logger import logger
+from src.core.enums import AuthSource
 from src.models.database import ApiKey, User, UserRole
 from src.services.auth.jwt_blacklist import JWTBlacklistService
+from src.services.auth.ldap import LDAPService
 from src.services.cache.user_cache import UserCacheService
 from src.services.user.apikey import ApiKeyService
 
@@ -92,13 +96,84 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的Token")
 
     @staticmethod
-    async def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
-        """用户登录认证"""
+    async def authenticate_user(
+        db: Session, email: str, password: str, auth_type: str = "local"
+    ) -> Optional[User]:
+        """用户登录认证
+
+        Args:
+            db: 数据库会话
+            email: 邮箱/用户名
+            password: 密码
+            auth_type: 认证类型 ("local" 或 "ldap")
+        """
+        if auth_type == "ldap":
+            # LDAP 认证
+            # 预取配置，避免将 Session 传递到线程池
+            config_data = LDAPService.get_config_data(db)
+            if not config_data:
+                logger.warning("登录失败 - LDAP 未启用或配置无效")
+                return None
+
+            # 计算总体超时：LDAP 认证包含多次网络操作（连接、管理员绑定、搜索、用户绑定）
+            # 超时策略：
+            # - 单次操作超时(connect_timeout)：控制每次网络操作的最大等待时间
+            # - 总体超时：防止异常场景（如服务器响应缓慢但未超时）导致请求堆积
+            # - 公式：单次超时 × 4（覆盖 4 次主要网络操作）+ 10% 缓冲
+            # - 最小 20 秒（保证基本操作），最大 60 秒（避免用户等待过长）
+            single_timeout = config_data.get("connect_timeout", 10)
+            total_timeout = max(20, min(int(single_timeout * 4 * 1.1), 60))
+
+            # 在线程池中执行阻塞的 LDAP 网络请求，避免阻塞事件循环
+            # 添加总体超时保护，防止异常场景下请求堆积
+            import asyncio
+
+            try:
+                ldap_user = await asyncio.wait_for(
+                    run_in_threadpool(
+                        LDAPService.authenticate_with_config, config_data, email, password
+                    ),
+                    timeout=total_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"LDAP 认证总体超时({total_timeout}秒): {email}")
+                return None
+
+            if not ldap_user:
+                return None
+
+            # 获取或创建本地用户
+            user = await AuthService._get_or_create_ldap_user(db, ldap_user)
+            if not user:
+                # 已有本地账号但来源不匹配等情况
+                return None
+            if not user.is_active:
+                logger.warning(f"登录失败 - 用户已禁用: {email}")
+                return None
+            return user
+
+        # 本地认证
         # 登录校验必须读取密码哈希，不能使用不包含 password_hash 的缓存对象
-        user = db.query(User).filter(User.email == email).first()
+        # 支持邮箱或用户名登录
+        from sqlalchemy import or_
+        user = db.query(User).filter(
+            or_(User.email == email, User.username == email)
+        ).first()
 
         if not user:
             logger.warning(f"登录失败 - 用户不存在: {email}")
+            return None
+
+        # 检查 LDAP exclusive 模式：仅允许本地管理员登录（紧急恢复通道）
+        if LDAPService.is_ldap_exclusive(db):
+            if user.role != UserRole.ADMIN or user.auth_source != AuthSource.LOCAL:
+                logger.warning(f"登录失败 - 仅允许 LDAP 登录（管理员除外）: {email}")
+                return None
+            logger.warning(f"[LDAP-EXCLUSIVE] 紧急恢复通道：本地管理员登录: {email}")
+
+        # 检查用户认证来源
+        if user.auth_source == AuthSource.LDAP:
+            logger.warning(f"登录失败 - 该用户使用 LDAP 认证: {email}")
             return None
 
         if not user.verify_password(password):
@@ -117,6 +192,127 @@ class AuthService:
 
         logger.info(f"用户登录成功: {email} (ID: {user.id})")
         return user
+
+    @staticmethod
+    async def _get_or_create_ldap_user(db: Session, ldap_user: dict) -> Optional[User]:
+        """获取或创建 LDAP 用户
+
+        Args:
+            ldap_user: LDAP 用户信息 {username, email, display_name, ldap_dn, ldap_username}
+
+        注意：使用 with_for_update() 防止并发首次登录创建重复用户
+        """
+        ldap_dn = (ldap_user.get("ldap_dn") or "").strip() or None
+        ldap_username = (ldap_user.get("ldap_username") or ldap_user.get("username") or "").strip() or None
+        email = ldap_user["email"]
+
+        # 优先用稳定标识查找，避免邮箱变更/用户名冲突导致重复建号
+        # 使用 with_for_update() 锁定行，防止并发创建
+        user: Optional[User] = None
+        if ldap_dn:
+            user = (
+                db.query(User)
+                .filter(User.auth_source == AuthSource.LDAP, User.ldap_dn == ldap_dn)
+                .with_for_update()
+                .first()
+            )
+        if not user and ldap_username:
+            user = (
+                db.query(User)
+                .filter(User.auth_source == AuthSource.LDAP, User.ldap_username == ldap_username)
+                .with_for_update()
+                .first()
+            )
+        if not user:
+            # 最后回退按 email 查找：如果存在同邮箱的本地账号，需要拒绝以避免接管
+            user = db.query(User).filter(User.email == email).with_for_update().first()
+
+        if user:
+            if user.auth_source != AuthSource.LDAP:
+                # 避免覆盖已有本地账户（不同来源时拒绝登录）
+                logger.warning(
+                    f"LDAP 登录拒绝 - 账户来源不匹配(现有:{user.auth_source}, 请求:LDAP): {email}"
+                )
+                return None
+
+            # 同步邮箱（LDAP 侧邮箱变更时更新；若新邮箱已被占用则拒绝）
+            if user.email != email:
+                email_taken = (
+                    db.query(User)
+                    .filter(User.email == email, User.id != user.id)
+                    .first()
+                )
+                if email_taken:
+                    logger.warning(f"LDAP 登录拒绝 - 新邮箱已被占用: {email}")
+                    return None
+                user.email = email
+
+            # 同步 LDAP 标识（首次填充或 LDAP 侧发生变化）
+            if ldap_dn and user.ldap_dn != ldap_dn:
+                user.ldap_dn = ldap_dn
+            if ldap_username and user.ldap_username != ldap_username:
+                user.ldap_username = ldap_username
+
+            user.last_login_at = datetime.now(timezone.utc)
+            db.commit()
+            await UserCacheService.invalidate_user_cache(user.id, user.email)
+            logger.info(f"LDAP 用户登录成功: {ldap_user['email']} (ID: {user.id})")
+            return user
+
+        # 检查 username 是否已被占用，使用时间戳+随机数确保唯一性
+        base_username = ldap_username or ldap_user["username"]
+        username = base_username
+        max_retries = 3
+
+        for attempt in range(max_retries):
+            # 检查用户名是否已存在
+            existing_user_with_username = db.query(User).filter(User.username == username).first()
+            if existing_user_with_username:
+                # 如果 username 已存在，使用时间戳+随机数确保唯一性
+                username = f"{base_username}_ldap_{int(time.time())}{uuid.uuid4().hex[:4]}"
+                logger.info(f"LDAP 用户名冲突，使用新用户名: {ldap_user['username']} -> {username}")
+
+            # 创建新用户
+            user = User(
+                email=email,
+                username=username,
+                password_hash="",  # LDAP 用户无本地密码
+                auth_source=AuthSource.LDAP,
+                ldap_dn=ldap_dn,
+                ldap_username=ldap_username,
+                role=UserRole.USER,
+                is_active=True,
+                last_login_at=datetime.now(timezone.utc),
+            )
+
+            try:
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                logger.info(f"LDAP 用户创建成功: {ldap_user['email']} (ID: {user.id})")
+                return user
+            except IntegrityError as e:
+                db.rollback()
+                error_str = str(e.orig).lower() if e.orig else str(e).lower()
+
+                # 解析具体冲突类型
+                if "email" in error_str or "ix_users_email" in error_str:
+                    # 邮箱冲突不应重试（前面已检查过，说明是并发创建）
+                    logger.error(f"LDAP 用户创建失败 - 邮箱并发冲突: {email}")
+                    return None
+                elif "username" in error_str or "ix_users_username" in error_str:
+                    # 用户名冲突，重试时会生成新用户名
+                    if attempt == max_retries - 1:
+                        logger.error(f"LDAP 用户创建失败（用户名冲突重试耗尽）: {username}")
+                        return None
+                    username = f"{base_username}_ldap_{int(time.time())}{uuid.uuid4().hex[:4]}"
+                    logger.warning(f"LDAP 用户创建用户名冲突，重试 ({attempt + 1}/{max_retries}): {username}")
+                else:
+                    # 其他约束冲突，不重试
+                    logger.error(f"LDAP 用户创建失败 - 未知数据库约束冲突: {e}")
+                    return None
+
+        return None
 
     @staticmethod
     def authenticate_api_key(db: Session, api_key: str) -> Optional[tuple[User, ApiKey]]:

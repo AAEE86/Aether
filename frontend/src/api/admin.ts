@@ -160,6 +160,44 @@ export interface EmailTemplateResetResponse {
   }
 }
 
+// LDAP 配置响应
+export interface LdapConfigResponse {
+  server_url: string | null
+  bind_dn: string | null
+  base_dn: string | null
+  has_bind_password: boolean
+  user_search_filter: string
+  username_attr: string
+  email_attr: string
+  display_name_attr: string
+  is_enabled: boolean
+  is_exclusive: boolean
+  use_starttls: boolean
+  connect_timeout: number
+}
+
+// LDAP 配置更新请求
+export interface LdapConfigUpdateRequest {
+  server_url: string
+  bind_dn: string
+  bind_password?: string
+  base_dn: string
+  user_search_filter?: string
+  username_attr?: string
+  email_attr?: string
+  display_name_attr?: string
+  is_enabled?: boolean
+  is_exclusive?: boolean
+  use_starttls?: boolean
+  connect_timeout?: number
+}
+
+// LDAP 连接测试响应
+export interface LdapTestResponse {
+  success: boolean
+  message: string
+}
+
 // Provider 模型查询响应
 export interface ProviderModelsQueryResponse {
   success: boolean
@@ -486,6 +524,28 @@ export const adminApi = {
     const response = await apiClient.get<{ version: string }>(
       '/api/admin/system/version'
     )
+    return response.data
+  },
+
+  // LDAP 配置相关
+  // 获取 LDAP 配置
+  async getLdapConfig(): Promise<LdapConfigResponse> {
+    const response = await apiClient.get<LdapConfigResponse>('/api/admin/ldap/config')
+    return response.data
+  },
+
+  // 更新 LDAP 配置
+  async updateLdapConfig(config: LdapConfigUpdateRequest): Promise<{ message: string }> {
+    const response = await apiClient.put<{ message: string }>(
+      '/api/admin/ldap/config',
+      config
+    )
+    return response.data
+  },
+
+  // 测试 LDAP 连接
+  async testLdapConnection(config: LdapConfigUpdateRequest): Promise<LdapTestResponse> {
+    const response = await apiClient.post<LdapTestResponse>('/api/admin/ldap/test', config)
     return response.data
   }
 }

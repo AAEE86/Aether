@@ -112,6 +112,11 @@ const routes: RouteRecordRaw[] = [
         component: () => importWithRetry(() => import('@/views/admin/EmailSettings.vue'))
       },
       {
+        path: 'ldap',
+        name: 'LdapSettings',
+        component: () => importWithRetry(() => import('@/views/admin/LdapSettings.vue'))
+      },
+      {
         path: 'audit-logs',
         name: 'AuditLogs',
         component: () => importWithRetry(() => import('@/views/admin/AuditLogs.vue'))

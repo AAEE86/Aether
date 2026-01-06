@@ -423,6 +423,7 @@ const navigation = computed(() => {
         { name: 'IP 安全', href: '/admin/ip-security', icon: Shield },
         { name: '审计日志', href: '/admin/audit-logs', icon: AlertTriangle },
         { name: '邮件配置', href: '/admin/email', icon: Mail },
+        { name: 'LDAP 配置', href: '/admin/ldap', icon: Shield },
         { name: '系统设置', href: '/admin/system', icon: Cog },
       ]
     }

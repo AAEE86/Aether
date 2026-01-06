@@ -106,23 +106,23 @@
                 type="text"
                 :placeholder="smtpPasswordIsSet ? '已设置（留空保持不变）' : '请输入密码'"
                 class="-webkit-text-security-disc"
-                :class="smtpPasswordIsSet ? 'pr-8' : ''"
+                :class="(smtpPasswordIsSet || emailConfig.smtp_password) ? 'pr-10' : ''"
                 autocomplete="one-time-code"
                 data-lpignore="true"
                 data-1p-ignore="true"
                 data-form-type="other"
               />
               <button
-                v-if="smtpPasswordIsSet"
+                v-if="smtpPasswordIsSet || emailConfig.smtp_password"
                 type="button"
-                class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                title="清除已保存的密码"
+                class="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-full text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted/50 transition-colors"
+                title="清除密码"
                 @click="handleClearSmtpPassword"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
+                  width="14"
+                  height="14"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -498,6 +498,7 @@ const smtpEncryptionSelectOpen = ref(false)
 const emailSuffixModeSelectOpen = ref(false)
 const testSmtpLoading = ref(false)
 const smtpPasswordIsSet = ref(false)
+const clearSmtpPassword = ref(false) // 标记是否要清除密码
 
 // 邮件模板相关状态
 const templateLoading = ref(false)
@@ -710,6 +711,7 @@ async function loadEmailConfig() {
         // 配置不存在时使用默认值，无需处理
       }
     }
+    clearSmtpPassword.value = false
   } catch (err) {
     error('加载邮件配置失败')
     log.error('加载邮件配置失败:', err)
@@ -720,6 +722,12 @@ async function loadEmailConfig() {
 async function saveSmtpConfig() {
   smtpSaveLoading.value = true
   try {
+    const passwordAction: 'unchanged' | 'updated' | 'cleared' = emailConfig.value.smtp_password
+      ? 'updated'
+      : clearSmtpPassword.value
+        ? 'cleared'
+        : 'unchanged'
+
     const configItems = [
       {
         key: 'smtp_host',
@@ -737,7 +745,7 @@ async function saveSmtpConfig() {
         description: 'SMTP 用户名'
       },
       // 只有输入了新密码才提交（空值表示保持原密码）
-      ...(emailConfig.value.smtp_password
+      ...(passwordAction === 'updated'
         ? [{
             key: 'smtp_password',
             value: emailConfig.value.smtp_password,
@@ -770,8 +778,23 @@ async function saveSmtpConfig() {
       adminApi.updateSystemConfig(item.key, item.value, item.description)
     )
 
+    // 如果标记了清除密码，删除密码配置
+    if (passwordAction === 'cleared') {
+      promises.push(adminApi.deleteSystemConfig('smtp_password'))
+    }
+
     await Promise.all(promises)
     success('SMTP 配置已保存')
+
+    // 更新状态
+    if (passwordAction === 'cleared') {
+      clearSmtpPassword.value = false
+      smtpPasswordIsSet.value = false
+    } else if (passwordAction === 'updated') {
+      clearSmtpPassword.value = false
+      smtpPasswordIsSet.value = true
+    }
+    emailConfig.value.smtp_password = null
   } catch (err) {
     error('保存配置失败')
     log.error('保存 SMTP 配置失败:', err)
@@ -812,15 +835,16 @@ async function saveEmailSuffixConfig() {
 }
 
 // 清除 SMTP 密码
-async function handleClearSmtpPassword() {
-  try {
-    await adminApi.deleteSystemConfig('smtp_password')
-    smtpPasswordIsSet.value = false
+function handleClearSmtpPassword() {
+  // 如果有输入内容，先清空输入框
+  if (emailConfig.value.smtp_password) {
     emailConfig.value.smtp_password = null
-    success('SMTP 密码已清除')
-  } catch (err) {
-    error('清除密码失败')
-    log.error('清除 SMTP 密码失败:', err)
+    return
+  }
+  // 标记要清除服务端密码（保存时生效）
+  if (smtpPasswordIsSet.value) {
+    clearSmtpPassword.value = true
+    smtpPasswordIsSet.value = false
   }
 }
 

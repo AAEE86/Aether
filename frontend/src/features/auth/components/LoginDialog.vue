@@ -66,19 +66,59 @@
         </div>
       </div>
 
+      <!-- 认证方式切换 -->
+      <div
+        v-if="showAuthTypeTabs"
+        class="auth-type-tabs"
+      >
+        <button
+          type="button"
+          :class="['auth-tab', authType === 'local' && 'active']"
+          @click="authType = 'local'"
+        >
+          本地登录
+        </button>
+        <button
+          type="button"
+          :class="['auth-tab', authType === 'ldap' && 'active']"
+          @click="authType = 'ldap'"
+        >
+          LDAP 登录
+        </button>
+      </div>
+
+
       <!-- 登录表单 -->
       <form
         class="space-y-4"
         @submit.prevent="handleLogin"
       >
         <div class="space-y-2">
-          <Label for="login-email">邮箱</Label>
+          <div class="flex items-center justify-between">
+            <Label for="login-email">{{ emailLabel }}</Label>
+            <button
+              v-if="ldapExclusive && authType === 'ldap'"
+              type="button"
+              class="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              @click="authType = 'local'"
+            >
+              管理员本地登录
+            </button>
+            <button
+              v-if="ldapExclusive && authType === 'local'"
+              type="button"
+              class="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              @click="authType = 'ldap'"
+            >
+              返回 LDAP 登录
+            </button>
+          </div>
           <Input
             id="login-email"
             v-model="form.email"
-            type="email"
+            type="text"
             required
-            placeholder="hello@example.com"
+            placeholder="username 或 email"
             autocomplete="off"
           />
         </div>
@@ -180,6 +220,30 @@ const showRegisterDialog = ref(false)
 const requireEmailVerification = ref(false)
 const allowRegistration = ref(false) // 由系统配置控制，默认关闭
 
+// LDAP authentication settings
+const PREFERRED_AUTH_TYPE_KEY = 'aether_preferred_auth_type'
+function getStoredAuthType(): 'local' | 'ldap' {
+  const stored = localStorage.getItem(PREFERRED_AUTH_TYPE_KEY)
+  return (stored === 'ldap' || stored === 'local') ? stored : 'local'
+}
+const authType = ref<'local' | 'ldap'>(getStoredAuthType())
+const localEnabled = ref(true)
+const ldapEnabled = ref(false)
+const ldapExclusive = ref(false)
+
+// 保存用户的认证类型偏好
+watch(authType, (newType) => {
+  localStorage.setItem(PREFERRED_AUTH_TYPE_KEY, newType)
+})
+
+const showAuthTypeTabs = computed(() => {
+  return localEnabled.value && ldapEnabled.value && !ldapExclusive.value
+})
+
+const emailLabel = computed(() => {
+  return '用户名/邮箱'
+})
+
 watch(() => props.modelValue, (val) => {
   isOpen.value = val
   // 打开对话框时重置表单
@@ -212,7 +276,7 @@ async function handleLogin() {
     return
   }
 
-  const success = await authStore.login(form.value.email, form.value.password)
+  const success = await authStore.login(form.value.email, form.value.password, authType.value)
   if (success) {
     showSuccess('登录成功，正在跳转...')
 
@@ -246,16 +310,84 @@ function handleSwitchToLogin() {
   isOpen.value = true
 }
 
-// Load registration settings on mount
+// Load authentication and registration settings on mount
 onMounted(async () => {
   try {
-    const settings = await authApi.getRegistrationSettings()
-    allowRegistration.value = !!settings.enable_registration
-    requireEmailVerification.value = !!settings.require_email_verification
+    // Load registration settings
+    const regSettings = await authApi.getRegistrationSettings()
+    allowRegistration.value = !!regSettings.enable_registration
+    requireEmailVerification.value = !!regSettings.require_email_verification
+
+    // Load authentication settings
+    const authSettings = await authApi.getAuthSettings()
+    localEnabled.value = authSettings.local_enabled
+    ldapEnabled.value = authSettings.ldap_enabled
+    ldapExclusive.value = authSettings.ldap_exclusive
+    // 若仅允许 LDAP 登录，则禁用本地注册入口
+    if (ldapExclusive.value) {
+      allowRegistration.value = false
+    }
+
+    // Set default auth type based on settings
+    if (authSettings.ldap_exclusive) {
+      authType.value = 'ldap'
+    } else if (!authSettings.local_enabled && authSettings.ldap_enabled) {
+      authType.value = 'ldap'
+    } else {
+      authType.value = 'local'
+    }
   } catch (error) {
-    // If获取失败，保持默认：关闭注册 & 关闭邮箱验证
+    // If获取失败，保持默认：关闭注册 & 关闭邮箱验证 & 使用本地认证
     allowRegistration.value = false
     requireEmailVerification.value = false
+    localEnabled.value = true
+    ldapEnabled.value = false
+    ldapExclusive.value = false
+    authType.value = 'local'
   }
 })
 </script>
+
+<style scoped>
+.auth-type-tabs {
+  display: flex;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  position: relative;
+}
+
+.auth-tab::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.auth-tab:hover:not(.active) {
+  color: hsl(var(--foreground));
+}
+
+.auth-tab.active {
+  color: var(--book-cloth);
+  font-weight: 600;
+}
+
+.auth-tab.active::after {
+  background: var(--book-cloth);
+}
+</style>
