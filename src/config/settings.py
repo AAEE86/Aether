@@ -106,13 +106,6 @@ class Config:
         self.llm_api_rate_limit = int(os.getenv("LLM_API_RATE_LIMIT", "100"))
         self.public_api_rate_limit = int(os.getenv("PUBLIC_API_RATE_LIMIT", "60"))
 
-        # 可信代理配置
-        # TRUSTED_PROXY_COUNT: 信任的代理层数（默认 1，即信任最近一层代理）
-        # 设置为 0 表示不信任任何代理头，直接使用连接 IP
-        # 当服务部署在 Nginx/CloudFlare 等反向代理后面时，设置为对应的代理层数
-        # 如果服务直接暴露公网，应设置为 0 以防止 IP 伪造
-        self.trusted_proxy_count = int(os.getenv("TRUSTED_PROXY_COUNT", "1"))
-
         # 异常处理配置
         # 设置为 True 时，ProxyException 会传播到路由层以便记录 provider_request_headers
         # 设置为 False 时，使用全局异常处理器统一处理
@@ -160,6 +153,11 @@ class Config:
         self.stream_prefetch_lines = int(os.getenv("STREAM_PREFETCH_LINES", "5"))
         self.stream_stats_delay = float(os.getenv("STREAM_STATS_DELAY", "0.1"))
         self.stream_first_byte_timeout = self._parse_ttfb_timeout()
+
+        # 请求体读取超时（秒）
+        # REQUEST_BODY_TIMEOUT: 等待客户端发送完整请求体的超时时间
+        #   默认 60 秒，防止客户端发送不完整请求导致连接卡死
+        self.request_body_timeout = float(os.getenv("REQUEST_BODY_TIMEOUT", "60.0"))
 
         # 内部请求 User-Agent 配置（用于查询上游模型列表等）
         # 可通过环境变量覆盖默认值，模拟对应 CLI 客户端

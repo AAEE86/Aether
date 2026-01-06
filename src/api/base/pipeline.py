@@ -7,6 +7,7 @@ from typing import Any, Optional, Tuple
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
+from src.config.settings import config
 from src.core.exceptions import QuotaExceededException
 from src.core.logger import logger
 from src.models.database import ApiKey, AuditEventType, User, UserRole
@@ -64,13 +65,17 @@ class ApiRequestPipeline:
             try:
                 import asyncio
 
-                # 添加30秒超时防止卡死
-                raw_body = await asyncio.wait_for(http_request.body(), timeout=30.0)
+                # 添加超时防止卡死
+                raw_body = await asyncio.wait_for(
+                    http_request.body(), timeout=config.request_body_timeout
+                )
                 logger.debug(f"[Pipeline] Raw body读取完成 | size={len(raw_body) if raw_body is not None else 0} bytes")
             except asyncio.TimeoutError:
-                logger.error("读取请求体超时(30s),可能客户端未发送完整请求体")
+                timeout_sec = int(config.request_body_timeout)
+                logger.error(f"读取请求体超时({timeout_sec}s),可能客户端未发送完整请求体")
                 raise HTTPException(
-                    status_code=408, detail="Request timeout: body not received within 30 seconds"
+                    status_code=408,
+                    detail=f"Request timeout: body not received within {timeout_sec} seconds",
                 )
         else:
             logger.debug(f"[Pipeline] 非写请求跳过读取Body | method={http_request.method}")

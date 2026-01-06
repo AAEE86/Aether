@@ -203,27 +203,20 @@ class PluginMiddleware:
         """
         获取客户端 IP 地址，支持代理头
 
-        注意：此方法信任 X-Forwarded-For 和 X-Real-IP 头，
-        仅当服务部署在可信代理（如 Nginx、CloudFlare）后面时才安全。
-        如果服务直接暴露公网，攻击者可伪造这些头绕过限流。
+        优先级：X-Real-IP > X-Forwarded-For > 直连 IP
+        X-Real-IP 由最外层 Nginx 设置，最可靠
         """
-        # 从配置获取可信代理层数（默认为 1，即信任最近一层代理）
-        trusted_proxy_count = getattr(config, "trusted_proxy_count", 1)
-
-        # 优先从代理头获取真实 IP
-        forwarded_for = request.headers.get("x-forwarded-for")
-        if forwarded_for:
-            # X-Forwarded-For 格式: "client, proxy1, proxy2"
-            # 从右往左数 trusted_proxy_count 个，取其左边的第一个
-            ips = [ip.strip() for ip in forwarded_for.split(",")]
-            if len(ips) > trusted_proxy_count:
-                return ips[-(trusted_proxy_count + 1)]
-            elif ips:
-                return ips[0]
-
+        # 优先检查 X-Real-IP（由最外层 Nginx 设置，最可靠）
         real_ip = request.headers.get("x-real-ip")
         if real_ip:
             return real_ip.strip()
+
+        # 检查 X-Forwarded-For，取第一个 IP（原始客户端）
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            ips = [ip.strip() for ip in forwarded_for.split(",") if ip.strip()]
+            if ips:
+                return ips[0]
 
         # 回退到直连 IP
         if request.client:

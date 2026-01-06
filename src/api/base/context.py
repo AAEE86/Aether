@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from src.core.logger import logger
 from src.models.database import ApiKey, User
+from src.utils.request_utils import get_client_ip
 
 
 
@@ -86,7 +87,7 @@ class ApiRequestContext:
         setattr(request.state, "request_id", request_id)
 
         start_time = time.time()
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         user_agent = request.headers.get("user-agent", "unknown")
 
         context = cls(
