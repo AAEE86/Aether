@@ -725,6 +725,7 @@ class CacheAwareScheduler:
             db.query(Provider)
             .options(
                 selectinload(Provider.endpoints).selectinload(ProviderEndpoint.api_keys),
+                selectinload(Provider.shared_api_keys),
                 # 同时加载 models 和 global_model 关系，以便 get_effective_* 方法能正确继承默认值
                 selectinload(Provider.models).selectinload(Model.global_model),
             )
@@ -950,8 +951,17 @@ class CacheAwareScheduler:
                 if not endpoint.is_active or endpoint_format_str != target_format.value:
                     continue
 
-                # 获取活跃的 Key 并按 internal_priority + 负载均衡排序
-                active_keys = [key for key in endpoint.api_keys if key.is_active]
+                # 获取活跃的 Provider 级共享 Key
+                active_shared_keys = [
+                    key for key in provider.shared_api_keys if key.is_active
+                ] if hasattr(provider, "shared_api_keys") else []
+
+                # 获取活跃的 Endpoint 级 Key
+                active_endpoint_keys = [key for key in endpoint.api_keys if key.is_active]
+
+                # 合并 Key 列表 (Endpoint Key 优先? 或者混合? 这里直接合并)
+                # 注意：shared key 会重复出现在每个 endpoint 的候选列表中
+                active_keys = active_endpoint_keys + active_shared_keys
                 # 检查是否所有 Key 都是 TTL=0（轮换模式）
                 # 如果所有 Key 的 cache_ttl_minutes 都是 0 或 None，则使用随机排序
                 use_random = all(

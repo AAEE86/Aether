@@ -550,6 +550,17 @@
                 </div>
               </Card>
 
+              <!-- 共享密钥管理 -->
+              <SharedKeysTab
+                v-if="provider"
+                ref="sharedKeysTabRef"
+                :provider="provider"
+                @add-key="handleAddSharedKey"
+                @edit-key="handleEditSharedKey"
+                @delete-key="handleDeleteSharedKey"
+                @config-models="handleConfigSharedKeyModels"
+              />
+
               <!-- 模型查看 -->
               <ModelsTab
                 v-if="provider"
@@ -710,6 +721,7 @@ import AlertDialog from '@/components/common/AlertDialog.vue'
 import {
   deleteEndpoint as deleteEndpointAPI,
   deleteEndpointKey,
+  deleteProviderKey,
   recoverKeyHealth,
   getEndpointKeys,
   updateEndpoint,
@@ -721,6 +733,7 @@ import {
   type Model
 } from '@/api/endpoints'
 import { deleteModel as deleteModelAPI } from '@/api/endpoints/models'
+import SharedKeysTab from './provider-tabs/SharedKeysTab.vue'
 
 // 扩展端点类型,包含密钥列表
 interface ProviderEndpointWithKeys extends ProviderEndpoint {
@@ -791,6 +804,9 @@ const dragState = ref({
 // 点击编辑优先级相关状态
 const editingPriorityKey = ref<string | null>(null)
 const editingPriorityValue = ref<number>(0)
+
+// SharedKeysTab 引用
+const sharedKeysTabRef = ref<InstanceType<typeof SharedKeysTab> | null>(null)
 
 // 任意模态窗口打开时,阻止抽屉被误关闭
 const hasBlockingDialogOpen = computed(() =>
@@ -913,10 +929,34 @@ async function handleEndpointChanged() {
 }
 
 // ===== 密钥事件处理 =====
+// 端点密钥
 function handleAddKey(endpoint: ProviderEndpoint) {
   currentEndpoint.value = endpoint
   editingKey.value = null
   keyFormDialogOpen.value = true
+}
+
+// 共享密钥
+function handleAddSharedKey() {
+  currentEndpoint.value = null  // 共享密钥不属于特定端点
+  editingKey.value = null
+  keyFormDialogOpen.value = true
+}
+
+function handleEditSharedKey(key: EndpointAPIKey) {
+  currentEndpoint.value = null  // 共享密钥不属于特定端点
+  editingKey.value = key
+  keyFormDialogOpen.value = true
+}
+
+function handleDeleteSharedKey(key: EndpointAPIKey) {
+  keyToDelete.value = key
+  deleteKeyConfirmOpen.value = true
+}
+
+function handleConfigSharedKeyModels(key: EndpointAPIKey) {
+  editingKey.value = key
+  keyAllowedModelsDialogOpen.value = true
 }
 
 function handleEditKey(endpoint: ProviderEndpoint, key: EndpointAPIKey) {
@@ -977,15 +1017,26 @@ async function confirmDeleteKey() {
 
   const keyId = keyToDelete.value.id
   deleteKeyConfirmOpen.value = false
-  keyToDelete.value = null
-
+  
   try {
-    await deleteEndpointKey(keyId)
+    if (keyToDelete.value.endpoint_id) {
+       // Endpoint Key
+       await deleteEndpointKey(keyId)
+       await loadEndpoints() // Refresh endpoint keys
+    } else {
+       // Shared Key
+       await deleteProviderKey(keyId)
+        if (sharedKeysTabRef.value) {
+           sharedKeysTabRef.value.refresh()
+        }
+    }
+    
     showSuccess('密钥已删除')
-    await loadEndpoints()
     emit('refresh')
   } catch (err: any) {
     showError(err.response?.data?.detail || '删除密钥失败', '错误')
+  } finally {
+    keyToDelete.value = null
   }
 }
 
@@ -1053,6 +1104,10 @@ async function handleRecoverAllKeys(endpoint: ProviderEndpointWithKeys) {
 async function handleKeyChanged() {
   await loadEndpoints()
   emit('refresh')
+  // 同时也刷新 SharedKeysTab
+  if (sharedKeysTabRef.value) {
+    sharedKeysTabRef.value.refresh()
+  }
 }
 
 // 切换端点启用状态

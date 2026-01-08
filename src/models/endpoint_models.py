@@ -133,7 +133,7 @@ class ProviderEndpointResponse(BaseModel):
 class EndpointAPIKeyCreate(BaseModel):
     """为 Endpoint 添加 API Key"""
 
-    endpoint_id: str = Field(..., description="Endpoint ID")
+    endpoint_id: Optional[str] = Field(None, description="Endpoint ID (required for non-shared keys)")
     api_key: str = Field(..., min_length=3, max_length=500, description="API Key（将自动加密）")
     name: str = Field(..., min_length=1, max_length=100, description="密钥名称（必填，用于识别）")
 
@@ -295,12 +295,14 @@ class EndpointAPIKeyResponse(BaseModel):
     """Endpoint API Key 响应"""
 
     id: str
-    endpoint_id: str
+    endpoint_id: Optional[str] = None
 
     # Key 信息（脱敏）
     api_key_masked: str = Field(..., description="脱敏后的 Key")
     api_key_plain: Optional[str] = Field(default=None, description="完整的 Key")
     name: str = Field(..., description="密钥名称")
+    is_shared: bool = Field(False, description="是否为共享密钥")
+    provider_id: Optional[str] = Field(None, description="归属的 Provider ID（仅共享密钥需要）")
 
     # 成本计算
     rate_multiplier: float = Field(default=1.0, description="成本倍率")

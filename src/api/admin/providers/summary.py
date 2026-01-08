@@ -217,16 +217,38 @@ def _build_provider_summary(db: Session, provider: Provider) -> ProviderWithEndp
     active_endpoints = sum(1 for e in endpoints if e.is_active)
     endpoint_ids = [e.id for e in endpoints]
 
-    # Key 统计（合并为单个查询）
+    # Key 统计（包含端点专属密钥和提供商共享密钥）
     total_keys = 0
     active_keys = 0
+    
+    # 统计端点专属密钥
+    endpoint_key_stats = None
     if endpoint_ids:
-        key_stats = db.query(
+        endpoint_key_stats = db.query(
             func.count(ProviderAPIKey.id).label("total"),
             func.sum(case((ProviderAPIKey.is_active == True, 1), else_=0)).label("active"),
-        ).filter(ProviderAPIKey.endpoint_id.in_(endpoint_ids)).first()
-        total_keys = key_stats.total or 0
-        active_keys = int(key_stats.active or 0)
+        ).filter(
+            ProviderAPIKey.endpoint_id.in_(endpoint_ids),
+            ProviderAPIKey.is_shared == False
+        ).first()
+    
+    # 统计提供商共享密钥
+    shared_key_stats = db.query(
+        func.count(ProviderAPIKey.id).label("total"),
+        func.sum(case((ProviderAPIKey.is_active == True, 1), else_=0)).label("active"),
+    ).filter(
+        ProviderAPIKey.provider_id == provider.id,
+        ProviderAPIKey.is_shared == True
+    ).first()
+    
+    # 合并统计结果
+    if endpoint_key_stats:
+        total_keys += endpoint_key_stats.total or 0
+        active_keys += int(endpoint_key_stats.active or 0)
+    
+    if shared_key_stats:
+        total_keys += shared_key_stats.total or 0
+        active_keys += int(shared_key_stats.active or 0)
 
     # Model 统计（合并为单个查询）
     model_stats = db.query(
@@ -238,12 +260,18 @@ def _build_provider_summary(db: Session, provider: Provider) -> ProviderWithEndp
 
     api_formats = [e.api_format for e in endpoints]
 
-    # 优化: 一次性加载所有 endpoint 的 keys，避免 N+1 查询
+    # 优化: 一次性加载所有 endpoint 的 keys 和共享 keys，避免 N+1 查询
     all_keys = []
     if endpoint_ids:
         all_keys = (
             db.query(ProviderAPIKey).filter(ProviderAPIKey.endpoint_id.in_(endpoint_ids)).all()
         )
+    
+    # 加载提供商的共享密钥
+    shared_keys = db.query(ProviderAPIKey).filter(
+        ProviderAPIKey.provider_id == provider.id,
+        ProviderAPIKey.is_shared == True
+    ).all()
 
     # 按 endpoint_id 分组 keys
     keys_by_endpoint: dict[str, list[ProviderAPIKey]] = {}
@@ -251,6 +279,12 @@ def _build_provider_summary(db: Session, provider: Provider) -> ProviderWithEndp
         if key.endpoint_id not in keys_by_endpoint:
             keys_by_endpoint[key.endpoint_id] = []
         keys_by_endpoint[key.endpoint_id].append(key)
+    
+    # 将共享密钥添加到每个端点
+    for endpoint in endpoints:
+        if endpoint.id not in keys_by_endpoint:
+            keys_by_endpoint[endpoint.id] = []
+        keys_by_endpoint[endpoint.id].extend(shared_keys)
 
     endpoint_health_map: dict[str, float] = {}
     for endpoint in endpoints:
@@ -266,7 +300,7 @@ def _build_provider_summary(db: Session, provider: Provider) -> ProviderWithEndp
     avg_health_score = sum(all_health_scores) / len(all_health_scores) if all_health_scores else 1.0
     unhealthy_endpoints = sum(1 for score in all_health_scores if score < 0.5)
 
-    # 计算每个端点的活跃密钥数量
+    # 计算每个端点的活跃密钥数量（包含专属密钥和共享密钥）
     active_keys_by_endpoint: dict[str, int] = {}
     for endpoint_id, keys in keys_by_endpoint.items():
         active_keys_by_endpoint[endpoint_id] = sum(1 for k in keys if k.is_active)

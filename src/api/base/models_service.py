@@ -202,8 +202,9 @@ def get_available_provider_ids(db: Session, api_formats: list[str]) -> set[str]:
     条件:
     - 端点 api_format 匹配
     - 端点是活跃的
-    - 端点下有活跃的 Key
+    - 端点下有活跃的 Key（包括共享密钥）
     """
+    # 查询普通密钥关联的 Provider
     rows = (
         db.query(ProviderEndpoint.provider_id)
         .join(ProviderAPIKey, ProviderAPIKey.endpoint_id == ProviderEndpoint.id)
@@ -215,7 +216,29 @@ def get_available_provider_ids(db: Session, api_formats: list[str]) -> set[str]:
         .distinct()
         .all()
     )
-    return {row[0] for row in rows}
+    provider_ids = {row[0] for row in rows}
+    
+    # 查询共享密钥关联的 Provider（endpoint_id 为空）
+    shared_rows = (
+        db.query(ProviderEndpoint.provider_id)
+        .join(Provider, Provider.id == ProviderEndpoint.provider_id)
+        .join(ProviderAPIKey, ProviderAPIKey.provider_id == Provider.id)
+        .filter(
+            ProviderAPIKey.endpoint_id.is_(None),
+            ProviderAPIKey.is_shared.is_(True),
+            ProviderAPIKey.is_active.is_(True),
+            ProviderEndpoint.api_format.in_(api_formats),
+            ProviderEndpoint.is_active.is_(True),
+        )
+        .distinct()
+        .all()
+    )
+    shared_provider_ids = {row[0] for row in shared_rows}
+    
+    all_provider_ids = provider_ids | shared_provider_ids
+    logger.debug(f"[ModelsService] 找到 {len(provider_ids)} 个普通密钥 Provider，{len(shared_provider_ids)} 个共享密钥 Provider，总计 {len(all_provider_ids)} 个")
+    
+    return all_provider_ids
 
 
 def _get_available_model_ids_for_format(db: Session, api_formats: list[str]) -> set[str]:
@@ -224,18 +247,22 @@ def _get_available_model_ids_for_format(db: Session, api_formats: list[str]) -> 
 
     一个模型可用需满足:
     1. 端点 api_format 匹配且活跃
-    2. 端点下有活跃的 Key
+    2. 端点下有活跃的 Key（包括共享密钥）
     3. **该端点的 Provider 关联了该模型**
     4. Key 的 allowed_models 允许该模型（null = 允许该 Provider 关联的所有模型）
     """
     # 查询所有匹配格式的活跃端点及其活跃 Key，同时获取 endpoint_id
+    # 注意: 包含两种类型的密钥
+    # 1. 普通密钥: endpoint_id 不为空
+    # 2. 共享密钥: endpoint_id 为空但 provider_id 匹配
     endpoint_keys = (
         db.query(
             ProviderEndpoint.id.label("endpoint_id"),
             ProviderEndpoint.provider_id,
             ProviderAPIKey.allowed_models,
+            ProviderAPIKey.is_shared,
         )
-        .join(ProviderAPIKey, ProviderAPIKey.endpoint_id == ProviderEndpoint.id)
+        .outerjoin(ProviderAPIKey, ProviderAPIKey.endpoint_id == ProviderEndpoint.id)
         .filter(
             ProviderEndpoint.api_format.in_(api_formats),
             ProviderEndpoint.is_active.is_(True),
@@ -243,6 +270,30 @@ def _get_available_model_ids_for_format(db: Session, api_formats: list[str]) -> 
         )
         .all()
     )
+    
+    # 查询共享密钥（endpoint_id 为空，直接关联到 provider）
+    shared_keys = (
+        db.query(
+            ProviderEndpoint.id.label("endpoint_id"),
+            ProviderEndpoint.provider_id,
+            ProviderAPIKey.allowed_models,
+            ProviderAPIKey.is_shared,
+        )
+        .join(ProviderEndpoint, ProviderEndpoint.provider_id == ProviderAPIKey.provider_id)
+        .filter(
+            ProviderAPIKey.endpoint_id.is_(None),
+            ProviderAPIKey.is_shared.is_(True),
+            ProviderAPIKey.is_active.is_(True),
+            ProviderEndpoint.api_format.in_(api_formats),
+            ProviderEndpoint.is_active.is_(True),
+        )
+        .all()
+    )
+    
+    # 合并两类密钥
+    endpoint_keys = list(endpoint_keys) + list(shared_keys)
+    
+    logger.debug(f"[ModelsService] 查询到 {len(endpoint_keys)} 个端点密钥 (包含共享密钥)")
 
     if not endpoint_keys:
         return set()
@@ -252,7 +303,7 @@ def _get_available_model_ids_for_format(db: Session, api_formats: list[str]) -> 
     provider_allowed_models: dict[str, list[Optional[list[str]]]] = {}
     provider_ids_with_format: set[str] = set()
 
-    for endpoint_id, provider_id, allowed_models in endpoint_keys:
+    for endpoint_id, provider_id, allowed_models, is_shared in endpoint_keys:
         provider_ids_with_format.add(provider_id)
         if provider_id not in provider_allowed_models:
             provider_allowed_models[provider_id] = []

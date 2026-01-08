@@ -258,6 +258,8 @@ import { log } from '@/utils/logger'
 import {
   addEndpointKey,
   updateEndpointKey,
+  addProviderKey,
+  updateProviderKey,
   getAllCapabilities,
   type EndpointAPIKey,
   type EndpointAPIKeyUpdate,
@@ -415,7 +417,7 @@ function createFieldNonce(): string {
 }
 
 async function handleSave() {
-  if (!props.endpoint) return
+  if (!props.endpoint && !props.providerId) return
 
   // 提交前验证
   if (apiKeyError.value) {
@@ -440,51 +442,60 @@ async function handleSave() {
 
   saving.value = true
   try {
+    const commonData = {
+      name: form.value.name,
+      rate_multiplier: form.value.rate_multiplier,
+      internal_priority: form.value.internal_priority,
+      // 显式使用 null 表示自适应模式，这样后端能区分"未提供"和"设置为 null"
+      // 注意：只有 max_concurrent 需要这种处理，因为它有"自适应模式"的概念
+      // 其他限制字段（rate_limit 等）不支持"清空"操作，undefined 会被 JSON 忽略即不更新
+      max_concurrent: form.value.max_concurrent === undefined ? null : form.value.max_concurrent,
+      rate_limit: form.value.rate_limit,
+      daily_limit: form.value.daily_limit,
+      monthly_limit: form.value.monthly_limit,
+      cache_ttl_minutes: form.value.cache_ttl_minutes,
+      max_probe_interval_minutes: form.value.max_probe_interval_minutes,
+      note: form.value.note,
+      is_active: form.value.is_active,
+      capabilities: capabilitiesData
+    }
+
     if (props.editingKey) {
       // 更新模式
-      // 注意：max_concurrent 需要显式发送 null 来切换到自适应模式
-      // undefined 会在 JSON 中被忽略，所以用 null 表示"清空/自适应"
-      const updateData: EndpointAPIKeyUpdate = {
-        name: form.value.name,
-        rate_multiplier: form.value.rate_multiplier,
-        internal_priority: form.value.internal_priority,
-        // 显式使用 null 表示自适应模式，这样后端能区分"未提供"和"设置为 null"
-        // 注意：只有 max_concurrent 需要这种处理，因为它有"自适应模式"的概念
-        // 其他限制字段（rate_limit 等）不支持"清空"操作，undefined 会被 JSON 忽略即不更新
-        max_concurrent: form.value.max_concurrent === undefined ? null : form.value.max_concurrent,
-        rate_limit: form.value.rate_limit,
-        daily_limit: form.value.daily_limit,
-        monthly_limit: form.value.monthly_limit,
-        cache_ttl_minutes: form.value.cache_ttl_minutes,
-        max_probe_interval_minutes: form.value.max_probe_interval_minutes,
-        note: form.value.note,
-        is_active: form.value.is_active,
-        capabilities: capabilitiesData
-      }
+      const updateData: any = { ...commonData }
 
       if (form.value.api_key.trim()) {
         updateData.api_key = form.value.api_key
       }
 
-      await updateEndpointKey(props.editingKey.id, updateData)
+      // Check if it's a shared key or endpoint key
+      if (props.endpoint) {
+        await updateEndpointKey(props.editingKey.id, updateData)
+      } else {
+        // Shared Key Update
+        await updateProviderKey(props.editingKey.id, updateData)
+      }
       success('密钥已更新', '成功')
     } else {
-      // 新增
-      await addEndpointKey(props.endpoint.id, {
-        endpoint_id: props.endpoint.id,
-        api_key: form.value.api_key,
-        name: form.value.name,
-        rate_multiplier: form.value.rate_multiplier,
-        internal_priority: form.value.internal_priority,
-        max_concurrent: form.value.max_concurrent,
-        rate_limit: form.value.rate_limit,
-        daily_limit: form.value.daily_limit,
-        monthly_limit: form.value.monthly_limit,
-        cache_ttl_minutes: form.value.cache_ttl_minutes,
-        max_probe_interval_minutes: form.value.max_probe_interval_minutes,
-        note: form.value.note,
-        capabilities: capabilitiesData || undefined
-      })
+      // 新增模式
+      if (props.endpoint) {
+        // Add Endpoint Key
+        await addEndpointKey(props.endpoint.id, {
+          endpoint_id: props.endpoint.id,
+          api_key: form.value.api_key,
+          ...commonData,
+          capabilities: capabilitiesData || undefined
+        })
+      } else if (props.providerId) {
+        // Add Shared Key
+        await addProviderKey(props.providerId, {
+          api_key: form.value.api_key,
+          ...commonData,
+          capabilities: capabilitiesData || undefined
+        })
+      } else {
+        throw new Error('Missing endpoint or provider context')
+      }
       success('密钥已添加', '成功')
     }
 

@@ -574,6 +574,9 @@ class Provider(Base):
     endpoints = relationship(
         "ProviderEndpoint", back_populates="provider", cascade="all, delete-orphan"
     )
+    shared_api_keys = relationship(
+        "ProviderAPIKey", back_populates="provider", cascade="all, delete-orphan"
+    )
     api_key_mappings = relationship(
         "ApiKeyProviderMapping", back_populates="provider", cascade="all, delete-orphan"
     )
@@ -991,13 +994,23 @@ class ProviderAPIKey(Base):
 
     # 外键关系
     endpoint_id = Column(
-        String(36), ForeignKey("provider_endpoints.id", ondelete="CASCADE"), nullable=False
+        String(36), ForeignKey("provider_endpoints.id", ondelete="CASCADE"), nullable=True
+    )
+    provider_id = Column(
+        String(36), ForeignKey("providers.id", ondelete="CASCADE"), nullable=True
     )
 
     # API密钥信息
     api_key = Column(String(500), nullable=False)  # API密钥（加密存储）
     name = Column(String(100), nullable=False)  # 密钥名称（必填，用于识别）
+    is_shared = Column(Boolean, default=False, nullable=False)  # 是否为共享密钥
     note = Column(String(500), nullable=True)  # 备注说明（可选）
+    
+    # ... (rest of fields)
+    
+    # 关系
+    endpoint = relationship("ProviderEndpoint", back_populates="api_keys")
+    provider = relationship("Provider", back_populates="shared_api_keys")
 
     # 成本计算
     rate_multiplier = Column(
