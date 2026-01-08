@@ -276,8 +276,8 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
             )
             all_formats[api_format] = provider_count
 
-        # 1.1 获取所有活跃的 API 格式及其 API Key 数量
-        active_keys = (
+        # 1.1 获取所有活跃的 API 格式及其 API Key 数量（端点密钥）
+        endpoint_keys = (
             db.query(
                 ProviderEndpoint.api_format,
                 func.count(ProviderAPIKey.id).label("key_count"),
@@ -288,18 +288,47 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
                 ProviderEndpoint.is_active.is_(True),
                 Provider.is_active.is_(True),
                 ProviderAPIKey.is_active.is_(True),
+                ProviderAPIKey.is_shared.is_(False),  # 只统计端点密钥
             )
             .group_by(ProviderEndpoint.api_format)
             .all()
         )
 
-        # 构建所有格式的 key_count 映射
+        # 1.2 获取所有活跃的共享密钥数量（按 Provider 的 API 格式统计）
+        shared_keys = (
+            db.query(
+                ProviderEndpoint.api_format,
+                func.count(ProviderAPIKey.id).label("key_count"),
+            )
+            .join(Provider, ProviderAPIKey.provider_id == Provider.id)
+            .join(ProviderEndpoint, ProviderEndpoint.provider_id == Provider.id)
+            .filter(
+                Provider.is_active.is_(True),
+                ProviderEndpoint.is_active.is_(True),
+                ProviderAPIKey.is_active.is_(True),
+                ProviderAPIKey.is_shared.is_(True),  # 只统计共享密钥
+            )
+            .group_by(ProviderEndpoint.api_format)
+            .all()
+        )
+
+        # 构建所有格式的 key_count 映射（合并端点密钥和共享密钥）
         key_counts: Dict[str, int] = {}
-        for api_format_enum, key_count in active_keys:
+        for api_format_enum, key_count in endpoint_keys:
             api_format = (
                 api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
             )
             key_counts[api_format] = key_count
+
+        # 添加共享密钥到统计中
+        for api_format_enum, key_count in shared_keys:
+            api_format = (
+                api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
+            )
+            key_counts[api_format] = key_counts.get(api_format, 0) + key_count
+
+        # 添加调试日志
+        logger.info(f"[HealthMonitor] API 格式密钥统计: {key_counts}")
 
         # 1.2 建立每个 API 格式对应的 Endpoint ID 列表，供 Usage 时间线生成使用
         endpoint_rows = (
