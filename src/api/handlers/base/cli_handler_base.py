@@ -1534,72 +1534,78 @@ class CliMessageHandlerBase(BaseMessageHandler):
                 f"原始模型={model}, 映射后={mapped_model or '无映射'}, URL模型={url_model}"
             )
 
-            # 创建 HTTP 客户端（支持代理配置）
-            # endpoint.timeout 作为整体请求超时
+            # 获取复用的 HTTP 客户端（支持代理配置）
+            # 注意：使用 get_proxy_client 复用连接池，不再每次创建新客户端
             from src.clients.http_client import HTTPClientPool
 
             request_timeout = float(endpoint.timeout or 300)
-            http_client = HTTPClientPool.create_client_with_proxy(
+            http_client = await HTTPClientPool.get_proxy_client(
                 proxy_config=endpoint.proxy,
+            )
+
+            # 注意：不使用 async with，因为复用的客户端不应该被关闭
+            # 超时通过 timeout 参数控制
+            resp = await http_client.post(
+                url,
+                json=provider_payload,
+                headers=provider_headers,
                 timeout=httpx.Timeout(request_timeout),
             )
-            async with http_client:
-                resp = await http_client.post(url, json=provider_payload, headers=provider_headers)
 
-                status_code = resp.status_code
-                response_headers = dict(resp.headers)
+            status_code = resp.status_code
+            response_headers = dict(resp.headers)
 
-                if resp.status_code == 401:
-                    raise ProviderAuthException(f"提供商认证失败: {provider.name}")
-                elif resp.status_code == 429:
-                    raise ProviderRateLimitException(
-                        f"提供商速率限制: {provider.name}",
-                        provider_name=str(provider.name),
-                        response_headers=response_headers,
-                        retry_after=int(resp.headers.get("retry-after", 0)) or None,
-                    )
-                elif resp.status_code >= 500:
-                    error_text = resp.text
-                    raise ProviderNotAvailableException(
-                        f"提供商服务不可用: {provider.name}, 状态: {resp.status_code}",
-                        provider_name=str(provider.name),
-                        upstream_status=resp.status_code,
-                        upstream_response=error_text,
-                    )
-                elif 300 <= resp.status_code < 400:
-                    redirect_url = resp.headers.get("location", "unknown")
-                    raise ProviderNotAvailableException(
-                        f"提供商配置错误: {provider.name}, 返回重定向 {resp.status_code} -> {redirect_url}"
-                    )
-                elif resp.status_code != 200:
-                    error_text = resp.text
-                    raise ProviderNotAvailableException(
-                        f"提供商返回错误: {provider.name}, 状态: {resp.status_code}",
-                        provider_name=str(provider.name),
-                        upstream_status=resp.status_code,
-                        upstream_response=error_text,
-                    )
+            if resp.status_code == 401:
+                raise ProviderAuthException(f"提供商认证失败: {provider.name}")
+            elif resp.status_code == 429:
+                raise ProviderRateLimitException(
+                    f"提供商速率限制: {provider.name}",
+                    provider_name=str(provider.name),
+                    response_headers=response_headers,
+                    retry_after=int(resp.headers.get("retry-after", 0)) or None,
+                )
+            elif resp.status_code >= 500:
+                error_text = resp.text
+                raise ProviderNotAvailableException(
+                    f"提供商服务不可用: {provider.name}, 状态: {resp.status_code}",
+                    provider_name=str(provider.name),
+                    upstream_status=resp.status_code,
+                    upstream_response=error_text,
+                )
+            elif 300 <= resp.status_code < 400:
+                redirect_url = resp.headers.get("location", "unknown")
+                raise ProviderNotAvailableException(
+                    f"提供商配置错误: {provider.name}, 返回重定向 {resp.status_code} -> {redirect_url}"
+                )
+            elif resp.status_code != 200:
+                error_text = resp.text
+                raise ProviderNotAvailableException(
+                    f"提供商返回错误: {provider.name}, 状态: {resp.status_code}",
+                    provider_name=str(provider.name),
+                    upstream_status=resp.status_code,
+                    upstream_response=error_text,
+                )
 
-                # 安全解析 JSON 响应，处理可能的编码错误
-                try:
-                    response_json = resp.json()
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    # 记录原始响应信息用于调试
-                    content_type = resp.headers.get("content-type", "unknown")
-                    content_encoding = resp.headers.get("content-encoding", "none")
-                    logger.error(
-                        f"[{self.request_id}] 无法解析响应 JSON: {e}, "
-                        f"Content-Type: {content_type}, Content-Encoding: {content_encoding}, "
-                        f"响应长度: {len(resp.content)} bytes"
-                    )
-                    raise ProviderNotAvailableException(
-                        f"提供商返回无效响应: {provider.name}, 无法解析 JSON: {str(e)[:100]}"
-                    )
+            # 安全解析 JSON 响应，处理可能的编码错误
+            try:
+                response_json = resp.json()
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                # 记录原始响应信息用于调试
+                content_type = resp.headers.get("content-type", "unknown")
+                content_encoding = resp.headers.get("content-encoding", "none")
+                logger.error(
+                    f"[{self.request_id}] 无法解析响应 JSON: {e}, "
+                    f"Content-Type: {content_type}, Content-Encoding: {content_encoding}, "
+                    f"响应长度: {len(resp.content)} bytes"
+                )
+                raise ProviderNotAvailableException(
+                    f"提供商返回无效响应: {provider.name}, 无法解析 JSON: {str(e)[:100]}"
+                )
 
-                # 提取 Provider 响应元数据（子类可覆盖）
-                response_metadata_result = self._extract_response_metadata(response_json)
+            # 提取 Provider 响应元数据（子类可覆盖）
+            response_metadata_result = self._extract_response_metadata(response_json)
 
-                return response_json if isinstance(response_json, dict) else {}
+            return response_json if isinstance(response_json, dict) else {}
 
         try:
             # 解析能力需求

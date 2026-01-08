@@ -85,6 +85,8 @@ class ConcurrencyManager:
         """
         获取当前并发数
 
+        性能优化：使用 MGET 批量获取，减少 Redis 往返次数
+
         Args:
             endpoint_id: Endpoint ID（可选）
             key_id: ProviderAPIKey ID（可选）
@@ -104,15 +106,21 @@ class ConcurrencyManager:
         key_count = 0
 
         try:
+            # 使用 MGET 批量获取，减少 Redis 往返（2 次 GET -> 1 次 MGET）
+            keys_to_fetch = []
             if endpoint_id:
-                endpoint_key = self._get_endpoint_key(endpoint_id)
-                result = await self._redis.get(endpoint_key)
-                endpoint_count = int(result) if result else 0
-
+                keys_to_fetch.append(self._get_endpoint_key(endpoint_id))
             if key_id:
-                key_key = self._get_key_key(key_id)
-                result = await self._redis.get(key_key)
-                key_count = int(result) if result else 0
+                keys_to_fetch.append(self._get_key_key(key_id))
+
+            if keys_to_fetch:
+                results = await self._redis.mget(keys_to_fetch)
+                idx = 0
+                if endpoint_id:
+                    endpoint_count = int(results[idx]) if results[idx] else 0
+                    idx += 1
+                if key_id:
+                    key_count = int(results[idx]) if results[idx] else 0
 
         except Exception as e:
             logger.error(f"获取并发数失败: {e}")

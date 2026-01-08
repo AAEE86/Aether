@@ -691,64 +691,70 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
                 f"  [{self.request_id}] 请求体stream字段: {provider_payload.get('stream', 'N/A')}"
             )
 
-            # 创建 HTTP 客户端（支持代理配置）
-            # endpoint.timeout 作为整体请求超时
+            # 获取复用的 HTTP 客户端（支持代理配置）
+            # 注意：使用 get_proxy_client 复用连接池，不再每次创建新客户端
             from src.clients.http_client import HTTPClientPool
 
             request_timeout = float(endpoint.timeout or 300)
-            http_client = HTTPClientPool.create_client_with_proxy(
+            http_client = await HTTPClientPool.get_proxy_client(
                 proxy_config=endpoint.proxy,
+            )
+
+            # 注意：不使用 async with，因为复用的客户端不应该被关闭
+            # 超时通过 timeout 参数控制
+            resp = await http_client.post(
+                url,
+                json=provider_payload,
+                headers=provider_hdrs,
                 timeout=httpx.Timeout(request_timeout),
             )
-            async with http_client:
-                resp = await http_client.post(url, json=provider_payload, headers=provider_hdrs)
 
-                status_code = resp.status_code
-                response_headers = dict(resp.headers)
+            status_code = resp.status_code
+            response_headers = dict(resp.headers)
 
-                if resp.status_code == 401:
-                    raise ProviderAuthException(f"提供商认证失败: {provider.name}")
-                elif resp.status_code == 429:
-                    raise ProviderRateLimitException(
-                        f"提供商速率限制: {provider.name}",
-                        provider_name=str(provider.name),
-                        response_headers=response_headers,
+            if resp.status_code == 401:
+                raise ProviderAuthException(f"提供商认证失败: {provider.name}")
+            elif resp.status_code == 429:
+                raise ProviderRateLimitException(
+                    f"提供商速率限制: {provider.name}",
+                    provider_name=str(provider.name),
+                    response_headers=response_headers,
+                )
+            elif resp.status_code >= 500:
+                # 记录响应体以便调试
+                error_body = ""
+                try:
+                    error_body = resp.text[:1000]
+                    logger.error(
+                        f"  [{self.request_id}] 上游返回5xx错误: status={resp.status_code}, body={error_body[:500]}"
                     )
-                elif resp.status_code >= 500:
-                    # 记录响应体以便调试
-                    error_body = ""
-                    try:
-                        error_body = resp.text[:1000]
-                        logger.error(
-                            f"  [{self.request_id}] 上游返回5xx错误: status={resp.status_code}, body={error_body[:500]}"
-                        )
-                    except Exception:
-                        pass
-                    raise ProviderNotAvailableException(
-                        f"提供商服务不可用: {provider.name}",
-                        provider_name=str(provider.name),
-                        upstream_status=resp.status_code,
-                        upstream_response=error_body,
+                except Exception:
+                    pass
+                raise ProviderNotAvailableException(
+                    f"提供商服务不可用: {provider.name}",
+                    provider_name=str(provider.name),
+                    upstream_status=resp.status_code,
+                    upstream_response=error_body,
+                )
+            elif resp.status_code != 200:
+                # 记录非200响应以便调试
+                error_body = ""
+                try:
+                    error_body = resp.text[:1000]
+                    logger.warning(
+                        f"  [{self.request_id}] 上游返回非200: status={resp.status_code}, body={error_body[:500]}"
                     )
-                elif resp.status_code != 200:
-                    # 记录非200响应以便调试
-                    error_body = ""
-                    try:
-                        error_body = resp.text[:1000]
-                        logger.warning(
-                            f"  [{self.request_id}] 上游返回非200: status={resp.status_code}, body={error_body[:500]}"
-                        )
-                    except Exception:
-                        pass
-                    raise ProviderNotAvailableException(
-                        f"提供商返回错误: {provider.name}, 状态: {resp.status_code}",
-                        provider_name=str(provider.name),
-                        upstream_status=resp.status_code,
-                        upstream_response=error_body,
-                    )
+                except Exception:
+                    pass
+                raise ProviderNotAvailableException(
+                    f"提供商返回错误: {provider.name}, 状态: {resp.status_code}",
+                    provider_name=str(provider.name),
+                    upstream_status=resp.status_code,
+                    upstream_response=error_body,
+                )
 
-                response_json = resp.json()
-                return response_json if isinstance(response_json, dict) else {}
+            response_json = resp.json()
+            return response_json if isinstance(response_json, dict) else {}
 
         try:
             # 解析能力需求
