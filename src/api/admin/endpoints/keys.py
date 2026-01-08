@@ -498,24 +498,85 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
     async def handle(self, context):  # type: ignore[override]
         db = context.db
 
-        keys = (
+        # 查询端点密钥（endpoint_id 不为空）
+        endpoint_keys = (
             db.query(ProviderAPIKey, ProviderEndpoint, Provider)
             .join(ProviderEndpoint, ProviderAPIKey.endpoint_id == ProviderEndpoint.id)
             .join(Provider, ProviderEndpoint.provider_id == Provider.id)
             .filter(
                 ProviderAPIKey.is_active.is_(True),
+                ProviderAPIKey.is_shared.is_(False),
                 ProviderEndpoint.is_active.is_(True),
                 Provider.is_active.is_(True),
-            )
-            .order_by(
-                ProviderAPIKey.global_priority.asc().nullslast(), ProviderAPIKey.internal_priority.asc()
             )
             .all()
         )
 
+        # 查询共享密钥（provider_id 不为空，endpoint_id 为空）
+        # 需要获取 Provider 及其所有活跃的 Endpoints
+        shared_keys = (
+            db.query(ProviderAPIKey, Provider)
+            .join(Provider, ProviderAPIKey.provider_id == Provider.id)
+            .filter(
+                ProviderAPIKey.is_active.is_(True),
+                ProviderAPIKey.is_shared.is_(True),
+                Provider.is_active.is_(True),
+            )
+            .all()
+        )
+
+        # 合并两种密钥的结果
+        all_keys = []
+        
+        # 处理端点密钥
+        for key, endpoint, provider in endpoint_keys:
+            all_keys.append({
+                'key': key,
+                'provider': provider,
+                'api_format': endpoint.api_format,
+                'endpoint_base_url': endpoint.base_url,
+            })
+        
+        # 处理共享密钥 - 为每个 Provider 的每个活跃 Endpoint 的 api_format 创建条目
+        for key, provider in shared_keys:
+            # 获取该 Provider 下所有活跃的 Endpoints
+            provider_endpoints = (
+                db.query(ProviderEndpoint)
+                .filter(
+                    ProviderEndpoint.provider_id == provider.id,
+                    ProviderEndpoint.is_active.is_(True)
+                )
+                .all()
+            )
+            
+            # 如果 Provider 没有活跃的 Endpoint，跳过这个共享密钥
+            if not provider_endpoints:
+                continue
+            
+            # 为每个 Endpoint 的 api_format 创建一个条目
+            for endpoint in provider_endpoints:
+                all_keys.append({
+                    'key': key,
+                    'provider': provider,
+                    'api_format': endpoint.api_format,
+                    'endpoint_base_url': 'shared',
+                })
+
+        # 按优先级排序
+        all_keys.sort(
+            key=lambda x: (
+                x['key'].global_priority if x['key'].global_priority is not None else float('inf'),
+                x['key'].internal_priority
+            )
+        )
+
         grouped: Dict[str, List[dict]] = {}
-        for key, endpoint, provider in keys:
-            api_format = endpoint.api_format
+        for item in all_keys:
+            key = item['key']
+            provider = item['provider']
+            api_format = item['api_format']
+            endpoint_base_url = item['endpoint_base_url']
+            
             if api_format not in grouped:
                 grouped[api_format] = []
 
@@ -552,7 +613,7 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
                     "is_active": key.is_active,
                     "circuit_breaker_open": key.circuit_breaker_open,
                     "provider_name": provider.display_name or provider.name,
-                    "endpoint_base_url": endpoint.base_url,
+                    "endpoint_base_url": endpoint_base_url,
                     "api_format": api_format,
                     "capabilities": caps_list,
                     "health_score": key.health_score,

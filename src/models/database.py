@@ -1109,6 +1109,7 @@ class ProviderAPIKey(Base):
 
     # 关系
     endpoint = relationship("ProviderEndpoint", back_populates="api_keys")
+    provider = relationship("Provider", back_populates="shared_api_keys")
 
 
 class UserPreference(Base):
