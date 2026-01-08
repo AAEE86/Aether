@@ -531,20 +531,23 @@ watch(() => props.open, async (isOpen) => {
 // 加载数据
 async function loadData() {
   await Promise.all([loadGlobalModels(), loadExistingModels()])
-  // 默认折叠全局模型组
-  collapsedGroups.value = new Set(['global'])
 
   // 检查缓存，如果有缓存数据则直接使用
   const cachedModels = getCachedModels(props.providerId)
-  if (cachedModels) {
+  if (cachedModels && cachedModels.length > 0) {
     upstreamModels.value = cachedModels
     upstreamModelsLoaded.value = true
-    // 折叠所有上游模型组
+    // 有多个分组时全部折叠
+    const allGroups = new Set(['global'])
     for (const model of cachedModels) {
       if (model.api_format) {
-        collapsedGroups.value.add(model.api_format)
+        allGroups.add(model.api_format)
       }
     }
+    collapsedGroups.value = allGroups
+  } else {
+    // 只有全局模型时展开
+    collapsedGroups.value = new Set()
   }
 }
 
@@ -585,8 +588,8 @@ async function fetchUpstreamModels(forceRefresh = false) {
       } else {
         upstreamModels.value = result.models
         upstreamModelsLoaded.value = true
-        // 折叠所有上游模型组
-        const allGroups = new Set(collapsedGroups.value)
+        // 有多个分组时全部折叠
+        const allGroups = new Set(['global'])
         for (const model of result.models) {
           if (model.api_format) {
             allGroups.add(model.api_format)
