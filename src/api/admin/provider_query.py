@@ -81,10 +81,13 @@ async def query_available_models(
     Returns:
         所有端点的模型列表（合并）
     """
-    # 获取提供商及其端点
+    # 获取提供商及其端点和共享密钥
     provider = (
         db.query(Provider)
-        .options(joinedload(Provider.endpoints).joinedload(ProviderEndpoint.api_keys))
+        .options(
+            joinedload(Provider.endpoints).joinedload(ProviderEndpoint.api_keys),
+            joinedload(Provider.shared_api_keys)
+        )
         .filter(Provider.id == request.provider_id)
         .first()
     )
@@ -97,6 +100,7 @@ async def query_available_models(
 
     if request.api_key_id:
         # 指定了特定的 API Key，只使用该 Key 对应的端点
+        # 先检查端点级别的 Keys
         for endpoint in provider.endpoints:
             for api_key in endpoint.api_keys:
                 if api_key.id == request.api_key_id:
@@ -114,30 +118,70 @@ async def query_available_models(
                     break
             if endpoint_configs:
                 break
+        
+        # 如果没找到，检查共享密钥
+        if not endpoint_configs:
+            for shared_key in provider.shared_api_keys:
+                if shared_key.id == request.api_key_id and shared_key.is_active:
+                    try:
+                        api_key_value = crypto_service.decrypt(shared_key.api_key)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt shared API key: {e}")
+                        raise HTTPException(status_code=500, detail="Failed to decrypt API key")
+                    # 共享密钥可以用于所有活跃端点
+                    for endpoint in provider.endpoints:
+                        if endpoint.is_active:
+                            endpoint_configs.append({
+                                "api_key": api_key_value,
+                                "base_url": endpoint.base_url,
+                                "api_format": endpoint.api_format,
+                                "extra_headers": endpoint.headers,
+                            })
+                    break
 
         if not endpoint_configs:
             raise HTTPException(status_code=404, detail="API Key not found")
     else:
         # 遍历所有活跃端点，每个端点取第一个可用的 Key
         for endpoint in provider.endpoints:
-            if not endpoint.is_active or not endpoint.api_keys:
+            if not endpoint.is_active:
                 continue
 
-            # 找第一个可用的 Key
-            for api_key in endpoint.api_keys:
-                if api_key.is_active:
-                    try:
-                        api_key_value = crypto_service.decrypt(api_key.api_key)
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt API key: {e}")
-                        continue  # 尝试下一个 Key
-                    endpoint_configs.append({
-                        "api_key": api_key_value,
-                        "base_url": endpoint.base_url,
-                        "api_format": endpoint.api_format,
-                        "extra_headers": endpoint.headers,
-                    })
-                    break  # 只取第一个可用的 Key
+            # 优先使用端点级别的 Key
+            found_key = False
+            if endpoint.api_keys:
+                for api_key in endpoint.api_keys:
+                    if api_key.is_active:
+                        try:
+                            api_key_value = crypto_service.decrypt(api_key.api_key)
+                        except Exception as e:
+                            logger.error(f"Failed to decrypt API key: {e}")
+                            continue  # 尝试下一个 Key
+                        endpoint_configs.append({
+                            "api_key": api_key_value,
+                            "base_url": endpoint.base_url,
+                            "api_format": endpoint.api_format,
+                            "extra_headers": endpoint.headers,
+                        })
+                        found_key = True
+                        break  # 只取第一个可用的 Key
+            
+            # 如果端点没有专属 Key，尝试使用共享密钥
+            if not found_key and provider.shared_api_keys:
+                for shared_key in provider.shared_api_keys:
+                    if shared_key.is_active:
+                        try:
+                            api_key_value = crypto_service.decrypt(shared_key.api_key)
+                        except Exception as e:
+                            logger.error(f"Failed to decrypt shared API key: {e}")
+                            continue
+                        endpoint_configs.append({
+                            "api_key": api_key_value,
+                            "base_url": endpoint.base_url,
+                            "api_format": endpoint.api_format,
+                            "extra_headers": endpoint.headers,
+                        })
+                        break  # 只取第一个可用的共享 Key
 
         if not endpoint_configs:
             raise HTTPException(status_code=400, detail="No active API Key found for this provider")
