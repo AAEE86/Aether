@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from .concurrency import router as concurrency_router
 from .health import router as health_router
-from .keys import router as keys_router
+from ..keys import endpoint_keys_router as keys_router
 from .routes import router as routes_router
 
 router = APIRouter(prefix="/api/admin/endpoints", tags=["Admin - Endpoints"])

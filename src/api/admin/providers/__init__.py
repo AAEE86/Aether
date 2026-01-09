@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from .models import router as models_router
 from .routes import router as routes_router
 from .summary import router as summary_router
-from .keys import router as keys_router
+from ..keys import provider_keys_router as keys_router
 
 router = APIRouter(prefix="/api/admin/providers", tags=["Admin - Providers"])
 
