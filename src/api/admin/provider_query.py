@@ -280,10 +280,13 @@ async def test_model(
     Returns:
         测试结果
     """
-    # 获取提供商及其端点
+    # 获取提供商及其端点和共享密钥
     provider = (
         db.query(Provider)
-        .options(joinedload(Provider.endpoints).joinedload(ProviderEndpoint.api_keys))
+        .options(
+            joinedload(Provider.endpoints).joinedload(ProviderEndpoint.api_keys),
+            joinedload(Provider.shared_api_keys)
+        )
         .filter(Provider.id == request.provider_id)
         .first()
     )
@@ -295,9 +298,11 @@ async def test_model(
     endpoint_config = None
     endpoint = None
     api_key = None
+    is_shared_key = False
 
     if request.api_key_id:
         # 使用指定的API Key
+        # 先检查端点级别的 Keys
         for ep in provider.endpoints:
             for key in ep.api_keys:
                 if key.id == request.api_key_id and key.is_active and ep.is_active:
@@ -306,17 +311,40 @@ async def test_model(
                     break
             if endpoint:
                 break
+        
+        # 如果没找到，检查共享密钥
+        if not endpoint:
+            for shared_key in provider.shared_api_keys:
+                if shared_key.id == request.api_key_id and shared_key.is_active:
+                    api_key = shared_key
+                    is_shared_key = True
+                    # 共享密钥需要找一个活跃的端点来使用
+                    for ep in provider.endpoints:
+                        if ep.is_active:
+                            endpoint = ep
+                            break
+                    break
     else:
         # 使用第一个可用的端点和密钥
         for ep in provider.endpoints:
-            if not ep.is_active or not ep.api_keys:
+            if not ep.is_active:
                 continue
-            for key in ep.api_keys:
-                if key.is_active:
-                    endpoint = ep
-                    api_key = key
-                    break
-            if endpoint:
+            # 优先使用端点级别的 Key
+            if ep.api_keys:
+                for key in ep.api_keys:
+                    if key.is_active:
+                        endpoint = ep
+                        api_key = key
+                        break
+            # 如果端点没有专属 Key，尝试使用共享密钥
+            if not api_key and provider.shared_api_keys:
+                for shared_key in provider.shared_api_keys:
+                    if shared_key.is_active:
+                        endpoint = ep
+                        api_key = shared_key
+                        is_shared_key = True
+                        break
+            if endpoint and api_key:
                 break
 
     if not endpoint or not api_key:
