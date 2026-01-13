@@ -374,6 +374,7 @@
                 v-if="provider"
                 :key="`models-${provider.id}`"
                 :provider="provider"
+                :endpoints="endpoints"
                 @edit-model="handleEditModel"
                 @delete-model="handleDeleteModel"
                 @batch-assign="handleBatchAssign"
