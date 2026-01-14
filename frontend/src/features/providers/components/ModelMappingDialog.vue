@@ -2,313 +2,202 @@
   <Dialog
     :model-value="open"
     :title="editingGroup ? '编辑模型映射' : '添加模型映射'"
-    :description="editingGroup ? '修改映射配置' : '为模型添加新的名称映射'"
+    :description="editingGroup ? '修改映射配置' : '为模型添加名称映射'"
     :icon="Tag"
-    size="4xl"
+    size="lg"
     @update:model-value="$emit('update:open', $event)"
   >
     <div class="space-y-4">
-      <!-- 第一行：目标模型 | 作用域 -->
-      <div class="flex gap-4">
-        <!-- 目标模型 -->
-        <div class="flex-1 space-y-1.5">
-          <Label class="text-xs">目标模型</Label>
-          <Select
-            v-model:open="modelSelectOpen"
-            :model-value="formData.modelId"
-            :disabled="!!editingGroup"
-            @update:model-value="handleModelChange"
-          >
-            <SelectTrigger class="h-9">
-              <SelectValue placeholder="请选择模型" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="model in models"
-                :key="model.id"
-                :value="model.id"
-              >
-                {{ model.global_model_display_name || model.provider_model_name }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <!-- 作用域 -->
-        <div class="flex-1 space-y-1.5">
-          <Label class="text-xs">作用域 <span class="text-muted-foreground font-normal">(不选则适用全部)</span></Label>
-          <div
-            v-if="providerApiFormats.length > 0"
-            class="flex flex-wrap gap-1.5 p-2 rounded-md border bg-muted/30 min-h-[36px]"
-          >
-            <button
-              v-for="format in providerApiFormats"
-              :key="format"
-              type="button"
-              class="px-2.5 py-0.5 rounded text-xs font-medium transition-colors"
-              :class="[
-                formData.apiFormats.includes(format)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background border border-border hover:bg-muted'
-              ]"
-              @click="toggleApiFormat(format)"
+      <!-- 目标模型选择 -->
+      <div class="space-y-1.5">
+        <Label class="text-xs">目标模型</Label>
+        <Select
+          v-model:open="modelSelectOpen"
+          :model-value="formData.modelId"
+          :disabled="!!editingGroup"
+          @update:model-value="handleModelChange"
+        >
+          <SelectTrigger class="h-9">
+            <SelectValue placeholder="请选择目标模型" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem
+              v-for="model in models"
+              :key="model.id"
+              :value="model.id"
             >
-              {{ API_FORMAT_LABELS[format] || format }}
-            </button>
-          </div>
-          <div
-            v-else
-            class="h-9 flex items-center text-xs text-muted-foreground"
-          >
-            无可用格式
-          </div>
-        </div>
+              <div class="flex items-center gap-2">
+                <span class="font-medium">{{ model.global_model_display_name || model.provider_model_name }}</span>
+                <span class="text-xs text-muted-foreground font-mono">{{ model.provider_model_name }}</span>
+              </div>
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        <p class="text-xs text-muted-foreground">
+          选中的映射名称将指向此模型
+        </p>
       </div>
 
-      <!-- 第二行：两栏布局 -->
-      <div class="flex gap-4 items-stretch">
-        <!-- 左侧：上游模型列表 -->
-        <div class="flex-1 space-y-2">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-sm font-medium shrink-0">
-              上游模型
-            </span>
-            <div class="flex-1 relative">
-              <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+      <!-- 映射名称选择面板 -->
+      <div class="space-y-1.5">
+        <Label class="text-xs">映射名称</Label>
+        <div class="border rounded-lg overflow-hidden">
+          <!-- 搜索 + 操作栏 -->
+          <div class="flex items-center gap-2 p-2 border-b bg-muted/30">
+            <div class="relative flex-1">
+              <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
-                v-model="upstreamModelSearch"
-                placeholder="搜索模型..."
-                class="pl-7 h-7 text-xs"
+                v-model="searchQuery"
+                placeholder="搜索或添加自定义映射名称..."
+                class="pl-8 h-8 text-sm"
               />
             </div>
-            <button
-              v-if="upstreamModelsLoaded"
-              type="button"
-              class="p-1.5 hover:bg-muted rounded-md transition-colors shrink-0"
-              title="刷新列表"
-              :disabled="refreshingUpstreamModels"
-              @click="refreshUpstreamModels"
+            <!-- 已选数量徽章 -->
+            <span
+              v-if="selectedNames.length === 0"
+              class="h-6 px-2 text-xs rounded flex items-center bg-muted text-muted-foreground shrink-0"
             >
-              <RefreshCw
-                class="w-3.5 h-3.5"
-                :class="{ 'animate-spin': refreshingUpstreamModels }"
-              />
-            </button>
-            <button
-              v-else-if="!fetchingUpstreamModels"
-              type="button"
-              class="p-1.5 hover:bg-muted rounded-md transition-colors shrink-0"
-              title="获取上游模型列表"
-              @click="fetchUpstreamModels"
-            >
-              <Zap class="w-3.5 h-3.5" />
-            </button>
-            <Loader2
+              未选择
+            </span>
+            <span
               v-else
-              class="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0"
+              class="h-6 px-2 text-xs rounded flex items-center bg-primary/10 text-primary shrink-0"
+            >
+              已选 {{ selectedNames.length }} 个
+            </span>
+            <Loader2
+              v-if="fetchingUpstreamModels"
+              class="w-4 h-4 animate-spin text-muted-foreground shrink-0"
             />
           </div>
-          <div class="border rounded-lg h-80 overflow-y-auto">
-            <template v-if="upstreamModelsLoaded">
+
+          <!-- 分组列表 -->
+          <div class="max-h-80 overflow-y-auto">
+            <!-- 加载中 -->
+            <div
+              v-if="loadingModels"
+              class="flex items-center justify-center py-12"
+            >
+              <Loader2 class="w-6 h-6 animate-spin text-primary" />
+            </div>
+
+            <template v-else>
+              <!-- 添加自定义映射名称（搜索内容不在列表中时显示） -->
               <div
-                v-if="groupedAvailableUpstreamModels.length === 0"
-                class="flex flex-col items-center justify-center h-full text-muted-foreground"
+                v-if="searchQuery && canAddAsCustom"
+                class="px-3 py-2 border-b bg-background sticky top-0 z-30"
               >
-                <Zap class="w-10 h-10 mb-2 opacity-30" />
-                <p class="text-sm">
-                  {{ upstreamModelSearch ? '没有匹配的模型' : '所有模型已添加' }}
-                </p>
-              </div>
-              <div
-                v-else
-                class="p-2 space-y-2"
-              >
-                <!-- 按分组显示（可折叠） -->
                 <div
-                  v-for="group in groupedAvailableUpstreamModels"
-                  :key="group.api_format"
-                  class="border rounded-lg overflow-hidden"
+                  class="flex items-center justify-between px-3 py-2 rounded-lg border border-dashed hover:border-primary hover:bg-primary/5 cursor-pointer transition-colors"
+                  @click="addCustomName"
                 >
-                  <div class="flex items-center gap-2 px-3 py-2 bg-muted/30">
-                    <button
-                      type="button"
-                      class="flex items-center gap-2 flex-1 hover:bg-muted/50 -mx-1 px-1 rounded transition-colors"
-                      @click="toggleGroupCollapse(group.api_format)"
-                    >
-                      <ChevronDown
-                        class="w-4 h-4 transition-transform shrink-0"
-                        :class="collapsedGroups.has(group.api_format) ? '-rotate-90' : ''"
-                      />
-                      <span class="text-xs font-medium">
-                        {{ API_FORMAT_LABELS[group.api_format] || group.api_format }}
-                      </span>
-                      <span class="text-xs text-muted-foreground">
-                        ({{ group.models.length }})
-                      </span>
-                    </button>
+                  <div class="flex items-center gap-2">
+                    <Plus class="w-4 h-4 text-muted-foreground" />
+                    <span class="text-sm font-mono">{{ searchQuery }}</span>
                   </div>
+                  <span class="text-xs text-muted-foreground">添加自定义模型</span>
+                </div>
+              </div>
+
+              <!-- 自定义映射名称 -->
+              <div v-if="customNames.length > 0">
+                <div
+                  class="flex items-center justify-between px-3 h-9 bg-muted sticky top-0 z-20 cursor-pointer hover:bg-muted/80 transition-colors border-b border-border/30"
+                  @click="toggleGroupCollapse('custom')"
+                >
+                  <div class="flex items-center gap-2">
+                    <ChevronDown
+                      class="w-4 h-4 transition-transform shrink-0"
+                      :class="collapsedGroups.has('custom') ? '-rotate-90' : ''"
+                    />
+                    <span class="text-xs font-medium">自定义映射</span>
+                    <span class="text-xs text-muted-foreground">({{ customNames.length }})</span>
+                  </div>
+                </div>
+                <div
+                  v-show="!collapsedGroups.has('custom')"
+                  class="space-y-1 p-2"
+                >
                   <div
-                    v-show="!collapsedGroups.has(group.api_format)"
-                    class="p-2 space-y-1 border-t"
+                    v-for="name in sortedCustomNames"
+                    :key="name"
+                    class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                    @click="toggleName(name)"
                   >
                     <div
-                      v-for="model in group.models"
-                      :key="model.id"
-                      class="flex items-center gap-2 p-2 rounded-lg border transition-colors hover:bg-muted/30"
-                      :title="model.id"
+                      class="w-4 h-4 border rounded flex items-center justify-center shrink-0"
+                      :class="selectedNames.includes(name) ? 'bg-primary border-primary' : ''"
                     >
-                      <div class="flex-1 min-w-0">
-                        <p class="font-medium text-sm truncate">
-                          {{ model.id }}
-                        </p>
-                        <p class="text-xs text-muted-foreground truncate font-mono">
-                          {{ model.owned_by || model.id }}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        class="p-1 hover:bg-primary/10 rounded transition-colors shrink-0"
-                        title="添加到映射"
-                        @click="addUpstreamModel(model.id)"
-                      >
-                        <ChevronRight class="w-4 h-4 text-muted-foreground hover:text-primary" />
-                      </button>
+                      <Check
+                        v-if="selectedNames.includes(name)"
+                        class="w-3 h-3 text-primary-foreground"
+                      />
                     </div>
+                    <span class="text-sm font-mono truncate flex-1">{{ name }}</span>
                   </div>
                 </div>
+              </div>
+
+              <!-- 上游模型 -->
+              <template v-if="filteredUpstreamModels.length > 0">
+                <div
+                  class="flex items-center justify-between px-3 h-9 bg-muted sticky top-0 z-20 cursor-pointer hover:bg-muted/80 transition-colors border-b border-border/30"
+                  @click="toggleGroupCollapse('upstream')"
+                >
+                  <div class="flex items-center gap-2">
+                    <ChevronDown
+                      class="w-4 h-4 transition-transform shrink-0"
+                      :class="collapsedGroups.has('upstream') ? '-rotate-90' : ''"
+                    />
+                    <span class="text-xs font-medium">上游模型</span>
+                    <span class="text-xs text-muted-foreground">({{ upstreamModelNames.length }})</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="text-xs text-primary hover:underline"
+                    @click.stop="toggleAllUpstreamModels"
+                  >
+                    {{ isAllUpstreamModelsSelected ? '取消全选' : '全选' }}
+                  </button>
+                </div>
+                <div
+                  v-show="!collapsedGroups.has('upstream')"
+                  class="space-y-1 p-2"
+                >
+                  <div
+                    v-for="name in filteredUpstreamModels"
+                    :key="name"
+                    class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                    @click="toggleName(name)"
+                  >
+                    <div
+                      class="w-4 h-4 border rounded flex items-center justify-center shrink-0"
+                      :class="selectedNames.includes(name) ? 'bg-primary border-primary' : ''"
+                    >
+                      <Check
+                        v-if="selectedNames.includes(name)"
+                        class="w-3 h-3 text-primary-foreground"
+                      />
+                    </div>
+                    <span class="text-sm font-mono truncate flex-1">{{ name }}</span>
+                  </div>
+                </div>
+              </template>
+
+              <!-- 空状态 -->
+              <div
+                v-if="showEmptyState"
+                class="flex flex-col items-center justify-center py-12 text-muted-foreground"
+              >
+                <Tag class="w-10 h-10 mb-2 opacity-30" />
+                <p class="text-sm">
+                  {{ searchQuery ? '无匹配结果' : '暂无可选模型' }}
+                </p>
+                <p class="text-xs mt-1">
+                  输入名称后点击添加自定义映射
+                </p>
               </div>
             </template>
-
-            <!-- 未加载状态 -->
-            <div
-              v-else
-              class="flex flex-col items-center justify-center h-full text-muted-foreground"
-            >
-              <Zap class="w-10 h-10 mb-2 opacity-30" />
-              <p class="text-sm">
-                点击右上角按钮
-              </p>
-              <p class="text-xs mt-1">
-                从上游获取可用模型
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- 右侧：映射名称列表 -->
-        <div class="flex-1 space-y-2">
-          <div class="flex items-center justify-between">
-            <p class="text-sm font-medium">
-              映射名称
-            </p>
-            <button
-              type="button"
-              class="p-1.5 hover:bg-muted rounded-md transition-colors"
-              title="手动添加"
-              @click="addAliasItem"
-            >
-              <Plus class="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div class="border rounded-lg h-80 overflow-y-auto">
-            <div
-              v-if="formData.aliases.length === 0"
-              class="flex flex-col items-center justify-center h-full text-muted-foreground"
-            >
-              <Tag class="w-10 h-10 mb-2 opacity-30" />
-              <p class="text-sm">
-                从左侧选择模型
-              </p>
-              <p class="text-xs mt-1">
-                或点击上方"手动添加"
-              </p>
-            </div>
-            <div
-              v-else
-              class="p-2 space-y-1"
-            >
-              <div
-                v-for="(alias, index) in formData.aliases"
-                :key="`alias-${index}`"
-                class="group flex items-center gap-2 p-2 rounded-lg border transition-colors hover:bg-muted/30"
-                :class="[
-                  draggedIndex === index ? 'bg-primary/5' : '',
-                  dragOverIndex === index ? 'bg-primary/10 border-primary' : ''
-                ]"
-                draggable="true"
-                @dragstart="handleDragStart(index, $event)"
-                @dragend="handleDragEnd"
-                @dragover.prevent="handleDragOver(index)"
-                @dragleave="handleDragLeave"
-                @drop="handleDrop(index)"
-              >
-                <!-- 删除按钮 -->
-                <button
-                  type="button"
-                  class="p-1 hover:bg-destructive/10 rounded transition-colors shrink-0"
-                  title="移除"
-                  @click="removeAliasItem(index)"
-                >
-                  <ChevronLeft class="w-4 h-4 text-muted-foreground hover:text-destructive" />
-                </button>
-
-                <!-- 优先级 -->
-                <div class="shrink-0">
-                  <input
-                    v-if="editingPriorityIndex === index"
-                    type="number"
-                    min="1"
-                    :value="alias.priority"
-                    class="w-7 h-6 rounded bg-background border border-primary text-xs text-center focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    autofocus
-                    @blur="finishEditPriority(index, $event)"
-                    @keydown.enter="($event.target as HTMLInputElement).blur()"
-                    @keydown.escape="cancelEditPriority"
-                  >
-                  <div
-                    v-else
-                    class="w-6 h-6 rounded bg-muted/50 flex items-center justify-center text-xs text-muted-foreground cursor-pointer hover:bg-primary/10 hover:text-primary"
-                    title="点击编辑优先级"
-                    @click.stop="startEditPriority(index)"
-                  >
-                    {{ alias.priority }}
-                  </div>
-                </div>
-
-                <!-- 名称显示/编辑 -->
-                <div class="flex-1 min-w-0">
-                  <Input
-                    v-if="alias.isEditing"
-                    v-model="alias.name"
-                    placeholder="输入映射名称"
-                    class="h-7 text-xs"
-                    autofocus
-                    @blur="alias.isEditing = false"
-                    @keydown.enter="alias.isEditing = false"
-                  />
-                  <p
-                    v-else
-                    class="font-medium text-sm truncate cursor-pointer hover:text-primary"
-                    title="点击编辑"
-                    @click="alias.isEditing = true"
-                  >
-                    {{ alias.name || '点击输入名称' }}
-                  </p>
-                </div>
-
-                <!-- 拖拽手柄 -->
-                <div class="cursor-grab active:cursor-grabbing text-muted-foreground/30 group-hover:text-muted-foreground shrink-0">
-                  <GripVertical class="w-4 h-4" />
-                </div>
-              </div>
-            </div>
-            <!-- 拖拽提示 -->
-            <div
-              v-if="formData.aliases.length > 1"
-              class="px-3 py-1.5 bg-muted/30 border-t text-xs text-muted-foreground text-center"
-            >
-              拖拽调整优先级顺序
-            </div>
           </div>
         </div>
       </div>
@@ -322,7 +211,7 @@
         取消
       </Button>
       <Button
-        :disabled="submitting || !formData.modelId || formData.aliases.length === 0 || !hasValidAliases"
+        :disabled="submitting || !formData.modelId || selectedNames.length === 0"
         @click="handleSubmit"
       >
         <Loader2
@@ -337,7 +226,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Tag, Loader2, GripVertical, Zap, Search, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Plus } from 'lucide-vue-next'
+import { Tag, Loader2, Plus, Search, Check, ChevronDown } from 'lucide-vue-next'
 import {
   Button,
   Input,
@@ -351,22 +240,17 @@ import {
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import {
-  API_FORMAT_LABELS,
   type Model,
   type ProviderModelAlias
 } from '@/api/endpoints'
 import { updateModel } from '@/api/endpoints/models'
-import { useUpstreamModelsCache, type UpstreamModel } from '../composables/useUpstreamModelsCache'
-
-interface FormAlias {
-  name: string
-  priority: number
-  isEditing?: boolean
-}
+import { useUpstreamModelsCache } from '../composables/useUpstreamModelsCache'
 
 export interface AliasGroup {
   model: Model
+  /** @deprecated 作用域功能已废弃，将在后续版本移除 */
   apiFormatsKey: string
+  /** @deprecated 作用域功能已废弃，将在后续版本移除 */
   apiFormats: string[]
   aliases: ProviderModelAlias[]
 }
@@ -374,7 +258,8 @@ export interface AliasGroup {
 const props = defineProps<{
   open: boolean
   providerId: string
-  providerApiFormats: string[]
+  /** @deprecated 作用域功能已废弃，此 prop 将在后续版本移除 */
+  providerApiFormats?: string[]
   models: Model[]
   editingGroup?: AliasGroup | null
   preselectedModelId?: string | null
@@ -386,108 +271,185 @@ const emit = defineEmits<{
 }>()
 
 const { error: showError, success: showSuccess } = useToast()
-const { fetchModels: fetchCachedModels, clearCache, getCachedModels } = useUpstreamModelsCache()
+const { fetchModels: fetchCachedModels } = useUpstreamModelsCache()
 
 // 状态
 const submitting = ref(false)
 const modelSelectOpen = ref(false)
-
-// 拖拽状态
-const draggedIndex = ref<number | null>(null)
-const dragOverIndex = ref<number | null>(null)
-
-// 优先级编辑状态
-const editingPriorityIndex = ref<number | null>(null)
-
-// 快速添加（上游模型）状态
+const loadingModels = ref(false)
 const fetchingUpstreamModels = ref(false)
-const refreshingUpstreamModels = ref(false)
-const upstreamModelsLoaded = ref(false)
-const upstreamModels = ref<UpstreamModel[]>([])
-const upstreamModelSearch = ref('')
 
-// 分组折叠状态
+// 搜索
+const searchQuery = ref('')
+
+// 折叠状态
 const collapsedGroups = ref<Set<string>>(new Set())
+
+// 上游模型
+const upstreamModels = ref<{ id: string; api_format?: string }[]>([])
 
 // 表单数据
 const formData = ref<{
   modelId: string
-  apiFormats: string[]
-  aliases: FormAlias[]
 }>({
-  modelId: '',
-  apiFormats: [],
-  aliases: []
+  modelId: ''
 })
 
-// 检查是否有有效的映射
-const hasValidAliases = computed(() => {
-  return formData.value.aliases.some(a => a.name.trim())
+// 选中的映射名称
+const selectedNames = ref<string[]>([])
+
+// 自定义名称列表（手动添加的）
+const allCustomNames = ref<string[]>([])
+
+// 所有已知名称集合
+const allKnownNames = computed(() => {
+  const set = new Set<string>()
+  upstreamModels.value.forEach(m => set.add(m.id))
+  return set
 })
 
-// 过滤和排序后的上游模型列表
-const filteredUpstreamModels = computed(() => {
-  const searchText = upstreamModelSearch.value.toLowerCase().trim()
-  let result = [...upstreamModels.value]
+// 上游模型名称列表（去重后）
+const upstreamModelNames = computed(() => {
+  const names = new Set<string>()
+  upstreamModels.value.forEach(m => {
+    names.add(m.id)
+  })
+  return Array.from(names).sort()
+})
 
-  result.sort((a, b) => a.id.localeCompare(b.id))
+// 自定义名称列表（排除上游模型中已有的）
+const customNames = computed(() => {
+  const upstreamSet = new Set(upstreamModelNames.value)
+  return allCustomNames.value.filter(name => !upstreamSet.has(name))
+})
 
-  if (searchText) {
-    const keywords = searchText.split(/\s+/).filter(k => k.length > 0)
-    result = result.filter(m => {
-      const searchableText = `${m.id} ${m.owned_by || ''} ${m.api_format || ''}`.toLowerCase()
-      return keywords.every(keyword => searchableText.includes(keyword))
-    })
+// 排序后的自定义名称
+const sortedCustomNames = computed(() => {
+  const search = searchQuery.value.toLowerCase().trim()
+  if (!search) return customNames.value
+
+  const matched: string[] = []
+  const unmatched: string[] = []
+  for (const name of customNames.value) {
+    if (name.toLowerCase().includes(search)) {
+      matched.push(name)
+    } else {
+      unmatched.push(name)
+    }
   }
-
-  return result
+  return [...matched, ...unmatched]
 })
 
-// 按 API 格式分组的上游模型列表
-interface UpstreamModelGroup {
-  api_format: string
-  models: Array<{ id: string; owned_by?: string; api_format?: string }>
+// 判断搜索内容是否可以作为自定义名称添加
+const canAddAsCustom = computed(() => {
+  const search = searchQuery.value.trim()
+  if (!search) return false
+  // 已经选中了就不显示
+  if (selectedNames.value.includes(search)) return false
+  // 已经在自定义列表中就不显示
+  if (allCustomNames.value.includes(search)) return false
+  // 精确匹配上游模型就不显示
+  if (upstreamModelNames.value.includes(search)) return false
+  return true
+})
+
+// 过滤后的上游模型
+const filteredUpstreamModels = computed(() => {
+  if (!searchQuery.value.trim()) return upstreamModelNames.value
+  const query = searchQuery.value.toLowerCase()
+  return upstreamModelNames.value.filter(name => name.toLowerCase().includes(query))
+})
+
+// 空状态判断
+const showEmptyState = computed(() => {
+  return filteredUpstreamModels.value.length === 0 && customNames.value.length === 0
+})
+
+// 上游模型是否全选
+const isAllUpstreamModelsSelected = computed(() => {
+  if (filteredUpstreamModels.value.length === 0) return false
+  return filteredUpstreamModels.value.every(name => selectedNames.value.includes(name))
+})
+
+// 切换名称选中状态
+function toggleName(name: string) {
+  const idx = selectedNames.value.indexOf(name)
+  if (idx === -1) {
+    selectedNames.value.push(name)
+  } else {
+    selectedNames.value.splice(idx, 1)
+  }
 }
 
-const groupedAvailableUpstreamModels = computed<UpstreamModelGroup[]>(() => {
-  // 收集当前表单已添加的名称
-  const addedNames = new Set(formData.value.aliases.map(a => a.name.trim()))
-
-  // 收集所有已存在的映射名称（包括主模型名和映射名称）
-  for (const m of props.models) {
-    addedNames.add(m.provider_model_name)
-    for (const mapping of m.provider_model_mappings ?? []) {
-      if (mapping.name) addedNames.add(mapping.name)
+// 添加自定义名称
+function addCustomName() {
+  const name = searchQuery.value.trim()
+  if (name && !selectedNames.value.includes(name)) {
+    selectedNames.value.push(name)
+    if (!allKnownNames.value.has(name) && !allCustomNames.value.includes(name)) {
+      allCustomNames.value.push(name)
     }
+    searchQuery.value = ''
   }
+}
 
-  const availableModels = filteredUpstreamModels.value.filter(m => !addedNames.has(m.id))
+// 全选/取消全选上游模型
+function toggleAllUpstreamModels() {
+  const allNames = filteredUpstreamModels.value
+  if (isAllUpstreamModelsSelected.value) {
+    selectedNames.value = selectedNames.value.filter(name => !allNames.includes(name))
+  } else {
+    allNames.forEach(name => {
+      if (!selectedNames.value.includes(name)) {
+        selectedNames.value.push(name)
+      }
+    })
+  }
+}
 
-  const groups = new Map<string, UpstreamModelGroup>()
+// 切换折叠状态
+function toggleGroupCollapse(group: string) {
+  if (collapsedGroups.value.has(group)) {
+    collapsedGroups.value.delete(group)
+  } else {
+    collapsedGroups.value.add(group)
+  }
+  collapsedGroups.value = new Set(collapsedGroups.value)
+}
 
-  for (const model of availableModels) {
-    const format = model.api_format || 'UNKNOWN'
-    if (!groups.has(format)) {
-      groups.set(format, { api_format: format, models: [] })
+// 从提供商获取模型（使用缓存）
+async function fetchUpstreamModels() {
+  if (!props.providerId) return
+  try {
+    loadingModels.value = true
+    fetchingUpstreamModels.value = true
+    const result = await fetchCachedModels(props.providerId)
+    if (result.models.length > 0) {
+      upstreamModels.value = result.models
+      // 获取上游模型后，将不在上游列表中的已选名称添加到自定义列表
+      const upstreamIds = new Set(result.models.map(m => m.id))
+      const customFromSelected = selectedNames.value.filter(name => !upstreamIds.has(name))
+      // 合并现有自定义名称和从已选中提取的自定义名称
+      const mergedCustom = new Set([...allCustomNames.value, ...customFromSelected])
+      allCustomNames.value = Array.from(mergedCustom).filter(name => !upstreamIds.has(name))
     }
-    groups.get(format)!.models.push(model)
+    if (result.error) {
+      showError(result.error, '获取上游模型失败')
+    }
+  } catch (err: any) {
+    showError(err.response?.data?.detail || '获取上游模型列表失败', '错误')
+  } finally {
+    loadingModels.value = false
+    fetchingUpstreamModels.value = false
   }
-
-  const order = Object.keys(API_FORMAT_LABELS)
-  return Array.from(groups.values()).sort((a, b) => {
-    const aIndex = order.indexOf(a.api_format)
-    const bIndex = order.indexOf(b.api_format)
-    if (aIndex === -1 && bIndex === -1) return a.api_format.localeCompare(b.api_format)
-    if (aIndex === -1) return 1
-    if (bIndex === -1) return -1
-    return aIndex - bIndex
-  })
-})
+}
 
 // 监听打开状态
-watch(() => props.open, (isOpen) => {
+watch(() => props.open, async (isOpen) => {
   if (isOpen) {
     initForm()
+    // 加载上游模型
+    await fetchUpstreamModels()
   }
 })
 
@@ -495,223 +457,25 @@ watch(() => props.open, (isOpen) => {
 function initForm() {
   if (props.editingGroup) {
     formData.value = {
-      modelId: props.editingGroup.model.id,
-      apiFormats: [...props.editingGroup.apiFormats],
-      aliases: props.editingGroup.aliases.map(a => ({ name: a.name, priority: a.priority }))
+      modelId: props.editingGroup.model.id
     }
+    selectedNames.value = props.editingGroup.aliases.map(a => a.name)
+    allCustomNames.value = []
   } else {
     formData.value = {
-      modelId: props.preselectedModelId || '',
-      apiFormats: [],
-      aliases: []
+      modelId: props.preselectedModelId || ''
     }
+    selectedNames.value = []
+    allCustomNames.value = []
   }
-  // 重置状态
-  editingPriorityIndex.value = null
-  draggedIndex.value = null
-  dragOverIndex.value = null
-  upstreamModelSearch.value = ''
+  searchQuery.value = ''
+  // 默认展开所有分组
   collapsedGroups.value = new Set()
-
-  // 检查缓存，如果有缓存数据则直接使用
-  const cachedModels = getCachedModels(props.providerId)
-  if (cachedModels) {
-    upstreamModels.value = cachedModels
-    upstreamModelsLoaded.value = true
-    // 默认折叠所有分组
-    for (const model of cachedModels) {
-      if (model.api_format) {
-        collapsedGroups.value.add(model.api_format)
-      }
-    }
-  } else {
-    upstreamModelsLoaded.value = false
-    upstreamModels.value = []
-  }
 }
 
 // 处理模型选择变更
 function handleModelChange(value: string) {
   formData.value.modelId = value
-  const selectedModel = props.models.find(m => m.id === value)
-  if (selectedModel) {
-    upstreamModelSearch.value = selectedModel.provider_model_name
-  }
-}
-
-// 切换 API 格式
-function toggleApiFormat(format: string) {
-  const index = formData.value.apiFormats.indexOf(format)
-  if (index >= 0) {
-    formData.value.apiFormats.splice(index, 1)
-  } else {
-    formData.value.apiFormats.push(format)
-  }
-}
-
-// 切换分组折叠状态
-function toggleGroupCollapse(apiFormat: string) {
-  if (collapsedGroups.value.has(apiFormat)) {
-    collapsedGroups.value.delete(apiFormat)
-  } else {
-    collapsedGroups.value.add(apiFormat)
-  }
-}
-
-// 添加映射项
-function addAliasItem() {
-  const maxPriority = formData.value.aliases.length > 0
-    ? Math.max(...formData.value.aliases.map(a => a.priority))
-    : 0
-  formData.value.aliases.push({ name: '', priority: maxPriority + 1, isEditing: true })
-}
-
-// 删除映射项
-function removeAliasItem(index: number) {
-  formData.value.aliases.splice(index, 1)
-}
-
-// ===== 拖拽排序 =====
-function handleDragStart(index: number, event: DragEvent) {
-  draggedIndex.value = index
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
-  }
-}
-
-function handleDragEnd() {
-  draggedIndex.value = null
-  dragOverIndex.value = null
-}
-
-function handleDragOver(index: number) {
-  if (draggedIndex.value !== null && draggedIndex.value !== index) {
-    dragOverIndex.value = index
-  }
-}
-
-function handleDragLeave() {
-  dragOverIndex.value = null
-}
-
-function handleDrop(targetIndex: number) {
-  const dragIndex = draggedIndex.value
-  if (dragIndex === null || dragIndex === targetIndex) {
-    dragOverIndex.value = null
-    return
-  }
-
-  const items = [...formData.value.aliases]
-  const draggedItem = items[dragIndex]
-
-  const originalPriorityMap = new Map<number, number>()
-  items.forEach((alias, idx) => {
-    originalPriorityMap.set(idx, alias.priority)
-  })
-
-  items.splice(dragIndex, 1)
-  items.splice(targetIndex, 0, draggedItem)
-
-  const groupNewPriority = new Map<number, number>()
-  let currentPriority = 1
-
-  items.forEach((alias) => {
-    const originalIdx = formData.value.aliases.findIndex(a => a === alias)
-    const originalPriority = originalIdx >= 0 ? originalPriorityMap.get(originalIdx)! : alias.priority
-
-    if (alias === draggedItem) {
-      alias.priority = currentPriority
-      currentPriority++
-    } else {
-      if (groupNewPriority.has(originalPriority)) {
-        alias.priority = groupNewPriority.get(originalPriority)!
-      } else {
-        groupNewPriority.set(originalPriority, currentPriority)
-        alias.priority = currentPriority
-        currentPriority++
-      }
-    }
-  })
-
-  formData.value.aliases = items
-  draggedIndex.value = null
-  dragOverIndex.value = null
-}
-
-// ===== 优先级编辑 =====
-function startEditPriority(index: number) {
-  editingPriorityIndex.value = index
-}
-
-function finishEditPriority(index: number, event: FocusEvent) {
-  const input = event.target as HTMLInputElement
-  const newPriority = parseInt(input.value) || 1
-  formData.value.aliases[index].priority = Math.max(1, newPriority)
-  editingPriorityIndex.value = null
-}
-
-function cancelEditPriority() {
-  editingPriorityIndex.value = null
-}
-
-// ===== 快速添加（上游模型）=====
-async function fetchUpstreamModels() {
-  if (!props.providerId) return
-
-  upstreamModelSearch.value = ''
-  fetchingUpstreamModels.value = true
-
-  try {
-    const result = await fetchCachedModels(props.providerId)
-    if (result) {
-      if (result.error) {
-        showError(result.error, '错误')
-      } else {
-        upstreamModels.value = result.models
-        upstreamModelsLoaded.value = true
-        // 默认折叠所有分组
-        for (const model of result.models) {
-          if (model.api_format) {
-            collapsedGroups.value.add(model.api_format)
-          }
-        }
-      }
-    }
-  } finally {
-    fetchingUpstreamModels.value = false
-  }
-}
-
-function addUpstreamModel(modelId: string) {
-  if (formData.value.aliases.some(a => a.name === modelId)) {
-    return
-  }
-
-  const maxPriority = formData.value.aliases.length > 0
-    ? Math.max(...formData.value.aliases.map(a => a.priority))
-    : 0
-
-  formData.value.aliases.push({ name: modelId, priority: maxPriority + 1 })
-}
-
-async function refreshUpstreamModels() {
-  if (!props.providerId || refreshingUpstreamModels.value) return
-
-  refreshingUpstreamModels.value = true
-  clearCache(props.providerId)
-
-  try {
-    const result = await fetchCachedModels(props.providerId, true)
-    if (result) {
-      if (result.error) {
-        showError(result.error, '错误')
-      } else {
-        upstreamModels.value = result.models
-      }
-    }
-  } finally {
-    refreshingUpstreamModels.value = false
-  }
 }
 
 // 生成作用域唯一键
@@ -723,13 +487,7 @@ function getApiFormatsKey(formats: string[] | undefined): string {
 // 提交表单
 async function handleSubmit() {
   if (submitting.value) return
-  if (!formData.value.modelId || formData.value.aliases.length === 0) return
-
-  const validAliases = formData.value.aliases.filter(a => a.name.trim())
-  if (validAliases.length === 0) {
-    showError('请至少添加一个有效的映射名称', '错误')
-    return
-  }
+  if (!formData.value.modelId || selectedNames.value.length === 0) return
 
   submitting.value = true
   try {
@@ -742,11 +500,13 @@ async function handleSubmit() {
     const currentAliases = targetModel.provider_model_mappings || []
     let newAliases: ProviderModelAlias[]
 
-    const buildAlias = (a: FormAlias): ProviderModelAlias => ({
-      name: a.name.trim(),
-      priority: a.priority,
-      ...(formData.value.apiFormats.length > 0 ? { api_formats: formData.value.apiFormats } : {})
-    })
+    // 为每个选中的名称创建映射（所有映射使用相同优先级，实现同级负载均衡）
+    const buildAliases = (names: string[]): ProviderModelAlias[] => {
+      return names.map((name) => ({
+        name: name.trim(),
+        priority: 1
+      }))
+    }
 
     if (props.editingGroup) {
       const oldApiFormatsKey = props.editingGroup.apiFormatsKey
@@ -758,26 +518,26 @@ async function handleSubmit() {
       })
 
       const existingNames = new Set(filteredAliases.map((a: ProviderModelAlias) => a.name))
-      const duplicates = validAliases.filter(a => existingNames.has(a.name.trim()))
+      const duplicates = selectedNames.value.filter(name => existingNames.has(name))
       if (duplicates.length > 0) {
-        showError(`以下映射名称已存在：${duplicates.map(d => d.name).join(', ')}`, '错误')
+        showError(`以下映射名称已存在：${duplicates.join(', ')}`, '错误')
         return
       }
 
       newAliases = [
         ...filteredAliases,
-        ...validAliases.map(buildAlias)
+        ...buildAliases(selectedNames.value)
       ]
     } else {
       const existingNames = new Set(currentAliases.map((a: ProviderModelAlias) => a.name))
-      const duplicates = validAliases.filter(a => existingNames.has(a.name.trim()))
+      const duplicates = selectedNames.value.filter(name => existingNames.has(name))
       if (duplicates.length > 0) {
-        showError(`以下映射名称已存在：${duplicates.map(d => d.name).join(', ')}`, '错误')
+        showError(`以下映射名称已存在：${duplicates.join(', ')}`, '错误')
         return
       }
       newAliases = [
         ...currentAliases,
-        ...validAliases.map(buildAlias)
+        ...buildAliases(selectedNames.value)
       ]
     }
 
