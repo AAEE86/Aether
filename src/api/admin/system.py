@@ -764,6 +764,8 @@ class AdminExportConfigAdapter(AdminApiAdapter):
                         "capabilities": key.capabilities,
                         "cache_ttl_minutes": key.cache_ttl_minutes,
                         "max_probe_interval_minutes": key.max_probe_interval_minutes,
+                        "auto_fetch_models": key.auto_fetch_models,
+                        "locked_models": key.locked_models,
                         "is_active": key.is_active,
                     }
                 )
@@ -1123,6 +1125,8 @@ class AdminImportConfigAdapter(AdminApiAdapter):
                         capabilities=key_data.get("capabilities"),
                         cache_ttl_minutes=key_data.get("cache_ttl_minutes", 5),
                         max_probe_interval_minutes=key_data.get("max_probe_interval_minutes", 32),
+                        auto_fetch_models=key_data.get("auto_fetch_models", False),
+                        locked_models=key_data.get("locked_models"),
                         is_active=key_data.get("is_active", True),
                         health_by_format={},
                         circuit_breaker_by_format={},
@@ -1130,6 +1134,12 @@ class AdminImportConfigAdapter(AdminApiAdapter):
                     db.add(new_key)
                     existing_key_values.add(plaintext_key)
                     stats["keys"]["created"] += 1
+
+                    # 如果开启了 auto_fetch_models，记录需要触发获取的 Key ID
+                    if key_data.get("auto_fetch_models", False):
+                        if "keys_to_fetch" not in stats:
+                            stats["keys_to_fetch"] = []
+                        stats["keys_to_fetch"].append(new_key.id)
 
                 # 导入 Models
                 for model_data in prov_data.get("models", []):
@@ -1237,6 +1247,22 @@ class AdminImportConfigAdapter(AdminApiAdapter):
 
             cache_service = get_cache_invalidation_service()
             cache_service.clear_all_caches()
+
+            # 触发开启了 auto_fetch_models 的 Key 的模型获取
+            keys_to_fetch = stats.get("keys_to_fetch", [])
+            if keys_to_fetch:
+                logger.info(f"[AUTO_FETCH] 导入了 {len(keys_to_fetch)} 个开启自动获取模型的 Key，触发模型获取")
+                try:
+                    from src.services.model.fetch_scheduler import get_model_fetch_scheduler
+                    import asyncio
+                    scheduler = get_model_fetch_scheduler()
+                    for key_id in keys_to_fetch:
+                        asyncio.create_task(scheduler._fetch_models_for_key_by_id(key_id))
+                except Exception as e:
+                    logger.error(f"触发模型获取失败: {e}")
+                    # 不影响导入成功的返回
+                # 从统计信息中移除内部字段
+                stats.pop("keys_to_fetch", None)
 
             return {
                 "message": "配置导入成功",
