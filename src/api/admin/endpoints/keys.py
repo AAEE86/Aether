@@ -19,12 +19,12 @@ from src.core.key_capabilities import get_capability
 from src.core.logger import logger
 from src.database import get_db
 from src.models.database import Provider, ProviderAPIKey, ProviderEndpoint
-from src.services.cache.provider_cache import ProviderCacheService
 from src.models.endpoint_models import (
     EndpointAPIKeyCreate,
     EndpointAPIKeyResponse,
     EndpointAPIKeyUpdate,
 )
+from src.services.cache.provider_cache import ProviderCacheService
 
 router = APIRouter(tags=["Provider Keys"])
 pipeline = ApiRequestPipeline()
@@ -214,7 +214,14 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
 
         # 检查是否开启了 auto_fetch_models（用于后续立即获取模型）
         auto_fetch_enabled_before = key.auto_fetch_models
-        auto_fetch_enabled_after = self.key_data.auto_fetch_models if "auto_fetch_models" in self.key_data.model_fields_set else auto_fetch_enabled_before
+        auto_fetch_enabled_after = (
+            self.key_data.auto_fetch_models
+            if "auto_fetch_models" in self.key_data.model_fields_set
+            else auto_fetch_enabled_before
+        )
+
+        # 记录 allowed_models 变化前的值
+        allowed_models_before = set(key.allowed_models or [])
 
         update_data = self.key_data.model_dump(exclude_unset=True)
         if "api_key" in update_data:
@@ -252,9 +259,11 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
             logger.info("[AUTO_FETCH] Key %s 开启自动获取模型，立即触发模型获取", self.key_id)
             try:
                 from src.services.model.fetch_scheduler import get_model_fetch_scheduler
+
                 scheduler = get_model_fetch_scheduler()
                 # 在后台异步执行，不阻塞当前请求
                 import asyncio
+
                 asyncio.create_task(scheduler._fetch_models_for_key_by_id(self.key_id))
             except Exception as e:
                 logger.error(f"触发模型获取失败: {e}")
@@ -281,6 +290,17 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
         # 任何字段更新都清除缓存，确保缓存一致性
         # 包括 is_active、allowed_models、capabilities 等影响权限和行为的字段
         await ProviderCacheService.invalidate_provider_api_key_cache(self.key_id)
+
+        # 检查 allowed_models 是否有变化，触发缓存失效和自动关联
+        allowed_models_after = set(key.allowed_models or [])
+        if allowed_models_before != allowed_models_after and key.provider_id:
+            from src.services.model.global_model import on_key_allowed_models_changed
+
+            on_key_allowed_models_changed(
+                db=db,
+                provider_id=key.provider_id,
+                allowed_models=list(key.allowed_models or []),
+            )
 
         logger.info("[OK] 更新 Key: ID=%s, Updates=%s", self.key_id, list(update_data.keys()))
 
@@ -613,12 +633,24 @@ class AdminCreateProviderKeyAdapter(AdminApiAdapter):
             logger.info("[AUTO_FETCH] 新 Key %s 开启自动获取模型，立即触发模型获取", new_key.id)
             try:
                 from src.services.model.fetch_scheduler import get_model_fetch_scheduler
+
                 scheduler = get_model_fetch_scheduler()
                 # 在后台异步执行，不阻塞当前请求
                 import asyncio
+
                 asyncio.create_task(scheduler._fetch_models_for_key_by_id(new_key.id))
             except Exception as e:
                 logger.error(f"触发模型获取失败: {e}")
                 # 不抛出异常，避免影响 Key 创建操作
+
+        # 如果创建时指定了 allowed_models，触发自动关联检查
+        if new_key.allowed_models:
+            from src.services.model.global_model import on_key_allowed_models_changed
+
+            on_key_allowed_models_changed(
+                db=db,
+                provider_id=self.provider_id,
+                allowed_models=list(new_key.allowed_models),
+            )
 
         return _build_key_response(new_key, api_key_plain=self.key_data.api_key)

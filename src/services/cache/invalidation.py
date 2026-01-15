@@ -53,6 +53,23 @@ class CacheInvalidationService:
 
     def on_model_changed(self, provider_id: str, global_model_id: str):
         """Model 变更时的缓存失效"""
+        self._refresh_provider_cache(provider_id)
+
+    def on_key_allowed_models_changed(self, provider_id: str) -> None:
+        """
+        Key 的 allowed_models 变更时的缓存失效
+
+        当 Key 的模型白名单变化时（如自动获取更新），需要刷新相关缓存，
+        以便正则映射规则能够重新匹配到新的白名单模型。
+
+        Args:
+            provider_id: 变更的 Key 所属的 Provider ID
+        """
+        logger.info(f"[CacheInvalidation] Key allowed_models 变更: provider_id={provider_id}")
+        self._refresh_provider_cache(provider_id)
+
+    def _refresh_provider_cache(self, provider_id: str) -> None:
+        """刷新指定 Provider 的 ModelMapper 缓存"""
         for mapper in self._model_mappers:
             mapper.refresh_cache(provider_id)
 

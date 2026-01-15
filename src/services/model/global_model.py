@@ -4,7 +4,7 @@ GlobalModel 服务层
 提供 GlobalModel 的 CRUD 操作、查询和统计功能
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, joinedload
@@ -14,6 +14,37 @@ from src.core.logger import logger
 from src.models.database import GlobalModel, Model
 from src.models.pydantic_models import GlobalModelUpdate
 
+
+def on_key_allowed_models_changed(
+    db: Session,
+    provider_id: str,
+    allowed_models: List[str],
+) -> None:
+    """
+    Key 的 allowed_models 变更后的统一处理
+
+    包括：
+    1. 触发缓存失效
+    2. 检查并自动关联匹配的 GlobalModel
+
+    Args:
+        db: 数据库 Session
+        provider_id: Provider ID
+        allowed_models: 更新后的 allowed_models 列表
+    """
+    from src.services.cache.invalidation import get_cache_invalidation_service
+
+    # 1. 触发缓存失效
+    cache_service = get_cache_invalidation_service()
+    cache_service.on_key_allowed_models_changed(provider_id)
+
+    # 2. 检查并自动关联 GlobalModel
+    if allowed_models:
+        GlobalModelService.auto_associate_provider_by_key_whitelist(
+            db=db,
+            provider_id=provider_id,
+            allowed_models=allowed_models,
+        )
 
 
 class GlobalModelService:
@@ -163,7 +194,9 @@ class GlobalModelService:
 
         # 级联删除所有关联的 Provider 模型实现
         if associated_models:
-            logger.info(f"删除 GlobalModel {global_model.name} 的 {len(associated_models)} 个关联 Provider 模型")
+            logger.info(
+                f"删除 GlobalModel {global_model.name} 的 {len(associated_models)} 个关联 Provider 模型"
+            )
             for model in associated_models:
                 db.delete(model)
 
@@ -285,4 +318,138 @@ class GlobalModelService:
                 results["errors"].append({"provider_id": provider_id, "error": str(e)})
 
         db.commit()
+        return results
+
+    @staticmethod
+    def auto_associate_provider_by_key_whitelist(
+        db: Session,
+        provider_id: str,
+        allowed_models: List[str],
+    ) -> Dict:
+        """
+        根据 Key 白名单自动关联 Provider 到匹配的 GlobalModel
+
+        当 Key 的 allowed_models 更新后调用此方法，检查所有 GlobalModel 的映射规则，
+        如果有映射规则匹配到 Key 白名单中的模型，且 Provider 尚未关联到该 GlobalModel，
+        则自动创建关联。
+
+        Args:
+            db: 数据库 Session
+            provider_id: Provider ID
+            allowed_models: Key 的白名单模型列表
+
+        Returns:
+            Dict: 包含 success 和 errors 列表
+        """
+        from src.core.model_permissions import match_model_with_pattern
+        from src.models.database import Provider
+
+        results: Dict[str, List[Dict]] = {
+            "success": [],
+            "errors": [],
+        }
+
+        if not allowed_models:
+            return results
+
+        # 获取 Provider
+        provider = db.query(Provider).filter(Provider.id == provider_id).first()
+        if not provider:
+            logger.warning(f"Provider {provider_id} not found for auto-association")
+            return results
+
+        # 获取该 Provider 已关联的 GlobalModel ID 集合
+        existing_associations = (
+            db.query(Model.global_model_id, Model.provider_model_name)
+            .filter(Model.provider_id == provider_id)
+            .all()
+        )
+        linked_global_model_ids: Set[str] = {row[0] for row in existing_associations if row[0]}
+        # 同时获取已存在的 provider_model_name 集合，避免唯一约束冲突
+        existing_provider_model_names: Set[str] = {
+            row[1] for row in existing_associations if row[1]
+        }
+
+        # 获取所有活跃的 GlobalModel（带映射规则）
+        global_models = db.query(GlobalModel).filter(GlobalModel.is_active == True).all()
+
+        allowed_models_set = set(allowed_models)
+
+        for global_model in global_models:
+            # 跳过已关联的
+            if global_model.id in linked_global_model_ids:
+                continue
+
+            # 跳过 provider_model_name 已存在的（避免唯一约束冲突）
+            if global_model.name in existing_provider_model_names:
+                logger.debug(
+                    f"Skipping auto-association for GlobalModel {global_model.name}: "
+                    f"provider_model_name already exists for Provider {provider.name}"
+                )
+                continue
+
+            # 提取映射规则
+            model_mappings: List[str] = []
+            if global_model.config and isinstance(global_model.config, dict):
+                mappings = global_model.config.get("model_mappings")
+                if isinstance(mappings, list):
+                    model_mappings = [m for m in mappings if isinstance(m, str)]
+
+            if not model_mappings:
+                continue
+
+            # 检查是否有映射规则匹配到 Key 白名单
+            matched = False
+            for mapping_pattern in model_mappings:
+                for allowed_model in allowed_models_set:
+                    if match_model_with_pattern(mapping_pattern, allowed_model):
+                        matched = True
+                        break
+                if matched:
+                    break
+
+            if not matched:
+                continue
+
+            # 自动创建关联
+            try:
+                new_model = Model(
+                    provider_id=provider_id,
+                    global_model_id=global_model.id,
+                    provider_model_name=global_model.name,
+                    is_active=True,
+                )
+                db.add(new_model)
+                db.flush()
+
+                # 添加到已存在集合，避免后续循环重复创建
+                existing_provider_model_names.add(global_model.name)
+
+                results["success"].append(
+                    {
+                        "global_model_id": global_model.id,
+                        "global_model_name": global_model.name,
+                        "model_id": new_model.id,
+                    }
+                )
+                logger.info(
+                    f"Auto-associated Provider {provider.name} to GlobalModel {global_model.name} "
+                    f"via mapping rule match"
+                )
+            except Exception as e:
+                db.rollback()
+                logger.error(
+                    f"Failed to auto-associate Provider {provider.name} to GlobalModel {global_model.name}: {e}"
+                )
+                results["errors"].append(
+                    {
+                        "global_model_id": global_model.id,
+                        "global_model_name": global_model.name,
+                        "error": str(e),
+                    }
+                )
+
+        if results["success"]:
+            db.commit()
+
         return results

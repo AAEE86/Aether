@@ -307,11 +307,27 @@ class ModelFetchScheduler:
         )
 
         # 更新 allowed_models（保留 locked_models）
-        self._update_key_allowed_models(key, fetched_model_ids)
+        has_changed = self._update_key_allowed_models(key, fetched_model_ids)
+
+        # 如果白名单有变化，触发缓存失效和自动关联检查
+        if has_changed and provider_id:
+            from src.services.model.global_model import on_key_allowed_models_changed
+
+            on_key_allowed_models_changed(
+                db=db,
+                provider_id=provider_id,
+                allowed_models=list(key.allowed_models or []),
+            )
+
         return "success"
 
-    def _update_key_allowed_models(self, key: ProviderAPIKey, fetched_model_ids: set[str]) -> None:
-        """更新 Key 的 allowed_models，保留 locked_models"""
+    def _update_key_allowed_models(self, key: ProviderAPIKey, fetched_model_ids: set[str]) -> bool:
+        """
+        更新 Key 的 allowed_models，保留 locked_models
+
+        Returns:
+            bool: 是否有变化
+        """
         # 获取当前锁定的模型
         locked_models = set(key.locked_models or [])
 
@@ -333,8 +349,10 @@ class ModelFetchScheduler:
                 logger.info(f"Key {key.id} 移除模型: {sorted(removed)}")
 
             key.allowed_models = new_allowed_models
+            return True
         else:
             logger.debug(f"Key {key.id} 模型列表无变化")
+            return False
 
     async def _fetch_models_from_endpoints(
         self, endpoint_configs: list[dict]
