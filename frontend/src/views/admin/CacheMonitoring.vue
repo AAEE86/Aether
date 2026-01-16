@@ -570,11 +570,11 @@ onBeforeUnmount(() => {
                   :title="item.user_api_key_name || undefined"
                 >{{ item.user_api_key_name || '未命名' }}</span>
                 <Badge
-                  v-if="item.rate_multiplier !== 1.0"
+                  v-if="item.api_format && item.rate_multipliers?.[item.api_format] && item.rate_multipliers[item.api_format] !== 1.0"
                   variant="outline"
                   class="text-warning border-warning/30 text-[10px] px-2"
                 >
-                  {{ item.rate_multiplier }}x
+                  {{ item.rate_multipliers[item.api_format] }}x
                 </Badge>
               </div>
               <div class="text-xs text-muted-foreground font-mono">
@@ -605,7 +605,7 @@ onBeforeUnmount(() => {
             </TableCell>
             <TableCell>
               <div class="text-sm">
-                {{ item.endpoint_api_format || '---' }}
+                {{ item.api_format || '---' }}
               </div>
               <div class="text-xs text-muted-foreground font-mono">
                 {{ item.key_prefix || '---' }}
@@ -685,7 +685,7 @@ onBeforeUnmount(() => {
             <span class="truncate max-w-[100px]">{{ item.model_display_name || '---' }}</span>
           </div>
           <div class="flex items-center justify-between text-xs">
-            <span class="text-muted-foreground">{{ item.endpoint_api_format || '---' }}</span>
+            <span class="text-muted-foreground">{{ item.api_format || '---' }}</span>
             <span>{{ getRemainingTime(item.expire_at) }} · {{ item.request_count }}次</span>
           </div>
         </div>

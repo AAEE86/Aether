@@ -551,11 +551,7 @@ class Provider(Base):
     # 限制
     concurrent_limit = Column(Integer, nullable=True)  # 并发请求限制
 
-    # 请求配置（从 Endpoint 迁移，作为全局默认值）
-    # [已废弃] timeout 字段不再使用，超时由环境变量控制：
-    # - 非流式请求: HTTP_REQUEST_TIMEOUT（默认 300 秒）
-    # - 流式首字节: STREAM_FIRST_BYTE_TIMEOUT（默认 30 秒）
-    timeout = Column(Integer, default=300, nullable=True)  # [已废弃] 请求超时（秒）
+    # 请求配置
     max_retries = Column(Integer, default=2, nullable=True)  # 最大重试次数
     proxy = Column(JSONB, nullable=True)  # 代理配置: {url, username, password, enabled}
 
@@ -603,7 +599,6 @@ class ProviderEndpoint(Base):
 
     # 请求配置
     header_rules = Column(JSON, nullable=True)  # 请求头规则 [{action, key, value, from, to}]
-    timeout = Column(Integer, default=300)  # [已废弃] 超时（秒），由环境变量控制
     max_retries = Column(Integer, default=2)  # 最大重试次数
 
     # 状态
@@ -1004,11 +999,6 @@ class ProviderAPIKey(Base):
     note = Column(String(500), nullable=True)  # 备注说明（可选）
 
     # 成本计算
-    # [DEPRECATED] rate_multiplier 已废弃，请使用 rate_multipliers
-    # 将在未来版本中移除，目前仅作为 rate_multipliers 未配置时的回退值
-    rate_multiplier = Column(
-        Float, default=1.0, nullable=False
-    )  # [DEPRECATED] 默认成本倍率，请使用 rate_multipliers
     rate_multipliers = Column(
         JSON, nullable=True
     )  # 按 API 格式的成本倍率 {"CLAUDE_CLI": 1.0, "OPENAI_CLI": 0.8}
@@ -1017,9 +1007,9 @@ class ProviderAPIKey(Base):
     internal_priority = Column(
         Integer, default=50
     )  # Endpoint 内部优先级（用于提供商优先模式，同 Endpoint 内 Keys 的排序，同优先级参与负载均衡）
-    global_priority = Column(
-        Integer, nullable=True
-    )  # 全局 Key 优先级（用于全局 Key 优先模式，跨 Provider 的 Key 排序，NULL=未配置使用默认排序）
+    global_priority_by_format = Column(
+        JSON, nullable=True
+    )  # 按 API 格式的全局优先级 {"CLAUDE": 1, "CLAUDE_CLI": 2}
 
     # RPM 限制配置（自适应学习）
     # rpm_limit 决定 RPM 控制模式：

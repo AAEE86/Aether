@@ -60,12 +60,11 @@ export interface UserAffinity {
   provider_id: string
   provider_name: string | null
   endpoint_id: string
-  endpoint_api_format: string | null
   endpoint_url: string | null
   key_id: string
   key_name: string | null
   key_prefix: string | null  // Provider Key 脱敏显示（前4...后4）
-  rate_multiplier: number
+  rate_multipliers: Record<string, number> | null
   global_model_id: string | null  // 原始的 global_model_id（用于删除）
   model_name: string | null  // 模型名称（如 claude-haiku-4-5-20250514）
   model_display_name: string | null  // 模型显示名称（如 Claude Haiku 4.5）

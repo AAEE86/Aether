@@ -307,7 +307,7 @@
                         </div>
                         <!-- 速率倍数 -->
                         <div class="text-sm font-medium tabular-nums text-primary min-w-[40px] text-right">
-                          {{ key.rate_multiplier }}x
+                          {{ key.rate_multipliers?.[format] ?? 1 }}x
                         </div>
                       </div>
                     </div>
@@ -422,9 +422,10 @@ interface KeyWithMeta {
   name: string
   api_key_masked: string
   internal_priority: number
-  global_priority: number | null
+  global_priority_by_format: Record<string, number> | null
+  format_priority: number | null  // 当前格式的优先级（后端计算）
   priority: number  // 用于编辑的优先级
-  rate_multiplier: number
+  rate_multipliers: Record<string, number> | null
   is_active: boolean
   circuit_breaker_open: boolean
   provider_name: string
@@ -530,13 +531,25 @@ async function loadKeysByFormat() {
     const { default: client } = await import('@/api/client')
     const response = await client.get('/api/admin/endpoints/keys/grouped-by-format')
 
-    // 为每个 key 添加 priority 字段，基于 global_priority 计算显示优先级
+    // 每个格式独立管理优先级，使用后端返回的 format_priority
     const data: Record<string, KeyWithMeta[]> = {}
     for (const [format, keys] of Object.entries(response.data as Record<string, any[]>)) {
-      data[format] = keys.map((key, index) => ({
+      // 计算该格式下的默认优先级
+      let maxPriority = 0
+      for (const key of keys) {
+        if (key.format_priority != null) {
+          maxPriority = Math.max(maxPriority, key.format_priority)
+        }
+      }
+
+      let nextPriority = maxPriority + 1
+      data[format] = keys.map((key) => ({
         ...key,
-        priority: key.global_priority ?? index + 1
+        // 使用格式特定优先级，如果没有则分配默认值
+        priority: key.format_priority ?? nextPriority++
       }))
+      // 按优先级排序
+      data[format].sort((a, b) => a.priority - b.priority)
     }
     keysByFormat.value = data
 
@@ -565,8 +578,9 @@ function finishEditKeyPriority(format: string, key: KeyWithMeta, event: FocusEve
   const newPriority = parseInt(input.value, 10)
 
   if (!isNaN(newPriority) && newPriority >= 1) {
+    // 每个格式独立管理优先级，只更新当前格式
     key.priority = newPriority
-    // 按 priority 重新排序
+    // 重新排序当前格式
     keysByFormat.value[format] = [...keysByFormat.value[format]].sort((a, b) => a.priority - b.priority)
   }
 
@@ -697,12 +711,13 @@ function handleKeyDrop(format: string, dropIndex: number) {
     return
   }
 
-  // 直接交换优先级
+  // 每个格式独立管理优先级，只交换当前格式内的优先级
   draggedItem.priority = targetPriority
   targetItem.priority = draggedPriority
 
-  // 重新排序
+  // 重新排序当前格式
   keysByFormat.value[format] = [...keys].sort((a, b) => a.priority - b.priority)
+
   draggedKey.value[format] = null
   dragOverKey.value[format] = null
 }
@@ -732,15 +747,21 @@ async function save() {
       updateProvider(provider.id, { provider_priority: provider.provider_priority })
     )
 
-    const keyUpdates: Promise<any>[] = []
-
+    // 收集每个 Key 的按格式优先级（保留原有其他格式的配置）
+    const keyPriorityByFormatMap = new Map<string, Record<string, number>>()
     for (const format of Object.keys(keysByFormat.value)) {
       const keys = keysByFormat.value[format]
       keys.forEach((key) => {
-        // 使用用户设置的 priority 值，相同 priority 会做负载均衡
-        keyUpdates.push(updateProviderKey(key.id, { global_priority: key.priority }))
+        // 合并原有配置，避免丢失未显示格式的优先级
+        const existing = keyPriorityByFormatMap.get(key.id) || { ...key.global_priority_by_format }
+        existing[format] = key.priority
+        keyPriorityByFormatMap.set(key.id, existing)
       })
     }
+
+    const keyUpdates = Array.from(keyPriorityByFormatMap.entries()).map(([keyId, priorityByFormat]) =>
+      updateProviderKey(keyId, { global_priority_by_format: priorityByFormat })
+    )
 
     await Promise.all([...providerUpdates, ...keyUpdates])
 

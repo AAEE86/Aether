@@ -670,7 +670,7 @@ class CacheAwareScheduler:
         )
 
         # 3. 应用优先级模式排序
-        candidates = self._apply_priority_mode_sort(candidates, affinity_key)
+        candidates = self._apply_priority_mode_sort(candidates, affinity_key, target_format.value)
 
         # 更新指标
         self._metrics["total_candidates"] += len(candidates)
@@ -693,7 +693,7 @@ class CacheAwareScheduler:
                 )
         elif self.scheduling_mode == self.SCHEDULING_MODE_LOAD_BALANCE:
             # 负载均衡模式：忽略缓存，同优先级内随机轮换
-            candidates = self._apply_load_balance(candidates)
+            candidates = self._apply_load_balance(candidates, target_format.value)
             for candidate in candidates:
                 candidate.is_cached = False
         else:
@@ -1188,50 +1188,57 @@ class CacheAwareScheduler:
         logger.debug(f"[CacheAwareScheduler] 切换调度模式为: {self.scheduling_mode}")
 
     def _apply_priority_mode_sort(
-        self, candidates: List[ProviderCandidate], affinity_key: Optional[str] = None
+        self, candidates: List[ProviderCandidate], affinity_key: Optional[str] = None,
+        api_format: Optional[str] = None
     ) -> List[ProviderCandidate]:
         """
         根据优先级模式对候选列表排序（数字越小越优先）
 
         - provider: 提供商优先模式，保持原有顺序（按 Provider.provider_priority -> Key.internal_priority 排序，已由查询保证）
                    Key.internal_priority 表示 Endpoint 内部优先级，同优先级内通过哈希分散负载均衡
-        - global_key: 全局 Key 优先模式，按 Key.global_priority 升序排序（数字小的优先）
-                     有 global_priority 的优先，NULL 的排后面
-                     同 global_priority 内通过哈希分散实现负载均衡
+        - global_key: 全局 Key 优先模式，按 Key.global_priority_by_format 升序排序（数字小的优先）
+                     有优先级的优先，NULL 的排后面
+                     同优先级内通过哈希分散实现负载均衡
         """
         if not candidates:
             return candidates
 
         if self.priority_mode == self.PRIORITY_MODE_GLOBAL_KEY:
             # 全局 Key 优先模式：按 global_priority 分组，同组内哈希分散负载均衡
-            return self._sort_by_global_priority_with_hash(candidates, affinity_key)
+            return self._sort_by_global_priority_with_hash(candidates, affinity_key, api_format)
 
         # 提供商优先模式：保持原有顺序（provider_priority 排序已经由查询保证）
         return candidates
 
     def _sort_by_global_priority_with_hash(
-        self, candidates: List[ProviderCandidate], affinity_key: Optional[str] = None
+        self, candidates: List[ProviderCandidate], affinity_key: Optional[str] = None,
+        api_format: Optional[str] = None
     ) -> List[ProviderCandidate]:
         """
-        按 global_priority 分组排序，同优先级内通过哈希分散实现负载均衡
+        按 global_priority_by_format 分组排序，同优先级内通过哈希分散实现负载均衡
 
         排序逻辑：
-        1. 按 global_priority 分组（数字小的优先，NULL 排后面）
-        2. 同 global_priority 组内，使用 affinity_key 哈希分散
+        1. 按 global_priority_by_format[api_format] 分组（数字小的优先，NULL 排后面）
+        2. 同优先级组内，使用 affinity_key 哈希分散
         3. 确保同一用户请求稳定选择同一个 Key（缓存亲和性）
         """
         import hashlib
         from collections import defaultdict
 
-        # 按 global_priority 分组
+        def get_priority(candidate: ProviderCandidate) -> int:
+            """获取候选的优先级"""
+            if not candidate.key:
+                return 999999
+            priority_by_format = candidate.key.global_priority_by_format or {}
+            if api_format and api_format in priority_by_format:
+                return priority_by_format[api_format]
+            return 999999  # NULL 排在后面
+
+        # 按优先级分组
         priority_groups: Dict[int, List[ProviderCandidate]] = defaultdict(list)
         for candidate in candidates:
-            global_priority = (
-                candidate.key.global_priority
-                if candidate.key and candidate.key.global_priority is not None
-                else 999999  # NULL 排在后面
-            )
-            priority_groups[global_priority].append(candidate)
+            priority = get_priority(candidate)
+            priority_groups[priority].append(candidate)
 
         result = []
         for priority in sorted(priority_groups.keys()):  # 数字小的优先级高
@@ -1263,13 +1270,13 @@ class CacheAwareScheduler:
         return result
 
     def _apply_load_balance(
-        self, candidates: List[ProviderCandidate]
+        self, candidates: List[ProviderCandidate], api_format: Optional[str] = None
     ) -> List[ProviderCandidate]:
         """
         负载均衡模式：同优先级内随机轮换
 
         排序逻辑：
-        1. 按优先级分组（provider_priority, internal_priority 或 global_priority）
+        1. 按优先级分组（provider_priority, internal_priority 或 global_priority_by_format）
         2. 同优先级组内随机打乱
         3. 不考虑缓存亲和性
         """
@@ -1282,14 +1289,14 @@ class CacheAwareScheduler:
 
         # 根据优先级模式选择分组方式
         if self.priority_mode == self.PRIORITY_MODE_GLOBAL_KEY:
-            # 全局 Key 优先模式：按 global_priority 分组
+            # 全局 Key 优先模式：按格式特定优先级分组
             for candidate in candidates:
-                global_priority = (
-                    candidate.key.global_priority
-                    if candidate.key and candidate.key.global_priority is not None
-                    else 999999
-                )
-                priority_groups[(global_priority,)].append(candidate)
+                priority = 999999
+                if candidate.key:
+                    priority_by_format = candidate.key.global_priority_by_format or {}
+                    if api_format and api_format in priority_by_format:
+                        priority = priority_by_format[api_format]
+                priority_groups[(priority,)].append(candidate)
         else:
             # 提供商优先模式：按 (provider_priority, internal_priority) 分组
             for candidate in candidates:

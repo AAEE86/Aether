@@ -47,7 +47,7 @@ class RoutingKeyInfo(BaseModel):
     name: str
     masked_key: str = Field("", description="脱敏的 API Key")
     internal_priority: int = Field(..., description="Key 内部优先级")
-    global_priority: Optional[int] = Field(None, description="全局 Key 优先级")
+    global_priority_by_format: Optional[Dict[str, int]] = Field(None, description="按 API 格式的全局优先级")
     rpm_limit: Optional[int] = Field(None, description="RPM 限制，null 表示自适应")
     is_adaptive: bool = Field(False, description="是否为自适应 RPM 模式")
     effective_rpm: Optional[int] = Field(None, description="有效 RPM 限制")
@@ -293,8 +293,14 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
             for ep in provider_endpoints:
                 # 获取该 Endpoint 格式对应的 Keys
                 ep_keys = keys_by_endpoint.get(ep.api_format or "", [])
-                # 按优先级排序
-                ep_keys.sort(key=lambda k: (k.global_priority or 999, k.internal_priority or 0))
+                # 按优先级排序（使用当前格式的全局优先级）
+                api_format = ep.api_format or ""
+                def get_key_priority(k: ProviderAPIKey) -> tuple[int, int]:
+                    format_priority = 999
+                    if k.global_priority_by_format and api_format in k.global_priority_by_format:
+                        format_priority = k.global_priority_by_format[api_format]
+                    return (format_priority, k.internal_priority or 0)
+                ep_keys.sort(key=get_key_priority)
 
                 key_infos = []
                 for key in ep_keys:
@@ -353,7 +359,7 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
                             name=key.name or "",
                             masked_key=masked_key,
                             internal_priority=key.internal_priority or 0,
-                            global_priority=key.global_priority,
+                            global_priority_by_format=key.global_priority_by_format,
                             rpm_limit=key.rpm_limit,
                             is_adaptive=is_adaptive,
                             effective_rpm=effective_rpm,

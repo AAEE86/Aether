@@ -27,22 +27,15 @@ class ProviderCacheService:
 
     @staticmethod
     def compute_rate_multiplier(
-        rate_multiplier: Optional[float],
         rate_multipliers: Optional[dict],
         api_format: Optional[str] = None,
     ) -> float:
         """
         计算 rate_multiplier 的纯函数（无数据库/缓存依赖）
 
-        优先返回指定 API 格式的倍率，如果没有则返回默认倍率。
-        规则：
-        - 如果指定了 api_format 且 rate_multipliers 存在：
-          - 如果 rate_multipliers[api_format] 存在，返回它
-          - 否则返回 1.0（rate_multipliers 存在但该格式未配置）
-        - 否则返回 rate_multiplier 或 1.0
+        返回指定 API 格式的倍率，如果没有则返回 1.0。
 
         Args:
-            rate_multiplier: 默认倍率
             rate_multipliers: 按 API 格式的倍率配置字典
             api_format: API 格式（可选），如 "CLAUDE"、"OPENAI"
 
@@ -53,12 +46,7 @@ class ProviderCacheService:
             format_upper = api_format.upper()
             if format_upper in rate_multipliers:
                 return float(rate_multipliers[format_upper])
-            else:
-                # rate_multipliers 存在但该格式未配置，使用默认值 1.0
-                return 1.0
-        else:
-            # rate_multipliers 不存在或未指定 api_format，回退到默认倍率
-            return rate_multiplier or 1.0
+        return 1.0
 
     @staticmethod
     async def get_provider_api_key_rate_multiplier(
@@ -92,7 +80,7 @@ class ProviderCacheService:
 
         # 2. 缓存未命中，查询数据库
         provider_key = (
-            db.query(ProviderAPIKey.rate_multiplier, ProviderAPIKey.rate_multipliers)
+            db.query(ProviderAPIKey.rate_multipliers)
             .filter(ProviderAPIKey.id == provider_api_key_id)
             .first()
         )
@@ -100,7 +88,7 @@ class ProviderCacheService:
         # 3. 计算倍率并写入缓存
         if provider_key:
             rate_multiplier = ProviderCacheService.compute_rate_multiplier(
-                provider_key.rate_multiplier, provider_key.rate_multipliers, api_format
+                provider_key.rate_multipliers, api_format
             )
 
             await CacheService.set(

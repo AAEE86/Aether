@@ -100,10 +100,9 @@ export interface ProviderKeyExport {
   name?: string | null
   note?: string | null
   api_formats: string[]
-  rate_multiplier?: number
   rate_multipliers?: Record<string, number> | null
   internal_priority?: number
-  global_priority?: number | null
+  global_priority_by_format?: Record<string, number> | null
   rpm_limit?: number | null
   allowed_models?: any
   capabilities?: any

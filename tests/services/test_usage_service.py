@@ -268,7 +268,7 @@ class TestHelperMethods:
     async def test_get_rate_multiplier_from_provider_api_key(self) -> None:
         """测试从 ProviderAPIKey 获取费率倍数"""
         mock_provider_api_key = MagicMock()
-        mock_provider_api_key.rate_multiplier = 0.8
+        mock_provider_api_key.rate_multipliers = {"CLAUDE": 0.8}
 
         mock_endpoint = MagicMock()
         mock_endpoint.provider_id = "provider-123"
@@ -285,7 +285,7 @@ class TestHelperMethods:
         ]
 
         rate_multiplier, is_free_tier = await UsageService._get_rate_multiplier_and_free_tier(
-            mock_db, provider_api_key_id="pak-123", provider_id=None
+            mock_db, provider_api_key_id="pak-123", provider_id=None, api_format="CLAUDE"
         )
 
         assert rate_multiplier == 0.8

@@ -50,7 +50,7 @@ async def update_endpoint_key(
     - `api_key`: 新的 API Key 原文
     - `name`: Key 名称
     - `note`: 备注
-    - `rate_multiplier`: 速率倍数
+    - `rate_multipliers`: 按 API 格式的成本倍率
     - `internal_priority`: 内部优先级
     - `rpm_limit`: RPM 限制（设置为 null 可切换到自适应模式）
     - `allowed_models`: 允许的模型列表
@@ -82,8 +82,9 @@ async def get_keys_grouped_by_format(
       - `name`: Key 名称
       - `api_key_masked`: 脱敏后的 API Key
       - `internal_priority`: 内部优先级
-      - `global_priority`: 全局优先级
-      - `rate_multiplier`: 速率倍数
+      - `global_priority_by_format`: 按 API 格式的全局优先级
+      - `format_priority`: 当前格式的优先级
+      - `rate_multipliers`: 按 API 格式的成本倍率
       - `is_active`: 是否活跃
       - `circuit_breaker_open`: 熔断器状态
       - `provider_name`: Provider 名称
@@ -367,7 +368,6 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
                 Provider.is_active.is_(True),
             )
             .order_by(
-                ProviderAPIKey.global_priority.asc().nullslast(),
                 ProviderAPIKey.internal_priority.asc(),
             )
             .all()
@@ -427,8 +427,8 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
                 "name": key.name,
                 "api_key_masked": masked_key,
                 "internal_priority": key.internal_priority,
-                "global_priority": key.global_priority,
-                "rate_multiplier": key.rate_multiplier,
+                "global_priority_by_format": key.global_priority_by_format,
+                "rate_multipliers": key.rate_multipliers,
                 "is_active": key.is_active,
                 "provider_name": provider.name,
                 "api_formats": api_formats,
@@ -438,9 +438,10 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
                 "request_count": key.request_count,
             }
 
-            # 将 Key 添加到每个支持的格式分组中，并附加格式特定的健康度数据
+            # 将 Key 添加到每个支持的格式分组中，并附加格式特定的数据
             health_by_format = key.health_by_format or {}
             circuit_by_format = key.circuit_breaker_by_format or {}
+            priority_by_format = key.global_priority_by_format or {}
             provider_id = str(provider.id)
             for api_format in api_formats:
                 if api_format not in grouped:
@@ -451,6 +452,8 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
                 format_key_info["endpoint_base_url"] = endpoint_base_url_map.get(
                     (provider_id, api_format)
                 )
+                # 添加格式特定的优先级
+                format_key_info["format_priority"] = priority_by_format.get(api_format)
                 # 添加格式特定的健康度数据
                 format_health = health_by_format.get(api_format, {})
                 format_circuit = circuit_by_format.get(api_format, {})
@@ -597,8 +600,7 @@ class AdminCreateProviderKeyAdapter(AdminApiAdapter):
             api_key=encrypted_key,
             name=self.key_data.name,
             note=self.key_data.note,
-            rate_multiplier=self.key_data.rate_multiplier,
-            rate_multipliers=self.key_data.rate_multipliers,  # 按 API 格式的成本倍率
+            rate_multipliers=self.key_data.rate_multipliers,
             internal_priority=self.key_data.internal_priority,
             rpm_limit=self.key_data.rpm_limit,
             allowed_models=self.key_data.allowed_models if self.key_data.allowed_models else None,

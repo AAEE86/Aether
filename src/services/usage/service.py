@@ -1567,7 +1567,7 @@ class UsageService:
         from src.services.cache.provider_cache import ProviderCacheService
 
         provider_key = (
-            db.query(ProviderAPIKey.rate_multiplier, ProviderAPIKey.rate_multipliers)
+            db.query(ProviderAPIKey.rate_multipliers)
             .filter(ProviderAPIKey.id == provider_api_key_id)
             .first()
         )
@@ -1576,7 +1576,7 @@ class UsageService:
             return None
 
         return ProviderCacheService.compute_rate_multiplier(
-            provider_key.rate_multiplier, provider_key.rate_multipliers, api_format
+            provider_key.rate_multipliers, api_format
         )
 
     @classmethod

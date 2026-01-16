@@ -213,12 +213,11 @@ async def list_affinities(
         - `provider_id`: Provider ID
         - `provider_name`: Provider 显示名称
         - `endpoint_id`: Endpoint ID
-        - `endpoint_api_format`: Endpoint API 格式
         - `endpoint_url`: Endpoint 基础 URL
         - `key_id`: Key ID
         - `key_name`: Key 名称
         - `key_prefix`: 脱敏后的 Provider Key
-        - `rate_multiplier`: 速率倍数
+        - `rate_multipliers`: 按 API 格式的成本倍率
         - `global_model_id`: GlobalModel ID
         - `model_name`: 模型名称
         - `model_display_name`: 模型显示名称
@@ -821,14 +820,11 @@ class AdminListAffinitiesAdapter(AdminApiAdapter):
                 "provider_id": provider_id,
                 "provider_name": provider.name if provider else None,
                 "endpoint_id": endpoint_id,
-                "endpoint_api_format": (
-                    endpoint.api_format if endpoint and endpoint.api_format else None
-                ),
                 "endpoint_url": endpoint.base_url if endpoint else None,
                 "key_id": key_id,
                 "key_name": key.name if key else None,
                 "key_prefix": provider_key_masked,
-                "rate_multiplier": key.rate_multiplier if key else 1.0,
+                "rate_multipliers": key.rate_multipliers if key else None,
                 "global_model_id": affinity.get("model_name"),  # 原始的 global_model_id
                 "model_name": (
                     global_model_map.get(affinity.get("model_name")).name

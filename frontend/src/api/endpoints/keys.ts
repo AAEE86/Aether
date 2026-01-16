@@ -86,8 +86,6 @@ export async function addProviderKey(
     api_formats: string[]  // 支持的 API 格式列表（必填）
     api_key: string
     name: string
-    /** @deprecated 已废弃，请使用 rate_multipliers */
-    rate_multiplier?: number  // [DEPRECATED] 默认成本倍率，已废弃
     rate_multipliers?: Record<string, number> | null  // 按 API 格式的成本倍率
     internal_priority?: number
     rpm_limit?: number | null  // RPM 限制（留空=自适应模式）
@@ -112,11 +110,9 @@ export async function updateProviderKey(
     api_formats: string[]  // 支持的 API 格式列表
     api_key: string
     name: string
-    /** @deprecated 已废弃，请使用 rate_multipliers */
-    rate_multiplier: number  // [DEPRECATED] 默认成本倍率，已废弃
     rate_multipliers: Record<string, number> | null  // 按 API 格式的成本倍率
     internal_priority: number
-    global_priority: number | null
+    global_priority_by_format: Record<string, number> | null  // 按 API 格式的全局优先级
     rpm_limit: number | null  // RPM 限制（留空=自适应模式）
     cache_ttl_minutes: number
     max_probe_interval_minutes: number
