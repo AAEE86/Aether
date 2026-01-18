@@ -329,6 +329,7 @@ async def verify_provider_auth(
         auth_type=ConnectorAuthType(request.connector.auth_type),
         config=request.connector.config,
         credentials=credentials,
+        provider_id=provider_id,
     )
 
     return VerifyAuthResponse(

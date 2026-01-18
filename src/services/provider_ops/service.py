@@ -412,6 +412,34 @@ class ProviderOpsService:
 
         await CacheService.set(cache_key, cache_data, BALANCE_CACHE_TTL)
 
+    async def _cache_balance_from_verify(self, provider_id: str, quota_usd: float) -> None:
+        """
+        从验证结果缓存余额
+
+        Args:
+            provider_id: Provider ID
+            quota_usd: 已转换为美元的余额值
+        """
+        cache_key = f"provider_ops:balance:{provider_id}"
+
+        # 构建与 BalanceAction 兼容的缓存数据
+        # 注意：验证接口只返回 quota，没有 total_granted/total_used
+        cache_data = {
+            "status": "success",
+            "data": {
+                "total_granted": None,
+                "total_used": None,
+                "total_available": quota_usd,
+                "currency": "USD",
+                "extra": {},
+            },
+            "executed_at": datetime.now(timezone.utc).isoformat(),
+            "response_time_ms": None,
+        }
+
+        await CacheService.set(cache_key, cache_data, BALANCE_CACHE_TTL)
+        logger.debug(f"验证成功，缓存余额: provider_id={provider_id}, quota_usd={quota_usd}")
+
     async def _get_cached_balance(self, provider_id: str) -> Optional[ActionResult]:
         """获取缓存的余额"""
         cache_key = f"provider_ops:balance:{provider_id}"
@@ -646,6 +674,7 @@ class ProviderOpsService:
         auth_type: ConnectorAuthType,
         config: Dict[str, Any],
         credentials: Dict[str, Any],
+        provider_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         验证认证配置
@@ -659,6 +688,7 @@ class ProviderOpsService:
             auth_type: 认证类型
             config: 连接器配置
             credentials: 凭据
+            provider_id: Provider ID（可选，用于缓存余额）
 
         Returns:
             验证结果
@@ -693,7 +723,20 @@ class ProviderOpsService:
 
                 # 使用架构的方法解析响应
                 result = architecture.parse_verify_response(response.status_code, data)
-                return result.to_dict()
+                result_dict = result.to_dict()
+
+                # 验证成功且有 provider_id 时，缓存余额
+                if result.success and provider_id and result.quota is not None:
+                    # 从架构的默认配置获取 quota_divisor
+                    balance_config = architecture.default_action_configs.get(
+                        ProviderActionType.QUERY_BALANCE, {}
+                    )
+                    quota_divisor = balance_config.get("quota_divisor", 1)
+                    # 转换为美元值后缓存
+                    quota_usd = result.quota / quota_divisor
+                    await self._cache_balance_from_verify(provider_id, quota_usd)
+
+                return result_dict
 
         except httpx.TimeoutException:
             return {"success": False, "message": "连接超时"}
