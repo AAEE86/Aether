@@ -70,6 +70,11 @@ class User(Base):
     ldap_dn = Column(String(512), nullable=True, index=True)
     ldap_username = Column(String(255), nullable=True, index=True)
 
+    # OAuth 标识（仅 auth_source=oauth 时使用）
+    oauth_provider_id = Column(String(64), nullable=True, index=True)  # OAuth 提供商 ID（如 linuxdo, github 等）
+    oauth_user_id = Column(String(128), nullable=True, index=True)  # OAuth 提供商中的用户 ID
+    oauth_username = Column(String(255), nullable=True, index=True)  # OAuth 提供商中的用户名
+
     # 访问限制（NULL 表示不限制，允许访问所有资源）
     allowed_providers = Column(JSON, nullable=True)  # 允许使用的提供商 ID 列表
     allowed_api_formats = Column(JSON, nullable=True)  # 允许使用的 API 格式列表
@@ -507,6 +512,61 @@ class LDAPConfig(Base):
         if not self.bind_password_encrypted:
             return ""
         return crypto_service.decrypt(self.bind_password_encrypted)
+
+
+class OAuthProviderConfig(Base):
+    """OAuth 提供商配置表 - 支持多个 OAuth 提供商"""
+
+    __tablename__ = "oauth_provider_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String(64), unique=True, nullable=False, index=True)  # 提供商标识（如 linuxdo, github）
+    display_name = Column(String(100), nullable=False)  # 显示名称（如 "Linux Do", "GitHub"）
+
+    # OAuth 端点配置
+    authorization_url = Column(String(500), nullable=False)  # 授权 URL
+    token_url = Column(String(500), nullable=False)  # Token 交换 URL
+    userinfo_url = Column(String(500), nullable=False)  # 用户信息 URL
+
+    # 用户信息字段映射（JSON 格式，用于从不同 OAuth 提供商响应中提取用户信息）
+    # 示例: {"user_id": "id", "username": "login", "email": "email"}
+    userinfo_mapping = Column(JSON, nullable=True)
+
+    # OAuth 凭证
+    client_id = Column(String(255), nullable=False)  # OAuth Client ID
+    client_secret_encrypted = Column(Text, nullable=True)  # 加密的 Client Secret
+    redirect_uri = Column(String(500), nullable=False)  # OAuth 回调地址
+    frontend_callback_url = Column(String(500), nullable=True)  # 前端回调地址（登录成功后重定向）
+
+    # OAuth 配置
+    scope = Column(String(500), nullable=True, default="user")  # OAuth scope
+
+    is_enabled = Column(Boolean, default=False, nullable=False)  # 是否启用
+
+    # 时间戳
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    def set_client_secret(self, secret: str) -> None:
+        """设置并加密 Client Secret"""
+        from src.core.crypto import crypto_service
+
+        self.client_secret_encrypted = crypto_service.encrypt(secret)
+
+    def get_client_secret(self) -> str:
+        """获取解密后的 Client Secret"""
+        from src.core.crypto import crypto_service
+
+        if not self.client_secret_encrypted:
+            return ""
+        return crypto_service.decrypt(self.client_secret_encrypted)
 
 
 class Provider(Base):

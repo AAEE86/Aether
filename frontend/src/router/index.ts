@@ -14,6 +14,13 @@ const routes: RouteRecordRaw[] = [
   },
 
   {
+    path: '/auth/callback',
+    name: 'OAuthCallback',
+    component: () => importWithRetry(() => import('@/views/auth/OAuthCallback.vue')),
+    meta: { requiresAuth: false }
+  },
+
+  {
     path: '/logo-demo',
     name: 'LogoColorDemo',
     component: () => importWithRetry(() => import('@/views/public/LogoColorDemo.vue')),
@@ -132,6 +139,12 @@ const routes: RouteRecordRaw[] = [
         name: 'LdapSettings',
         component: () => importWithRetry(() => import('@/views/admin/LdapSettings.vue')),
         meta: { module: 'ldap' }
+      },
+      {
+        path: 'oauth',
+        name: 'OAuthSettings',
+        component: () => importWithRetry(() => import('@/views/admin/OAuthSettings.vue')),
+        meta: { module: 'oauth' }
       },
       {
         path: 'audit-logs',

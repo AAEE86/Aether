@@ -91,6 +91,17 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 设置 tokens（用于 OAuth 回调）
+   */
+  function setTokens(accessToken: string, refreshToken?: string) {
+    apiClient.setToken(accessToken)
+    token.value = accessToken
+    if (refreshToken) {
+      localStorage.setItem('refresh_token', refreshToken)
+    }
+  }
+
   return {
     user,
     token,
@@ -102,6 +113,7 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     fetchCurrentUser,
     checkAuth,
-    syncToken
+    syncToken,
+    setTokens
   }
 })

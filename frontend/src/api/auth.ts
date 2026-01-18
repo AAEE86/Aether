@@ -82,10 +82,17 @@ export interface RegistrationSettingsResponse {
   require_email_verification: boolean
 }
 
+// OAuth 提供商信息
+export interface OAuthProviderInfo {
+  provider_id: string
+  display_name: string
+}
+
 export interface AuthSettingsResponse {
   local_enabled: boolean
   ldap_enabled: boolean
   ldap_exclusive: boolean
+  oauth_providers: OAuthProviderInfo[]
 }
 
 export interface User {

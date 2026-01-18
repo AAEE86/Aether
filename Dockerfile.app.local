@@ -33,6 +33,7 @@ COPY --from=builder /usr/local/bin/alembic /usr/local/bin/
 
 # 从 builder 阶段复制前端构建产物
 COPY --from=builder /app/frontend/dist /usr/share/nginx/html
+RUN chmod -R 755 /usr/share/nginx/html
 
 # 复制后端代码
 COPY src/ ./src/
@@ -79,7 +80,7 @@ RUN printf '%s\n' \
 '        return 404;' \
 '    }' \
 '' \
-'    location ~ ^/(dashboard|admin|login)(/|$) {' \
+'    location ~ ^/(dashboard|admin|login|auth)(/|$) {' \
 '        try_files $uri $uri/ /index.html;' \
 '    }' \
 '' \

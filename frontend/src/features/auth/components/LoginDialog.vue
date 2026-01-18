@@ -147,6 +147,38 @@
         </p>
       </form>
 
+      <!-- OAuth 登录 -->
+      <div
+        v-if="oauthProviders.length > 0"
+        class="space-y-3"
+      >
+        <div class="relative">
+          <div class="absolute inset-0 flex items-center">
+            <span class="w-full border-t border-border" />
+          </div>
+          <div class="relative flex justify-center text-xs uppercase">
+            <span class="bg-background px-2 text-muted-foreground">或</span>
+          </div>
+        </div>
+        <Button
+          v-for="provider in oauthProviders"
+          :key="provider.provider_id"
+          type="button"
+          variant="outline"
+          class="w-full"
+          @click="handleOAuthLogin(provider.provider_id)"
+        >
+          <svg
+            class="mr-2 h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+          </svg>
+          使用 {{ provider.display_name }} 登录
+        </Button>
+      </div>
+
       <!-- 注册链接 -->
       <div
         v-if="allowRegistration"
@@ -186,6 +218,7 @@
   <RegisterDialog
     v-model:open="showRegisterDialog"
     :require-email-verification="requireEmailVerification"
+    :oauth-providers="oauthProviders"
     @success="handleRegisterSuccess"
     @switch-to-login="handleSwitchToLogin"
   />
@@ -232,6 +265,7 @@ const authType = ref<'local' | 'ldap'>(getStoredAuthType())
 const localEnabled = ref(true)
 const ldapEnabled = ref(false)
 const ldapExclusive = ref(false)
+const oauthProviders = ref<Array<{ provider_id: string; display_name: string }>>([])
 
 // 保存用户的认证类型偏好
 watch(authType, (newType) => {
@@ -312,6 +346,11 @@ function handleSwitchToLogin() {
   isOpen.value = true
 }
 
+function handleOAuthLogin(providerId: string) {
+  // 重定向到后端 OAuth 授权端点
+  window.location.href = `/api/auth/oauth/${providerId}/authorize`
+}
+
 // Load authentication and registration settings on mount
 onMounted(async () => {
   try {
@@ -325,6 +364,7 @@ onMounted(async () => {
     localEnabled.value = authSettings.local_enabled
     ldapEnabled.value = authSettings.ldap_enabled
     ldapExclusive.value = authSettings.ldap_exclusive
+    oauthProviders.value = authSettings.oauth_providers || []
     // 若仅允许 LDAP 登录，则禁用本地注册入口
     if (ldapExclusive.value) {
       allowRegistration.value = false
@@ -345,6 +385,7 @@ onMounted(async () => {
     localEnabled.value = true
     ldapEnabled.value = false
     ldapExclusive.value = false
+    oauthProviders.value = []
     authType.value = 'local'
   }
 })

@@ -393,10 +393,23 @@ class AuthSettingsAdapter(AuthPublicAdapter):
         ldap_enabled = LDAPService.is_ldap_enabled(db)
         ldap_exclusive = LDAPService.is_ldap_exclusive(db)
 
+        # 通用 OAuth 状态
+        from src.services.auth.oauth import OAuthService
+
+        oauth_providers = OAuthService.get_enabled_providers(db)
+        oauth_providers_info = [
+            {
+                "provider_id": p.provider_id,
+                "display_name": p.display_name,
+            }
+            for p in oauth_providers
+        ]
+
         return {
             "local_enabled": not ldap_exclusive,
             "ldap_enabled": ldap_enabled,
             "ldap_exclusive": ldap_exclusive,
+            "oauth_providers": oauth_providers_info,
         }
 
 

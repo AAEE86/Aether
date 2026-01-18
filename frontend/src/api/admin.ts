@@ -206,6 +206,58 @@ export interface LdapTestResponse {
   message: string
 }
 
+// 通用 OAuth 提供商配置
+export interface OAuthProviderConfig {
+  provider_id: string
+  display_name: string
+  authorization_url: string
+  token_url: string
+  userinfo_url: string
+  userinfo_mapping: Record<string, string>
+  client_id: string
+  has_client_secret: boolean
+  redirect_uri: string
+  frontend_callback_url: string | null
+  scope: string
+  is_enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface OAuthProviderConfigCreate {
+  provider_id: string
+  display_name: string
+  authorization_url: string
+  token_url: string
+  userinfo_url: string
+  userinfo_mapping?: Record<string, string>
+  client_id: string
+  client_secret: string
+  redirect_uri: string
+  frontend_callback_url?: string
+  scope?: string
+  is_enabled?: boolean
+}
+
+export interface OAuthProviderConfigUpdate {
+  display_name?: string
+  authorization_url?: string
+  token_url?: string
+  userinfo_url?: string
+  userinfo_mapping?: Record<string, string>
+  client_id?: string
+  client_secret?: string
+  redirect_uri?: string
+  frontend_callback_url?: string | null
+  scope?: string
+  is_enabled?: boolean
+}
+
+export interface OAuthTestResponse {
+  success: boolean
+  message: string
+}
+
 // Provider 模型查询响应
 export interface ProviderModelsQueryResponse {
   success: boolean
@@ -578,6 +630,53 @@ export const adminApi = {
   // 测试 LDAP 连接
   async testLdapConnection(config: LdapConfigUpdateRequest): Promise<LdapTestResponse> {
     const response = await apiClient.post<LdapTestResponse>('/api/admin/ldap/test', config)
+    return response.data
+  },
+
+  // 通用 OAuth 配置相关
+  // 获取所有 OAuth 提供商列表
+  async getOAuthProviders(): Promise<{ providers: OAuthProviderConfig[] }> {
+    const response = await apiClient.get<{ providers: OAuthProviderConfig[] }>('/api/admin/oauth/providers')
+    return response.data
+  },
+
+  // 获取指定 OAuth 提供商配置
+  async getOAuthProvider(providerId: string): Promise<OAuthProviderConfig> {
+    const response = await apiClient.get<OAuthProviderConfig>(`/api/admin/oauth/providers/${providerId}`)
+    return response.data
+  },
+
+  // 创建 OAuth 提供商配置
+  async createOAuthProvider(config: OAuthProviderConfigCreate): Promise<OAuthProviderConfig & { message: string }> {
+    const response = await apiClient.post<OAuthProviderConfig & { message: string }>(
+      '/api/admin/oauth/providers',
+      config
+    )
+    return response.data
+  },
+
+  // 更新 OAuth 提供商配置
+  async updateOAuthProvider(providerId: string, config: OAuthProviderConfigUpdate): Promise<{ message: string }> {
+    const response = await apiClient.put<{ message: string }>(
+      `/api/admin/oauth/providers/${providerId}`,
+      config
+    )
+    return response.data
+  },
+
+  // 删除 OAuth 提供商配置
+  async deleteOAuthProvider(providerId: string): Promise<{ message: string }> {
+    const response = await apiClient.delete<{ message: string }>(
+      `/api/admin/oauth/providers/${providerId}`
+    )
+    return response.data
+  },
+
+  // 测试 OAuth 提供商连接
+  async testOAuthProvider(providerId: string): Promise<OAuthTestResponse> {
+    const response = await apiClient.post<OAuthTestResponse>(
+      `/api/admin/oauth/providers/${providerId}/test`
+    )
     return response.data
   }
 }
