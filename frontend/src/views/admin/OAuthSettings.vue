@@ -233,30 +233,28 @@
             />
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="space-y-2">
-              <Label for="redirect-uri">回调地址 (Redirect URI)</Label>
-              <Input
-                id="redirect-uri"
-                v-model="providerForm.redirect_uri"
-                type="url"
-                placeholder="https://your-domain.com/api/auth/oauth/{provider_id}/callback"
-                required
-              />
-            </div>
+          <div class="space-y-2">
+            <Label for="redirect-uri">回调地址 (Redirect URI)</Label>
+            <Input
+              id="redirect-uri"
+              v-model="providerForm.redirect_uri"
+              type="url"
+              placeholder="https://your-domain.com/api/auth/oauth/{provider_id}/callback"
+              required
+            />
+          </div>
 
-            <div class="space-y-2">
-              <Label for="frontend-callback-url">前端回调地址</Label>
-              <Input
-                id="frontend-callback-url"
-                v-model="providerForm.frontend_callback_url"
-                type="url"
-                placeholder="https://your-domain.com/auth/callback"
-              />
-              <p class="text-xs text-muted-foreground">
-                登录成功后重定向到的前端页面
-              </p>
-            </div>
+          <div class="space-y-2">
+            <Label for="frontend-callback-url">前端回调地址</Label>
+            <Input
+              id="frontend-callback-url"
+              v-model="providerForm.frontend_callback_url"
+              type="url"
+              placeholder="https://your-domain.com/auth/callback"
+            />
+            <p class="text-xs text-muted-foreground">
+              登录成功后重定向到的前端页面
+            </p>
           </div>
 
           <div class="space-y-2">
@@ -392,7 +390,20 @@ const showProviderDialog = ref(false)
 const editingProvider = ref<OAuthProviderConfig | null>(null)
 const savingProvider = ref(false)
 
-const defaultForm = () => ({
+const defaultForm = (): {
+  provider_id: string
+  display_name: string
+  authorization_url: string
+  token_url: string
+  userinfo_url: string
+  userinfo_mapping: Record<string, string>
+  client_id: string
+  client_secret: string
+  redirect_uri: string
+  frontend_callback_url: string
+  scope: string
+  is_enabled: boolean
+} => ({
   provider_id: '',
   display_name: '',
   authorization_url: '',

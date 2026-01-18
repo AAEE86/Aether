@@ -93,6 +93,7 @@ class OAuthProviderTestRequest(BaseModel):
     authorization_url: Optional[str] = Field(None, min_length=1, max_length=500)
     token_url: Optional[str] = Field(None, min_length=1, max_length=500)
     userinfo_url: Optional[str] = Field(None, min_length=1, max_length=500)
+    redirect_uri: Optional[str] = Field(None, min_length=1, max_length=500)
 
 
 class OAuthProviderTestResponse(BaseModel):
@@ -496,10 +497,11 @@ class AdminTestOAuthProviderAdapter(AdminApiAdapter):
             "authorization_url": saved_config.authorization_url,
             "token_url": saved_config.token_url,
             "userinfo_url": saved_config.userinfo_url,
+            "redirect_uri": saved_config.redirect_uri,
         }
 
         # 应用覆盖值
-        for field in ["client_id", "authorization_url", "token_url", "userinfo_url"]:
+        for field in ["client_id", "authorization_url", "token_url", "userinfo_url", "redirect_uri"]:
             value = getattr(overrides, field)
             if value is not None:
                 config_data[field] = value
@@ -519,7 +521,14 @@ class AdminTestOAuthProviderAdapter(AdminApiAdapter):
                 ).model_dump()
 
         # 必填字段检查
-        required_fields = ["client_id", "client_secret", "authorization_url", "token_url"]
+        required_fields = [
+            "client_id",
+            "client_secret",
+            "authorization_url",
+            "token_url",
+            "userinfo_url",
+            "redirect_uri",
+        ]
         missing = [f for f in required_fields if not config_data.get(f)]
         if missing:
             return OAuthProviderTestResponse(
