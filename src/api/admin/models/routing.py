@@ -289,10 +289,34 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
                         keys_by_endpoint[fmt] = []
                     keys_by_endpoint[fmt].append(key)
 
+            # 定义 Key 模型权限匹配检查函数（用于过滤 Key）
+            def is_key_model_allowed(key: ProviderAPIKey) -> bool:
+                """检查 Key 的白名单是否匹配当前 GlobalModel"""
+                raw_allowed_models = key.allowed_models
+                if not raw_allowed_models:
+                    # 没有白名单限制，允许所有模型
+                    return True
+                allowed_models_list = parse_allowed_models_to_list(raw_allowed_models)
+                is_allowed, _ = check_model_allowed_with_mappings(
+                    model_name=global_model.name,
+                    allowed_models=allowed_models_list,
+                    resolved_model_name=global_model.name,
+                    model_mappings=global_model_mappings,
+                )
+                return is_allowed
+
             endpoint_infos = []
             for ep in provider_endpoints:
                 # 获取该 Endpoint 格式对应的 Keys
                 ep_keys = keys_by_endpoint.get(ep.api_format or "", [])
+
+                # 过滤：只保留白名单匹配当前 GlobalModel 的 Keys
+                ep_keys = [k for k in ep_keys if is_key_model_allowed(k)]
+
+                # 如果该 Endpoint 没有任何匹配的 Key，跳过此 Endpoint
+                if not ep_keys:
+                    continue
+
                 # 按优先级排序（使用当前格式的全局优先级）
                 api_format = ep.api_format or ""
                 def get_key_priority(k: ProviderAPIKey) -> tuple[int, int]:
@@ -374,20 +398,8 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
                         )
                     )
 
-                # 计算有效 Keys 数量：is_active 且模型权限匹配
-                def is_key_effective(k: RoutingKeyInfo) -> bool:
-                    if not k.is_active:
-                        return False
-                    # 检查模型权限（包括正则映射匹配）
-                    is_allowed, _ = check_model_allowed_with_mappings(
-                        model_name=global_model.name,
-                        allowed_models=k.allowed_models,
-                        resolved_model_name=global_model.name,
-                        model_mappings=global_model_mappings,
-                    )
-                    return is_allowed
-
-                active_keys = sum(1 for k in key_infos if is_key_effective(k))
+                # 计算有效 Keys 数量：is_active 即可（模型权限已在前面过滤）
+                active_keys = sum(1 for k in key_infos if k.is_active)
                 endpoint_infos.append(
                     RoutingEndpointInfo(
                         id=ep.id or "",
