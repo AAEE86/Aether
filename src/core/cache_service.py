@@ -125,7 +125,7 @@ class CacheService:
 
             # 使用 SCAN 遍历匹配的键
             deleted_count = 0
-            cursor = 0
+            cursor: int = 0
             while True:
                 cursor, keys = await redis.scan(cursor, match=pattern, count=batch_size)
                 if keys:
@@ -134,7 +134,8 @@ class CacheService:
                         batch = keys[i : i + batch_size]
                         await redis.delete(*batch)
                         deleted_count += len(batch)
-                if cursor == 0:
+                # cursor 可能是 int 或 str（取决于 decode_responses 配置），统一转为 int 比较
+                if int(cursor) == 0:
                     break
 
             if deleted_count > 0:
