@@ -73,7 +73,10 @@ async def invalidate_models_list_cache() -> None:
     try:
         # 使用通配符删除所有 models:list:* 缓存（包括多格式组合的 key）
         deleted = await CacheService.delete_pattern(f"{_CACHE_KEY_PREFIX}:*")
-        logger.debug(f"[ModelsService] 已清除 {deleted} 个 {_CACHE_KEY_PREFIX} 缓存")
+        if deleted > 0:
+            logger.info(f"[ModelsService] 已清除 {deleted} 个 {_CACHE_KEY_PREFIX} 缓存")
+        else:
+            logger.debug(f"[ModelsService] 无 {_CACHE_KEY_PREFIX} 缓存需要清除")
     except Exception as e:
         logger.warning(f"[ModelsService] 清除缓存失败: {e}")
 
