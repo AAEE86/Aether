@@ -658,11 +658,24 @@ class ProviderOpsService:
                 if p.config and p.config.get("provider_ops")
             ]
 
-        # 并行查询，使用缓存优先策略
-        tasks = [
-            self.query_balance_with_cache(provider_id, trigger_refresh=True)
-            for provider_id in provider_ids
-        ]
+        # 并行查询，使用缓存优先策略，每个查询有独立超时
+        SINGLE_QUERY_TIMEOUT = 15.0  # 单个查询最多 15 秒
+
+        async def query_with_timeout(provider_id: str) -> ActionResult:
+            try:
+                return await asyncio.wait_for(
+                    self.query_balance_with_cache(provider_id, trigger_refresh=True),
+                    timeout=SINGLE_QUERY_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"查询余额超时: provider_id={provider_id}")
+                return ActionResult(
+                    status=ActionStatus.UNKNOWN_ERROR,
+                    action_type=ProviderActionType.QUERY_BALANCE,
+                    message=f"查询超时（>{SINGLE_QUERY_TIMEOUT}秒）",
+                )
+
+        tasks = [query_with_timeout(provider_id) for provider_id in provider_ids]
         results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
         results = {}
