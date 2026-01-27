@@ -81,6 +81,39 @@ def test_openai_request_instructions_roundtrip() -> None:
     assert out_messages[3]["content"] == "ok"
 
 
+def test_openai_request_max_completion_tokens_support() -> None:
+    """测试 max_completion_tokens 参数的兼容性（OpenAI API 新参数名）"""
+    n = OpenAINormalizer()
+
+    # 测试 max_completion_tokens 优先于 max_tokens
+    req_new = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_completion_tokens": 100,
+        "max_tokens": 50,  # 旧参数应被忽略
+    }
+    internal = n.request_to_internal(req_new)
+    assert internal.max_tokens == 100
+
+    # 测试仅使用 max_completion_tokens
+    req_only_new = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_completion_tokens": 200,
+    }
+    internal = n.request_to_internal(req_only_new)
+    assert internal.max_tokens == 200
+
+    # 测试仅使用 max_tokens（向后兼容）
+    req_only_old = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 150,
+    }
+    internal = n.request_to_internal(req_only_old)
+    assert internal.max_tokens == 150
+
+
 def test_openai_request_tool_calls_and_tool_role_roundtrip() -> None:
     n = OpenAINormalizer()
 

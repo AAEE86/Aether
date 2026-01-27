@@ -2381,8 +2381,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
         当 Provider 的 API 格式与客户端请求的 API 格式不同时，需要转换响应。
         例如：客户端请求 Claude 格式，但 Provider 返回 OpenAI 格式。
 
-        注意：CLAUDE 和 CLAUDE_CLI、OPENAI 和 OPENAI_CLI 等同族格式在响应层面是兼容的，
-        因此使用 get_base_format 比较基础格式（去除 _CLI 后缀）。
+        注意：
+        - CLAUDE 和 CLAUDE_CLI、GEMINI 和 GEMINI_CLI：格式相同，只是认证不同，可透传
+        - OPENAI 和 OPENAI_CLI：格式不同（Chat Completions vs Responses API），需要转换
         """
         from src.core.api_format.utils import get_base_format
 
@@ -2393,17 +2394,39 @@ class CliMessageHandlerBase(BaseMessageHandler):
             )
             return False
 
-        # 比较基础格式（CLAUDE_CLI -> CLAUDE, OPENAI_CLI -> OPENAI）
-        provider_base = get_base_format(ctx.provider_api_format)
-        client_base = get_base_format(ctx.client_api_format)
-        result = provider_base != client_base
+        provider_format = str(ctx.provider_api_format).upper()
+        client_format = str(ctx.client_api_format).upper()
 
+        # 1. 格式完全匹配 -> 不需要转换
+        if provider_format == client_format:
+            logger.debug(
+                f"[{getattr(ctx, 'request_id', 'unknown')}] _needs_format_conversion: "
+                f"provider={provider_format}, client={client_format} -> False (exact match)"
+            )
+            return False
+
+        # 2. 同族格式检查
+        provider_base = get_base_format(provider_format)
+        client_base = get_base_format(client_format)
+
+        if provider_base == client_base:
+            # OPENAI 和 OPENAI_CLI 的请求/响应格式不同，需要转换
+            # CLAUDE 和 CLAUDE_CLI、GEMINI 和 GEMINI_CLI 格式相同，可透传
+            result = provider_base == "OPENAI"
+            logger.debug(
+                f"[{getattr(ctx, 'request_id', 'unknown')}] _needs_format_conversion: "
+                f"provider={provider_format}(base={provider_base}), "
+                f"client={client_format}(base={client_base}) -> {result} (same family, OPENAI needs conversion)"
+            )
+            return result
+
+        # 3. 跨格式 -> 需要转换
         logger.debug(
             f"[{getattr(ctx, 'request_id', 'unknown')}] _needs_format_conversion: "
-            f"provider={ctx.provider_api_format}(base={provider_base}), "
-            f"client={ctx.client_api_format}(base={client_base}) -> {result}"
+            f"provider={provider_format}(base={provider_base}), "
+            f"client={client_format}(base={client_base}) -> True (cross-format)"
         )
-        return result
+        return True
 
     def _mark_first_output(self, ctx: StreamContext, state: Dict[str, bool]) -> None:
         """

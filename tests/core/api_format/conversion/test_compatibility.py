@@ -161,3 +161,123 @@ def test_conversion_allowed_when_converter_supports_full() -> None:
     assert ok is True
     assert needs_conv is True
     assert reason is None
+
+
+# ==================== 同族格式测试 ====================
+
+
+def test_claude_cli_to_claude_no_conversion_needed() -> None:
+    """CLAUDE 和 CLAUDE_CLI 格式相同，只是认证不同，可透传"""
+    ok, needs_conv, reason = is_format_compatible(
+        "CLAUDE_CLI",
+        "CLAUDE",
+        endpoint_format_acceptance_config=None,
+        is_stream=False,
+        global_conversion_enabled=False,
+        registry=MagicMock(),
+    )
+    assert ok is True
+    assert needs_conv is False
+    assert reason is None
+
+
+def test_claude_to_claude_cli_no_conversion_needed() -> None:
+    """CLAUDE 和 CLAUDE_CLI 格式相同，只是认证不同，可透传"""
+    ok, needs_conv, reason = is_format_compatible(
+        "CLAUDE",
+        "CLAUDE_CLI",
+        endpoint_format_acceptance_config=None,
+        is_stream=False,
+        global_conversion_enabled=False,
+        registry=MagicMock(),
+    )
+    assert ok is True
+    assert needs_conv is False
+    assert reason is None
+
+
+def test_gemini_cli_to_gemini_no_conversion_needed() -> None:
+    """GEMINI 和 GEMINI_CLI 格式相同，只是认证不同，可透传"""
+    ok, needs_conv, reason = is_format_compatible(
+        "GEMINI_CLI",
+        "GEMINI",
+        endpoint_format_acceptance_config=None,
+        is_stream=False,
+        global_conversion_enabled=False,
+        registry=MagicMock(),
+    )
+    assert ok is True
+    assert needs_conv is False
+    assert reason is None
+
+
+def test_openai_cli_to_openai_needs_conversion() -> None:
+    """OPENAI 和 OPENAI_CLI 格式不同（Chat Completions vs Responses API），需要转换"""
+    registry = MagicMock()
+    registry.can_convert_full.return_value = True
+
+    ok, needs_conv, reason = is_format_compatible(
+        "OPENAI_CLI",
+        "OPENAI",
+        endpoint_format_acceptance_config=None,  # 同族转换不需要端点配置
+        is_stream=False,
+        global_conversion_enabled=False,  # 同族转换不需要全局开关
+        registry=registry,
+    )
+    assert ok is True
+    assert needs_conv is True  # 需要转换！
+    assert reason is None
+
+
+def test_openai_to_openai_cli_needs_conversion() -> None:
+    """OPENAI 和 OPENAI_CLI 格式不同（Chat Completions vs Responses API），需要转换"""
+    registry = MagicMock()
+    registry.can_convert_full.return_value = True
+
+    ok, needs_conv, reason = is_format_compatible(
+        "OPENAI",
+        "OPENAI_CLI",
+        endpoint_format_acceptance_config=None,  # 同族转换不需要端点配置
+        is_stream=False,
+        global_conversion_enabled=False,  # 同族转换不需要全局开关
+        registry=registry,
+    )
+    assert ok is True
+    assert needs_conv is True  # 需要转换！
+    assert reason is None
+
+
+def test_openai_cli_to_openai_stream_needs_conversion() -> None:
+    """OPENAI_CLI 流式请求到 OPENAI 也需要转换"""
+    registry = MagicMock()
+    registry.can_convert_full.return_value = True
+
+    ok, needs_conv, reason = is_format_compatible(
+        "OPENAI_CLI",
+        "OPENAI",
+        endpoint_format_acceptance_config=None,
+        is_stream=True,
+        global_conversion_enabled=False,
+        registry=registry,
+    )
+    assert ok is True
+    assert needs_conv is True
+    assert reason is None
+
+
+def test_openai_cli_to_openai_fails_without_converter() -> None:
+    """如果转换器不支持，同族转换也会失败"""
+    registry = MagicMock()
+    registry.can_convert_full.return_value = False
+
+    ok, needs_conv, reason = is_format_compatible(
+        "OPENAI_CLI",
+        "OPENAI",
+        endpoint_format_acceptance_config=None,
+        is_stream=False,
+        global_conversion_enabled=False,
+        registry=registry,
+    )
+    assert ok is False
+    assert needs_conv is False
+    assert reason and "转换器" in reason

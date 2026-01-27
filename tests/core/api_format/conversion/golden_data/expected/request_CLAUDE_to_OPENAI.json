@@ -16,6 +16,9 @@
     "B"
   ],
   "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
   "temperature": 0.2,
   "tool_choice": "auto",
   "tools": [

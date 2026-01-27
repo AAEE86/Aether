@@ -179,7 +179,6 @@
             required
             placeholder="输入密码"
             autocomplete="off"
-            @keyup.enter="handleLogin"
           />
         </div>
 

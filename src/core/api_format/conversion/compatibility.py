@@ -59,12 +59,30 @@ def is_format_compatible(
     if provider_format == client_format_upper:
         return True, False, None
 
-    # 2. 同族格式匹配（CLAUDE 和 CLAUDE_CLI、OPENAI 和 OPENAI_CLI 等）
-    #    这些格式在响应层面是兼容的，只是认证方式不同
+    # 2. 同族格式检查
     provider_base = get_base_format(provider_format)
     client_base = get_base_format(client_format_upper)
+
     if provider_base == client_base:
-        return True, False, None
+        # 同族格式：检查是否需要转换
+        # - OPENAI 和 OPENAI_CLI 的请求/响应格式不同（Chat Completions vs Responses API），需要转换
+        # - CLAUDE 和 CLAUDE_CLI、GEMINI 和 GEMINI_CLI 格式相同，只是认证不同，可透传
+        if provider_base == "OPENAI":
+            # OPENAI/OPENAI_CLI 同族转换：兼容但需要转换
+            # 检查转换器能力（同族转换不需要全局开关和端点配置）
+            if registry.can_convert_full(
+                client_format_upper, provider_format, require_stream=is_stream
+            ):
+                return True, True, None  # 兼容，需要转换
+            else:
+                return (
+                    False,
+                    False,
+                    f"不存在 {client_format} <-> {provider_format} 的完整转换器",
+                )
+        else:
+            # CLAUDE/CLAUDE_CLI、GEMINI/GEMINI_CLI 等：格式相同，可透传
+            return True, False, None
 
     # 3. 检查全局开关
     if not global_conversion_enabled:

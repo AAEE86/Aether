@@ -138,12 +138,18 @@ class OpenAINormalizer(FormatNormalizer):
 
         stop_sequences = self._coerce_str_list(request.get("stop"))
 
+        # 兼容新旧参数名：优先使用 max_completion_tokens，回退到 max_tokens
+        mct = request.get("max_completion_tokens")
+        max_tokens_value = self._optional_int(
+            mct if mct is not None else request.get("max_tokens")
+        )
+
         internal = InternalRequest(
             model=model,
             messages=messages,
             instructions=instructions,
             system=system_text,
-            max_tokens=self._optional_int(request.get("max_tokens")),
+            max_tokens=max_tokens_value,
             temperature=self._optional_float(request.get("temperature")),
             top_p=self._optional_float(request.get("top_p")),
             stop_sequences=stop_sequences,
