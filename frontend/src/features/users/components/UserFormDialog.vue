@@ -457,6 +457,7 @@ function loadUserData() {
   if (!props.user) return
   formNonce.value = createFieldNonce()
   passwordFocused.value = false
+  // 创建数组副本，避免与 props 数据共享引用
   form.value = {
     username: props.user.username,
     password: '',
@@ -466,9 +467,9 @@ function loadUserData() {
     role: props.user.role,
     unlimited: props.user.quota_usd == null,
     is_active: props.user.is_active ?? true,
-    allowed_providers: props.user.allowed_providers || [],
-    allowed_api_formats: props.user.allowed_api_formats || [],
-    allowed_models: props.user.allowed_models || []
+    allowed_providers: [...(props.user.allowed_providers || [])],
+    allowed_api_formats: [...(props.user.allowed_api_formats || [])],
+    allowed_models: [...(props.user.allowed_models || [])]
   }
 }
 

@@ -11,7 +11,7 @@ export interface PublicGlobalModel {
   display_name: string | null
   is_active: boolean
   // 阶梯计费配置
-  default_tiered_pricing: TieredPricingConfig
+  default_tiered_pricing: TieredPricingConfig | null
   default_price_per_request: number | null  // 按次计费价格
   // Key 能力支持
   supported_capabilities: string[] | null

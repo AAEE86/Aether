@@ -5,12 +5,14 @@ Provider 操作服务
 """
 
 import asyncio
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from src.config import config
 from src.core.cache_service import CacheService
 from src.core.crypto import CryptoService
 from src.core.logger import logger
@@ -31,6 +33,36 @@ from src.services.provider_ops.types import (
 
 # 余额缓存 TTL（24 小时）
 BALANCE_CACHE_TTL = 86400
+
+
+def _get_batch_balance_concurrency() -> int:
+    """
+    动态计算批量余额查询的并发限制
+
+    计算逻辑：
+    1. 优先使用环境变量 BATCH_BALANCE_CONCURRENCY
+    2. 否则根据连接池大小自动计算（取 40% 的连接池容量）
+    3. 限制在 [3, 15] 范围内
+
+    Returns:
+        并发限制数
+    """
+    # 优先使用环境变量
+    env_value = os.getenv("BATCH_BALANCE_CONCURRENCY")
+    if env_value:
+        try:
+            return max(1, int(env_value))
+        except ValueError:
+            pass
+
+    # 根据连接池大小自动计算
+    # 连接池容量 = pool_size + max_overflow
+    pool_capacity = config.db_pool_size + config.db_max_overflow
+
+    # 取 40% 的连接池容量，保留 60% 给其他请求
+    # 最小 3（保证基本并发），最大 15（避免过度并发）
+    calculated = int(pool_capacity * 0.4)
+    return max(3, min(calculated, 15))
 
 
 class ProviderOpsService:
@@ -366,6 +398,7 @@ class ProviderOpsService:
         self,
         provider_id: str,
         trigger_refresh: bool = True,
+        allow_sync_query: bool = True,
     ) -> ActionResult:
         """
         查询余额（优先返回缓存，可触发异步刷新）
@@ -373,6 +406,7 @@ class ProviderOpsService:
         Args:
             provider_id: Provider ID
             trigger_refresh: 是否触发后台异步刷新
+            allow_sync_query: 缓存未命中时是否允许同步查询（False 时仅返回缓存或触发异步刷新）
 
         Returns:
             操作结果（可能是缓存的）
@@ -387,19 +421,43 @@ class ProviderOpsService:
                 asyncio.create_task(self._refresh_balance_async(provider_id))
             return cached
 
-        # 没有缓存，同步查询一次（首次访问）
-        logger.info(f"余额缓存未命中，同步查询: provider_id={provider_id}")
-        return await self.query_balance(provider_id)
+        # 没有缓存
+        if allow_sync_query:
+            # 同步查询一次（首次访问）
+            logger.info(f"余额缓存未命中，同步查询: provider_id={provider_id}")
+            return await self.query_balance(provider_id)
+        else:
+            # 仅触发异步刷新，立即返回
+            logger.debug(f"余额缓存未命中，触发异步刷新: provider_id={provider_id}")
+            asyncio.create_task(self._refresh_balance_async(provider_id))
+            return ActionResult(
+                status=ActionStatus.PENDING,
+                action_type=ProviderActionType.QUERY_BALANCE,
+                message="余额数据加载中，请稍后刷新",
+            )
 
     async def _refresh_balance_async(self, provider_id: str) -> None:
-        """后台异步刷新余额（使用独立的数据库 session）"""
+        """
+        后台异步刷新余额（使用独立的数据库 session）
+
+        注意：这是一个后台任务，使用独立的短生命周期 session，
+        避免长时间占用连接池资源。
+        """
+        db = None
         try:
             # 后台任务需要创建独立的 session，因为原请求的 session 可能已关闭
-            with create_session() as db:
-                service = ProviderOpsService(db)
-                await service.query_balance(provider_id)
+            db = create_session()
+            service = ProviderOpsService(db)
+            await service.query_balance(provider_id)
         except Exception as e:
             logger.warning(f"异步刷新余额失败: provider_id={provider_id}, error={e}")
+        finally:
+            # 确保 session 被关闭，归还连接到连接池
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     async def _clear_balance_cache(self, provider_id: str) -> None:
         """清除余额缓存（认证失败时调用）"""
@@ -643,6 +701,8 @@ class ProviderOpsService:
         """
         批量查询余额（优先返回缓存，后台异步刷新）
 
+        使用信号量限制并发数，避免数据库连接池耗尽。
+
         Args:
             provider_ids: Provider ID 列表，None 表示查询所有已配置的
 
@@ -658,26 +718,36 @@ class ProviderOpsService:
                 if p.config and p.config.get("provider_ops")
             ]
 
-        # 并行查询，使用缓存优先策略
-        tasks = [
-            self.query_balance_with_cache(provider_id, trigger_refresh=True)
-            for provider_id in provider_ids
-        ]
-        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+        if not provider_ids:
+            return {}
 
-        results = {}
-        for provider_id, result in zip(provider_ids, results_list):
-            if isinstance(result, Exception):
-                logger.warning(f"查询余额失败: provider_id={provider_id}, error={result}")
-                results[provider_id] = ActionResult(
-                    status=ActionStatus.UNKNOWN_ERROR,
-                    action_type=ProviderActionType.QUERY_BALANCE,
-                    message=str(result),
-                )
-            else:
-                results[provider_id] = result
+        # 使用信号量限制并发数，避免同时发起过多请求耗尽连接池
+        concurrency = _get_batch_balance_concurrency()
+        semaphore = asyncio.Semaphore(concurrency)
+        logger.debug(f"批量余额查询: providers={len(provider_ids)}, concurrency={concurrency}")
 
-        return results
+        async def _query_with_limit(provider_id: str) -> tuple[str, ActionResult]:
+            async with semaphore:
+                try:
+                    # 批量查询时禁用同步查询，避免阻塞请求
+                    # 缓存未命中时会触发异步刷新，前端可稍后重试
+                    result = await self.query_balance_with_cache(
+                        provider_id, trigger_refresh=True, allow_sync_query=False
+                    )
+                    return provider_id, result
+                except Exception as e:
+                    logger.warning(f"查询余额失败: provider_id={provider_id}, error={e}")
+                    return provider_id, ActionResult(
+                        status=ActionStatus.UNKNOWN_ERROR,
+                        action_type=ProviderActionType.QUERY_BALANCE,
+                        message=str(e),
+                    )
+
+        # 并行查询，但受信号量限制
+        tasks = [_query_with_limit(provider_id) for provider_id in provider_ids]
+        results_list = await asyncio.gather(*tasks)
+
+        return dict(results_list)
 
     # ==================== 认证验证 ====================
 

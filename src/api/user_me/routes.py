@@ -19,11 +19,13 @@ from src.database import get_db
 from src.models.api import (
     ChangePasswordRequest,
     CreateMyApiKeyRequest,
+    PublicGlobalModelListResponse,
+    PublicGlobalModelResponse,
     UpdateApiKeyProvidersRequest,
     UpdatePreferencesRequest,
     UpdateProfileRequest,
 )
-from src.models.database import ApiKey, Provider, Usage, User
+from src.models.database import ApiKey, GlobalModel, Model, Provider, Usage, User
 from src.services.usage.service import UsageService
 from src.services.user.apikey import ApiKeyService
 from src.services.user.preference import PreferenceService
@@ -258,6 +260,34 @@ async def list_available_providers(request: Request, db: Session = Depends(get_d
     **返回字段**: id, name, display_name, endpoints, models 等
     """
     adapter = ListAvailableProvidersAdapter()
+    return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)
+
+
+@router.get("/available-models")
+async def list_available_models(
+    request: Request,
+    skip: int = Query(0, ge=0, description="跳过记录数"),
+    limit: int = Query(100, ge=1, le=1000, description="返回记录数限制"),
+    search: Optional[str] = Query(None, description="搜索关键词"),
+    db: Session = Depends(get_db),
+):
+    """
+    获取用户可用的模型列表
+
+    根据用户权限返回可用的 GlobalModel 列表。
+    - 管理员：可以看到所有活跃提供商的模型
+    - 普通用户：只能看到关联提供商的模型
+
+    **查询参数**:
+    - skip: 跳过的记录数，用于分页，默认 0
+    - limit: 返回记录数限制，默认 100，范围 1-1000
+    - search: 可选，搜索关键词，支持模糊匹配模型名称
+
+    **返回字段**:
+    - models: 模型列表
+    - total: 符合条件的模型总数
+    """
+    adapter = ListAvailableModelsAdapter(skip=skip, limit=limit, search=search)
     return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)
 
 
@@ -981,13 +1011,109 @@ class GetMyActivityHeatmapAdapter(AuthenticatedApiAdapter):
         return result
 
 
+@dataclass
+class ListAvailableModelsAdapter(AuthenticatedApiAdapter):
+    """获取用户可用模型列表的适配器"""
+
+    skip: int
+    limit: int
+    search: Optional[str]
+
+    async def handle(self, context):  # type: ignore[override]
+        from sqlalchemy import or_
+
+        from src.api.base.models_service import AccessRestrictions
+
+        db = context.db
+        user = context.user
+
+        # 使用 AccessRestrictions 类来处理限制（与 /v1/models 逻辑一致）
+        restrictions = AccessRestrictions.from_api_key_and_user(api_key=None, user=user)
+
+        # 获取所有活跃的 Provider ID
+        all_active_provider_ids = {
+            p.id for p in db.query(Provider.id).filter(Provider.is_active == True).all()
+        }
+
+        if not all_active_provider_ids:
+            return {"models": [], "total": 0}
+
+        # 查询所有活跃的 GlobalModel 及其关联的 Model
+        id_query = (
+            db.query(GlobalModel.id, GlobalModel.name, Model.provider_id)
+            .join(Model, Model.global_model_id == GlobalModel.id)
+            .filter(
+                and_(
+                    Model.provider_id.in_(all_active_provider_ids),
+                    Model.is_active == True,
+                    GlobalModel.is_active == True,
+                )
+            )
+        )
+
+        # 搜索过滤
+        if self.search:
+            search_term = f"%{self.search}%"
+            id_query = id_query.filter(
+                or_(
+                    GlobalModel.name.ilike(search_term),
+                    GlobalModel.display_name.ilike(search_term),
+                )
+            )
+
+        # 获取所有匹配的记录
+        all_matches = id_query.all()
+
+        # 应用访问限制过滤
+        allowed_global_model_ids = set()
+        for global_model_id, model_name, provider_id in all_matches:
+            # 使用 AccessRestrictions.is_model_allowed 检查模型是否可访问
+            # 它会同时检查 allowed_providers 和 allowed_models
+            if restrictions.is_model_allowed(model_name, provider_id):
+                allowed_global_model_ids.add(global_model_id)
+
+        # 统计总数
+        total = len(allowed_global_model_ids)
+
+        if not allowed_global_model_ids:
+            return {"models": [], "total": 0}
+
+        # 分页并获取完整的 GlobalModel 对象
+        models = (
+            db.query(GlobalModel)
+            .filter(GlobalModel.id.in_(allowed_global_model_ids))
+            .order_by(GlobalModel.name)
+            .offset(self.skip)
+            .limit(self.limit)
+            .all()
+        )
+
+        # 转换为响应格式（复用 PublicGlobalModelResponse schema）
+        model_responses = [
+            PublicGlobalModelResponse(
+                id=gm.id,
+                name=gm.name,
+                display_name=gm.display_name,
+                is_active=gm.is_active,
+                default_price_per_request=gm.default_price_per_request,
+                default_tiered_pricing=gm.default_tiered_pricing,
+                supported_capabilities=gm.supported_capabilities,
+                config=gm.config,
+            )
+            for gm in models
+        ]
+
+        logger.debug(f"用户 {user.email} 可用模型: {len(model_responses)} 个")
+        return PublicGlobalModelListResponse(models=model_responses, total=total)
+
+
 class ListAvailableProvidersAdapter(AuthenticatedApiAdapter):
     """获取可用提供商列表的适配器"""
 
     async def handle(self, context):  # type: ignore[override]
         from sqlalchemy.orm import selectinload
 
-        from src.models.database import Model, ProviderEndpoint
+        from src.models.database import ProviderEndpoint
 
         db = context.db
 

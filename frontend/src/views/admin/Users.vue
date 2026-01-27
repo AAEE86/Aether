@@ -920,6 +920,7 @@ function openCreateDialog() {
 }
 
 function editUser(user: any) {
+  // 创建数组副本，避免与 store 数据共享引用
   editingUser.value = {
     id: user.id,
     username: user.username,
@@ -927,9 +928,9 @@ function editUser(user: any) {
     quota_usd: user.quota_usd,
     role: user.role,
     is_active: user.is_active,
-    allowed_providers: user.allowed_providers || [],
-    allowed_api_formats: user.allowed_api_formats || [],
-    allowed_models: user.allowed_models || []
+    allowed_providers: [...(user.allowed_providers || [])],
+    allowed_api_formats: [...(user.allowed_api_formats || [])],
+    allowed_models: [...(user.allowed_models || [])]
   }
   showUserFormDialog.value = true
 }

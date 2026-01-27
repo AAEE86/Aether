@@ -34,6 +34,7 @@ class ActionStatus(str, Enum):
     """操作执行状态"""
 
     SUCCESS = "success"  # 成功
+    PENDING = "pending"  # 处理中（异步任务已触发，尚未完成）
     AUTH_FAILED = "auth_failed"  # 认证失败
     AUTH_EXPIRED = "auth_expired"  # 认证过期
     RATE_LIMITED = "rate_limited"  # 频率限制

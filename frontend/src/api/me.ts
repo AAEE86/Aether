@@ -1,5 +1,6 @@
 import apiClient from './client'
 import type { ActivityHeatmap } from '@/types/activity'
+import type { TieredPricingConfig } from './endpoints/types'
 
 export interface Profile {
   id: string // UUID
@@ -232,6 +233,28 @@ export const meApi = {
   // 获取可用的提供商
   async getAvailableProviders(): Promise<any[]> {
     const response = await apiClient.get('/api/users/me/providers')
+    return response.data
+  },
+
+  // 获取用户可用的模型列表
+  async getAvailableModels(params?: {
+    skip?: number
+    limit?: number
+    search?: string
+  }): Promise<{
+    models: Array<{
+      id: string
+      name: string
+      display_name: string | null
+      is_active: boolean
+      default_price_per_request: number | null
+      default_tiered_pricing: TieredPricingConfig | null
+      supported_capabilities: string[] | null
+      config: Record<string, any> | null
+    }>
+    total: number
+  }> {
+    const response = await apiClient.get('/api/users/me/available-models', { params })
     return response.data
   },
 

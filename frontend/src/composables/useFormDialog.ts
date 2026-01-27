@@ -101,11 +101,15 @@ export function useFormDialog<E>(
   })
 
   // 监听实体变化（编辑模式切换）
-  watch(entity, (newEntity) => {
-    if (newEntity && isOpen()) {
+  // 注意：不使用 deep: true，只在实体引用变化时触发（如从 user A 切换到 user B）
+  // 使用 deep: true 会导致实体的深层属性变化时也触发，覆盖用户正在编辑的数据
+  watch(entity, (newEntity, oldEntity) => {
+    // 只在实体引用真正变化时（如切换用户）才重新加载
+    // 避免深层属性变化时意外触发
+    if (newEntity && isOpen() && newEntity !== oldEntity) {
       loadData()
     }
-  }, { immediate: true, deep: true })
+  }, { immediate: true })
 
   return {
     isEditMode,

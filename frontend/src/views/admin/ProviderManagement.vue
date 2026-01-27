@@ -143,9 +143,17 @@
                 </div>
               </TableCell>
               <TableCell class="py-3.5">
+                <!-- 余额正在加载中 -->
+                <div
+                  v-if="provider.ops_configured && isBalanceLoading(provider.id)"
+                  class="flex items-center gap-1.5 text-xs text-muted-foreground"
+                >
+                  <Loader2 class="h-3 w-3 animate-spin" />
+                  <span>加载中...</span>
+                </div>
                 <!-- 显示从上游 API 查询的余额 -->
                 <div
-                  v-if="provider.ops_configured && getProviderBalance(provider.id)"
+                  v-else-if="provider.ops_configured && getProviderBalance(provider.id)"
                   class="flex items-center gap-2 text-xs"
                 >
                   <!-- 余额文字 -->
@@ -445,9 +453,17 @@
             >
               {{ formatBillingType(provider.billing_type || 'pay_as_you_go') }}
             </Badge>
+            <!-- 余额加载中 -->
+            <span
+              v-if="provider.ops_configured && isBalanceLoading(provider.id)"
+              class="text-muted-foreground flex items-center gap-1"
+            >
+              <Loader2 class="h-3 w-3 animate-spin" />
+              加载中...
+            </span>
             <!-- 余额（从上游 API 查询） -->
             <span
-              v-if="provider.ops_configured && getProviderBalance(provider.id)"
+              v-else-if="provider.ops_configured && getProviderBalance(provider.id)"
               class="text-muted-foreground"
             >
               余额 <span class="font-semibold text-foreground/90">{{ formatBalanceDisplay(getProviderBalance(provider.id)) }}</span>
@@ -586,7 +602,8 @@ import {
   Trash2,
   ChevronDown,
   Power,
-  KeyRound
+  KeyRound,
+  Loader2
 } from 'lucide-vue-next'
 import Button from '@/components/ui/button.vue'
 import Badge from '@/components/ui/badge.vue'
@@ -737,14 +754,70 @@ async function loadBalances() {
     // 检查是否有新的请求已经开始，如果有则丢弃当前结果
     if (currentVersion !== balanceLoadVersion) return
 
-    // 将成功的结果存入缓存
+    // 收集需要重试的 provider IDs
+    const pendingProviderIds: string[] = []
+
+    // 将结果存入缓存（包括 pending 状态）
     for (const [providerId, result] of Object.entries(results)) {
-      if (result.status === 'success') {
+      // 存入缓存：success, auth_expired (带有效数据), pending
+      if (result.status === 'success' || result.status === 'auth_expired' || result.status === 'pending') {
         balanceCache.value[providerId] = result
       }
+      // 收集 pending 状态的 provider，稍后重试
+      if (result.status === 'pending') {
+        pendingProviderIds.push(providerId)
+      }
+    }
+
+    // 如果有 pending 状态的 provider，3秒后自动重试
+    if (pendingProviderIds.length > 0) {
+      const timerId = setTimeout(() => {
+        pendingTimers.delete(timerId)
+        // 检查版本号，确保没有新的加载请求
+        if (currentVersion === balanceLoadVersion) {
+          retryPendingBalances(pendingProviderIds, currentVersion, 0)
+        }
+      }, 3000)
+      pendingTimers.add(timerId)
     }
   } catch (e) {
     console.warn('[loadBalances] 加载余额数据失败:', e)
+  }
+}
+
+// 重试加载 pending 状态的余额
+const MAX_BALANCE_RETRIES = 3
+
+// 追踪待处理的定时器，用于组件卸载时清理
+const pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+
+async function retryPendingBalances(providerIds: string[], loadVersion: number, retryCount: number) {
+  try {
+    const results = await batchQueryBalance(providerIds)
+    const stillPending: string[] = []
+
+    for (const [providerId, result] of Object.entries(results)) {
+      if (result.status !== 'pending') {
+        balanceCache.value[providerId] = result
+      } else {
+        stillPending.push(providerId)
+      }
+    }
+
+    // 如果还有 pending 且未达到最大重试次数，继续重试（指数退避）
+    if (stillPending.length > 0 && retryCount < MAX_BALANCE_RETRIES) {
+      const delay = 3000 * Math.pow(1.5, retryCount) // 3s, 4.5s, 6.75s
+      const timerId = setTimeout(() => {
+        pendingTimers.delete(timerId)
+        // 检查版本号，确保没有新的加载请求
+        if (loadVersion === balanceLoadVersion) {
+          retryPendingBalances(stillPending, loadVersion, retryCount + 1)
+        }
+      }, delay)
+      pendingTimers.add(timerId)
+    }
+  } catch (e) {
+    console.warn('[retryPendingBalances] 重试加载余额失败:', e)
   }
 }
 
@@ -785,6 +858,10 @@ function getProviderBalanceError(providerId: string): { status: string; message:
   if (!result) {
     return null
   }
+  // pending 状态不是错误，正在加载中
+  if (result.status === 'pending') {
+    return null
+  }
   // 认证失败或过期
   if (result.status === 'auth_failed' || result.status === 'auth_expired') {
     return {
@@ -800,6 +877,12 @@ function getProviderBalanceError(providerId: string): { status: string; message:
     }
   }
   return null
+}
+
+// 检查余额是否正在加载中
+function isBalanceLoading(providerId: string): boolean {
+  const result = balanceCache.value[providerId]
+  return result?.status === 'pending'
 }
 
 // 获取 provider 的签到信息（从 extra 字段）
@@ -1098,5 +1181,8 @@ onUnmounted(() => {
   if (tickInterval) {
     clearInterval(tickInterval)
   }
+  // 清理余额重试的待处理定时器
+  pendingTimers.forEach(clearTimeout)
+  pendingTimers.clear()
 })
 </script>

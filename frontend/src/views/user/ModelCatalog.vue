@@ -357,10 +357,7 @@ import {
   Pagination,
   RefreshButton,
 } from '@/components/ui'
-import {
-  getPublicGlobalModels,
-  type PublicGlobalModel,
-} from '@/api/public-models'
+import { type PublicGlobalModel } from '@/api/public-models'
 import { meApi } from '@/api/me'
 import {
   getUserConfigurableCapabilities,
@@ -515,8 +512,9 @@ watch([searchQuery, capabilityFilters], () => {
 async function loadModels() {
   loading.value = true
   try {
-    const response = await getPublicGlobalModels({ limit: 1000 })
-    models.value = response.models || []
+    // 使用用户认证端点，只获取用户有权限使用的模型
+    const response = await meApi.getAvailableModels({ limit: 1000 })
+    models.value = (response.models || []) as PublicGlobalModel[]
   } catch (err: any) {
     log.error('加载模型失败:', err)
     showError(err.response?.data?.detail || err.message, '加载模型失败')
