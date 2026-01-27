@@ -1178,6 +1178,9 @@ class ProviderAPIKey(Base):
     last_models_fetch_at = Column(DateTime(timezone=True), nullable=True)  # 最后获取时间
     last_models_fetch_error = Column(Text, nullable=True)  # 最后获取错误信息
     locked_models = Column(JSON, nullable=True)  # 被锁定的模型列表（刷新时不会被删除）
+    # 模型过滤规则（支持 * 和 ? 通配符，如 "gpt-*", "claude-?-sonnet"）
+    model_include_patterns = Column(JSON, nullable=True)  # 包含规则列表，空表示不过滤（包含所有）
+    model_exclude_patterns = Column(JSON, nullable=True)  # 排除规则列表，空表示不排除
 
     # 时间戳
     created_at = Column(

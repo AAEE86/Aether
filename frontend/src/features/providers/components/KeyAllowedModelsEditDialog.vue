@@ -754,14 +754,12 @@ watch(() => props.open, async (open) => {
     // 加载全局模型
     await loadGlobalModels()
 
-    // 自动获取模式下，获取上游模型并刷新（保留锁定的模型）
+    // 自动获取模式下，获取上游模型用于显示（但选中状态使用已保存的 allowed_models）
     if (props.apiKey.auto_fetch_models) {
       await fetchUpstreamModels()
-      // 锁定的模型 + 最新上游模型（去重）
-      const newSelected = new Set(lockedModels.value)
-      upstreamModelNames.value.forEach(m => newSelected.add(m))
-      selectedModels.value = Array.from(newSelected)
-      initialSelectedModels.value = [...selectedModels.value]
+      // 注意：不再将所有上游模型自动标记为选中
+      // 因为后端有过滤规则，实际保存的 allowed_models 是过滤后的结果
+      // selectedModels 已在上面从 props.apiKey.allowed_models 初始化
     }
 
     // 提取自定义模型（不在全局模型和上游模型中的）

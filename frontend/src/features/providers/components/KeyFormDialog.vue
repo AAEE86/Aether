@@ -211,20 +211,51 @@
       </div>
 
       <!-- 自动获取模型 -->
-      <div class="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-muted/30">
-        <div class="space-y-0.5">
-          <Label class="text-sm font-medium">自动获取上游可用模型</Label>
-          <p class="text-xs text-muted-foreground">
-            定时更新上游模型, 配合模型映射使用
-          </p>
-          <p
-            v-if="showAutoFetchWarning"
-            class="text-xs text-amber-600 dark:text-amber-400"
-          >
-            已配置的模型权限将在下次获取时被覆盖
-          </p>
+      <div class="space-y-3 py-2 px-3 rounded-md border border-border/60 bg-muted/30">
+        <div class="flex items-center justify-between">
+          <div class="space-y-0.5">
+            <Label class="text-sm font-medium">自动获取上游可用模型</Label>
+            <p class="text-xs text-muted-foreground">
+              定时更新上游模型, 配合模型映射使用
+            </p>
+            <p
+              v-if="showAutoFetchWarning"
+              class="text-xs text-amber-600 dark:text-amber-400"
+            >
+              已配置的模型权限将在下次获取时被覆盖
+            </p>
+          </div>
+          <Switch v-model="form.auto_fetch_models" />
         </div>
-        <Switch v-model="form.auto_fetch_models" />
+
+        <!-- 模型过滤规则（仅当开启自动获取时显示） -->
+        <div
+          v-if="form.auto_fetch_models"
+          class="space-y-2 pt-2 border-t border-border/40"
+        >
+          <div>
+            <Label class="text-xs">包含规则</Label>
+            <Input
+              v-model="form.model_include_patterns_text"
+              placeholder="gpt-*, claude-*, 留空包含全部"
+              class="h-8 text-sm"
+            />
+            <p class="text-xs text-muted-foreground mt-0.5">
+              逗号分隔，支持 * 和 ? 通配符
+            </p>
+          </div>
+          <div>
+            <Label class="text-xs">排除规则</Label>
+            <Input
+              v-model="form.model_exclude_patterns_text"
+              placeholder="*-preview, *-beta"
+              class="h-8 text-sm"
+            />
+            <p class="text-xs text-muted-foreground mt-0.5">
+              匹配的模型将被排除
+            </p>
+          </div>
+        </div>
       </div>
     </form>
 
@@ -335,7 +366,9 @@ const form = ref({
   note: '',
   is_active: true,
   capabilities: {} as Record<string, boolean>,
-  auto_fetch_models: false
+  auto_fetch_models: false,
+  model_include_patterns_text: '',  // 包含规则文本（逗号分隔）
+  model_exclude_patterns_text: ''   // 排除规则文本（逗号分隔）
 })
 
 // 加载能力列表
@@ -419,7 +452,9 @@ function resetForm() {
     note: '',
     is_active: true,
     capabilities: {},
-    auto_fetch_models: false
+    auto_fetch_models: false,
+    model_include_patterns_text: '',
+    model_exclude_patterns_text: ''
   }
 }
 
@@ -449,7 +484,9 @@ function loadKeyData() {
     note: props.editingKey.note || '',
     is_active: props.editingKey.is_active,
     capabilities: { ...(props.editingKey.capabilities || {}) },
-    auto_fetch_models: props.editingKey.auto_fetch_models ?? false
+    auto_fetch_models: props.editingKey.auto_fetch_models ?? false,
+    model_include_patterns_text: (props.editingKey.model_include_patterns || []).join(', '),
+    model_exclude_patterns_text: (props.editingKey.model_exclude_patterns || []).join(', ')
   }
 }
 
@@ -465,6 +502,16 @@ const { isEditMode, handleDialogUpdate, handleCancel } = useFormDialog({
 
 function createFieldNonce(): string {
   return Math.random().toString(36).slice(2, 10)
+}
+
+// 将逗号分隔的文本解析为数组（去空、去重）
+function parsePatternText(text: string): string[] | undefined {
+  if (!text.trim()) return undefined
+  const patterns = text
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  return patterns.length > 0 ? [...new Set(patterns)] : undefined
 }
 
 async function handleSave() {
@@ -529,7 +576,9 @@ async function handleSave() {
         note: form.value.note,
         is_active: form.value.is_active,
         capabilities: capabilitiesData,
-        auto_fetch_models: form.value.auto_fetch_models
+        auto_fetch_models: form.value.auto_fetch_models,
+        model_include_patterns: parsePatternText(form.value.model_include_patterns_text),
+        model_exclude_patterns: parsePatternText(form.value.model_exclude_patterns_text)
       }
 
       if (form.value.api_key.trim()) {
@@ -551,7 +600,9 @@ async function handleSave() {
         max_probe_interval_minutes: form.value.max_probe_interval_minutes,
         note: form.value.note,
         capabilities: capabilitiesData || undefined,
-        auto_fetch_models: form.value.auto_fetch_models
+        auto_fetch_models: form.value.auto_fetch_models,
+        model_include_patterns: parsePatternText(form.value.model_include_patterns_text),
+        model_exclude_patterns: parsePatternText(form.value.model_exclude_patterns_text)
       })
       success('密钥已添加', '成功')
       // 添加模式：不关闭对话框，只清除名称和密钥以便继续添加

@@ -7,10 +7,12 @@
 - 扫描所有启用了 auto_fetch_models 的 ProviderAPIKey
 - 调用 Adapter.fetch_models() 获取模型列表
 - 更新 Key 的 allowed_models（保留 locked_models 中的模型）
+- 支持包含/排除规则过滤模型
 - 记录获取结果和错误信息
 """
 
 import asyncio
+import fnmatch
 import os
 from datetime import datetime, timezone
 from typing import Optional
@@ -40,6 +42,68 @@ KEY_FETCH_TIMEOUT_SECONDS = 120
 
 # 上游模型缓存 TTL（与定时任务间隔保持一致）
 UPSTREAM_MODELS_CACHE_TTL_SECONDS = MODEL_FETCH_INTERVAL_MINUTES * 60
+
+
+def _match_pattern(model_id: str, pattern: str) -> bool:
+    """
+    检查模型 ID 是否匹配模式
+
+    支持的通配符:
+    - * 匹配任意字符（包括空）
+    - ? 匹配单个字符
+
+    Args:
+        model_id: 模型 ID
+        pattern: 匹配模式
+
+    Returns:
+        是否匹配
+    """
+    return fnmatch.fnmatch(model_id.lower(), pattern.lower())
+
+
+def _filter_models_by_patterns(
+    model_ids: set[str],
+    include_patterns: list[str] | None,
+    exclude_patterns: list[str] | None,
+) -> set[str]:
+    """
+    根据包含/排除规则过滤模型列表
+
+    规则优先级:
+    1. 如果 include_patterns 为空或 None，则包含所有模型
+    2. 如果 include_patterns 不为空，则只包含匹配的模型
+    3. exclude_patterns 总是会排除匹配的模型（优先级高于 include）
+
+    Args:
+        model_ids: 原始模型 ID 集合
+        include_patterns: 包含规则列表（支持 * 和 ? 通配符）
+        exclude_patterns: 排除规则列表（支持 * 和 ? 通配符）
+
+    Returns:
+        过滤后的模型 ID 集合
+    """
+    result = set()
+
+    for model_id in model_ids:
+        # 步骤1: 检查是否应该包含
+        should_include = True
+        if include_patterns:
+            # 有包含规则时，必须匹配至少一个规则
+            should_include = any(_match_pattern(model_id, p) for p in include_patterns)
+
+        if not should_include:
+            continue
+
+        # 步骤2: 检查是否应该排除
+        should_exclude = False
+        if exclude_patterns:
+            should_exclude = any(_match_pattern(model_id, p) for p in exclude_patterns)
+
+        if not should_exclude:
+            result.add(model_id)
+
+    return result
 
 
 def _get_upstream_models_cache_key(provider_id: str, api_key_id: str) -> str:
@@ -341,7 +405,7 @@ class ModelFetchScheduler:
 
     def _update_key_allowed_models(self, key: ProviderAPIKey, fetched_model_ids: set[str]) -> bool:
         """
-        更新 Key 的 allowed_models，保留 locked_models
+        更新 Key 的 allowed_models，保留 locked_models，应用过滤规则
 
         Returns:
             bool: 是否有变化
@@ -349,9 +413,26 @@ class ModelFetchScheduler:
         # 获取当前锁定的模型
         locked_models = set(key.locked_models or [])
 
-        # 新的 allowed_models = 获取到的模型 + 锁定的模型
+        # 应用包含/排除过滤规则
+        include_patterns = key.model_include_patterns
+        exclude_patterns = key.model_exclude_patterns
+
+        filtered_model_ids = _filter_models_by_patterns(
+            fetched_model_ids, include_patterns, exclude_patterns
+        )
+
+        # 记录过滤结果
+        if include_patterns or exclude_patterns:
+            filtered_count = len(fetched_model_ids) - len(filtered_model_ids)
+            if filtered_count > 0:
+                logger.info(
+                    f"Key {key.id} 过滤规则生效: 原始 {len(fetched_model_ids)} 个模型, "
+                    f"过滤后 {len(filtered_model_ids)} 个 (排除 {filtered_count} 个)"
+                )
+
+        # 新的 allowed_models = 过滤后的模型 + 锁定的模型
         # 锁定模型无论上游是否返回都会保留
-        new_allowed_models = list(fetched_model_ids | locked_models)
+        new_allowed_models = list(filtered_model_ids | locked_models)
         new_allowed_models.sort()  # 保持顺序稳定
 
         # 检查是否有变化

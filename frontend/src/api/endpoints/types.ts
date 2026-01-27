@@ -189,6 +189,9 @@ export interface EndpointAPIKey {
   last_models_fetch_at?: string  // 最后获取模型时间
   last_models_fetch_error?: string  // 最后获取模型错误信息
   locked_models?: string[]  // 被锁定的模型列表
+  // 模型过滤规则（仅当 auto_fetch_models=true 时生效）
+  model_include_patterns?: string[]  // 模型包含规则（支持 * 和 ? 通配符）
+  model_exclude_patterns?: string[]  // 模型排除规则（支持 * 和 ? 通配符）
 }
 
 // 按格式的健康度数据
@@ -227,6 +230,9 @@ export interface EndpointAPIKeyUpdate {
   is_active?: boolean
   auto_fetch_models?: boolean  // 是否启用自动获取模型
   locked_models?: string[]  // 被锁定的模型列表
+  // 模型过滤规则（仅当 auto_fetch_models=true 时生效）
+  model_include_patterns?: string[]  // 模型包含规则（支持 * 和 ? 通配符）
+  model_exclude_patterns?: string[]  // 模型排除规则（支持 * 和 ? 通配符）
 }
 
 export interface EndpointHealthDetail {

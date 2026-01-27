@@ -98,6 +98,8 @@ export async function addProviderKey(
     capabilities?: Record<string, boolean>
     note?: string
     auto_fetch_models?: boolean  // 是否启用自动获取模型
+    model_include_patterns?: string[]  // 模型包含规则
+    model_exclude_patterns?: string[]  // 模型排除规则
   }
 ): Promise<EndpointAPIKey> {
   const response = await client.post(`/api/admin/endpoints/providers/${providerId}/keys`, data)
@@ -125,6 +127,8 @@ export async function updateProviderKey(
     is_active: boolean
     note: string
     auto_fetch_models: boolean  // 是否启用自动获取模型
+    model_include_patterns: string[]  // 模型包含规则
+    model_exclude_patterns: string[]  // 模型排除规则
   }>
 ): Promise<EndpointAPIKey> {
   const response = await client.put(`/api/admin/endpoints/keys/${keyId}`, data)

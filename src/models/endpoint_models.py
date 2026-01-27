@@ -211,6 +211,14 @@ class EndpointAPIKeyCreate(BaseModel):
         default=None, description="被锁定的模型列表（刷新时不会被删除）"
     )
 
+    # 模型过滤规则（仅当 auto_fetch_models=True 时生效）
+    model_include_patterns: Optional[List[str]] = Field(
+        default=None, description="模型包含规则（支持 * 和 ? 通配符），空表示包含所有"
+    )
+    model_exclude_patterns: Optional[List[str]] = Field(
+        default=None, description="模型排除规则（支持 * 和 ? 通配符），空表示不排除"
+    )
+
     @field_validator("api_formats")
     @classmethod
     def validate_api_formats(cls, v: Optional[List[str]]) -> Optional[List[str]]:
@@ -344,6 +352,13 @@ class EndpointAPIKeyUpdate(BaseModel):
     )
     locked_models: Optional[List[str]] = Field(
         default=None, description="被锁定的模型列表（刷新时不会被删除）"
+    )
+    # 模型过滤规则（仅当 auto_fetch_models=True 时生效）
+    model_include_patterns: Optional[List[str]] = Field(
+        default=None, description="模型包含规则（支持 * 和 ? 通配符），空表示包含所有"
+    )
+    model_exclude_patterns: Optional[List[str]] = Field(
+        default=None, description="模型排除规则（支持 * 和 ? 通配符），空表示不排除"
     )
 
     @field_validator("api_formats")
@@ -502,6 +517,9 @@ class EndpointAPIKeyResponse(BaseModel):
     last_models_fetch_at: Optional[datetime] = Field(None, description="最后获取模型时间")
     last_models_fetch_error: Optional[str] = Field(None, description="最后获取模型错误信息")
     locked_models: Optional[List[str]] = Field(None, description="被锁定的模型列表")
+    # 模型过滤规则
+    model_include_patterns: Optional[List[str]] = Field(None, description="模型包含规则")
+    model_exclude_patterns: Optional[List[str]] = Field(None, description="模型排除规则")
 
     # 时间戳
     last_used_at: Optional[datetime] = None

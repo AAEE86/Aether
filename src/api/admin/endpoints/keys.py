@@ -224,6 +224,10 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
         # 记录 allowed_models 变化前的值
         allowed_models_before = set(key.allowed_models or [])
 
+        # 记录过滤规则变化前的值（用于检测是否需要重新应用过滤）
+        include_patterns_before = key.model_include_patterns
+        exclude_patterns_before = key.model_exclude_patterns
+
         update_data = self.key_data.model_dump(exclude_unset=True)
         if "api_key" in update_data:
             update_data["api_key"] = crypto_service.encrypt(update_data["api_key"])
@@ -246,6 +250,17 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
             lm = update_data["locked_models"]
             if isinstance(lm, list) and len(lm) == 0:
                 update_data["locked_models"] = None
+
+        # 处理模型过滤规则：空字符串 -> None
+        if "model_include_patterns" in update_data:
+            patterns = update_data["model_include_patterns"]
+            if isinstance(patterns, list) and len(patterns) == 0:
+                update_data["model_include_patterns"] = None
+
+        if "model_exclude_patterns" in update_data:
+            patterns = update_data["model_exclude_patterns"]
+            if isinstance(patterns, list) and len(patterns) == 0:
+                update_data["model_exclude_patterns"] = None
 
         for field, value in update_data.items():
             setattr(key, field, value)
@@ -285,6 +300,27 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
                 )
             db.commit()
             db.refresh(key)
+        elif auto_fetch_enabled_after:
+            # auto_fetch_models 保持开启状态，检查过滤规则是否变更
+            include_patterns_after = key.model_include_patterns
+            exclude_patterns_after = key.model_exclude_patterns
+            patterns_changed = (
+                include_patterns_before != include_patterns_after
+                or exclude_patterns_before != exclude_patterns_after
+            )
+            if patterns_changed:
+                # 过滤规则变更，重新应用过滤（使用缓存的上游模型数据）
+                logger.info(
+                    "[AUTO_FETCH] Key %s 过滤规则变更，重新应用过滤",
+                    self.key_id,
+                )
+                try:
+                    from src.services.model.fetch_scheduler import get_model_fetch_scheduler
+
+                    scheduler = get_model_fetch_scheduler()
+                    await scheduler._fetch_models_for_key_by_id(self.key_id)
+                except Exception as e:
+                    logger.error(f"重新应用过滤规则失败: {e}")
 
         # 任何字段更新都清除缓存，确保缓存一致性
         # 包括 is_active、allowed_models、capabilities 等影响权限和行为的字段
@@ -622,6 +658,12 @@ class AdminCreateProviderKeyAdapter(AdminApiAdapter):
             max_probe_interval_minutes=self.key_data.max_probe_interval_minutes,
             auto_fetch_models=self.key_data.auto_fetch_models,
             locked_models=self.key_data.locked_models if self.key_data.locked_models else None,
+            model_include_patterns=(
+                self.key_data.model_include_patterns if self.key_data.model_include_patterns else None
+            ),
+            model_exclude_patterns=(
+                self.key_data.model_exclude_patterns if self.key_data.model_exclude_patterns else None
+            ),
             request_count=0,
             success_count=0,
             error_count=0,
