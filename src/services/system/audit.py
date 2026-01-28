@@ -78,20 +78,24 @@ class AuditService:
         db.flush()
 
         # 同时记录到系统日志
-        log_message = (
-            f"AUDIT [{event_type.value}] - {description} | "
-            f"user_id={user_id}, ip={ip_address}"
-        )
+        # 检查 metadata 中是否有 quiet_logging 标志（由高频轮询端点设置）
+        quiet_logging = metadata.get("quiet_logging", False) if metadata else False
 
-        if event_type in [
-            AuditEventType.UNAUTHORIZED_ACCESS,
-            AuditEventType.SUSPICIOUS_ACTIVITY,
-        ]:
-            logger.warning(log_message)
-        elif event_type in [AuditEventType.LOGIN_FAILED, AuditEventType.REQUEST_FAILED]:
-            logger.info(log_message)
-        else:
-            logger.debug(log_message)
+        if not quiet_logging:
+            log_message = (
+                f"AUDIT [{event_type.value}] - {description} | "
+                f"user_id={user_id}, ip={ip_address}"
+            )
+
+            if event_type in [
+                AuditEventType.UNAUTHORIZED_ACCESS,
+                AuditEventType.SUSPICIOUS_ACTIVITY,
+            ]:
+                logger.warning(log_message)
+            elif event_type in [AuditEventType.LOGIN_FAILED, AuditEventType.REQUEST_FAILED]:
+                logger.info(log_message)
+            else:
+                logger.debug(log_message)
 
         return audit_log
 

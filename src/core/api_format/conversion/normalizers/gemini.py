@@ -151,6 +151,22 @@ class GeminiNormalizer(FormatNormalizer):
             else request.get("toolConfig")
         )
 
+        # 构建 extra，保留原始 gemini 字段
+        extra: Dict[str, Any] = {"gemini": self._extract_extra(request, {"contents"})}
+
+        # 保留 generationConfig 中的特殊字段（responseModalities, thinkingConfig 等）
+        # 这些字段在 _get_generation_config 中已提取，需要单独存储以便转换时使用
+        if isinstance(generation_config, dict):
+            response_modalities = generation_config.get("response_modalities")
+            thinking_config = generation_config.get("thinking_config")
+            if response_modalities or thinking_config:
+                google_extra: Dict[str, Any] = {}
+                if response_modalities:
+                    google_extra["response_modalities"] = response_modalities
+                if thinking_config:
+                    google_extra["thinking_config"] = thinking_config
+                extra["google"] = google_extra
+
         internal = InternalRequest(
             model=model,
             messages=messages,
@@ -164,7 +180,7 @@ class GeminiNormalizer(FormatNormalizer):
             stream=bool(request.get("stream") or False),
             tools=tools,
             tool_choice=tool_choice,
-            extra={"gemini": self._extract_extra(request, {"contents"})},
+            extra=extra,
         )
 
         if dropped:
@@ -207,6 +223,47 @@ class GeminiNormalizer(FormatNormalizer):
             generation_config["top_k"] = internal.top_k
         if internal.stop_sequences:
             generation_config["stop_sequences"] = list(internal.stop_sequences)
+
+        # 从 internal.extra["google"] 读取 OpenAI extra_body.google 透传的配置
+        google_extra = internal.extra.get("google", {})
+        if isinstance(google_extra, dict):
+            # 处理 thinking_config -> thinkingConfig
+            thinking_config = google_extra.get("thinking_config")
+            if isinstance(thinking_config, dict):
+                # snake_case -> camelCase 转换
+                gemini_thinking: Dict[str, Any] = {}
+                if "thinking_budget" in thinking_config:
+                    gemini_thinking["thinkingBudget"] = thinking_config["thinking_budget"]
+                if "include_thoughts" in thinking_config:
+                    gemini_thinking["includeThoughts"] = thinking_config["include_thoughts"]
+                # 保留其他可能的字段
+                for k, v in thinking_config.items():
+                    if k not in ("thinking_budget", "include_thoughts"):
+                        gemini_thinking[k] = v
+                if gemini_thinking:
+                    generation_config["thinkingConfig"] = gemini_thinking
+
+            # 处理 response_modalities -> responseModalities
+            response_modalities = google_extra.get("response_modalities")
+            if response_modalities:
+                generation_config["responseModalities"] = response_modalities
+
+        # 从 internal.extra["gemini"] 读取原生 Gemini 配置（Gemini -> Gemini 场景）
+        gemini_extra = internal.extra.get("gemini", {})
+        if isinstance(gemini_extra, dict):
+            # 保留原生 Gemini generationConfig 中的额外字段
+            orig_gc = gemini_extra.get("generation_config") or gemini_extra.get("generationConfig")
+            if isinstance(orig_gc, dict):
+                # responseModalities
+                if "responseModalities" in orig_gc and "responseModalities" not in generation_config:
+                    generation_config["responseModalities"] = orig_gc["responseModalities"]
+                if "response_modalities" in orig_gc and "responseModalities" not in generation_config:
+                    generation_config["responseModalities"] = orig_gc["response_modalities"]
+                # thinkingConfig
+                if "thinkingConfig" in orig_gc and "thinkingConfig" not in generation_config:
+                    generation_config["thinkingConfig"] = orig_gc["thinkingConfig"]
+                if "thinking_config" in orig_gc and "thinkingConfig" not in generation_config:
+                    generation_config["thinkingConfig"] = orig_gc["thinking_config"]
 
         contents: List[Dict[str, Any]] = []
         for msg in internal.messages:
@@ -431,6 +488,35 @@ class GeminiNormalizer(FormatNormalizer):
                     events.append(ContentBlockStopEvent(block_index=block_index))
                     continue
 
+                # inlineData（图片生成等多模态输出）
+                inline_data = part.get("inlineData")
+                if inline_data is None:
+                    inline_data = part.get("inline_data")
+
+                if isinstance(inline_data, dict):
+                    mime_type = str(inline_data.get("mimeType") or inline_data.get("mime_type") or "").strip()
+                    data = str(inline_data.get("data") or "").strip()
+
+                    # 确保 mime_type 和 data 都非空
+                    if mime_type and data and len(data) > 10:  # base64 图片数据至少几十个字符
+                        block_index = int(ss.get("next_block_index") or 1)
+                        ss["next_block_index"] = block_index + 1
+
+                        # 使用 ContentBlockStartEvent 传递图片数据
+                        # 图片数据存储在 extra 中，供 target normalizer 处理
+                        events.append(
+                            ContentBlockStartEvent(
+                                block_index=block_index,
+                                block_type=ContentType.IMAGE,
+                                extra={
+                                    "image_data": data,
+                                    "image_media_type": mime_type,
+                                },
+                            )
+                        )
+                        events.append(ContentBlockStopEvent(block_index=block_index))
+                    continue
+
         finish_reason = candidate0.get("finishReason")
         if finish_reason is not None:
             stop_reason = self._FINISH_REASON_TO_STOP.get(str(finish_reason), StopReason.UNKNOWN)
@@ -486,6 +572,25 @@ class GeminiNormalizer(FormatNormalizer):
                 "name": event.tool_name or "",
                 "json": "",
             }
+            return out
+
+        # 图片内容块（来自其他格式的图像生成输出）
+        if isinstance(event, ContentBlockStartEvent) and event.block_type == ContentType.IMAGE:
+            image_data = event.extra.get("image_data")
+            image_media_type = event.extra.get("image_media_type")
+            if image_data and image_media_type:
+                out.append(
+                    base_chunk(
+                        [
+                            {
+                                "inlineData": {
+                                    "mimeType": image_media_type,
+                                    "data": image_data,
+                                }
+                            }
+                        ]
+                    )
+                )
             return out
 
         if isinstance(event, ToolCallDeltaEvent):
@@ -784,6 +889,17 @@ class GeminiNormalizer(FormatNormalizer):
         normalized["top_p"] = pick("top_p", "topP")
         normalized["top_k"] = pick("top_k", "topK")
         normalized["stop_sequences"] = pick("stop_sequences", "stopSequences")
+
+        # 保留 responseModalities（图像生成等多模态输出必需）
+        response_modalities = pick("response_modalities", "responseModalities")
+        if response_modalities:
+            normalized["response_modalities"] = response_modalities
+
+        # 保留 thinkingConfig（思考模式配置）
+        thinking_config = pick("thinking_config", "thinkingConfig")
+        if thinking_config:
+            normalized["thinking_config"] = thinking_config
+
         return {k: v for k, v in normalized.items() if v is not None}
 
     def _gemini_tools_to_internal(self, tools: Any) -> Optional[List[ToolDefinition]]:

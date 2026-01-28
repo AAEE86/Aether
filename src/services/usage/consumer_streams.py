@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from redis.exceptions import ResponseError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.clients.redis_client import get_redis_client
@@ -135,6 +136,12 @@ class UsageQueueConsumer:
         self._dlq_key = config.usage_queue_dlq_key
         self._dlq_maxlen = config.usage_queue_dlq_maxlen
         self._metrics_interval = config.usage_queue_metrics_interval_seconds
+
+    @staticmethod
+    def _is_duplicate_key_error(exc: IntegrityError) -> bool:
+        """判断是否为重复键错误（唯一约束冲突）"""
+        err_str = str(exc).lower()
+        return "unique" in err_str or "duplicate" in err_str
 
     async def start(self) -> None:
         if self._running:
@@ -303,6 +310,19 @@ class UsageQueueConsumer:
                 try:
                     await self._apply_record_event(event, db=db)
                     success_ids.append(message_id)
+                except IntegrityError as ie:
+                    # 重复 request_id 导致的唯一约束冲突，视为成功（记录已存在）
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                    if self._is_duplicate_key_error(ie):
+                        logger.debug(
+                            f"[usage-queue] Duplicate request_id, skipping: {event.request_id}"
+                        )
+                        success_ids.append(message_id)
+                    else:
+                        await self._handle_processing_error(redis_client, message_id, fields, ie)
                 except Exception as individual_exc:
                     await self._handle_processing_error(redis_client, message_id, fields, individual_exc)
             # 批量 ACK 成功处理的消息

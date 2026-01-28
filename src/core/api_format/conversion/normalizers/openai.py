@@ -13,6 +13,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from src.core.logger import logger
 from src.core.api_format.conversion.field_mappings import (
     ERROR_TYPE_MAPPINGS,
     RETRYABLE_ERROR_TYPES,
@@ -144,6 +145,16 @@ class OpenAINormalizer(FormatNormalizer):
             mct if mct is not None else request.get("max_tokens")
         )
 
+        # 构建 extra，保留未识别字段
+        extra: Dict[str, Any] = {"openai": self._extract_extra(request, {"messages"})}
+
+        # 处理 extra_body.google (用于 Gemini 特定功能透传，如 thinkingConfig, responseModalities)
+        extra_body = request.get("extra_body")
+        if isinstance(extra_body, dict):
+            google_extra = extra_body.get("google")
+            if isinstance(google_extra, dict) and google_extra:
+                extra["google"] = google_extra
+
         internal = InternalRequest(
             model=model,
             messages=messages,
@@ -156,7 +167,7 @@ class OpenAINormalizer(FormatNormalizer):
             stream=bool(request.get("stream") or False),
             tools=tools,
             tool_choice=tool_choice,
-            extra={"openai": self._extract_extra(request, {"messages"})},
+            extra=extra,
         )
 
         if dropped:
@@ -468,6 +479,50 @@ class OpenAINormalizer(FormatNormalizer):
                     }
                 )
             )
+            return out
+
+        # 图片内容块（来自 Gemini 图像生成等多模态输出）
+        if isinstance(event, ContentBlockStartEvent) and event.block_type == ContentType.IMAGE:
+            image_data = event.extra.get("image_data")
+            image_media_type = event.extra.get("image_media_type")
+            # 确保图片数据有效（base64 数据至少有一定长度）
+            if image_data and image_media_type and isinstance(image_data, str) and len(image_data) > 10:
+                # 构造 data URL 格式的图片
+                data_url = f"data:{image_media_type};base64,{image_data}"
+                # 存储图片数据，在 ContentBlockStopEvent 时输出
+                image_blocks = ss.get("image_blocks")
+                if not isinstance(image_blocks, dict):
+                    image_blocks = {}
+                    ss["image_blocks"] = image_blocks
+                image_blocks[int(event.block_index)] = {
+                    "url": data_url,
+                    "media_type": image_media_type,
+                }
+            return out
+
+        # 图片内容块结束时输出
+        if isinstance(event, ContentBlockStopEvent):
+            image_blocks = ss.get("image_blocks")
+            if isinstance(image_blocks, dict):
+                entry = image_blocks.get(int(event.block_index))
+                if isinstance(entry, dict):
+                    url = entry.get("url")
+                    # 确保 URL 有效（data URL 至少包含 "data:" 前缀 + 一些数据）
+                    if url and isinstance(url, str) and len(url) > 20:
+                        # OpenAI 流式响应中 delta.content 必须是字符串
+                        # 使用 markdown 图片格式，兼容各种客户端渲染
+                        # 注意：base64 data URL 可能很长（几百KB~几MB），客户端需支持长内容
+                        # 典型图片大小：100KB 原图 ≈ 130KB base64，1MB 原图 ≈ 1.3MB base64
+                        if len(url) > 1_000_000:  # > 1MB
+                            logger.warning(
+                                f"Large image in stream response: {len(url)} bytes, "
+                                "client may have rendering issues"
+                            )
+                        out.append(base_chunk({"content": f"![image]({url})"}))
+                    # 清理已处理的图片
+                    del image_blocks[int(event.block_index)]
+                    return out
+            # 其他 ContentBlockStopEvent 不处理
             return out
 
         if isinstance(event, ToolCallDeltaEvent):
@@ -854,20 +909,30 @@ class OpenAINormalizer(FormatNormalizer):
                     text_parts.append(b.text)
                 continue
             if isinstance(b, ImageBlock):
-                url = b.url
-                if not url and b.data and b.media_type:
-                    url = f"data:{b.media_type};base64,{b.data}"
-                if url:
-                    parts.append({"type": "image_url", "image_url": {"url": url}})
+                # 区分两种图片来源：
+                # 1. URL 引用（OpenAI 原生格式）-> multipart content
+                # 2. base64 内嵌数据（格式转换来的）-> markdown 格式
+                if b.url and not b.data:
+                    # OpenAI 原生格式：URL 引用的图片，使用 multipart content
+                    parts.append({"type": "image_url", "image_url": {"url": b.url}})
+                elif b.data and b.media_type:
+                    # 格式转换来的图片（base64 内嵌），使用 markdown 格式
+                    data_url = f"data:{b.media_type};base64,{b.data}"
+                    text_parts.append(f"![image]({data_url})")
+                elif b.url:
+                    # 有 URL 也有 data，优先使用 URL
+                    parts.append({"type": "image_url", "image_url": {"url": b.url}})
                 continue
 
             # Unknown / Tool blocks 不进入 OpenAI content
 
+        # 如果有 OpenAI 原生格式的图片（URL 引用），使用 multipart content
         if parts:
             if text_parts:
                 parts = [{"type": "text", "text": "\n".join(text_parts)}] + parts
             return parts
 
+        # 纯文本或包含 markdown 图片
         if text_parts:
             return "\n".join(text_parts)
 

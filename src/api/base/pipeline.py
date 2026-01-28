@@ -22,6 +22,14 @@ if TYPE_CHECKING:
 from .adapter import ApiAdapter, ApiMode
 from .context import ApiRequestContext
 
+# 高频轮询端点，抑制其 debug 日志以减少噪音
+QUIET_POLLING_PATHS: set[str] = {
+    "/api/admin/usage/active",
+    "/api/admin/usage/records",
+    "/api/admin/usage/stats",
+    "/api/admin/usage/aggregation/stats",
+    "/api/admin/health/status",
+}
 
 
 class ApiRequestPipeline:
@@ -47,9 +55,12 @@ class ApiRequestPipeline:
         api_format_hint: Optional[str] = None,
         path_params: Optional[dict[str, Any]] = None,
     ):
-        logger.debug(f"[Pipeline] START | path={http_request.url.path}")
-        logger.debug(f"[Pipeline] Running with mode={mode}, adapter={adapter.__class__.__name__}, "
-            f"adapter.mode={adapter.mode}, path={http_request.url.path}")
+        # 高频轮询端点抑制 debug 日志
+        is_quiet = http_request.url.path in QUIET_POLLING_PATHS
+        if not is_quiet:
+            logger.debug(f"[Pipeline] START | path={http_request.url.path}")
+            logger.debug(f"[Pipeline] Running with mode={mode}, adapter={adapter.__class__.__name__}, "
+                f"adapter.mode={adapter.mode}, path={http_request.url.path}")
         if mode == ApiMode.ADMIN:
             user, management_token = await self._authenticate_admin(http_request, db)
             api_key = None
@@ -64,10 +75,12 @@ class ApiRequestPipeline:
             user, management_token = await self._authenticate_management(http_request, db)
             api_key = None
         else:
-            logger.debug("[Pipeline] 调用 _authenticate_client")
-            user, api_key = self._authenticate_client(http_request, db, adapter)
+            if not is_quiet:
+                logger.debug("[Pipeline] 调用 _authenticate_client")
+            user, api_key = self._authenticate_client(http_request, db, adapter, quiet=is_quiet)
             management_token = None
-            logger.debug(f"[Pipeline] 认证完成 | user={user.username if user else None}")
+            if not is_quiet:
+                logger.debug(f"[Pipeline] 认证完成 | user={user.username if user else None}")
 
         raw_body = None
         if http_request.method in {"POST", "PUT", "PATCH"}:
@@ -78,7 +91,8 @@ class ApiRequestPipeline:
                 raw_body = await asyncio.wait_for(
                     http_request.body(), timeout=config.request_body_timeout
                 )
-                logger.debug(f"[Pipeline] Raw body读取完成 | size={len(raw_body) if raw_body is not None else 0} bytes")
+                if not is_quiet:
+                    logger.debug(f"[Pipeline] Raw body读取完成 | size={len(raw_body) if raw_body is not None else 0} bytes")
             except asyncio.TimeoutError:
                 timeout_sec = int(config.request_body_timeout)
                 logger.error(f"读取请求体超时({timeout_sec}s),可能客户端未发送完整请求体")
@@ -87,7 +101,8 @@ class ApiRequestPipeline:
                     detail=f"Request timeout: body not received within {timeout_sec} seconds",
                 )
         else:
-            logger.debug(f"[Pipeline] 非写请求跳过读取Body | method={http_request.method}")
+            if not is_quiet:
+                logger.debug(f"[Pipeline] 非写请求跳过读取Body | method={http_request.method}")
 
         context = ApiRequestContext.build(
             request=http_request,
@@ -102,14 +117,17 @@ class ApiRequestPipeline:
         # 存储 management_token 到 context（用于权限检查）
         if management_token:
             context.management_token = management_token
-        logger.debug(f"[Pipeline] Context构建完成 | adapter={adapter.name} | request_id={context.request_id}")
+        # 存储 quiet 标志到 context，用于审计日志判断
+        context.quiet_logging = is_quiet
+        if not is_quiet:
+            logger.debug(f"[Pipeline] Context构建完成 | adapter={adapter.name} | request_id={context.request_id}")
 
         if mode != ApiMode.ADMIN and user:
             context.quota_remaining = self._calculate_quota_remaining(user)
 
-        logger.debug(f"[Pipeline] Adapter={adapter.name} | RequestID={context.request_id}")
-
-        logger.debug(f"[Pipeline] Calling authorize on {adapter.__class__.__name__}, user={context.user}")
+        if not is_quiet:
+            logger.debug(f"[Pipeline] Adapter={adapter.name} | RequestID={context.request_id}")
+            logger.debug(f"[Pipeline] Calling authorize on {adapter.__class__.__name__}, user={context.user}")
         # authorize 可能是异步的，需要检查并 await
         authorize_result = adapter.authorize(context)
         if hasattr(authorize_result, "__await__"):
@@ -145,18 +163,22 @@ class ApiRequestPipeline:
     # --------------------------------------------------------------------- #
 
     def _authenticate_client(
-        self, request: Request, db: Session, adapter: ApiAdapter
+        self, request: Request, db: Session, adapter: ApiAdapter, *, quiet: bool = False
     ) -> Tuple[User, ApiKey]:
-        logger.debug("[Pipeline._authenticate_client] 开始")
+        if not quiet:
+            logger.debug("[Pipeline._authenticate_client] 开始")
         # 使用 adapter 的 extract_api_key 方法，支持不同 API 格式的认证头
         client_api_key = adapter.extract_api_key(request)
-        logger.debug(f"[Pipeline._authenticate_client] 提取API密钥完成 | key_prefix={client_api_key[:8] if client_api_key else None}...")
+        if not quiet:
+            logger.debug(f"[Pipeline._authenticate_client] 提取API密钥完成 | key_prefix={client_api_key[:8] if client_api_key else None}...")
         if not client_api_key:
             raise HTTPException(status_code=401, detail="请提供API密钥")
 
-        logger.debug("[Pipeline._authenticate_client] 调用 auth_service.authenticate_api_key")
+        if not quiet:
+            logger.debug("[Pipeline._authenticate_client] 调用 auth_service.authenticate_api_key")
         auth_result = self.auth_service.authenticate_api_key(db, client_api_key)
-        logger.debug(f"[Pipeline._authenticate_client] 认证结果 | result={bool(auth_result)}")
+        if not quiet:
+            logger.debug(f"[Pipeline._authenticate_client] 认证结果 | result={bool(auth_result)}")
         if not auth_result:
             raise HTTPException(status_code=401, detail="无效的API密钥")
 
@@ -435,6 +457,8 @@ class ApiRequestPipeline:
             "request_content_type": request.headers.get("content-type"),
             "quota_remaining": context.quota_remaining,
             "success": success,
+            # 传递 quiet_logging 标志给审计服务，用于抑制高频轮询日志
+            "quiet_logging": getattr(context, "quiet_logging", False),
         }
         if status_code is not None:
             metadata["status_code"] = status_code

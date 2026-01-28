@@ -45,6 +45,9 @@ class ApiRequestContext:
     extra: Dict[str, Any] = field(default_factory=dict)
     audit_metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # 高频轮询端点日志抑制标志
+    quiet_logging: bool = False
+
     def ensure_json_body(self) -> Dict[str, Any]:
         """确保请求体已解析为JSON并返回。"""
         if self.json_body is not None:

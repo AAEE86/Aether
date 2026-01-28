@@ -33,6 +33,8 @@ from src.services.provider_ops.types import (
 
 # 余额缓存 TTL（24 小时）
 BALANCE_CACHE_TTL = 86400
+# 认证失败缓存 TTL（60 秒，避免频繁重试但允许用户修正后快速重试）
+AUTH_FAILED_CACHE_TTL = 60
 
 
 def _get_batch_balance_concurrency() -> int:
@@ -388,9 +390,9 @@ class ProviderOpsService:
         # 成功或 auth_expired 时缓存（auth_expired 带有 cookie_expired 信息供前端显示警告）
         if result.status in (ActionStatus.SUCCESS, ActionStatus.AUTH_EXPIRED) and result.data:
             await self._cache_balance(provider_id, result)
-        # auth_failed 时清除缓存（配置错误，用户修正后应立即重试）
+        # auth_failed 时也缓存（使用较短 TTL），避免前端无限显示"加载中..."
         elif result.status == ActionStatus.AUTH_FAILED:
-            await self._clear_balance_cache(provider_id)
+            await self._cache_auth_failed(provider_id, result)
 
         return result
 
@@ -460,10 +462,28 @@ class ProviderOpsService:
                     pass
 
     async def _clear_balance_cache(self, provider_id: str) -> None:
-        """清除余额缓存（认证失败时调用）"""
+        """清除余额缓存"""
         cache_key = f"provider_ops:balance:{provider_id}"
         await CacheService.delete(cache_key)
         logger.info(f"余额缓存已清除: provider_id={provider_id}")
+
+    async def _cache_auth_failed(self, provider_id: str, result: ActionResult) -> None:
+        """
+        缓存认证失败结果（使用较短 TTL）
+
+        这样前端可以立即显示错误信息，而不是无限显示"加载中..."。
+        用户修正配置后，等待 60 秒或手动刷新即可重试。
+        """
+        cache_key = f"provider_ops:balance:{provider_id}"
+        cache_data = {
+            "status": result.status.value,
+            "data": None,
+            "message": result.message,
+            "executed_at": result.executed_at.isoformat() if result.executed_at else None,
+            "response_time_ms": result.response_time_ms,
+        }
+        await CacheService.set(cache_key, cache_data, AUTH_FAILED_CACHE_TTL)
+        logger.info(f"余额缓存已写入（认证失败）: provider_id={provider_id}, message={result.message}")
 
     async def _cache_balance(self, provider_id: str, result: ActionResult) -> None:
         """缓存余额结果"""
@@ -546,13 +566,17 @@ class ProviderOpsService:
                 else datetime.now(timezone.utc)
             )
 
+            status = ActionStatus(cached.get("status", "success"))
+            # 认证失败使用较短的缓存 TTL
+            ttl = AUTH_FAILED_CACHE_TTL if status == ActionStatus.AUTH_FAILED else BALANCE_CACHE_TTL
             return ActionResult(
-                status=ActionStatus(cached.get("status", "success")),
+                status=status,
                 action_type=ProviderActionType.QUERY_BALANCE,
                 data=data,
+                message=cached.get("message"),
                 executed_at=executed_at,
                 response_time_ms=cached.get("response_time_ms"),
-                cache_ttl_seconds=BALANCE_CACHE_TTL,
+                cache_ttl_seconds=ttl,
             )
         except Exception as e:
             logger.warning(f"解析缓存余额失败: provider_id={provider_id}, error={e}")

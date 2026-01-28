@@ -12,7 +12,15 @@ from sqlalchemy.orm import Session
 
 from src.core.api_format.metadata import can_passthrough
 from src.core.logger import logger
-from src.models.database import ApiKey, Provider, ProviderAPIKey, Usage, User, UserRole
+from src.models.database import (
+    ApiKey,
+    Provider,
+    ProviderAPIKey,
+    RequestCandidate,
+    Usage,
+    User,
+    UserRole,
+)
 from src.services.model.cost import ModelCostService
 from src.services.system.config import SystemConfigService
 
@@ -1025,6 +1033,7 @@ class UsageService:
         - 批量插入 Usage 记录，减少 commit 次数
         - 聚合更新用户/API Key 统计（按 user_id/api_key_id 分组）
         - 聚合更新 GlobalModel 和 Provider 统计
+        - 支持更新已存在的 pending/streaming 状态记录
 
         Args:
             db: 数据库会话
@@ -1040,6 +1049,43 @@ class UsageService:
         from sqlalchemy import update
         from src.models.database import ApiKey as ApiKeyModel, User as UserModel, GlobalModel
 
+        # 分离需要更新和需要新建的记录
+        request_ids = [r.get("request_id") for r in records if r.get("request_id")]
+        existing_usages: Dict[str, Usage] = {}
+        records_to_update: List[Dict[str, Any]] = []
+        records_to_insert: List[Dict[str, Any]] = []
+
+        if request_ids:
+            # 查询已存在的 Usage 记录（包括 pending/streaming 状态）
+            existing_records = (
+                db.query(Usage)
+                .filter(Usage.request_id.in_(request_ids))
+                .all()
+            )
+            existing_usages = {u.request_id: u for u in existing_records}
+
+            for record in records:
+                req_id = record.get("request_id")
+                if req_id and req_id in existing_usages:
+                    existing_usage = existing_usages[req_id]
+                    # 只更新 pending/streaming 状态的记录
+                    # 已经是 completed/failed/cancelled 的记录跳过
+                    if existing_usage.status in ("pending", "streaming"):
+                        records_to_update.append(record)
+                    else:
+                        logger.debug(
+                            f"批量记录预过滤: 跳过已完成的 request_id={req_id} (status={existing_usage.status})"
+                        )
+                else:
+                    records_to_insert.append(record)
+        else:
+            records_to_insert = list(records)
+
+        if records_to_update:
+            logger.debug(
+                f"批量记录: 需要更新 {len(records_to_update)} 条已存在的 pending/streaming 记录"
+            )
+
         usages: List[Usage] = []
         user_costs: Dict[str, float] = defaultdict(float)  # user_id -> total_cost
         apikey_stats: Dict[str, Dict[str, Any]] = defaultdict(
@@ -1048,9 +1094,12 @@ class UsageService:
         model_counts: Dict[str, int] = defaultdict(int)  # model -> count
         provider_costs: Dict[str, float] = defaultdict(float)  # provider_id -> cost
 
+        # 合并所有需要处理的记录（用于预取 user/api_key）
+        all_records = records_to_insert + records_to_update
+
         # 批量预取 User 和 ApiKey，避免 N+1 查询
-        user_ids = {r.get("user_id") for r in records if r.get("user_id")}
-        api_key_ids = {r.get("api_key_id") for r in records if r.get("api_key_id")}
+        user_ids = {r.get("user_id") for r in all_records if r.get("user_id")}
+        api_key_ids = {r.get("api_key_id") for r in all_records if r.get("api_key_id")}
 
         users_map: Dict[str, User] = {}
         if user_ids:
@@ -1063,9 +1112,95 @@ class UsageService:
             api_keys_map = {str(k.id): k for k in api_keys}
 
         skipped_count = 0
-        total_count = len(records)
+        updated_count = 0
+        total_count = len(all_records)
 
-        for record in records:
+        # 1. 处理需要更新的记录（pending/streaming -> completed/failed/cancelled）
+        for record in records_to_update:
+            try:
+                request_id = record.get("request_id")
+                existing_usage = existing_usages.get(request_id)
+                if not existing_usage:
+                    skipped_count += 1
+                    continue
+
+                # 从预取的 map 中获取 user 和 api_key 对象
+                user_id = record.get("user_id")
+                api_key_id = record.get("api_key_id")
+                user = users_map.get(str(user_id)) if user_id else None
+                api_key = api_keys_map.get(str(api_key_id)) if api_key_id else None
+
+                # 准备记录参数
+                params = UsageRecordParams(
+                    db=db,
+                    user=user,
+                    api_key=api_key,
+                    provider=record.get("provider") or "unknown",
+                    model=record.get("model") or "unknown",
+                    input_tokens=int(record.get("input_tokens") or 0),
+                    output_tokens=int(record.get("output_tokens") or 0),
+                    cache_creation_input_tokens=int(record.get("cache_creation_input_tokens") or 0),
+                    cache_read_input_tokens=int(record.get("cache_read_input_tokens") or 0),
+                    request_type=record.get("request_type") or "chat",
+                    api_format=record.get("api_format"),
+                    endpoint_api_format=record.get("endpoint_api_format"),
+                    has_format_conversion=bool(record.get("has_format_conversion")),
+                    is_stream=bool(record.get("is_stream", True)),
+                    response_time_ms=record.get("response_time_ms"),
+                    first_byte_time_ms=record.get("first_byte_time_ms"),
+                    status_code=int(record.get("status_code") or 200),
+                    error_message=record.get("error_message"),
+                    metadata=record.get("metadata"),
+                    request_headers=record.get("request_headers"),
+                    request_body=record.get("request_body"),
+                    provider_request_headers=record.get("provider_request_headers"),
+                    response_headers=record.get("response_headers"),
+                    client_response_headers=record.get("client_response_headers"),
+                    response_body=record.get("response_body"),
+                    request_id=request_id,
+                    provider_id=record.get("provider_id"),
+                    provider_endpoint_id=record.get("provider_endpoint_id"),
+                    provider_api_key_id=record.get("provider_api_key_id"),
+                    status=record.get("status") or "completed",
+                    cache_ttl_minutes=record.get("cache_ttl_minutes"),
+                    use_tiered_pricing=record.get("use_tiered_pricing", True),
+                    target_model=record.get("target_model"),
+                )
+
+                usage_params, total_cost = await cls._prepare_usage_record(params)
+
+                # 更新已存在的 Usage 记录
+                cls._update_existing_usage(existing_usage, usage_params, record.get("target_model"))
+                usages.append(existing_usage)
+                updated_count += 1
+
+                # 聚合统计（更新记录也需要更新统计，因为 pending 状态没有计费）
+                model_name = record.get("model") or "unknown"
+                model_counts[model_name] += 1
+
+                provider_id = record.get("provider_id")
+                if provider_id:
+                    actual_cost = usage_params.get("actual_total_cost_usd", 0)
+                    provider_costs[provider_id] += actual_cost
+
+                # 用户统计（独立 Key 不计入创建者）
+                if user and not (api_key and api_key.is_standalone):
+                    user_costs[str(user.id)] += total_cost
+
+                # API Key 统计
+                if api_key:
+                    key_id = str(api_key.id)
+                    apikey_stats[key_id]["requests"] += 1
+                    apikey_stats[key_id]["cost"] += total_cost
+                    apikey_stats[key_id]["is_standalone"] = api_key.is_standalone
+
+            except Exception as e:
+                skipped_count += 1
+                logger.warning(f"批量记录中更新失败: {e}, request_id={record.get('request_id')}")
+                continue
+
+        # 2. 处理需要新建的记录
+        for record in records_to_insert:
             try:
                 # 从预取的 map 中获取 user 和 api_key 对象
                 user_id = record.get("user_id")
@@ -1215,7 +1350,13 @@ class UsageService:
         # 单次提交所有更改
         try:
             db.commit()
-            logger.debug(f"批量记录 {len(usages)} 条使用记录成功")
+            inserted_count = len(usages) - updated_count
+            if updated_count > 0:
+                logger.debug(
+                    f"批量记录成功: 更新 {updated_count} 条, 新建 {inserted_count} 条"
+                )
+            else:
+                logger.debug(f"批量记录 {len(usages)} 条使用记录成功")
         except Exception as e:
             logger.error(f"批量提交使用记录时出错: {e}")
             db.rollback()
@@ -1989,7 +2130,8 @@ class UsageService:
         records = query.all()
 
         # 检查超时的 pending/streaming 请求
-        timeout_ids = []
+        # 收集可能超时的 usage_id 列表
+        timeout_candidates: List[str] = []
         for r in records:
             if r.status in ("pending", "streaming") and r.created_at:
                 # 使用全局配置的超时时间
@@ -2001,15 +2143,90 @@ class UsageService:
                     created_at = created_at.replace(tzinfo=timezone.utc)
                 elapsed = (now - created_at).total_seconds()
                 if elapsed > timeout_seconds:
-                    timeout_ids.append(r.id)
+                    # 需要获取 request_id 以便检查 RequestCandidate 表
+                    # r.id 是 usage_id，需要查询 request_id
+                    timeout_candidates.append(r.id)
 
-        # 批量更新超时的请求
-        if timeout_ids:
-            db.query(Usage).filter(Usage.id.in_(timeout_ids)).update(
-                {"status": "failed", "error_message": "请求超时（服务器可能已重启）"},
-                synchronize_session=False,
+        # 批量更新超时的请求（排除已有成功完成记录的请求）
+        timeout_ids = []
+        if timeout_candidates:
+            # 检查 RequestCandidate 表是否有成功完成的记录
+            # 如果流已经成功完成（stream_completed: true），不应该标记为超时
+            # 先获取这些 Usage 的 request_id
+            usage_request_ids = (
+                db.query(Usage.id, Usage.request_id)
+                .filter(Usage.id.in_(timeout_candidates))
+                .all()
             )
-            db.commit()
+            usage_id_to_request_id = {u.id: u.request_id for u in usage_request_ids}
+            request_id_to_usage_id = {u.request_id: u.id for u in usage_request_ids}
+            request_ids = list(request_id_to_usage_id.keys())
+
+            # 查询这些请求中已有成功完成记录的 request_id
+            # 包括两种情况：
+            # 1. status='success' 且 stream_completed=True（正常完成）
+            # 2. status='streaming' 且 status_code=200（流传输中但 Provider 已返回 200，可能是服务重启导致回调丢失）
+            completed_usage_ids = set()
+            if request_ids:
+                from sqlalchemy import or_
+
+                candidates = (
+                    db.query(
+                        RequestCandidate.request_id,
+                        RequestCandidate.status,
+                        RequestCandidate.status_code,
+                        RequestCandidate.extra_data,
+                    )
+                    .filter(
+                        RequestCandidate.request_id.in_(request_ids),
+                        or_(
+                            RequestCandidate.status == "success",
+                            # streaming 状态且 status_code=200，说明 Provider 响应成功
+                            # 但流传输可能因服务重启而中断
+                            (RequestCandidate.status == "streaming")
+                            & (RequestCandidate.status_code == 200),
+                        ),
+                    )
+                    .all()
+                )
+                for candidate in candidates:
+                    extra_data = candidate.extra_data or {}
+                    # 情况1：status='success' 且 stream_completed=True
+                    if candidate.status == "success" and extra_data.get(
+                        "stream_completed", False
+                    ):
+                        usage_id = request_id_to_usage_id.get(candidate.request_id)
+                        if usage_id:
+                            completed_usage_ids.add(usage_id)
+                    # 情况2：status='streaming' 且 status_code=200
+                    # 这表示 Provider 返回了 200，但流传输可能因服务重启而未正常结束
+                    # 此时应该恢复为 completed 而不是标记为 failed
+                    elif candidate.status == "streaming" and candidate.status_code == 200:
+                        usage_id = request_id_to_usage_id.get(candidate.request_id)
+                        if usage_id:
+                            completed_usage_ids.add(usage_id)
+
+            # 只对没有成功完成记录的请求标记超时
+            timeout_ids = [uid for uid in timeout_candidates if uid not in completed_usage_ids]
+
+            if timeout_ids:
+                db.query(Usage).filter(Usage.id.in_(timeout_ids)).update(
+                    {"status": "failed", "error_message": "请求超时（服务器可能已重启）"},
+                    synchronize_session=False,
+                )
+                db.commit()
+
+            # 对于已完成但状态未更新的请求，主动恢复状态为 completed
+            # 这处理了遥测回调丢失的情况（例如服务重启、后台任务未执行等）
+            if completed_usage_ids:
+                db.query(Usage).filter(Usage.id.in_(list(completed_usage_ids))).update(
+                    {"status": "completed"},
+                    synchronize_session=False,
+                )
+                db.commit()
+                logger.info(
+                    f"[Usage] 恢复 {len(completed_usage_ids)} 个已完成请求的状态（遥测回调丢失）"
+                )
 
         result: List[Dict[str, Any]] = []
         for r in records:

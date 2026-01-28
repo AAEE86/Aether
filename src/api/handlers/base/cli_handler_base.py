@@ -1851,6 +1851,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
                 api_key = bg_db.query(ApiKeyModel).filter(ApiKeyModel.id == ctx.api_key_id).first()
 
                 if not user or not api_key:
+                    logger.warning(
+                        f"[{ctx.request_id}] 无法记录统计: user={user is not None}, api_key={api_key is not None}"
+                    )
                     return
 
                 bg_telemetry = MessageTelemetry(
@@ -1925,6 +1928,11 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         }
                     )
 
+                    logger.debug(
+                        f"[{ctx.request_id}] 开始记录 Usage: "
+                        f"provider={ctx.provider_name}, model={ctx.model}, "
+                        f"in={actual_input_tokens}, out={ctx.output_tokens}"
+                    )
                     total_cost = await bg_telemetry.record_success(
                         provider=ctx.provider_name,
                         model=ctx.model,
@@ -1955,7 +1963,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         # Provider 响应元数据（如 Gemini 的 modelVersion）
                         response_metadata=ctx.response_metadata if ctx.response_metadata else None,
                     )
-                    logger.debug(f"{self.FORMAT_ID} 流式响应完成")
+                    logger.debug(
+                        f"[{ctx.request_id}] Usage 记录完成: cost=${total_cost:.6f}"
+                    )
                     # 简洁的请求完成摘要（两行格式）
                     line1 = f"[OK] {self.request_id[:8]} | {ctx.model} | {ctx.provider_name}"
                     if ctx.first_byte_time_ms:
