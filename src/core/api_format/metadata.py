@@ -38,6 +38,9 @@ class ApiFormatDefinition:
     - protected_keys: 不应被 extra_headers 覆盖的头部（小写）
     - model_in_body: 是否需要在请求体中包含 model 字段（Gemini 等格式通过 URL 传递模型名）
     - stream_in_body: 是否需要在请求体中包含 stream 字段（Gemini 等格式通过 URL 端点区分流式）
+    - data_format_id: 数据格式标识，相同 ID 的格式数据结构相同可以透传，不同则需要转换
+                      例如：CLAUDE/CLAUDE_CLI 都是 "claude"，可以透传
+                           OPENAI 是 "openai_chat"，OPENAI_CLI 是 "openai_responses"，需要转换
     """
 
     api_format: APIFormat
@@ -50,6 +53,7 @@ class ApiFormatDefinition:
     protected_keys: frozenset[str] = field(default_factory=frozenset)  # 受保护的头部 key（小写）
     model_in_body: bool = True  # 是否需要在请求体中包含 model 字段
     stream_in_body: bool = True  # 是否需要在请求体中包含 stream 字段
+    data_format_id: str = ""  # 数据格式标识，相同 ID 可透传，不同需转换
 
     def iter_aliases(self) -> Iterable[str]:
         """返回大小写统一后的别名集合，包含枚举名本身。"""
@@ -70,6 +74,7 @@ _DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
         auth_type="header",
         extra_headers={"anthropic-version": "2023-06-01"},
         protected_keys=frozenset({"x-api-key", "content-type", "anthropic-version"}),
+        data_format_id="claude",  # CLAUDE/CLAUDE_CLI 数据格式相同
     ),
     APIFormat.CLAUDE_CLI: ApiFormatDefinition(
         api_format=APIFormat.CLAUDE_CLI,
@@ -79,6 +84,7 @@ _DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
         auth_header="Authorization",
         auth_type="bearer",
         protected_keys=frozenset({"authorization", "content-type"}),
+        data_format_id="claude",  # CLAUDE/CLAUDE_CLI 数据格式相同
     ),
     APIFormat.OPENAI: ApiFormatDefinition(
         api_format=APIFormat.OPENAI,
@@ -98,6 +104,7 @@ _DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
         auth_header="Authorization",
         auth_type="bearer",
         protected_keys=frozenset({"authorization", "content-type"}),
+        data_format_id="openai_chat",  # Chat Completions API 格式
     ),
     APIFormat.OPENAI_CLI: ApiFormatDefinition(
         api_format=APIFormat.OPENAI_CLI,
@@ -107,6 +114,7 @@ _DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
         auth_header="Authorization",
         auth_type="bearer",
         protected_keys=frozenset({"authorization", "content-type"}),
+        data_format_id="openai_responses",  # Responses API 格式，与 OPENAI 不同需转换
     ),
     APIFormat.GEMINI: ApiFormatDefinition(
         api_format=APIFormat.GEMINI,
@@ -118,6 +126,7 @@ _DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
         protected_keys=frozenset({"x-goog-api-key", "content-type"}),
         model_in_body=False,  # Gemini 通过 URL 路径传递模型名
         stream_in_body=False,  # Gemini 通过 URL 端点区分流式（streamGenerateContent vs generateContent）
+        data_format_id="gemini",  # GEMINI/GEMINI_CLI 数据格式相同
     ),
     APIFormat.GEMINI_CLI: ApiFormatDefinition(
         api_format=APIFormat.GEMINI_CLI,
@@ -129,6 +138,7 @@ _DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
         protected_keys=frozenset({"x-goog-api-key", "content-type"}),
         model_in_body=False,  # Gemini 通过 URL 路径传递模型名
         stream_in_body=False,  # Gemini 通过 URL 端点区分流式
+        data_format_id="gemini",  # GEMINI/GEMINI_CLI 数据格式相同
     ),
 }
 
@@ -225,6 +235,62 @@ def get_protected_keys(api_format: APIFormat) -> frozenset[str]:
     if definition:
         return definition.protected_keys
     return frozenset({"authorization", "content-type"})
+
+
+def get_data_format_id(api_format: Union[str, APIFormat]) -> str:
+    """
+    获取格式的数据格式标识。
+
+    相同 data_format_id 的格式数据结构相同，可以透传；不同则需要转换。
+
+    Args:
+        api_format: API 格式（字符串或枚举）
+
+    Returns:
+        数据格式标识，未找到时返回格式名称本身（小写）
+    """
+    # 统一转换为 APIFormat 枚举
+    if isinstance(api_format, str):
+        resolved = resolve_api_format(api_format)
+        if resolved is None:
+            # 未知格式：返回小写，与已定义格式的 data_format_id 风格一致
+            return api_format.lower()
+        api_format = resolved
+
+    definition = API_FORMAT_DEFINITIONS.get(api_format)
+    if definition and definition.data_format_id:
+        return definition.data_format_id
+    # 兜底：返回格式名称本身（小写）
+    return api_format.value.lower()
+
+
+def can_passthrough(client_format: Union[str, APIFormat], endpoint_format: Union[str, APIFormat]) -> bool:
+    """
+    判断两个格式之间是否可以透传（不需要数据转换）。
+
+    透传条件：
+    1. 格式完全相同
+    2. data_format_id 相同（如 CLAUDE 和 CLAUDE_CLI 都是 "claude"）
+
+    Args:
+        client_format: 客户端请求格式
+        endpoint_format: 端点 API 格式
+
+    Returns:
+        True 表示可以透传，False 表示需要转换
+    """
+    # 统一转换为字符串比较
+    client_str = client_format.value if isinstance(client_format, APIFormat) else str(client_format).upper()
+    endpoint_str = endpoint_format.value if isinstance(endpoint_format, APIFormat) else str(endpoint_format).upper()
+
+    # 完全相同
+    if client_str == endpoint_str:
+        return True
+
+    # 检查 data_format_id
+    client_data_id = get_data_format_id(client_format)
+    endpoint_data_id = get_data_format_id(endpoint_format)
+    return client_data_id == endpoint_data_id
 
 
 @lru_cache(maxsize=1)

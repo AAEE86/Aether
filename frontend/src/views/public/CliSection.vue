@@ -1,7 +1,7 @@
 <template>
   <section
     ref="sectionRef"
-    class="min-h-screen snap-start flex items-center px-16 lg:px-20 py-20"
+    class="min-h-screen snap-start flex items-center px-4 sm:px-8 md:px-16 lg:px-20 py-20"
   >
     <div class="max-w-7xl mx-auto grid md:grid-cols-2 gap-12 items-center">
       <!-- Content column -->

@@ -1,7 +1,7 @@
 <template>
   <div
     ref="scrollContainer"
-    class="relative h-screen overflow-y-auto snap-y snap-mandatory scroll-smooth literary-grid literary-paper"
+    class="relative h-screen overflow-y-auto overflow-x-hidden snap-y snap-mandatory scroll-smooth literary-grid literary-paper"
   >
     <!-- Fixed scroll indicator -->
     <nav class="scroll-indicator">
@@ -21,93 +21,93 @@
 
     <!-- Header -->
     <header class="sticky top-0 z-50 border-b border-[#cc785c]/10 dark:border-[rgba(227,224,211,0.12)] bg-[#fafaf7]/90 dark:bg-[#191714]/95 backdrop-blur-xl transition-all">
-      <div class="h-16 flex items-center">
-        <!-- Centered content container (max-w-7xl) -->
-        <div class="mx-auto max-w-7xl w-full px-6 flex items-center justify-between">
-          <!-- Left: Logo & Brand -->
-          <div
-            class="flex items-center gap-3 group/logo cursor-pointer"
-            @click="scrollToSection(0)"
-          >
-            <HeaderLogo
-              size="h-9 w-9"
-              class-name="text-[#191919] dark:text-white"
-            />
-            <div class="flex flex-col justify-center">
-              <h1 class="text-lg font-bold text-[#191919] dark:text-white leading-none">
-                Aether
-              </h1>
-              <span class="text-[10px] text-[#91918d] dark:text-muted-foreground leading-none mt-1.5 font-medium tracking-wide">AI Gateway</span>
-            </div>
+      <div class="h-14 sm:h-16 flex items-center px-3 sm:px-4 md:px-8">
+        <!-- Left: Logo & Brand -->
+        <div
+          class="flex items-center gap-2 sm:gap-3 group/logo cursor-pointer shrink-0"
+          @click="scrollToSection(0)"
+        >
+          <HeaderLogo
+            size="h-7 w-7 sm:h-9 sm:w-9"
+            class-name="text-[#191919] dark:text-white"
+          />
+          <div class="flex flex-col justify-center">
+            <h1 class="text-base sm:text-lg font-bold text-[#191919] dark:text-white leading-none">
+              Aether
+            </h1>
+            <span class="text-[9px] sm:text-[10px] text-[#91918d] dark:text-muted-foreground leading-none mt-1 sm:mt-1.5 font-medium tracking-wide">AI Gateway</span>
           </div>
+        </div>
 
-          <!-- Center: Navigation -->
-          <nav class="hidden md:flex items-center gap-2">
-            <button
-              v-for="(section, index) in sections"
-              :key="index"
-              class="group relative px-3 py-2 text-sm font-medium transition"
-              :class="currentSection === index
-                ? 'text-[#cc785c] dark:text-[#d4a27f]'
-                : 'text-[#666663] dark:text-muted-foreground hover:text-[#191919] dark:hover:text-white'"
-              @click="scrollToSection(index)"
-            >
-              {{ section.name }}
-              <div
-                class="absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-all duration-300"
-                :class="currentSection === index ? 'bg-[#cc785c] dark:bg-[#d4a27f] scale-x-100' : 'bg-transparent scale-x-0'"
-              />
-            </button>
-          </nav>
+        <!-- Center: Navigation (flexible, takes remaining space) -->
+        <nav class="hidden md:flex items-center justify-center gap-2 flex-1 min-w-0">
+          <button
+            v-for="(section, index) in sections"
+            :key="index"
+            class="group relative px-3 py-2 text-sm font-medium transition"
+            :class="currentSection === index
+              ? 'text-[#cc785c] dark:text-[#d4a27f]'
+              : 'text-[#666663] dark:text-muted-foreground hover:text-[#191919] dark:hover:text-white'"
+            @click="scrollToSection(index)"
+          >
+            {{ section.name }}
+            <div
+              class="absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-all duration-300"
+              :class="currentSection === index ? 'bg-[#cc785c] dark:bg-[#d4a27f] scale-x-100' : 'bg-transparent scale-x-0'"
+            />
+          </button>
+        </nav>
 
-          <!-- Right: Login/Dashboard Button -->
+        <!-- Spacer for mobile (when nav is hidden) -->
+        <div class="flex-1 md:hidden" />
+
+        <!-- Right: Login/Dashboard Button + Icons -->
+        <div class="flex items-center gap-1 sm:gap-2 shrink-0">
+          <!-- Login/Dashboard Button -->
           <RouterLink
             v-if="authStore.isAuthenticated"
             :to="dashboardPath"
-            class="min-w-[72px] text-center rounded-xl bg-[#191919] dark:bg-[#cc785c] px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-[#262625] dark:hover:bg-[#b86d52] whitespace-nowrap"
+            class="min-w-[60px] sm:min-w-[72px] text-center rounded-lg sm:rounded-xl bg-[#191919] dark:bg-[#cc785c] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-white shadow-sm transition hover:bg-[#262625] dark:hover:bg-[#b86d52] whitespace-nowrap"
           >
             控制台
           </RouterLink>
           <button
             v-else
-            class="min-w-[72px] text-center rounded-xl bg-[#cc785c] px-4 py-2 text-sm font-medium text-white shadow-lg shadow-[#cc785c]/30 transition hover:bg-[#d4a27f] whitespace-nowrap"
+            class="min-w-[60px] sm:min-w-[72px] text-center rounded-lg sm:rounded-xl bg-[#cc785c] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-white shadow-lg shadow-[#cc785c]/30 transition hover:bg-[#d4a27f] whitespace-nowrap"
             @click="showLoginDialog = true"
           >
             登录
           </button>
-        </div>
-
-        <!-- Fixed right icons (px-8 to match dashboard) -->
-        <div class="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-2">
-          <!-- Theme Toggle -->
-          <button
-            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-            :title="themeMode === 'system' ? '跟随系统' : themeMode === 'dark' ? '深色模式' : '浅色模式'"
-            @click="toggleDarkMode"
-          >
-            <SunMoon
-              v-if="themeMode === 'system'"
-              class="h-4 w-4"
-            />
-            <Sun
-              v-else-if="themeMode === 'light'"
-              class="h-4 w-4"
-            />
-            <Moon
-              v-else
-              class="h-4 w-4"
-            />
-          </button>
-          <!-- GitHub Link -->
-          <a
-            href="https://github.com/fawney19/Aether"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-            title="GitHub 仓库"
-          >
-            <GithubIcon class="h-4 w-4" />
-          </a>
+          <!-- Theme Toggle + GitHub Icons -->
+          <div class="flex items-center gap-0.5 sm:gap-1 ml-0.5 sm:ml-1 md:ml-3 lg:ml-4">
+            <button
+              class="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+              :title="themeMode === 'system' ? '跟随系统' : themeMode === 'dark' ? '深色模式' : '浅色模式'"
+              @click="toggleDarkMode"
+            >
+              <SunMoon
+                v-if="themeMode === 'system'"
+                class="h-3.5 w-3.5 sm:h-4 sm:w-4"
+              />
+              <Sun
+                v-else-if="themeMode === 'light'"
+                class="h-3.5 w-3.5 sm:h-4 sm:w-4"
+              />
+              <Moon
+                v-else
+                class="h-3.5 w-3.5 sm:h-4 sm:w-4"
+              />
+            </button>
+            <a
+              href="https://github.com/fawney19/Aether"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+              title="GitHub 仓库"
+            >
+              <GithubIcon class="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            </a>
+          </div>
         </div>
       </div>
     </header>
@@ -115,9 +115,9 @@
     <!-- Main Content -->
     <main class="relative z-10">
       <!-- Fixed Logo Container -->
-      <div class="mt-4 fixed inset-0 z-20 pointer-events-none flex items-center justify-center overflow-hidden">
+      <div class="fixed top-0 left-0 right-0 bottom-0 z-20 pointer-events-none flex items-center justify-center overflow-hidden">
         <div
-          class="mt-16 transform-gpu logo-container"
+          class="transform-gpu logo-container"
           :class="[currentSection === SECTIONS.HOME ? 'home-section' : '', `logo-transition-${scrollDirection}`]"
           :style="fixedLogoStyle"
         >
@@ -161,18 +161,18 @@
       <!-- Section 0: Introduction -->
       <section
         ref="section0"
-        class="min-h-screen snap-start flex items-center justify-center px-16 lg:px-20 py-20"
+        class="min-h-screen snap-start flex items-center justify-center px-4 sm:px-8 md:px-16 lg:px-20 py-20"
       >
         <div class="max-w-4xl mx-auto text-center">
-          <div class="h-80 w-full mb-16 mt-8" />
+          <div class="h-48 sm:h-64 md:h-80 w-full mb-8 sm:mb-12 md:mb-16 mt-4 sm:mt-8" />
           <h1
-            class="mb-6 text-5xl md:text-7xl font-bold text-[#191919] dark:text-white leading-tight transition-all duration-700"
+            class="mb-6 text-3xl sm:text-5xl md:text-7xl font-bold text-[#191919] dark:text-white leading-tight transition-all duration-700"
             :style="getTitleStyle(SECTIONS.HOME)"
           >
             欢迎使用 <span class="text-primary">Aether</span>
           </h1>
           <p
-            class="mb-8 text-xl text-[#666663] dark:text-gray-300 max-w-2xl mx-auto transition-all duration-700"
+            class="mb-8 text-base sm:text-lg md:text-xl text-[#666663] dark:text-gray-300 max-w-2xl mx-auto transition-all duration-700"
             :style="getDescStyle(SECTIONS.HOME)"
           >
             AI 开发工具统一接入平台<br>
@@ -261,7 +261,7 @@
       <!-- Section 4: Features -->
       <section
         ref="section4"
-        class="min-h-screen snap-start flex items-center justify-center px-16 lg:px-20 py-20 relative overflow-hidden"
+        class="min-h-screen snap-start flex items-center justify-center px-4 sm:px-8 md:px-16 lg:px-20 py-20 relative overflow-hidden"
       >
         <div class="max-w-4xl mx-auto text-center relative z-10">
           <div

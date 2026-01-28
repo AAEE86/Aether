@@ -356,13 +356,13 @@
             class="py-4 w-[80px]"
             :title="getApiFormatTooltip(record)"
           >
-            <!-- 有格式转换：两行显示 -->
+            <!-- 有格式转换或同族格式差异：两行显示 -->
             <div
-              v-if="record.api_format && record.has_format_conversion && record.endpoint_api_format"
+              v-if="shouldShowFormatConversion(record)"
               class="flex flex-col text-xs gap-0.5"
             >
               <div class="flex items-center gap-1">
-                <span>{{ formatApiFormat(record.api_format) }}</span>
+                <span>{{ formatApiFormat(record.api_format!) }}</span>
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 20 20"
@@ -376,7 +376,7 @@
                   />
                 </svg>
               </div>
-              <span class="text-muted-foreground">{{ formatApiFormat(record.endpoint_api_format) }}</span>
+              <span class="text-muted-foreground">{{ formatApiFormat(record.endpoint_api_format!) }}</span>
             </div>
             <!-- 无格式转换：单行显示 -->
             <span
@@ -700,6 +700,20 @@ function formatApiFormat(format: string): string {
   return formatMap[format.toUpperCase()] || format
 }
 
+// 判断是否应该显示格式转换信息
+// 包括：1. 跨格式转换（has_format_conversion=true）2. 同族格式差异（如 CLAUDE_CLI → CLAUDE）
+function shouldShowFormatConversion(record: UsageRecord): boolean {
+  if (!record.api_format || !record.endpoint_api_format) {
+    return false
+  }
+  // 跨格式转换
+  if (record.has_format_conversion) {
+    return true
+  }
+  // 同族格式差异（精确字符串比较，不区分大小写）
+  return record.api_format.toUpperCase() !== record.endpoint_api_format.toUpperCase()
+}
+
 // 获取 API 格式的 tooltip（包含转换信息）
 function getApiFormatTooltip(record: UsageRecord): string {
   if (!record.api_format) {
@@ -707,10 +721,11 @@ function getApiFormatTooltip(record: UsageRecord): string {
   }
   const displayFormat = formatApiFormat(record.api_format)
 
-  // 如果发生了格式转换，显示详细信息
-  if (record.has_format_conversion && record.endpoint_api_format) {
-    const endpointDisplayFormat = formatApiFormat(record.endpoint_api_format)
-    return `用户请求格式: ${displayFormat}\n端点原生格式: ${endpointDisplayFormat}\n系统进行了 ${displayFormat} → ${endpointDisplayFormat} 格式转换`
+  // 如果发生了格式转换或同族格式差异，显示详细信息
+  if (shouldShowFormatConversion(record)) {
+    const endpointDisplayFormat = formatApiFormat(record.endpoint_api_format!)
+    const conversionType = record.has_format_conversion ? '格式转换' : '格式兼容（无需转换）'
+    return `用户请求格式: ${displayFormat}\n端点原生格式: ${endpointDisplayFormat}\n${conversionType}`
   }
 
   return record.api_format

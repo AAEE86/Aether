@@ -28,6 +28,5 @@ def main():
     print("  - 这些密钥应该独立设置，避免相互耦合")
     print()
 
-
 if __name__ == "__main__":
     main()

@@ -730,6 +730,7 @@ class GetUsageAdapter(AuthenticatedApiAdapter):
     async def handle(self, context):  # type: ignore[override]
         from sqlalchemy import or_
 
+        from src.models.database import ProviderEndpoint
         from src.utils.database_helpers import escape_like_pattern, safe_truncate_escaped
 
         db = context.db
@@ -837,8 +838,9 @@ class GetUsageAdapter(AuthenticatedApiAdapter):
         summary_by_provider = sorted(summary_by_provider, key=lambda x: x["requests"], reverse=True)
 
         query = (
-            db.query(Usage, ApiKey)
+            db.query(Usage, ApiKey, ProviderEndpoint)
             .outerjoin(ApiKey, Usage.api_key_id == ApiKey.id)
+            .outerjoin(ProviderEndpoint, Usage.provider_endpoint_id == ProviderEndpoint.id)
             .filter(Usage.user_id == user.id)
         )
         if self.start_date:
@@ -894,50 +896,14 @@ class GetUsageAdapter(AuthenticatedApiAdapter):
                 "offset": self.offset,
                 "has_more": self.offset + self.limit < total_records,
             },
-            "records": [
-                {
-                    "id": r.id,
-                    "model": r.model,
-                    "target_model": r.target_model,  # 映射后的目标模型名
-                    "api_format": r.api_format,
-                    "endpoint_api_format": r.endpoint_api_format,
-                    "has_format_conversion": bool(r.has_format_conversion) if r.has_format_conversion is not None else False,
-                    "input_tokens": r.input_tokens,
-                    "output_tokens": r.output_tokens,
-                    "total_tokens": r.total_tokens,
-                    "cost": r.total_cost_usd,
-                    "response_time_ms": r.response_time_ms,
-                    "first_byte_time_ms": r.first_byte_time_ms,
-                    "is_stream": r.is_stream,
-                    "status": r.status,  # 请求状态: pending, streaming, completed, failed
-                    "created_at": r.created_at.isoformat(),
-                    "cache_creation_input_tokens": r.cache_creation_input_tokens,
-                    "cache_read_input_tokens": r.cache_read_input_tokens,
-                    "status_code": r.status_code,
-                    "error_message": r.error_message,
-                    "input_price_per_1m": r.input_price_per_1m,
-                    "output_price_per_1m": r.output_price_per_1m,
-                    "cache_creation_price_per_1m": r.cache_creation_price_per_1m,
-                    "cache_read_price_per_1m": r.cache_read_price_per_1m,
-                    "api_key": (
-                        {
-                            "id": str(api_key.id),
-                            "name": api_key.name,
-                            "display": api_key.get_display_key(),
-                        }
-                        if api_key
-                        else None
-                    ),
-                }
-                for r, api_key in usage_records
-            ],
+            "records": self._build_usage_records(usage_records),
         }
 
         # 管理员可以看到真实成本
         if user.role == "admin":
             response_data["total_actual_cost"] = total_actual_cost
             # 为每条记录添加真实成本和倍率信息
-            for i, (r, _) in enumerate(usage_records):
+            for i, (r, _, _) in enumerate(usage_records):
                 # 确保字段有值，避免前端显示 -
                 actual_cost = (
                     r.actual_total_cost_usd if r.actual_total_cost_usd is not None else 0.0
@@ -946,15 +912,65 @@ class GetUsageAdapter(AuthenticatedApiAdapter):
                 response_data["records"][i]["actual_cost"] = actual_cost
                 response_data["records"][i]["rate_multiplier"] = rate_mult
 
-                # 调试日志：检查前几条记录
-                if i < 3:
-                    from src.core.logger import logger
-                    logger.debug(
-                        f"Usage record {i}: id={r.id}, actual_total_cost_usd={r.actual_total_cost_usd}, "
-                        f"rate_multiplier={r.rate_multiplier}, returned: actual_cost={actual_cost}, rate_mult={rate_mult}"
-                    )
-
         return response_data
+
+    def _build_usage_records(self, usage_records: list) -> list:
+        """构建使用记录列表，包含格式转换信息的回填逻辑"""
+        from src.core.api_format.metadata import can_passthrough
+
+        records = []
+        for r, api_key, endpoint in usage_records:
+            # 格式转换追踪（兼容历史数据：尽量回填可展示信息）
+            api_format = r.api_format
+            endpoint_api_format = r.endpoint_api_format or (
+                endpoint.api_format if endpoint else None
+            )
+
+            has_format_conversion = r.has_format_conversion
+            if has_format_conversion is None:
+                # 使用 can_passthrough 判断是否需要转换，与实际转换逻辑保持一致
+                client_fmt = str(api_format or "").upper()
+                endpoint_fmt = str(endpoint_api_format or "").upper()
+                if client_fmt and endpoint_fmt:
+                    has_format_conversion = not can_passthrough(client_fmt, endpoint_fmt)
+                else:
+                    has_format_conversion = False
+
+            records.append({
+                "id": r.id,
+                "model": r.model,
+                "target_model": r.target_model,  # 映射后的目标模型名
+                "api_format": api_format,
+                "endpoint_api_format": endpoint_api_format,
+                "has_format_conversion": bool(has_format_conversion),
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "total_tokens": r.total_tokens,
+                "cost": r.total_cost_usd,
+                "response_time_ms": r.response_time_ms,
+                "first_byte_time_ms": r.first_byte_time_ms,
+                "is_stream": r.is_stream,
+                "status": r.status,  # 请求状态: pending, streaming, completed, failed
+                "created_at": r.created_at.isoformat(),
+                "cache_creation_input_tokens": r.cache_creation_input_tokens,
+                "cache_read_input_tokens": r.cache_read_input_tokens,
+                "status_code": r.status_code,
+                "error_message": r.error_message,
+                "input_price_per_1m": r.input_price_per_1m,
+                "output_price_per_1m": r.output_price_per_1m,
+                "cache_creation_price_per_1m": r.cache_creation_price_per_1m,
+                "cache_read_price_per_1m": r.cache_read_price_per_1m,
+                "api_key": (
+                    {
+                        "id": str(api_key.id),
+                        "name": api_key.name,
+                        "display": api_key.get_display_key(),
+                    }
+                    if api_key
+                    else None
+                ),
+            })
+        return records
 
 
 @dataclass
