@@ -12,7 +12,8 @@
 
 from __future__ import annotations
 
-from typing import AbstractSet, Any, Dict, FrozenSet, Optional, Set
+from collections.abc import Set as AbstractSet
+from typing import Any
 
 from src.core.api_format.enums import APIFormat
 from src.core.api_format.metadata import get_auth_config, get_extra_headers, get_protected_keys
@@ -23,7 +24,7 @@ from src.core.api_format.metadata import get_auth_config, get_extra_headers, get
 # =============================================================================
 
 # 转发给上游时需要剔除的头部（系统管理 + 认证替换）
-UPSTREAM_DROP_HEADERS: FrozenSet[str] = frozenset(
+UPSTREAM_DROP_HEADERS: frozenset[str] = frozenset(
     {
         # 认证头 - 会被替换为 Provider 的认证
         "authorization",
@@ -41,7 +42,7 @@ UPSTREAM_DROP_HEADERS: FrozenSet[str] = frozenset(
 
 # 最小必脱敏集合（编译时常量，用于快速路径）
 # 完整脱敏应使用 SystemConfigService.get_sensitive_headers()
-CORE_REDACT_HEADERS: FrozenSet[str] = frozenset(
+CORE_REDACT_HEADERS: frozenset[str] = frozenset(
     {
         "authorization",
         "x-api-key",
@@ -50,7 +51,7 @@ CORE_REDACT_HEADERS: FrozenSet[str] = frozenset(
 )
 
 # Hop-by-hop 头部 (RFC 7230)
-HOP_BY_HOP_HEADERS: FrozenSet[str] = frozenset(
+HOP_BY_HOP_HEADERS: frozenset[str] = frozenset(
     {
         "connection",
         "keep-alive",
@@ -64,7 +65,7 @@ HOP_BY_HOP_HEADERS: FrozenSet[str] = frozenset(
 )
 
 # 响应时需要过滤的头部（body-dependent + hop-by-hop）
-RESPONSE_DROP_HEADERS: FrozenSet[str] = (
+RESPONSE_DROP_HEADERS: frozenset[str] = (
     frozenset(
         {
             "content-length",
@@ -82,7 +83,7 @@ RESPONSE_DROP_HEADERS: FrozenSet[str] = (
 # =============================================================================
 
 
-def normalize_headers(headers: Dict[str, str]) -> Dict[str, str]:
+def normalize_headers(headers: dict[str, str]) -> dict[str, str]:
     """
     将请求头 key 统一为小写
 
@@ -92,7 +93,7 @@ def normalize_headers(headers: Dict[str, str]) -> Dict[str, str]:
     return {k.lower(): v for k, v in headers.items()}
 
 
-def get_header_value(headers: Dict[str, str], key: str, default: str = "") -> str:
+def get_header_value(headers: dict[str, str], key: str, default: str = "") -> str:
     """
     大小写不敏感地获取请求头值
 
@@ -117,7 +118,7 @@ def get_header_value(headers: Dict[str, str], key: str, default: str = "") -> st
 # =============================================================================
 
 
-def extract_client_api_key(headers: Dict[str, str], api_format: APIFormat) -> Optional[str]:
+def extract_client_api_key(headers: dict[str, str], api_format: APIFormat) -> str | None:
     """
     从客户端请求头提取 API Key
 
@@ -147,10 +148,10 @@ def extract_client_api_key(headers: Dict[str, str], api_format: APIFormat) -> Op
 
 
 def extract_client_api_key_with_query(
-    headers: Dict[str, str],
-    query_params: Optional[Dict[str, str]],
+    headers: dict[str, str],
+    query_params: dict[str, str] | None,
     api_format: APIFormat,
-) -> Optional[str]:
+) -> str | None:
     """
     从客户端请求头或 URL 参数提取 API Key
 
@@ -184,10 +185,10 @@ def extract_client_api_key_with_query(
 
 
 def detect_capabilities(
-    headers: Dict[str, str],
+    headers: dict[str, str],
     api_format: APIFormat,
-    request_body: Optional[Dict[str, Any]] = None,  # noqa: ARG001 - 预留给部分格式使用
-) -> Dict[str, bool]:
+    request_body: dict[str, Any] | None = None,  # noqa: ARG001 - 预留给部分格式使用
+) -> dict[str, bool]:
     """
     从请求头检测能力需求
 
@@ -203,7 +204,7 @@ def detect_capabilities(
         能力需求字典，如 {"context_1m": True}
     """
 
-    requirements: Dict[str, bool] = {}
+    requirements: dict[str, bool] = {}
 
     if api_format in (APIFormat.CLAUDE, APIFormat.CLAUDE_CLI):
         beta_header = get_header_value(headers, "anthropic-beta")
@@ -228,20 +229,20 @@ class HeaderBuilder:
 
     def __init__(self) -> None:
         # key: (original_case_key, value)
-        self._headers: Dict[str, tuple[str, str]] = {}
+        self._headers: dict[str, tuple[str, str]] = {}
 
-    def add(self, key: str, value: str) -> "HeaderBuilder":
+    def add(self, key: str, value: str) -> HeaderBuilder:
         """添加单个头部（会覆盖同名头部）"""
         self._headers[key.lower()] = (key, value)
         return self
 
-    def add_many(self, headers: Dict[str, str]) -> "HeaderBuilder":
+    def add_many(self, headers: dict[str, str]) -> HeaderBuilder:
         """批量添加头部"""
         for k, v in headers.items():
             self.add(k, v)
         return self
 
-    def add_protected(self, headers: Dict[str, str], protected_keys: AbstractSet[str]) -> "HeaderBuilder":
+    def add_protected(self, headers: dict[str, str], protected_keys: AbstractSet[str]) -> HeaderBuilder:
         """
         添加头部但保护指定的 key 不被覆盖
 
@@ -253,13 +254,13 @@ class HeaderBuilder:
                 self.add(k, v)
         return self
 
-    def remove(self, keys: FrozenSet[str]) -> "HeaderBuilder":
+    def remove(self, keys: frozenset[str]) -> HeaderBuilder:
         """移除指定的头部"""
         for k in keys:
             self._headers.pop(k.lower(), None)
         return self
 
-    def rename(self, from_key: str, to_key: str) -> "HeaderBuilder":
+    def rename(self, from_key: str, to_key: str) -> HeaderBuilder:
         """
         重命名头部（保留原值）
 
@@ -273,9 +274,9 @@ class HeaderBuilder:
 
     def apply_rules(
         self,
-        rules: list[Dict[str, Any]],
-        protected_keys: Optional[AbstractSet[str]] = None,
-    ) -> "HeaderBuilder":
+        rules: list[dict[str, Any]],
+        protected_keys: AbstractSet[str] | None = None,
+    ) -> HeaderBuilder:
         """
         应用请求头规则
 
@@ -314,20 +315,20 @@ class HeaderBuilder:
 
         return self
 
-    def build(self) -> Dict[str, str]:
+    def build(self) -> dict[str, str]:
         """构建最终的头部字典"""
         return {original_key: value for original_key, value in self._headers.values()}
 
 
 def build_upstream_headers(
-    original_headers: Dict[str, str],
+    original_headers: dict[str, str],
     api_format: APIFormat,
     provider_api_key: str,
     *,
-    endpoint_headers: Optional[Dict[str, str]] = None,
-    extra_headers: Optional[Dict[str, str]] = None,
-    drop_headers: Optional[FrozenSet[str]] = None,
-) -> Dict[str, str]:
+    endpoint_headers: dict[str, str] | None = None,
+    extra_headers: dict[str, str] | None = None,
+    drop_headers: frozenset[str] | None = None,
+) -> dict[str, str]:
     """
     构建发送给上游 Provider 的请求头
 
@@ -386,10 +387,10 @@ def build_upstream_headers(
 
 
 def merge_headers_with_protection(
-    base_headers: Dict[str, str],
-    extra_headers: Optional[Dict[str, str]],
-    protected_keys: FrozenSet[str] | Set[str],
-) -> Dict[str, str]:
+    base_headers: dict[str, str],
+    extra_headers: dict[str, str] | None,
+    protected_keys: frozenset[str] | set[str],
+) -> dict[str, str]:
     """
     合并头部但保护指定的 key 不被覆盖
 
@@ -418,9 +419,9 @@ def merge_headers_with_protection(
 
 
 def filter_response_headers(
-    headers: Optional[Dict[str, str]],
-    drop_headers: Optional[FrozenSet[str]] = None,
-) -> Dict[str, str]:
+    headers: dict[str, str] | None,
+    drop_headers: frozenset[str] | None = None,
+) -> dict[str, str]:
     """
     过滤上游响应头中不应透传给客户端的字段
 
@@ -446,9 +447,9 @@ def filter_response_headers(
 
 
 def redact_headers_for_log(
-    headers: Dict[str, str],
-    redact_keys: Optional[FrozenSet[str]] = None,
-) -> Dict[str, str]:
+    headers: dict[str, str],
+    redact_keys: frozenset[str] | None = None,
+) -> dict[str, str]:
     """
     将敏感头部值替换为 *** 用于日志记录
 
@@ -487,7 +488,7 @@ def build_adapter_base_headers(
     api_key: str,
     *,
     include_extra: bool = True,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     根据 API 格式构建基础请求头
 
@@ -504,7 +505,7 @@ def build_adapter_base_headers(
     auth_header, auth_type = get_auth_config(api_format)
     auth_value = f"Bearer {api_key}" if auth_type == "bearer" else api_key
 
-    headers: Dict[str, str] = {
+    headers: dict[str, str] = {
         auth_header: auth_value,
         "Content-Type": "application/json",
     }
@@ -520,8 +521,8 @@ def build_adapter_base_headers(
 def build_adapter_headers(
     api_format: APIFormat,
     api_key: str,
-    extra_headers: Optional[Dict[str, str]] = None,
-) -> Dict[str, str]:
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, str]:
     """
     构建完整的 Adapter 请求头
 
@@ -565,8 +566,8 @@ def get_adapter_protected_keys(api_format: APIFormat) -> tuple[str, ...]:
 
 
 def extract_set_headers_from_rules(
-    header_rules: Optional[list[Dict[str, Any]]],
-) -> Optional[Dict[str, str]]:
+    header_rules: list[dict[str, Any]] | None,
+) -> dict[str, str] | None:
     """
     从 header_rules 中提取 set 操作生成的头部字典
 
@@ -582,7 +583,7 @@ def extract_set_headers_from_rules(
     if not header_rules:
         return None
 
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     for rule in header_rules:
         if rule.get("action") == "set":
             key = rule.get("key", "")
@@ -593,7 +594,7 @@ def extract_set_headers_from_rules(
     return headers if headers else None
 
 
-def get_extra_headers_from_endpoint(endpoint: Any) -> Optional[Dict[str, str]]:
+def get_extra_headers_from_endpoint(endpoint: Any) -> dict[str, str] | None:
     """
     从 endpoint 提取额外请求头
 

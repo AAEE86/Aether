@@ -4,7 +4,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 @dataclass
@@ -13,14 +13,14 @@ class ParsedChunk:
 
     # 原始数据
     raw_line: str
-    event_type: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
+    event_type: str | None = None
+    data: dict[str, Any] | None = None
 
     # 提取的内容
     text_delta: str = ""
     is_done: bool = False
     is_error: bool = False
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # 使用量信息（通常在最后一个 chunk 中）
     input_tokens: int = 0
@@ -29,7 +29,7 @@ class ParsedChunk:
     cache_read_tokens: int = 0
 
     # 响应 ID
-    response_id: Optional[str] = None
+    response_id: str | None = None
 
 
 @dataclass
@@ -48,21 +48,21 @@ class StreamStats:
 
     # 内容
     collected_text: str = ""
-    response_id: Optional[str] = None
+    response_id: str | None = None
 
     # 状态
     has_completion: bool = False
     status_code: int = 200
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # Provider 信息
-    provider_name: Optional[str] = None
-    endpoint_id: Optional[str] = None
-    key_id: Optional[str] = None
+    provider_name: str | None = None
+    endpoint_id: str | None = None
+    key_id: str | None = None
 
     # 响应头和完整响应
-    response_headers: Dict[str, str] = field(default_factory=dict)
-    final_response: Optional[Dict[str, Any]] = None
+    response_headers: dict[str, str] = field(default_factory=dict)
+    final_response: dict[str, Any] | None = None
 
 
 @dataclass
@@ -70,12 +70,12 @@ class ParsedResponse:
     """解析后的非流式响应"""
 
     # 原始响应
-    raw_response: Dict[str, Any]
+    raw_response: dict[str, Any]
     status_code: int
 
     # 提取的内容
     text_content: str = ""
-    response_id: Optional[str] = None
+    response_id: str | None = None
 
     # 使用量
     input_tokens: int = 0
@@ -85,10 +85,10 @@ class ParsedResponse:
 
     # 错误信息
     is_error: bool = False
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
+    error_type: str | None = None
+    error_message: str | None = None
     # 从响应体解析出的嵌套状态码（当 HTTP 200 但响应体含错误时使用）
-    embedded_status_code: Optional[int] = None
+    embedded_status_code: int | None = None
 
 
 class ResponseParser(ABC):
@@ -106,7 +106,7 @@ class ResponseParser(ABC):
     api_format: str = "UNKNOWN"
 
     @abstractmethod
-    def parse_sse_line(self, line: str, stats: StreamStats) -> Optional[ParsedChunk]:
+    def parse_sse_line(self, line: str, stats: StreamStats) -> ParsedChunk | None:
         """
         解析单行 SSE 数据
 
@@ -120,7 +120,7 @@ class ResponseParser(ABC):
         pass
 
     @abstractmethod
-    def parse_response(self, response: Dict[str, Any], status_code: int) -> ParsedResponse:
+    def parse_response(self, response: dict[str, Any], status_code: int) -> ParsedResponse:
         """
         解析非流式响应
 
@@ -134,7 +134,7 @@ class ResponseParser(ABC):
         pass
 
     @abstractmethod
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, int]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, int]:
         """
         从响应中提取 token 使用量
 
@@ -147,7 +147,7 @@ class ResponseParser(ABC):
         pass
 
     @abstractmethod
-    def extract_text_content(self, response: Dict[str, Any]) -> str:
+    def extract_text_content(self, response: dict[str, Any]) -> str:
         """
         从响应中提取文本内容
 
@@ -159,7 +159,7 @@ class ResponseParser(ABC):
         """
         pass
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         """
         判断响应是否为错误响应
 

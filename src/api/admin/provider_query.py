@@ -4,7 +4,6 @@ Provider Query API 端点
 """
 
 import asyncio
-from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -40,7 +39,7 @@ class ModelsQueryRequest(BaseModel):
     """模型列表查询请求"""
 
     provider_id: str
-    api_key_id: Optional[str] = None
+    api_key_id: str | None = None
     force_refresh: bool = False  # 强制刷新，跳过缓存
 
 
@@ -49,11 +48,11 @@ class TestModelRequest(BaseModel):
 
     provider_id: str
     model_name: str
-    api_key_id: Optional[str] = None
-    endpoint_id: Optional[str] = None  # 指定使用的端点ID
+    api_key_id: str | None = None
+    endpoint_id: str | None = None  # 指定使用的端点ID
     stream: bool = False
-    message: Optional[str] = "你好"
-    api_format: Optional[str] = None  # 指定使用的API格式，如果不指定则使用端点的默认格式
+    message: str | None = "你好"
+    api_format: str | None = None  # 指定使用的API格式，如果不指定则使用端点的默认格式
 
 
 # ============ API Endpoints ============

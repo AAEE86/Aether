@@ -2,13 +2,13 @@
 Usage 事件定义与序列化工具（用于 Redis Streams）
 """
 
-from __future__ import annotations
 
+from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 USAGE_EVENT_VERSION = 1
 
@@ -34,7 +34,7 @@ def _sanitize_value(value: Any) -> Any:
     return str(value)
 
 
-def sanitize_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+def sanitize_payload(data: dict[str, Any]) -> dict[str, Any]:
     return {str(k): _sanitize_value(v) for k, v in data.items()}
 
 
@@ -43,9 +43,9 @@ class UsageEvent:
     event_type: UsageEventType
     request_id: str
     timestamp_ms: int
-    data: Dict[str, Any]
+    data: dict[str, Any]
 
-    def to_stream_fields(self) -> Dict[str, str]:
+    def to_stream_fields(self) -> dict[str, str]:
         payload = {
             "v": USAGE_EVENT_VERSION,
             "type": self.event_type.value,
@@ -56,7 +56,7 @@ class UsageEvent:
         return {"payload": json.dumps(payload, ensure_ascii=False)}
 
     @classmethod
-    def from_stream_fields(cls, fields: Dict[str, Any]) -> "UsageEvent":
+    def from_stream_fields(cls, fields: dict[str, Any]) -> UsageEvent:
         raw = fields.get("payload")
         if not raw:
             raise ValueError("Missing payload field in usage event")
@@ -76,8 +76,8 @@ def build_usage_event(
     *,
     event_type: UsageEventType,
     request_id: str,
-    data: Dict[str, Any],
-    timestamp_ms: Optional[int] = None,
+    data: dict[str, Any],
+    timestamp_ms: int | None = None,
 ) -> UsageEvent:
     return UsageEvent(
         event_type=event_type,

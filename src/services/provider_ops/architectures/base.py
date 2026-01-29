@@ -6,7 +6,8 @@ from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional, Type
+from typing import Any
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -35,7 +36,7 @@ class ProviderConnector(ABC):
     auth_type: ConnectorAuthType = ConnectorAuthType.NONE
     display_name: str = "Base Connector"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         """
         初始化连接器
 
@@ -46,19 +47,19 @@ class ProviderConnector(ABC):
         self.base_url = base_url.rstrip("/")
         self.config = config or {}
         self._status = ConnectorStatus.DISCONNECTED
-        self._connected_at: Optional[datetime] = None
-        self._expires_at: Optional[datetime] = None
-        self._last_error: Optional[str] = None
+        self._connected_at: datetime | None = None
+        self._expires_at: datetime | None = None
+        self._last_error: str | None = None
 
         # 代理配置
-        self._proxy: Optional[str] = self.config.get("proxy")
+        self._proxy: str | None = self.config.get("proxy")
 
         # HTTP 客户端配置
         self._timeout = self.config.get("timeout", 30)
-        self._headers: Dict[str, str] = {}
+        self._headers: dict[str, str] = {}
 
     @abstractmethod
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """
         建立认证连接
 
@@ -93,7 +94,7 @@ class ProviderConnector(ABC):
         """
         pass
 
-    async def refresh_auth(self, credentials: Dict[str, Any]) -> bool:
+    async def refresh_auth(self, credentials: dict[str, Any]) -> bool:
         """
         刷新认证（如 Token 过期）
 
@@ -144,7 +145,7 @@ class ProviderConnector(ABC):
             last_error=self._last_error,
         )
 
-    def _set_connected(self, expires_at: Optional[datetime] = None) -> None:
+    def _set_connected(self, expires_at: datetime | None = None) -> None:
         """设置为已连接状态"""
         self._status = ConnectorStatus.CONNECTED
         self._connected_at = datetime.now(timezone.utc)
@@ -163,7 +164,7 @@ class ProviderConnector(ABC):
         self._expires_at = None
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """
         获取凭据配置 JSON Schema（用于前端表单生成）
 
@@ -180,16 +181,16 @@ class VerifyResult:
     """认证验证结果"""
 
     success: bool
-    message: Optional[str] = None
-    username: Optional[str] = None
-    display_name: Optional[str] = None
-    email: Optional[str] = None
-    quota: Optional[float] = None
-    used_quota: Optional[float] = None
-    request_count: Optional[int] = None
-    extra: Optional[Dict[str, Any]] = None
+    message: str | None = None
+    username: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+    quota: float | None = None
+    used_quota: float | None = None
+    request_count: int | None = None
+    extra: dict[str, Any] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         if not self.success:
             return {"success": False, "message": self.message}
@@ -240,15 +241,15 @@ class ProviderArchitecture(ABC):
     description: str = ""
 
     # 支持的 Connector 类型列表（按优先级排序）
-    supported_connectors: List[Type[ProviderConnector]] = []
+    supported_connectors: list[type[ProviderConnector]] = []
 
     # 支持的 Action 类型列表
-    supported_actions: List[Type[ProviderAction]] = []
+    supported_actions: list[type[ProviderAction]] = []
 
     # 默认操作配置
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {}
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {}
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         """
         初始化架构
 
@@ -260,7 +261,7 @@ class ProviderArchitecture(ABC):
     # ==================== 认证验证相关方法（子类必须实现） ====================
 
     @abstractmethod
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """
         获取凭据字段定义（JSON Schema 格式）
 
@@ -303,9 +304,9 @@ class ProviderArchitecture(ABC):
     @abstractmethod
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """
         构建认证验证请求的 Headers
 
@@ -324,7 +325,7 @@ class ProviderArchitecture(ABC):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """
         解析认证验证响应
@@ -345,9 +346,9 @@ class ProviderArchitecture(ABC):
     async def prepare_verify_config(
         self,
         base_url: str,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         验证前的异步预处理（可选）
 
@@ -369,8 +370,8 @@ class ProviderArchitecture(ABC):
     def get_connector(
         self,
         base_url: str,
-        auth_type: Optional[ConnectorAuthType] = None,
-        config: Optional[Dict[str, Any]] = None,
+        auth_type: ConnectorAuthType | None = None,
+        config: dict[str, Any] | None = None,
     ) -> ProviderConnector:
         """
         获取连接器实例
@@ -390,7 +391,7 @@ class ProviderArchitecture(ABC):
             raise ValueError(f"架构 {self.architecture_id} 未配置支持的连接器")
 
         # 查找匹配的连接器
-        connector_cls: Optional[Type[ProviderConnector]] = None
+        connector_cls: type[ProviderConnector] | None = None
 
         if auth_type:
             for cls in self.supported_connectors:
@@ -413,7 +414,7 @@ class ProviderArchitecture(ABC):
     def get_action(
         self,
         action_type: ProviderActionType,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> ProviderAction:
         """
         获取操作实例
@@ -428,7 +429,7 @@ class ProviderArchitecture(ABC):
         Raises:
             ValueError: 不支持的操作类型
         """
-        action_cls: Optional[Type[ProviderAction]] = None
+        action_cls: type[ProviderAction] | None = None
 
         for cls in self.supported_actions:
             if cls.action_type == action_type:
@@ -457,15 +458,15 @@ class ProviderArchitecture(ABC):
         """检查是否支持指定认证类型"""
         return any(c.auth_type == auth_type for c in self.supported_connectors)
 
-    def get_supported_auth_types(self) -> List[ConnectorAuthType]:
+    def get_supported_auth_types(self) -> list[ConnectorAuthType]:
         """获取支持的认证类型列表"""
         return [c.auth_type for c in self.supported_connectors]
 
-    def get_supported_action_types(self) -> List[ProviderActionType]:
+    def get_supported_action_types(self) -> list[ProviderActionType]:
         """获取支持的操作类型列表"""
         return [a.action_type for a in self.supported_actions]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典（用于 API 响应）"""
         return {
             "architecture_id": self.architecture_id,

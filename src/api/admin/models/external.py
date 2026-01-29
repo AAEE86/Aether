@@ -3,8 +3,7 @@ models.dev 外部模型数据代理
 """
 
 import json
-
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -43,7 +42,7 @@ OFFICIAL_PROVIDERS = {
 }
 
 
-async def _get_cached_data() -> Optional[dict[str, Any]]:
+async def _get_cached_data() -> dict[str, Any] | None:
     """从 Redis 获取缓存数据"""
     redis = await get_redis_client()
     if redis is None:

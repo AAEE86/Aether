@@ -4,7 +4,7 @@ Gemini CLI Adapter - 基于通用 CLI Adapter 基类的实现
 继承 CliAdapterBase，处理 Gemini CLI 格式的请求。
 """
 
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 from fastapi import Request
@@ -29,16 +29,16 @@ class GeminiCliAdapter(CliAdapterBase):
     name = "gemini.cli"
 
     @property
-    def HANDLER_CLASS(self) -> Type[CliMessageHandlerBase]:
+    def HANDLER_CLASS(self) -> type[CliMessageHandlerBase]:
         """延迟导入 Handler 类避免循环依赖"""
         from src.api.handlers.gemini_cli.handler import GeminiCliMessageHandler
 
         return GeminiCliMessageHandler
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         super().__init__(allowed_api_formats or ["GEMINI_CLI"])
 
-    def extract_api_key(self, request: Request) -> Optional[str]:
+    def extract_api_key(self, request: Request) -> str | None:
         """
         从请求中提取 API 密钥 - Gemini CLI 支持 header 和 query 两种方式
 
@@ -53,8 +53,8 @@ class GeminiCliAdapter(CliAdapterBase):
         )
 
     def _merge_path_params(
-        self, original_request_body: Dict[str, Any], path_params: Dict[str, Any]  # noqa: ARG002
-    ) -> Dict[str, Any]:
+        self, original_request_body: dict[str, Any], path_params: dict[str, Any]  # noqa: ARG002
+    ) -> dict[str, Any]:
         """
         合并 URL 路径参数到请求体 - Gemini CLI 特化版本
 
@@ -74,23 +74,23 @@ class GeminiCliAdapter(CliAdapterBase):
         # Gemini: 不合并任何 path_params 到请求体
         return original_request_body.copy()
 
-    def _extract_message_count(self, payload: Dict[str, Any]) -> int:
+    def _extract_message_count(self, payload: dict[str, Any]) -> int:
         """Gemini CLI 使用 contents 字段"""
         contents = payload.get("contents", [])
         return len(contents) if isinstance(contents, list) else 0
 
     def _build_audit_metadata(
         self,
-        payload: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        payload: dict[str, Any],
+        path_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Gemini CLI 特定的审计元数据"""
         # 从 path_params 获取 model（Gemini 请求体不含 model）
         model = path_params.get("model", "unknown") if path_params else "unknown"
         contents = payload.get("contents", [])
         generation_config = payload.get("generation_config", {}) or {}
 
-        role_counts: Dict[str, int] = {}
+        role_counts: dict[str, int] = {}
         for content in contents:
             role = content.get("role", "unknown") if isinstance(content, dict) else "unknown"
             role_counts[role] = role_counts.get(role, 0) + 1
@@ -120,8 +120,8 @@ class GeminiCliAdapter(CliAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """查询 Gemini API 支持的模型列表（带 CLI User-Agent）"""
         # 复用 GeminiChatAdapter 的实现，添加 CLI User-Agent
         cli_headers = {"User-Agent": config.internal_user_agent_gemini_cli}
@@ -136,7 +136,7 @@ class GeminiCliAdapter(CliAdapterBase):
         return models, error
 
     @classmethod
-    def build_endpoint_url(cls, base_url: str, request_data: Dict[str, Any], model_name: Optional[str] = None) -> str:
+    def build_endpoint_url(cls, base_url: str, request_data: dict[str, Any], model_name: str | None = None) -> str:
         """构建Gemini CLI API端点URL"""
         effective_model_name = model_name or request_data.get("model", "")
         if not effective_model_name:
@@ -152,12 +152,12 @@ class GeminiCliAdapter(CliAdapterBase):
     # build_request_body 使用基类实现，通过 format_conversion_registry 自动转换 OPENAI -> GEMINI_CLI
 
     @classmethod
-    def get_cli_user_agent(cls) -> Optional[str]:
+    def get_cli_user_agent(cls) -> str | None:
         """获取Gemini CLI User-Agent"""
         return config.internal_user_agent_gemini_cli
 
     @classmethod
-    def get_cli_extra_headers(cls) -> Dict[str, str]:
+    def get_cli_extra_headers(cls) -> dict[str, str]:
         """获取Gemini CLI额外请求头，包含 x-app: cli 标识"""
         headers = super().get_cli_extra_headers()
         headers["x-app"] = "cli"  # 标识 CLI 模式，让上游使用正确的 adapter

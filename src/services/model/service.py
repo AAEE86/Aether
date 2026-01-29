@@ -3,7 +3,6 @@
 """
 
 import asyncio
-from typing import List, Optional
 
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
@@ -126,8 +125,8 @@ class ModelService:
         provider_id: str,  # UUID
         skip: int = 0,
         limit: int = 100,
-        is_active: Optional[bool] = None,
-    ) -> List[Model]:
+        is_active: bool | None = None,
+    ) -> list[Model]:
         """获取提供商的模型列表"""
         from sqlalchemy.orm import joinedload
 
@@ -150,9 +149,9 @@ class ModelService:
         db: Session,
         skip: int = 0,
         limit: int = 100,
-        is_active: Optional[bool] = None,
-        category: Optional[str] = None,
-    ) -> List[Model]:
+        is_active: bool | None = None,
+        category: str | None = None,
+    ) -> list[Model]:
         """获取所有模型列表"""
         query = db.query(Model)
 
@@ -336,7 +335,7 @@ class ModelService:
         return model
 
     @staticmethod
-    def get_model_by_name(db: Session, provider_id: str, model_name: str) -> Optional[Model]:
+    def get_model_by_name(db: Session, provider_id: str, model_name: str) -> Model | None:
         """根据 provider_model_name 获取模型"""
         return (
             db.query(Model)
@@ -346,8 +345,8 @@ class ModelService:
 
     @staticmethod
     def batch_create_models(
-        db: Session, provider_id: str, models_data: List[ModelCreate]
-    ) -> List[Model]:  # UUID
+        db: Session, provider_id: str, models_data: list[ModelCreate]
+    ) -> list[Model]:  # UUID
         """批量创建模型"""
         # 检查提供商是否存在
         provider = db.query(Provider).filter(Provider.id == provider_id).first()

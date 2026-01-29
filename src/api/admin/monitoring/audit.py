@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func
@@ -33,8 +32,8 @@ pipeline = ApiRequestPipeline()
 @router.get("/audit-logs")
 async def get_audit_logs(
     request: Request,
-    username: Optional[str] = Query(None, description="用户名筛选 (模糊匹配)"),
-    event_type: Optional[str] = Query(None, description="事件类型筛选"),
+    username: str | None = Query(None, description="用户名筛选 (模糊匹配)"),
+    event_type: str | None = Query(None, description="事件类型筛选"),
     days: int = Query(7, description="查询天数"),
     limit: int = Query(100, description="返回数量限制"),
     offset: int = Query(0, description="偏移量"),
@@ -212,8 +211,8 @@ async def get_circuit_history(
 
 @dataclass
 class AdminGetAuditLogsAdapter(AdminApiAdapter):
-    username: Optional[str]
-    event_type: Optional[str]
+    username: str | None
+    event_type: str | None
     days: int
     limit: int
     offset: int
@@ -497,8 +496,8 @@ class AdminCircuitHistoryAdapter(AdminApiAdapter):
         return {"items": history, "count": len(history)}
 
 
-def _get_health_recommendations(error_stats: dict, health_score: int) -> List[str]:
-    recommendations: List[str] = []
+def _get_health_recommendations(error_stats: dict, health_score: int) -> list[str]:
+    recommendations: list[str] = []
     if health_score < 50:
         recommendations.append("系统健康状况严重，请立即检查错误日志")
     if error_stats.get("total_errors", 0) > 100:

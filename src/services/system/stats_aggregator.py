@@ -6,7 +6,6 @@
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session

@@ -2,7 +2,6 @@
 
 import ipaddress
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -12,7 +11,7 @@ from src.core.logger import logger
 from src.models.database import ManagementToken
 
 
-def validate_ip_list(ips: Optional[list[str]]) -> Optional[list[str]]:
+def validate_ip_list(ips: list[str] | None) -> list[str] | None:
     """验证 IP 白名单格式
 
     - None: 不限制 IP
@@ -45,7 +44,7 @@ def validate_ip_list(ips: Optional[list[str]]) -> Optional[list[str]]:
     return validated
 
 
-def parse_expires_at(v, allow_past: bool = False) -> Optional[datetime]:
+def parse_expires_at(v, allow_past: bool = False) -> datetime | None:
     """解析过期时间，确保时区安全
 
     前端 datetime-local 输入返回本地时间字符串（无时区信息）。
@@ -88,7 +87,7 @@ def parse_expires_at(v, allow_past: bool = False) -> Optional[datetime]:
 
 def token_to_dict(
     token: ManagementToken,
-    raw_token: Optional[str] = None,
+    raw_token: str | None = None,
     include_user: bool = False,
 ) -> dict:
     """将 ManagementToken 转换为字典
@@ -136,9 +135,9 @@ class ManagementTokenService:
         db: Session,
         user_id: str,
         name: str,
-        description: Optional[str] = None,
-        allowed_ips: Optional[list[str]] = None,
-        expires_at: Optional[datetime] = None,
+        description: str | None = None,
+        allowed_ips: list[str] | None = None,
+        expires_at: datetime | None = None,
     ) -> tuple[ManagementToken, str]:
         """创建 Management Token
 
@@ -201,8 +200,8 @@ class ManagementTokenService:
 
     @staticmethod
     def get_token_by_id(
-        db: Session, token_id: str, user_id: Optional[str] = None
-    ) -> Optional[ManagementToken]:
+        db: Session, token_id: str, user_id: str | None = None
+    ) -> ManagementToken | None:
         """根据 ID 获取 Token
 
         Args:
@@ -221,8 +220,8 @@ class ManagementTokenService:
     @staticmethod
     def list_tokens(
         db: Session,
-        user_id: Optional[str] = None,
-        is_active: Optional[bool] = None,
+        user_id: str | None = None,
+        is_active: bool | None = None,
         skip: int = 0,
         limit: int = 100,
     ) -> tuple[list[ManagementToken], int]:
@@ -254,16 +253,16 @@ class ManagementTokenService:
     def update_token(
         db: Session,
         token_id: str,
-        user_id: Optional[str] = None,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        allowed_ips: Optional[list[str]] = None,
-        expires_at: Optional[datetime] = None,
-        is_active: Optional[bool] = None,
+        user_id: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        allowed_ips: list[str] | None = None,
+        expires_at: datetime | None = None,
+        is_active: bool | None = None,
         clear_description: bool = False,
         clear_allowed_ips: bool = False,
         clear_expires_at: bool = False,
-    ) -> Optional[ManagementToken]:
+    ) -> ManagementToken | None:
         """更新 Token
 
         Args:
@@ -334,7 +333,7 @@ class ManagementTokenService:
 
     @staticmethod
     def delete_token(
-        db: Session, token_id: str, user_id: Optional[str] = None
+        db: Session, token_id: str, user_id: str | None = None
     ) -> bool:
         """删除 Token
 
@@ -359,8 +358,8 @@ class ManagementTokenService:
 
     @staticmethod
     def toggle_status(
-        db: Session, token_id: str, user_id: Optional[str] = None
-    ) -> Optional[ManagementToken]:
+        db: Session, token_id: str, user_id: str | None = None
+    ) -> ManagementToken | None:
         """切换 Token 状态
 
         Args:
@@ -385,8 +384,8 @@ class ManagementTokenService:
 
     @staticmethod
     def regenerate_token(
-        db: Session, token_id: str, user_id: Optional[str] = None
-    ) -> tuple[Optional[ManagementToken], Optional[str], Optional[str]]:
+        db: Session, token_id: str, user_id: str | None = None
+    ) -> tuple[ManagementToken | None, str | None, str | None]:
         """重新生成 Token
 
         Args:

@@ -5,7 +5,6 @@
 """
 
 from dataclasses import dataclass
-from typing import Dict, List
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session, joinedload
@@ -64,12 +63,12 @@ class AdminGetModelCatalogAdapter(AdminApiAdapter):
         db: Session = context.db
 
         # 1. 获取所有活跃的 GlobalModel
-        global_models: List[GlobalModel] = (
+        global_models: list[GlobalModel] = (
             db.query(GlobalModel).filter(GlobalModel.is_active == True).all()
         )
 
         # 2. 获取所有活跃的 Model 实现（包含 global_model 以便计算有效价格）
-        models: List[Model] = (
+        models: list[Model] = (
             db.query(Model)
             .options(joinedload(Model.provider), joinedload(Model.global_model))
             .filter(Model.is_active == True)
@@ -77,17 +76,17 @@ class AdminGetModelCatalogAdapter(AdminApiAdapter):
         )
 
         # 按 GlobalModel ID 组织关联提供商
-        models_by_global_model: Dict[str, List[Model]] = {}
+        models_by_global_model: dict[str, list[Model]] = {}
         for model in models:
             if model.global_model_id:
                 models_by_global_model.setdefault(model.global_model_id, []).append(model)
 
         # 3. 为每个 GlobalModel 构建 catalog item
-        catalog_items: List[ModelCatalogItem] = []
+        catalog_items: list[ModelCatalogItem] = []
 
         for gm in global_models:
             gm_id = gm.id
-            provider_entries: List[ModelCatalogProviderDetail] = []
+            provider_entries: list[ModelCatalogProviderDetail] = []
             # 从 config JSON 读取能力标志
             gm_config = gm.config or {}
             capability_flags = {

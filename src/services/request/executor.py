@@ -4,7 +4,9 @@
 
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Union
+from typing import Any
+
+from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
@@ -24,12 +26,12 @@ class ExecutionContext:
     provider_id: str
     endpoint_id: str
     key_id: str
-    user_id: Optional[str]
-    api_key_id: Optional[str]
+    user_id: str | None
+    api_key_id: str | None
     is_cached_user: bool
-    start_time: Optional[float] = None
-    elapsed_ms: Optional[int] = None
-    concurrent_requests: Optional[int] = None
+    start_time: float | None = None
+    elapsed_ms: int | None = None
+    concurrent_requests: int | None = None
 
 
 @dataclass
@@ -59,8 +61,8 @@ class RequestExecutor:
         candidate_index: int,
         user_api_key,
         request_func: Callable,
-        request_id: Optional[str],
-        api_format: Union[str, APIFormat],
+        request_id: str | None,
+        api_format: str | APIFormat,
         model_name: str,
         is_stream: bool = False,
     ) -> ExecutionResult:

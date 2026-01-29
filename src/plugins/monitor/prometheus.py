@@ -4,9 +4,7 @@ Prometheus监控插件
 """
 
 import asyncio
-import time
-from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
     from prometheus_client import REGISTRY, Counter, Gauge, Histogram, Summary, generate_latest
@@ -28,7 +26,7 @@ class PrometheusPlugin(MonitorPlugin):
     使用prometheus_client库导出指标
     """
 
-    def __init__(self, name: str = "prometheus", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "prometheus", config: dict[str, Any] = None):
         super().__init__(name, config)
 
         # Check if prometheus_client is available
@@ -38,10 +36,10 @@ class PrometheusPlugin(MonitorPlugin):
             return
 
         # 指标注册表
-        self._metrics: Dict[str, Any] = {}
-        self._buffer: List[Metric] = []
+        self._metrics: dict[str, Any] = {}
+        self._buffer: list[Metric] = []
         self._lock = asyncio.Lock()
-        self._flush_task: Optional[asyncio.Task] = None  # 跟踪后台任务
+        self._flush_task: asyncio.Task | None = None  # 跟踪后台任务
 
         # 预定义常用指标
         self._init_default_metrics()
@@ -132,13 +130,13 @@ class PrometheusPlugin(MonitorPlugin):
 
         # 保存任务句柄以便后续取消
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._flush_task = loop.create_task(flush_loop())
         except RuntimeError:
             # 如果没有运行的事件循环，任务将在后续创建
             logger.warning("No event loop available for Prometheus flush task")
 
-    def _get_or_create_metric(self, name: str, metric_type: MetricType, labels: List[str] = None):
+    def _get_or_create_metric(self, name: str, metric_type: MetricType, labels: list[str] = None):
         """获取或创建指标"""
         if name not in self._metrics:
             labels = labels or []
@@ -162,7 +160,7 @@ class PrometheusPlugin(MonitorPlugin):
             if len(self._buffer) >= self.batch_size:
                 await self.flush()
 
-    async def record_batch(self, metrics: List[Metric]):
+    async def record_batch(self, metrics: list[Metric]):
         """批量记录指标"""
         async with self._lock:
             self._buffer.extend(metrics)
@@ -171,7 +169,7 @@ class PrometheusPlugin(MonitorPlugin):
             if len(self._buffer) >= self.batch_size:
                 await self.flush()
 
-    async def increment(self, name: str, value: float = 1, labels: Optional[Dict[str, str]] = None):
+    async def increment(self, name: str, value: float = 1, labels: dict[str, str] | None = None):
         """增加计数器"""
         try:
             if name in self._metrics:
@@ -194,7 +192,7 @@ class PrometheusPlugin(MonitorPlugin):
             # 记录错误但不中断
             logger.warning(f"Error recording metric {name}: {e}")
 
-    async def gauge(self, name: str, value: float, labels: Optional[Dict[str, str]] = None):
+    async def gauge(self, name: str, value: float, labels: dict[str, str] | None = None):
         """设置仪表值"""
         try:
             if name in self._metrics:
@@ -219,8 +217,8 @@ class PrometheusPlugin(MonitorPlugin):
         self,
         name: str,
         value: float,
-        labels: Optional[Dict[str, str]] = None,
-        buckets: Optional[List[float]] = None,
+        labels: dict[str, str] | None = None,
+        buckets: list[float] | None = None,
     ):
         """记录直方图数据"""
         try:
@@ -249,7 +247,7 @@ class PrometheusPlugin(MonitorPlugin):
         except Exception as e:
             logger.warning(f"Error recording histogram {name}: {e}")
 
-    async def timing(self, name: str, duration: float, labels: Optional[Dict[str, str]] = None):
+    async def timing(self, name: str, duration: float, labels: dict[str, str] | None = None):
         """记录时间指标"""
         # 使用直方图记录时间
         await self.histogram(f"{name}_seconds", duration, labels)
@@ -272,7 +270,7 @@ class PrometheusPlugin(MonitorPlugin):
             # 清空缓冲区
             self._buffer.clear()
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """获取插件统计信息"""
         return {
             "type": "prometheus",

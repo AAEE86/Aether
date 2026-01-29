@@ -5,8 +5,8 @@
 
 import json
 import re
-import time
-from typing import Any, AsyncIterator, Dict, Optional, Tuple
+from typing import Any
+from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
 
@@ -30,19 +30,19 @@ class StreamUsageTracker:
         api_key: ApiKey,
         provider: str,
         model: str,
-        request_headers: Optional[Dict[str, Any]] = None,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
-        request_id: Optional[str] = None,
-        start_time: Optional[float] = None,
-        attempt_id: Optional[str] = None,
+        request_headers: dict[str, Any] | None = None,
+        provider_request_headers: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        start_time: float | None = None,
+        attempt_id: str | None = None,
         # Provider 侧追踪信息（用于记录真实成本）
-        provider_id: Optional[str] = None,
-        provider_endpoint_id: Optional[str] = None,
-        provider_api_key_id: Optional[str] = None,
+        provider_id: str | None = None,
+        provider_endpoint_id: str | None = None,
+        provider_api_key_id: str | None = None,
         # API 格式（用于选择正确的响应解析器）
-        api_format: Optional[str] = None,
+        api_format: str | None = None,
         # 格式转换信息
-        endpoint_api_format: Optional[str] = None,
+        endpoint_api_format: str | None = None,
         has_format_conversion: bool = False,
     ):
         """
@@ -144,7 +144,7 @@ class StreamUsageTracker:
         self.error_message = error_message
         logger.debug(f"ID:{self.request_id} | 流式响应错误状态已设置 | 状态码:{status_code} | 错误:{error_message[:100]}")
 
-    def _update_complete_response(self, chunk: Dict[str, Any]):
+    def _update_complete_response(self, chunk: dict[str, Any]):
         """根据响应块更新完整响应结构"""
         try:
             # 更新响应ID
@@ -245,7 +245,7 @@ class StreamUsageTracker:
         # 粗略估算：4个字符约等于1个token
         return max(1, total_chars // 4)
 
-    def _process_sse_event(self) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    def _process_sse_event(self) -> tuple[str | None, dict[str, Any] | None]:
         """
         处理缓冲区中的完整SSE事件
 
@@ -312,7 +312,7 @@ class StreamUsageTracker:
 
         return content, usage
 
-    def parse_sse_line(self, line: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    def parse_sse_line(self, line: str) -> tuple[str | None, dict[str, Any] | None]:
         """
         解析单行SSE事件（使用统一响应解析器）
 
@@ -362,7 +362,7 @@ class StreamUsageTracker:
 
         return content, usage
 
-    def parse_stream_chunk(self, chunk: bytes) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    def parse_stream_chunk(self, chunk: bytes) -> tuple[str | None, dict[str, Any] | None]:
         """
         解析流式响应块（处理原始字节流）
 
@@ -436,8 +436,8 @@ class StreamUsageTracker:
     async def track_stream(
         self,
         stream: AsyncIterator[str],
-        request_data: Dict[str, Any],
-        response_headers: Optional[Dict[str, Any]] = None,
+        request_data: dict[str, Any],
+        response_headers: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """
         跟踪流式响应并计算用量
@@ -663,7 +663,7 @@ class StreamUsageTracker:
             db_for_usage = self.db
             created_temp_session = False
 
-            def _load_user_and_key(db_session: Session) -> Tuple[Optional[User], Optional[ApiKey]]:
+            def _load_user_and_key(db_session: Session) -> tuple[User | None, ApiKey | None]:
                 local_user = (
                     db_session.query(User).filter(User.id == self.user_id).first()
                     if self.user_id
@@ -801,19 +801,19 @@ class EnhancedStreamUsageTracker(StreamUsageTracker):
         api_key: ApiKey,
         provider: str,
         model: str,
-        request_headers: Optional[Dict[str, Any]] = None,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
-        request_id: Optional[str] = None,
-        start_time: Optional[float] = None,
-        attempt_id: Optional[str] = None,
+        request_headers: dict[str, Any] | None = None,
+        provider_request_headers: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        start_time: float | None = None,
+        attempt_id: str | None = None,
         # Provider 侧追踪信息（用于记录真实成本）
-        provider_id: Optional[str] = None,
-        provider_endpoint_id: Optional[str] = None,
-        provider_api_key_id: Optional[str] = None,
+        provider_id: str | None = None,
+        provider_endpoint_id: str | None = None,
+        provider_api_key_id: str | None = None,
         # API 格式（用于选择正确的响应解析器）
-        api_format: Optional[str] = None,
+        api_format: str | None = None,
         # 格式转换信息
-        endpoint_api_format: Optional[str] = None,
+        endpoint_api_format: str | None = None,
         has_format_conversion: bool = False,
     ):
         super().__init__(
@@ -907,8 +907,8 @@ class EnhancedStreamUsageTracker(StreamUsageTracker):
     async def track_stream(
         self,
         stream: AsyncIterator[str],
-        request_data: Dict[str, Any],
-        response_headers: Optional[Dict[str, Any]] = None,
+        request_data: dict[str, Any],
+        response_headers: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """
         跟踪流式响应并更准确地计算用量
@@ -1061,19 +1061,19 @@ def create_stream_tracker(
     provider: str,
     model: str,
     enhanced: bool = True,
-    request_headers: Optional[Dict[str, Any]] = None,
-    provider_request_headers: Optional[Dict[str, Any]] = None,
-    request_id: Optional[str] = None,
-    start_time: Optional[float] = None,
-    attempt_id: Optional[str] = None,
+    request_headers: dict[str, Any] | None = None,
+    provider_request_headers: dict[str, Any] | None = None,
+    request_id: str | None = None,
+    start_time: float | None = None,
+    attempt_id: str | None = None,
     # Provider 侧追踪信息（用于记录真实成本）
-    provider_id: Optional[str] = None,
-    provider_endpoint_id: Optional[str] = None,
-    provider_api_key_id: Optional[str] = None,
+    provider_id: str | None = None,
+    provider_endpoint_id: str | None = None,
+    provider_api_key_id: str | None = None,
     # API 格式（用于选择正确的响应解析器）
-    api_format: Optional[str] = None,
+    api_format: str | None = None,
     # 格式转换信息
-    endpoint_api_format: Optional[str] = None,
+    endpoint_api_format: str | None = None,
     has_format_conversion: bool = False,
 ) -> StreamUsageTracker:
     """

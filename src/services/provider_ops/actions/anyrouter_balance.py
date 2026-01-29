@@ -3,7 +3,7 @@ Anyrouter 余额查询操作（含自动签到）
 """
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -101,7 +101,7 @@ class AnyrouterBalanceAction(BalanceAction):
         )
 
     def _handle_http_error(
-        self, response: httpx.Response, raw_data: Optional[Dict[str, Any]] = None
+        self, response: httpx.Response, raw_data: dict[str, Any] | None = None
     ) -> ActionResult:
         """处理 HTTP 错误响应"""
         status_code = response.status_code
@@ -117,7 +117,7 @@ class AnyrouterBalanceAction(BalanceAction):
 
         return super()._handle_http_error(response, raw_data)
 
-    async def _do_checkin(self, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
+    async def _do_checkin(self, client: httpx.AsyncClient) -> dict[str, Any] | None:
         """
         执行自动签到（始终执行）
 

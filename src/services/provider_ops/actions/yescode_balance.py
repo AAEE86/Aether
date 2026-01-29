@@ -4,7 +4,7 @@ YesCode 余额查询操作
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from typing import Any
 
 import httpx
 
@@ -15,7 +15,7 @@ from src.services.provider_ops.types import ActionResult, ActionStatus, BalanceI
 async def fetch_yescode_combined_data(
     client: httpx.AsyncClient,
     base_url: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     获取 YesCode 合并数据（balance + profile）
 
@@ -31,7 +31,7 @@ async def fetch_yescode_combined_data(
         合并后的数据字典
     """
     base_url = base_url.rstrip("/")
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
 
     # 并发调用两个接口
     balance_task = client.get(f"{base_url}/api/v1/user/balance")
@@ -42,7 +42,7 @@ async def fetch_yescode_combined_data(
     )
 
     # 解析 balance 接口
-    balance_data: Dict[str, Any] = {}
+    balance_data: dict[str, Any] = {}
     if isinstance(balance_resp, httpx.Response) and balance_resp.status_code == 200:
         try:
             balance_data = balance_resp.json()
@@ -51,7 +51,7 @@ async def fetch_yescode_combined_data(
             pass
 
     # 解析 profile 接口
-    profile_data: Dict[str, Any] = {}
+    profile_data: dict[str, Any] = {}
     if isinstance(profile_resp, httpx.Response) and profile_resp.status_code == 200:
         try:
             profile_data = profile_resp.json()
@@ -87,7 +87,7 @@ async def fetch_yescode_combined_data(
     return result
 
 
-def parse_yescode_balance_extra(data: Dict[str, Any]) -> Dict[str, Any]:
+def parse_yescode_balance_extra(data: dict[str, Any]) -> dict[str, Any]:
     """
     解析 YesCode 余额额外信息
 
@@ -97,7 +97,7 @@ def parse_yescode_balance_extra(data: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         统一格式的 extra 字典
     """
-    extra: Dict[str, Any] = {}
+    extra: dict[str, Any] = {}
 
     pay_as_you_go = data.get("pay_as_you_go_balance", 0)
     subscription = data.get("subscription_balance", 0)

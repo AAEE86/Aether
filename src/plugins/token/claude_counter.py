@@ -5,9 +5,9 @@ Claude Token计数插件
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .base import TokenCounterPlugin, TokenUsage
+from .base import TokenCounterPlugin
 
 
 class ClaudeTokenCounterPlugin(TokenCounterPlugin):
@@ -61,7 +61,7 @@ class ClaudeTokenCounterPlugin(TokenCounterPlugin):
         },
     }
 
-    def __init__(self, name: str = "claude", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "claude", config: dict[str, Any] = None):
         super().__init__(name, config)
 
         # 价格表（每1M tokens的价格 USD）
@@ -153,7 +153,7 @@ class ClaudeTokenCounterPlugin(TokenCounterPlugin):
             # 取两者的平均
             return (token_by_words + token_by_chars) // 2
 
-    async def count_tokens(self, text: str, model: Optional[str] = None) -> int:
+    async def count_tokens(self, text: str, model: str | None = None) -> int:
         """计算文本的Token数量"""
         if not self.enabled:
             return 0
@@ -162,7 +162,7 @@ class ClaudeTokenCounterPlugin(TokenCounterPlugin):
         return self._estimate_tokens_from_text(text, model)
 
     async def count_messages(
-        self, messages: List[Dict[str, Any]], model: Optional[str] = None
+        self, messages: list[dict[str, Any]], model: str | None = None
     ) -> int:
         """计算消息列表的Token数量"""
         if not self.enabled:
@@ -213,7 +213,7 @@ class ClaudeTokenCounterPlugin(TokenCounterPlugin):
 
         return total_tokens
 
-    async def count_request(self, request: Dict[str, Any], model: Optional[str] = None) -> int:
+    async def count_request(self, request: dict[str, Any], model: str | None = None) -> int:
         """计算请求的Token数量"""
         model = model or request.get("model") or self.default_model
         messages = request.get("messages", [])
@@ -227,7 +227,7 @@ class ClaudeTokenCounterPlugin(TokenCounterPlugin):
 
         return total
 
-    async def get_model_info(self, model: str) -> Dict[str, Any]:
+    async def get_model_info(self, model: str) -> dict[str, Any]:
         """获取模型信息"""
         info = {"model": model, "supported": self.supports_model(model)}
 
@@ -261,7 +261,7 @@ class ClaudeTokenCounterPlugin(TokenCounterPlugin):
 
         return info
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
         stats = await super().get_stats()
         stats.update(

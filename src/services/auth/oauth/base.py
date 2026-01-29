@@ -1,7 +1,5 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode, urlparse, urlunparse
 
 import httpx
@@ -31,20 +29,20 @@ class OAuthProviderBase(ABC):
     userinfo_url: str
     default_scopes: tuple[str, ...] = ()
 
-    def get_effective_authorization_url(self, config: "OAuthProvider") -> str:
+    def get_effective_authorization_url(self, config: OAuthProvider) -> str:
         return config.authorization_url_override or self.authorization_url
 
-    def get_effective_token_url(self, config: "OAuthProvider") -> str:
+    def get_effective_token_url(self, config: OAuthProvider) -> str:
         return config.token_url_override or self.token_url
 
-    def get_effective_userinfo_url(self, config: "OAuthProvider") -> str:
+    def get_effective_userinfo_url(self, config: OAuthProvider) -> str:
         return config.userinfo_url_override or self.userinfo_url
 
-    def get_effective_scopes(self, config: "OAuthProvider") -> str:
+    def get_effective_scopes(self, config: OAuthProvider) -> str:
         scopes = config.scopes or list(self.default_scopes)
         return " ".join(scopes)
 
-    def get_authorization_url(self, config: "OAuthProvider", state: str) -> str:
+    def get_authorization_url(self, config: OAuthProvider, state: str) -> str:
         """
         构造 provider 授权 URL。
 
@@ -83,11 +81,11 @@ class OAuthProviderBase(ABC):
         return urlunparse(parsed._replace(query=urlencode(query)))
 
     @abstractmethod
-    async def exchange_code(self, config: "OAuthProvider", code: str) -> OAuthToken:
+    async def exchange_code(self, config: OAuthProvider, code: str) -> OAuthToken:
         """使用授权码兑换 token。"""
 
     @abstractmethod
-    async def get_user_info(self, config: "OAuthProvider", access_token: str) -> OAuthUserInfo:
+    async def get_user_info(self, config: OAuthProvider, access_token: str) -> OAuthUserInfo:
         """获取用户信息。"""
 
     async def _http_post_form(
@@ -96,7 +94,7 @@ class OAuthProviderBase(ABC):
         data: dict[str, str],
         *,
         timeout_seconds: float = 5.0,
-        headers: Optional[dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds), verify=get_ssl_context()) as client:
             return await client.post(url, data=data, headers=headers)
@@ -106,7 +104,7 @@ class OAuthProviderBase(ABC):
         url: str,
         *,
         timeout_seconds: float = 5.0,
-        headers: Optional[dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds), verify=get_ssl_context()) as client:
             return await client.get(url, headers=headers)

@@ -5,8 +5,6 @@ IP 级别的速率限制服务
 """
 
 import ipaddress
-from datetime import datetime, timezone
-from typing import Dict, Optional, Set
 
 from src.clients.redis_client import get_redis_client
 from src.core.logger import logger
@@ -34,7 +32,7 @@ class IPRateLimiter:
 
     @staticmethod
     async def check_limit(
-        ip_address: str, endpoint_type: str = "default", limit: Optional[int] = None
+        ip_address: str, endpoint_type: str = "default", limit: int | None = None
     ) -> tuple[bool, int, int]:
         """
         检查 IP 是否超过速率限制
@@ -102,7 +100,7 @@ class IPRateLimiter:
 
     @staticmethod
     async def add_to_blacklist(
-        ip_address: str, reason: str = "manual", ttl: Optional[int] = None
+        ip_address: str, reason: str = "manual", ttl: int | None = None
     ) -> bool:
         """
         将 IP 加入黑名单
@@ -301,7 +299,7 @@ class IPRateLimiter:
             return False
 
     @staticmethod
-    async def get_blacklist_stats() -> Dict:
+    async def get_blacklist_stats() -> dict:
         """
         获取黑名单统计信息
 
@@ -332,7 +330,7 @@ class IPRateLimiter:
             return {"available": False, "total": 0, "error": str(e)}
 
     @staticmethod
-    async def get_whitelist() -> Set[str]:
+    async def get_whitelist() -> set[str]:
         """
         获取白名单列表
 

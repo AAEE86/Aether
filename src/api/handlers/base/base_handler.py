@@ -25,22 +25,19 @@
     ) -> JSONResponse: ...
 """
 
-from __future__ import annotations
 
 import asyncio
 import time
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
-    Coroutine,
-    Dict,
-    Optional,
     Protocol,
     TypeVar,
     runtime_checkable,
 )
+
+from collections.abc import Callable
+from collections.abc import Awaitable, Coroutine
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -56,6 +53,9 @@ from src.services.usage.service import UsageService
 
 if TYPE_CHECKING:
     from src.api.handlers.base.stream_context import StreamContext
+
+# Adapter 检测器类型：接受 headers 和可选的 request_body，返回能力需求字典
+type AdapterDetectorType = Callable[[dict[str, str], dict[str, Any] | None], dict[str, bool]]
 
 
 class MessageTelemetry:
@@ -105,29 +105,29 @@ class MessageTelemetry:
         output_tokens: int,
         response_time_ms: int,
         status_code: int,
-        request_body: Dict[str, Any],
-        request_headers: Dict[str, Any],
+        request_body: dict[str, Any],
+        request_headers: dict[str, Any],
         response_body: Any,
-        response_headers: Dict[str, Any],
-        client_response_headers: Optional[Dict[str, Any]] = None,
+        response_headers: dict[str, Any],
+        client_response_headers: dict[str, Any] | None = None,
         cache_creation_tokens: int = 0,
         cache_read_tokens: int = 0,
         is_stream: bool = False,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
+        provider_request_headers: dict[str, Any] | None = None,
         # 时间指标
-        first_byte_time_ms: Optional[int] = None,  # 首字时间/TTFB
+        first_byte_time_ms: int | None = None,  # 首字时间/TTFB
         # Provider 侧追踪信息（用于记录真实成本）
-        provider_id: Optional[str] = None,
-        provider_endpoint_id: Optional[str] = None,
-        provider_api_key_id: Optional[str] = None,
-        api_format: Optional[str] = None,
+        provider_id: str | None = None,
+        provider_endpoint_id: str | None = None,
+        provider_api_key_id: str | None = None,
+        api_format: str | None = None,
         # 格式转换追踪
-        endpoint_api_format: Optional[str] = None,  # 端点原生 API 格式
+        endpoint_api_format: str | None = None,  # 端点原生 API 格式
         has_format_conversion: bool = False,  # 是否发生了格式转换
         # 模型映射信息
-        target_model: Optional[str] = None,
+        target_model: str | None = None,
         # Provider 响应元数据（如 Gemini 的 modelVersion）
-        response_metadata: Optional[Dict[str, Any]] = None,
+        response_metadata: dict[str, Any] | None = None,
     ) -> float:
         total_cost = await self.calculate_cost(
             provider,
@@ -199,24 +199,24 @@ class MessageTelemetry:
         response_time_ms: int,
         status_code: int,
         error_message: str,
-        request_body: Dict[str, Any],
-        request_headers: Dict[str, Any],
+        request_body: dict[str, Any],
+        request_headers: dict[str, Any],
         is_stream: bool,
-        api_format: Optional[str] = None,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
+        api_format: str | None = None,
+        provider_request_headers: dict[str, Any] | None = None,
         # 预估 token 信息（来自 message_start 事件，用于中断请求的成本估算）
         input_tokens: int = 0,
         output_tokens: int = 0,
         cache_creation_tokens: int = 0,
         cache_read_tokens: int = 0,
-        response_body: Optional[Dict[str, Any]] = None,
-        response_headers: Optional[Dict[str, Any]] = None,
-        client_response_headers: Optional[Dict[str, Any]] = None,
+        response_body: dict[str, Any] | None = None,
+        response_headers: dict[str, Any] | None = None,
+        client_response_headers: dict[str, Any] | None = None,
         # 格式转换追踪
-        endpoint_api_format: Optional[str] = None,
+        endpoint_api_format: str | None = None,
         has_format_conversion: bool = False,
         # 模型映射信息
-        target_model: Optional[str] = None,
+        target_model: str | None = None,
     ) -> None:
         """
         记录失败请求
@@ -273,24 +273,24 @@ class MessageTelemetry:
         provider: str,
         model: str,
         response_time_ms: int,
-        first_byte_time_ms: Optional[int],
+        first_byte_time_ms: int | None,
         status_code: int,
-        request_body: Dict[str, Any],
-        request_headers: Dict[str, Any],
+        request_body: dict[str, Any],
+        request_headers: dict[str, Any],
         is_stream: bool,
-        api_format: Optional[str] = None,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
+        api_format: str | None = None,
+        provider_request_headers: dict[str, Any] | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
         cache_creation_tokens: int = 0,
         cache_read_tokens: int = 0,
-        response_body: Optional[Dict[str, Any]] = None,
-        response_headers: Optional[Dict[str, Any]] = None,
-        client_response_headers: Optional[Dict[str, Any]] = None,
+        response_body: dict[str, Any] | None = None,
+        response_headers: dict[str, Any] | None = None,
+        client_response_headers: dict[str, Any] | None = None,
         # 格式转换追踪
-        endpoint_api_format: Optional[str] = None,
+        endpoint_api_format: str | None = None,
         has_format_conversion: bool = False,
-        target_model: Optional[str] = None,
+        target_model: str | None = None,
     ) -> None:
         """
         记录客户端取消的请求
@@ -341,9 +341,9 @@ class MessageHandlerProtocol(Protocol):
         self,
         request: Any,
         http_request: Request,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
-        query_params: Optional[Dict[str, str]] = None,
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
+        query_params: dict[str, str] | None = None,
     ) -> StreamingResponse:
         """处理流式请求"""
         ...
@@ -352,9 +352,9 @@ class MessageHandlerProtocol(Protocol):
         self,
         request: Any,
         http_request: Request,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
-        query_params: Optional[Dict[str, str]] = None,
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
+        query_params: dict[str, str] | None = None,
     ) -> JSONResponse:
         """处理非流式请求"""
         ...
@@ -371,9 +371,6 @@ class BaseMessageHandler:
     推荐使用 MessageHandlerProtocol 中定义的签名。
     """
 
-    # Adapter 检测器类型
-    AdapterDetectorType = Callable[[Dict[str, str], Optional[Dict[str, Any]]], Dict[str, bool]]
-
     def __init__(
         self,
         *,
@@ -384,8 +381,8 @@ class BaseMessageHandler:
         client_ip: str,
         user_agent: str,
         start_time: float,
-        allowed_api_formats: Optional[list[str]] = None,
-        adapter_detector: Optional[AdapterDetectorType] = None,
+        allowed_api_formats: list[str] | None = None,
+        adapter_detector: AdapterDetectorType | None = None,
     ) -> None:
         self.db = db
         self.user = user
@@ -408,9 +405,9 @@ class BaseMessageHandler:
     def _resolve_capability_requirements(
         self,
         model_name: str,
-        request_headers: Optional[Dict[str, str]] = None,
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, bool]:
+        request_headers: dict[str, str] | None = None,
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
         """
         解析请求的能力需求
 
@@ -439,7 +436,7 @@ class BaseMessageHandler:
             adapter_detector=self.adapter_detector,
         )
 
-    def get_api_format(self, provider_type: Optional[str] = None) -> APIFormat:
+    def get_api_format(self, provider_type: str | None = None) -> APIFormat:
         """根据 provider_type 解析 API 格式，未知类型默认 OPENAI"""
         if provider_type:
             result = resolve_api_format(provider_type, default=APIFormat.OPENAI)
@@ -448,17 +445,17 @@ class BaseMessageHandler:
 
     def build_provider_payload(
         self,
-        original_body: Dict[str, Any],
+        original_body: dict[str, Any],
         *,
-        mapped_model: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        mapped_model: str | None = None,
+    ) -> dict[str, Any]:
         """构建发送给 Provider 的请求体，替换 model 名称"""
         payload = dict(original_body)
         if mapped_model:
             payload["model"] = mapped_model
         return payload
 
-    def _update_usage_to_streaming(self, request_id: Optional[str] = None) -> None:
+    def _update_usage_to_streaming(self, request_id: str | None = None) -> None:
         """更新 Usage 状态为 streaming（流式传输开始时调用）
 
         使用 asyncio 后台任务执行数据库更新，避免阻塞流式传输
@@ -492,7 +489,7 @@ class BaseMessageHandler:
         # 创建后台任务，不阻塞当前流
         asyncio.create_task(_do_update())
 
-    def _update_usage_to_streaming_with_ctx(self, ctx: "StreamContext") -> None:
+    def _update_usage_to_streaming_with_ctx(self, ctx: StreamContext) -> None:
         """更新 Usage 状态为 streaming，同时更新 provider 相关信息
 
         使用 asyncio 后台任务执行数据库更新，避免阻塞流式传输

@@ -5,7 +5,6 @@ Provider API Keys 管理
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
@@ -145,14 +144,14 @@ async def delete_endpoint_key(
 # ========== Provider Keys API ==========
 
 
-@router.get("/providers/{provider_id}/keys", response_model=List[EndpointAPIKeyResponse])
+@router.get("/providers/{provider_id}/keys", response_model=list[EndpointAPIKeyResponse])
 async def list_provider_keys(
     provider_id: str,
     request: Request,
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(100, ge=1, le=1000, description="返回的最大记录数"),
     db: Session = Depends(get_db),
-) -> List[EndpointAPIKeyResponse]:
+) -> list[EndpointAPIKeyResponse]:
     """
     获取 Provider 的所有 Keys
 
@@ -439,12 +438,12 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
             )
             .all()
         )
-        endpoint_base_url_map: Dict[tuple[str, str], str] = {}
+        endpoint_base_url_map: dict[tuple[str, str], str] = {}
         for provider_id, api_format, base_url in endpoints:
             fmt = api_format.value if hasattr(api_format, "value") else str(api_format)
             endpoint_base_url_map[(str(provider_id), fmt)] = base_url
 
-        grouped: Dict[str, List[dict]] = {}
+        grouped: dict[str, list[dict]] = {}
         for key, provider in keys:
             api_formats = key.api_formats or []
 

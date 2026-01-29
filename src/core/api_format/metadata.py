@@ -13,13 +13,12 @@ API 格式元数据定义
     definition = get_api_format_definition(APIFormat.CLAUDE)
 """
 
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Union
+from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 
 from .enums import APIFormat
 
@@ -64,7 +63,7 @@ class ApiFormatDefinition:
                 yield normalized
 
 
-_DEFINITIONS: Dict[APIFormat, ApiFormatDefinition] = {
+_DEFINITIONS: dict[APIFormat, ApiFormatDefinition] = {
     APIFormat.CLAUDE: ApiFormatDefinition(
         api_format=APIFormat.CLAUDE,
         aliases=("claude", "anthropic", "claude_compatible"),
@@ -151,12 +150,12 @@ def get_api_format_definition(api_format: APIFormat) -> ApiFormatDefinition:
     return API_FORMAT_DEFINITIONS[api_format]
 
 
-def list_api_format_definitions() -> List[ApiFormatDefinition]:
+def list_api_format_definitions() -> list[ApiFormatDefinition]:
     """返回所有定义的浅拷贝列表，供遍历使用。"""
     return list(API_FORMAT_DEFINITIONS.values())
 
 
-def build_alias_lookup() -> Dict[str, APIFormat]:
+def build_alias_lookup() -> dict[str, APIFormat]:
     """
     构建 alias -> APIFormat 的查找表。
     每次调用都会返回新的 dict，避免可变全局引发并发问题。
@@ -237,7 +236,7 @@ def get_protected_keys(api_format: APIFormat) -> frozenset[str]:
     return frozenset({"authorization", "content-type"})
 
 
-def get_data_format_id(api_format: Union[str, APIFormat]) -> str:
+def get_data_format_id(api_format: str | APIFormat) -> str:
     """
     获取格式的数据格式标识。
 
@@ -264,7 +263,7 @@ def get_data_format_id(api_format: Union[str, APIFormat]) -> str:
     return api_format.value.lower()
 
 
-def can_passthrough(client_format: Union[str, APIFormat], endpoint_format: Union[str, APIFormat]) -> bool:
+def can_passthrough(client_format: str | APIFormat, endpoint_format: str | APIFormat) -> bool:
     """
     判断两个格式之间是否可以透传（不需要数据转换）。
 
@@ -294,12 +293,12 @@ def can_passthrough(client_format: Union[str, APIFormat], endpoint_format: Union
 
 
 @lru_cache(maxsize=1)
-def _alias_lookup_cache() -> Dict[str, APIFormat]:
+def _alias_lookup_cache() -> dict[str, APIFormat]:
     """缓存 alias -> APIFormat 查找表，减少重复构建。"""
     return build_alias_lookup()
 
 
-def resolve_api_format_alias(value: str) -> Optional[APIFormat]:
+def resolve_api_format_alias(value: str) -> APIFormat | None:
     """根据别名查找 APIFormat，找不到时返回 None。"""
     if not value:
         return None
@@ -310,9 +309,9 @@ def resolve_api_format_alias(value: str) -> Optional[APIFormat]:
 
 
 def resolve_api_format(
-    value: Union[str, APIFormat, None],
-    default: Optional[APIFormat] = None,
-) -> Optional[APIFormat]:
+    value: str | APIFormat | None,
+    default: APIFormat | None = None,
+) -> APIFormat | None:
     """
     将任意字符串/枚举值解析为 APIFormat。
 

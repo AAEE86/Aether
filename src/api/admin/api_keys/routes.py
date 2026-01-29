@@ -5,7 +5,6 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -25,7 +24,7 @@ from src.services.user.apikey import ApiKeyService
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
 
 
-def parse_expiry_date(date_str: Optional[str]) -> Optional[datetime]:
+def parse_expiry_date(date_str: str | None) -> datetime | None:
     """解析过期日期字符串为 datetime 对象。
 
     Args:
@@ -70,7 +69,7 @@ async def list_standalone_api_keys(
     request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    is_active: Optional[bool] = None,
+    is_active: bool | None = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -330,7 +329,7 @@ class AdminListStandaloneKeysAdapter(AdminApiAdapter):
         self,
         skip: int,
         limit: int,
-        is_active: Optional[bool],
+        is_active: bool | None,
     ):
         self.skip = skip
         self.limit = limit

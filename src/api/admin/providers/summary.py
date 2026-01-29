@@ -4,7 +4,6 @@ Provider 摘要与健康监控 API
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import case, func
@@ -35,11 +34,11 @@ router = APIRouter(tags=["Provider Summary"])
 pipeline = ApiRequestPipeline()
 
 
-@router.get("/summary", response_model=List[ProviderWithEndpointsSummary])
+@router.get("/summary", response_model=list[ProviderWithEndpointsSummary])
 async def get_providers_summary(
     request: Request,
     db: Session = Depends(get_db),
-) -> List[ProviderWithEndpointsSummary]:
+) -> list[ProviderWithEndpointsSummary]:
     """
     获取所有提供商摘要信息
 
@@ -381,8 +380,8 @@ class AdminProviderHealthMonitorAdapter(AdminApiAdapter):
         )
         attempts = attempts_query.limit(limit_rows).all()
 
-        buffered_attempts: Dict[str, List[RequestCandidate]] = {eid: [] for eid in endpoint_ids}
-        counters: Dict[str, int] = {eid: 0 for eid in endpoint_ids}
+        buffered_attempts: dict[str, list[RequestCandidate]] = {eid: [] for eid in endpoint_ids}
+        counters: dict[str, int] = {eid: 0 for eid in endpoint_ids}
 
         for attempt in attempts:
             if not attempt.endpoint_id or attempt.endpoint_id not in buffered_attempts:
@@ -392,10 +391,10 @@ class AdminProviderHealthMonitorAdapter(AdminApiAdapter):
             buffered_attempts[attempt.endpoint_id].append(attempt)
             counters[attempt.endpoint_id] += 1
 
-        endpoint_monitors: List[EndpointHealthMonitor] = []
+        endpoint_monitors: list[EndpointHealthMonitor] = []
         for endpoint in endpoints:
             attempt_list = list(reversed(buffered_attempts.get(endpoint.id, [])))
-            events: List[EndpointHealthEvent] = []
+            events: list[EndpointHealthEvent] = []
             for attempt in attempt_list:
                 event_timestamp = attempt.finished_at or attempt.started_at or attempt.created_at
                 events.append(

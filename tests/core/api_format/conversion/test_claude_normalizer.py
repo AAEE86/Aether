@@ -11,7 +11,7 @@ ClaudeNormalizer 单元测试
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 from src.core.api_format.conversion.internal import (
     ErrorType,
@@ -62,7 +62,7 @@ def test_claude_request_system_roundtrip() -> None:
     assert out["model"] == "claude-3-opus"
     assert out["system"] == "sys"
 
-    out_messages: List[Dict[str, Any]] = out["messages"]
+    out_messages: list[dict[str, Any]] = out["messages"]
     assert [m["role"] for m in out_messages] == ["user", "assistant"]
     assert out_messages[0]["content"] == "hi"
     assert out_messages[1]["content"] == "ok"
@@ -128,19 +128,19 @@ def test_claude_request_tool_blocks_roundtrip() -> None:
     assert tool_result.is_error is False
 
     out = n.request_from_internal(internal)
-    out_messages: List[Dict[str, Any]] = out["messages"]
+    out_messages: list[dict[str, Any]] = out["messages"]
     assert [m["role"] for m in out_messages] == ["user", "assistant", "user"]
 
     assistant_out = out_messages[1]
     assert isinstance(assistant_out["content"], list)
-    a_blocks = cast(List[Dict[str, Any]], assistant_out["content"])
+    a_blocks = cast(list[dict[str, Any]], assistant_out["content"])
     assert a_blocks[0]["type"] == "tool_use"
     assert a_blocks[0]["id"] == "toolu_1"
     assert a_blocks[0]["name"] == "get_weather"
 
     user_out = out_messages[2]
     assert isinstance(user_out["content"], list)
-    u_blocks = cast(List[Dict[str, Any]], user_out["content"])
+    u_blocks = cast(list[dict[str, Any]], user_out["content"])
     assert u_blocks[0]["type"] == "tool_result"
     assert u_blocks[0]["tool_use_id"] == "toolu_1"
     assert u_blocks[0]["content"] == {"temp_c": 20}
@@ -173,7 +173,7 @@ def test_claude_unknown_block_drop_on_output() -> None:
 
     out = n.request_from_internal(internal)
     # Claude 要求以 user 开头，且会做最小修复：插入空 user
-    out_messages: List[Dict[str, Any]] = out["messages"]
+    out_messages: list[dict[str, Any]] = out["messages"]
     assert out_messages[0]["role"] == "user"
     assert out_messages[1]["role"] == "assistant"
     assert out_messages[1]["content"] == "ok"
@@ -255,7 +255,7 @@ def test_claude_stream_chunk_and_event_roundtrip_basic() -> None:
         {"type": "message_stop"},
     ]
 
-    events: List[Any] = []
+    events: list[Any] = []
     for ch in chunks:
         events.extend(n.stream_chunk_to_internal(ch, state))
 
@@ -266,7 +266,7 @@ def test_claude_stream_chunk_and_event_roundtrip_basic() -> None:
 
     # internal events -> Claude events
     state2 = StreamState()
-    out_events: List[Dict[str, Any]] = []
+    out_events: list[dict[str, Any]] = []
     for e in events:
         out_events.extend(n.stream_event_from_internal(e, state2))
 

@@ -3,10 +3,10 @@
 包含所有插件类型共享的类和接口
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.core.logger import logger
 
@@ -28,8 +28,8 @@ class PluginMetadata:
     author: str = "Unknown"
     description: str = ""
     api_version: str = "1.0"
-    dependencies: List[str] = None
-    provides: List[str] = None
+    dependencies: list[str] = None
+    provides: list[str] = None
 
     def __post_init__(self):
         if self.dependencies is None:
@@ -52,9 +52,9 @@ class BasePlugin(ABC):
         author: str = "Unknown",
         description: str = "",
         api_version: str = "1.0",
-        dependencies: List[str] = None,
-        provides: List[str] = None,
-        config: Dict[str, Any] = None,
+        dependencies: list[str] = None,
+        provides: list[str] = None,
+        config: dict[str, Any] = None,
     ):
         """
         初始化插件
@@ -153,7 +153,7 @@ class BasePlugin(ABC):
             HealthStatus.HEALTHY if (self._initialized and self.enabled) else HealthStatus.UNHEALTHY
         )
 
-    def configure(self, config: Dict[str, Any]):
+    def configure(self, config: dict[str, Any]):
         """
         配置插件
 
@@ -177,7 +177,7 @@ class BasePlugin(ABC):
         """检查插件是否已初始化"""
         return self._initialized
 
-    def validate_dependencies(self, available_plugins: Dict[str, List[str]]) -> List[str]:
+    def validate_dependencies(self, available_plugins: dict[str, list[str]]) -> list[str]:
         """
         验证插件依赖是否满足
 

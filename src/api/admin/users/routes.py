@@ -1,7 +1,6 @@
 """用户管理 API 端点。"""
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
@@ -48,8 +47,8 @@ async def list_users(
     request: Request,
     skip: int = Query(0, ge=0, description="跳过记录数"),
     limit: int = Query(100, ge=1, le=1000, description="返回记录数"),
-    role: Optional[str] = Query(None, description="按角色筛选（user/admin）"),
-    is_active: Optional[bool] = Query(None, description="按状态筛选"),
+    role: str | None = Query(None, description="按角色筛选（user/admin）"),
+    is_active: bool | None = Query(None, description="按状态筛选"),
     db: Session = Depends(get_db),
 ):
     """
@@ -136,7 +135,7 @@ async def reset_user_quota(user_id: str, request: Request, db: Session = Depends
 async def get_user_api_keys(
     user_id: str,
     request: Request,
-    is_active: Optional[bool] = Query(None, description="按状态筛选"),
+    is_active: bool | None = Query(None, description="按状态筛选"),
     db: Session = Depends(get_db),
 ):
     """
@@ -274,7 +273,7 @@ class AdminCreateUserAdapter(AdminApiAdapter):
 
 
 class AdminListUsersAdapter(AdminApiAdapter):
-    def __init__(self, skip: int, limit: int, role: Optional[str], is_active: Optional[bool]):
+    def __init__(self, skip: int, limit: int, role: str | None, is_active: bool | None):
         self.skip = skip
         self.limit = limit
         self.role = role
@@ -467,7 +466,7 @@ class AdminResetUserQuotaAdapter(AdminApiAdapter):
 class AdminGetUserKeysAdapter(AdminApiAdapter):
     """获取用户的API Keys"""
 
-    def __init__(self, user_id: str, is_active: Optional[bool]):
+    def __init__(self, user_id: str, is_active: bool | None):
         self.user_id = user_id
         self.is_active = is_active
 

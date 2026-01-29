@@ -1,6 +1,6 @@
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 # 配置允许额外字段，以支持API的新特性
@@ -15,20 +15,20 @@ class ClaudeContentBlockText(BaseModelWithExtras):
 
 class ClaudeContentBlockImage(BaseModelWithExtras):
     type: Literal["image"]
-    source: Dict[str, Any]
+    source: dict[str, Any]
 
 
 class ClaudeContentBlockToolUse(BaseModelWithExtras):
     type: Literal["tool_use"]
     id: str
     name: str
-    input: Dict[str, Any]
+    input: dict[str, Any]
 
 
 class ClaudeContentBlockToolResult(BaseModelWithExtras):
     type: Literal["tool_result"]
     tool_use_id: str
-    content: Union[str, List[Dict[str, Any]], Dict[str, Any]]
+    content: str | list[dict[str, Any]] | dict[str, Any]
 
 
 class ClaudeContentBlockThinking(BaseModelWithExtras):
@@ -45,13 +45,13 @@ class ClaudeMessage(BaseModelWithExtras):
     role: Literal["user", "assistant"]
     # 宽松的内容类型定义 - 接受字符串或任意字典列表
     # 作为转发代理,不应该严格限制内容块类型,以支持API的新特性
-    content: Union[str, List[Dict[str, Any]]]
+    content: str | list[dict[str, Any]]
 
 
 class ClaudeTool(BaseModelWithExtras):
     name: str
-    description: Optional[str] = None
-    input_schema: Dict[str, Any]
+    description: str | None = None
+    input_schema: dict[str, Any]
 
 
 class ClaudeThinkingConfig(BaseModelWithExtras):
@@ -61,28 +61,28 @@ class ClaudeThinkingConfig(BaseModelWithExtras):
 class ClaudeMessagesRequest(BaseModelWithExtras):
     model: str
     max_tokens: int
-    messages: List[ClaudeMessage]
+    messages: list[ClaudeMessage]
     # 宽松的system类型 - 接受字符串、字典列表或任意字典
-    system: Optional[Union[str, List[Dict[str, Any]], Dict[str, Any]]] = None
-    stop_sequences: Optional[List[str]] = None
-    stream: Optional[bool] = False
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    metadata: Optional[Dict[str, Any]] = None
-    tools: Optional[List[Dict[str, Any]]] = None  # 改为更宽松的类型
-    tool_choice: Optional[Dict[str, Any]] = None
-    thinking: Optional[Dict[str, Any]] = None  # 改为更宽松的类型
+    system: str | list[dict[str, Any]] | dict[str, Any] | None = None
+    stop_sequences: list[str] | None = None
+    stream: bool | None = False
+    temperature: float | None = 1.0
+    top_p: float | None = None
+    top_k: int | None = None
+    metadata: dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None  # 改为更宽松的类型
+    tool_choice: dict[str, Any] | None = None
+    thinking: dict[str, Any] | None = None  # 改为更宽松的类型
 
 
 class ClaudeTokenCountRequest(BaseModelWithExtras):
     model: str
-    messages: List[ClaudeMessage]
+    messages: list[ClaudeMessage]
     # 宽松的类型定义以支持API新特性
-    system: Optional[Union[str, List[Dict[str, Any]], Dict[str, Any]]] = None
-    tools: Optional[List[Dict[str, Any]]] = None
-    thinking: Optional[Dict[str, Any]] = None
-    tool_choice: Optional[Dict[str, Any]] = None
+    system: str | list[dict[str, Any]] | dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    thinking: dict[str, Any] | None = None
+    tool_choice: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -95,8 +95,8 @@ class ClaudeResponseUsage(BaseModelWithExtras):
 
     input_tokens: int = 0
     output_tokens: int = 0
-    cache_creation_input_tokens: Optional[int] = None
-    cache_read_input_tokens: Optional[int] = None
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
 
 
 class ClaudeResponse(BaseModelWithExtras):
@@ -110,9 +110,9 @@ class ClaudeResponse(BaseModelWithExtras):
     model: str
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"
-    content: List[Dict[str, Any]]
-    stop_reason: Optional[str] = None
-    stop_sequence: Optional[str] = None
-    usage: Optional[ClaudeResponseUsage] = None
-    context_management: Optional[Dict[str, Any]] = None
-    container: Optional[Dict[str, Any]] = None
+    content: list[dict[str, Any]]
+    stop_reason: str | None = None
+    stop_sequence: str | None = None
+    usage: ClaudeResponseUsage | None = None
+    context_management: dict[str, Any] | None = None
+    container: dict[str, Any] | None = None

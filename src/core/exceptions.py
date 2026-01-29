@@ -11,7 +11,7 @@ import asyncio
 import re
 import traceback
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
@@ -91,7 +91,7 @@ FIELD_NAME_TRANSLATIONS = {
 }
 
 
-def translate_pydantic_error(error: Dict[str, Any]) -> str:
+def translate_pydantic_error(error: dict[str, Any]) -> str:
     """
     将 Pydantic 验证错误翻译为中文
 
@@ -122,7 +122,7 @@ def translate_pydantic_error(error: Dict[str, Any]) -> str:
     return translated_msg
 
 
-def translate_pydantic_errors(errors: List[Dict[str, Any]]) -> str:
+def translate_pydantic_errors(errors: list[dict[str, Any]]) -> str:
     """
     翻译多个 Pydantic 验证错误
 
@@ -157,7 +157,7 @@ class ProxyException(HTTPException):
         status_code: int,
         error_type: str,
         message: str,
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         self.error_type = error_type
         self.message = message
@@ -171,8 +171,8 @@ class ProviderException(ProxyException):
     def __init__(
         self,
         message: str,
-        provider_name: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
+        provider_name: str | None = None,
+        request_metadata: Any | None = None,
         **kwargs,
     ):
         self.request_metadata = request_metadata  # 保存元数据以便传递
@@ -192,10 +192,10 @@ class ProviderNotAvailableException(ProviderException):
     def __init__(
         self,
         message: str,
-        provider_name: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
-        upstream_status: Optional[int] = None,
-        upstream_response: Optional[str] = None,
+        provider_name: str | None = None,
+        request_metadata: Any | None = None,
+        upstream_status: int | None = None,
+        upstream_response: str | None = None,
     ):
         super().__init__(
             message=message,
@@ -209,7 +209,7 @@ class ProviderNotAvailableException(ProviderException):
 class ProviderTimeoutException(ProviderException):
     """提供商请求超时"""
 
-    def __init__(self, provider_name: str, timeout: int, request_metadata: Optional[Any] = None):
+    def __init__(self, provider_name: str, timeout: int, request_metadata: Any | None = None):
         super().__init__(
             message=f"请求超时（{timeout}秒）",
             provider_name=provider_name,
@@ -221,7 +221,7 @@ class ProviderTimeoutException(ProviderException):
 class ProviderAuthException(ProviderException):
     """提供商认证失败"""
 
-    def __init__(self, provider_name: str, request_metadata: Optional[Any] = None):
+    def __init__(self, provider_name: str, request_metadata: Any | None = None):
         super().__init__(
             message="上游服务认证失败",
             provider_name=provider_name,
@@ -235,10 +235,10 @@ class ProviderRateLimitException(ProviderException):
     def __init__(
         self,
         message: str,
-        provider_name: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
-        response_headers: Optional[Dict[str, str]] = None,  # 添加响应头
-        retry_after: Optional[int] = None,  # 添加重试时间
+        provider_name: str | None = None,
+        request_metadata: Any | None = None,
+        response_headers: dict[str, str] | None = None,  # 添加响应头
+        retry_after: int | None = None,  # 添加重试时间
     ):
         self.response_headers = response_headers or {}  # 保存响应头
         self.retry_after = retry_after  # 保存重试时间
@@ -250,7 +250,7 @@ class ProviderRateLimitException(ProviderException):
 class QuotaExceededException(ProxyException):
     """配额超限"""
 
-    def __init__(self, quota_type: str = "tokens", remaining: Optional[float] = None):
+    def __init__(self, quota_type: str = "tokens", remaining: float | None = None):
         message = f"{quota_type}配额已用尽"
         if remaining is not None:
             message += f"（剩余: {remaining}）"
@@ -278,7 +278,7 @@ class ConcurrencyLimitError(ProxyException):
     """并发限制异常"""
 
     def __init__(
-        self, message: str, endpoint_id: Optional[str] = None, key_id: Optional[str] = None
+        self, message: str, endpoint_id: str | None = None, key_id: str | None = None
     ):
         details = {}
         if endpoint_id:
@@ -297,7 +297,7 @@ class ConcurrencyLimitError(ProxyException):
 class ModelNotSupportedException(ProxyException):
     """模型不支持"""
 
-    def __init__(self, model: str, provider_name: Optional[str] = None):
+    def __init__(self, model: str, provider_name: str | None = None):
         # 客户端消息不暴露提供商信息
         message = f"模型 '{model}' 不受支持"
         super().__init__(
@@ -311,7 +311,7 @@ class ModelNotSupportedException(ProxyException):
 class StreamingNotSupportedException(ProxyException):
     """流式请求不支持"""
 
-    def __init__(self, model: str, provider_name: Optional[str] = None):
+    def __init__(self, model: str, provider_name: str | None = None):
         # 客户端消息不暴露提供商信息
         message = f"模型 '{model}' 不支持流式请求"
         super().__init__(
@@ -325,7 +325,7 @@ class StreamingNotSupportedException(ProxyException):
 class InvalidRequestException(ProxyException):
     """无效请求"""
 
-    def __init__(self, message: str, field: Optional[str] = None):
+    def __init__(self, message: str, field: str | None = None):
         super().__init__(
             status_code=status.HTTP_400_BAD_REQUEST,
             error_type="invalid_request",
@@ -337,7 +337,7 @@ class InvalidRequestException(ProxyException):
 class NotFoundException(ProxyException):
     """资源未找到"""
 
-    def __init__(self, message: str, resource_type: Optional[str] = None):
+    def __init__(self, message: str, resource_type: str | None = None):
         super().__init__(
             status_code=status.HTTP_404_NOT_FOUND,
             error_type="not_found",
@@ -361,7 +361,7 @@ class ConfirmationRequiredException(ProxyException):
 class ForbiddenException(ProxyException):
     """权限不足"""
 
-    def __init__(self, message: str, required_role: Optional[str] = None):
+    def __init__(self, message: str, required_role: str | None = None):
         super().__init__(
             status_code=status.HTTP_403_FORBIDDEN,
             error_type="forbidden",
@@ -373,7 +373,7 @@ class ForbiddenException(ProxyException):
 class DecryptionException(ProxyException):
     """解密失败异常 - 已知的配置问题，不需要打印堆栈"""
 
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             error_type="decryption_error",
@@ -389,9 +389,9 @@ class JSONParseException(ProviderException):
         self,
         provider_name: str,
         original_error: str,
-        response_content: Optional[str] = None,
-        content_type: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
+        response_content: str | None = None,
+        content_type: str | None = None,
+        request_metadata: Any | None = None,
     ):
         details = {
             "original_error": original_error,
@@ -418,7 +418,7 @@ class EmptyStreamException(ProviderException):
         self,
         provider_name: str,
         chunk_count: int = 0,
-        request_metadata: Optional[Any] = None,
+        request_metadata: Any | None = None,
     ):
         super().__init__(
             message="上游服务返回了空的流式响应",
@@ -438,10 +438,10 @@ class EmbeddedErrorException(ProviderException):
     def __init__(
         self,
         provider_name: str,
-        error_code: Optional[int] = None,
-        error_message: Optional[str] = None,
-        error_status: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
+        error_code: int | None = None,
+        error_message: str | None = None,
+        error_status: str | None = None,
+        request_metadata: Any | None = None,
     ):
         # 客户端消息不暴露提供商信息
         message = "上游服务返回了错误"
@@ -475,10 +475,10 @@ class ProviderCompatibilityException(ProviderException):
     def __init__(
         self,
         message: str,
-        provider_name: Optional[str] = None,
+        provider_name: str | None = None,
         status_code: int = 400,
-        upstream_error: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
+        upstream_error: str | None = None,
+        request_metadata: Any | None = None,
     ):
         self.upstream_error = upstream_error
         super().__init__(
@@ -505,11 +505,11 @@ class UpstreamClientException(ProxyException):
     def __init__(
         self,
         message: str,
-        provider_name: Optional[str] = None,
+        provider_name: str | None = None,
         status_code: int = 400,
-        error_type: Optional[str] = None,
-        upstream_error: Optional[str] = None,
-        request_metadata: Optional[Any] = None,
+        error_type: str | None = None,
+        upstream_error: str | None = None,
+        request_metadata: Any | None = None,
     ):
         self.upstream_error = upstream_error
         self.request_metadata = request_metadata
@@ -535,8 +535,8 @@ class ThinkingSignatureException(UpstreamClientException):
     def __init__(
         self,
         message: str,
-        provider_name: Optional[str] = None,
-        upstream_error: Optional[str] = None,
+        provider_name: str | None = None,
+        upstream_error: str | None = None,
         request_metadata: Any = None,
     ):
         super().__init__(
@@ -557,7 +557,7 @@ class ErrorResponse:
         error_type: str,
         message: str,
         status_code: int = 500,
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> JSONResponse:
         """创建标准错误响应"""
         error_body = {"error": {"type": error_type, "message": message}}

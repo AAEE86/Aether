@@ -8,7 +8,7 @@ import asyncio
 import os
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ from src.core.crypto import CryptoService
 from src.core.logger import logger
 from src.database import create_session
 from src.models.database import Provider
-from src.services.provider_ops.architectures import ProviderArchitecture, ProviderConnector
+from src.services.provider_ops.architectures import ProviderConnector
 from src.services.provider_ops.registry import get_registry
 from src.services.provider_ops.types import (
     ActionResult,
@@ -85,11 +85,11 @@ class ProviderOpsService:
         self.crypto = CryptoService()
 
         # 连接器缓存 {provider_id: ProviderConnector}
-        self._connectors: Dict[str, ProviderConnector] = {}
+        self._connectors: dict[str, ProviderConnector] = {}
 
     # ==================== 配置管理 ====================
 
-    def get_config(self, provider_id: str) -> Optional[ProviderOpsConfig]:
+    def get_config(self, provider_id: str) -> ProviderOpsConfig | None:
         """
         获取 Provider 的操作配置
 
@@ -186,7 +186,7 @@ class ProviderOpsService:
     async def connect(
         self,
         provider_id: str,
-        credentials: Optional[Dict[str, Any]] = None,
+        credentials: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """
         建立与 Provider 的连接
@@ -296,7 +296,7 @@ class ProviderOpsService:
         self,
         provider_id: str,
         action_type: ProviderActionType,
-        action_config: Optional[Dict[str, Any]] = None,
+        action_config: dict[str, Any] | None = None,
     ) -> ActionResult:
         """
         执行操作
@@ -371,7 +371,7 @@ class ProviderOpsService:
     async def query_balance(
         self,
         provider_id: str,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> ActionResult:
         """
         查询余额（快捷方法）
@@ -508,7 +508,7 @@ class ProviderOpsService:
         self,
         provider_id: str,
         quota_usd: float,
-        extra: Optional[Dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         """
         从验证结果缓存余额
@@ -538,7 +538,7 @@ class ProviderOpsService:
         await CacheService.set(cache_key, cache_data, BALANCE_CACHE_TTL)
         logger.debug(f"验证成功，缓存余额: provider_id={provider_id}, quota_usd={quota_usd}")
 
-    async def _get_cached_balance(self, provider_id: str) -> Optional[ActionResult]:
+    async def _get_cached_balance(self, provider_id: str) -> ActionResult | None:
         """获取缓存的余额"""
         cache_key = f"provider_ops:balance:{provider_id}"
         cached = await CacheService.get(cache_key)
@@ -585,7 +585,7 @@ class ProviderOpsService:
     async def checkin(
         self,
         provider_id: str,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> ActionResult:
         """
         签到（快捷方法）
@@ -601,11 +601,11 @@ class ProviderOpsService:
 
     # ==================== 辅助方法 ====================
 
-    def _get_provider(self, provider_id: str) -> Optional[Provider]:
+    def _get_provider(self, provider_id: str) -> Provider | None:
         """获取 Provider"""
         return self.db.query(Provider).filter(Provider.id == provider_id).first()
 
-    def _get_provider_base_url(self, provider: Provider) -> Optional[str]:
+    def _get_provider_base_url(self, provider: Provider) -> str | None:
         """从 Provider 获取 base_url"""
         # 优先从第一个 endpoint 获取
         if provider.endpoints:
@@ -624,7 +624,7 @@ class ProviderOpsService:
 
         return None
 
-    def _encrypt_credentials(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
+    def _encrypt_credentials(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """加密凭据中的敏感字段"""
         encrypted = {}
         for key, value in credentials.items():
@@ -639,7 +639,7 @@ class ProviderOpsService:
                 encrypted[key] = value
         return encrypted
 
-    def _decrypt_credentials(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
+    def _decrypt_credentials(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """解密凭据中的敏感字段"""
         decrypted = {}
         for key, value in credentials.items():
@@ -653,7 +653,7 @@ class ProviderOpsService:
                 decrypted[key] = value
         return decrypted
 
-    def get_masked_credentials(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
+    def get_masked_credentials(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """
         获取脱敏后的凭据
 
@@ -683,8 +683,8 @@ class ProviderOpsService:
     def merge_credentials_with_saved(
         self,
         provider_id: str,
-        credentials: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         合并凭据：如果请求中的敏感字段为空，使用已保存的凭据
 
@@ -720,8 +720,8 @@ class ProviderOpsService:
     # ==================== 批量操作 ====================
 
     async def batch_query_balance(
-        self, provider_ids: Optional[List[str]] = None
-    ) -> Dict[str, ActionResult]:
+        self, provider_ids: list[str] | None = None
+    ) -> dict[str, ActionResult]:
         """
         批量查询余额（优先返回缓存，后台异步刷新）
 
@@ -780,10 +780,10 @@ class ProviderOpsService:
         base_url: str,
         architecture_id: str,
         auth_type: ConnectorAuthType,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-        provider_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+        provider_id: str | None = None,
+    ) -> dict[str, Any]:
         """
         验证认证配置
 
@@ -831,7 +831,7 @@ class ProviderOpsService:
 
         try:
             # 构建 httpx client 参数
-            client_kwargs: Dict[str, Any] = {
+            client_kwargs: dict[str, Any] = {
                 "timeout": 30.0,
                 "verify": get_ssl_context(),
             }

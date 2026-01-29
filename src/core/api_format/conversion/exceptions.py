@@ -4,7 +4,6 @@
 用于严格模式转换失败时抛出，让编排器可以尝试下一个候选。
 """
 
-from __future__ import annotations
 
 
 class FormatConversionError(Exception):

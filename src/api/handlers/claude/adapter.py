@@ -4,7 +4,7 @@ Claude Chat Adapter - 基于 ChatAdapterBase 的 Claude Chat API 适配器
 处理 /v1/messages 端点的 Claude Chat 格式请求。
 """
 
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request
@@ -25,9 +25,9 @@ class ClaudeCapabilityDetector:
 
     @staticmethod
     def detect_from_headers(
-        headers: Dict[str, str],
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, bool]:
+        headers: dict[str, str],
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
         """
         从 Claude 请求头检测能力需求
 
@@ -38,7 +38,7 @@ class ClaudeCapabilityDetector:
             headers: 请求头字典
             request_body: 请求体（Claude 不使用，保留用于接口统一）
         """
-        requirements: Dict[str, bool] = {}
+        requirements: dict[str, bool] = {}
 
         # 使用统一的大小写不敏感获取
         beta_header = get_header_value(headers, "anthropic-beta")
@@ -61,21 +61,21 @@ class ClaudeChatAdapter(ChatAdapterBase):
     name = "claude.chat"
 
     @property
-    def HANDLER_CLASS(self) -> Type[ChatHandlerBase]:
+    def HANDLER_CLASS(self) -> type[ChatHandlerBase]:
         """延迟导入 Handler 类避免循环依赖"""
         from src.api.handlers.claude.handler import ClaudeChatHandler
 
         return ClaudeChatHandler
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         super().__init__(allowed_api_formats or ["CLAUDE"])
         logger.info(f"[{self.name}] 初始化Chat模式适配器 | API格式: {self.allowed_api_formats}")
 
     def detect_capability_requirements(
         self,
-        headers: Dict[str, str],
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, bool]:
+        headers: dict[str, str],
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
         """检测 Claude 请求中隐含的能力需求"""
         return ClaudeCapabilityDetector.detect_from_headers(headers)
 
@@ -124,7 +124,7 @@ class ClaudeChatAdapter(ChatAdapterBase):
             )
         return request
 
-    def _build_audit_metadata(self, _payload: Dict[str, Any], request_obj) -> Dict[str, Any]:
+    def _build_audit_metadata(self, _payload: dict[str, Any], request_obj) -> dict[str, Any]:
         """构建 Claude Chat 特定的审计元数据"""
         role_counts: dict[str, int] = {}
         for message in request_obj.messages:
@@ -153,8 +153,8 @@ class ClaudeChatAdapter(ChatAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """查询 Claude API 支持的模型列表"""
         headers = cls.build_headers_with_extra(api_key, extra_headers)
 
@@ -201,7 +201,7 @@ class ClaudeChatAdapter(ChatAdapterBase):
     # build_request_body 使用基类实现，通过 format_conversion_registry 自动转换 OPENAI -> CLAUDE
 
 
-def build_claude_adapter(x_app_header: Optional[str]):
+def build_claude_adapter(x_app_header: str | None):
     """根据 x-app 头部构造 Chat 或 Claude Code 适配器。"""
     if x_app_header and x_app_header.lower() == "cli":
         from src.api.handlers.claude_cli.adapter import ClaudeCliAdapter
@@ -216,7 +216,7 @@ class ClaudeTokenCountAdapter(ApiAdapter):
     name = "claude.token_count"
     mode = ApiMode.STANDARD
 
-    def extract_api_key(self, request: Request) -> Optional[str]:
+    def extract_api_key(self, request: Request) -> str | None:
         """从请求中提取 API 密钥 (x-api-key 或 Authorization: Bearer)"""
         # 优先检查 x-api-key
         api_key = request.headers.get("x-api-key")

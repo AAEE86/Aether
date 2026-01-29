@@ -4,7 +4,7 @@ Gemini Chat Adapter
 处理 Gemini API 格式的请求适配
 """
 
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request
@@ -32,17 +32,17 @@ class GeminiChatAdapter(ChatAdapterBase):
     name = "gemini.chat"
 
     @property
-    def HANDLER_CLASS(self) -> Type[ChatHandlerBase]:
+    def HANDLER_CLASS(self) -> type[ChatHandlerBase]:
         """延迟导入 Handler 类避免循环依赖"""
         from src.api.handlers.gemini.handler import GeminiChatHandler
 
         return GeminiChatHandler
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         super().__init__(allowed_api_formats or ["GEMINI"])
         logger.info(f"[{self.name}] 初始化 Gemini Chat 适配器 | API格式: {self.allowed_api_formats}")
 
-    def extract_api_key(self, request: Request) -> Optional[str]:
+    def extract_api_key(self, request: Request) -> str | None:
         """
         从请求中提取 API 密钥 - Gemini 支持 header 和 query 两种方式
 
@@ -57,8 +57,8 @@ class GeminiChatAdapter(ChatAdapterBase):
         )
 
     def _merge_path_params(
-        self, original_request_body: Dict[str, Any], path_params: Dict[str, Any]  # noqa: ARG002
-    ) -> Dict[str, Any]:
+        self, original_request_body: dict[str, Any], path_params: dict[str, Any]  # noqa: ARG002
+    ) -> dict[str, Any]:
         """
         合并 URL 路径参数到请求体 - Gemini 特化版本
 
@@ -111,14 +111,14 @@ class GeminiChatAdapter(ChatAdapterBase):
         request.stream = is_stream
         return request
 
-    def _extract_message_count(self, payload: Dict[str, Any], request_obj) -> int:
+    def _extract_message_count(self, payload: dict[str, Any], request_obj) -> int:
         """提取消息数量"""
         contents = payload.get("contents", [])
         if hasattr(request_obj, "contents"):
             contents = request_obj.contents
         return len(contents) if isinstance(contents, list) else 0
 
-    def _build_audit_metadata(self, payload: Dict[str, Any], request_obj) -> Dict[str, Any]:
+    def _build_audit_metadata(self, payload: dict[str, Any], request_obj) -> dict[str, Any]:
         """构建 Gemini Chat 特定的审计元数据"""
         role_counts: dict[str, int] = {}
 
@@ -171,8 +171,8 @@ class GeminiChatAdapter(ChatAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """查询 Gemini API 支持的模型列表"""
         # Gemini 使用 URL 参数传递 key，不需要 headers 中的认证
         base_url_clean = base_url.rstrip("/")
@@ -181,7 +181,7 @@ class GeminiChatAdapter(ChatAdapterBase):
         else:
             models_url = f"{base_url_clean}/v1beta/models?key={api_key}"
 
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
         if extra_headers:
             headers.update(extra_headers)
 
@@ -231,16 +231,16 @@ class GeminiChatAdapter(ChatAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        request_data: Dict[str, Any],
-        extra_headers: Optional[Dict[str, str]] = None,
+        request_data: dict[str, Any],
+        extra_headers: dict[str, str] | None = None,
         # 用量计算参数
-        db: Optional[Any] = None,
-        user: Optional[Any] = None,
-        provider_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-        model_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        db: Any | None = None,
+        user: Any | None = None,
+        provider_name: str | None = None,
+        provider_id: str | None = None,
+        api_key_id: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
         """测试 Gemini API 模型连接性（非流式）"""
         # Gemini需要从request_data或model_name参数获取model名称
         effective_model_name = model_name or request_data.get("model", "")

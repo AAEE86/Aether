@@ -4,7 +4,7 @@ import asyncio
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from ...clients.redis_client import get_redis_client_sync
 from src.core.logger import logger
@@ -82,7 +82,7 @@ class TokenBucketStrategy(RateLimitStrategy):
 
     def __init__(self):
         super().__init__("token_bucket")
-        self.buckets: Dict[str, TokenBucket] = {}
+        self.buckets: dict[str, TokenBucket] = {}
         self._lock = asyncio.Lock()
 
         # 默认配置
@@ -90,11 +90,11 @@ class TokenBucketStrategy(RateLimitStrategy):
         self.default_refill_rate = 10  # 默认每秒补充10个令牌
 
         # 可选的 Redis 后端
-        self._redis_backend: Optional[RedisTokenBucketBackend] = None
+        self._redis_backend: RedisTokenBucketBackend | None = None
         self._redis_checked = False
         self._backend_mode = os.getenv("RATE_LIMIT_BACKEND", "auto").lower()
 
-    def _get_bucket(self, key: str, rate_limit: Optional[int] = None) -> TokenBucket:
+    def _get_bucket(self, key: str, rate_limit: int | None = None) -> TokenBucket:
         """
         获取或创建令牌桶
 
@@ -248,7 +248,7 @@ class TokenBucketStrategy(RateLimitStrategy):
 
                 logger.info(f"令牌桶已重置")
 
-    async def get_stats(self, key: str) -> Dict[str, Any]:
+    async def get_stats(self, key: str) -> dict[str, Any]:
         """
         获取统计信息
 
@@ -278,7 +278,7 @@ class TokenBucketStrategy(RateLimitStrategy):
                 "reset_at": bucket.get_reset_time().isoformat(),
             }
 
-    def configure(self, config: Dict[str, Any]):
+    def configure(self, config: dict[str, Any]):
         """
         配置策略
 
@@ -292,7 +292,7 @@ class TokenBucketStrategy(RateLimitStrategy):
         self.default_capacity = config.get("default_capacity", self.default_capacity)
         self.default_refill_rate = config.get("default_refill_rate", self.default_refill_rate)
 
-    def _resolve_capacity(self, key: str, rate_limit: Optional[int] = None) -> int:
+    def _resolve_capacity(self, key: str, rate_limit: int | None = None) -> int:
         if rate_limit is not None:
             return rate_limit
         if key.startswith("api_key:"):
@@ -301,7 +301,7 @@ class TokenBucketStrategy(RateLimitStrategy):
             return self.config.get("user_capacity", self.default_capacity * 2)
         return self.default_capacity
 
-    def _resolve_refill_rate(self, key: str, rate_limit: Optional[int] = None) -> float:
+    def _resolve_refill_rate(self, key: str, rate_limit: int | None = None) -> float:
         if rate_limit is not None:
             return rate_limit / 60.0
         if key.startswith("api_key:"):
@@ -404,7 +404,7 @@ class RedisTokenBucketBackend:
         capacity: int,
         refill_rate: float,
         amount: int,
-    ) -> Tuple[bool, int]:
+    ) -> tuple[bool, int]:
         result = await self._consume_script(
             keys=[self._redis_key(key)],
             args=[time.time(), capacity, refill_rate, amount],
@@ -416,7 +416,7 @@ class RedisTokenBucketBackend:
     async def reset(self, key: str):
         await self.redis.delete(self._redis_key(key))
 
-    async def get_stats(self, key: str, capacity: int, refill_rate: float) -> Dict[str, Any]:
+    async def get_stats(self, key: str, capacity: int, refill_rate: float) -> dict[str, Any]:
         data = await self.redis.hmget(self._redis_key(key), "tokens", "timestamp")
         tokens = data[0]
         timestamp = data[1]

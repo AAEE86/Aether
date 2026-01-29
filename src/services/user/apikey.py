@@ -3,14 +3,14 @@ API密钥管理服务
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.core.crypto import crypto_service
 from src.core.logger import logger
-from src.models.database import ApiKey, Usage, User
+from src.models.database import ApiKey, Usage
 
 
 
@@ -21,15 +21,15 @@ class ApiKeyService:
     def create_api_key(
         db: Session,
         user_id: str,  # UUID
-        name: Optional[str] = None,
-        allowed_providers: Optional[List[str]] = None,
-        allowed_api_formats: Optional[List[str]] = None,
-        allowed_models: Optional[List[str]] = None,
-        rate_limit: Optional[int] = None,
+        name: str | None = None,
+        allowed_providers: list[str] | None = None,
+        allowed_api_formats: list[str] | None = None,
+        allowed_models: list[str] | None = None,
+        rate_limit: int | None = None,
         concurrent_limit: int = 5,
-        expire_days: Optional[int] = None,
-        expires_at: Optional[datetime] = None,  # 直接传入过期时间，优先于 expire_days
-        initial_balance_usd: Optional[float] = None,
+        expire_days: int | None = None,
+        expires_at: datetime | None = None,  # 直接传入过期时间，优先于 expire_days
+        initial_balance_usd: float | None = None,
         is_standalone: bool = False,
         auto_delete_on_expiry: bool = False,
     ) -> tuple[ApiKey, str]:
@@ -89,20 +89,20 @@ class ApiKeyService:
         return api_key, key  # 返回密钥对象和明文密钥
 
     @staticmethod
-    def get_api_key(db: Session, key_id: str) -> Optional[ApiKey]:  # UUID
+    def get_api_key(db: Session, key_id: str) -> ApiKey | None:  # UUID
         """获取API密钥"""
         return db.query(ApiKey).filter(ApiKey.id == key_id).first()
 
     @staticmethod
-    def get_api_key_by_key(db: Session, key: str) -> Optional[ApiKey]:
+    def get_api_key_by_key(db: Session, key: str) -> ApiKey | None:
         """通过密钥字符串获取API密钥"""
         key_hash = ApiKey.hash_key(key)
         return db.query(ApiKey).filter(ApiKey.key_hash == key_hash).first()
 
     @staticmethod
     def list_user_api_keys(
-        db: Session, user_id: str, is_active: Optional[bool] = None  # UUID
-    ) -> List[ApiKey]:
+        db: Session, user_id: str, is_active: bool | None = None  # UUID
+    ) -> list[ApiKey]:
         """列出用户的所有API密钥（不包括独立Key）"""
         query = db.query(ApiKey).filter(
             ApiKey.user_id == user_id, ApiKey.is_standalone == False  # 排除独立Key
@@ -114,7 +114,7 @@ class ApiKeyService:
         return query.order_by(ApiKey.created_at.desc()).all()
 
     @staticmethod
-    def list_standalone_api_keys(db: Session, is_active: Optional[bool] = None) -> List[ApiKey]:
+    def list_standalone_api_keys(db: Session, is_active: bool | None = None) -> list[ApiKey]:
         """列出所有独立余额Key（仅管理员可用）"""
         query = db.query(ApiKey).filter(ApiKey.is_standalone == True)
 
@@ -124,7 +124,7 @@ class ApiKeyService:
         return query.order_by(ApiKey.created_at.desc()).all()
 
     @staticmethod
-    def update_api_key(db: Session, key_id: str, **kwargs) -> Optional[ApiKey]:  # UUID
+    def update_api_key(db: Session, key_id: str, **kwargs) -> ApiKey | None:  # UUID
         """更新API密钥"""
         api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
         if not api_key:
@@ -186,7 +186,7 @@ class ApiKeyService:
         return True
 
     @staticmethod
-    def get_remaining_balance(api_key: ApiKey) -> Optional[float]:
+    def get_remaining_balance(api_key: ApiKey) -> float | None:
         """计算剩余余额（仅用于独立Key）
 
         Returns:
@@ -203,7 +203,7 @@ class ApiKeyService:
         return max(0, remaining)  # 不能为负数
 
     @staticmethod
-    def check_balance(api_key: ApiKey) -> tuple[bool, Optional[float]]:
+    def check_balance(api_key: ApiKey) -> tuple[bool, float | None]:
         """检查余额限制（仅用于独立Key）
 
         Returns:
@@ -259,7 +259,7 @@ class ApiKeyService:
         return is_allowed, api_key.rate_limit - request_count
 
     @staticmethod
-    def add_balance(db: Session, key_id: str, amount_usd: float) -> Optional[ApiKey]:
+    def add_balance(db: Session, key_id: str, amount_usd: float) -> ApiKey | None:
         """为独立余额Key调整余额
 
         Args:
@@ -355,9 +355,9 @@ class ApiKeyService:
     def get_api_key_stats(
         db: Session,
         key_id: str,  # UUID
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> dict[str, Any]:
         """获取API密钥使用统计"""
 
         api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()

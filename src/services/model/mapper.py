@@ -3,8 +3,6 @@
 根据数据库中的配置，将用户请求的模型映射到提供商的实际模型
 """
 
-from typing import Dict, List, Optional
-
 from sqlalchemy.orm import Session, joinedload
 
 from src.core.cache_utils import SyncLRUCache
@@ -79,7 +77,7 @@ class ModelMapperMiddleware:
 
     async def get_mapping(
         self, source_model: str, provider_id: str
-    ) -> Optional[object]:
+    ) -> object | None:
         """
         获取模型映射
 
@@ -137,7 +135,7 @@ class ModelMapperMiddleware:
 
         return mapping
 
-    def get_all_mappings(self, provider_id: str) -> List[object]:
+    def get_all_mappings(self, provider_id: str) -> list[object]:
         """
         获取提供商的所有可用模型(通过 GlobalModel)
 
@@ -177,7 +175,7 @@ class ModelMapperMiddleware:
 
         return mappings
 
-    def get_supported_models(self, provider_id: str) -> List[str]:
+    def get_supported_models(self, provider_id: str) -> list[str]:
         """
         获取提供商支持的所有源模型名
 
@@ -192,7 +190,7 @@ class ModelMapperMiddleware:
 
     async def validate_request(
         self, request: ClaudeMessagesRequest, provider: Provider
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """
         验证请求是否符合映射的限制
 
@@ -219,7 +217,7 @@ class ModelMapperMiddleware:
         self._cache.clear()
         logger.debug("Model mapping cache cleared")
 
-    def refresh_cache(self, provider_id: Optional[str] = None):
+    def refresh_cache(self, provider_id: str | None = None):
         """
         刷新缓存
 
@@ -258,10 +256,10 @@ class ModelRoutingMiddleware:
     def select_provider(
         self,
         model_name: str,
-        preferred_provider: Optional[str] = None,
-        allowed_api_formats: Optional[List[str]] = None,
-        request_id: Optional[str] = None,
-    ) -> Optional[Provider]:
+        preferred_provider: str | None = None,
+        allowed_api_formats: list[str] | None = None,
+        request_id: str | None = None,
+    ) -> Provider | None:
         """
         根据模型名选择提供商
 
@@ -327,7 +325,7 @@ class ModelRoutingMiddleware:
             logger.error("No active providers found.")
         return None
 
-    def get_available_models(self) -> Dict[str, List[str]]:
+    def get_available_models(self) -> dict[str, list[str]]:
         """
         获取所有可用的模型及其提供商
 
@@ -354,7 +352,7 @@ class ModelRoutingMiddleware:
 
         return result
 
-    async def get_cheapest_provider(self, model_name: str) -> Optional[Provider]:
+    async def get_cheapest_provider(self, model_name: str) -> Provider | None:
         """
         获取某个模型最便宜的提供商
 

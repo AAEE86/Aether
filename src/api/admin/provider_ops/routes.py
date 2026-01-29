@@ -9,7 +9,7 @@ Provider 操作 API 路由
 """
 
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -18,9 +18,7 @@ from sqlalchemy.orm import Session
 from src.database import get_db
 from src.models.database import Provider, User
 from src.services.provider_ops import (
-    ActionStatus,
     ConnectorAuthType,
-    ConnectorStatus,
     ProviderActionType,
     ProviderOpsConfig,
     ProviderOpsService,
@@ -40,46 +38,46 @@ class ArchitectureInfo(BaseModel):
     architecture_id: str
     display_name: str
     description: str
-    supported_auth_types: List[Dict[str, str]]
-    supported_actions: List[Dict[str, Any]]
-    default_connector: Optional[str]
+    supported_auth_types: list[dict[str, str]]
+    supported_actions: list[dict[str, Any]]
+    default_connector: str | None
 
 
 class ConnectorConfigRequest(BaseModel):
     """连接器配置请求"""
 
     auth_type: str = Field(..., description="认证类型")
-    config: Dict[str, Any] = Field(default_factory=dict, description="连接器配置")
-    credentials: Dict[str, Any] = Field(default_factory=dict, description="凭据信息")
+    config: dict[str, Any] = Field(default_factory=dict, description="连接器配置")
+    credentials: dict[str, Any] = Field(default_factory=dict, description="凭据信息")
 
 
 class ActionConfigRequest(BaseModel):
     """操作配置请求"""
 
     enabled: bool = Field(True, description="是否启用")
-    config: Dict[str, Any] = Field(default_factory=dict, description="操作配置")
+    config: dict[str, Any] = Field(default_factory=dict, description="操作配置")
 
 
 class SaveConfigRequest(BaseModel):
     """保存配置请求"""
 
     architecture_id: str = Field("generic_api", description="架构 ID")
-    base_url: Optional[str] = Field(None, description="API 基础地址")
+    base_url: str | None = Field(None, description="API 基础地址")
     connector: ConnectorConfigRequest
-    actions: Dict[str, ActionConfigRequest] = Field(default_factory=dict)
-    schedule: Dict[str, str] = Field(default_factory=dict, description="定时任务配置")
+    actions: dict[str, ActionConfigRequest] = Field(default_factory=dict)
+    schedule: dict[str, str] = Field(default_factory=dict, description="定时任务配置")
 
 
 class ConnectRequest(BaseModel):
     """连接请求"""
 
-    credentials: Optional[Dict[str, Any]] = Field(None, description="凭据（可选，使用已保存的）")
+    credentials: dict[str, Any] | None = Field(None, description="凭据（可选，使用已保存的）")
 
 
 class ExecuteActionRequest(BaseModel):
     """执行操作请求"""
 
-    config: Optional[Dict[str, Any]] = Field(None, description="操作配置（覆盖默认）")
+    config: dict[str, Any] | None = Field(None, description="操作配置（覆盖默认）")
 
 
 class ConnectionStatusResponse(BaseModel):
@@ -87,9 +85,9 @@ class ConnectionStatusResponse(BaseModel):
 
     status: str
     auth_type: str
-    connected_at: Optional[str]
-    expires_at: Optional[str]
-    last_error: Optional[str]
+    connected_at: str | None
+    expires_at: str | None
+    last_error: str | None
 
 
 class ActionResultResponse(BaseModel):
@@ -97,10 +95,10 @@ class ActionResultResponse(BaseModel):
 
     status: str
     action_type: str
-    data: Optional[Any]
-    message: Optional[str]
+    data: Any | None
+    message: str | None
     executed_at: str
-    response_time_ms: Optional[int]
+    response_time_ms: int | None
     cache_ttl_seconds: int
 
 
@@ -109,9 +107,9 @@ class ProviderOpsStatusResponse(BaseModel):
 
     provider_id: str
     is_configured: bool
-    architecture_id: Optional[str]
+    architecture_id: str | None
     connection_status: ConnectionStatusResponse
-    enabled_actions: List[str]
+    enabled_actions: list[str]
 
 
 class ProviderOpsConfigResponse(BaseModel):
@@ -119,17 +117,17 @@ class ProviderOpsConfigResponse(BaseModel):
 
     provider_id: str
     is_configured: bool
-    architecture_id: Optional[str] = None
-    base_url: Optional[str] = None
-    connector: Optional[Dict[str, Any]] = None  # 脱敏后的连接器配置
+    architecture_id: str | None = None
+    base_url: str | None = None
+    connector: dict[str, Any] | None = None  # 脱敏后的连接器配置
 
 
 class VerifyAuthResponse(BaseModel):
     """验证认证响应"""
 
     success: bool
-    message: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
+    message: str | None = None
+    data: dict[str, Any] | None = None
 
 
 # ==================== Helper Functions ====================
@@ -147,7 +145,7 @@ def _serialize_data(data: Any) -> Any:
 # ==================== Routes ====================
 
 
-@router.get("/architectures", response_model=List[ArchitectureInfo])
+@router.get("/architectures", response_model=list[ArchitectureInfo])
 async def list_architectures(_: User = Depends(require_admin)):
     """获取所有可用的架构"""
     registry = get_registry()
@@ -490,7 +488,7 @@ async def checkin(
 
 @router.post("/batch/balance")
 async def batch_query_balance(
-    provider_ids: Optional[List[str]] = None,
+    provider_ids: list[str] | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):

@@ -3,7 +3,6 @@
 负责提供商选择、模型映射和请求处理
 """
 
-from typing import Dict
 
 from sqlalchemy.orm import Session
 
@@ -92,7 +91,7 @@ class ProviderService:
 
     def calculate_cost(
         self, provider: Provider, model: str, input_tokens: int, output_tokens: int
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """
         计算使用成本
 
@@ -107,7 +106,7 @@ class ProviderService:
         """
         return self.mapper.calculate_cost(model, provider.id, input_tokens, output_tokens)
 
-    def get_available_models(self) -> Dict[str, list]:
+    def get_available_models(self) -> dict[str, list]:
         """
         获取所有可用的模型
 

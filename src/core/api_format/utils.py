@@ -4,15 +4,14 @@ API 格式工具函数
 提供格式判断、规范化等工具函数，供整个项目使用。
 """
 
-from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.core.api_format.enums import APIFormat
 
 
-def is_cli_format(format_id: Union[str, "APIFormat", None]) -> bool:
+def is_cli_format(format_id: str | APIFormat | None) -> bool:
     """
     判断是否为 CLI 透传格式
 
@@ -40,7 +39,7 @@ def is_cli_format(format_id: Union[str, "APIFormat", None]) -> bool:
     return str(format_id).upper().endswith("_CLI")
 
 
-def get_base_format(format_id: Union[str, "APIFormat", None]) -> Optional[str]:
+def get_base_format(format_id: str | APIFormat | None) -> str | None:
     """
     获取基础格式（去除 _CLI 后缀）
 
@@ -66,7 +65,7 @@ def get_base_format(format_id: Union[str, "APIFormat", None]) -> Optional[str]:
     return format_str
 
 
-def normalize_format(format_id: Union[str, "APIFormat", None]) -> Optional[str]:
+def normalize_format(format_id: str | APIFormat | None) -> str | None:
     """
     规范化格式标识符
 
@@ -84,8 +83,8 @@ def normalize_format(format_id: Union[str, "APIFormat", None]) -> Optional[str]:
 
 
 def is_same_format(
-    format1: Union[str, "APIFormat", None],
-    format2: Union[str, "APIFormat", None],
+    format1: str | APIFormat | None,
+    format2: str | APIFormat | None,
 ) -> bool:
     """
     判断两个格式是否相同
@@ -95,7 +94,7 @@ def is_same_format(
     return normalize_format(format1) == normalize_format(format2)
 
 
-def is_convertible_format(format_id: Union[str, "APIFormat", None]) -> bool:
+def is_convertible_format(format_id: str | APIFormat | None) -> bool:
     """
     判断是否为可转换格式
 

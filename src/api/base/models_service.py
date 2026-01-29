@@ -10,8 +10,9 @@
 4. Key 的 allowed_models 允许该模型（null = 允许所有）
 """
 
+from __future__ import annotations
 from dataclasses import asdict, dataclass
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -27,7 +28,7 @@ _CACHE_KEY_PREFIX = "models:list"
 _CACHE_TTL = CacheTTL.MODEL  # 300 秒
 
 
-def _get_cache_key(api_formats: list[str], client_format: Optional[str] = None) -> str:
+def _get_cache_key(api_formats: list[str], client_format: str | None = None) -> str:
     """生成缓存 key"""
     formats_str = ",".join(sorted(api_formats))
     format_key = (client_format or "any").lower()
@@ -35,8 +36,8 @@ def _get_cache_key(api_formats: list[str], client_format: Optional[str] = None) 
 
 
 async def _get_cached_models(
-    api_formats: list[str], client_format: Optional[str] = None
-) -> Optional[list["ModelInfo"]]:
+    api_formats: list[str], client_format: str | None = None
+) -> list[ModelInfo] | None:
     """从缓存获取模型列表"""
     cache_key = _get_cache_key(api_formats, client_format)
     try:
@@ -51,8 +52,8 @@ async def _get_cached_models(
 
 async def _set_cached_models(
     api_formats: list[str],
-    models: list["ModelInfo"],
-    client_format: Optional[str] = None,
+    models: list[ModelInfo],
+    client_format: str | None = None,
 ) -> None:
     """将模型列表写入缓存"""
     cache_key = _get_cache_key(api_formats, client_format)
@@ -87,8 +88,8 @@ class ModelInfo:
 
     id: str  # 模型 ID (GlobalModel.name 或 provider_model_name)
     display_name: str
-    description: Optional[str]
-    created_at: Optional[str]  # ISO 格式
+    description: str | None
+    created_at: str | None  # ISO 格式
     created_timestamp: int  # Unix 时间戳
     provider_name: str
     provider_id: str = ""  # Provider ID，用于权限过滤
@@ -100,27 +101,27 @@ class ModelInfo:
     image_generation: bool = False
     structured_output: bool = False
     # 规格参数
-    context_limit: Optional[int] = None
-    output_limit: Optional[int] = None
+    context_limit: int | None = None
+    output_limit: int | None = None
     # 元信息
-    family: Optional[str] = None
-    knowledge_cutoff: Optional[str] = None
-    input_modalities: Optional[list[str]] = None
-    output_modalities: Optional[list[str]] = None
+    family: str | None = None
+    knowledge_cutoff: str | None = None
+    input_modalities: list[str] | None = None
+    output_modalities: list[str] | None = None
 
 
 @dataclass
 class AccessRestrictions:
     """API Key 或 User 的访问限制"""
 
-    allowed_providers: Optional[list[str]] = None  # 允许的 Provider ID 列表
-    allowed_models: Optional[list[str]] = None  # 允许的模型名称列表
-    allowed_api_formats: Optional[list[str]] = None  # 允许的 API 格式列表
+    allowed_providers: list[str] | None = None  # 允许的 Provider ID 列表
+    allowed_models: list[str] | None = None  # 允许的模型名称列表
+    allowed_api_formats: list[str] | None = None  # 允许的 API 格式列表
 
     @classmethod
     def from_api_key_and_user(
-        cls, api_key: Optional[ApiKey], user: Optional[User]
-    ) -> "AccessRestrictions":
+        cls, api_key: ApiKey | None, user: User | None
+    ) -> AccessRestrictions:
         """
         从 API Key 和 User 合并访问限制
 
@@ -130,9 +131,9 @@ class AccessRestrictions:
         - 如果 API Key 无限制但 User 有限制，使用 User 的限制
         - 两者都无限制则返回空限制
         """
-        allowed_providers: Optional[list[str]] = None
-        allowed_models: Optional[list[str]] = None
-        allowed_api_formats: Optional[list[str]] = None
+        allowed_providers: list[str] | None = None
+        allowed_models: list[str] | None = None
+        allowed_api_formats: list[str] | None = None
 
         # 优先使用 API Key 的限制
         if api_key:
@@ -197,8 +198,8 @@ class AccessRestrictions:
 
 
 def _normalize_api_formats(
-    api_formats: Optional[list[str]],
-    provider_to_formats: Optional[dict[str, set[str]]] = None,
+    api_formats: list[str] | None,
+    provider_to_formats: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """规范化 API 格式列表（大写），必要时从 provider_to_formats 兜底"""
     if api_formats:
@@ -212,7 +213,7 @@ def _normalize_api_formats(
 
 
 def _get_provider_model_names_for_formats(
-    model: Model, usable_formats: Optional[set[str]] = None
+    model: Model, usable_formats: set[str] | None = None
 ) -> set[str]:
     """
     获取模型在指定格式下支持的 Provider 模型名称集合
@@ -305,7 +306,7 @@ def get_compatible_provider_formats(
 def get_available_provider_ids(
     db: Session,
     api_formats: list[str],
-    provider_to_formats: Optional[dict[str, set[str]]] = None,
+    provider_to_formats: dict[str, set[str]] | None = None,
 ) -> set[str]:
     """
     返回有可用端点的 Provider IDs
@@ -334,7 +335,7 @@ def get_available_provider_ids(
 def _get_available_model_ids_for_format(
     db: Session,
     api_formats: list[str],
-    provider_to_formats: Optional[dict[str, set[str]]] = None,
+    provider_to_formats: dict[str, set[str]] | None = None,
 ) -> set[str]:
     """
     获取指定格式下真正可用的模型 ID 集合
@@ -410,7 +411,7 @@ def _get_available_model_ids_for_format(
     return available_model_ids
 
 
-def _extract_model_info(model: Any) -> Optional[ModelInfo]:
+def _extract_model_info(model: Any) -> ModelInfo | None:
     """
     从 Model 对象提取 ModelInfo
 
@@ -424,7 +425,7 @@ def _extract_model_info(model: Any) -> Optional[ModelInfo]:
 
     model_id: str = global_model.name
     display_name: str = global_model.display_name
-    created_at: Optional[str] = (
+    created_at: str | None = (
         model.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if model.created_at else None
     )
     created_timestamp: int = int(model.created_at.timestamp()) if model.created_at else 0
@@ -433,7 +434,7 @@ def _extract_model_info(model: Any) -> Optional[ModelInfo]:
 
     # 从 GlobalModel.config 提取配置信息
     config: dict = global_model.config or {}
-    description: Optional[str] = config.get("description")
+    description: str | None = config.get("description")
 
     return ModelInfo(
         id=model_id,
@@ -464,10 +465,10 @@ def _extract_model_info(model: Any) -> Optional[ModelInfo]:
 async def list_available_models(
     db: Session,
     available_provider_ids: set[str],
-    api_formats: Optional[list[str]] = None,
-    restrictions: Optional[AccessRestrictions] = None,
-    provider_to_formats: Optional[dict[str, set[str]]] = None,
-    client_format: Optional[str] = None,
+    api_formats: list[str] | None = None,
+    restrictions: AccessRestrictions | None = None,
+    provider_to_formats: dict[str, set[str]] | None = None,
+    client_format: str | None = None,
 ) -> list[ModelInfo]:
     """
     获取可用模型列表（已去重，带缓存）
@@ -503,7 +504,7 @@ async def list_available_models(
             return cached
 
     # 如果提供了 api_formats，获取真正可用的模型 ID
-    available_model_ids: Optional[set[str]] = None
+    available_model_ids: set[str] | None = None
     if normalized_formats:
         available_model_ids = _get_available_model_ids_for_format(
             db, normalized_formats, provider_to_formats
@@ -551,10 +552,10 @@ def find_model_by_id(
     db: Session,
     model_id: str,
     available_provider_ids: set[str],
-    api_formats: Optional[list[str]] = None,
-    restrictions: Optional[AccessRestrictions] = None,
-    provider_to_formats: Optional[dict[str, set[str]]] = None,
-) -> Optional[ModelInfo]:
+    api_formats: list[str] | None = None,
+    restrictions: AccessRestrictions | None = None,
+    provider_to_formats: dict[str, set[str]] | None = None,
+) -> ModelInfo | None:
     """
     按 ID 查找模型（仅支持 GlobalModel.name）
 
@@ -575,7 +576,7 @@ def find_model_by_id(
     normalized_formats = _normalize_api_formats(api_formats, provider_to_formats)
 
     # 如果提供了 api_formats，获取真正可用的模型 ID
-    available_model_ids: Optional[set[str]] = None
+    available_model_ids: set[str] | None = None
     if normalized_formats:
         available_model_ids = _get_available_model_ids_for_format(
             db, normalized_formats, provider_to_formats

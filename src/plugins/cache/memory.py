@@ -7,7 +7,7 @@ import asyncio
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import CachePlugin
 
@@ -18,10 +18,10 @@ class MemoryCachePlugin(CachePlugin):
     使用OrderedDict实现LRU缓存
     """
 
-    def __init__(self, name: str = "memory", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "memory", config: dict[str, Any] = None):
         super().__init__(name, config)
         self._cache: OrderedDict = OrderedDict()
-        self._expiry: Dict[str, float] = {}
+        self._expiry: dict[str, float] = {}
         self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
@@ -46,8 +46,12 @@ class MemoryCachePlugin(CachePlugin):
                 await asyncio.sleep(self._cleanup_interval)
                 await self._cleanup_expired()
 
-        loop = asyncio.get_event_loop()
-        self._cleanup_task = loop.create_task(cleanup_loop())
+        try:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task = loop.create_task(cleanup_loop())
+        except RuntimeError:
+            # 没有运行的事件循环，稍后再启动
+            pass
 
     async def _cleanup_expired(self):
         """清理过期的缓存项"""
@@ -73,7 +77,7 @@ class MemoryCachePlugin(CachePlugin):
             self._expiry.pop(key, None)
             self._evictions += 1
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """获取缓存值"""
         with self._lock:
             # 检查是否过期
@@ -95,7 +99,7 @@ class MemoryCachePlugin(CachePlugin):
                 self._misses += 1
                 return None
 
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> bool:
         """设置缓存值"""
         with self._lock:
             # 检查大小限制
@@ -146,7 +150,7 @@ class MemoryCachePlugin(CachePlugin):
             self._expiry.clear()
             return True
 
-    async def get_many(self, keys: List[str]) -> Dict[str, Any]:
+    async def get_many(self, keys: list[str]) -> dict[str, Any]:
         """批量获取缓存值"""
         result = {}
         for key in keys:
@@ -155,7 +159,7 @@ class MemoryCachePlugin(CachePlugin):
                 result[key] = value
         return result
 
-    async def set_many(self, items: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set_many(self, items: dict[str, Any], ttl: int | None = None) -> bool:
         """批量设置缓存值"""
         success = True
         for key, value in items.items():
@@ -163,7 +167,7 @@ class MemoryCachePlugin(CachePlugin):
                 success = False
         return success
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """获取缓存统计信息"""
         total_requests = self._hits + self._misses
         hit_rate = self._hits / total_requests if total_requests > 0 else 0

@@ -8,9 +8,7 @@
 - API Key/User 的请求级访问限制由 models_service.AccessRestrictions 处理
 """
 
-from __future__ import annotations
 
-from typing import Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Query, Session, contains_eager
@@ -167,7 +165,7 @@ class ModelAvailabilityQuery:
         provider_ids: set[str],
         api_formats: list[str],
         provider_to_endpoint_formats: dict[str, set[str]],
-    ) -> dict[str, list[tuple[Optional[list[str]], set[str]]]]:
+    ) -> dict[str, list[tuple[list[str] | None, set[str]]]]:
         """
         获取每个 Provider 的 Key 权限规则
 
@@ -197,7 +195,7 @@ class ModelAvailabilityQuery:
             .all()
         )
 
-        provider_key_rules: dict[str, list[tuple[Optional[list[str]], set[str]]]] = {}
+        provider_key_rules: dict[str, list[tuple[list[str] | None, set[str]]]] = {}
         for key_id, provider_id, allowed_models_raw, key_formats in key_rows:
             if not provider_id:
                 continue
@@ -221,7 +219,7 @@ class ModelAvailabilityQuery:
                 continue
 
             # 类型兜底：allowed_models（安全优先）
-            allowed_models: Optional[list[str]]
+            allowed_models: list[str] | None
             if allowed_models_raw is None:
                 # None = 不限制
                 allowed_models = None
@@ -242,7 +240,7 @@ class ModelAvailabilityQuery:
     def find_by_global_model_name(
         db: Session,
         model_name: str,
-        provider_ids: Optional[set[str]] = None,
+        provider_ids: set[str] | None = None,
         eager_load: bool = False,
     ) -> Query:
         """

@@ -5,7 +5,7 @@
 import json
 import time
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -25,10 +25,10 @@ class LogLevel(str, Enum):
 _CONFIG_CACHE_TTL = 60  # 1 分钟
 
 # 进程内缓存存储: {key: (value, expire_time)}
-_config_cache: Dict[str, Tuple[Any, float]] = {}
+_config_cache: dict[str, tuple[Any, float]] = {}
 
 
-def _get_cached_config(key: str) -> Tuple[bool, Any]:
+def _get_cached_config(key: str) -> tuple[bool, Any]:
     """从进程内缓存获取配置值
 
     Returns:
@@ -48,7 +48,7 @@ def _set_cached_config(key: str, value: Any) -> None:
     _config_cache[key] = (value, time.time() + _CONFIG_CACHE_TTL)
 
 
-def invalidate_config_cache(key: Optional[str] = None) -> None:
+def invalidate_config_cache(key: str | None = None) -> None:
     """清除配置缓存
 
     Args:
@@ -174,7 +174,7 @@ class SystemConfigService:
     }
 
     @classmethod
-    def get_config(cls, db: Session, key: str, default: Any = None) -> Optional[Any]:
+    def get_config(cls, db: Session, key: str, default: Any = None) -> Any | None:
         """获取系统配置值（带进程内缓存）"""
         # 1. 检查进程内缓存
         hit, cached_value = _get_cached_config(key)
@@ -196,7 +196,7 @@ class SystemConfigService:
         return default
 
     @classmethod
-    def get_configs(cls, db: Session, keys: List[str]) -> Dict[str, Any]:
+    def get_configs(cls, db: Session, keys: list[str]) -> dict[str, Any]:
         """
         批量获取系统配置值
 
@@ -248,7 +248,7 @@ class SystemConfigService:
         return config
 
     @staticmethod
-    def get_default_provider(db: Session) -> Optional[str]:
+    def get_default_provider(db: Session) -> str | None:
         """
         获取系统默认提供商
         优先级：1. 管理员设置的默认提供商 2. 数据库中第一个可用提供商
@@ -355,7 +355,7 @@ class SystemConfigService:
         return cls.get_config(db, "sensitive_headers", [])
 
     @classmethod
-    def mask_sensitive_headers(cls, db: Session, headers: Dict[str, Any]) -> Dict[str, Any]:
+    def mask_sensitive_headers(cls, db: Session, headers: dict[str, Any]) -> dict[str, Any]:
         """脱敏敏感请求头"""
         if not cls.should_mask_sensitive_data(db):
             return headers

@@ -13,7 +13,10 @@ import asyncio
 import codecs
 import json
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any
+
+from collections.abc import Callable
+from collections.abc import AsyncGenerator
 
 import httpx
 
@@ -65,10 +68,10 @@ class StreamProcessor:
         self,
         request_id: str,
         default_parser: ResponseParser,
-        on_streaming_start: Optional[Callable[[], None]] = None,
+        on_streaming_start: Callable[[], None] | None = None,
         *,
         collect_text: bool = False,
-        smoothing_config: Optional[StreamSmoothingConfig] = None,
+        smoothing_config: StreamSmoothingConfig | None = None,
     ):
         """
         初始化流处理器
@@ -105,7 +108,7 @@ class StreamProcessor:
     def handle_sse_event(
         self,
         ctx: StreamContext,
-        event_name: Optional[str],
+        event_name: str | None,
         data_str: str,
         *,
         skip_record: bool = False,
@@ -363,7 +366,7 @@ class StreamProcessor:
         ):
             # 重新抛出可重试的 Provider 异常，触发故障转移
             raise
-        except (OSError, IOError) as e:
+        except OSError as e:
             # 网络 I/O 异常：记录警告，可能需要重试
             logger.warning(f"  [{self.request_id}] 预读流时发生网络异常: {type(e).__name__}: {e}")
         except Exception as e:
@@ -382,10 +385,10 @@ class StreamProcessor:
         byte_iterator: Any,
         response_ctx: Any,
         http_client: httpx.AsyncClient,
-        prefetched_chunks: Optional[list] = None,
+        prefetched_chunks: list | None = None,
         *,
-        start_time: Optional[float] = None,
-    ) -> AsyncGenerator[bytes, None]:
+        start_time: float | None = None,
+    ) -> AsyncGenerator[bytes]:
         """
         创建响应流生成器
 
@@ -547,9 +550,7 @@ class StreamProcessor:
                             logger.warning(f"[{self.request_id}] 流式格式转换失败: {conv_err}")
                             payload = _build_stream_error_payload("响应格式转换失败，请稍后重试")
                             error_bytes = (
-                                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode(
-                                    "utf-8"
-                                )
+                                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
                             )
                             done_bytes = (
                                 b"data: [DONE]\n\n" if client_format.startswith("OPENAI") else b""
@@ -570,7 +571,7 @@ class StreamProcessor:
                             # 统一使用 SSE 格式输出（Gemini streamGenerateContent 也使用 SSE）
                             # 参考: https://ai.google.dev/api/generate-content
                             out.append(
-                                f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode("utf-8")
+                                f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode()
                             )
                         return out
 
@@ -769,9 +770,9 @@ class StreamProcessor:
     async def create_monitored_stream(
         self,
         ctx: StreamContext,
-        stream_generator: AsyncGenerator[bytes, None],
+        stream_generator: AsyncGenerator[bytes],
         is_disconnected: Callable[[], Any],
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         创建带监控的流生成器
 
@@ -833,8 +834,8 @@ class StreamProcessor:
 
     async def create_smoothed_stream(
         self,
-        stream_generator: AsyncGenerator[bytes, None],
-    ) -> AsyncGenerator[bytes, None]:
+        stream_generator: AsyncGenerator[bytes],
+    ) -> AsyncGenerator[bytes]:
         """
         创建平滑输出的流生成器
 
@@ -933,7 +934,7 @@ class StreamProcessor:
         if buffer:
             yield buffer
 
-    def _get_extractor(self, format_name: str) -> Optional[ContentExtractor]:
+    def _get_extractor(self, format_name: str) -> ContentExtractor | None:
         """获取或创建格式对应的提取器（带缓存）"""
         if format_name not in self._extractors:
             extractor = get_extractor(format_name)
@@ -943,7 +944,7 @@ class StreamProcessor:
 
     def _detect_format_and_extract(
         self, data: dict
-    ) -> tuple[Optional[str], Optional[ContentExtractor]]:
+    ) -> tuple[str | None, ContentExtractor | None]:
         """
         检测数据格式并提取内容
 
@@ -998,10 +999,10 @@ class StreamProcessor:
 
 
 async def create_smoothed_stream(
-    stream_generator: AsyncGenerator[bytes, None],
+    stream_generator: AsyncGenerator[bytes],
     chunk_size: int = 20,
     delay_ms: int = 8,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     独立的平滑流生成函数
 
@@ -1032,7 +1033,7 @@ class _LightweightSmoother:
         self.delay_ms = delay_ms
         self._extractors: dict[str, ContentExtractor] = {}
 
-    def _get_extractor(self, format_name: str) -> Optional[ContentExtractor]:
+    def _get_extractor(self, format_name: str) -> ContentExtractor | None:
         if format_name not in self._extractors:
             extractor = get_extractor(format_name)
             if extractor:
@@ -1041,7 +1042,7 @@ class _LightweightSmoother:
 
     def _detect_format_and_extract(
         self, data: dict
-    ) -> tuple[Optional[str], Optional[ContentExtractor]]:
+    ) -> tuple[str | None, ContentExtractor | None]:
         for format_name in get_extractor_formats():
             extractor = self._get_extractor(format_name)
             if extractor:
@@ -1060,8 +1061,8 @@ class _LightweightSmoother:
         return [content[i : i + self.chunk_size] for i in range(0, text_length, self.chunk_size)]
 
     async def smooth(
-        self, stream_generator: AsyncGenerator[bytes, None]
-    ) -> AsyncGenerator[bytes, None]:
+        self, stream_generator: AsyncGenerator[bytes]
+    ) -> AsyncGenerator[bytes]:
         buffer = b""
         is_first_content = True
 

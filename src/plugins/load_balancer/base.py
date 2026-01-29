@@ -3,10 +3,9 @@
 定义负载均衡策略的接口
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..common import BasePlugin
 
@@ -20,8 +19,8 @@ class ProviderCandidate:
     provider: Any  # Provider 对象
     priority: int = 0  # 优先级（数字越大优先级越高）
     weight: float = 1.0  # 权重（影响被选中的概率）
-    model: Optional[Any] = None  # Model 对象（如果需要模型信息）
-    metadata: Optional[Dict[str, Any]] = None  # 额外元数据
+    model: Any | None = None  # Model 对象（如果需要模型信息）
+    metadata: dict[str, Any] | None = None  # 额外元数据
 
     def __post_init__(self):
         if self.metadata is None:
@@ -37,7 +36,7 @@ class SelectionResult:
     provider: Any  # 选中的提供商
     priority: int  # 该提供商的优先级
     weight: float  # 该提供商的权重
-    selection_metadata: Optional[Dict[str, Any]] = None  # 选择过程的元数据
+    selection_metadata: dict[str, Any] | None = None  # 选择过程的元数据
 
     def __post_init__(self):
         if self.selection_metadata is None:
@@ -58,9 +57,9 @@ class LoadBalancerStrategy(BasePlugin):
         author: str = "Unknown",
         description: str = "",
         api_version: str = "1.0",
-        dependencies: List[str] = None,
-        provides: List[str] = None,
-        config: Dict[str, Any] = None,
+        dependencies: list[str] = None,
+        provides: list[str] = None,
+        config: dict[str, Any] = None,
     ):
         """
         初始化负载均衡策略
@@ -90,8 +89,8 @@ class LoadBalancerStrategy(BasePlugin):
 
     @abstractmethod
     async def select(
-        self, candidates: List[ProviderCandidate], context: Optional[Dict[str, Any]] = None
-    ) -> Optional[SelectionResult]:
+        self, candidates: list[ProviderCandidate], context: dict[str, Any] | None = None
+    ) -> SelectionResult | None:
         """
         从候选提供商中选择一个
 
@@ -105,7 +104,7 @@ class LoadBalancerStrategy(BasePlugin):
         pass
 
     @abstractmethod
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """
         获取负载均衡统计信息
 
@@ -118,8 +117,8 @@ class LoadBalancerStrategy(BasePlugin):
         self,
         provider: Any,
         success: bool,
-        response_time: Optional[float] = None,
-        error: Optional[Exception] = None,
+        response_time: float | None = None,
+        error: Exception | None = None,
     ):
         """
         记录请求结果（用于动态调整策略）

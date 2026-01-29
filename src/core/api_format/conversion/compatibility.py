@@ -10,10 +10,9 @@
    - data_format_id 不同 -> 需要转换，检查全局开关 + 端点配置 + 转换器能力
 """
 
-from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.core.api_format.conversion.registry import FormatConversionRegistry
@@ -26,11 +25,11 @@ logger = logging.getLogger(__name__)
 def is_format_compatible(
     client_format: str,
     endpoint_api_format: str,
-    endpoint_format_acceptance_config: Optional[dict],
+    endpoint_format_acceptance_config: dict | None,
     is_stream: bool,
     global_conversion_enabled: bool,
-    registry: Optional["FormatConversionRegistry"] = None,
-) -> Tuple[bool, bool, Optional[str]]:
+    registry: FormatConversionRegistry | None = None,
+) -> tuple[bool, bool, str | None]:
     """
     检查端点是否兼容客户端格式
 

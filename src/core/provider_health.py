@@ -5,8 +5,7 @@
 
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class ProviderHealthTracker:
@@ -26,11 +25,11 @@ class ProviderHealthTracker:
         self.recovery_time = recovery_time
 
         # 存储每个提供商的失败记录
-        self.failures: Dict[str, list] = defaultdict(list)
+        self.failures: dict[str, list] = defaultdict(list)
         # 存储每个提供商的成功记录
-        self.successes: Dict[str, list] = defaultdict(list)
+        self.successes: dict[str, list] = defaultdict(list)
         # 存储优先级调整
-        self.priority_adjustments: Dict[str, int] = {}
+        self.priority_adjustments: dict[str, int] = {}
 
     def record_success(self, provider_name: str) -> None:
         """记录成功的请求"""
@@ -71,7 +70,7 @@ class ProviderHealthTracker:
         """
         return self.priority_adjustments.get(provider_name, 0)
 
-    def get_health_status(self, provider_name: str) -> Dict:
+    def get_health_status(self, provider_name: str) -> dict:
         """
         获取提供商的健康状态
         """
@@ -146,7 +145,7 @@ class SimpleProviderSelector:
     def __init__(self, health_tracker: ProviderHealthTracker):
         self.health_tracker = health_tracker
 
-    def select_provider(self, providers: list, specified_provider: Optional[str] = None) -> Any:
+    def select_provider(self, providers: list, specified_provider: str | None = None) -> Any:
         """
         选择提供商
 

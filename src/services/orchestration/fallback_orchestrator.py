@@ -21,9 +21,10 @@
 - 本类作为协调者，组合使用上述组件
 """
 
-from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, NoReturn
+
+from collections.abc import Callable
 
 import httpx
 from redis import Redis
@@ -80,7 +81,7 @@ class FallbackOrchestrator:
     - 优势：可预测、高效、公平、资源友好
     """
 
-    def __init__(self, db: Session, redis_client: Optional[Redis] = None) -> None:
+    def __init__(self, db: Session, redis_client: Redis | None = None) -> None:
         """
         初始化编排器
 
@@ -90,15 +91,15 @@ class FallbackOrchestrator:
         """
         self.db = db
         self.redis = redis_client
-        self.cache_scheduler: Optional[CacheAwareScheduler] = None
+        self.cache_scheduler: CacheAwareScheduler | None = None
         self.concurrency_manager: Any = None
         self.adaptive_manager = get_adaptive_rpm_manager()  # 自适应 RPM 管理器
-        self.request_executor: Optional[RequestExecutor] = None
+        self.request_executor: RequestExecutor | None = None
 
         # 拆分后的组件（延迟初始化）
-        self._candidate_resolver: Optional[CandidateResolver] = None
-        self._request_dispatcher: Optional[RequestDispatcher] = None
-        self._error_classifier: Optional[ErrorClassifier] = None
+        self._candidate_resolver: CandidateResolver | None = None
+        self._request_dispatcher: RequestDispatcher | None = None
+        self._error_classifier: ErrorClassifier | None = None
 
     async def _ensure_initialized(self) -> None:
         """确保异步组件已初始化"""
@@ -172,11 +173,11 @@ class FallbackOrchestrator:
         api_format: APIFormat,
         model_name: str,
         affinity_key: str,
-        user_api_key: Optional[ApiKey] = None,
-        request_id: Optional[str] = None,
+        user_api_key: ApiKey | None = None,
+        request_id: str | None = None,
         is_stream: bool = False,
-        capability_requirements: Optional[Dict[str, bool]] = None,
-    ) -> Tuple[List[ProviderCandidate], str]:
+        capability_requirements: dict[str, bool] | None = None,
+    ) -> tuple[list[ProviderCandidate], str]:
         """
         收集所有可用的 Provider/Endpoint/Key 候选组合
 
@@ -210,12 +211,12 @@ class FallbackOrchestrator:
 
     def _create_candidate_records(
         self,
-        all_candidates: List[ProviderCandidate],
-        request_id: Optional[str],
+        all_candidates: list[ProviderCandidate],
+        request_id: str | None,
         user_id: str,
         user_api_key: ApiKey,
-        required_capabilities: Optional[Dict[str, bool]] = None,
-    ) -> Dict[Tuple[int, int], str]:
+        required_capabilities: dict[str, bool] | None = None,
+    ) -> dict[tuple[int, int], str]:
         """
         为所有候选预先创建 available 状态记录（批量插入优化）
 
@@ -248,7 +249,7 @@ class FallbackOrchestrator:
         candidate_record_id: str,
         user_api_key: ApiKey,
         request_func: Callable[..., Any],
-        request_id: Optional[str],
+        request_id: str | None,
         api_format: APIFormat,
         model_name: str,
         affinity_key: str,
@@ -256,7 +257,7 @@ class FallbackOrchestrator:
         attempt_counter: int,
         max_attempts: int,
         is_stream: bool = False,
-    ) -> Tuple[Any, str, str, str, str, str]:
+    ) -> tuple[Any, str, str, str, str, str]:
         """
         尝试单个候选执行请求
 
@@ -305,12 +306,12 @@ class FallbackOrchestrator:
     def _handle_thinking_signature_error(
         self,
         converted_error: ThinkingSignatureException,
-        request_id: Optional[str],
+        request_id: str | None,
         candidate_record_id: str,
         elapsed_ms: int,
-        captured_key_concurrent: Optional[int],
-        serializable_extra_data: Dict[str, Any],
-        request_body_ref: Optional[Dict[str, Any]],
+        captured_key_concurrent: int | None,
+        serializable_extra_data: dict[str, Any],
+        request_body_ref: dict[str, Any] | None,
     ) -> str:
         """
         处理 ThinkingSignatureException 错误
@@ -395,8 +396,8 @@ class FallbackOrchestrator:
         candidate_record_id: str,
         error: ThinkingSignatureException,
         elapsed_ms: int,
-        captured_key_concurrent: Optional[int],
-        extra_data: Dict[str, Any],
+        captured_key_concurrent: int | None,
+        extra_data: dict[str, Any],
     ) -> None:
         """标记 Thinking 签名错误导致的候选失败"""
         RequestCandidateService.mark_candidate_failed(
@@ -420,10 +421,10 @@ class FallbackOrchestrator:
         affinity_key: str,
         api_format: APIFormat,
         global_model_id: str,
-        request_id: Optional[str],
+        request_id: str | None,
         attempt: int,
         max_attempts: int,
-        request_body_ref: Optional[Dict[str, Any]] = None,
+        request_body_ref: dict[str, Any] | None = None,
     ) -> str:
         """
         处理候选执行错误
@@ -651,7 +652,7 @@ class FallbackOrchestrator:
 
     def _create_pending_usage_record(
         self,
-        request_id: Optional[str],
+        request_id: str | None,
         user_api_key: ApiKey,
         model_name: str,
         is_stream: bool,
@@ -682,23 +683,23 @@ class FallbackOrchestrator:
 
     async def _execute_candidates_loop(
         self,
-        all_candidates: List[ProviderCandidate],
-        candidate_record_map: Dict[Tuple[int, int], str],
+        all_candidates: list[ProviderCandidate],
+        candidate_record_map: dict[tuple[int, int], str],
         user_api_key: ApiKey,
         request_func: Callable[..., Any],
-        request_id: Optional[str],
+        request_id: str | None,
         api_format_enum: APIFormat,
         model_name: str,
         affinity_key: str,
         global_model_id: str,
         is_stream: bool = False,
-        request_body_ref: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[Any, str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+        request_body_ref: dict[str, Any] | None = None,
+    ) -> tuple[Any, str, str | None, str | None, str | None, str | None]:
         """遍历所有候选执行请求，返回第一个成功的结果或抛出异常"""
         attempt_counter = 0
         max_attempts = 0
-        last_error: Optional[Exception] = None
-        last_candidate: Optional[ProviderCandidate] = None
+        last_error: Exception | None = None
+        last_candidate: ProviderCandidate | None = None
 
         for candidate_index, candidate in enumerate(all_candidates):
             last_candidate = candidate
@@ -728,8 +729,8 @@ class FallbackOrchestrator:
             )
 
             if result["success"]:
-                response: Tuple[
-                    Any, str, Optional[str], Optional[str], Optional[str], Optional[str]
+                response: tuple[
+                    Any, str, str | None, str | None, str | None, str | None
                 ] = result["response"]
                 return response
 
@@ -753,10 +754,10 @@ class FallbackOrchestrator:
         self,
         candidate: ProviderCandidate,
         candidate_index: int,
-        candidate_record_map: Dict[Tuple[int, int], str],
+        candidate_record_map: dict[tuple[int, int], str],
         user_api_key: ApiKey,
         request_func: Callable[..., Any],
-        request_id: Optional[str],
+        request_id: str | None,
         api_format_enum: APIFormat,
         model_name: str,
         affinity_key: str,
@@ -764,14 +765,14 @@ class FallbackOrchestrator:
         attempt_counter: int,
         max_attempts: int,
         is_stream: bool = False,
-        request_body_ref: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        request_body_ref: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """尝试单个候选（含重试逻辑），返回执行结果"""
         provider = candidate.provider
         endpoint = candidate.endpoint
         # 从 Provider 读取 max_retries（已从 Endpoint 迁移）
         max_retries_for_candidate = int(provider.max_retries or 2) if candidate.is_cached else 1
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         retry_index = 0
         while retry_index < max_retries_for_candidate:
@@ -876,8 +877,8 @@ class FallbackOrchestrator:
 
     def _attach_metadata_to_error(
         self,
-        error: Optional[Exception],
-        candidate: Optional[ProviderCandidate],
+        error: Exception | None,
+        candidate: ProviderCandidate | None,
         model_name: str,
         api_format_enum: APIFormat,
     ) -> None:
@@ -915,12 +916,12 @@ class FallbackOrchestrator:
 
     def _raise_all_failed_exception(
         self,
-        request_id: Optional[str],
+        request_id: str | None,
         max_attempts: int,
-        last_candidate: Optional[ProviderCandidate],
+        last_candidate: ProviderCandidate | None,
         model_name: str,
         api_format_enum: APIFormat,
-        last_error: Optional[Exception] = None,
+        last_error: Exception | None = None,
     ) -> NoReturn:
         """所有组合都失败时抛出异常"""
         logger.error(f"  [{request_id}] 所有 {max_attempts} 个组合均失败")
@@ -937,8 +938,8 @@ class FallbackOrchestrator:
             }
 
         # 提取上游错误响应
-        upstream_status: Optional[int] = None
-        upstream_response: Optional[str] = None
+        upstream_status: int | None = None
+        upstream_response: str | None = None
         if last_error:
             # 从 httpx.HTTPStatusError 提取
             if isinstance(last_error, httpx.HTTPStatusError):
@@ -981,15 +982,15 @@ class FallbackOrchestrator:
 
     async def execute_with_fallback(
         self,
-        api_format: Union[str, APIFormat],
+        api_format: str | APIFormat,
         model_name: str,
         user_api_key: ApiKey,
         request_func: Callable[[Provider, ProviderEndpoint, ProviderAPIKey], Any],
-        request_id: Optional[str] = None,
+        request_id: str | None = None,
         is_stream: bool = False,
-        capability_requirements: Optional[Dict[str, bool]] = None,
-        request_body_ref: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[Any, str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+        capability_requirements: dict[str, bool] | None = None,
+        request_body_ref: dict[str, Any] | None = None,
+    ) -> tuple[Any, str, str | None, str | None, str | None, str | None]:
         """
         执行请求，并在失败时自动故障转移（缓存感知）
 

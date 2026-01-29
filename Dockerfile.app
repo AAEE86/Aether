@@ -7,7 +7,7 @@ WORKDIR /app
 COPY frontend/ ./frontend/
 RUN cd frontend && npm run build
 # ==================== 运行时镜像 ====================
-FROM python:3.12-slim
+FROM python:3.14-slim
 WORKDIR /app
 # 运行时依赖（无 gcc/nodejs/npm）
 RUN apt-get update && apt-get install -y \
@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 # 从 base 镜像复制 Python 包
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 # 只复制需要的 Python 可执行文件
 COPY --from=builder /usr/local/bin/gunicorn /usr/local/bin/
 COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/

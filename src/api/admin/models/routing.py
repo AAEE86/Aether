@@ -9,7 +9,6 @@ GlobalModel 请求链路预览 API
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,22 +46,22 @@ class RoutingKeyInfo(BaseModel):
     name: str
     masked_key: str = Field("", description="脱敏的 API Key")
     internal_priority: int = Field(..., description="Key 内部优先级")
-    global_priority_by_format: Optional[Dict[str, int]] = Field(None, description="按 API 格式的全局优先级")
-    rpm_limit: Optional[int] = Field(None, description="RPM 限制，null 表示自适应")
+    global_priority_by_format: dict[str, int] | None = Field(None, description="按 API 格式的全局优先级")
+    rpm_limit: int | None = Field(None, description="RPM 限制，null 表示自适应")
     is_adaptive: bool = Field(False, description="是否为自适应 RPM 模式")
-    effective_rpm: Optional[int] = Field(None, description="有效 RPM 限制")
+    effective_rpm: int | None = Field(None, description="有效 RPM 限制")
     cache_ttl_minutes: int = Field(0, description="缓存 TTL（分钟）")
     health_score: float = Field(1.0, description="健康度分数（0-1 小数格式）")
     is_active: bool
-    api_formats: List[str] = Field(default_factory=list, description="支持的 API 格式")
+    api_formats: list[str] = Field(default_factory=list, description="支持的 API 格式")
     # 模型白名单
-    allowed_models: Optional[List[str]] = Field(None, description="允许的模型列表，null 表示不限制")
+    allowed_models: list[str] | None = Field(None, description="允许的模型列表，null 表示不限制")
     # 熔断状态
     circuit_breaker_open: bool = Field(False, description="熔断器是否打开")
-    circuit_breaker_formats: List[str] = Field(
+    circuit_breaker_formats: list[str] = Field(
         default_factory=list, description="熔断的 API 格式列表"
     )
-    next_probe_at: Optional[str] = Field(None, description="下次探测时间（ISO格式）")
+    next_probe_at: str | None = Field(None, description="下次探测时间（ISO格式）")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -73,9 +72,9 @@ class RoutingEndpointInfo(BaseModel):
     id: str
     api_format: str
     base_url: str
-    custom_path: Optional[str] = None
+    custom_path: str | None = None
     is_active: bool
-    keys: List[RoutingKeyInfo] = Field(default_factory=list)
+    keys: list[RoutingKeyInfo] = Field(default_factory=list)
     total_keys: int = 0
     active_keys: int = 0
 
@@ -87,7 +86,7 @@ class RoutingModelMapping(BaseModel):
 
     name: str = Field(..., description="映射名称")
     priority: int = Field(..., description="优先级（数字越小优先级越高）")
-    api_formats: Optional[List[str]] = Field(None, description="作用域（适用的 API 格式）")
+    api_formats: list[str] | None = Field(None, description="作用域（适用的 API 格式）")
 
 
 class RoutingProviderInfo(BaseModel):
@@ -97,18 +96,18 @@ class RoutingProviderInfo(BaseModel):
     name: str
     model_id: str = Field(..., description="Model ID（GlobalModel 与 Provider 的关联记录 ID）")
     provider_priority: int = Field(..., description="提供商优先级（数字越小优先级越高）")
-    billing_type: Optional[str] = Field(None, description="计费类型")
-    monthly_quota_usd: Optional[float] = Field(None, description="月额度（美元）")
-    monthly_used_usd: Optional[float] = Field(None, description="已用额度（美元）")
+    billing_type: str | None = Field(None, description="计费类型")
+    monthly_quota_usd: float | None = Field(None, description="月额度（美元）")
+    monthly_used_usd: float | None = Field(None, description="已用额度（美元）")
     is_active: bool
     # 模型映射信息
     provider_model_name: str = Field(..., description="提供商侧的模型名称")
-    model_mappings: List[RoutingModelMapping] = Field(
+    model_mappings: list[RoutingModelMapping] = Field(
         default_factory=list, description="模型名称映射列表"
     )
     model_is_active: bool = Field(True, description="Model 是否活跃")
     # Endpoint 和 Key 信息
-    endpoints: List[RoutingEndpointInfo] = Field(default_factory=list)
+    endpoints: list[RoutingEndpointInfo] = Field(default_factory=list)
     total_endpoints: int = 0
     active_endpoints: int = 0
 
@@ -123,7 +122,7 @@ class GlobalKeyWhitelistItem(BaseModel):
     masked_key: str = Field(..., description="脱敏的 API Key")
     provider_id: str = Field(..., description="Provider ID")
     provider_name: str = Field(..., description="Provider 名称")
-    allowed_models: List[str] = Field(default_factory=list, description="Key 白名单模型列表")
+    allowed_models: list[str] = Field(default_factory=list, description="Key 白名单模型列表")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -136,11 +135,11 @@ class ModelRoutingPreviewResponse(BaseModel):
     display_name: str
     is_active: bool
     # GlobalModel 的模型映射（用于前端匹配 Key 白名单）
-    global_model_mappings: List[str] = Field(
+    global_model_mappings: list[str] = Field(
         default_factory=list, description="GlobalModel 的模型映射规则（正则模式）"
     )
     # 链路信息
-    providers: List[RoutingProviderInfo] = Field(
+    providers: list[RoutingProviderInfo] = Field(
         default_factory=list, description="按优先级排序的提供商列表"
     )
     total_providers: int = 0
@@ -149,7 +148,7 @@ class ModelRoutingPreviewResponse(BaseModel):
     scheduling_mode: str = Field("cache_affinity", description="调度模式")
     priority_mode: str = Field("provider", description="优先级模式")
     # 全局 Key 白名单数据（供前端实时匹配，包含所有 Provider 的 Key）
-    all_keys_whitelist: List[GlobalKeyWhitelistItem] = Field(
+    all_keys_whitelist: list[GlobalKeyWhitelistItem] = Field(
         default_factory=list, description="所有 Provider 的 Key 白名单数据"
     )
 
@@ -227,7 +226,7 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
         provider_ids = [m.provider_id for m in models if m.provider_id]
 
         # 批量获取 Provider 的 Endpoints
-        endpoints_by_provider: Dict[str, List[ProviderEndpoint]] = {}
+        endpoints_by_provider: dict[str, list[ProviderEndpoint]] = {}
         if provider_ids:
             endpoints = (
                 db.query(ProviderEndpoint)
@@ -240,7 +239,7 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
                 endpoints_by_provider[ep.provider_id].append(ep)
 
         # 批量获取 Provider 的 Keys
-        keys_by_provider: Dict[str, List[ProviderAPIKey]] = {}
+        keys_by_provider: dict[str, list[ProviderAPIKey]] = {}
         if provider_ids:
             keys = (
                 db.query(ProviderAPIKey).filter(ProviderAPIKey.provider_id.in_(provider_ids)).all()
@@ -251,14 +250,14 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
                 keys_by_provider[key.provider_id].append(key)
 
         # 提取 GlobalModel 的 model_mappings（用于 Key 白名单匹配）
-        global_model_mappings: List[str] = []
+        global_model_mappings: list[str] = []
         if global_model.config and isinstance(global_model.config, dict):
             mappings = global_model.config.get("model_mappings")
             if isinstance(mappings, list):
                 global_model_mappings = [m for m in mappings if isinstance(m, str)]
 
         # 构建 Provider 路由信息
-        provider_infos: List[RoutingProviderInfo] = []
+        provider_infos: list[RoutingProviderInfo] = []
         for model in models:
             provider = model.provider
             if not provider:
@@ -281,7 +280,7 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
             provider_keys = keys_by_provider.get(provider.id, [])
 
             # 按 api_format 组织 Keys
-            keys_by_endpoint: Dict[str, List[ProviderAPIKey]] = {}
+            keys_by_endpoint: dict[str, list[ProviderAPIKey]] = {}
             for key in provider_keys:
                 # 每个 Key 可能支持多个 api_formats
                 for fmt in key.api_formats or []:
@@ -355,8 +354,8 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
 
                     # 检查熔断状态
                     circuit_breaker_open = False
-                    circuit_breaker_formats: List[str] = []
-                    next_probe_at: Optional[str] = None
+                    circuit_breaker_formats: list[str] = []
+                    next_probe_at: str | None = None
                     if key.circuit_breaker_by_format:
                         for fmt, cb_state in key.circuit_breaker_by_format.items():
                             if isinstance(cb_state, dict) and cb_state.get("open"):
@@ -462,7 +461,7 @@ class AdminGetModelRoutingPreviewAdapter(AdminApiAdapter):
         )
 
         # 获取所有活跃 Provider 的 Key 白名单数据（供前端实时匹配）
-        all_keys_whitelist: List[GlobalKeyWhitelistItem] = []
+        all_keys_whitelist: list[GlobalKeyWhitelistItem] = []
         crypto = CryptoService()
 
         # 获取所有活跃的 Key（带白名单），使用 selectinload 避免 N+1 查询

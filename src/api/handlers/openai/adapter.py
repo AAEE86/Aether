@@ -4,7 +4,7 @@ OpenAI Chat Adapter - 基于 ChatAdapterBase 的 OpenAI Chat API 适配器
 处理 /v1/chat/completions 端点的 OpenAI Chat 格式请求。
 """
 
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -28,13 +28,13 @@ class OpenAIChatAdapter(ChatAdapterBase):
     name = "openai.chat"
 
     @property
-    def HANDLER_CLASS(self) -> Type[ChatHandlerBase]:
+    def HANDLER_CLASS(self) -> type[ChatHandlerBase]:
         """延迟导入 Handler 类避免循环依赖"""
         from src.api.handlers.openai.handler import OpenAIChatHandler
 
         return OpenAIChatHandler
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         super().__init__(allowed_api_formats or ["OPENAI"])
 
     def _validate_request_body(self, original_request_body: dict, path_params: dict = None):
@@ -66,7 +66,7 @@ class OpenAIChatAdapter(ChatAdapterBase):
                 max_tokens=original_request_body.get("max_tokens"),
             )
 
-    def _build_audit_metadata(self, payload: Dict[str, Any], request_obj) -> Dict[str, Any]:
+    def _build_audit_metadata(self, payload: dict[str, Any], request_obj) -> dict[str, Any]:
         """构建 OpenAI Chat 特定的审计元数据"""
         role_counts = {}
         for message in request_obj.messages:
@@ -105,8 +105,8 @@ class OpenAIChatAdapter(ChatAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """查询 OpenAI 兼容 API 支持的模型列表"""
         headers = cls.build_headers_with_extra(api_key, extra_headers)
 

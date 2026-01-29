@@ -9,7 +9,9 @@
 5. 显式传入 (用于重试升级)
 """
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any
+
+from collections.abc import Callable
 
 from src.core.key_capabilities import (
     CAPABILITY_DEFINITIONS,
@@ -20,7 +22,7 @@ from src.core.api_format import get_header_value
 from src.core.logger import logger
 
 # Adapter 检测器类型：接受 headers 和可选的 request_body，返回能力需求字典
-AdapterDetectorType = Callable[[Dict[str, str], Optional[Dict[str, Any]]], Dict[str, bool]]
+type AdapterDetectorType = Callable[[dict[str, str], dict[str, Any] | None], dict[str, bool]]
 
 
 class CapabilityResolver:
@@ -28,14 +30,14 @@ class CapabilityResolver:
 
     @staticmethod
     def resolve_requirements(
-        user: Optional[Any] = None,
-        user_api_key: Optional[Any] = None,
-        model_name: Optional[str] = None,
-        request_headers: Optional[Dict[str, str]] = None,
-        request_body: Optional[Dict[str, Any]] = None,
-        explicit_requirements: Optional[Dict[str, bool]] = None,
-        adapter_detector: Optional[AdapterDetectorType] = None,
-    ) -> Dict[str, bool]:
+        user: Any | None = None,
+        user_api_key: Any | None = None,
+        model_name: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        request_body: dict[str, Any] | None = None,
+        explicit_requirements: dict[str, bool] | None = None,
+        adapter_detector: AdapterDetectorType | None = None,
+    ) -> dict[str, bool]:
         """
         解析请求的能力需求
 
@@ -58,7 +60,7 @@ class CapabilityResolver:
         Returns:
             能力需求字典，如 {"cache_1h": True, "context_1m": False}
         """
-        requirements: Dict[str, bool] = {}
+        requirements: dict[str, bool] = {}
 
         # 1. 从用户模型级配置获取（仅用户可配置型能力）
         if user and model_name:
@@ -125,9 +127,9 @@ class CapabilityResolver:
 
     @staticmethod
     def get_default_requirements_for_model(
-        user: Optional[Any] = None,
-        model_name: Optional[str] = None,
-    ) -> Dict[str, bool]:
+        user: Any | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, bool]:
         """
         获取用户对特定模型的默认能力需求
 
@@ -140,7 +142,7 @@ class CapabilityResolver:
         Returns:
             能力需求字典
         """
-        requirements: Dict[str, bool] = {}
+        requirements: dict[str, bool] = {}
 
         if not user or not model_name:
             return requirements
@@ -156,9 +158,9 @@ class CapabilityResolver:
 
     @staticmethod
     def merge_requirements(
-        base: Optional[Dict[str, bool]],
-        override: Optional[Dict[str, bool]],
-    ) -> Dict[str, bool]:
+        base: dict[str, bool] | None,
+        override: dict[str, bool] | None,
+    ) -> dict[str, bool]:
         """
         合并两个能力需求字典
 

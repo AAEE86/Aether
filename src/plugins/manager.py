@@ -8,14 +8,14 @@ import importlib
 import inspect
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 from src.core.logger import logger
 from src.plugins.auth.base import AuthPlugin
 from src.plugins.cache.base import CachePlugin
 
 # 移除审计插件 - 审计功能现在是核心服务，不再作为插件
-from src.plugins.common import BasePlugin, HealthStatus, PluginMetadata
+from src.plugins.common import BasePlugin, HealthStatus
 from src.plugins.load_balancer.base import LoadBalancerStrategy
 from src.plugins.monitor.base import MonitorPlugin
 from src.plugins.notification.base import NotificationPlugin
@@ -45,7 +45,7 @@ class PluginManager:
         # 移除 "audit" - 审计功能现在是核心服务
     }
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         """
         初始化插件管理器
 
@@ -53,7 +53,7 @@ class PluginManager:
             config: 配置字典
         """
         self.config = config or {}
-        self.plugins: Dict[str, Dict[str, Any]] = {
+        self.plugins: dict[str, dict[str, Any]] = {
             "auth": {},
             "rate_limit": {},
             "cache": {},
@@ -63,7 +63,7 @@ class PluginManager:
             "load_balancer": {},
             # 移除 "audit" - 审计功能现在是核心服务
         }
-        self.default_plugins: Dict[str, Optional[str]] = {
+        self.default_plugins: dict[str, str | None] = {
             "auth": None,
             "rate_limit": None,
             "cache": None,
@@ -74,7 +74,7 @@ class PluginManager:
             # 移除 "audit" - 审计功能现在是核心服务
         }
         # 跟踪因版本不兼容而跳过的插件
-        self._incompatible_plugins: List[str] = []
+        self._incompatible_plugins: list[str] = []
 
         # 自动发现和加载插件
         self._auto_discover_plugins()
@@ -210,7 +210,7 @@ class PluginManager:
 
                 logger.debug(f"Unregistered {plugin_type} plugin: {plugin_name}")
 
-    def get_plugin(self, plugin_type: str, plugin_name: Optional[str] = None) -> Optional[Any]:
+    def get_plugin(self, plugin_type: str, plugin_name: str | None = None) -> Any | None:
         """
         获取插件实例
 
@@ -238,7 +238,7 @@ class PluginManager:
 
         return None
 
-    def get_plugins_by_type(self, plugin_type: str) -> List[Any]:
+    def get_plugins_by_type(self, plugin_type: str) -> list[Any]:
         """
         获取某个类型的所有插件
 
@@ -253,7 +253,7 @@ class PluginManager:
 
         return list(self.plugins[plugin_type].values())
 
-    def get_enabled_plugins(self, plugin_type: str) -> List[Any]:
+    def get_enabled_plugins(self, plugin_type: str) -> list[Any]:
         """
         获取某个类型的所有启用的插件
 
@@ -302,7 +302,7 @@ class PluginManager:
 
         return None
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """
         获取插件管理器统计信息
 
@@ -340,7 +340,7 @@ class PluginManager:
 
         return stats
 
-    async def initialize_all(self) -> Dict[str, bool]:
+    async def initialize_all(self) -> dict[str, bool]:
         """
         初始化所有插件
 
@@ -411,7 +411,7 @@ class PluginManager:
             except Exception as e:
                 logger.error(f"Error during plugin shutdown: {e}")
 
-    def _sort_plugins_by_dependencies(self, plugins: List[BasePlugin]) -> List[BasePlugin]:
+    def _sort_plugins_by_dependencies(self, plugins: list[BasePlugin]) -> list[BasePlugin]:
         """
         按依赖关系对插件进行拓扑排序
 
@@ -466,7 +466,7 @@ class PluginManager:
 
         return result
 
-    async def health_check_all(self) -> Dict[str, HealthStatus]:
+    async def health_check_all(self) -> dict[str, HealthStatus]:
         """
         检查所有插件的健康状态
 
@@ -496,7 +496,7 @@ class PluginManager:
 
         return results
 
-    def validate_plugin_dependencies(self) -> Dict[str, List[str]]:
+    def validate_plugin_dependencies(self) -> dict[str, list[str]]:
         """
         验证所有插件的依赖关系
 
@@ -520,7 +520,7 @@ class PluginManager:
         return results
 
     def reload_plugin_config(
-        self, plugin_type: str, plugin_name: str, new_config: Dict[str, Any]
+        self, plugin_type: str, plugin_name: str, new_config: dict[str, Any]
     ) -> bool:
         """
         重新加载插件配置
@@ -547,11 +547,11 @@ class PluginManager:
 
 
 # 全局插件管理器实例
-_plugin_manager: Optional[PluginManager] = None
+_plugin_manager: PluginManager | None = None
 _plugin_manager_lock = threading.Lock()
 
 
-def get_plugin_manager(config: Optional[Dict[str, Any]] = None) -> PluginManager:
+def get_plugin_manager(config: dict[str, Any] | None = None) -> PluginManager:
     """
     获取全局插件管理器实例（线程安全）
 

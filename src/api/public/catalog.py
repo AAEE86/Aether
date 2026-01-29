@@ -6,10 +6,9 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
 
 from src.api.base.adapter import ApiAdapter, ApiMode
@@ -41,10 +40,10 @@ router = APIRouter(prefix="/api/public", tags=["System Catalog"])
 pipeline = ApiRequestPipeline()
 
 
-@router.get("/providers", response_model=List[PublicProviderResponse])
+@router.get("/providers", response_model=list[PublicProviderResponse])
 async def get_public_providers(
     request: Request,
-    is_active: Optional[bool] = Query(None, description="过滤活跃状态"),
+    is_active: bool | None = Query(None, description="过滤活跃状态"),
     skip: int = Query(0, description="跳过记录数"),
     limit: int = Query(100, description="返回记录数限制"),
     db: Session = Depends(get_db),
@@ -77,11 +76,11 @@ async def get_public_providers(
     return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=ApiMode.PUBLIC)
 
 
-@router.get("/models", response_model=List[PublicModelResponse])
+@router.get("/models", response_model=list[PublicModelResponse])
 async def get_public_models(
     request: Request,
-    provider_id: Optional[str] = Query(None, description="提供商ID过滤"),
-    is_active: Optional[bool] = Query(None, description="过滤活跃状态"),
+    provider_id: str | None = Query(None, description="提供商ID过滤"),
+    is_active: bool | None = Query(None, description="过滤活跃状态"),
     skip: int = Query(0, description="跳过记录数"),
     limit: int = Query(100, description="返回记录数限制"),
     db: Session = Depends(get_db),
@@ -145,7 +144,7 @@ async def get_public_stats(request: Request, db: Session = Depends(get_db)):
 async def search_models(
     request: Request,
     q: str = Query(..., description="搜索关键词"),
-    provider_id: Optional[int] = Query(None, description="提供商ID过滤"),
+    provider_id: int | None = Query(None, description="提供商ID过滤"),
     limit: int = Query(20, description="返回记录数限制"),
     db: Session = Depends(get_db),
 ):
@@ -234,8 +233,8 @@ async def get_public_global_models(
     request: Request,
     skip: int = Query(0, ge=0, description="跳过记录数"),
     limit: int = Query(100, ge=1, le=1000, description="返回记录数限制"),
-    is_active: Optional[bool] = Query(None, description="过滤活跃状态"),
-    search: Optional[str] = Query(None, description="搜索关键词"),
+    is_active: bool | None = Query(None, description="过滤活跃状态"),
+    search: str | None = Query(None, description="搜索关键词"),
     db: Session = Depends(get_db),
 ):
     """
@@ -283,7 +282,7 @@ class PublicApiAdapter(ApiAdapter):
 
 @dataclass
 class PublicProvidersAdapter(PublicApiAdapter):
-    is_active: Optional[bool]
+    is_active: bool | None
     skip: int
     limit: int
 
@@ -338,8 +337,8 @@ class PublicProvidersAdapter(PublicApiAdapter):
 
 @dataclass
 class PublicModelsAdapter(PublicApiAdapter):
-    provider_id: Optional[str]
-    is_active: Optional[bool]
+    provider_id: str | None
+    is_active: bool | None
     skip: int
     limit: int
 
@@ -426,7 +425,7 @@ class PublicStatsAdapter(PublicApiAdapter):
 @dataclass
 class PublicSearchModelsAdapter(PublicApiAdapter):
     query: str
-    provider_id: Optional[int]
+    provider_id: int | None
     limit: int
 
     async def handle(self, context):  # type: ignore[override]
@@ -508,7 +507,7 @@ class PublicApiFormatHealthMonitorAdapter(PublicApiAdapter):
             .all()
         )
 
-        all_formats: List[str] = []
+        all_formats: list[str] = []
         for (api_format_enum,) in active_formats:
             api_format = (
                 api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
@@ -525,7 +524,7 @@ class PublicApiFormatHealthMonitorAdapter(PublicApiAdapter):
             )
             .all()
         )
-        endpoint_map: Dict[str, List[str]] = defaultdict(list)
+        endpoint_map: dict[str, list[str]] = defaultdict(list)
         for api_format_enum, endpoint_id in endpoint_rows:
             api_format = (
                 api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
@@ -551,7 +550,7 @@ class PublicApiFormatHealthMonitorAdapter(PublicApiAdapter):
             .all()
         )
 
-        grouped_candidates: Dict[str, List[RequestCandidate]] = {}
+        grouped_candidates: dict[str, list[RequestCandidate]] = {}
 
         for candidate, api_format_enum in rows:
             api_format = (
@@ -564,7 +563,7 @@ class PublicApiFormatHealthMonitorAdapter(PublicApiAdapter):
                 grouped_candidates[api_format].append(candidate)
 
         # 3. 为所有活跃格式生成监控数据
-        monitors: List[PublicApiFormatHealthMonitor] = []
+        monitors: list[PublicApiFormatHealthMonitor] = []
         for api_format in all_formats:
             candidates = grouped_candidates.get(api_format, [])
 
@@ -579,7 +578,7 @@ class PublicApiFormatHealthMonitorAdapter(PublicApiAdapter):
             success_rate = success_count / actual_completed if actual_completed > 0 else 1.0
 
             # 转换为公开版事件列表（不含敏感信息如 provider_id, key_id）
-            events: List[PublicHealthEvent] = []
+            events: list[PublicHealthEvent] = []
             for c in candidates:
                 event_time = c.finished_at or c.started_at or c.created_at
                 events.append(
@@ -649,8 +648,8 @@ class PublicGlobalModelsAdapter(PublicApiAdapter):
 
     skip: int
     limit: int
-    is_active: Optional[bool]
-    search: Optional[str]
+    is_active: bool | None
+    search: str | None
 
     async def handle(self, context):  # type: ignore[override]
         db = context.db

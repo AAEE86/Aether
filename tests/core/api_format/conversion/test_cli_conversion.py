@@ -8,7 +8,7 @@ CLI 格式参与转换的单元测试
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 from src.core.api_format.conversion.normalizers.claude import ClaudeNormalizer
 from src.core.api_format.conversion.normalizers.claude_cli import ClaudeCliNormalizer
@@ -72,10 +72,10 @@ def test_claude_response_to_openai_cli() -> None:
     openai_cli_resp = reg.convert_response(claude_resp, "CLAUDE", "OPENAI_CLI")
     assert openai_cli_resp["object"] == "response"
     assert isinstance(openai_cli_resp.get("output"), list)
-    msg = cast(Dict[str, Any], openai_cli_resp["output"][0])
+    msg = cast(dict[str, Any], openai_cli_resp["output"][0])
     assert msg["type"] == "message"
     assert msg["role"] == "assistant"
-    content = cast(List[Dict[str, Any]], msg.get("content") or [])
+    content = cast(list[dict[str, Any]], msg.get("content") or [])
     assert content and content[0]["type"] == "output_text"
     assert content[0]["text"] == "hello"
 
@@ -117,8 +117,8 @@ def test_stream_openai_cli_to_openai_delta() -> None:
     # 第二个 chunk 才是文本增量
     choices = out_events[1].get("choices") or []
     assert isinstance(choices, list) and choices
-    delta = cast(Dict[str, Any], choices[0]).get("delta") or {}
-    assert cast(Dict[str, Any], delta).get("content") == "hi"
+    delta = cast(dict[str, Any], choices[0]).get("delta") or {}
+    assert cast(dict[str, Any], delta).get("content") == "hi"
 
 
 def test_openai_cli_function_call_to_claude() -> None:
@@ -484,7 +484,7 @@ def test_real_claude_cli_stream_response_conversion() -> None:
     ]
 
     # 收集所有转换后的 OpenAI 格式事件
-    all_openai_events: List[Dict[str, Any]] = []
+    all_openai_events: list[dict[str, Any]] = []
     for chunk in chunks:
         events = reg.convert_stream_chunk(chunk, "CLAUDE_CLI", "OPENAI", state=state)
         all_openai_events.extend(events)
@@ -553,7 +553,7 @@ def test_real_claude_cli_stream_to_openai_cli() -> None:
         {"type": "message_stop"},
     ]
 
-    all_events: List[Dict[str, Any]] = []
+    all_events: list[dict[str, Any]] = []
     for chunk in chunks:
         events = reg.convert_stream_chunk(chunk, "CLAUDE_CLI", "OPENAI_CLI", state=state)
         all_events.extend(events)

@@ -21,7 +21,7 @@ WARNING: 多进程环境注意事项
 
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.core.logger import logger
 
@@ -49,7 +49,7 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
         详见模块文档说明。
     """
 
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: dict[str, Any] = None):
         config = config or {}  # 确保 config 不为 None
         super().__init__(
             name="sticky_priority",
@@ -68,7 +68,7 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
         self.enable_auto_recovery = config.get("enable_auto_recovery", True)  # 是否自动恢复
 
         # 提供商健康状态追踪 {provider_id: health_info}
-        self._provider_health: Dict[str, Dict[str, Any]] = defaultdict(
+        self._provider_health: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "consecutive_failures": 0,
                 "last_failure_time": None,
@@ -80,7 +80,7 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
 
         # 当前粘性提供商缓存 {cache_key: provider_id}
         # cache_key 可以是 api_key_id 或者其他标识
-        self._sticky_providers: Dict[str, str] = {}
+        self._sticky_providers: dict[str, str] = {}
 
         # 统计信息
         self._stats = {
@@ -92,8 +92,8 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
         }
 
     async def select(
-        self, candidates: List[ProviderCandidate], context: Optional[Dict[str, Any]] = None
-    ) -> Optional[SelectionResult]:
+        self, candidates: list[ProviderCandidate], context: dict[str, Any] | None = None
+    ) -> SelectionResult | None:
         """
         从候选提供商中选择一个
 
@@ -180,7 +180,7 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
             },
         )
 
-    def _get_cache_key(self, context: Optional[Dict[str, Any]]) -> str:
+    def _get_cache_key(self, context: dict[str, Any] | None) -> str:
         """
         生成缓存键，用于识别同一请求源
 
@@ -204,10 +204,10 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
         return "default"
 
     def _group_by_priority(
-        self, candidates: List[ProviderCandidate]
-    ) -> Dict[int, List[ProviderCandidate]]:
+        self, candidates: list[ProviderCandidate]
+    ) -> dict[int, list[ProviderCandidate]]:
         """按优先级分组候选提供商"""
-        groups: Dict[int, List[ProviderCandidate]] = {}
+        groups: dict[int, list[ProviderCandidate]] = {}
         for candidate in candidates:
             priority = candidate.priority
             if priority not in groups:
@@ -217,9 +217,9 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
 
     def _determine_sticky_provider(
         self,
-        candidates: List[ProviderCandidate],
+        candidates: list[ProviderCandidate],
         cache_key: str,
-        context: Optional[Dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
     ) -> ProviderCandidate:
         """
         确定粘性提供商
@@ -289,8 +289,8 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
         return False
 
     def _select_backup_provider(
-        self, candidates: List[ProviderCandidate]
-    ) -> Optional[ProviderCandidate]:
+        self, candidates: list[ProviderCandidate]
+    ) -> ProviderCandidate | None:
         """
         从候选列表中选择健康的备用提供商
 
@@ -340,8 +340,8 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
         self,
         provider: Any,
         success: bool,
-        response_time: Optional[float] = None,
-        error: Optional[Exception] = None,
+        response_time: float | None = None,
+        error: Exception | None = None,
     ):
         """
         记录请求结果，更新健康状态
@@ -377,7 +377,7 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
             else:
                 logger.debug(f"Recorded failed result for provider {provider.name}")
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
         # 计算健康状态
         healthy_count = sum(1 for info in self._provider_health.values() if info["is_healthy"])
@@ -434,7 +434,7 @@ class StickyPriorityStrategy(LoadBalancerStrategy):
             }
             logger.info(f"Reset health status for provider {provider_id}")
 
-    async def clear_sticky_cache(self, cache_key: Optional[str] = None):
+    async def clear_sticky_cache(self, cache_key: str | None = None):
         """
         清除粘性提供商缓存
 

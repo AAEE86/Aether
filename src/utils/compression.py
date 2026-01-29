@@ -6,10 +6,10 @@
 
 import gzip
 import json
-from typing import Any, Optional
+from typing import Any
 
 
-def compress_json(data: Any) -> Optional[bytes]:
+def compress_json(data: Any) -> bytes | None:
     """
     将JSON数据压缩为gzip格式的字节
 
@@ -33,7 +33,7 @@ def compress_json(data: Any) -> Optional[bytes]:
         return None
 
 
-def decompress_json(compressed_data: Optional[bytes]) -> Optional[Any]:
+def decompress_json(compressed_data: bytes | None) -> Any | None:
     """
     解压gzip格式的字节为JSON数据
 

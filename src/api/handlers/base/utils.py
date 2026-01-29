@@ -2,10 +2,9 @@
 Handler 基础工具函数
 """
 
-from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from src.core.exceptions import EmbeddedErrorException, ProviderNotAvailableException
 from src.core.api_format import filter_response_headers
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
     from src.core.api_format.conversion.registry import FormatConversionRegistry
 
 
-def get_format_converter_registry() -> "FormatConversionRegistry":
+def get_format_converter_registry() -> FormatConversionRegistry:
     """
     获取格式转换注册表（线程安全）
 
@@ -31,7 +30,7 @@ def get_format_converter_registry() -> "FormatConversionRegistry":
     return format_conversion_registry
 
 
-def extract_cache_creation_tokens(usage: Dict[str, Any]) -> int:
+def extract_cache_creation_tokens(usage: dict[str, Any]) -> int:
     """
     提取缓存创建 tokens（兼容三种格式）
 
@@ -99,7 +98,7 @@ def extract_cache_creation_tokens(usage: Dict[str, Any]) -> int:
     return old_format
 
 
-def build_sse_headers(extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def build_sse_headers(extra_headers: dict[str, str] | None = None) -> dict[str, str]:
     """
     构建 SSE（text/event-stream）推荐响应头，用于减少代理缓冲带来的卡顿/成段输出。
 
@@ -107,7 +106,7 @@ def build_sse_headers(extra_headers: Optional[Dict[str, str]] = None) -> Dict[st
     - Cache-Control: no-transform 可避免部分代理对流做压缩/改写导致缓冲
     - X-Accel-Buffering: no 可显式提示 Nginx 关闭缓冲（即使全局已关闭也无害）
     """
-    headers: Dict[str, str] = {
+    headers: dict[str, str] = {
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
     }
@@ -116,7 +115,7 @@ def build_sse_headers(extra_headers: Optional[Dict[str, str]] = None) -> Dict[st
     return headers
 
 
-def filter_proxy_response_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+def filter_proxy_response_headers(headers: dict[str, str] | None) -> dict[str, str]:
     """
     过滤上游响应头中不应透传给客户端的字段。
 
@@ -148,8 +147,8 @@ def check_prefetched_response_error(
     parser: Any,
     request_id: str,
     provider_name: str,
-    endpoint_id: Optional[str],
-    base_url: Optional[str],
+    endpoint_id: str | None,
+    base_url: str | None,
 ) -> None:
     """
     检查预读的响应是否为非 SSE 格式的错误响应（HTML 或纯 JSON 错误）

@@ -9,12 +9,10 @@
 - 多实例部署：设置 SINGLE_INSTANCE_MODE=false 禁用启动清理
 """
 
-from __future__ import annotations
 
 import os
 import pathlib
 import uuid
-from typing import Dict, Optional
 
 from src.core.logger import logger
 
@@ -31,10 +29,10 @@ class StartupTaskCoordinator:
     # 注意：这在 fork 模式下每个 worker 都是独立的
     _startup_cleanup_attempted = False
 
-    def __init__(self, redis_client=None, lock_dir: Optional[str] = None):
+    def __init__(self, redis_client=None, lock_dir: str | None = None):
         self.redis = redis_client
-        self._tokens: Dict[str, str] = {}
-        self._file_handles: Dict[str, object] = {}
+        self._tokens: dict[str, str] = {}
+        self._file_handles: dict[str, object] = {}
         self._lock_dir = pathlib.Path(lock_dir or os.getenv("TASK_LOCK_DIR", "./.locks"))
         if not self._lock_dir.exists():
             self._lock_dir.mkdir(parents=True, exist_ok=True)
@@ -44,7 +42,7 @@ class StartupTaskCoordinator:
     def _redis_key(self, name: str) -> str:
         return f"task_lock:{name}"
 
-    async def acquire(self, name: str, ttl: Optional[int] = None) -> bool:
+    async def acquire(self, name: str, ttl: int | None = None) -> bool:
         ttl = ttl or int(os.getenv("TASK_COORDINATOR_LOCK_TTL", "86400"))
 
         if self.redis:
@@ -142,7 +140,7 @@ class StartupTaskCoordinator:
             return False
 
 
-async def ensure_singleton_task(name: str, redis_client=None, ttl: Optional[int] = None):
+async def ensure_singleton_task(name: str, redis_client=None, ttl: int | None = None):
     """便捷协程，返回 (coordinator, acquired)"""
 
     coordinator = StartupTaskCoordinator(redis_client)

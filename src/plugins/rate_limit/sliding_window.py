@@ -22,7 +22,7 @@ import asyncio
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict
+from typing import Any
 
 from src.core.logger import logger
 from .base import RateLimitResult, RateLimitStrategy
@@ -42,7 +42,7 @@ class SlidingWindow:
         """
         self.window_size = window_size
         self.max_requests = max_requests
-        self.requests: Deque[float] = deque()
+        self.requests: deque[float] = deque()
         self.last_access_time: float = time.time()
 
     def _cleanup(self):
@@ -121,7 +121,7 @@ class SlidingWindowStrategy(RateLimitStrategy):
 
     def __init__(self):
         super().__init__("sliding_window")
-        self.windows: Dict[str, SlidingWindow] = {}
+        self.windows: dict[str, SlidingWindow] = {}
         self._lock = asyncio.Lock()
 
         # 默认配置
@@ -300,7 +300,7 @@ class SlidingWindowStrategy(RateLimitStrategy):
 
                 logger.info(f"滑动窗口已重置")
 
-    async def get_stats(self, key: str) -> Dict[str, Any]:
+    async def get_stats(self, key: str) -> dict[str, Any]:
         """
         获取统计信息
 
@@ -324,7 +324,7 @@ class SlidingWindowStrategy(RateLimitStrategy):
                 "reset_at": window.get_reset_time().isoformat(),
             }
 
-    def configure(self, config: Dict[str, Any]):
+    def configure(self, config: dict[str, Any]):
         """
         配置策略
 
@@ -344,7 +344,7 @@ class SlidingWindowStrategy(RateLimitStrategy):
         self.window_expiry = config.get("window_expiry", self.window_expiry)
         self._cleanup_interval = config.get("cleanup_interval", self._cleanup_interval)
 
-    def get_memory_stats(self) -> Dict[str, Any]:
+    def get_memory_stats(self) -> dict[str, Any]:
         """
         获取内存使用统计信息
 

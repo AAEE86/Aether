@@ -14,15 +14,14 @@
 - EndpointCheckOrchestrator: 协调整个流程
 """
 
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, Iterable, Optional, Union, List
-from abc import ABC, abstractmethod
+from typing import Any
+from collections.abc import Iterable
 import time
 import uuid
 import json
-from functools import lru_cache
 import asyncio
-from collections import defaultdict
 
 import httpx
 
@@ -31,7 +30,7 @@ from src.core.api_format import CORE_REDACT_HEADERS, merge_headers_with_protecti
 from src.utils.ssl_utils import get_ssl_context
 
 
-def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
     return redact_headers_for_log(headers, CORE_REDACT_HEADERS)
 
 
@@ -46,10 +45,10 @@ def _truncate_repr(value: Any, limit: int = 1200) -> str:
 
 
 def build_safe_headers(
-    base_headers: Dict[str, str],
-    extra_headers: Optional[Dict[str, str]],
+    base_headers: dict[str, str],
+    extra_headers: dict[str, str] | None,
     protected_keys: Iterable[str],
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     合并 extra_headers，但防止覆盖 protected_keys（大小写不敏感）。
     """
@@ -60,16 +59,16 @@ async def run_endpoint_check(
     *,
     client: httpx.AsyncClient,  # 保持兼容性，但内部不使用
     url: str,
-    headers: Dict[str, str],
-    json_body: Dict[str, Any],
+    headers: dict[str, str],
+    json_body: dict[str, Any],
     api_format: str,
-    provider_name: Optional[str] = None,
-    model_name: Optional[str] = None,
-    api_key_id: Optional[str] = None,
-    provider_id: Optional[str] = None,
-    db: Optional[Any] = None,  # Session对象，需要时才导入
-    user: Optional[Any] = None,  # User对象
-) -> Dict[str, Any]:
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    api_key_id: str | None = None,
+    provider_id: str | None = None,
+    db: Any | None = None,  # Session对象，需要时才导入
+    user: Any | None = None,  # User对象
+) -> dict[str, Any]:
     """
     执行端点检查（重构版本，使用新的架构）：
     - 使用新的架构类来分离关注点
@@ -123,21 +122,21 @@ async def _calculate_and_record_usage(
     provider_id: str,
     api_key_id: str,
     model_name: str,
-    request_data: Dict[str, Any],
-    response_data: Optional[Dict[str, Any]],
+    request_data: dict[str, Any],
+    response_data: dict[str, Any] | None,
     request_id: str,
     response_time_ms: int,
-    request_headers: Dict[str, str],
-    response_headers: Optional[Dict[str, str]] = None,
+    request_headers: dict[str, str],
+    response_headers: dict[str, str] | None = None,
     status_code: int = 0,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
     # 新增：支持直接传递token数据
-    input_tokens: Optional[int] = None,
-    output_tokens: Optional[int] = None,
-    cache_creation_input_tokens: Optional[int] = None,
-    cache_read_input_tokens: Optional[int] = None,
-    api_format: Optional[str] = None,
-) -> Dict[str, Any]:
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+    api_format: str | None = None,
+) -> dict[str, Any]:
     """
     计算并记录用量数据（遗留函数）
 
@@ -149,7 +148,7 @@ async def _calculate_and_record_usage(
     """
     from src.services.usage.service import UsageService
     from src.services.request.candidate import RequestCandidateService
-    from src.models.database import ApiKey, ProviderAPIKey, ProviderEndpoint
+    from src.models.database import ApiKey, ProviderAPIKey
 
     # 获取Provider API Key对象（不是用户API Key）
     provider_api_key = db.query(ProviderAPIKey).filter(ProviderAPIKey.id == api_key_id).first()
@@ -360,7 +359,7 @@ async def _calculate_and_record_usage(
         }
 
 
-def _extract_tokens_from_response(api_identifier: str, response_data: Optional[Dict[str, Any]]) -> tuple[int, int, int, int]:
+def _extract_tokens_from_response(api_identifier: str, response_data: dict[str, Any] | None) -> tuple[int, int, int, int]:
     """
     从响应中提取Token计数信息
 
@@ -446,7 +445,7 @@ def _extract_tokens_from_response(api_identifier: str, response_data: Optional[D
 
 
 
-def _fallback_token_counting(request_data: Dict[str, Any], response_data: Optional[Dict[str, Any]]) -> tuple[int, int, int, int]:
+def _fallback_token_counting(request_data: dict[str, Any], response_data: dict[str, Any] | None) -> tuple[int, int, int, int]:
     """
     回退的Token计数方法（简单估算）
 
@@ -508,16 +507,16 @@ def _fallback_token_counting(request_data: Dict[str, Any], response_data: Option
 class EndpointCheckRequest:
     """端点检查请求数据类"""
     url: str
-    headers: Dict[str, str]
-    json_body: Dict[str, Any]
+    headers: dict[str, str]
+    json_body: dict[str, Any]
     api_format: str
-    provider_name: Optional[str] = None
-    model_name: Optional[str] = None
-    api_key_id: Optional[str] = None
-    provider_id: Optional[str] = None
-    db: Optional[Any] = None
-    user: Optional[Any] = None
-    request_id: Optional[str] = None
+    provider_name: str | None = None
+    model_name: str | None = None
+    api_key_id: str | None = None
+    provider_id: str | None = None
+    db: Any | None = None
+    user: Any | None = None
+    request_id: str | None = None
     timeout: float = 30.0
 
 
@@ -525,12 +524,12 @@ class EndpointCheckRequest:
 class EndpointCheckResult:
     """端点检查结果数据类"""
     status_code: int
-    headers: Dict[str, str]
+    headers: dict[str, str]
     response_time_ms: int
     request_id: str
-    response_data: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-    usage_data: Optional[Dict[str, Any]] = None
+    response_data: dict[str, Any] | None = None
+    error_message: str | None = None
+    usage_data: dict[str, Any] | None = None
 
 
 class HttpRequestExecutor:
@@ -613,7 +612,7 @@ class UsageCalculator:
         return _extract_tokens_from_response(api_identifier, result.response_data)
 
     @staticmethod
-    def _fallback_token_counting(request_data: Dict[str, Any], response_data: Optional[Dict[str, Any]]) -> tuple[int, int, int, int]:
+    def _fallback_token_counting(request_data: dict[str, Any], response_data: dict[str, Any] | None) -> tuple[int, int, int, int]:
         """回退的Token计数方法（简单估算）"""
         # 估算输入Token
         messages = request_data.get("messages", request_data.get("contents", []))
@@ -665,12 +664,12 @@ class AsyncBatchUsageRecorder:
     def __init__(self, batch_size: int = 10, flush_interval: float = 2.0):
         self.batch_size = batch_size
         self.flush_interval = flush_interval
-        self.pending_records: List[Dict[str, Any]] = []
-        self._flush_task: Optional[asyncio.Task] = None
+        self.pending_records: list[dict[str, Any]] = []
+        self._flush_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._running = True
 
-    async def add_record(self, usage_data: Dict[str, Any]) -> None:
+    async def add_record(self, usage_data: dict[str, Any]) -> None:
         """添加用量记录到批处理队列"""
         async with self._lock:
             self.pending_records.append(usage_data)
@@ -740,7 +739,7 @@ class AsyncBatchUsageRecorder:
 
 
 # 全局批处理器实例（单例）
-_global_batch_recorder: Optional[AsyncBatchUsageRecorder] = None
+_global_batch_recorder: AsyncBatchUsageRecorder | None = None
 
 def get_batch_recorder() -> AsyncBatchUsageRecorder:
     """获取全局批处理器实例"""
@@ -756,7 +755,7 @@ def get_batch_recorder() -> AsyncBatchUsageRecorder:
 
 class EndpointCheckError(Exception):
     """端点检查错误基类"""
-    def __init__(self, message: str, error_type: str, status_code: int = 500, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_type: str, status_code: int = 500, details: dict[str, Any] | None = None):
         super().__init__(message)
         self.message = message
         self.error_type = error_type
@@ -765,22 +764,22 @@ class EndpointCheckError(Exception):
 
 class NetworkError(EndpointCheckError):
     """网络请求错误"""
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(message, "network_error", 0, details)
 
 class AuthenticationError(EndpointCheckError):
     """认证错误"""
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(message, "authentication_error", 401, details)
 
 class RateLimitError(EndpointCheckError):
     """速率限制错误"""
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(message, "rate_limit_error", 429, details)
 
 class UpstreamError(EndpointCheckError):
     """上游服务错误"""
-    def __init__(self, message: str, status_code: int, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, status_code: int, details: dict[str, Any] | None = None):
         super().__init__(message, "upstream_error", status_code, details)
 
 
@@ -982,7 +981,7 @@ class EndpointCheckConfig:
     retry_on_timeouts: bool = True
 
     @classmethod
-    def from_env(cls) -> 'EndpointCheckConfig':
+    def from_env(cls) -> EndpointCheckConfig:
         """从环境变量创建配置"""
         import os
 
@@ -1004,7 +1003,7 @@ class EndpointCheckConfig:
         )
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> 'EndpointCheckConfig':
+    def from_dict(cls, config_dict: dict[str, Any]) -> EndpointCheckConfig:
         """从字典创建配置"""
         return cls(**{k: v for k, v in config_dict.items() if hasattr(cls, k)})
 
@@ -1012,7 +1011,7 @@ class EndpointCheckConfig:
 class ConfigurableEndpointChecker:
     """可配置的端点检查器"""
 
-    def __init__(self, config: Optional[EndpointCheckConfig] = None):
+    def __init__(self, config: EndpointCheckConfig | None = None):
         self.config = config or EndpointCheckConfig()
         self.executor = HttpRequestExecutor(timeout=self.config.timeout)
         self.usage_calculator = UsageCalculator()
@@ -1171,9 +1170,9 @@ class ConfigurableEndpointChecker:
 
 
 # 全局配置检查器实例
-_global_configured_checker: Optional[ConfigurableEndpointChecker] = None
+_global_configured_checker: ConfigurableEndpointChecker | None = None
 
-def get_configured_checker(config: Optional[EndpointCheckConfig] = None) -> ConfigurableEndpointChecker:
+def get_configured_checker(config: EndpointCheckConfig | None = None) -> ConfigurableEndpointChecker:
     """获取全局配置检查器实例"""
     global _global_configured_checker
     if _global_configured_checker is None or config is not None:
@@ -1186,8 +1185,8 @@ def get_configured_checker(config: Optional[EndpointCheckConfig] = None) -> Conf
 class EndpointCheckOrchestrator:
     """端点检查协调器 - 协调整个流程"""
 
-    def __init__(self, executor: Optional[HttpRequestExecutor] = None,
-                 usage_calculator: Optional[UsageCalculator] = None):
+    def __init__(self, executor: HttpRequestExecutor | None = None,
+                 usage_calculator: UsageCalculator | None = None):
         self.executor = executor or HttpRequestExecutor()
         self.usage_calculator = usage_calculator or UsageCalculator()
 

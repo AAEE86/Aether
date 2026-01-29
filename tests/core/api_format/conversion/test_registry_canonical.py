@@ -8,7 +8,7 @@ Canonical Registry 单元测试
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 from src.core.api_format.conversion.normalizers.claude import ClaudeNormalizer
 from src.core.api_format.conversion.normalizers.gemini import GeminiNormalizer
@@ -25,14 +25,14 @@ def _make_registry() -> FormatConversionRegistry:
     return reg
 
 
-def _first_openai_choice_message(resp: Dict[str, Any]) -> Dict[str, Any]:
+def _first_openai_choice_message(resp: dict[str, Any]) -> dict[str, Any]:
     choices = resp.get("choices") or []
     assert isinstance(choices, list) and choices
     c0 = choices[0]
     assert isinstance(c0, dict)
     msg = c0.get("message")
     assert isinstance(msg, dict)
-    return cast(Dict[str, Any], msg)
+    return cast(dict[str, Any], msg)
 
 
 def test_registry_canonical_can_convert_full_stream() -> None:
@@ -101,5 +101,5 @@ def test_registry_canonical_stream_openai_to_claude() -> None:
     out_events = reg.convert_stream_chunk(chunk, "OPENAI", "CLAUDE", state=state)
     assert isinstance(out_events, list) and out_events
 
-    types = [cast(Dict[str, Any], e).get("type") for e in cast(List[Dict[str, Any]], out_events)]
+    types = [cast(dict[str, Any], e).get("type") for e in cast(list[dict[str, Any]], out_events)]
     assert types[:3] == ["message_start", "content_block_start", "content_block_delta"]

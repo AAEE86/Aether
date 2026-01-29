@@ -12,7 +12,7 @@
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,7 @@ class WarmupContext:
 
     db: Session
     user: Any  # User model
-    audit_metadata: Dict[str, Any] = field(default_factory=dict)
+    audit_metadata: dict[str, Any] = field(default_factory=dict)
 
     def add_audit_metadata(self, **kwargs: Any) -> None:
         """兼容 ApiRequestContext 接口"""

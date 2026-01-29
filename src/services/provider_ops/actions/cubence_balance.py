@@ -3,7 +3,7 @@ Cubence 余额查询操作
 """
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -85,7 +85,7 @@ class CubenceBalanceAction(BalanceAction):
             )
 
     def _handle_http_error(
-        self, response: httpx.Response, raw_data: Optional[Dict[str, Any]] = None
+        self, response: httpx.Response, raw_data: dict[str, Any] | None = None
     ) -> ActionResult:
         """处理 HTTP 错误响应（Cubence 专用）"""
         status_code = response.status_code
@@ -117,7 +117,7 @@ class CubenceBalanceAction(BalanceAction):
         charity_balance = balance_data.get("charity_balance_dollar")
 
         # 窗口限额信息
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
 
         # 5小时窗口限额
         five_hour = subscription_limits.get("five_hour", {})

@@ -5,7 +5,7 @@ Claude Chat Handler - 基于通用 Chat Handler 基类的简化实现
 代码量从原来的 ~1470 行减少到 ~120 行。
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.api.handlers.base.chat_handler_base import ChatHandlerBase
 from src.api.handlers.base.utils import extract_cache_creation_tokens
@@ -25,8 +25,8 @@ class ClaudeChatHandler(ChatHandlerBase):
 
     def extract_model_from_request(
         self,
-        request_body: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,  # noqa: ARG002
+        request_body: dict[str, Any],
+        path_params: dict[str, Any] | None = None,  # noqa: ARG002
     ) -> str:
         """
         从请求中提取模型名 - Claude 格式实现
@@ -45,9 +45,9 @@ class ClaudeChatHandler(ChatHandlerBase):
 
     def apply_mapped_model(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         mapped_model: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         将映射后的模型名应用到请求体
 
@@ -90,7 +90,7 @@ class ClaudeChatHandler(ChatHandlerBase):
 
         return request
 
-    def _extract_usage(self, response: Dict) -> Dict[str, int]:
+    def _extract_usage(self, response: dict) -> dict[str, int]:
         """
         从 Claude 响应中提取 token 使用情况
 
@@ -108,7 +108,7 @@ class ClaudeChatHandler(ChatHandlerBase):
             "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
         }
 
-    def _normalize_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """
         规范化 Claude 响应
 

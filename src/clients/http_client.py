@@ -8,11 +8,13 @@
 3. 连接池复用：Keep-alive 连接减少 TCP 握手开销
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -26,7 +28,7 @@ _proxy_clients_lock = asyncio.Lock()
 _default_client_lock = asyncio.Lock()
 
 
-def _compute_proxy_cache_key(proxy_config: Optional[Dict[str, Any]]) -> str:
+def _compute_proxy_cache_key(proxy_config: dict[str, Any] | None) -> str:
     """
     计算代理配置的缓存键
 
@@ -48,7 +50,7 @@ def _compute_proxy_cache_key(proxy_config: Optional[Dict[str, Any]]) -> str:
     return f"proxy:{hashlib.md5(proxy_url.encode()).hexdigest()[:16]}"
 
 
-def build_proxy_url(proxy_config: Dict[str, Any]) -> Optional[str]:
+def build_proxy_url(proxy_config: dict[str, Any]) -> str | None:
     """
     根据代理配置构建完整的代理 URL
 
@@ -103,11 +105,11 @@ class HTTPClientPool:
     3. LRU 淘汰：代理客户端超过上限时淘汰最久未使用的
     """
 
-    _instance: Optional["HTTPClientPool"] = None
-    _default_client: Optional[httpx.AsyncClient] = None
-    _clients: Dict[str, httpx.AsyncClient] = {}
+    _instance: HTTPClientPool | None = None
+    _default_client: httpx.AsyncClient | None = None
+    _clients: dict[str, httpx.AsyncClient] = {}
     # 代理客户端缓存：{cache_key: (client, last_used_time)}
-    _proxy_clients: Dict[str, Tuple[httpx.AsyncClient, float]] = {}
+    _proxy_clients: dict[str, tuple[httpx.AsyncClient, float]] = {}
     # 代理客户端缓存上限（避免内存泄漏）
     _max_proxy_clients: int = 50
 
@@ -242,7 +244,7 @@ class HTTPClientPool:
     @classmethod
     async def get_proxy_client(
         cls,
-        proxy_config: Optional[Dict[str, Any]] = None,
+        proxy_config: dict[str, Any] | None = None,
     ) -> httpx.AsyncClient:
         """
         获取代理客户端（带缓存复用）
@@ -280,7 +282,7 @@ class HTTPClientPool:
             await cls._evict_lru_proxy_client()
 
             # 创建新客户端（使用默认超时，请求时可覆盖）
-            client_config: Dict[str, Any] = {
+            client_config: dict[str, Any] = {
                 "http2": False,
                 "verify": get_ssl_context(),
                 "follow_redirects": True,
@@ -370,8 +372,8 @@ class HTTPClientPool:
     @classmethod
     def create_client_with_proxy(
         cls,
-        proxy_config: Optional[Dict[str, Any]] = None,
-        timeout: Optional[httpx.Timeout] = None,
+        proxy_config: dict[str, Any] | None = None,
+        timeout: httpx.Timeout | None = None,
         **kwargs: Any,
     ) -> httpx.AsyncClient:
         """
@@ -387,7 +389,7 @@ class HTTPClientPool:
         Returns:
             配置好的 httpx.AsyncClient 实例（调用者需要负责关闭）
         """
-        client_config: Dict[str, Any] = {
+        client_config: dict[str, Any] = {
             "http2": False,
             "verify": get_ssl_context(),
             "follow_redirects": True,
@@ -413,7 +415,7 @@ class HTTPClientPool:
         return httpx.AsyncClient(**client_config)
 
     @classmethod
-    def get_pool_stats(cls) -> Dict[str, Any]:
+    def get_pool_stats(cls) -> dict[str, Any]:
         """获取连接池统计信息"""
         return {
             "default_client_active": cls._default_client is not None,

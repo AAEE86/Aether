@@ -3,8 +3,7 @@
 """
 
 import json
-from datetime import timedelta
-from typing import Any, Optional
+from typing import Any
 
 from src.clients.redis_client import get_redis_client
 from src.core.logger import logger
@@ -15,7 +14,7 @@ class CacheService:
     """缓存服务"""
 
     @staticmethod
-    async def get(key: str) -> Optional[Any]:
+    async def get(key: str) -> Any | None:
         """
         从缓存获取数据
 
@@ -170,7 +169,7 @@ class CacheService:
             return False
 
     @staticmethod
-    async def incr(key: str, ttl_seconds: Optional[int] = None) -> int:
+    async def incr(key: str, ttl_seconds: int | None = None) -> int:
         """
         递增缓存值
 

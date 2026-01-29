@@ -6,9 +6,10 @@
 数据存储仍然使用 UTC。
 """
 
+from __future__ import annotations
+
 import os
 from datetime import datetime
-from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -23,14 +24,14 @@ APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Shanghai")
 class TaskScheduler:
     """统一定时任务调度器"""
 
-    _instance: Optional["TaskScheduler"] = None
+    _instance: TaskScheduler | None = None
 
     def __init__(self):
         self.scheduler = AsyncIOScheduler(timezone=APP_TIMEZONE)
         self._started = False
 
     @classmethod
-    def get_instance(cls) -> "TaskScheduler":
+    def get_instance(cls) -> TaskScheduler:
         """获取调度器单例"""
         if cls._instance is None:
             cls._instance = TaskScheduler()

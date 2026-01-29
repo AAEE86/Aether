@@ -3,7 +3,7 @@ Provider 模型管理 API
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session, joinedload
@@ -40,15 +40,15 @@ router = APIRouter(tags=["Model Management"])
 pipeline = ApiRequestPipeline()
 
 
-@router.get("/{provider_id}/models", response_model=List[ModelResponse])
+@router.get("/{provider_id}/models", response_model=list[ModelResponse])
 async def list_provider_models(
     provider_id: str,
     request: Request,
-    is_active: Optional[bool] = None,
+    is_active: bool | None = None,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-) -> List[ModelResponse]:
+) -> list[ModelResponse]:
     """
     获取提供商的所有模型
 
@@ -222,13 +222,13 @@ async def delete_provider_model(
     return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)
 
 
-@router.post("/{provider_id}/models/batch", response_model=List[ModelResponse])
+@router.post("/{provider_id}/models/batch", response_model=list[ModelResponse])
 async def batch_create_provider_models(
     provider_id: str,
-    models_data: List[ModelCreate],
+    models_data: list[ModelCreate],
     request: Request,
     db: Session = Depends(get_db),
-) -> List[ModelResponse]:
+) -> list[ModelResponse]:
     """
     批量创建模型
 
@@ -375,7 +375,7 @@ async def import_models_from_upstream(
 @dataclass
 class AdminListProviderModelsAdapter(AdminApiAdapter):
     provider_id: str
-    is_active: Optional[bool]
+    is_active: bool | None
     skip: int
     limit: int
 
@@ -482,7 +482,7 @@ class AdminDeleteProviderModelAdapter(AdminApiAdapter):
 @dataclass
 class AdminBatchCreateModelsAdapter(AdminApiAdapter):
     provider_id: str
-    models_data: List[ModelCreate]
+    models_data: list[ModelCreate]
 
     async def handle(self, context):  # type: ignore[override]
         db = context.db
@@ -525,7 +525,7 @@ class AdminGetProviderAvailableSourceModelsAdapter(AdminApiAdapter):
         )
 
         # 2. 构建以 GlobalModel 为主键的字典
-        global_models_dict: Dict[str, Dict[str, Any]] = {}
+        global_models_dict: dict[str, dict[str, Any]] = {}
 
         for model in models:
             global_model = model.global_model

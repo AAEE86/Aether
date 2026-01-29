@@ -9,7 +9,7 @@ Usage 字段映射器
 - GEMINI / GEMINI_CLI: Google Gemini API
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.services.billing.models import StandardizedUsage
 
@@ -47,7 +47,7 @@ class UsageMapper:
     # =========================================================================
 
     # OpenAI 格式字段映射
-    OPENAI_MAPPING: Dict[str, str] = {
+    OPENAI_MAPPING: dict[str, str] = {
         "prompt_tokens": "input_tokens",
         "completion_tokens": "output_tokens",
         "prompt_tokens_details.cached_tokens": "cache_read_tokens",
@@ -55,7 +55,7 @@ class UsageMapper:
     }
 
     # Claude 格式字段映射
-    CLAUDE_MAPPING: Dict[str, str] = {
+    CLAUDE_MAPPING: dict[str, str] = {
         "input_tokens": "input_tokens",
         "output_tokens": "output_tokens",
         "cache_creation_input_tokens": "cache_creation_tokens",
@@ -63,7 +63,7 @@ class UsageMapper:
     }
 
     # Gemini 格式字段映射
-    GEMINI_MAPPING: Dict[str, str] = {
+    GEMINI_MAPPING: dict[str, str] = {
         "promptTokenCount": "input_tokens",
         "candidatesTokenCount": "output_tokens",
         "cachedContentTokenCount": "cache_read_tokens",
@@ -74,7 +74,7 @@ class UsageMapper:
     }
 
     # 格式名称到映射的对应关系
-    FORMAT_MAPPINGS: Dict[str, Dict[str, str]] = {
+    FORMAT_MAPPINGS: dict[str, dict[str, str]] = {
         "OPENAI": OPENAI_MAPPING,
         "OPENAI_CLI": OPENAI_MAPPING,
         "CLAUDE": CLAUDE_MAPPING,
@@ -86,9 +86,9 @@ class UsageMapper:
     @classmethod
     def map(
         cls,
-        raw_usage: Dict[str, Any],
+        raw_usage: dict[str, Any],
         api_format: str,
-        extra_mapping: Optional[Dict[str, str]] = None,
+        extra_mapping: dict[str, str] | None = None,
     ) -> StandardizedUsage:
         """
         将原始 usage 映射为标准化格式
@@ -124,7 +124,7 @@ class UsageMapper:
     @classmethod
     def map_from_response(
         cls,
-        response: Dict[str, Any],
+        response: dict[str, Any],
         api_format: str,
     ) -> StandardizedUsage:
         """
@@ -145,7 +145,7 @@ class UsageMapper:
         format_upper = api_format.upper() if api_format else ""
 
         # 提取 usage 部分
-        usage_data: Dict[str, Any] = {}
+        usage_data: dict[str, Any] = {}
 
         if format_upper.startswith("GEMINI"):
             # Gemini: usageMetadata
@@ -162,7 +162,7 @@ class UsageMapper:
         return cls.map(usage_data, api_format)
 
     @classmethod
-    def _get_mapping(cls, api_format: str) -> Dict[str, str]:
+    def _get_mapping(cls, api_format: str) -> dict[str, str]:
         """获取对应格式的字段映射"""
         if not api_format:
             return cls.CLAUDE_MAPPING
@@ -182,7 +182,7 @@ class UsageMapper:
         return cls.CLAUDE_MAPPING
 
     @classmethod
-    def _get_nested_value(cls, data: Dict[str, Any], path: str) -> Any:
+    def _get_nested_value(cls, data: dict[str, Any], path: str) -> Any:
         """
         获取嵌套字段值
 
@@ -212,7 +212,7 @@ class UsageMapper:
         return value
 
     @classmethod
-    def register_format(cls, format_name: str, mapping: Dict[str, str]) -> None:
+    def register_format(cls, format_name: str, mapping: dict[str, str]) -> None:
         """
         注册新的格式映射
 
@@ -234,7 +234,7 @@ class UsageMapper:
 
 
 def map_usage(
-    raw_usage: Dict[str, Any],
+    raw_usage: dict[str, Any],
     api_format: str,
 ) -> StandardizedUsage:
     """
@@ -251,7 +251,7 @@ def map_usage(
 
 
 def map_usage_from_response(
-    response: Dict[str, Any],
+    response: dict[str, Any],
     api_format: str,
 ) -> StandardizedUsage:
     """

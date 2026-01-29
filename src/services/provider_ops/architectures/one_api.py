@@ -4,7 +4,7 @@ One API 架构
 针对 One API 风格的中转站优化的预设配置。
 """
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 import httpx
 
@@ -29,11 +29,11 @@ class OneApiConnector(ProviderConnector):
     auth_type = ConnectorAuthType.API_KEY
     display_name = "One API Key"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         super().__init__(base_url, config)
-        self._api_key: Optional[str] = None
+        self._api_key: str | None = None
 
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """建立连接"""
         api_key = credentials.get("api_key")
         if not api_key:
@@ -60,7 +60,7 @@ class OneApiConnector(ProviderConnector):
         return request
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """获取凭据配置 schema"""
         return {
             "type": "object",
@@ -91,15 +91,15 @@ class OneApiArchitecture(ProviderArchitecture):
     display_name = "One API"
     description = "One API 风格中转站的预设配置"
 
-    supported_connectors: List[Type[ProviderConnector]] = [
+    supported_connectors: list[type[ProviderConnector]] = [
         OneApiConnector,
     ]
 
-    supported_actions: List[Type[ProviderAction]] = [
+    supported_actions: list[type[ProviderAction]] = [
         NewApiBalanceAction,
     ]
 
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {
         ProviderActionType.QUERY_BALANCE: {
             "endpoint": "/api/user/self",
             "method": "GET",
@@ -110,7 +110,7 @@ class OneApiArchitecture(ProviderArchitecture):
         },
     }
 
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """One API 只需要 api_key"""
         return OneApiConnector.get_credentials_schema()
 
@@ -120,11 +120,11 @@ class OneApiArchitecture(ProviderArchitecture):
 
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """构建 One API 的验证请求 Headers"""
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
 
         api_key = credentials.get("api_key", "")
         if api_key:
@@ -135,7 +135,7 @@ class OneApiArchitecture(ProviderArchitecture):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """解析 One API 验证响应"""
         if status_code == 401:

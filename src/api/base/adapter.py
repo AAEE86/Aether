@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import Request, Response
 
@@ -23,7 +21,7 @@ class ApiAdapter(ABC):
 
     name: str = "base"
     mode: ApiMode = ApiMode.STANDARD
-    api_format: Optional[str] = None  # 对应 Provider API 格式提示
+    api_format: str | None = None  # 对应 Provider API 格式提示
     audit_log_enabled: bool = True
     audit_success_event = None
     audit_failure_event = None
@@ -36,7 +34,7 @@ class ApiAdapter(ABC):
         """可选的授权钩子，默认允许通过。"""
         return None
 
-    def extract_api_key(self, request: Request) -> Optional[str]:
+    def extract_api_key(self, request: Request) -> str | None:
         """
         从请求中提取客户端 API 密钥。
 
@@ -55,17 +53,17 @@ class ApiAdapter(ABC):
         context: ApiRequestContext,
         *,
         success: bool,
-        status_code: Optional[int],
-        error: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        status_code: int | None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
         """允许适配器在审计日志中追加自定义字段。"""
         return {}
 
     def detect_capability_requirements(
         self,
-        headers: Dict[str, str],
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, bool]:
+        headers: dict[str, str],
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
         """
         检测请求中隐含的能力需求（子类可覆盖）
 

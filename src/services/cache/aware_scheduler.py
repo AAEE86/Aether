@@ -28,14 +28,13 @@
    - 失效缓存亲和性，避免重复选择故障资源
 """
 
-from __future__ import annotations
 
 import hashlib
 import random
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -65,7 +64,6 @@ from src.services.rate_limit.adaptive_reservation import (
     get_adaptive_reservation_manager,
 )
 from src.services.rate_limit.concurrency_manager import get_concurrency_manager
-from src.services.system.config import SystemConfigService
 
 
 @dataclass
@@ -77,8 +75,8 @@ class ProviderCandidate:
     key: ProviderAPIKey
     is_cached: bool = False
     is_skipped: bool = False  # 是否被跳过
-    skip_reason: Optional[str] = None  # 跳过原因
-    mapping_matched_model: Optional[str] = None  # 通过映射匹配到的模型名（用于实际请求）
+    skip_reason: str | None = None  # 跳过原因
+    mapping_matched_model: str | None = None  # 通过映射匹配到的模型名（用于实际请求）
     needs_conversion: bool = False  # 是否需要格式转换
     provider_api_format: str = ""  # Provider 端点实际格式（用于健康度/熔断 bucket）
 
@@ -86,7 +84,7 @@ class ProviderCandidate:
 @dataclass
 class ConcurrencySnapshot:
     key_current: int
-    key_limit: Optional[int]
+    key_limit: int | None
     is_cached_user: bool = False
     # 动态预留信息
     reservation_ratio: float = 0.0
@@ -134,8 +132,8 @@ class CacheAwareScheduler:
     def __init__(
         self,
         redis_client=None,
-        priority_mode: Optional[str] = None,
-        scheduling_mode: Optional[str] = None,
+        priority_mode: str | None = None,
+        scheduling_mode: str | None = None,
     ):
         """
         初始化调度器
@@ -160,7 +158,7 @@ class CacheAwareScheduler:
         )
 
         # 初始化子组件（将在第一次使用时异步初始化）
-        self._affinity_manager: Optional[CacheAffinityManager] = None
+        self._affinity_manager: CacheAffinityManager | None = None
         self._concurrency_manager = None
         # 动态预留管理器（同步初始化）
         self._reservation_manager: AdaptiveReservationManager = get_adaptive_reservation_manager()
@@ -194,13 +192,13 @@ class CacheAwareScheduler:
         self,
         db: Session,
         affinity_key: str,
-        api_format: Union[str, APIFormat],
+        api_format: str | APIFormat,
         model_name: str,
-        excluded_endpoints: Optional[List[str]] = None,
-        excluded_keys: Optional[List[str]] = None,
+        excluded_endpoints: list[str] | None = None,
+        excluded_keys: list[str] | None = None,
         provider_batch_size: int = 20,
-        max_candidates_per_batch: Optional[int] = None,
-    ) -> Tuple[Provider, ProviderEndpoint, ProviderAPIKey]:
+        max_candidates_per_batch: int | None = None,
+    ) -> tuple[Provider, ProviderEndpoint, ProviderAPIKey]:
         """
         缓存感知选择 - 核心方法
 
@@ -318,7 +316,7 @@ class CacheAwareScheduler:
 
         raise ProviderNotAvailableException("服务暂时繁忙，请稍后重试")
 
-    def _get_effective_rpm_limit(self, key: ProviderAPIKey) -> Optional[int]:
+    def _get_effective_rpm_limit(self, key: ProviderAPIKey) -> int | None:
         """
         获取有效的 RPM 限制
 
@@ -348,7 +346,7 @@ class CacheAwareScheduler:
         self,
         key: ProviderAPIKey,
         is_cached_user: bool = False,
-    ) -> Tuple[bool, ConcurrencySnapshot]:
+    ) -> tuple[bool, ConcurrencySnapshot]:
         """
         检查 RPM 限制是否可用（使用动态预留机制）
 
@@ -448,7 +446,7 @@ class CacheAwareScheduler:
                     )
                     can_use = False
 
-        key_limit_for_snapshot: Optional[int]
+        key_limit_for_snapshot: int | None
         if is_cached_user:
             key_limit_for_snapshot = effective_key_limit
         elif effective_key_limit is not None:
@@ -471,8 +469,8 @@ class CacheAwareScheduler:
 
     def _get_effective_restrictions(
         self,
-        user_api_key: Optional[ApiKey],
-    ) -> Dict[str, Any]:
+        user_api_key: ApiKey | None,
+    ) -> dict[str, Any]:
         """
         获取有效的访问限制（合并 ApiKey 和 User 的限制）
 
@@ -549,16 +547,16 @@ class CacheAwareScheduler:
     async def list_all_candidates(
         self,
         db: Session,
-        api_format: Union[str, APIFormat],
+        api_format: str | APIFormat,
         model_name: str,
-        affinity_key: Optional[str] = None,
-        user_api_key: Optional[ApiKey] = None,
+        affinity_key: str | None = None,
+        user_api_key: ApiKey | None = None,
         provider_offset: int = 0,
-        provider_limit: Optional[int] = None,
-        max_candidates: Optional[int] = None,
+        provider_limit: int | None = None,
+        max_candidates: int | None = None,
         is_stream: bool = False,
-        capability_requirements: Optional[Dict[str, bool]] = None,
-    ) -> Tuple[List[ProviderCandidate], str]:
+        capability_requirements: dict[str, bool] | None = None,
+    ) -> tuple[list[ProviderCandidate], str]:
         """
         预先获取所有可用的 Provider/Endpoint/Key 组合
 
@@ -599,7 +597,7 @@ class CacheAwareScheduler:
         global_model_id: str = str(global_model.id)
 
         # 提取模型映射（用于 Provider Key 的 allowed_models 匹配）
-        model_mappings: List[str] = (global_model.config or {}).get("model_mappings", [])
+        model_mappings: list[str] = (global_model.config or {}).get("model_mappings", [])
         if model_mappings:
             logger.debug(
                 f"[Scheduler] GlobalModel={global_model.name} 配置了映射规则: {model_mappings}"
@@ -712,8 +710,8 @@ class CacheAwareScheduler:
         self,
         db: Session,
         provider_offset: int = 0,
-        provider_limit: Optional[int] = None,
-    ) -> List[Provider]:
+        provider_limit: int | None = None,
+    ) -> list[Provider]:
         """
         查询活跃的 Providers（带预加载）
 
@@ -751,10 +749,10 @@ class CacheAwareScheduler:
         db: Session,
         provider: Provider,
         model_name: str,
-        api_format: Optional[str] = None,
+        api_format: str | None = None,
         is_stream: bool = False,
-        capability_requirements: Optional[Dict[str, bool]] = None,
-    ) -> Tuple[bool, Optional[str], Optional[List[str]], Optional[set[str]]]:
+        capability_requirements: dict[str, bool] | None = None,
+    ) -> tuple[bool, str | None, list[str] | None, set[str] | None]:
         """
         检查 Provider 是否支持指定模型（可选检查流式支持和能力需求）
 
@@ -807,12 +805,12 @@ class CacheAwareScheduler:
         self,
         db: Session,
         provider: Provider,
-        global_model: "GlobalModel",
+        global_model: GlobalModel,
         model_name: str,
-        api_format: Optional[str] = None,
+        api_format: str | None = None,
         is_stream: bool = False,
-        capability_requirements: Optional[Dict[str, bool]] = None,
-    ) -> Tuple[bool, Optional[str], Optional[List[str]], Optional[set[str]]]:
+        capability_requirements: dict[str, bool] | None = None,
+    ) -> tuple[bool, str | None, list[str] | None, set[str] | None]:
         """
         检查 Provider 是否支持指定的 GlobalModel
 
@@ -841,7 +839,7 @@ class CacheAwareScheduler:
             pass
 
         # 获取模型支持的能力列表
-        model_supported_capabilities: List[str] = list(global_model.supported_capabilities or [])
+        model_supported_capabilities: list[str] = list(global_model.supported_capabilities or [])
 
         # 查询该 Provider 是否有实现这个 GlobalModel
         for model in provider.models:
@@ -892,12 +890,12 @@ class CacheAwareScheduler:
     def _check_key_availability(
         self,
         key: ProviderAPIKey,
-        api_format: Optional[str],
+        api_format: str | None,
         model_name: str,
-        capability_requirements: Optional[Dict[str, bool]] = None,
-        model_mappings: Optional[List[str]] = None,
-        candidate_models: Optional[set[str]] = None,
-    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        capability_requirements: dict[str, bool] | None = None,
+        model_mappings: list[str] | None = None,
+        candidate_models: set[str] | None = None,
+    ) -> tuple[bool, str | None, str | None]:
         """
         检查 API Key 的可用性
 
@@ -971,7 +969,7 @@ class CacheAwareScheduler:
         # 因为 check_capability_match 会检查 Key 的 EXCLUSIVE 能力是否被浪费
         from src.core.key_capabilities import check_capability_match
 
-        key_caps: Dict[str, bool] = dict(key.capabilities or {})
+        key_caps: dict[str, bool] = dict(key.capabilities or {})
         is_match, skip_reason = check_capability_match(key_caps, capability_requirements)
         if not is_match:
             return False, skip_reason, None
@@ -981,16 +979,16 @@ class CacheAwareScheduler:
     async def _build_candidates(
         self,
         db: Session,
-        providers: List[Provider],
+        providers: list[Provider],
         client_format: APIFormat,
         model_name: str,
-        affinity_key: Optional[str],
-        model_mappings: Optional[List[str]] = None,
-        max_candidates: Optional[int] = None,
+        affinity_key: str | None,
+        model_mappings: list[str] | None = None,
+        max_candidates: int | None = None,
         is_stream: bool = False,
-        capability_requirements: Optional[Dict[str, bool]] = None,
+        capability_requirements: dict[str, bool] | None = None,
         global_conversion_enabled: bool = False,
-    ) -> List[ProviderCandidate]:
+    ) -> list[ProviderCandidate]:
         """
         构建候选列表
 
@@ -1013,18 +1011,18 @@ class CacheAwareScheduler:
         """
         from src.core.api_format.conversion.compatibility import is_format_compatible
 
-        candidates: List[ProviderCandidate] = []
+        candidates: list[ProviderCandidate] = []
         client_format_str = client_format.value
 
         for provider in providers:
             # 按端点格式分别判断兼容性与模型/Key 可用性：
             # - 同格式端点优先（needs_conversion=False）
             # - 跨格式端点次之（needs_conversion=True）
-            model_support_cache: Dict[
-                str, Tuple[bool, Optional[str], Optional[List[str]], Optional[Set[str]]]
+            model_support_cache: dict[
+                str, tuple[bool, str | None, list[str] | None, set[str] | None]
             ] = {}
-            exact_candidates: List[ProviderCandidate] = []
-            convertible_candidates: List[ProviderCandidate] = []
+            exact_candidates: list[ProviderCandidate] = []
+            convertible_candidates: list[ProviderCandidate] = []
 
             for endpoint in provider.endpoints:
                 if not endpoint.is_active:
@@ -1130,11 +1128,11 @@ class CacheAwareScheduler:
 
     async def _apply_cache_affinity(
         self,
-        candidates: List[ProviderCandidate],
+        candidates: list[ProviderCandidate],
         affinity_key: str,
         api_format: APIFormat,
         global_model_id: str,
-    ) -> List[ProviderCandidate]:
+    ) -> list[ProviderCandidate]:
         """
         应用缓存亲和性排序
 
@@ -1177,7 +1175,7 @@ class CacheAwareScheduler:
                 return True  # 需要降级
 
             # 按是否匹配缓存亲和性分类候选，同时记录是否降级
-            matched_candidate: Optional[ProviderCandidate] = None
+            matched_candidate: ProviderCandidate | None = None
             matched = False
 
             for candidate in candidates:
@@ -1231,8 +1229,8 @@ class CacheAwareScheduler:
             matched_should_demote = should_demote(matched_candidate)
 
             # 分组：非降级类 和 降级类
-            keep_priority_candidates: List[ProviderCandidate] = []
-            demote_candidates: List[ProviderCandidate] = []
+            keep_priority_candidates: list[ProviderCandidate] = []
+            demote_candidates: list[ProviderCandidate] = []
 
             for c in candidates:
                 if c is matched_candidate:
@@ -1258,7 +1256,7 @@ class CacheAwareScheduler:
             logger.warning(f"检查缓存亲和性失败: {e}，继续使用默认排序")
             return candidates
 
-    def _normalize_priority_mode(self, mode: Optional[str]) -> str:
+    def _normalize_priority_mode(self, mode: str | None) -> str:
         normalized = (mode or "").strip().lower()
         if normalized not in self.ALLOWED_PRIORITY_MODES:
             if normalized:
@@ -1266,7 +1264,7 @@ class CacheAwareScheduler:
             return self.PRIORITY_MODE_PROVIDER
         return normalized
 
-    def set_priority_mode(self, mode: Optional[str]) -> None:
+    def set_priority_mode(self, mode: str | None) -> None:
         """运行时更新候选排序策略"""
         normalized = self._normalize_priority_mode(mode)
         if normalized == self.priority_mode:
@@ -1274,7 +1272,7 @@ class CacheAwareScheduler:
         self.priority_mode = normalized
         logger.debug(f"[CacheAwareScheduler] 切换优先级模式为: {self.priority_mode}")
 
-    def _normalize_scheduling_mode(self, mode: Optional[str]) -> str:
+    def _normalize_scheduling_mode(self, mode: str | None) -> str:
         normalized = (mode or "").strip().lower()
         if normalized not in self.ALLOWED_SCHEDULING_MODES:
             if normalized:
@@ -1284,7 +1282,7 @@ class CacheAwareScheduler:
             return self.SCHEDULING_MODE_CACHE_AFFINITY
         return normalized
 
-    def set_scheduling_mode(self, mode: Optional[str]) -> None:
+    def set_scheduling_mode(self, mode: str | None) -> None:
         """运行时更新调度模式"""
         normalized = self._normalize_scheduling_mode(mode)
         if normalized == self.scheduling_mode:
@@ -1294,10 +1292,10 @@ class CacheAwareScheduler:
 
     def _apply_priority_mode_sort(
         self,
-        candidates: List[ProviderCandidate],
-        affinity_key: Optional[str] = None,
-        api_format: Optional[str] = None,
-    ) -> List[ProviderCandidate]:
+        candidates: list[ProviderCandidate],
+        affinity_key: str | None = None,
+        api_format: str | None = None,
+    ) -> list[ProviderCandidate]:
         """
         根据优先级模式对候选列表排序（数字越小越优先）
 
@@ -1328,8 +1326,8 @@ class CacheAwareScheduler:
         # 全局未开启：按是否需要降级分组
         # - 不需要降级：exact 候选 或 provider.keep_priority_on_conversion=True 的 convertible 候选
         # - 需要降级：convertible 且 provider.keep_priority_on_conversion=False
-        keep_priority_candidates: List[ProviderCandidate] = []
-        demote_candidates: List[ProviderCandidate] = []
+        keep_priority_candidates: list[ProviderCandidate] = []
+        demote_candidates: list[ProviderCandidate] = []
 
         for c in candidates:
             if not c.needs_conversion:
@@ -1357,10 +1355,10 @@ class CacheAwareScheduler:
 
     def _sort_by_global_priority_with_hash(
         self,
-        candidates: List[ProviderCandidate],
-        affinity_key: Optional[str] = None,
-        api_format: Optional[str] = None,
-    ) -> List[ProviderCandidate]:
+        candidates: list[ProviderCandidate],
+        affinity_key: str | None = None,
+        api_format: str | None = None,
+    ) -> list[ProviderCandidate]:
         """
         按 global_priority_by_format 分组排序，同优先级内通过哈希分散实现负载均衡
 
@@ -1382,7 +1380,7 @@ class CacheAwareScheduler:
             return 999999  # NULL 排在后面
 
         # 按优先级分组
-        priority_groups: Dict[int, List[ProviderCandidate]] = defaultdict(list)
+        priority_groups: dict[int, list[ProviderCandidate]] = defaultdict(list)
         for candidate in candidates:
             priority = get_priority(candidate)
             priority_groups[priority].append(candidate)
@@ -1417,8 +1415,8 @@ class CacheAwareScheduler:
         return result
 
     def _apply_load_balance(
-        self, candidates: List[ProviderCandidate], api_format: Optional[str] = None
-    ) -> List[ProviderCandidate]:
+        self, candidates: list[ProviderCandidate], api_format: str | None = None
+    ) -> list[ProviderCandidate]:
         """
         负载均衡模式：同优先级内随机轮换
 
@@ -1432,7 +1430,7 @@ class CacheAwareScheduler:
 
         from collections import defaultdict
 
-        priority_groups: Dict[tuple, List[ProviderCandidate]] = defaultdict(list)
+        priority_groups: dict[tuple, list[ProviderCandidate]] = defaultdict(list)
 
         # 根据优先级模式选择分组方式
         if self.priority_mode == self.PRIORITY_MODE_GLOBAL_KEY:
@@ -1453,7 +1451,7 @@ class CacheAwareScheduler:
                 )
                 priority_groups[key].append(candidate)
 
-        result: List[ProviderCandidate] = []
+        result: list[ProviderCandidate] = []
         for priority in sorted(priority_groups.keys()):
             group = priority_groups[priority]
             if len(group) > 1:
@@ -1468,10 +1466,10 @@ class CacheAwareScheduler:
 
     def _shuffle_keys_by_internal_priority(
         self,
-        keys: List[ProviderAPIKey],
-        affinity_key: Optional[str] = None,
+        keys: list[ProviderAPIKey],
+        affinity_key: str | None = None,
         use_random: bool = False,
-    ) -> List[ProviderAPIKey]:
+    ) -> list[ProviderAPIKey]:
         """
         对 API Key 按 internal_priority 分组，同优先级内部基于 affinity_key 进行确定性打乱
 
@@ -1495,7 +1493,7 @@ class CacheAwareScheduler:
         # 按 internal_priority 分组
         from collections import defaultdict
 
-        priority_groups: Dict[int, List[ProviderAPIKey]] = defaultdict(list)
+        priority_groups: dict[int, list[ProviderAPIKey]] = defaultdict(list)
 
         for key in keys:
             priority = key.internal_priority if key.internal_priority is not None else 999999
@@ -1538,9 +1536,9 @@ class CacheAwareScheduler:
         affinity_key: str,
         api_format: str,
         global_model_id: str,
-        endpoint_id: Optional[str] = None,
-        key_id: Optional[str] = None,
-        provider_id: Optional[str] = None,
+        endpoint_id: str | None = None,
+        key_id: str | None = None,
+        provider_id: str | None = None,
     ):
         """
         失效指定亲和性标识符对特定API格式和模型的缓存亲和性
@@ -1571,7 +1569,7 @@ class CacheAwareScheduler:
         key_id: str,
         api_format: str,
         global_model_id: str,
-        ttl: Optional[int] = None,
+        ttl: int | None = None,
     ):
         """
         记录缓存亲和性（供编排器调用）
@@ -1641,13 +1639,13 @@ class CacheAwareScheduler:
 
 
 # 全局单例
-_scheduler: Optional[CacheAwareScheduler] = None
+_scheduler: CacheAwareScheduler | None = None
 
 
 async def get_cache_aware_scheduler(
     redis_client=None,
-    priority_mode: Optional[str] = None,
-    scheduling_mode: Optional[str] = None,
+    priority_mode: str | None = None,
+    scheduling_mode: str | None = None,
 ) -> CacheAwareScheduler:
     """
     获取全局CacheAwareScheduler实例

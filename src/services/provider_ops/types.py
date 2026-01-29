@@ -2,10 +2,12 @@
 Provider 操作模块类型定义
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ConnectorAuthType(str, Enum):
@@ -60,23 +62,23 @@ class ConnectorStatus(str, Enum):
 class BalanceInfo:
     """余额信息"""
 
-    total_granted: Optional[float] = None  # 总授予额度
-    total_used: Optional[float] = None  # 已使用额度
-    total_available: Optional[float] = None  # 可用余额
-    expires_at: Optional[datetime] = None  # 过期时间
+    total_granted: float | None = None  # 总授予额度
+    total_used: float | None = None  # 已使用额度
+    total_available: float | None = None  # 可用余额
+    expires_at: datetime | None = None  # 过期时间
     currency: str = "USD"  # 货币单位
-    extra: Dict[str, Any] = field(default_factory=dict)  # 额外信息
+    extra: dict[str, Any] = field(default_factory=dict)  # 额外信息
 
 
 @dataclass
 class CheckinInfo:
     """签到信息"""
 
-    reward: Optional[float] = None  # 奖励额度
-    streak_days: Optional[int] = None  # 连续签到天数
-    next_reward: Optional[float] = None  # 下次奖励
-    message: Optional[str] = None  # 签到消息
-    extra: Dict[str, Any] = field(default_factory=dict)
+    reward: float | None = None  # 奖励额度
+    streak_days: int | None = None  # 连续签到天数
+    next_reward: float | None = None  # 下次奖励
+    message: str | None = None  # 签到消息
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,13 +87,13 @@ class ActionResult:
 
     status: ActionStatus
     action_type: ProviderActionType
-    data: Optional[Any] = None  # 操作返回的数据（如 BalanceInfo, CheckinInfo）
-    message: Optional[str] = None  # 消息
+    data: Any | None = None  # 操作返回的数据（如 BalanceInfo, CheckinInfo）
+    message: str | None = None  # 消息
     executed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    response_time_ms: Optional[int] = None  # 响应时间（毫秒）
-    raw_response: Optional[Dict[str, Any]] = None  # 原始响应（调试用）
+    response_time_ms: int | None = None  # 响应时间（毫秒）
+    raw_response: dict[str, Any] | None = None  # 原始响应（调试用）
     cache_ttl_seconds: int = 300  # 建议缓存时间
-    retry_after_seconds: Optional[int] = None  # 失败后重试间隔
+    retry_after_seconds: int | None = None  # 失败后重试间隔
 
     @property
     def is_success(self) -> bool:
@@ -104,10 +106,10 @@ class ConnectorState:
 
     status: ConnectorStatus
     auth_type: ConnectorAuthType
-    connected_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
-    last_error: Optional[str] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    connected_at: datetime | None = None
+    expires_at: datetime | None = None
+    last_error: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,21 +117,21 @@ class ProviderOpsConfig:
     """Provider 操作配置（存储在 Provider.config['provider_ops'] 中）"""
 
     architecture_id: str = "generic_api"
-    base_url: Optional[str] = None  # API 基础地址
+    base_url: str | None = None  # API 基础地址
 
     # 连接器配置
     connector_auth_type: ConnectorAuthType = ConnectorAuthType.API_KEY
-    connector_config: Dict[str, Any] = field(default_factory=dict)
-    connector_credentials: Dict[str, Any] = field(default_factory=dict)  # 加密存储
+    connector_config: dict[str, Any] = field(default_factory=dict)
+    connector_credentials: dict[str, Any] = field(default_factory=dict)  # 加密存储
 
     # 操作配置
-    actions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    actions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # 定时任务配置
-    schedule: Dict[str, str] = field(default_factory=dict)  # {action_type: cron_expression}
+    schedule: dict[str, str] = field(default_factory=dict)  # {action_type: cron_expression}
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ProviderOpsConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> ProviderOpsConfig:
         """从字典创建配置"""
         if not data:
             return cls()
@@ -146,7 +148,7 @@ class ProviderOpsConfig:
             schedule=data.get("schedule", {}),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典（用于存储）"""
         return {
             "architecture_id": self.architecture_id,

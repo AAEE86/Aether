@@ -8,7 +8,6 @@
 """
 
 import asyncio
-from typing import Set
 
 from src.core.logger import logger
 from sqlalchemy.orm import Session
@@ -23,7 +22,7 @@ class BatchCommitter:
             interval_seconds: 批量提交间隔（秒）
         """
         self.interval_seconds = interval_seconds
-        self._pending_sessions: Set[Session] = set()
+        self._pending_sessions: set[Session] = set()
         self._lock = asyncio.Lock()
         self._task = None
 

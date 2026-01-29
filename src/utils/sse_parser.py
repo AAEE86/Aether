@@ -1,6 +1,3 @@
-from typing import Dict, List, Optional, Union
-
-
 class SSEEventParser:
     """轻量SSE解析器，按行接收输入并输出完整事件。"""
 
@@ -8,14 +5,14 @@ class SSEEventParser:
         self._reset_buffer()
 
     def _reset_buffer(self) -> None:
-        self._buffer: Dict[str, Union[Optional[str], List[str]]] = {
+        self._buffer: dict[str, str | None | list[str]] = {
             "event": None,
             "data": [],
             "id": None,
             "retry": None,
         }
 
-    def _finalize_event(self) -> Optional[Dict[str, Optional[str]]]:
+    def _finalize_event(self) -> dict[str, str | None] | None:
         data_lines = self._buffer.get("data", [])
         if not isinstance(data_lines, list) or not data_lines:
             self._reset_buffer()
@@ -25,7 +22,7 @@ class SSEEventParser:
         event_val = self._buffer.get("event")
         id_val = self._buffer.get("id")
         retry_val = self._buffer.get("retry")
-        event: Dict[str, Optional[str]] = {
+        event: dict[str, str | None] = {
             "event": event_val if isinstance(event_val, str) else None,
             "data": data_str,
             "id": id_val if isinstance(id_val, str) else None,
@@ -35,11 +32,11 @@ class SSEEventParser:
         self._reset_buffer()
         return event
 
-    def feed_line(self, line: Optional[str]) -> List[Dict[str, Optional[str]]]:
+    def feed_line(self, line: str | None) -> list[dict[str, str | None]]:
         """处理单行SSE文本，返回所有完成的事件。"""
 
         normalized_line = (line or "").rstrip("\r")
-        events: List[Dict[str, Optional[str]]] = []
+        events: list[dict[str, str | None]] = []
 
         # 空行表示事件结束
         if normalized_line == "":
@@ -98,7 +95,7 @@ class SSEEventParser:
         self._append_data_line(normalized_line)
         return events
 
-    def flush(self) -> List[Dict[str, Optional[str]]]:
+    def flush(self) -> list[dict[str, str | None]]:
         """在流结束时调用，输出尚未完成的事件。"""
 
         event = self._finalize_event()

@@ -7,7 +7,6 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
-from typing import Optional
 
 import bcrypt
 from sqlalchemy import (
@@ -1008,7 +1007,7 @@ class Model(Base):
         return self._get_effective_capability("supports_image_generation", False)
 
     def select_provider_model_name(
-        self, affinity_key: Optional[str] = None, api_format: Optional[str] = None
+        self, affinity_key: str | None = None, api_format: str | None = None
     ) -> str:
         """按优先级选择要使用的 Provider 模型名称
 
@@ -1868,4 +1867,3 @@ class StatsUserDaily(Base):
 
 
 # 导入扩展的数据库模型
-from .database_extensions import ApiKeyProviderMapping, ProviderUsageTracking

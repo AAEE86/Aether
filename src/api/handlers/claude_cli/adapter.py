@@ -4,7 +4,7 @@ Claude CLI Adapter - 基于通用 CLI Adapter 基类的简化实现
 继承 CliAdapterBase，只需配置 FORMAT_ID 和 HANDLER_CLASS。
 """
 
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 
@@ -27,20 +27,20 @@ class ClaudeCliAdapter(CliAdapterBase):
     name = "claude.cli"
 
     @property
-    def HANDLER_CLASS(self) -> Type[CliMessageHandlerBase]:
+    def HANDLER_CLASS(self) -> type[CliMessageHandlerBase]:
         """延迟导入 Handler 类避免循环依赖"""
         from src.api.handlers.claude_cli.handler import ClaudeCliMessageHandler
 
         return ClaudeCliMessageHandler
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         super().__init__(allowed_api_formats or ["CLAUDE_CLI"])
 
     def detect_capability_requirements(
         self,
-        headers: Dict[str, str],
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, bool]:
+        headers: dict[str, str],
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
         """检测 Claude CLI 请求中隐含的能力需求"""
         return ClaudeCapabilityDetector.detect_from_headers(headers)
 
@@ -61,16 +61,16 @@ class ClaudeCliAdapter(CliAdapterBase):
         """
         return input_tokens + cache_creation_input_tokens + cache_read_input_tokens
 
-    def _extract_message_count(self, payload: Dict[str, Any]) -> int:
+    def _extract_message_count(self, payload: dict[str, Any]) -> int:
         """Claude CLI 使用 messages 字段"""
         messages = payload.get("messages", [])
         return len(messages) if isinstance(messages, list) else 0
 
     def _build_audit_metadata(
         self,
-        payload: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,  # noqa: ARG002
-    ) -> Dict[str, Any]:
+        payload: dict[str, Any],
+        path_params: dict[str, Any] | None = None,  # noqa: ARG002
+    ) -> dict[str, Any]:
         """Claude CLI 特定的审计元数据"""
         model = payload.get("model", "unknown")
         stream = payload.get("stream", False)
@@ -104,8 +104,8 @@ class ClaudeCliAdapter(CliAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """查询 Claude API 支持的模型列表（带 CLI User-Agent）"""
         # 复用 ClaudeChatAdapter 的实现，添加 CLI User-Agent
         cli_headers = {"User-Agent": config.internal_user_agent_claude_cli}
@@ -120,7 +120,7 @@ class ClaudeCliAdapter(CliAdapterBase):
         return models, error
 
     @classmethod
-    def build_endpoint_url(cls, base_url: str, request_data: Dict[str, Any], model_name: Optional[str] = None) -> str:
+    def build_endpoint_url(cls, base_url: str, request_data: dict[str, Any], model_name: str | None = None) -> str:
         """构建Claude CLI API端点URL"""
         base_url = base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -131,12 +131,12 @@ class ClaudeCliAdapter(CliAdapterBase):
     # build_request_body 使用基类实现，通过 format_conversion_registry 自动转换 OPENAI -> CLAUDE_CLI
 
     @classmethod
-    def get_cli_user_agent(cls) -> Optional[str]:
+    def get_cli_user_agent(cls) -> str | None:
         """获取Claude CLI User-Agent"""
         return config.internal_user_agent_claude_cli
 
     @classmethod
-    def get_cli_extra_headers(cls) -> Dict[str, str]:
+    def get_cli_extra_headers(cls) -> dict[str, str]:
         """获取Claude CLI额外请求头，包含 x-app: cli 标识"""
         headers = super().get_cli_extra_headers()
         headers["x-app"] = "cli"  # 标识 CLI 模式，让上游使用正确的认证方式

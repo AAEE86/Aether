@@ -4,7 +4,7 @@ YesCode 架构
 针对 YesCode 中转站的预设配置。
 """
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 import httpx
 
@@ -23,7 +23,7 @@ from src.services.provider_ops.types import ConnectorAuthType, ProviderActionTyp
 from src.utils.ssl_utils import get_ssl_context
 
 
-def _extract_cookies(cookie_string: str) -> Dict[str, str]:
+def _extract_cookies(cookie_string: str) -> dict[str, str]:
     """
     从完整的 Cookie 字符串中提取 yescode_auth 和 yescode_csrf
 
@@ -33,7 +33,7 @@ def _extract_cookies(cookie_string: str) -> Dict[str, str]:
     Returns:
         包含 yescode_auth 和 yescode_csrf 的字典
     """
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for part in cookie_string.split(";"):
         part = part.strip()
         if "=" in part:
@@ -82,11 +82,11 @@ class YesCodeConnector(ProviderConnector):
     auth_type = ConnectorAuthType.COOKIE
     display_name = "YesCode Cookie"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         super().__init__(base_url, config)
-        self._auth_cookie: Optional[str] = None
+        self._auth_cookie: str | None = None
 
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """建立连接"""
         auth_cookie = credentials.get("auth_cookie")
         if not auth_cookie:
@@ -116,7 +116,7 @@ class YesCodeConnector(ProviderConnector):
         return request
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """获取凭据配置 schema"""
         return {
             "type": "object",
@@ -148,15 +148,15 @@ class YesCodeArchitecture(ProviderArchitecture):
     display_name = "YesCode"
     description = "YesCode 中转站预设配置，使用 Cookie 认证"
 
-    supported_connectors: List[Type[ProviderConnector]] = [
+    supported_connectors: list[type[ProviderConnector]] = [
         YesCodeConnector,
     ]
 
-    supported_actions: List[Type[ProviderAction]] = [
+    supported_actions: list[type[ProviderAction]] = [
         YesCodeBalanceAction,
     ]
 
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {
         ProviderActionType.QUERY_BALANCE: {
             "endpoint": "/api/v1/user/balance",
             "method": "GET",
@@ -166,7 +166,7 @@ class YesCodeArchitecture(ProviderArchitecture):
         },
     }
 
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """YesCode 使用 auth_cookie 认证"""
         return YesCodeConnector.get_credentials_schema()
 
@@ -177,15 +177,15 @@ class YesCodeArchitecture(ProviderArchitecture):
     async def prepare_verify_config(
         self,
         base_url: str,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         预获取合并数据（balance + profile）
 
         验证时并发调用两个接口获取完整数据。
         """
-        extra_config: Dict[str, Any] = {}
+        extra_config: dict[str, Any] = {}
 
         cookie_input = credentials.get("auth_cookie")
         if not cookie_input:
@@ -198,7 +198,7 @@ class YesCodeArchitecture(ProviderArchitecture):
 
         try:
             # 构建 client 参数
-            client_kwargs: Dict[str, Any] = {
+            client_kwargs: dict[str, Any] = {
                 "headers": {"Cookie": cookie_header},
                 "timeout": 10.0,
                 "verify": get_ssl_context(),
@@ -218,15 +218,15 @@ class YesCodeArchitecture(ProviderArchitecture):
 
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """
         构建 YesCode 的验证请求 Headers
 
         使用 Cookie 认证，不使用 Authorization。
         """
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
 
         # 添加 Cookie
         cookie_input = credentials.get("auth_cookie")
@@ -238,7 +238,7 @@ class YesCodeArchitecture(ProviderArchitecture):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """解析 YesCode 验证响应（使用预获取的合并数据）"""
         if status_code == 401:

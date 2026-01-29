@@ -3,7 +3,6 @@
 提供统一的HTTP请求信息提取功能
 """
 
-from typing import Optional
 
 from fastapi import Request
 
@@ -61,7 +60,7 @@ def get_user_agent(request: Request) -> str:
     return request.headers.get("User-Agent", "unknown")
 
 
-def get_request_id(request: Request) -> Optional[str]:
+def get_request_id(request: Request) -> str | None:
     """
     获取请求ID（如果存在）
 

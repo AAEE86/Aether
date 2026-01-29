@@ -4,7 +4,8 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Optional, cast
+from typing import Any, cast
+from collections.abc import Awaitable
 
 from redis.asyncio import Redis
 
@@ -31,11 +32,11 @@ class OAuthStateData:
     nonce: str
     provider_type: str
     action: str  # "login" | "bind"
-    user_id: Optional[str]
+    user_id: str | None
     created_at: int
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "OAuthStateData":
+    def from_dict(cls, data: dict[str, Any]) -> OAuthStateData:
         return cls(
             nonce=str(data.get("nonce") or ""),
             provider_type=str(data.get("provider_type") or ""),
@@ -50,7 +51,7 @@ def _state_key(nonce: str) -> str:
 
 
 async def create_oauth_state(
-    redis: Redis, *, provider_type: str, action: str, user_id: Optional[str] = None
+    redis: Redis, *, provider_type: str, action: str, user_id: str | None = None
 ) -> str:
     nonce = secrets.token_urlsafe(24)
     data = {
@@ -64,13 +65,13 @@ async def create_oauth_state(
     return nonce
 
 
-async def consume_oauth_state(redis: Redis, nonce: str) -> Optional[OAuthStateData]:
+async def consume_oauth_state(redis: Redis, nonce: str) -> OAuthStateData | None:
     if not nonce:
         return None
 
     key = _state_key(nonce)
     # redis-py 的类型标注在 sync/async 之间会出现 Union；这里明确按 async 处理。
-    raw = await cast(Awaitable[Optional[str]], redis.eval(CONSUME_STATE_SCRIPT, 1, key))
+    raw = await cast(Awaitable[str | None], redis.eval(CONSUME_STATE_SCRIPT, 1, key))
     if not raw:
         return None
 
@@ -92,7 +93,7 @@ class OAuthBindTokenData:
     created_at: int
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "OAuthBindTokenData":
+    def from_dict(cls, data: dict[str, Any]) -> OAuthBindTokenData:
         return cls(
             token=str(data.get("token") or ""),
             user_id=str(data.get("user_id") or ""),
@@ -118,13 +119,13 @@ async def create_oauth_bind_token(redis: Redis, *, user_id: str, provider_type: 
     return token
 
 
-async def consume_oauth_bind_token(redis: Redis, token: str) -> Optional[OAuthBindTokenData]:
+async def consume_oauth_bind_token(redis: Redis, token: str) -> OAuthBindTokenData | None:
     """消费（验证并删除）OAuth 绑定令牌，返回令牌数据或 None"""
     if not token:
         return None
 
     key = _bind_token_key(token)
-    raw = await cast(Awaitable[Optional[str]], redis.eval(CONSUME_STATE_SCRIPT, 1, key))
+    raw = await cast(Awaitable[str | None], redis.eval(CONSUME_STATE_SCRIPT, 1, key))
     if not raw:
         return None
 

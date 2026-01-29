@@ -19,7 +19,6 @@ Model 映射缓存服务 - 减少模型查询
 """
 
 import time
-from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -45,7 +44,7 @@ class ModelCacheService:
     CACHE_TTL = CacheTTL.MODEL
 
     @staticmethod
-    async def get_model_by_id(db: Session, model_id: str) -> Optional[Model]:
+    async def get_model_by_id(db: Session, model_id: str) -> Model | None:
         """
         获取 Model（带缓存）
 
@@ -76,7 +75,7 @@ class ModelCacheService:
         return model
 
     @staticmethod
-    async def get_global_model_by_id(db: Session, global_model_id: str) -> Optional[GlobalModel]:
+    async def get_global_model_by_id(db: Session, global_model_id: str) -> GlobalModel | None:
         """
         获取 GlobalModel（带缓存）
 
@@ -111,7 +110,7 @@ class ModelCacheService:
     @staticmethod
     async def get_model_by_provider_and_global_model(
         db: Session, provider_id: str, global_model_id: str
-    ) -> Optional[Model]:
+    ) -> Model | None:
         """
         通过 Provider ID 和 GlobalModel ID 获取 Model（带缓存）
 
@@ -160,7 +159,7 @@ class ModelCacheService:
         return model
 
     @staticmethod
-    async def get_global_model_by_name(db: Session, name: str) -> Optional[GlobalModel]:
+    async def get_global_model_by_name(db: Session, name: str) -> GlobalModel | None:
         """
         通过名称获取 GlobalModel（带缓存）
 
@@ -195,10 +194,10 @@ class ModelCacheService:
     @staticmethod
     async def invalidate_model_cache(
         model_id: str,
-        provider_id: Optional[str] = None,
-        global_model_id: Optional[str] = None,
-        provider_model_name: Optional[str] = None,
-        provider_model_mappings: Optional[list] = None,
+        provider_id: str | None = None,
+        global_model_id: str | None = None,
+        provider_model_name: str | None = None,
+        provider_model_mappings: list | None = None,
     ) -> None:
         """清除 Model 缓存
 
@@ -240,7 +239,7 @@ class ModelCacheService:
             logger.debug(f"Model resolve 缓存已清除: {resolve_keys_to_clear}")
 
     @staticmethod
-    async def invalidate_global_model_cache(global_model_id: str, name: Optional[str] = None) -> None:
+    async def invalidate_global_model_cache(global_model_id: str, name: str | None = None) -> None:
         """清除 GlobalModel 缓存"""
         await CacheService.delete(f"global_model:id:{global_model_id}")
         if name:
@@ -270,7 +269,7 @@ class ModelCacheService:
     @staticmethod
     async def resolve_global_model_by_name_or_mapping(
         db: Session, model_name: str
-    ) -> Optional[GlobalModel]:
+    ) -> GlobalModel | None:
         """
         通过名称解析 GlobalModel（带缓存）
 
@@ -355,7 +354,7 @@ class ModelCacheService:
             )
 
             # 收集匹配的 GlobalModel（只通过 provider_model_name 匹配）
-            matched_global_models: List[GlobalModel] = []
+            matched_global_models: list[GlobalModel] = []
             seen_global_model_ids: set[str] = set()
             for model, gm in models_with_global:
                 if gm.id not in seen_global_model_ids:
@@ -405,7 +404,7 @@ class ModelCacheService:
                 .all()
             )
 
-            mapping_matched_global_models: List[GlobalModel] = []
+            mapping_matched_global_models: list[GlobalModel] = []
             mapping_seen_ids: set[str] = set()
             for model, gm in models_with_mappings:
                 raw_mappings = model.provider_model_mappings
@@ -469,7 +468,7 @@ class ModelCacheService:
                 .all()
             )
 
-            mapping_matches: List[GlobalModel] = []
+            mapping_matches: list[GlobalModel] = []
             for gm in mapping_rows:
                 config = gm.config or {}
                 mappings = config.get("model_mappings")

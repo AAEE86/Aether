@@ -1,8 +1,7 @@
 """OAuth 管理端点（管理员）。"""
 
-from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, ValidationError
@@ -27,24 +26,24 @@ class SupportedOAuthType(BaseModel):
     default_authorization_url: str
     default_token_url: str
     default_userinfo_url: str
-    default_scopes: List[str]
+    default_scopes: list[str]
 
 
 class OAuthProviderUpsertRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=100)
     client_id: str = Field(..., min_length=1, max_length=255)
-    client_secret: Optional[str] = Field(None, max_length=2048)
+    client_secret: str | None = Field(None, max_length=2048)
 
-    authorization_url_override: Optional[str] = Field(None, max_length=500)
-    token_url_override: Optional[str] = Field(None, max_length=500)
-    userinfo_url_override: Optional[str] = Field(None, max_length=500)
-    scopes: Optional[List[str]] = None
+    authorization_url_override: str | None = Field(None, max_length=500)
+    token_url_override: str | None = Field(None, max_length=500)
+    userinfo_url_override: str | None = Field(None, max_length=500)
+    scopes: list[str] | None = None
 
     redirect_uri: str = Field(..., min_length=1, max_length=500)
     frontend_callback_url: str = Field(..., min_length=1, max_length=500)
 
-    attribute_mapping: Optional[Dict[str, Any]] = None
-    extra_config: Optional[Dict[str, Any]] = None
+    attribute_mapping: dict[str, Any] | None = None
+    extra_config: dict[str, Any] | None = None
 
     is_enabled: bool = False
     force: bool = False
@@ -55,14 +54,14 @@ class OAuthProviderAdminResponse(BaseModel):
     display_name: str
     client_id: str
     has_secret: bool
-    authorization_url_override: Optional[str] = None
-    token_url_override: Optional[str] = None
-    userinfo_url_override: Optional[str] = None
-    scopes: Optional[List[str]] = None
+    authorization_url_override: str | None = None
+    token_url_override: str | None = None
+    userinfo_url_override: str | None = None
+    scopes: list[str] | None = None
     redirect_uri: str
     frontend_callback_url: str
-    attribute_mapping: Optional[Dict[str, Any]] = None
-    extra_config: Optional[Dict[str, Any]] = None
+    attribute_mapping: dict[str, Any] | None = None
+    extra_config: dict[str, Any] | None = None
     is_enabled: bool
 
 
@@ -77,19 +76,19 @@ class OAuthProviderTestRequest(BaseModel):
     """测试请求，使用表单数据而非数据库配置"""
 
     client_id: str = Field(..., min_length=1)
-    client_secret: Optional[str] = None
-    authorization_url_override: Optional[str] = None
-    token_url_override: Optional[str] = None
+    client_secret: str | None = None
+    authorization_url_override: str | None = None
+    token_url_override: str | None = None
     redirect_uri: str = Field(..., min_length=1)
 
 
-@router.get("/supported-types", response_model=List[SupportedOAuthType])
+@router.get("/supported-types", response_model=list[SupportedOAuthType])
 async def get_supported_types(request: Request, db: Session = Depends(get_db)) -> Any:
     adapter = GetSupportedTypesAdapter()
     return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)
 
 
-@router.get("/providers", response_model=List[OAuthProviderAdminResponse])
+@router.get("/providers", response_model=list[OAuthProviderAdminResponse])
 async def list_provider_configs(request: Request, db: Session = Depends(get_db)) -> Any:
     adapter = ListOAuthProviderConfigsAdapter()
     return await pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode)

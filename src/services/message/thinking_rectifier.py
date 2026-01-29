@@ -13,7 +13,7 @@ Thinking 整流器（Rectifier）
 """
 
 import copy
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from src.core.logger import logger
 
@@ -27,7 +27,7 @@ class ThinkingRectifier:
     """
 
     @staticmethod
-    def rectify(request_body: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    def rectify(request_body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         """
         整流请求体
 
@@ -68,7 +68,7 @@ class ThinkingRectifier:
         return rectified_body, modified
 
     @staticmethod
-    def _rectify_messages(messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
+    def _rectify_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
         """
         整流消息列表
 
@@ -84,7 +84,7 @@ class ThinkingRectifier:
             return messages, False
 
         modified = False
-        result_messages: List[Dict[str, Any]] = []
+        result_messages: list[dict[str, Any]] = []
         thinking_removed = 0
         signature_removed = 0
 
@@ -151,7 +151,7 @@ class ThinkingRectifier:
         return result_messages, modified
 
     @staticmethod
-    def _should_remove_top_level_thinking(body: Dict[str, Any]) -> bool:
+    def _should_remove_top_level_thinking(body: dict[str, Any]) -> bool:
         """
         判断是否应该删除顶层 thinking 参数
 

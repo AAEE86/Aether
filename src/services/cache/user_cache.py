@@ -19,7 +19,6 @@
     await UserCacheService.invalidate_user_cache(user_id, email)
 """
 
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -40,7 +39,7 @@ class UserCacheService:
     CACHE_TTL = CacheTTL.USER
 
     @staticmethod
-    async def get_user_by_id(db: Session, user_id: str) -> Optional[User]:
+    async def get_user_by_id(db: Session, user_id: str) -> User | None:
         """
         获取用户（带缓存）
 
@@ -72,7 +71,7 @@ class UserCacheService:
         return user
 
     @staticmethod
-    async def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    async def get_user_by_email(db: Session, email: str) -> User | None:
         """
         通过邮箱获取用户（带缓存）
 
@@ -103,7 +102,7 @@ class UserCacheService:
         return user
 
     @staticmethod
-    async def invalidate_user_cache(user_id: str, email: Optional[str] = None):
+    async def invalidate_user_cache(user_id: str, email: str | None = None):
         """
         清除用户缓存
 

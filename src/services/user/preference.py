@@ -2,7 +2,6 @@
 用户偏好设置服务
 """
 
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -42,15 +41,15 @@ class PreferenceService:
     def update_preferences(
         db: Session,
         user_id: str,  # UUID
-        avatar_url: Optional[str] = None,
-        bio: Optional[str] = None,
-        default_provider_id: Optional[str] = None,  # UUID
-        theme: Optional[str] = None,
-        language: Optional[str] = None,
-        timezone: Optional[str] = None,
-        email_notifications: Optional[bool] = None,
-        usage_alerts: Optional[bool] = None,
-        announcement_notifications: Optional[bool] = None,
+        avatar_url: str | None = None,
+        bio: str | None = None,
+        default_provider_id: str | None = None,  # UUID
+        theme: str | None = None,
+        language: str | None = None,
+        timezone: str | None = None,
+        email_notifications: bool | None = None,
+        usage_alerts: bool | None = None,
+        announcement_notifications: bool | None = None,
     ) -> UserPreference:
         """更新用户偏好设置"""
         preferences = PreferenceService.get_or_create_preferences(db, user_id)

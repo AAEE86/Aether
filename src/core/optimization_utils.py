@@ -2,7 +2,7 @@
 优化工具类 - 包含Token计数和响应头管理
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 import tiktoken
 

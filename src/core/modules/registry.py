@@ -4,9 +4,11 @@
 负责模块的注册、状态管理和生命周期控制
 """
 
+from __future__ import annotations
+
 import importlib.util
 import os
-from typing import TYPE_CHECKING, Dict, List, Optional, Set
+from typing import TYPE_CHECKING
 
 from src.core.logger import logger
 from src.core.modules.base import (
@@ -31,14 +33,14 @@ class ModuleRegistry:
     - 提供模块状态查询
     """
 
-    _instance: Optional["ModuleRegistry"] = None
+    _instance: ModuleRegistry | None = None
 
     def __init__(self):
-        self._modules: Dict[str, ModuleDefinition] = {}
-        self._initialized: Set[str] = set()
+        self._modules: dict[str, ModuleDefinition] = {}
+        self._initialized: set[str] = set()
 
     @classmethod
-    def get_instance(cls) -> "ModuleRegistry":
+    def get_instance(cls) -> ModuleRegistry:
         """获取单例实例"""
         if cls._instance is None:
             cls._instance = cls()
@@ -63,11 +65,11 @@ class ModuleRegistry:
         self._modules[name] = module
         logger.debug(f"Module [{name}] registered")
 
-    def get_module(self, name: str) -> Optional[ModuleDefinition]:
+    def get_module(self, name: str) -> ModuleDefinition | None:
         """获取模块定义"""
         return self._modules.get(name)
 
-    def get_all_modules(self) -> List[ModuleDefinition]:
+    def get_all_modules(self) -> list[ModuleDefinition]:
         """获取所有已注册模块"""
         return list(self._modules.values())
 
@@ -115,13 +117,13 @@ class ModuleRegistry:
 
         return True
 
-    def get_available_modules(self) -> List[ModuleDefinition]:
+    def get_available_modules(self) -> list[ModuleDefinition]:
         """获取所有部署可用的模块"""
         return [m for m in self._modules.values() if self.is_available(m.metadata.name)]
 
     # ========== 启用状态检查（运行级）==========
 
-    def is_enabled(self, name: str, db: "Session") -> bool:
+    def is_enabled(self, name: str, db: Session) -> bool:
         """
         检查模块是否运行启用（数据库配置）
 
@@ -135,7 +137,7 @@ class ModuleRegistry:
         value = SystemConfigService.get_config(db, config_key, default=False)
         return bool(value)
 
-    def set_enabled(self, name: str, enabled: bool, db: "Session") -> None:
+    def set_enabled(self, name: str, enabled: bool, db: Session) -> None:
         """
         设置模块启用状态
 
@@ -156,7 +158,7 @@ class ModuleRegistry:
 
     # ========== 激活状态检查 ==========
 
-    def is_active(self, name: str, db: "Session") -> bool:
+    def is_active(self, name: str, db: Session) -> bool:
         """
         检查模块是否最终激活
 
@@ -177,7 +179,7 @@ class ModuleRegistry:
 
     # ========== 配置验证 ==========
 
-    def validate_config(self, name: str, db: "Session") -> tuple[bool, str]:
+    def validate_config(self, name: str, db: Session) -> tuple[bool, str]:
         """
         验证模块配置是否有效
 
@@ -206,8 +208,8 @@ class ModuleRegistry:
     # ========== 状态查询 ==========
 
     def get_module_status(
-        self, name: str, db: "Session", health: Optional[ModuleHealth] = None
-    ) -> Optional[ModuleStatus]:
+        self, name: str, db: Session, health: ModuleHealth | None = None
+    ) -> ModuleStatus | None:
         """
         获取单个模块状态
 
@@ -225,7 +227,7 @@ class ModuleRegistry:
 
         # 获取配置验证状态
         config_validated = False
-        config_error: Optional[str] = None
+        config_error: str | None = None
         if available:
             config_validated, config_error = self.validate_config(name, db)
             if config_validated:
@@ -279,8 +281,8 @@ class ModuleRegistry:
             return ModuleHealth.UNHEALTHY
 
     async def get_module_status_async(
-        self, name: str, db: "Session"
-    ) -> Optional[ModuleStatus]:
+        self, name: str, db: Session
+    ) -> ModuleStatus | None:
         """异步获取模块状态（包含健康检查）"""
         if name not in self._modules:
             return None
@@ -288,7 +290,7 @@ class ModuleRegistry:
         health = await self.check_health(name) if self.is_available(name) else ModuleHealth.UNKNOWN
         return self.get_module_status(name, db, health=health)
 
-    async def get_all_status_async(self, db: "Session") -> Dict[str, ModuleStatus]:
+    async def get_all_status_async(self, db: Session) -> dict[str, ModuleStatus]:
         """异步获取所有模块状态（包含健康检查）"""
         result = {}
         for name in self._modules:
@@ -297,7 +299,7 @@ class ModuleRegistry:
                 result[name] = status
         return result
 
-    def get_all_status(self, db: "Session") -> Dict[str, ModuleStatus]:
+    def get_all_status(self, db: Session) -> dict[str, ModuleStatus]:
         """获取所有模块状态（同步版本，不含健康检查）"""
         result = {}
         for name in self._modules:
@@ -306,7 +308,7 @@ class ModuleRegistry:
                 result[name] = status
         return result
 
-    def get_available_status(self, db: "Session") -> Dict[str, ModuleStatus]:
+    def get_available_status(self, db: Session) -> dict[str, ModuleStatus]:
         """获取所有可用模块的状态"""
         result = {}
         for name, module in self._modules.items():
@@ -316,7 +318,7 @@ class ModuleRegistry:
                     result[name] = status
         return result
 
-    def get_auth_modules_status(self, db: "Session") -> List[ModuleStatus]:
+    def get_auth_modules_status(self, db: Session) -> list[ModuleStatus]:
         """获取认证模块状态（供登录页使用）"""
         result = []
         for name, module in self._modules.items():

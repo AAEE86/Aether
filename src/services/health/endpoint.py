@@ -11,7 +11,7 @@
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -43,7 +43,7 @@ class EndpointHealthService:
         lookback_hours: int = 6,
         include_admin_fields: bool = False,
         use_cache: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         获取按 API 格式聚合的端点健康状态
 
@@ -71,7 +71,7 @@ class EndpointHealthService:
         )
 
         # 收集所有 provider_ids
-        all_provider_ids = list(set(ep.provider_id for ep in endpoints))
+        all_provider_ids = list({ep.provider_id for ep in endpoints})
 
         # 批量查询所有密钥（通过 provider_id 关联）
         all_keys = (
@@ -81,7 +81,7 @@ class EndpointHealthService:
         ) if all_provider_ids else []
 
         # 按 api_format 分组密钥（通过 api_formats 字段）
-        keys_by_format: Dict[str, List[ProviderAPIKey]] = defaultdict(list)
+        keys_by_format: dict[str, list[ProviderAPIKey]] = defaultdict(list)
         for key in all_keys:
             for fmt in (key.api_formats or []):
                 keys_by_format[fmt].append(key)
@@ -140,7 +140,7 @@ class EndpointHealthService:
 
         # 批量生成所有格式的时间线数据
         all_key_ids = []
-        format_key_mapping: Dict[str, List[str]] = {}
+        format_key_mapping: dict[str, list[str]] = {}
         for api_format, stats in format_stats.items():
             key_ids = stats["key_ids"]
             format_key_mapping[api_format] = key_ids
@@ -215,11 +215,11 @@ class EndpointHealthService:
     @staticmethod
     def _generate_timeline_batch(
         db: Session,
-        format_key_mapping: Dict[str, List[str]],
+        format_key_mapping: dict[str, list[str]],
         now: datetime,
         lookback_hours: int,
         segments: int = 100,
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> dict[str, dict[str, Any]]:
         """
         批量生成多个 API 格式的时间线数据（基于 RequestCandidate 表）
 
@@ -303,13 +303,13 @@ class EndpointHealthService:
         )
 
         # 构建 key_id -> api_format 的反向映射
-        key_to_format: Dict[str, str] = {}
+        key_to_format: dict[str, str] = {}
         for api_format, key_ids in format_key_mapping.items():
             for key_id in key_ids:
                 key_to_format[key_id] = api_format
 
         # 按 api_format 和 segment 聚合数据
-        format_segment_data: Dict[str, Dict[int, Dict]] = defaultdict(lambda: defaultdict(lambda: {
+        format_segment_data: dict[str, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {
             "total": 0,
             "success": 0,
             "failed": 0,
@@ -336,7 +336,7 @@ class EndpointHealthService:
                         seg_data["max_time"] = row.max_time
 
         # 生成各格式的时间线
-        result: Dict[str, Dict[str, Any]] = {}
+        result: dict[str, dict[str, Any]] = {}
 
         for api_format in format_key_mapping.keys():
             timeline = []
@@ -385,11 +385,11 @@ class EndpointHealthService:
     @staticmethod
     def _generate_timeline_from_usage(
         db: Session,
-        endpoint_ids: List[str],
+        endpoint_ids: list[str],
         now: datetime,
         lookback_hours: int,
         segments: int = 100,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         从真实使用记录生成时间线数据（使用批量查询优化）
 
@@ -472,7 +472,7 @@ class EndpointHealthService:
         return format_names.get(api_format, api_format)
 
     @staticmethod
-    def _get_from_cache(key: str) -> Optional[List[Dict[str, Any]]]:
+    def _get_from_cache(key: str) -> list[dict[str, Any]] | None:
         """从 Redis 缓存获取数据"""
         redis_client = _get_redis_client()
         if not redis_client:
@@ -487,7 +487,7 @@ class EndpointHealthService:
         return None
 
     @staticmethod
-    def _set_to_cache(key: str, data: List[Dict[str, Any]]) -> None:
+    def _set_to_cache(key: str, data: list[dict[str, Any]]) -> None:
         """写入 Redis 缓存"""
         redis_client = _get_redis_client()
         if not redis_client:

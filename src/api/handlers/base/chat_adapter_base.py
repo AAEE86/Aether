@@ -19,7 +19,7 @@ Chat Adapter 通用基类
 import time
 import traceback
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request
@@ -65,7 +65,7 @@ class ChatAdapterBase(ApiAdapter):
 
     # 子类必须覆盖
     FORMAT_ID: str = "UNKNOWN"
-    HANDLER_CLASS: Type[ChatHandlerBase]
+    HANDLER_CLASS: type[ChatHandlerBase]
 
     # 适配器配置
     name: str = "chat.base"
@@ -90,7 +90,7 @@ class ChatAdapterBase(ApiAdapter):
         return base_url
 
     @classmethod
-    def build_base_headers(cls, api_key: str) -> Dict[str, str]:
+    def build_base_headers(cls, api_key: str) -> dict[str, str]:
         """构建基础请求头，使用统一的 headers.py 实现"""
         return build_adapter_base_headers(cls._get_api_format(), api_key)
 
@@ -101,13 +101,13 @@ class ChatAdapterBase(ApiAdapter):
 
     @classmethod
     def build_headers_with_extra(
-        cls, api_key: str, extra_headers: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
+        cls, api_key: str, extra_headers: dict[str, str] | None = None
+    ) -> dict[str, str]:
         """构建完整请求头（包含 extra_headers），使用统一的 headers.py 实现"""
         return build_adapter_headers(cls._get_api_format(), api_key, extra_headers)
 
     @classmethod
-    def build_request_body(cls, request_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def build_request_body(cls, request_data: dict[str, Any] | None = None) -> dict[str, Any]:
         """构建测试请求体，使用转换器注册表自动处理格式转换
 
         Args:
@@ -120,11 +120,11 @@ class ChatAdapterBase(ApiAdapter):
 
         return build_test_request_body(cls.FORMAT_ID, request_data)
 
-    def extract_api_key(self, request: Request) -> Optional[str]:
+    def extract_api_key(self, request: Request) -> str | None:
         """从请求中提取 API 密钥，使用统一的 headers.py 实现"""
         return extract_client_api_key(dict(request.headers), self._get_api_format())
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         self.allowed_api_formats = allowed_api_formats or [self.FORMAT_ID]
 
     async def handle(self, context: ApiRequestContext):
@@ -282,8 +282,8 @@ class ChatAdapterBase(ApiAdapter):
         )
 
     def _merge_path_params(
-        self, original_request_body: Dict[str, Any], path_params: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, original_request_body: dict[str, Any], path_params: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         合并 URL 路径参数到请求体 - 子类可覆盖
 
@@ -316,7 +316,7 @@ class ChatAdapterBase(ApiAdapter):
         """
         pass
 
-    def _extract_message_count(self, payload: Dict[str, Any], request_obj) -> int:
+    def _extract_message_count(self, payload: dict[str, Any], request_obj) -> int:
         """
         提取消息数量 - 子类可覆盖
 
@@ -327,7 +327,7 @@ class ChatAdapterBase(ApiAdapter):
             messages = request_obj.messages
         return len(messages) if isinstance(messages, list) else 0
 
-    def _build_audit_metadata(self, payload: Dict[str, Any], request_obj) -> Dict[str, Any]:
+    def _build_audit_metadata(self, payload: dict[str, Any], request_obj) -> dict[str, Any]:
         """
         构建审计日志元数据 - 子类可覆盖
         """
@@ -355,8 +355,8 @@ class ChatAdapterBase(ApiAdapter):
         model: str,
         stream: bool,
         start_time: float,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
         client_ip: str,
         request_id: str,
     ) -> JSONResponse:
@@ -426,8 +426,8 @@ class ChatAdapterBase(ApiAdapter):
         model: str,
         stream: bool,
         start_time: float,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
         client_ip: str,
         request_id: str,
     ) -> JSONResponse:
@@ -527,12 +527,12 @@ class ChatAdapterBase(ApiAdapter):
         cache_read_input_tokens: int,
         input_price_per_1m: float,
         output_price_per_1m: float,
-        cache_creation_price_per_1m: Optional[float],
-        cache_read_price_per_1m: Optional[float],
-        price_per_request: Optional[float],
-        tiered_pricing: Optional[dict] = None,
-        cache_ttl_minutes: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        cache_creation_price_per_1m: float | None,
+        cache_read_price_per_1m: float | None,
+        price_per_request: float | None,
+        tiered_pricing: dict | None = None,
+        cache_ttl_minutes: int | None = None,
+    ) -> dict[str, Any]:
         """
         计算请求成本
 
@@ -597,8 +597,8 @@ class ChatAdapterBase(ApiAdapter):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """
         查询上游 API 支持的模型列表
 
@@ -626,16 +626,16 @@ class ChatAdapterBase(ApiAdapter):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        request_data: Dict[str, Any],
-        extra_headers: Optional[Dict[str, str]] = None,
+        request_data: dict[str, Any],
+        extra_headers: dict[str, str] | None = None,
         # 用量计算参数（现在强制记录）
-        db: Optional[Any] = None,
-        user: Optional[Any] = None,
-        provider_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-        model_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        db: Any | None = None,
+        user: Any | None = None,
+        provider_name: str | None = None,
+        provider_id: str | None = None,
+        api_key_id: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
         """
         测试模型连接性（非流式）
 
@@ -682,11 +682,11 @@ class ChatAdapterBase(ApiAdapter):
 # Adapter 注册表 - 用于根据 API format 获取 Adapter 实例
 # =========================================================================
 
-_ADAPTER_REGISTRY: Dict[str, Type["ChatAdapterBase"]] = {}
+_ADAPTER_REGISTRY: dict[str, type[ChatAdapterBase]] = {}
 _ADAPTERS_LOADED = False
 
 
-def register_adapter(adapter_class: Type["ChatAdapterBase"]) -> Type["ChatAdapterBase"]:
+def register_adapter(adapter_class: type[ChatAdapterBase]) -> type[ChatAdapterBase]:
     """
     注册 Adapter 类到注册表
 
@@ -731,7 +731,7 @@ def _ensure_adapters_loaded():
     _ADAPTERS_LOADED = True
 
 
-def get_adapter_class(api_format: str) -> Optional[Type["ChatAdapterBase"]]:
+def get_adapter_class(api_format: str) -> type[ChatAdapterBase] | None:
     """
     根据 API format 获取 Adapter 类
 
@@ -745,7 +745,7 @@ def get_adapter_class(api_format: str) -> Optional[Type["ChatAdapterBase"]]:
     return _ADAPTER_REGISTRY.get(api_format.upper()) if api_format else None
 
 
-def get_adapter_instance(api_format: str) -> Optional["ChatAdapterBase"]:
+def get_adapter_instance(api_format: str) -> ChatAdapterBase | None:
     """
     根据 API format 获取 Adapter 实例
 

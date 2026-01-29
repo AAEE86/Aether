@@ -3,7 +3,7 @@
 """
 
 from abc import abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -80,7 +80,7 @@ class BalanceAction(ProviderAction):
         """
         pass
 
-    async def _do_checkin(self, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
+    async def _do_checkin(self, client: httpx.AsyncClient) -> dict[str, Any] | None:
         """
         执行签到（子类可选实现）
 
@@ -97,11 +97,11 @@ class BalanceAction(ProviderAction):
 
     def _create_balance_info(
         self,
-        total_granted: Optional[float] = None,
-        total_used: Optional[float] = None,
-        total_available: Optional[float] = None,
+        total_granted: float | None = None,
+        total_used: float | None = None,
+        total_available: float | None = None,
         currency: str = "USD",
-        extra: Optional[Dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> BalanceInfo:
         """
         创建余额信息对象
@@ -135,7 +135,7 @@ class BalanceAction(ProviderAction):
             extra=extra if extra is not None else {},
         )
 
-    def _to_float(self, value: Any) -> Optional[float]:
+    def _to_float(self, value: Any) -> float | None:
         """转换为浮点数"""
         if value is None:
             return None
@@ -145,7 +145,7 @@ class BalanceAction(ProviderAction):
             return None
 
     @classmethod
-    def get_config_schema(cls) -> Dict[str, Any]:
+    def get_config_schema(cls) -> dict[str, Any]:
         """获取操作配置 schema（子类可重写）"""
         return {
             "type": "object",

@@ -10,11 +10,10 @@ OpenAI CLI / Responses Normalizer (OPENAI_CLI)
 - 未识别的字段会进入 extra/raw，未知内容块保留在 internal，但默认输出阶段会丢弃。
 """
 
-from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from src.core.api_format.conversion.field_mappings import (
     ERROR_TYPE_MAPPINGS,
@@ -65,7 +64,7 @@ class OpenAICliNormalizer(FormatNormalizer):
         supports_images=True,
     )
 
-    _ERROR_TYPE_TO_OPENAI: Dict[ErrorType, str] = {
+    _ERROR_TYPE_TO_OPENAI: dict[ErrorType, str] = {
         ErrorType.INVALID_REQUEST: "invalid_request_error",
         ErrorType.AUTHENTICATION: "invalid_api_key",
         ErrorType.PERMISSION_DENIED: "invalid_request_error",
@@ -82,12 +81,12 @@ class OpenAICliNormalizer(FormatNormalizer):
     # Requests
     # =========================
 
-    def request_to_internal(self, request: Dict[str, Any]) -> InternalRequest:
+    def request_to_internal(self, request: dict[str, Any]) -> InternalRequest:
         model = str(request.get("model") or "")
 
         instructions_text = request.get("instructions")
-        instructions: List[InstructionSegment] = []
-        system_text: Optional[str] = None
+        instructions: list[InstructionSegment] = []
+        system_text: str | None = None
         if isinstance(instructions_text, str) and instructions_text.strip():
             system_text = instructions_text
             instructions.append(InstructionSegment(role=Role.SYSTEM, text=instructions_text))
@@ -118,8 +117,8 @@ class OpenAICliNormalizer(FormatNormalizer):
 
         return internal
 
-    def request_from_internal(self, internal: InternalRequest) -> Dict[str, Any]:
-        result: Dict[str, Any] = {
+    def request_from_internal(self, internal: InternalRequest) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "model": internal.model,
             "input": self._internal_messages_to_input(internal.messages),
         }
@@ -164,7 +163,7 @@ class OpenAICliNormalizer(FormatNormalizer):
     # Responses
     # =========================
 
-    def response_to_internal(self, response: Dict[str, Any]) -> InternalResponse:
+    def response_to_internal(self, response: dict[str, Any]) -> InternalResponse:
         payload = self._unwrap_response_object(response)
 
         rid = str(payload.get("id") or "")
@@ -191,8 +190,8 @@ class OpenAICliNormalizer(FormatNormalizer):
         self,
         internal: InternalResponse,
         *,
-        requested_model: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
         text = self._collapse_internal_text(internal.content)
 
         output_message = {
@@ -203,7 +202,7 @@ class OpenAICliNormalizer(FormatNormalizer):
         }
 
         usage = internal.usage or UsageInfo()
-        usage_obj: Dict[str, Any] = {
+        usage_obj: dict[str, Any] = {
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens or (usage.input_tokens + usage.output_tokens),
@@ -228,11 +227,11 @@ class OpenAICliNormalizer(FormatNormalizer):
 
     def stream_chunk_to_internal(
         self,
-        chunk: Dict[str, Any],
+        chunk: dict[str, Any],
         state: StreamState,
-    ) -> List[InternalStreamEvent]:
+    ) -> list[InternalStreamEvent]:
         ss = state.substate(self.FORMAT_ID)
-        events: List[InternalStreamEvent] = []
+        events: list[InternalStreamEvent] = []
 
         # 统一错误结构（最佳努力）
         if isinstance(chunk, dict) and "error" in chunk:
@@ -392,11 +391,11 @@ class OpenAICliNormalizer(FormatNormalizer):
         self,
         event: InternalStreamEvent,
         state: StreamState,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         ss = state.substate(self.FORMAT_ID)
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
 
-        def event_block(payload: Dict[str, Any]) -> Dict[str, Any]:
+        def event_block(payload: dict[str, Any]) -> dict[str, Any]:
             # OpenAI Responses SSE 的 payload 通常自带 type 字段；这里强制保证
             return payload
 
@@ -463,10 +462,10 @@ class OpenAICliNormalizer(FormatNormalizer):
     # Error conversion
     # =========================
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         return isinstance(response, dict) and "error" in response
 
-    def error_to_internal(self, error_response: Dict[str, Any]) -> InternalError:
+    def error_to_internal(self, error_response: dict[str, Any]) -> InternalError:
         err = error_response.get("error") if isinstance(error_response, dict) else None
         err = err if isinstance(err, dict) else {}
 
@@ -484,9 +483,9 @@ class OpenAICliNormalizer(FormatNormalizer):
             extra={"openai_cli": {"error": err}, "raw": {"type": raw_type}},
         )
 
-    def error_from_internal(self, internal: InternalError) -> Dict[str, Any]:
+    def error_from_internal(self, internal: InternalError) -> dict[str, Any]:
         type_str = self._ERROR_TYPE_TO_OPENAI.get(internal.type, "server_error")
-        payload: Dict[str, Any] = {"type": type_str, "message": internal.message}
+        payload: dict[str, Any] = {"type": type_str, "message": internal.message}
         if internal.code is not None:
             payload["code"] = internal.code
         if internal.param is not None:
@@ -497,7 +496,7 @@ class OpenAICliNormalizer(FormatNormalizer):
     # Helpers
     # =========================
 
-    def _unwrap_response_object(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def _unwrap_response_object(self, response: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(response, dict):
             return {}
         resp_inner = response.get("response")
@@ -506,8 +505,8 @@ class OpenAICliNormalizer(FormatNormalizer):
             return resp_inner
         return response
 
-    def _extract_output_text_blocks(self, payload: Dict[str, Any]) -> Tuple[List[ContentBlock], Dict[str, Any]]:
-        text_parts: List[str] = []
+    def _extract_output_text_blocks(self, payload: dict[str, Any]) -> tuple[list[ContentBlock], dict[str, Any]]:
+        text_parts: list[str] = []
 
         output = payload.get("output")
         if isinstance(output, list):
@@ -532,12 +531,12 @@ class OpenAICliNormalizer(FormatNormalizer):
         if not text_parts and isinstance(payload.get("output_text"), str):
             text_parts.append(payload.get("output_text") or "")
 
-        blocks: List[ContentBlock] = []
+        blocks: list[ContentBlock] = []
         text = "".join(text_parts)
         if text:
             blocks.append(TextBlock(text=text))
 
-        extra: Dict[str, Any] = {"raw": {"openai_cli_output": output}} if output is not None else {}
+        extra: dict[str, Any] = {"raw": {"openai_cli_output": output}} if output is not None else {}
         return blocks, extra
 
     def _usage_to_internal(self, usage: Any) -> UsageInfo:
@@ -553,14 +552,14 @@ class OpenAICliNormalizer(FormatNormalizer):
             extra={"openai_cli": {"usage": usage}},
         )
 
-    def _collapse_internal_text(self, blocks: List[ContentBlock]) -> str:
-        parts: List[str] = []
+    def _collapse_internal_text(self, blocks: list[ContentBlock]) -> str:
+        parts: list[str] = []
         for block in blocks:
             if isinstance(block, TextBlock) and block.text:
                 parts.append(block.text)
         return "".join(parts)
 
-    def _input_to_internal_messages(self, input_data: Any) -> List[InternalMessage]:
+    def _input_to_internal_messages(self, input_data: Any) -> list[InternalMessage]:
         if input_data is None:
             return []
 
@@ -575,7 +574,7 @@ class OpenAICliNormalizer(FormatNormalizer):
         if not isinstance(input_data, list):
             return [InternalMessage(role=Role.USER, content=[UnknownBlock(raw_type="input", payload={"input": input_data})])]
 
-        messages: List[InternalMessage] = []
+        messages: list[InternalMessage] = []
         for item in input_data:
             if not isinstance(item, dict):
                 continue
@@ -624,7 +623,7 @@ class OpenAICliNormalizer(FormatNormalizer):
 
             # reasoning -> assistant 消息，提取 summary 作为文本
             if item_type == "reasoning":
-                summary_parts: List[str] = []
+                summary_parts: list[str] = []
                 summary = item.get("summary")
                 if isinstance(summary, list):
                     for s in summary:
@@ -638,7 +637,7 @@ class OpenAICliNormalizer(FormatNormalizer):
                     summary_parts.append(summary)
 
                 # 如果有 summary 文本，创建一个 UnknownBlock 保留原始结构
-                reasoning_blocks: List[ContentBlock] = []
+                reasoning_blocks: list[ContentBlock] = []
                 if summary_parts:
                     # 保留 reasoning 的 summary 作为 UnknownBlock，便于输出时决策
                     reasoning_blocks.append(UnknownBlock(
@@ -662,7 +661,7 @@ class OpenAICliNormalizer(FormatNormalizer):
 
         return messages
 
-    def _responses_content_to_blocks(self, content: Any) -> List[ContentBlock]:
+    def _responses_content_to_blocks(self, content: Any) -> list[ContentBlock]:
         if content is None:
             return []
         if isinstance(content, str):
@@ -673,7 +672,7 @@ class OpenAICliNormalizer(FormatNormalizer):
         if not isinstance(content, list):
             return [UnknownBlock(raw_type="content", payload={"content": content})]
 
-        blocks: List[ContentBlock] = []
+        blocks: list[ContentBlock] = []
         for part in content:
             if isinstance(part, str):
                 if part:
@@ -690,8 +689,8 @@ class OpenAICliNormalizer(FormatNormalizer):
             blocks.append(UnknownBlock(raw_type=ptype or "unknown", payload=part))
         return blocks
 
-    def _internal_messages_to_input(self, messages: List[InternalMessage]) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
+    def _internal_messages_to_input(self, messages: list[InternalMessage]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for msg in messages:
             # ToolUseBlock -> function_call
             for block in msg.content:
@@ -729,7 +728,7 @@ class OpenAICliNormalizer(FormatNormalizer):
 
             # 普通 message（TextBlock）
             role = self._role_to_openai(msg.role)
-            content_items: List[Dict[str, Any]] = []
+            content_items: list[dict[str, Any]] = []
             has_text = False
 
             for block in msg.content:
@@ -748,10 +747,10 @@ class OpenAICliNormalizer(FormatNormalizer):
 
         return out
 
-    def _tools_to_internal(self, tools: Any) -> Optional[List[ToolDefinition]]:
+    def _tools_to_internal(self, tools: Any) -> list[ToolDefinition] | None:
         if not isinstance(tools, list):
             return None
-        out: List[ToolDefinition] = []
+        out: list[ToolDefinition] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
@@ -783,7 +782,7 @@ class OpenAICliNormalizer(FormatNormalizer):
                 )
         return out or None
 
-    def _tool_choice_to_internal(self, tool_choice: Any) -> Optional[ToolChoice]:
+    def _tool_choice_to_internal(self, tool_choice: Any) -> ToolChoice | None:
         if tool_choice is None:
             return None
         if isinstance(tool_choice, str):
@@ -802,7 +801,7 @@ class OpenAICliNormalizer(FormatNormalizer):
 
         return ToolChoice(type=ToolChoiceType.AUTO, extra={"raw": tool_choice})
 
-    def _tool_choice_to_openai(self, tool_choice: ToolChoice) -> Union[str, Dict[str, Any]]:
+    def _tool_choice_to_openai(self, tool_choice: ToolChoice) -> str | dict[str, Any]:
         if tool_choice.type == ToolChoiceType.NONE:
             return "none"
         if tool_choice.type == ToolChoiceType.AUTO:
@@ -840,7 +839,7 @@ class OpenAICliNormalizer(FormatNormalizer):
             return "tool"
         return "user"
 
-    def _optional_int(self, value: Any) -> Optional[int]:
+    def _optional_int(self, value: Any) -> int | None:
         if value is None:
             return None
         try:
@@ -848,7 +847,7 @@ class OpenAICliNormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _optional_float(self, value: Any) -> Optional[float]:
+    def _optional_float(self, value: Any) -> float | None:
         if value is None:
             return None
         try:
@@ -856,13 +855,13 @@ class OpenAICliNormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _coerce_str_list(self, value: Any) -> Optional[List[str]]:
+    def _coerce_str_list(self, value: Any) -> list[str] | None:
         if value is None:
             return None
         if isinstance(value, str):
             return [value]
         if isinstance(value, list):
-            out: List[str] = []
+            out: list[str] = []
             for item in value:
                 if item is None:
                     continue
@@ -870,14 +869,14 @@ class OpenAICliNormalizer(FormatNormalizer):
             return out
         return [str(value)]
 
-    def _extract_extra(self, payload: Dict[str, Any], keep_keys: set[str]) -> Dict[str, Any]:
+    def _extract_extra(self, payload: dict[str, Any], keep_keys: set[str]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             return {}
         return {k: v for k, v in payload.items() if k not in keep_keys}
 
     def _join_instructions(self, internal: InternalRequest) -> str:
         if internal.instructions:
-            parts: List[str] = []
+            parts: list[str] = []
             for seg in internal.instructions:
                 if seg.text:
                     parts.append(seg.text)

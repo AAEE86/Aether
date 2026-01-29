@@ -12,7 +12,7 @@ GeminiNormalizer 单元测试
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 from src.core.api_format.conversion.internal import (
     ErrorType,
@@ -138,18 +138,18 @@ def test_gemini_request_parts_image_tool_and_unknown_drop() -> None:
     assert tool_result.output == {"temp_c": 20}
 
     out = n.request_from_internal(internal)
-    out_contents: List[Dict[str, Any]] = out["contents"]
+    out_contents: list[dict[str, Any]] = out["contents"]
 
     # unknown 被丢弃
-    user_parts = cast(List[Dict[str, Any]], out_contents[0]["parts"])
+    user_parts = cast(list[dict[str, Any]], out_contents[0]["parts"])
     assert any(p.get("text") == "look" for p in user_parts)
     assert any(p.get("inline_data", {}).get("mime_type") == "image/png" for p in user_parts)
     assert all("foo" not in p for p in user_parts)
 
-    model_parts = cast(List[Dict[str, Any]], out_contents[1]["parts"])
+    model_parts = cast(list[dict[str, Any]], out_contents[1]["parts"])
     assert model_parts[0]["function_call"]["name"] == "get_weather"
 
-    tool_parts = cast(List[Dict[str, Any]], out_contents[2]["parts"])
+    tool_parts = cast(list[dict[str, Any]], out_contents[2]["parts"])
     assert tool_parts[0]["function_response"]["name"] == "call_1"
     assert tool_parts[0]["function_response"]["response"]["result"] == {"temp_c": 20}
 
@@ -231,7 +231,7 @@ def test_gemini_stream_chunk_and_event_roundtrip_basic() -> None:
         },
     ]
 
-    events: List[Any] = []
+    events: list[Any] = []
     for ch in chunks:
         events.extend(n.stream_chunk_to_internal(ch, state))
 
@@ -241,7 +241,7 @@ def test_gemini_stream_chunk_and_event_roundtrip_basic() -> None:
     assert any(isinstance(e, MessageStopEvent) and e.stop_reason == StopReason.END_TURN for e in events)
 
     state2 = StreamState()
-    out_chunks: List[Dict[str, Any]] = []
+    out_chunks: list[dict[str, Any]] = []
     for e in events:
         out_chunks.extend(n.stream_event_from_internal(e, state2))
 

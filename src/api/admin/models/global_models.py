@@ -5,7 +5,6 @@ GlobalModel Admin API
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
@@ -37,8 +36,8 @@ async def list_global_models(
     request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    is_active: Optional[bool] = Query(None),
-    search: Optional[str] = Query(None),
+    is_active: bool | None = Query(None),
+    search: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> GlobalModelListResponse:
     """
@@ -254,8 +253,8 @@ class AdminListGlobalModelsAdapter(AdminApiAdapter):
 
     skip: int
     limit: int
-    is_active: Optional[bool]
-    search: Optional[str]
+    is_active: bool | None
+    search: str | None
 
     async def handle(self, context):  # type: ignore[override]
         from sqlalchemy import func

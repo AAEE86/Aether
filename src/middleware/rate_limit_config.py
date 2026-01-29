@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional
+from typing import Literal
 
 RateLimitScope = Literal["server_ip", "user", "api_key", "skip"]
 
@@ -27,7 +27,7 @@ class RateLimitConfig:
     """
 
     # 默认策略配置
-    POLICIES: Dict[str, RateLimitPolicy] = {
+    POLICIES: dict[str, RateLimitPolicy] = {
         # 客户端 API 端点 - 服务器级别 IP 限制
         "/v1/": RateLimitPolicy(
             scope="server_ip", limit=60, description="Claude/OpenAI API 端点，服务器级别限制"
@@ -49,7 +49,7 @@ class RateLimitConfig:
     }
 
     @classmethod
-    def get_policy_for_path(cls, path: str) -> Optional[RateLimitPolicy]:
+    def get_policy_for_path(cls, path: str) -> RateLimitPolicy | None:
         """
         根据路径获取速率限制策略
 
@@ -82,6 +82,6 @@ class RateLimitConfig:
         cls.POLICIES[prefix] = policy
 
     @classmethod
-    def get_all_policies(cls) -> Dict[str, RateLimitPolicy]:
+    def get_all_policies(cls) -> dict[str, RateLimitPolicy]:
         """获取所有策略配置"""
         return cls.POLICIES.copy()

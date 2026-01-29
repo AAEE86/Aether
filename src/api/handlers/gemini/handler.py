@@ -4,7 +4,7 @@ Gemini Chat Handler
 处理 Gemini API 格式的请求
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.api.handlers.base.chat_handler_base import ChatHandlerBase
 
@@ -24,8 +24,8 @@ class GeminiChatHandler(ChatHandlerBase):
 
     def extract_model_from_request(
         self,
-        request_body: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,
+        request_body: dict[str, Any],
+        path_params: dict[str, Any] | None = None,
     ) -> str:
         """
         从请求中提取模型名 - Gemini Chat 格式实现
@@ -74,7 +74,7 @@ class GeminiChatHandler(ChatHandlerBase):
 
         return request
 
-    def _extract_usage(self, response: Dict) -> Dict[str, int]:
+    def _extract_usage(self, response: dict) -> dict[str, int]:
         """
         从 Gemini 响应中提取 token 使用情况
 
@@ -99,7 +99,7 @@ class GeminiChatHandler(ChatHandlerBase):
             "cache_read_input_tokens": usage.get("cached_tokens", 0),
         }
 
-    def _normalize_response(self, response: Dict) -> Dict:
+    def _normalize_response(self, response: dict) -> dict:
         """
         规范化 Gemini 响应
 

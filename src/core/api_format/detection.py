@@ -4,9 +4,8 @@ API 格式检测
 提供从请求头、响应内容等检测 API 格式的函数。
 """
 
-from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -16,10 +15,10 @@ from src.core.api_format.metadata import API_FORMAT_DEFINITIONS, ApiFormatDefini
 
 
 def _extract_api_key_by_definition(
-    headers: Dict[str, str],
-    query_params: Optional[Dict[str, str]],
+    headers: dict[str, str],
+    query_params: dict[str, str] | None,
     definition: ApiFormatDefinition,
-) -> Tuple[Optional[str], str]:
+) -> tuple[str | None, str]:
     """
     根据格式定义从请求中提取 API Key
 
@@ -64,9 +63,9 @@ def _extract_api_key_by_definition(
 
 
 def detect_format_from_request(
-    headers: Dict[str, str],
-    query_params: Optional[Dict[str, str]] = None,
-) -> Tuple[APIFormat, Optional[str], str]:
+    headers: dict[str, str],
+    query_params: dict[str, str] | None = None,
+) -> tuple[APIFormat, str | None, str]:
     """
     从请求头检测 API 格式和 API Key
 
@@ -107,8 +106,8 @@ def detect_format_from_request(
 
 
 def detect_format_and_key_from_starlette(
-    request: "Request",
-) -> Tuple[str, Optional[str], str]:
+    request: Request,
+) -> tuple[str, str | None, str]:
     """
     从 Starlette Request 对象检测 API 格式和 API Key
 
@@ -135,7 +134,7 @@ def detect_format_and_key_from_starlette(
 
 def detect_format_from_response(
     response_data: dict,
-) -> Optional[APIFormat]:
+) -> APIFormat | None:
     """
     从响应内容检测 API 格式
 

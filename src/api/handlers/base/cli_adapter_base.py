@@ -17,7 +17,7 @@ CLI Adapter 通用基类
 
 import time
 import traceback
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request
@@ -63,7 +63,7 @@ class CliAdapterBase(ApiAdapter):
 
     # 子类必须覆盖
     FORMAT_ID: str = "UNKNOWN"
-    HANDLER_CLASS: Type[CliMessageHandlerBase]
+    HANDLER_CLASS: type[CliMessageHandlerBase]
 
     # 适配器配置
     name: str = "cli.base"
@@ -72,7 +72,7 @@ class CliAdapterBase(ApiAdapter):
     # 计费模板配置（子类可覆盖，如 "claude", "openai", "gemini"）
     BILLING_TEMPLATE: str = "claude"
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         self.allowed_api_formats = allowed_api_formats or [self.FORMAT_ID]
 
     # =========================================================================
@@ -87,7 +87,7 @@ class CliAdapterBase(ApiAdapter):
         except KeyError:
             return APIFormat.OPENAI
 
-    def extract_api_key(self, request: Request) -> Optional[str]:
+    def extract_api_key(self, request: Request) -> str | None:
         """
         从请求中提取 API 密钥
 
@@ -96,7 +96,7 @@ class CliAdapterBase(ApiAdapter):
         return extract_client_api_key(dict(request.headers), self._get_api_format())
 
     @classmethod
-    def build_base_headers(cls, api_key: str) -> Dict[str, str]:
+    def build_base_headers(cls, api_key: str) -> dict[str, str]:
         """
         构建 CLI API 认证头
 
@@ -106,8 +106,8 @@ class CliAdapterBase(ApiAdapter):
 
     @classmethod
     def build_headers_with_extra(
-        cls, api_key: str, extra_headers: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
+        cls, api_key: str, extra_headers: dict[str, str] | None = None
+    ) -> dict[str, str]:
         """
         构建带额外头部的完整请求头
 
@@ -260,8 +260,8 @@ class CliAdapterBase(ApiAdapter):
             )
 
     def _merge_path_params(
-        self, original_request_body: Dict[str, Any], path_params: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, original_request_body: dict[str, Any], path_params: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         合并 URL 路径参数到请求体 - 子类可覆盖
 
@@ -280,7 +280,7 @@ class CliAdapterBase(ApiAdapter):
                 merged[key] = value
         return merged
 
-    def _extract_message_count(self, payload: Dict[str, Any]) -> int:
+    def _extract_message_count(self, payload: dict[str, Any]) -> int:
         """
         提取消息数量 - 子类可覆盖
 
@@ -297,9 +297,9 @@ class CliAdapterBase(ApiAdapter):
 
     def _build_audit_metadata(
         self,
-        payload: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        payload: dict[str, Any],
+        path_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         构建审计日志元数据 - 子类可覆盖
 
@@ -338,8 +338,8 @@ class CliAdapterBase(ApiAdapter):
         model: str,
         stream: bool,
         start_time: float,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
         client_ip: str,
         request_id: str,
     ) -> JSONResponse:
@@ -409,8 +409,8 @@ class CliAdapterBase(ApiAdapter):
         model: str,
         stream: bool,
         start_time: float,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
         client_ip: str,
         request_id: str,
     ) -> JSONResponse:
@@ -507,12 +507,12 @@ class CliAdapterBase(ApiAdapter):
         cache_read_input_tokens: int,
         input_price_per_1m: float,
         output_price_per_1m: float,
-        cache_creation_price_per_1m: Optional[float],
-        cache_read_price_per_1m: Optional[float],
-        price_per_request: Optional[float],
-        tiered_pricing: Optional[dict] = None,
-        cache_ttl_minutes: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        cache_creation_price_per_1m: float | None,
+        cache_read_price_per_1m: float | None,
+        price_per_request: float | None,
+        tiered_pricing: dict | None = None,
+        cache_ttl_minutes: int | None = None,
+    ) -> dict[str, Any]:
         """
         计算请求成本
 
@@ -567,8 +567,8 @@ class CliAdapterBase(ApiAdapter):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """
         查询上游 API 支持的模型列表
 
@@ -596,16 +596,16 @@ class CliAdapterBase(ApiAdapter):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        request_data: Dict[str, Any],
-        extra_headers: Optional[Dict[str, str]] = None,
+        request_data: dict[str, Any],
+        extra_headers: dict[str, str] | None = None,
         # 用量计算参数
-        db: Optional[Any] = None,
-        user: Optional[Any] = None,
-        provider_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-        model_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        db: Any | None = None,
+        user: Any | None = None,
+        provider_name: str | None = None,
+        provider_id: str | None = None,
+        api_key_id: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
         """
         测试模型连接性（非流式）
 
@@ -669,7 +669,7 @@ class CliAdapterBase(ApiAdapter):
     # =========================================================================
 
     @classmethod
-    def build_endpoint_url(cls, base_url: str, request_data: Dict[str, Any], model_name: Optional[str] = None) -> str:
+    def build_endpoint_url(cls, base_url: str, request_data: dict[str, Any], model_name: str | None = None) -> str:
         """
         构建CLI API端点URL - 子类应覆盖
 
@@ -684,7 +684,7 @@ class CliAdapterBase(ApiAdapter):
         raise NotImplementedError(f"{cls.FORMAT_ID} adapter must implement build_endpoint_url")
 
     @classmethod
-    def build_request_body(cls, request_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def build_request_body(cls, request_data: dict[str, Any] | None = None) -> dict[str, Any]:
         """构建测试请求体，使用转换器注册表自动处理格式转换
 
         Args:
@@ -698,7 +698,7 @@ class CliAdapterBase(ApiAdapter):
         return build_test_request_body(cls.FORMAT_ID, request_data)
 
     @classmethod
-    def get_cli_user_agent(cls) -> Optional[str]:
+    def get_cli_user_agent(cls) -> str | None:
         """
         获取CLI User-Agent - 子类可覆盖
 
@@ -708,7 +708,7 @@ class CliAdapterBase(ApiAdapter):
         return None
 
     @classmethod
-    def get_cli_extra_headers(cls) -> Dict[str, str]:
+    def get_cli_extra_headers(cls) -> dict[str, str]:
         """
         获取CLI额外请求头 - 子类可覆盖
 
@@ -718,7 +718,7 @@ class CliAdapterBase(ApiAdapter):
         Returns:
             额外请求头字典
         """
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
         cli_user_agent = cls.get_cli_user_agent()
         if cli_user_agent:
             headers["User-Agent"] = cli_user_agent
@@ -728,11 +728,11 @@ class CliAdapterBase(ApiAdapter):
 # CLI Adapter 注册表 - 用于根据 API format 获取 CLI Adapter 实例
 # =========================================================================
 
-_CLI_ADAPTER_REGISTRY: Dict[str, Type["CliAdapterBase"]] = {}
+_CLI_ADAPTER_REGISTRY: dict[str, type[CliAdapterBase]] = {}
 _CLI_ADAPTERS_LOADED = False
 
 
-def register_cli_adapter(adapter_class: Type["CliAdapterBase"]) -> Type["CliAdapterBase"]:
+def register_cli_adapter(adapter_class: type[CliAdapterBase]) -> type[CliAdapterBase]:
     """
     注册 CLI Adapter 类到注册表
 
@@ -771,13 +771,13 @@ def _ensure_cli_adapters_loaded():
     _CLI_ADAPTERS_LOADED = True
 
 
-def get_cli_adapter_class(api_format: str) -> Optional[Type["CliAdapterBase"]]:
+def get_cli_adapter_class(api_format: str) -> type[CliAdapterBase] | None:
     """根据 API format 获取 CLI Adapter 类"""
     _ensure_cli_adapters_loaded()
     return _CLI_ADAPTER_REGISTRY.get(api_format.upper()) if api_format else None
 
 
-def get_cli_adapter_instance(api_format: str) -> Optional["CliAdapterBase"]:
+def get_cli_adapter_instance(api_format: str) -> CliAdapterBase | None:
     """根据 API format 获取 CLI Adapter 实例"""
     adapter_class = get_cli_adapter_class(api_format)
     if adapter_class:

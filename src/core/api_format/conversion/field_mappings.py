@@ -9,13 +9,11 @@
   这些应复用 `src/core/api_format/metadata.py`（API_FORMAT_DEFINITIONS）作为单一事实来源。
 """
 
-from __future__ import annotations
 
-from typing import Dict, Set
 
 
 # 角色映射（仅作为辅助；system/tool 的具体落点以 Normalizer 规则为准）
-ROLE_MAPPINGS: Dict[str, Dict[str, str]] = {
+ROLE_MAPPINGS: dict[str, dict[str, str]] = {
     "OPENAI": {
         "user": "user",
         "assistant": "assistant",
@@ -29,7 +27,7 @@ ROLE_MAPPINGS: Dict[str, Dict[str, str]] = {
 
 
 # 停止原因映射（internal -> provider），未知值使用 UNKNOWN 并写入 extra/raw
-STOP_REASON_MAPPINGS: Dict[str, Dict[str, str]] = {
+STOP_REASON_MAPPINGS: dict[str, dict[str, str]] = {
     "CLAUDE": {
         "end_turn": "end_turn",
         "max_tokens": "max_tokens",
@@ -60,7 +58,7 @@ STOP_REASON_MAPPINGS: Dict[str, Dict[str, str]] = {
 
 
 # 使用量字段映射（provider usage field -> internal UsageInfo field）
-USAGE_FIELD_MAPPINGS: Dict[str, Dict[str, str]] = {
+USAGE_FIELD_MAPPINGS: dict[str, dict[str, str]] = {
     "CLAUDE": {
         "input_tokens": "input_tokens",
         "output_tokens": "output_tokens",
@@ -82,7 +80,7 @@ USAGE_FIELD_MAPPINGS: Dict[str, Dict[str, str]] = {
 
 
 # 错误类型映射（provider -> internal ErrorType.value）
-ERROR_TYPE_MAPPINGS: Dict[str, Dict[str, str]] = {
+ERROR_TYPE_MAPPINGS: dict[str, dict[str, str]] = {
     "CLAUDE": {
         "invalid_request_error": "invalid_request",
         "authentication_error": "authentication",
@@ -116,7 +114,7 @@ ERROR_TYPE_MAPPINGS: Dict[str, Dict[str, str]] = {
 
 
 # 可重试的错误类型（internal ErrorType.value）
-RETRYABLE_ERROR_TYPES: Set[str] = {
+RETRYABLE_ERROR_TYPES: set[str] = {
     "rate_limit",
     "overloaded",
     "server_error",

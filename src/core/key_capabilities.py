@@ -13,7 +13,6 @@ Key 能力系统
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
 
 
 class CapabilityMatchMode(Enum):
@@ -41,12 +40,12 @@ class CapabilityDefinition:
     match_mode: CapabilityMatchMode
     config_mode: CapabilityConfigMode
     short_name: str = ""  # 简短展示名称（用于列表等紧凑场景）
-    error_patterns: List[str] = field(default_factory=list)  # 错误检测关键词组
+    error_patterns: list[str] = field(default_factory=list)  # 错误检测关键词组
 
 
 # ============ 能力注册表 ============
 
-_capabilities: Dict[str, CapabilityDefinition] = {}
+_capabilities: dict[str, CapabilityDefinition] = {}
 
 
 def register_capability(
@@ -56,7 +55,7 @@ def register_capability(
     match_mode: CapabilityMatchMode,
     config_mode: CapabilityConfigMode,
     short_name: str = "",
-    error_patterns: Optional[List[str]] = None,
+    error_patterns: list[str] | None = None,
 ) -> CapabilityDefinition:
     """注册能力"""
     cap = CapabilityDefinition(
@@ -72,17 +71,17 @@ def register_capability(
     return cap
 
 
-def get_capability(name: str) -> Optional[CapabilityDefinition]:
+def get_capability(name: str) -> CapabilityDefinition | None:
     """获取能力定义"""
     return _capabilities.get(name)
 
 
-def get_all_capabilities() -> List[CapabilityDefinition]:
+def get_all_capabilities() -> list[CapabilityDefinition]:
     """获取所有能力定义"""
     return list(_capabilities.values())
 
 
-def get_user_configurable_capabilities() -> List[CapabilityDefinition]:
+def get_user_configurable_capabilities() -> list[CapabilityDefinition]:
     """获取用户可配置的能力列表"""
     return [c for c in _capabilities.values() if c.config_mode == CapabilityConfigMode.USER_CONFIGURABLE]
 
@@ -91,9 +90,9 @@ def get_user_configurable_capabilities() -> List[CapabilityDefinition]:
 
 
 def check_capability_match(
-    key_capabilities: Optional[Dict[str, bool]],
-    requirements: Optional[Dict[str, bool]],
-) -> Tuple[bool, Optional[str]]:
+    key_capabilities: dict[str, bool] | None,
+    requirements: dict[str, bool] | None,
+) -> tuple[bool, str | None]:
     """
     检查 Key 能力是否满足需求
 
@@ -157,7 +156,7 @@ def check_capability_match(
     return True, None
 
 
-def _match_error_patterns(error_msg: str, patterns: List[str]) -> bool:
+def _match_error_patterns(error_msg: str, patterns: list[str]) -> bool:
     """检查错误信息是否匹配模式（所有关键词都要出现）"""
     if not patterns:
         return False
@@ -167,8 +166,8 @@ def _match_error_patterns(error_msg: str, patterns: List[str]) -> bool:
 
 def detect_capability_upgrade_from_error(
     error_msg: str,
-    current_requirements: Optional[Dict[str, bool]] = None,
-) -> Optional[str]:
+    current_requirements: dict[str, bool] | None = None,
+) -> str | None:
     """
     从错误信息检测是否需要升级某能力
 
@@ -198,7 +197,7 @@ get_capability_definition = get_capability
 class _CapabilityDefinitionsProxy:
     """CAPABILITY_DEFINITIONS 代理，提供字典式访问（兼容旧代码）"""
 
-    def get(self, name: str) -> Optional[CapabilityDefinition]:
+    def get(self, name: str) -> CapabilityDefinition | None:
         return _capabilities.get(name)
 
     def __getitem__(self, name: str) -> CapabilityDefinition:
@@ -210,10 +209,10 @@ class _CapabilityDefinitionsProxy:
     def __contains__(self, name: str) -> bool:
         return name in _capabilities
 
-    def values(self) -> List[CapabilityDefinition]:
+    def values(self) -> list[CapabilityDefinition]:
         return list(_capabilities.values())
 
-    def items(self) -> List[Tuple[str, CapabilityDefinition]]:
+    def items(self) -> list[tuple[str, CapabilityDefinition]]:
         return list(_capabilities.items())
 
 

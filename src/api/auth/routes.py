@@ -2,10 +2,9 @@
 认证相关API端点
 """
 
-from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -42,7 +41,7 @@ from src.services.email import EmailSenderService, EmailVerificationService
 from src.utils.request_utils import get_client_ip, get_user_agent
 
 
-def validate_email_suffix(db: Session, email: str) -> Tuple[bool, Optional[str]]:
+def validate_email_suffix(db: Session, email: str) -> tuple[bool, str | None]:
     """
     验证邮箱后缀是否允许注册
 

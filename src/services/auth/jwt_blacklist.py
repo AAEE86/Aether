@@ -6,8 +6,7 @@ JWT Token 黑名单服务
 
 import hashlib
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timezone
 
 from src.clients.redis_client import get_redis_client
 from src.core.logger import logger

@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, cast
+from typing import Any, cast
 
 from src.core.api_format.conversion.internal import ErrorType, InternalError
 from src.core.api_format.conversion.normalizers.claude import ClaudeNormalizer
@@ -65,7 +65,7 @@ def test_error_event_stream_openai_to_claude_via_registry() -> None:
     chunk = {"error": {"message": "bad", "type": "invalid_request_error"}}
     out = reg.convert_stream_chunk(chunk, "OPENAI", "CLAUDE", state=StreamState())
     assert isinstance(out, list) and out
-    evt0 = cast(Dict[str, Any], out[0])
+    evt0 = cast(dict[str, Any], out[0])
     assert evt0.get("type") == "error"
     assert isinstance(evt0.get("error"), dict)
     assert evt0["error"]["message"] == "bad"

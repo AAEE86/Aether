@@ -4,7 +4,6 @@
 """
 
 import hashlib
-from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -117,7 +116,7 @@ async def get_current_user(
 
 
 async def get_current_user_from_header(
-    authorization: Optional[str] = Header(None), db: Session = Depends(get_db)
+    authorization: str | None = Header(None), db: Session = Depends(get_db)
 ) -> User:
     """
     从Header中获取当前用户（兼容性函数）

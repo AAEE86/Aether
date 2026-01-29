@@ -14,7 +14,7 @@
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
@@ -90,7 +90,7 @@ class AdaptiveRPMManager:
         db: Session,
         key: ProviderAPIKey,
         rate_limit_info: RateLimitInfo,
-        current_rpm: Optional[int] = None,
+        current_rpm: int | None = None,
     ) -> int:
         """
         处理429错误，调整 RPM 限制
@@ -193,7 +193,7 @@ class AdaptiveRPMManager:
         db: Session,
         key: ProviderAPIKey,
         current_rpm: int,
-    ) -> Optional[int]:
+    ) -> int | None:
         """
         处理成功请求，基于滑动窗口利用率考虑增加 RPM 限制
 
@@ -293,7 +293,7 @@ class AdaptiveRPMManager:
 
     def _update_utilization_window(
         self, key: ProviderAPIKey, now_ts: float, utilization: float
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         更新利用率滑动窗口
 
@@ -305,7 +305,7 @@ class AdaptiveRPMManager:
         Returns:
             更新后的采样列表
         """
-        samples: List[Dict[str, Any]] = list(key.utilization_samples or [])
+        samples: list[dict[str, Any]] = list(key.utilization_samples or [])
 
         # 添加新采样
         samples.append({"ts": now_ts, "util": round(utilization, 3)})
@@ -326,10 +326,10 @@ class AdaptiveRPMManager:
     def _check_increase_conditions(
         self,
         key: ProviderAPIKey,
-        samples: List[Dict[str, Any]],
+        samples: list[dict[str, Any]],
         now: datetime,
-        known_boundary: Optional[int] = None,
-    ) -> Optional[str]:
+        known_boundary: int | None = None,
+    ) -> str | None:
         """
         检查是否满足扩容条件
 
@@ -371,7 +371,7 @@ class AdaptiveRPMManager:
         return None
 
     def _should_probe_increase(
-        self, key: ProviderAPIKey, samples: List[Dict[str, Any]], now: datetime
+        self, key: ProviderAPIKey, samples: list[dict[str, Any]], now: datetime
     ) -> bool:
         """
         检查是否应该进行探测性扩容
@@ -439,7 +439,7 @@ class AdaptiveRPMManager:
     def _decrease_limit(
         self,
         current_limit: int,
-        current_rpm: Optional[int] = None,
+        current_rpm: int | None = None,
     ) -> int:
         """
         减少 RPM 限制（基于边界记忆策略）
@@ -469,7 +469,7 @@ class AdaptiveRPMManager:
     def _increase_limit(
         self,
         current_limit: int,
-        known_boundary: Optional[int] = None,
+        known_boundary: int | None = None,
         is_probe: bool = False,
     ) -> int:
         """
@@ -523,7 +523,7 @@ class AdaptiveRPMManager:
             reason: 调整原因
             **extra_data: 额外数据
         """
-        history: List[Dict[str, Any]] = list(key.adjustment_history or [])
+        history: list[dict[str, Any]] = list(key.adjustment_history or [])
 
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -540,7 +540,7 @@ class AdaptiveRPMManager:
 
         key.adjustment_history = history  # type: ignore[assignment]
 
-    def get_adjustment_stats(self, key: ProviderAPIKey) -> Dict[str, Any]:
+    def get_adjustment_stats(self, key: ProviderAPIKey) -> dict[str, Any]:
         """
         获取调整统计信息
 
@@ -550,8 +550,8 @@ class AdaptiveRPMManager:
         Returns:
             统计信息
         """
-        history: List[Dict[str, Any]] = list(key.adjustment_history or [])
-        samples: List[Dict[str, Any]] = list(key.utilization_samples or [])
+        history: list[dict[str, Any]] = list(key.adjustment_history or [])
+        samples: list[dict[str, Any]] = list(key.utilization_samples or [])
 
         # rpm_limit=NULL 表示自适应，否则为固定限制
         is_adaptive = key.rpm_limit is None
@@ -559,18 +559,18 @@ class AdaptiveRPMManager:
         effective_limit = current_limit if is_adaptive else int(key.rpm_limit)  # type: ignore
 
         # 计算窗口统计
-        avg_utilization: Optional[float] = None
-        high_util_ratio: Optional[float] = None
+        avg_utilization: float | None = None
+        high_util_ratio: float | None = None
         if samples:
             avg_utilization = sum(s["util"] for s in samples) / len(samples)
             high_util_count = sum(1 for s in samples if s["util"] >= self.UTILIZATION_THRESHOLD)
             high_util_ratio = high_util_count / len(samples)
 
-        last_429_at_str: Optional[str] = None
+        last_429_at_str: str | None = None
         if key.last_429_at:
             last_429_at_str = cast(datetime, key.last_429_at).isoformat()
 
-        last_probe_at_str: Optional[str] = None
+        last_probe_at_str: str | None = None
         if key.last_probe_increase_at:
             last_probe_at_str = cast(datetime, key.last_probe_increase_at).isoformat()
 
@@ -627,7 +627,7 @@ class AdaptiveRPMManager:
 
 
 # 全局单例
-_adaptive_rpm_manager: Optional[AdaptiveRPMManager] = None
+_adaptive_rpm_manager: AdaptiveRPMManager | None = None
 
 
 def get_adaptive_rpm_manager() -> AdaptiveRPMManager:

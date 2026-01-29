@@ -4,7 +4,6 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -22,16 +21,16 @@ class RequestCandidateService:
         request_id: str,
         candidate_index: int,
         retry_index: int = 0,  # 新增：重试序号
-        user_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        endpoint_id: Optional[str] = None,
-        key_id: Optional[str] = None,
+        user_id: str | None = None,
+        api_key_id: str | None = None,
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
+        key_id: str | None = None,
         status: str = "available",
-        skip_reason: Optional[str] = None,
+        skip_reason: str | None = None,
         is_cached: bool = False,
-        extra_data: Optional[dict] = None,
-        required_capabilities: Optional[dict] = None,
+        extra_data: dict | None = None,
+        required_capabilities: dict | None = None,
     ) -> RequestCandidate:
         """
         创建候选记录
@@ -116,7 +115,7 @@ class RequestCandidateService:
         db: Session,
         candidate_id: str,
         status_code: int = 200,
-        concurrent_requests: Optional[int] = None,
+        concurrent_requests: int | None = None,
     ) -> None:
         """
         标记候选为流式传输中
@@ -144,8 +143,8 @@ class RequestCandidateService:
         candidate_id: str,
         status_code: int,
         latency_ms: int,
-        concurrent_requests: Optional[int] = None,
-        extra_data: Optional[dict] = None,
+        concurrent_requests: int | None = None,
+        extra_data: dict | None = None,
     ) -> None:
         """
         标记候选执行成功
@@ -180,10 +179,10 @@ class RequestCandidateService:
         candidate_id: str,
         error_type: str,
         error_message: str,
-        status_code: Optional[int] = None,
-        latency_ms: Optional[int] = None,
-        concurrent_requests: Optional[int] = None,
-        extra_data: Optional[dict] = None,
+        status_code: int | None = None,
+        latency_ms: int | None = None,
+        concurrent_requests: int | None = None,
+        extra_data: dict | None = None,
     ) -> None:
         """
         标记候选执行失败
@@ -218,9 +217,9 @@ class RequestCandidateService:
         db: Session,
         candidate_id: str,
         status_code: int = 499,
-        latency_ms: Optional[int] = None,
-        concurrent_requests: Optional[int] = None,
-        extra_data: Optional[dict] = None,
+        latency_ms: int | None = None,
+        concurrent_requests: int | None = None,
+        extra_data: dict | None = None,
     ) -> None:
         """
         标记候选被客户端取消
@@ -248,7 +247,7 @@ class RequestCandidateService:
 
     @staticmethod
     def mark_candidate_skipped(
-        db: Session, candidate_id: str, skip_reason: Optional[str] = None
+        db: Session, candidate_id: str, skip_reason: str | None = None
     ) -> None:
         """
         标记候选为已跳过
@@ -267,7 +266,7 @@ class RequestCandidateService:
             get_batch_committer().mark_dirty(db)
 
     @staticmethod
-    def get_candidates_by_request_id(db: Session, request_id: str) -> List[RequestCandidate]:
+    def get_candidates_by_request_id(db: Session, request_id: str) -> list[RequestCandidate]:
         """
         获取请求的所有候选记录
 

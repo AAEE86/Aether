@@ -4,11 +4,13 @@
 提供在异步上下文中安全执行同步函数的工具，避免阻塞事件循环。
 """
 
-from __future__ import annotations
 
 import asyncio
 from functools import partial, wraps
-from typing import Any, Callable, Coroutine, TypeVar
+from typing import Any, TypeVar
+
+from collections.abc import Callable
+from collections.abc import Coroutine
 
 T = TypeVar("T")
 

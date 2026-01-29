@@ -6,9 +6,9 @@
 
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.core.api_format import APIFormat
 from src.core.enums import ProviderBillingType
@@ -18,8 +18,8 @@ class ProxyConfig(BaseModel):
     """代理配置"""
 
     url: str = Field(..., description="代理 URL (http://, https://, socks5://)")
-    username: Optional[str] = Field(None, max_length=255, description="代理用户名")
-    password: Optional[str] = Field(None, max_length=500, description="代理密码")
+    username: str | None = Field(None, max_length=255, description="代理用户名")
+    password: str | None = Field(None, max_length=500, description="代理密码")
     enabled: bool = Field(True, description="是否启用代理（false 时保留配置但不使用）")
 
     @field_validator("url")
@@ -54,8 +54,8 @@ class CreateProviderRequest(BaseModel):
     """创建 Provider 请求"""
 
     name: str = Field(..., min_length=1, max_length=100, description="提供商名称（唯一）")
-    description: Optional[str] = Field(None, max_length=1000, description="描述")
-    website: Optional[str] = Field(None, max_length=500, description="官网地址")
+    description: str | None = Field(None, max_length=1000, description="描述")
+    website: str | None = Field(None, max_length=500, description="官网地址")
 
     @field_validator("name")
     @classmethod
@@ -78,27 +78,27 @@ class CreateProviderRequest(BaseModel):
                 raise ValueError(f"名称包含非法关键字: {keyword}")
 
         return v
-    billing_type: Optional[str] = Field(
+    billing_type: str | None = Field(
         ProviderBillingType.PAY_AS_YOU_GO.value, description="计费类型"
     )
-    monthly_quota_usd: Optional[float] = Field(None, ge=0, description="周期配额（美元）")
-    quota_reset_day: Optional[int] = Field(30, ge=1, le=365, description="配额重置周期（天数）")
-    quota_last_reset_at: Optional[datetime] = Field(None, description="当前周期开始时间")
-    quota_expires_at: Optional[datetime] = Field(None, description="配额过期时间")
-    provider_priority: Optional[int] = Field(100, ge=0, le=1000, description="提供商优先级（数字越小越优先）")
-    is_active: Optional[bool] = Field(True, description="是否启用")
-    concurrent_limit: Optional[int] = Field(None, ge=0, description="并发限制")
+    monthly_quota_usd: float | None = Field(None, ge=0, description="周期配额（美元）")
+    quota_reset_day: int | None = Field(30, ge=1, le=365, description="配额重置周期（天数）")
+    quota_last_reset_at: datetime | None = Field(None, description="当前周期开始时间")
+    quota_expires_at: datetime | None = Field(None, description="配额过期时间")
+    provider_priority: int | None = Field(100, ge=0, le=1000, description="提供商优先级（数字越小越优先）")
+    is_active: bool | None = Field(True, description="是否启用")
+    concurrent_limit: int | None = Field(None, ge=0, description="并发限制")
     # 请求配置（从 Endpoint 迁移）
-    max_retries: Optional[int] = Field(2, ge=0, le=10, description="最大重试次数")
-    proxy: Optional[ProxyConfig] = Field(None, description="代理配置")
+    max_retries: int | None = Field(2, ge=0, le=10, description="最大重试次数")
+    proxy: ProxyConfig | None = Field(None, description="代理配置")
     # 超时配置（秒），为空时使用全局配置
-    stream_first_byte_timeout: Optional[float] = Field(None, ge=1, le=300, description="流式请求首字节超时（秒）")
-    request_timeout: Optional[float] = Field(None, ge=1, le=600, description="非流式请求整体超时（秒）")
-    config: Optional[Dict[str, Any]] = Field(None, description="其他配置")
+    stream_first_byte_timeout: float | None = Field(None, ge=1, le=300, description="流式请求首字节超时（秒）")
+    request_timeout: float | None = Field(None, ge=1, le=600, description="非流式请求整体超时（秒）")
+    config: dict[str, Any] | None = Field(None, description="其他配置")
 
     @field_validator("name", "description")
     @classmethod
-    def sanitize_text(cls, v: Optional[str]) -> Optional[str]:
+    def sanitize_text(cls, v: str | None) -> str | None:
         """清理文本输入，防止 XSS"""
         if v is None:
             return v
@@ -119,7 +119,7 @@ class CreateProviderRequest(BaseModel):
 
     @field_validator("website")
     @classmethod
-    def validate_website(cls, v: Optional[str]) -> Optional[str]:
+    def validate_website(cls, v: str | None) -> str | None:
         """验证网站地址"""
         if v is None or v.strip() == "":
             return None
@@ -134,7 +134,7 @@ class CreateProviderRequest(BaseModel):
 
     @field_validator("billing_type")
     @classmethod
-    def validate_billing_type(cls, v: Optional[str]) -> Optional[str]:
+    def validate_billing_type(cls, v: str | None) -> str | None:
         """验证计费类型"""
         if v is None:
             return ProviderBillingType.PAY_AS_YOU_GO.value
@@ -150,24 +150,24 @@ class CreateProviderRequest(BaseModel):
 class UpdateProviderRequest(BaseModel):
     """更新 Provider 请求"""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=1000)
-    website: Optional[str] = Field(None, max_length=500)
-    billing_type: Optional[str] = None
-    monthly_quota_usd: Optional[float] = Field(None, ge=0)
-    quota_reset_day: Optional[int] = Field(None, ge=1, le=365)
-    quota_last_reset_at: Optional[datetime] = None
-    quota_expires_at: Optional[datetime] = None
-    provider_priority: Optional[int] = Field(None, ge=0, le=1000)
-    is_active: Optional[bool] = None
-    concurrent_limit: Optional[int] = Field(None, ge=0)
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=1000)
+    website: str | None = Field(None, max_length=500)
+    billing_type: str | None = None
+    monthly_quota_usd: float | None = Field(None, ge=0)
+    quota_reset_day: int | None = Field(None, ge=1, le=365)
+    quota_last_reset_at: datetime | None = None
+    quota_expires_at: datetime | None = None
+    provider_priority: int | None = Field(None, ge=0, le=1000)
+    is_active: bool | None = None
+    concurrent_limit: int | None = Field(None, ge=0)
     # 请求配置（从 Endpoint 迁移）
-    max_retries: Optional[int] = Field(None, ge=0, le=10, description="最大重试次数")
-    proxy: Optional[ProxyConfig] = Field(None, description="代理配置")
+    max_retries: int | None = Field(None, ge=0, le=10, description="最大重试次数")
+    proxy: ProxyConfig | None = Field(None, description="代理配置")
     # 超时配置（秒），为空时使用全局配置
-    stream_first_byte_timeout: Optional[float] = Field(None, ge=1, le=300, description="流式请求首字节超时（秒）")
-    request_timeout: Optional[float] = Field(None, ge=1, le=600, description="非流式请求整体超时（秒）")
-    config: Optional[Dict[str, Any]] = None
+    stream_first_byte_timeout: float | None = Field(None, ge=1, le=300, description="流式请求首字节超时（秒）")
+    request_timeout: float | None = Field(None, ge=1, le=600, description="非流式请求整体超时（秒）")
+    config: dict[str, Any] | None = None
 
     # 复用相同的验证器
     _sanitize_text = field_validator("name", "description")(
@@ -186,12 +186,12 @@ class CreateEndpointRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Endpoint 名称")
     base_url: str = Field(..., min_length=1, max_length=500, description="API 基础 URL")
     api_format: str = Field(..., description="API 格式（CLAUDE 或 OPENAI）")
-    custom_path: Optional[str] = Field(None, max_length=200, description="自定义路径")
-    priority: Optional[int] = Field(100, ge=0, le=1000, description="优先级")
-    is_active: Optional[bool] = Field(True, description="是否启用")
-    concurrent_limit: Optional[int] = Field(None, ge=0, description="并发限制")
-    config: Optional[Dict[str, Any]] = Field(None, description="其他配置")
-    proxy: Optional[ProxyConfig] = Field(None, description="代理配置")
+    custom_path: str | None = Field(None, max_length=200, description="自定义路径")
+    priority: int | None = Field(100, ge=0, le=1000, description="优先级")
+    is_active: bool | None = Field(True, description="是否启用")
+    concurrent_limit: int | None = Field(None, ge=0, description="并发限制")
+    config: dict[str, Any] | None = Field(None, description="其他配置")
+    proxy: ProxyConfig | None = Field(None, description="代理配置")
 
     @field_validator("name")
     @classmethod
@@ -223,7 +223,7 @@ class CreateEndpointRequest(BaseModel):
 
     @field_validator("custom_path")
     @classmethod
-    def validate_custom_path(cls, v: Optional[str]) -> Optional[str]:
+    def validate_custom_path(cls, v: str | None) -> str | None:
         """验证自定义路径"""
         if v is None:
             return v
@@ -238,15 +238,15 @@ class CreateEndpointRequest(BaseModel):
 class UpdateEndpointRequest(BaseModel):
     """更新 Endpoint 请求"""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    base_url: Optional[str] = Field(None, min_length=1, max_length=500)
-    api_format: Optional[str] = None
-    custom_path: Optional[str] = Field(None, max_length=200)
-    priority: Optional[int] = Field(None, ge=0, le=1000)
-    is_active: Optional[bool] = None
-    concurrent_limit: Optional[int] = Field(None, ge=0)
-    config: Optional[Dict[str, Any]] = None
-    proxy: Optional[ProxyConfig] = Field(None, description="代理配置")
+    name: str | None = Field(None, min_length=1, max_length=100)
+    base_url: str | None = Field(None, min_length=1, max_length=500)
+    api_format: str | None = None
+    custom_path: str | None = Field(None, max_length=200)
+    priority: int | None = Field(None, ge=0, le=1000)
+    is_active: bool | None = None
+    concurrent_limit: int | None = Field(None, ge=0)
+    config: dict[str, Any] | None = None
+    proxy: ProxyConfig | None = Field(None, description="代理配置")
 
     # 复用验证器
     _validate_name = field_validator("name")(CreateEndpointRequest.validate_name.__func__)
@@ -266,10 +266,10 @@ class CreateAPIKeyRequest(BaseModel):
 
     endpoint_id: str = Field(..., description="Endpoint ID")
     api_key: str = Field(..., min_length=1, max_length=500, description="API Key")
-    priority: Optional[int] = Field(100, ge=0, le=1000, description="优先级")
-    is_active: Optional[bool] = Field(True, description="是否启用")
-    rpm_limit: Optional[int] = Field(None, ge=0, description="RPM 限制（NULL=自适应）")
-    notes: Optional[str] = Field(None, max_length=500, description="备注")
+    priority: int | None = Field(100, ge=0, le=1000, description="优先级")
+    is_active: bool | None = Field(True, description="是否启用")
+    rpm_limit: int | None = Field(None, ge=0, description="RPM 限制（NULL=自适应）")
+    notes: str | None = Field(None, max_length=500, description="备注")
 
     @field_validator("api_key")
     @classmethod
@@ -292,7 +292,7 @@ class CreateAPIKeyRequest(BaseModel):
 
     @field_validator("notes")
     @classmethod
-    def sanitize_notes(cls, v: Optional[str]) -> Optional[str]:
+    def sanitize_notes(cls, v: str | None) -> str | None:
         """清理备注"""
         if v is None:
             return v
@@ -303,19 +303,19 @@ class CreateAPIKeyRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     """更新用户请求"""
 
-    username: Optional[str] = Field(None, min_length=1, max_length=50)
-    email: Optional[str] = Field(None, max_length=100)
-    password: Optional[str] = Field(None, min_length=6, max_length=128, description="新密码（留空保持不变）")
-    quota_usd: Optional[float] = Field(None, ge=0)
-    is_active: Optional[bool] = None
-    role: Optional[str] = None
-    allowed_providers: Optional[List[str]] = Field(None, description="允许使用的提供商 ID 列表")
-    allowed_api_formats: Optional[List[str]] = Field(None, description="允许使用的 API 格式列表")
-    allowed_models: Optional[List[str]] = Field(None, description="允许使用的模型名称列表")
+    username: str | None = Field(None, min_length=1, max_length=50)
+    email: str | None = Field(None, max_length=100)
+    password: str | None = Field(None, min_length=6, max_length=128, description="新密码（留空保持不变）")
+    quota_usd: float | None = Field(None, ge=0)
+    is_active: bool | None = None
+    role: str | None = None
+    allowed_providers: list[str] | None = Field(None, description="允许使用的提供商 ID 列表")
+    allowed_api_formats: list[str] | None = Field(None, description="允许使用的 API 格式列表")
+    allowed_models: list[str] | None = Field(None, description="允许使用的模型名称列表")
 
     @field_validator("username")
     @classmethod
-    def validate_username(cls, v: Optional[str]) -> Optional[str]:
+    def validate_username(cls, v: str | None) -> str | None:
         """验证用户名"""
         if v is None:
             return v
@@ -327,7 +327,7 @@ class UpdateUserRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def validate_email(cls, v: Optional[str]) -> Optional[str]:
+    def validate_email(cls, v: str | None) -> str | None:
         """验证邮箱"""
         if v is None:
             return v
@@ -341,7 +341,7 @@ class UpdateUserRequest(BaseModel):
 
     @field_validator("role")
     @classmethod
-    def validate_role(cls, v: Optional[str]) -> Optional[str]:
+    def validate_role(cls, v: str | None) -> str | None:
         """验证角色"""
         if v is None:
             return v

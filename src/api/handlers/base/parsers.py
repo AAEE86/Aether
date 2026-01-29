@@ -6,7 +6,7 @@
 """
 
 import re
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 from src.api.handlers.base.response_parser import (
     ParsedChunk,
@@ -20,7 +20,7 @@ from src.api.handlers.base.utils import extract_cache_creation_tokens
 from src.core.api_format import is_cli_format
 
 
-def _check_nested_error(response: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+def _check_nested_error(response: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
     """
     检查响应中是否存在嵌套错误（某些代理服务返回 HTTP 200 但在响应体中包含错误）
 
@@ -62,7 +62,7 @@ def _check_nested_error(response: Dict[str, Any]) -> Tuple[bool, Optional[Dict[s
     return False, None
 
 
-def _extract_embedded_status_code(error_info: Optional[Dict[str, Any]]) -> Optional[int]:
+def _extract_embedded_status_code(error_info: dict[str, Any] | None) -> int | None:
     """
     从错误信息中提取嵌套的状态码
 
@@ -137,7 +137,7 @@ class OpenAIResponseParser(ResponseParser):
         self.name = "OPENAI"
         self.api_format = "OPENAI"
 
-    def parse_sse_line(self, line: str, stats: StreamStats) -> Optional[ParsedChunk]:
+    def parse_sse_line(self, line: str, stats: StreamStats) -> ParsedChunk | None:
         if not line or not line.strip():
             return None
 
@@ -186,7 +186,7 @@ class OpenAIResponseParser(ResponseParser):
 
         return chunk
 
-    def parse_response(self, response: Dict[str, Any], status_code: int) -> ParsedResponse:
+    def parse_response(self, response: dict[str, Any], status_code: int) -> ParsedResponse:
         result = ParsedResponse(
             raw_response=response,
             status_code=status_code,
@@ -217,7 +217,7 @@ class OpenAIResponseParser(ResponseParser):
 
         return result
 
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, int]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, int]:
         usage = response.get("usage") or {}
         return {
             "input_tokens": usage.get("prompt_tokens", 0),
@@ -226,7 +226,7 @@ class OpenAIResponseParser(ResponseParser):
             "cache_read_tokens": 0,
         }
 
-    def extract_text_content(self, response: Dict[str, Any]) -> str:
+    def extract_text_content(self, response: dict[str, Any]) -> str:
         choices = response.get("choices", [])
         if choices:
             message = choices[0].get("message", {})
@@ -235,7 +235,7 @@ class OpenAIResponseParser(ResponseParser):
                 return content
         return ""
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         is_error, _ = _check_nested_error(response)
         return is_error
 
@@ -259,7 +259,7 @@ class ClaudeResponseParser(ResponseParser):
         self.name = "CLAUDE"
         self.api_format = "CLAUDE"
 
-    def parse_sse_line(self, line: str, stats: StreamStats) -> Optional[ParsedChunk]:
+    def parse_sse_line(self, line: str, stats: StreamStats) -> ParsedChunk | None:
         if not line or not line.strip():
             return None
 
@@ -324,7 +324,7 @@ class ClaudeResponseParser(ResponseParser):
 
         return chunk
 
-    def parse_response(self, response: Dict[str, Any], status_code: int) -> ParsedResponse:
+    def parse_response(self, response: dict[str, Any], status_code: int) -> ParsedResponse:
         result = ParsedResponse(
             raw_response=response,
             status_code=status_code,
@@ -358,7 +358,7 @@ class ClaudeResponseParser(ResponseParser):
 
         return result
 
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, int]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, int]:
         # 对于 message_start 事件，usage 在 message.usage 路径下
         # 对于其他响应，usage 在顶层
         usage = response.get("usage") or {}
@@ -372,7 +372,7 @@ class ClaudeResponseParser(ResponseParser):
             "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
         }
 
-    def extract_text_content(self, response: Dict[str, Any]) -> str:
+    def extract_text_content(self, response: dict[str, Any]) -> str:
         content = response.get("content", [])
         if isinstance(content, list):
             text_parts = []
@@ -382,7 +382,7 @@ class ClaudeResponseParser(ResponseParser):
             return "".join(text_parts)
         return ""
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         is_error, _ = _check_nested_error(response)
         return is_error
 
@@ -406,7 +406,7 @@ class GeminiResponseParser(ResponseParser):
         self.name = "GEMINI"
         self.api_format = "GEMINI"
 
-    def parse_sse_line(self, line: str, stats: StreamStats) -> Optional[ParsedChunk]:
+    def parse_sse_line(self, line: str, stats: StreamStats) -> ParsedChunk | None:
         """
         解析 Gemini SSE 行
 
@@ -473,7 +473,7 @@ class GeminiResponseParser(ResponseParser):
 
         return chunk
 
-    def parse_response(self, response: Dict[str, Any], status_code: int) -> ParsedResponse:
+    def parse_response(self, response: dict[str, Any], status_code: int) -> ParsedResponse:
         result = ParsedResponse(
             raw_response=response,
             status_code=status_code,
@@ -509,7 +509,7 @@ class GeminiResponseParser(ResponseParser):
 
         return result
 
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, int]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, int]:
         """
         从 Gemini 响应中提取 token 使用量
 
@@ -531,7 +531,7 @@ class GeminiResponseParser(ResponseParser):
             "cache_read_tokens": usage.get("cached_tokens", 0),
         }
 
-    def extract_text_content(self, response: Dict[str, Any]) -> str:
+    def extract_text_content(self, response: dict[str, Any]) -> str:
         candidates = response.get("candidates", [])
         if candidates:
             content = candidates[0].get("content", {})
@@ -543,7 +543,7 @@ class GeminiResponseParser(ResponseParser):
             return "".join(text_parts)
         return ""
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         """
         判断响应是否为错误响应
 
@@ -562,7 +562,7 @@ class GeminiCliResponseParser(GeminiResponseParser):
 
 
 # 解析器注册表
-_PARSERS: Dict[str, Type[ResponseParser]] = {
+_PARSERS: dict[str, type[ResponseParser]] = {
     "CLAUDE": ClaudeResponseParser,
     "CLAUDE_CLI": ClaudeCliResponseParser,
     "OPENAI": OpenAIResponseParser,

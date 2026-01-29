@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any
 
 from src.core.logger import logger
@@ -45,7 +43,7 @@ class LinuxDoOAuthProvider(OAuthProviderBase):
     # LinuxDo 不需要 scope
     default_scopes = ()
 
-    async def exchange_code(self, config: "OAuthProvider", code: str) -> OAuthToken:
+    async def exchange_code(self, config: OAuthProvider, code: str) -> OAuthToken:
         url = self.get_effective_token_url(config)
         client_secret = config.get_client_secret()
         if not client_secret:
@@ -86,7 +84,7 @@ class LinuxDoOAuthProvider(OAuthProviderBase):
             raw=data,
         )
 
-    async def get_user_info(self, config: "OAuthProvider", access_token: str) -> OAuthUserInfo:
+    async def get_user_info(self, config: OAuthProvider, access_token: str) -> OAuthUserInfo:
         url = self.get_effective_userinfo_url(config)
         resp = await self._http_get(url, headers={"Authorization": f"Bearer {access_token}"})
 

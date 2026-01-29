@@ -8,7 +8,6 @@ StreamSmoother 使用这些提取器来处理不同格式的 SSE 事件。
 import copy
 import json
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class ContentExtractor(ABC):
@@ -20,7 +19,7 @@ class ContentExtractor(ABC):
     """
 
     @abstractmethod
-    def extract_content(self, data: dict) -> Optional[str]:
+    def extract_content(self, data: dict) -> str | None:
         """
         从 SSE 数据中提取可拆分的文本内容
 
@@ -64,7 +63,7 @@ class OpenAIContentExtractor(ContentExtractor):
     - 只在 delta 仅包含 role/content 时允许拆分，避免破坏 tool_calls 等结构
     """
 
-    def extract_content(self, data: dict) -> Optional[str]:
+    def extract_content(self, data: dict) -> str | None:
         if not isinstance(data, dict):
             return None
 
@@ -115,7 +114,7 @@ class OpenAIContentExtractor(ContentExtractor):
                 new_choices.append(new_choice)
             new_data["choices"] = new_choices
 
-        return f"data: {json.dumps(new_data, ensure_ascii=False)}\n\n".encode("utf-8")
+        return f"data: {json.dumps(new_data, ensure_ascii=False)}\n\n".encode()
 
 
 class ClaudeContentExtractor(ContentExtractor):
@@ -127,7 +126,7 @@ class ClaudeContentExtractor(ContentExtractor):
     - 数据结构: delta.type=text_delta, delta.text
     """
 
-    def extract_content(self, data: dict) -> Optional[str]:
+    def extract_content(self, data: dict) -> str | None:
         if not isinstance(data, dict):
             return None
 
@@ -165,9 +164,7 @@ class ClaudeContentExtractor(ContentExtractor):
 
         # Claude 格式需要 event: 前缀
         event_name = event_type or "content_block_delta"
-        return f"event: {event_name}\ndata: {json.dumps(new_data, ensure_ascii=False)}\n\n".encode(
-            "utf-8"
-        )
+        return f"event: {event_name}\ndata: {json.dumps(new_data, ensure_ascii=False)}\n\n".encode()
 
 
 class GeminiContentExtractor(ContentExtractor):
@@ -179,7 +176,7 @@ class GeminiContentExtractor(ContentExtractor):
     - 只有纯文本块才拆分
     """
 
-    def extract_content(self, data: dict) -> Optional[str]:
+    def extract_content(self, data: dict) -> str | None:
         if not isinstance(data, dict):
             return None
 
@@ -226,7 +223,7 @@ class GeminiContentExtractor(ContentExtractor):
                 if "parts" in content and content["parts"]:
                     content["parts"][0]["text"] = new_content
 
-        return f"data: {json.dumps(new_data, ensure_ascii=False)}\n\n".encode("utf-8")
+        return f"data: {json.dumps(new_data, ensure_ascii=False)}\n\n".encode()
 
 
 # 提取器注册表
@@ -237,7 +234,7 @@ _EXTRACTORS: dict[str, type[ContentExtractor]] = {
 }
 
 
-def get_extractor(format_name: str) -> Optional[ContentExtractor]:
+def get_extractor(format_name: str) -> ContentExtractor | None:
     """
     根据格式名获取对应的内容提取器实例
 

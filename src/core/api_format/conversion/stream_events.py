@@ -4,11 +4,10 @@
 用于把 OpenAI/Claude/Gemini 的流式协议映射为统一事件序列，再由目标格式 Normalizer 输出。
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 from .internal import ContentType, InternalError, StopReason, UsageInfo
 
@@ -34,8 +33,8 @@ class MessageStartEvent:
     type: StreamEventType = field(default=StreamEventType.MESSAGE_START, init=False)
     message_id: str = ""
     model: str = ""
-    usage: Optional[UsageInfo] = None  # Claude 流式响应的 message_start 可能包含 usage
-    extra: Dict[str, Any] = field(default_factory=dict)
+    usage: UsageInfo | None = None  # Claude 流式响应的 message_start 可能包含 usage
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,9 +45,9 @@ class ContentBlockStartEvent:
     block_index: int = 0
     block_type: ContentType = ContentType.TEXT
     # 工具调用时使用（TOOL_USE block）
-    tool_id: Optional[str] = None
-    tool_name: Optional[str] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    tool_id: str | None = None
+    tool_name: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,7 +57,7 @@ class ContentDeltaEvent:
     type: StreamEventType = field(default=StreamEventType.CONTENT_DELTA, init=False)
     block_index: int = 0
     text_delta: str = ""
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -69,7 +68,7 @@ class ToolCallDeltaEvent:
     block_index: int = 0
     tool_id: str = ""
     input_delta: str = ""  # JSON 字符串片段
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -78,7 +77,7 @@ class ContentBlockStopEvent:
 
     type: StreamEventType = field(default=StreamEventType.CONTENT_BLOCK_STOP, init=False)
     block_index: int = 0
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -86,9 +85,9 @@ class MessageStopEvent:
     """消息结束事件"""
 
     type: StreamEventType = field(default=StreamEventType.MESSAGE_STOP, init=False)
-    stop_reason: Optional[StopReason] = None
-    usage: Optional[UsageInfo] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    stop_reason: StopReason | None = None
+    usage: UsageInfo | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,7 +96,7 @@ class UsageEvent:
 
     type: StreamEventType = field(default=StreamEventType.USAGE, init=False)
     usage: UsageInfo = field(default_factory=UsageInfo)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -106,7 +105,7 @@ class ErrorEvent:
 
     type: StreamEventType = field(default=StreamEventType.ERROR, init=False)
     error: InternalError
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,21 +114,21 @@ class UnknownStreamEvent:
 
     type: StreamEventType = field(default=StreamEventType.UNKNOWN, init=False)
     raw_type: str = ""
-    payload: Dict[str, Any] = field(default_factory=dict)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
-InternalStreamEvent = Union[
-    MessageStartEvent,
-    ContentBlockStartEvent,
-    ContentDeltaEvent,
-    ToolCallDeltaEvent,
-    ContentBlockStopEvent,
-    MessageStopEvent,
-    UsageEvent,
-    ErrorEvent,
-    UnknownStreamEvent,
-]
+InternalStreamEvent = (
+    MessageStartEvent
+    | ContentBlockStartEvent
+    | ContentDeltaEvent
+    | ToolCallDeltaEvent
+    | ContentBlockStopEvent
+    | MessageStopEvent
+    | UsageEvent
+    | ErrorEvent
+    | UnknownStreamEvent
+)
 
 
 __all__ = [

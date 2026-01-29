@@ -15,7 +15,6 @@ import asyncio
 import fnmatch
 import os
 from datetime import datetime, timezone
-from typing import List, Optional, Set
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -63,10 +62,10 @@ def _match_pattern(model_id: str, pattern: str) -> bool:
 
 
 def _filter_models_by_patterns(
-    model_ids: Set[str],
-    include_patterns: Optional[List[str]],
-    exclude_patterns: Optional[List[str]],
-) -> Set[str]:
+    model_ids: set[str],
+    include_patterns: list[str] | None,
+    exclude_patterns: list[str] | None,
+) -> set[str]:
     """
     根据包含/排除规则过滤模型列表
 
@@ -113,7 +112,7 @@ def _get_upstream_models_cache_key(provider_id: str, api_key_id: str) -> str:
 
 async def get_upstream_models_from_cache(
     provider_id: str, api_key_id: str
-) -> Optional[list[dict]]:
+) -> list[dict] | None:
     """从缓存获取上游模型列表"""
     cache_key = _get_upstream_models_cache_key(provider_id, api_key_id)
     cached = await CacheService.get(cache_key)
@@ -138,7 +137,7 @@ class ModelFetchScheduler:
     def __init__(self) -> None:
         self._running = False
         self._lock = asyncio.Lock()
-        self._startup_task: Optional[asyncio.Task] = None
+        self._startup_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         """启动调度器"""
@@ -238,7 +237,7 @@ class ModelFetchScheduler:
                     skip_count += 1
                 else:
                     error_count += 1
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(f"处理 Key {key_id} 超时（{KEY_FETCH_TIMEOUT_SECONDS}s）")
                 self._update_key_error(key_id, f"Timeout after {KEY_FETCH_TIMEOUT_SECONDS}s")
                 error_count += 1
@@ -290,7 +289,7 @@ class ModelFetchScheduler:
 
     async def _fetch_models_for_key(
         self,
-        db: "Session",
+        db: Session,
         key: ProviderAPIKey,
     ) -> str:
         """为单个 Key 获取模型并更新 allowed_models，返回结果状态"""
@@ -455,7 +454,7 @@ class ModelFetchScheduler:
 
 
 # 单例模式
-_model_fetch_scheduler: Optional[ModelFetchScheduler] = None
+_model_fetch_scheduler: ModelFetchScheduler | None = None
 
 
 def get_model_fetch_scheduler() -> ModelFetchScheduler:

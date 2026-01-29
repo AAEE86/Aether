@@ -2,11 +2,10 @@
 Telemetry writer abstraction for stream usage.
 """
 
-from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.api.handlers.base.base_handler import MessageTelemetry
 from src.clients.redis_client import get_redis_client
@@ -40,7 +39,7 @@ class DbTelemetryWriter(TelemetryWriter):
     def __init__(self, telemetry: MessageTelemetry) -> None:
         self._telemetry = telemetry
 
-    def _filter_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """过滤掉 MessageTelemetry 不支持的参数"""
         return {k: v for k, v in kwargs.items() if k not in self._IGNORED_KWARGS}
 
@@ -101,7 +100,7 @@ class QueueTelemetryWriter(TelemetryWriter):
             logger.error(f"[usage-queue] XADD failed: {exc}")
             raise
 
-    def _truncate_body(self, value: Any) -> Optional[str]:
+    def _truncate_body(self, value: Any) -> str | None:
         """将 body 序列化为字符串，超长时截断并添加标记"""
         if value is None:
             return None
@@ -116,9 +115,9 @@ class QueueTelemetryWriter(TelemetryWriter):
             raw = raw[:truncate_at] + "...[truncated]"
         return raw
 
-    def _build_event_data(self, **kwargs: Any) -> Dict[str, Any]:
+    def _build_event_data(self, **kwargs: Any) -> dict[str, Any]:
         # 必需字段
-        data: Dict[str, Any] = {
+        data: dict[str, Any] = {
             "request_id": self.request_id,
             "user_id": self.user_id,
             "api_key_id": self.api_key_id,

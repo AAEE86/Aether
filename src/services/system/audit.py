@@ -4,7 +4,7 @@
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -29,14 +29,14 @@ class AuditService:
         db: Session,
         event_type: AuditEventType,
         description: str,
-        user_id: Optional[str] = None,  # UUID
-        api_key_id: Optional[str] = None,  # UUID
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        request_id: Optional[str] = None,
-        status_code: Optional[int] = None,
-        error_message: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        user_id: str | None = None,  # UUID
+        api_key_id: str | None = None,  # UUID
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        request_id: str | None = None,
+        status_code: int | None = None,
+        error_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AuditLog:
         """
         记录审计事件
@@ -106,8 +106,8 @@ class AuditService:
         success: bool,
         ip_address: str,
         user_agent: str,
-        user_id: Optional[str] = None,  # UUID
-        error_reason: Optional[str] = None,
+        user_id: str | None = None,  # UUID
+        error_reason: str | None = None,
     ):
         """
         记录登录尝试
@@ -147,10 +147,10 @@ class AuditService:
         success: bool,
         ip_address: str,
         status_code: int,
-        error_message: Optional[str] = None,
-        input_tokens: Optional[int] = None,
-        output_tokens: Optional[int] = None,
-        cost_usd: Optional[float] = None,
+        error_message: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_usd: float | None = None,
     ):
         """
         记录API请求
@@ -201,9 +201,9 @@ class AuditService:
         event_type: AuditEventType,
         description: str,
         ip_address: str,
-        user_id: Optional[str] = None,  # UUID
+        user_id: str | None = None,  # UUID
         severity: str = "medium",
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         记录安全事件
@@ -238,9 +238,9 @@ class AuditService:
     def get_user_audit_logs(
         db: Session,
         user_id: str,  # UUID
-        event_types: Optional[List[AuditEventType]] = None,
+        event_types: list[AuditEventType] | None = None,
         limit: int = 100,
-    ) -> List[AuditLog]:
+    ) -> list[AuditLog]:
         """
         获取用户的审计日志
 
@@ -262,7 +262,7 @@ class AuditService:
         return query.order_by(AuditLog.created_at.desc()).limit(limit).all()
 
     @staticmethod
-    def get_suspicious_activities(db: Session, hours: int = 24, limit: int = 100) -> List[AuditLog]:
+    def get_suspicious_activities(db: Session, hours: int = 24, limit: int = 100) -> list[AuditLog]:
         """
         获取可疑活动
 
@@ -292,7 +292,7 @@ class AuditService:
         )
 
     @staticmethod
-    def analyze_user_behavior(db: Session, user_id: str, days: int = 30) -> Dict[str, Any]:  # UUID
+    def analyze_user_behavior(db: Session, user_id: str, days: int = 30) -> dict[str, Any]:  # UUID
         """
         分析用户行为
 
@@ -373,16 +373,16 @@ class AuditService:
     def log_event_auto(
         event_type: AuditEventType,
         description: str,
-        user_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        request_id: Optional[str] = None,
-        status_code: Optional[int] = None,
-        error_message: Optional[str] = None,
-        event_metadata: Optional[Dict[str, Any]] = None,
-        db: Optional[Session] = None,
-    ) -> Optional[AuditLog]:
+        user_id: str | None = None,
+        api_key_id: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        request_id: str | None = None,
+        status_code: int | None = None,
+        error_message: str | None = None,
+        event_metadata: dict[str, Any] | None = None,
+        db: Session | None = None,
+    ) -> AuditLog | None:
         """
         自动管理数据库会话的审计日志记录方法
         适用于中间件等无法直接获取数据库会话的场景

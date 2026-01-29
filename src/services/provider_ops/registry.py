@@ -4,8 +4,9 @@
 管理所有可用的 Provider 架构。
 """
 
+from __future__ import annotations
+
 import threading
-from typing import Dict, List, Optional, Type
 
 from src.core.logger import logger
 from src.services.provider_ops.architectures import (
@@ -27,11 +28,11 @@ class ArchitectureRegistry:
     单例模式，管理所有可用的 Provider 架构。
     """
 
-    _instance: Optional["ArchitectureRegistry"] = None
+    _instance: ArchitectureRegistry | None = None
     _lock = threading.Lock()
     _initialized: bool = False
 
-    def __new__(cls) -> "ArchitectureRegistry":
+    def __new__(cls) -> ArchitectureRegistry:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -43,7 +44,7 @@ class ArchitectureRegistry:
         if self._initialized:
             return
 
-        self._architectures: Dict[str, ProviderArchitecture] = {}
+        self._architectures: dict[str, ProviderArchitecture] = {}
         self._initialized = True
 
         # 注册内置架构
@@ -51,7 +52,7 @@ class ArchitectureRegistry:
 
     def _register_builtin_architectures(self) -> None:
         """注册内置架构"""
-        builtin: List[Type[ProviderArchitecture]] = [
+        builtin: list[type[ProviderArchitecture]] = [
             AnyrouterArchitecture,
             CubenceArchitecture,
             GenericApiArchitecture,
@@ -92,7 +93,7 @@ class ArchitectureRegistry:
             return True
         return False
 
-    def get(self, architecture_id: str) -> Optional[ProviderArchitecture]:
+    def get(self, architecture_id: str) -> ProviderArchitecture | None:
         """
         获取架构
 
@@ -104,7 +105,7 @@ class ArchitectureRegistry:
         """
         return self._architectures.get(architecture_id)
 
-    def get_or_default(self, architecture_id: Optional[str] = None) -> ProviderArchitecture:
+    def get_or_default(self, architecture_id: str | None = None) -> ProviderArchitecture:
         """
         获取架构，如果不存在则返回默认架构
 
@@ -120,21 +121,21 @@ class ArchitectureRegistry:
         # 返回默认架构（generic_api）
         return self._architectures.get("generic_api", GenericApiArchitecture())
 
-    def list_all(self) -> List[ProviderArchitecture]:
+    def list_all(self) -> list[ProviderArchitecture]:
         """获取所有已注册的架构"""
         return list(self._architectures.values())
 
-    def list_ids(self) -> List[str]:
+    def list_ids(self) -> list[str]:
         """获取所有已注册的架构 ID"""
         return list(self._architectures.keys())
 
-    def to_dict_list(self) -> List[Dict]:
+    def to_dict_list(self) -> list[dict]:
         """获取所有架构的字典表示（用于 API 响应）"""
         return [arch.to_dict() for arch in self._architectures.values()]
 
 
 # 全局注册表实例
-_registry: Optional[ArchitectureRegistry] = None
+_registry: ArchitectureRegistry | None = None
 
 
 def get_registry() -> ArchitectureRegistry:

@@ -4,10 +4,9 @@ Claude SSE 流解析器
 解析 Claude Messages API 的 Server-Sent Events 流。
 """
 
-from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.api.handlers.base.utils import extract_cache_creation_tokens
 
@@ -43,7 +42,7 @@ class ClaudeStreamParser:
     DELTA_TEXT = "text_delta"
     DELTA_INPUT_JSON = "input_json_delta"
 
-    def parse_chunk(self, chunk: bytes | str) -> List[Dict[str, Any]]:
+    def parse_chunk(self, chunk: bytes | str) -> list[dict[str, Any]]:
         """
         解析 SSE 数据块
 
@@ -58,10 +57,10 @@ class ClaudeStreamParser:
         else:
             text = chunk
 
-        events: List[Dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
         lines = text.strip().split("\n")
 
-        current_event_type: Optional[str] = None
+        current_event_type: str | None = None
 
         for line in lines:
             line = line.strip()
@@ -96,7 +95,7 @@ class ClaudeStreamParser:
 
         return events
 
-    def parse_line(self, line: str) -> Optional[Dict[str, Any]]:
+    def parse_line(self, line: str) -> dict[str, Any] | None:
         """
         解析单行 SSE 数据
 
@@ -117,7 +116,7 @@ class ClaudeStreamParser:
         except json.JSONDecodeError:
             return None
 
-    def is_done_event(self, event: Dict[str, Any]) -> bool:
+    def is_done_event(self, event: dict[str, Any]) -> bool:
         """
         判断是否为结束事件
 
@@ -130,7 +129,7 @@ class ClaudeStreamParser:
         event_type = event.get("type")
         return event_type in (self.EVENT_MESSAGE_STOP, "__done__")
 
-    def is_error_event(self, event: Dict[str, Any]) -> bool:
+    def is_error_event(self, event: dict[str, Any]) -> bool:
         """
         判断是否为错误事件
 
@@ -142,7 +141,7 @@ class ClaudeStreamParser:
         """
         return event.get("type") == self.EVENT_ERROR
 
-    def get_event_type(self, event: Dict[str, Any]) -> Optional[str]:
+    def get_event_type(self, event: dict[str, Any]) -> str | None:
         """
         获取事件类型
 
@@ -155,7 +154,7 @@ class ClaudeStreamParser:
         event_type = event.get("type")
         return str(event_type) if event_type is not None else None
 
-    def extract_text_delta(self, event: Dict[str, Any]) -> Optional[str]:
+    def extract_text_delta(self, event: dict[str, Any]) -> str | None:
         """
         从 content_block_delta 事件中提取文本增量
 
@@ -175,7 +174,7 @@ class ClaudeStreamParser:
 
         return None
 
-    def extract_usage(self, event: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    def extract_usage(self, event: dict[str, Any]) -> dict[str, int] | None:
         """
         从事件中提取 token 使用量
 
@@ -212,7 +211,7 @@ class ClaudeStreamParser:
 
         return None
 
-    def extract_message_id(self, event: Dict[str, Any]) -> Optional[str]:
+    def extract_message_id(self, event: dict[str, Any]) -> str | None:
         """
         从 message_start 事件中提取消息 ID
 
@@ -229,7 +228,7 @@ class ClaudeStreamParser:
         msg_id = message.get("id")
         return str(msg_id) if msg_id is not None else None
 
-    def extract_stop_reason(self, event: Dict[str, Any]) -> Optional[str]:
+    def extract_stop_reason(self, event: dict[str, Any]) -> str | None:
         """
         从 message_delta 事件中提取停止原因
 

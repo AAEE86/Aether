@@ -1,7 +1,8 @@
 """模块管理 API 端点"""
 
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
@@ -28,18 +29,18 @@ class ModuleStatusResponse(BaseModel):
     enabled: bool
     active: bool
     config_validated: bool
-    config_error: Optional[str]
+    config_error: str | None
     display_name: str
     description: str
     category: str
-    admin_route: Optional[str]
-    admin_menu_icon: Optional[str]
-    admin_menu_group: Optional[str]
+    admin_route: str | None
+    admin_menu_icon: str | None
+    admin_menu_group: str | None
     admin_menu_order: int
     health: str
 
     @classmethod
-    def from_status(cls, status: ModuleStatus) -> "ModuleStatusResponse":
+    def from_status(cls, status: ModuleStatus) -> ModuleStatusResponse:
         return cls(
             name=status.name,
             available=status.available,
@@ -130,7 +131,7 @@ async def set_module_enabled(
 class AdminGetAllModulesStatusAdapter(AdminApiAdapter):
     """获取所有模块状态"""
 
-    async def handle(self, context) -> Dict[str, Any]:
+    async def handle(self, context) -> dict[str, Any]:
         registry = get_module_registry()
         all_status = await registry.get_all_status_async(context.db)
 
@@ -146,7 +147,7 @@ class AdminGetModuleStatusAdapter(AdminApiAdapter):
 
     module_name: str
 
-    async def handle(self, context) -> Dict[str, Any]:
+    async def handle(self, context) -> dict[str, Any]:
         registry = get_module_registry()
         status = await registry.get_module_status_async(self.module_name, context.db)
 
@@ -162,7 +163,7 @@ class AdminSetModuleEnabledAdapter(AdminApiAdapter):
 
     module_name: str
 
-    async def handle(self, context) -> Dict[str, Any]:
+    async def handle(self, context) -> dict[str, Any]:
         registry = get_module_registry()
 
         # 检查模块是否存在

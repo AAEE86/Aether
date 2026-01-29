@@ -4,8 +4,6 @@ IP 安全管理接口
 提供 IP 黑白名单管理和速率限制统计
 """
 
-from typing import List, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
@@ -14,7 +12,6 @@ from src.api.base.adapter import ApiMode
 from src.api.base.authenticated_adapter import AuthenticatedApiAdapter
 from src.api.base.pipeline import ApiRequestPipeline
 from src.core.exceptions import InvalidRequestException, translate_pydantic_error
-from src.core.logger import logger
 from src.database import get_db
 from src.services.rate_limit.ip_limiter import IPRateLimiter
 
@@ -30,7 +27,7 @@ class AddIPToBlacklistRequest(BaseModel):
 
     ip_address: str = Field(..., description="IP 地址")
     reason: str = Field(..., min_length=1, max_length=200, description="加入黑名单的原因")
-    ttl: Optional[int] = Field(None, gt=0, description="过期时间（秒），None 表示永久")
+    ttl: int | None = Field(None, gt=0, description="过期时间（秒），None 表示永久")
 
 
 class RemoveIPFromBlacklistRequest(BaseModel):

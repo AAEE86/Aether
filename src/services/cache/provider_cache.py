@@ -5,7 +5,6 @@ Provider 缓存服务 - 减少 Provider 和 ProviderAPIKey 查询
 这些数据在 UsageService.record_usage() 中被频繁查询但变化不频繁。
 """
 
-from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -27,8 +26,8 @@ class ProviderCacheService:
 
     @staticmethod
     def compute_rate_multiplier(
-        rate_multipliers: Optional[dict],
-        api_format: Optional[str] = None,
+        rate_multipliers: dict | None,
+        api_format: str | None = None,
     ) -> float:
         """
         计算 rate_multiplier 的纯函数（无数据库/缓存依赖）
@@ -50,8 +49,8 @@ class ProviderCacheService:
 
     @staticmethod
     async def get_provider_api_key_rate_multiplier(
-        db: Session, provider_api_key_id: str, api_format: Optional[str] = None
-    ) -> Optional[float]:
+        db: Session, provider_api_key_id: str, api_format: str | None = None
+    ) -> float | None:
         """
         获取 ProviderAPIKey 的 rate_multiplier（带缓存）
 
@@ -106,7 +105,7 @@ class ProviderCacheService:
     @staticmethod
     async def get_provider_billing_type(
         db: Session, provider_id: str
-    ) -> Optional[ProviderBillingType]:
+    ) -> ProviderBillingType | None:
         """
         获取 Provider 的 billing_type（带缓存）
 
@@ -154,10 +153,10 @@ class ProviderCacheService:
     @staticmethod
     async def get_rate_multiplier_and_free_tier(
         db: Session,
-        provider_api_key_id: Optional[str],
-        provider_id: Optional[str],
-        api_format: Optional[str] = None,
-    ) -> Tuple[float, bool]:
+        provider_api_key_id: str | None,
+        provider_id: str | None,
+        api_format: str | None = None,
+    ) -> tuple[float, bool]:
         """
         获取费率倍数和是否免费套餐（带缓存）
 

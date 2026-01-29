@@ -15,7 +15,7 @@ import json
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import Any, Dict, Optional
+from typing import Any
 
 import redis.asyncio as aioredis
 from src.core.logger import logger
@@ -28,7 +28,7 @@ class BaseCacheBackend(ABC):
     """缓存后端抽象基类"""
 
     @abstractmethod
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """获取缓存值"""
         pass
 
@@ -43,7 +43,7 @@ class BaseCacheBackend(ABC):
         pass
 
     @abstractmethod
-    async def clear(self, pattern: Optional[str] = None) -> None:
+    async def clear(self, pattern: str | None = None) -> None:
         """清空缓存（支持模式匹配）"""
         pass
 
@@ -65,12 +65,12 @@ class LocalCache(BaseCacheBackend):
             default_ttl: 默认过期时间（秒）
         """
         self._cache: OrderedDict = OrderedDict()
-        self._expiry: Dict[str, float] = {}
+        self._expiry: dict[str, float] = {}
         self._max_size = max_size
         self._default_ttl = default_ttl
         self._lock = asyncio.Lock()
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """获取缓存值（线程安全）"""
         async with self._lock:
             if key not in self._cache:
@@ -115,7 +115,7 @@ class LocalCache(BaseCacheBackend):
             if key in self._expiry:
                 del self._expiry[key]
 
-    async def clear(self, pattern: Optional[str] = None) -> None:
+    async def clear(self, pattern: str | None = None) -> None:
         """清空缓存（线程安全）"""
         async with self._lock:
             if pattern is None:
@@ -145,7 +145,7 @@ class LocalCache(BaseCacheBackend):
 
             return True
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取缓存统计信息"""
         return {
             "backend": "local",
@@ -177,7 +177,7 @@ class RedisCache(BaseCacheBackend):
         """构造完整的 Redis 键"""
         return f"{self._key_prefix}:{key}"
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """获取缓存值"""
         try:
             redis_key = self._make_key(key)
@@ -223,7 +223,7 @@ class RedisCache(BaseCacheBackend):
         except Exception as e:
             logger.error(f"[RedisCache] 删除缓存失败: {key}, 错误: {e}")
 
-    async def clear(self, pattern: Optional[str] = None) -> None:
+    async def clear(self, pattern: str | None = None) -> None:
         """清空缓存"""
         try:
             if pattern is None:
@@ -264,7 +264,7 @@ class RedisCache(BaseCacheBackend):
         except Exception as e:
             logger.error(f"[RedisCache] 发布缓存失效失败: {channel}, {key}, 错误: {e}")
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取缓存统计信息"""
         return {
             "backend": "redis",
@@ -274,7 +274,7 @@ class RedisCache(BaseCacheBackend):
 
 
 # 缓存后端工厂
-_cache_backends: Dict[str, BaseCacheBackend] = {}
+_cache_backends: dict[str, BaseCacheBackend] = {}
 
 
 async def get_cache_backend(

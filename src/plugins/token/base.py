@@ -3,9 +3,10 @@ Token计数插件基类
 定义Token计数的接口
 """
 
+from __future__ import annotations
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from src.plugins.common import BasePlugin
 
@@ -21,7 +22,7 @@ class TokenUsage:
     cache_write_tokens: int = 0  # Claude缓存写入
     reasoning_tokens: int = 0  # OpenAI o1推理令牌
 
-    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+    def __add__(self, other: TokenUsage) -> TokenUsage:
         """令牌使用相加"""
         return TokenUsage(
             input_tokens=self.input_tokens + other.input_tokens,
@@ -32,7 +33,7 @@ class TokenUsage:
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
         )
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> dict[str, int]:
         """转换为字典"""
         return {
             "input_tokens": self.input_tokens,
@@ -50,7 +51,7 @@ class TokenCounterPlugin(BasePlugin):
     支持不同模型的Token计数
     """
 
-    def __init__(self, name: str = "token_counter", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "token_counter", config: dict[str, Any] = None):
         # 调用父类初始化，设置metadata
         super().__init__(
             name=name, config=config, description="Token Counter Plugin", version="1.0.0"
@@ -65,25 +66,25 @@ class TokenCounterPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def count_tokens(self, text: str, model: Optional[str] = None) -> int:
+    async def count_tokens(self, text: str, model: str | None = None) -> int:
         """计算文本的Token数量"""
         pass
 
     @abstractmethod
     async def count_messages(
-        self, messages: List[Dict[str, Any]], model: Optional[str] = None
+        self, messages: list[dict[str, Any]], model: str | None = None
     ) -> int:
         """计算消息列表的Token数量"""
         pass
 
-    async def count_request(self, request: Dict[str, Any], model: Optional[str] = None) -> int:
+    async def count_request(self, request: dict[str, Any], model: str | None = None) -> int:
         """计算请求的Token数量"""
         model = model or request.get("model") or self.default_model
         messages = request.get("messages", [])
         return await self.count_messages(messages, model)
 
     async def count_response(
-        self, response: Dict[str, Any], model: Optional[str] = None
+        self, response: dict[str, Any], model: str | None = None
     ) -> TokenUsage:
         """从响应中提取Token使用情况"""
         usage = response.get("usage", {})
@@ -112,8 +113,8 @@ class TokenCounterPlugin(BasePlugin):
         return TokenUsage()
 
     async def estimate_cost(
-        self, usage: TokenUsage, model: str, provider: Optional[str] = None
-    ) -> Dict[str, float]:
+        self, usage: TokenUsage, model: str, provider: str | None = None
+    ) -> dict[str, float]:
         """估算使用成本"""
         # 默认价格表（每1M tokens的价格）
         pricing = self.config.get("pricing", {})
@@ -156,11 +157,11 @@ class TokenCounterPlugin(BasePlugin):
         }
 
     @abstractmethod
-    async def get_model_info(self, model: str) -> Dict[str, Any]:
+    async def get_model_info(self, model: str) -> dict[str, Any]:
         """获取模型信息"""
         pass
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
         return {
             "type": self.name,

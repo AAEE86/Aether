@@ -6,7 +6,7 @@
 from abc import abstractmethod
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.plugins.common import BasePlugin
 
@@ -28,9 +28,9 @@ class Metric:
         name: str,
         value: float,
         metric_type: MetricType,
-        labels: Optional[Dict[str, str]] = None,
-        timestamp: Optional[datetime] = None,
-        description: Optional[str] = None,
+        labels: dict[str, str] | None = None,
+        timestamp: datetime | None = None,
+        description: str | None = None,
     ):
         self.name = name
         self.value = value
@@ -46,7 +46,7 @@ class MonitorPlugin(BasePlugin):
     所有监控插件必须继承此类并实现相关方法
     """
 
-    def __init__(self, name: str, config: Dict[str, Any] = None):
+    def __init__(self, name: str, config: dict[str, Any] = None):
         """
         初始化监控插件
 
@@ -71,7 +71,7 @@ class MonitorPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def record_batch(self, metrics: List[Metric]):
+    async def record_batch(self, metrics: list[Metric]):
         """
         批量记录指标
 
@@ -81,7 +81,7 @@ class MonitorPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def increment(self, name: str, value: float = 1, labels: Optional[Dict[str, str]] = None):
+    async def increment(self, name: str, value: float = 1, labels: dict[str, str] | None = None):
         """
         增加计数器
 
@@ -93,7 +93,7 @@ class MonitorPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def gauge(self, name: str, value: float, labels: Optional[Dict[str, str]] = None):
+    async def gauge(self, name: str, value: float, labels: dict[str, str] | None = None):
         """
         设置仪表值
 
@@ -109,8 +109,8 @@ class MonitorPlugin(BasePlugin):
         self,
         name: str,
         value: float,
-        labels: Optional[Dict[str, str]] = None,
-        buckets: Optional[List[float]] = None,
+        labels: dict[str, str] | None = None,
+        buckets: list[float] | None = None,
     ):
         """
         记录直方图数据
@@ -124,7 +124,7 @@ class MonitorPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def timing(self, name: str, duration: float, labels: Optional[Dict[str, str]] = None):
+    async def timing(self, name: str, duration: float, labels: dict[str, str] | None = None):
         """
         记录时间指标
 
@@ -143,7 +143,7 @@ class MonitorPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """
         获取插件统计信息
 
@@ -158,8 +158,8 @@ class MonitorPlugin(BasePlugin):
         endpoint: str,
         status_code: int,
         duration: float,
-        provider: Optional[str] = None,
-        model: Optional[str] = None,
+        provider: str | None = None,
+        model: str | None = None,
     ):
         """
         记录API请求指标（便捷方法）
@@ -187,7 +187,10 @@ class MonitorPlugin(BasePlugin):
         # 异步记录指标
         import asyncio
 
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # 没有事件循环时跳过
 
         # 请求计数
         loop.create_task(self.increment("http_requests_total", labels=labels))
@@ -205,7 +208,7 @@ class MonitorPlugin(BasePlugin):
         model: str,
         input_tokens: int,
         output_tokens: int,
-        cost: Optional[float] = None,
+        cost: float | None = None,
     ):
         """
         记录Token使用指标（便捷方法）
@@ -221,7 +224,10 @@ class MonitorPlugin(BasePlugin):
 
         import asyncio
 
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # 没有事件循环时跳过
 
         # Token计数
         loop.create_task(self.increment("tokens_input_total", input_tokens, labels=labels))
@@ -234,7 +240,7 @@ class MonitorPlugin(BasePlugin):
         if cost is not None:
             loop.create_task(self.increment("usage_cost_total", cost, labels=labels))
 
-    def configure(self, config: Dict[str, Any]):
+    def configure(self, config: dict[str, Any]):
         """
         配置插件
 

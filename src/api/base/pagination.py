@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 from dataclasses import asdict, dataclass
-from typing import Any, List, Sequence, Tuple, TypeVar
+from typing import Any, TypeVar
+from collections.abc import Sequence
 
 from sqlalchemy.orm import Query
 
@@ -19,7 +18,7 @@ class PaginationMeta:
         return asdict(self)
 
 
-def paginate_query(query: Query, limit: int, offset: int) -> Tuple[int, List[T]]:
+def paginate_query(query: Query, limit: int, offset: int) -> tuple[int, list[T]]:
     """
     对 SQLAlchemy 查询应用 limit/offset，并返回总数与结果列表。
     """
@@ -30,7 +29,7 @@ def paginate_query(query: Query, limit: int, offset: int) -> Tuple[int, List[T]]
 
 def paginate_sequence(
     items: Sequence[T], limit: int, offset: int
-) -> Tuple[List[T], PaginationMeta]:
+) -> tuple[list[T], PaginationMeta]:
     """
     对内存序列应用分页，返回切片和元数据。
     """
@@ -40,7 +39,7 @@ def paginate_sequence(
     return sliced, meta
 
 
-def build_pagination_payload(items: List[dict], meta: PaginationMeta, **extra: Any) -> dict:
+def build_pagination_payload(items: list[dict], meta: PaginationMeta, **extra: Any) -> dict:
     """
     构建标准分页响应 payload。
     """

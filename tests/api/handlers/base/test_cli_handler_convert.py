@@ -9,7 +9,6 @@ CliMessageHandlerBase._convert_sse_line 单元测试
 """
 
 import json
-from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,7 +26,7 @@ class MockCliHandler:
         ctx: StreamContext,
         line: str,
         events: list,
-    ) -> List[str]:
+    ) -> list[str]:
         """复制自 CliMessageHandlerBase._convert_sse_line"""
         from src.core.api_format.conversion import (
             format_conversion_registry,

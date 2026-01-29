@@ -10,7 +10,6 @@
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
@@ -34,7 +33,7 @@ class EnableAdaptiveRequest(BaseModel):
     """启用自适应模式请求"""
 
     enabled: bool = Field(..., description="是否启用自适应模式（true=自适应，false=固定限制）")
-    fixed_limit: Optional[int] = Field(
+    fixed_limit: int | None = Field(
         None, ge=1, le=100, description="固定 RPM 限制（仅当 enabled=false 时生效，1-100）"
     )
 
@@ -43,30 +42,30 @@ class AdaptiveStatsResponse(BaseModel):
     """自适应统计响应"""
 
     adaptive_mode: bool = Field(..., description="是否为自适应模式（rpm_limit=NULL）")
-    rpm_limit: Optional[int] = Field(None, description="用户配置的固定限制（NULL=自适应）")
-    effective_limit: Optional[int] = Field(
+    rpm_limit: int | None = Field(None, description="用户配置的固定限制（NULL=自适应）")
+    effective_limit: int | None = Field(
         None, description="当前有效限制（自适应使用学习值，固定使用配置值）"
     )
-    learned_limit: Optional[int] = Field(None, description="学习到的 RPM 限制")
+    learned_limit: int | None = Field(None, description="学习到的 RPM 限制")
     concurrent_429_count: int
     rpm_429_count: int
-    last_429_at: Optional[str]
-    last_429_type: Optional[str]
+    last_429_at: str | None
+    last_429_type: str | None
     adjustment_count: int
-    recent_adjustments: List[dict]
+    recent_adjustments: list[dict]
 
 
 class KeyListItem(BaseModel):
     """Key 列表项"""
 
     id: str
-    name: Optional[str]
+    name: str | None
     provider_id: str
-    api_formats: List[str] = Field(default_factory=list)
+    api_formats: list[str] = Field(default_factory=list)
     is_adaptive: bool = Field(..., description="是否为自适应模式（rpm_limit=NULL）")
-    rpm_limit: Optional[int] = Field(None, description="固定 RPM 限制（NULL=自适应）")
-    effective_limit: Optional[int] = Field(None, description="当前有效限制")
-    learned_rpm_limit: Optional[int] = Field(None, description="学习到的 RPM 限制")
+    rpm_limit: int | None = Field(None, description="固定 RPM 限制（NULL=自适应）")
+    effective_limit: int | None = Field(None, description="当前有效限制")
+    learned_rpm_limit: int | None = Field(None, description="学习到的 RPM 限制")
     concurrent_429_count: int
     rpm_429_count: int
 
@@ -76,12 +75,12 @@ class KeyListItem(BaseModel):
 
 @router.get(
     "/keys",
-    response_model=List[KeyListItem],
+    response_model=list[KeyListItem],
     summary="获取所有启用自适应模式的Key",
 )
 async def list_adaptive_keys(
     request: Request,
-    provider_id: Optional[str] = Query(None, description="按 Provider 过滤"),
+    provider_id: str | None = Query(None, description="按 Provider 过滤"),
     db: Session = Depends(get_db),
 ):
     """
@@ -207,7 +206,7 @@ async def get_adaptive_summary(
 
 @dataclass
 class ListAdaptiveKeysAdapter(AdminApiAdapter):
-    provider_id: Optional[str] = None
+    provider_id: str | None = None
 
     async def handle(self, context):  # type: ignore[override]
         # 自适应模式：rpm_limit = NULL

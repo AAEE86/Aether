@@ -13,9 +13,11 @@
 - ChatAdapterBase 使用 RequestResult 处理异常响应
 """
 
+from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any
+from collections.abc import AsyncIterator
 
 
 class RequestStatus(Enum):
@@ -50,20 +52,20 @@ class RequestMetadata:
     model: str = "unknown"
 
     # Provider 追踪信息
-    provider_id: Optional[str] = None
-    provider_endpoint_id: Optional[str] = None
-    provider_api_key_id: Optional[str] = None
+    provider_id: str | None = None
+    provider_endpoint_id: str | None = None
+    provider_api_key_id: str | None = None
 
     # 请求/响应头
-    provider_request_headers: Dict[str, str] = field(default_factory=dict)
-    provider_response_headers: Dict[str, str] = field(default_factory=dict)
+    provider_request_headers: dict[str, str] = field(default_factory=dict)
+    provider_response_headers: dict[str, str] = field(default_factory=dict)
 
     # 其他元数据
-    attempt_id: Optional[str] = None
-    original_model: Optional[str] = None  # 用户请求的原始模型名（用于价格计算）
+    attempt_id: str | None = None
+    original_model: str | None = None  # 用户请求的原始模型名（用于价格计算）
 
     # Provider 响应元数据（存储 provider 返回的额外信息，如 Gemini 的 modelVersion）
-    response_metadata: Dict[str, Any] = field(default_factory=dict)
+    response_metadata: dict[str, Any] = field(default_factory=dict)
 
     def with_provider_info(
         self,
@@ -71,7 +73,7 @@ class RequestMetadata:
         provider_id: str,
         provider_endpoint_id: str,
         provider_api_key_id: str,
-    ) -> "RequestMetadata":
+    ) -> RequestMetadata:
         """返回包含 Provider 信息的新 RequestMetadata"""
         return RequestMetadata(
             api_format=self.api_format,
@@ -87,7 +89,7 @@ class RequestMetadata:
             response_metadata=self.response_metadata,
         )
 
-    def with_response_headers(self, headers: Dict[str, str]) -> "RequestMetadata":
+    def with_response_headers(self, headers: dict[str, str]) -> RequestMetadata:
         """返回包含响应头的新 RequestMetadata"""
         return RequestMetadata(
             api_format=self.api_format,
@@ -151,8 +153,8 @@ class RequestResult:
     metadata: RequestMetadata
 
     # 响应相关
-    response_data: Optional[Any] = None  # 成功时的响应数据
-    stream: Optional[AsyncIterator[str]] = None  # 流式响应
+    response_data: Any | None = None  # 成功时的响应数据
+    stream: AsyncIterator[str] | None = None  # 流式响应
 
     # 使用量和费用
     usage: UsageInfo = field(default_factory=UsageInfo)
@@ -160,16 +162,16 @@ class RequestResult:
 
     # 错误信息
     status_code: int = 200
-    error_message: Optional[str] = None
-    error_type: Optional[str] = None
+    error_message: str | None = None
+    error_type: str | None = None
 
     # 计时
     response_time_ms: int = 0
 
     # 请求信息（用于记录）
     is_stream: bool = False
-    request_headers: Dict[str, str] = field(default_factory=dict)
-    request_body: Dict[str, Any] = field(default_factory=dict)
+    request_headers: dict[str, str] = field(default_factory=dict)
+    request_body: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_success(self) -> bool:
@@ -191,7 +193,7 @@ class RequestResult:
         usage: UsageInfo,
         response_time_ms: int,
         is_stream: bool = False,
-    ) -> "RequestResult":
+    ) -> RequestResult:
         """创建成功的请求结果"""
         return cls(
             status=RequestStatus.SUCCESS,
@@ -212,7 +214,7 @@ class RequestResult:
         error_type: str,
         response_time_ms: int,
         is_stream: bool = False,
-    ) -> "RequestResult":
+    ) -> RequestResult:
         """创建失败的请求结果"""
         return cls(
             status=RequestStatus.FAILED,
@@ -229,9 +231,9 @@ class RequestResult:
         cls,
         metadata: RequestMetadata,
         response_time_ms: int,
-        usage: Optional[UsageInfo] = None,
+        usage: UsageInfo | None = None,
         is_stream: bool = False,
-    ) -> "RequestResult":
+    ) -> RequestResult:
         """创建客户端取消的请求结果"""
         return cls(
             status=RequestStatus.CANCELLED,
@@ -252,7 +254,7 @@ class RequestResult:
         model: str,
         response_time_ms: int,
         is_stream: bool = False,
-    ) -> "RequestResult":
+    ) -> RequestResult:
         """从异常创建失败的请求结果"""
         # 尝试从异常中提取 metadata
         existing_metadata = getattr(exception, "request_metadata", None)
@@ -338,7 +340,7 @@ class StreamWithMetadata:
         self,
         stream: AsyncIterator[str],
         metadata: RequestMetadata,
-        response_headers_container: Optional[Dict[str, Any]] = None,
+        response_headers_container: dict[str, Any] | None = None,
     ):
         self.stream = stream
         self.metadata = metadata

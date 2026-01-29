@@ -7,11 +7,10 @@ OpenAI Chat Completions Normalizer
 - 可选：OpenAI error <-> InternalError
 """
 
-from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from src.core.logger import logger
 from src.core.api_format.conversion.field_mappings import (
@@ -49,7 +48,6 @@ from src.core.api_format.conversion.stream_events import (
     InternalStreamEvent,
     MessageStartEvent,
     MessageStopEvent,
-    StreamEventType,
     ToolCallDeltaEvent,
 )
 from src.core.api_format.conversion.stream_state import StreamState
@@ -65,7 +63,7 @@ class OpenAINormalizer(FormatNormalizer):
     )
 
     # finish_reason -> StopReason
-    _FINISH_REASON_TO_STOP: Dict[str, StopReason] = {
+    _FINISH_REASON_TO_STOP: dict[str, StopReason] = {
         "stop": StopReason.END_TURN,
         "length": StopReason.MAX_TOKENS,
         "tool_calls": StopReason.TOOL_USE,
@@ -74,7 +72,7 @@ class OpenAINormalizer(FormatNormalizer):
     }
 
     # StopReason -> finish_reason
-    _STOP_TO_FINISH_REASON: Dict[StopReason, str] = {
+    _STOP_TO_FINISH_REASON: dict[StopReason, str] = {
         StopReason.END_TURN: "stop",
         StopReason.MAX_TOKENS: "length",
         StopReason.STOP_SEQUENCE: "stop",
@@ -84,7 +82,7 @@ class OpenAINormalizer(FormatNormalizer):
     }
 
     # InternalError.type -> OpenAI error.type（最佳努力）
-    _ERROR_TYPE_TO_OPENAI: Dict[ErrorType, str] = {
+    _ERROR_TYPE_TO_OPENAI: dict[ErrorType, str] = {
         ErrorType.INVALID_REQUEST: "invalid_request_error",
         ErrorType.AUTHENTICATION: "invalid_api_key",
         ErrorType.PERMISSION_DENIED: "invalid_request_error",
@@ -101,13 +99,13 @@ class OpenAINormalizer(FormatNormalizer):
     # Requests
     # =========================
 
-    def request_to_internal(self, request: Dict[str, Any]) -> InternalRequest:
+    def request_to_internal(self, request: dict[str, Any]) -> InternalRequest:
         model = str(request.get("model") or "")
 
-        dropped: Dict[str, int] = {}
+        dropped: dict[str, int] = {}
 
-        instructions: List[InstructionSegment] = []
-        messages: List[InternalMessage] = []
+        instructions: list[InstructionSegment] = []
+        messages: list[InternalMessage] = []
 
         for msg in request.get("messages") or []:
             if not isinstance(msg, dict):
@@ -146,7 +144,7 @@ class OpenAINormalizer(FormatNormalizer):
         )
 
         # 构建 extra，保留未识别字段
-        extra: Dict[str, Any] = {"openai": self._extract_extra(request, {"messages"})}
+        extra: dict[str, Any] = {"openai": self._extract_extra(request, {"messages"})}
 
         # 处理 extra_body.google (用于 Gemini 特定功能透传，如 thinkingConfig, responseModalities)
         extra_body = request.get("extra_body")
@@ -175,8 +173,8 @@ class OpenAINormalizer(FormatNormalizer):
 
         return internal
 
-    def request_from_internal(self, internal: InternalRequest) -> Dict[str, Any]:
-        out_messages: List[Dict[str, Any]] = []
+    def request_from_internal(self, internal: InternalRequest) -> dict[str, Any]:
+        out_messages: list[dict[str, Any]] = []
 
         if internal.instructions:
             for seg in internal.instructions:
@@ -189,7 +187,7 @@ class OpenAINormalizer(FormatNormalizer):
         for msg in internal.messages:
             out_messages.extend(self._internal_message_to_openai_messages(msg))
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "model": internal.model,
             "messages": out_messages,
         }
@@ -233,11 +231,11 @@ class OpenAINormalizer(FormatNormalizer):
     # Responses
     # =========================
 
-    def response_to_internal(self, response: Dict[str, Any]) -> InternalResponse:
+    def response_to_internal(self, response: dict[str, Any]) -> InternalResponse:
         rid = str(response.get("id") or "")
         model = str(response.get("model") or "")
 
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
 
         choices = response.get("choices") or []
         if isinstance(choices, list) and len(choices) > 1:
@@ -285,12 +283,12 @@ class OpenAINormalizer(FormatNormalizer):
         self,
         internal: InternalResponse,
         *,
-        requested_model: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
         # OpenAI Chat Completions response envelope
         # 优先使用用户请求的原始模型名，回退到上游返回的模型名
         model_name = requested_model if requested_model else internal.model
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "id": internal.id or "chatcmpl-unknown",
             "object": "chat.completion",
             "created": int(time.time()),
@@ -298,7 +296,7 @@ class OpenAINormalizer(FormatNormalizer):
             "choices": [],
         }
 
-        message: Dict[str, Any] = {"role": "assistant"}
+        message: dict[str, Any] = {"role": "assistant"}
 
         content_blocks, tool_blocks = self._split_blocks(internal.content)
         content_value = self._blocks_to_openai_content(content_blocks)
@@ -336,9 +334,9 @@ class OpenAINormalizer(FormatNormalizer):
     # Streaming
     # =========================
 
-    def stream_chunk_to_internal(self, chunk: Dict[str, Any], state: StreamState) -> List[InternalStreamEvent]:
+    def stream_chunk_to_internal(self, chunk: dict[str, Any], state: StreamState) -> list[InternalStreamEvent]:
         ss = state.substate(self.FORMAT_ID)
-        events: List[InternalStreamEvent] = []
+        events: list[InternalStreamEvent] = []
 
         # OpenAI streaming error（通常是单个 {"error": {...}}）
         if isinstance(chunk, dict) and "error" in chunk:
@@ -437,11 +435,11 @@ class OpenAINormalizer(FormatNormalizer):
         self,
         event: InternalStreamEvent,
         state: StreamState,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         ss = state.substate(self.FORMAT_ID)
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
 
-        def base_chunk(delta: Dict[str, Any], finish_reason: Optional[str] = None) -> Dict[str, Any]:
+        def base_chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:
             return {
                 "id": state.message_id or "chatcmpl-stream",
                 "object": "chat.completion.chunk",
@@ -570,10 +568,10 @@ class OpenAINormalizer(FormatNormalizer):
     # Error conversion
     # =========================
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         return isinstance(response, dict) and "error" in response
 
-    def error_to_internal(self, error_response: Dict[str, Any]) -> InternalError:
+    def error_to_internal(self, error_response: dict[str, Any]) -> InternalError:
         err = error_response.get("error") if isinstance(error_response, dict) else None
         err = err if isinstance(err, dict) else {}
 
@@ -592,9 +590,9 @@ class OpenAINormalizer(FormatNormalizer):
             extra={"openai": {"error": err}, "raw": {"type": raw_type}},
         )
 
-    def error_from_internal(self, internal: InternalError) -> Dict[str, Any]:
+    def error_from_internal(self, internal: InternalError) -> dict[str, Any]:
         type_str = self._ERROR_TYPE_TO_OPENAI.get(internal.type, "server_error")
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "message": internal.message,
             "type": type_str,
         }
@@ -608,8 +606,8 @@ class OpenAINormalizer(FormatNormalizer):
     # Helpers
     # =========================
 
-    def _openai_message_to_internal(self, msg: Dict[str, Any]) -> Tuple[Optional[InternalMessage], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _openai_message_to_internal(self, msg: dict[str, Any]) -> tuple[InternalMessage | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
 
         role_raw = str(msg.get("role") or "unknown")
         role = self._role_from_openai(role_raw)
@@ -656,8 +654,8 @@ class OpenAINormalizer(FormatNormalizer):
             dropped,
         )
 
-    def _openai_content_to_blocks(self, content: Any) -> Tuple[List[ContentBlock], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _openai_content_to_blocks(self, content: Any) -> tuple[list[ContentBlock], dict[str, int]]:
+        dropped: dict[str, int] = {}
 
         if content is None:
             return [], dropped
@@ -667,7 +665,7 @@ class OpenAINormalizer(FormatNormalizer):
             dropped["openai_content_non_list"] = dropped.get("openai_content_non_list", 0) + 1
             return [], dropped
 
-        blocks: List[ContentBlock] = []
+        blocks: list[ContentBlock] = []
         for part in content:
             if not isinstance(part, dict):
                 dropped["openai_content_part_non_dict"] = dropped.get("openai_content_part_non_dict", 0) + 1
@@ -698,21 +696,21 @@ class OpenAINormalizer(FormatNormalizer):
 
         return blocks, dropped
 
-    def _collapse_openai_text(self, content: Any) -> Tuple[str, Dict[str, int]]:
+    def _collapse_openai_text(self, content: Any) -> tuple[str, dict[str, int]]:
         blocks, dropped = self._openai_content_to_blocks(content)
         text_parts = [b.text for b in blocks if isinstance(b, TextBlock) and b.text]
         return ("\n\n".join(text_parts), dropped)
 
-    def _join_instructions(self, instructions: List[InstructionSegment]) -> Optional[str]:
+    def _join_instructions(self, instructions: list[InstructionSegment]) -> str | None:
         parts = [seg.text for seg in instructions if seg.text]
         joined = "\n\n".join(parts)
         return joined or None
 
-    def _openai_tools_to_internal(self, tools: Any) -> Optional[List[ToolDefinition]]:
+    def _openai_tools_to_internal(self, tools: Any) -> list[ToolDefinition] | None:
         if not tools or not isinstance(tools, list):
             return None
 
-        out: List[ToolDefinition] = []
+        out: list[ToolDefinition] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
@@ -720,7 +718,7 @@ class OpenAINormalizer(FormatNormalizer):
                 continue
 
             function_raw = tool.get("function")
-            function: Dict[str, Any] = function_raw if isinstance(function_raw, dict) else {}
+            function: dict[str, Any] = function_raw if isinstance(function_raw, dict) else {}
             name = str(function.get("name") or "")
             if not name:
                 continue
@@ -740,7 +738,7 @@ class OpenAINormalizer(FormatNormalizer):
 
         return out or None
 
-    def _openai_tool_choice_to_internal(self, tool_choice: Any) -> Optional[ToolChoice]:
+    def _openai_tool_choice_to_internal(self, tool_choice: Any) -> ToolChoice | None:
         if tool_choice is None:
             return None
 
@@ -756,13 +754,13 @@ class OpenAINormalizer(FormatNormalizer):
 
         if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
             fn_raw = tool_choice.get("function")
-            fn: Dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
+            fn: dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
             name = str(fn.get("name") or "")
             return ToolChoice(type=ToolChoiceType.TOOL, tool_name=name, extra={"openai": tool_choice})
 
         return ToolChoice(type=ToolChoiceType.AUTO, extra={"openai": tool_choice})
 
-    def _tool_choice_to_openai(self, tool_choice: ToolChoice) -> Union[str, Dict[str, Any]]:
+    def _tool_choice_to_openai(self, tool_choice: ToolChoice) -> str | dict[str, Any]:
         if tool_choice.type == ToolChoiceType.NONE:
             return "none"
         if tool_choice.type == ToolChoiceType.AUTO:
@@ -773,8 +771,8 @@ class OpenAINormalizer(FormatNormalizer):
             return {"type": "function", "function": {"name": tool_choice.tool_name or ""}}
         return "auto"
 
-    def _openai_tool_call_to_block(self, tool_call: Any) -> Tuple[Optional[ToolUseBlock], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _openai_tool_call_to_block(self, tool_call: Any) -> tuple[ToolUseBlock | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
         if not isinstance(tool_call, dict):
             dropped["openai_tool_call_non_dict"] = dropped.get("openai_tool_call_non_dict", 0) + 1
             return None, dropped
@@ -785,12 +783,12 @@ class OpenAINormalizer(FormatNormalizer):
             return None, dropped
 
         fn_raw = tool_call.get("function")
-        fn: Dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
+        fn: dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
         name = str(fn.get("name") or "")
         args_str = str(fn.get("arguments") or "")
         tool_id = str(tool_call.get("id") or "")
 
-        tool_input: Dict[str, Any]
+        tool_input: dict[str, Any]
         if args_str:
             try:
                 parsed = json.loads(args_str)
@@ -810,15 +808,15 @@ class OpenAINormalizer(FormatNormalizer):
             dropped,
         )
 
-    def _legacy_function_call_to_block(self, func_call: Dict[str, Any]) -> Tuple[Optional[ToolUseBlock], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _legacy_function_call_to_block(self, func_call: dict[str, Any]) -> tuple[ToolUseBlock | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
         name = str(func_call.get("name") or "")
         args_str = str(func_call.get("arguments") or "")
         if not name:
             dropped["openai_function_call_missing_name"] = dropped.get("openai_function_call_missing_name", 0) + 1
             return None, dropped
 
-        tool_input: Dict[str, Any]
+        tool_input: dict[str, Any]
         if args_str:
             try:
                 parsed = json.loads(args_str)
@@ -840,10 +838,10 @@ class OpenAINormalizer(FormatNormalizer):
 
     def _openai_tool_result_message_to_block(
         self,
-        msg: Dict[str, Any],
+        msg: dict[str, Any],
         tool_call_id: str,
-    ) -> Tuple[Optional[ToolResultBlock], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    ) -> tuple[ToolResultBlock | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
         content = msg.get("content")
         if content is None:
             return ToolResultBlock(tool_use_id=tool_call_id, output=None, content_text=None, extra={"openai": msg}), dropped
@@ -887,7 +885,7 @@ class OpenAINormalizer(FormatNormalizer):
             dropped,
         )
 
-    def _openai_usage_to_internal(self, usage: Any) -> Optional[UsageInfo]:
+    def _openai_usage_to_internal(self, usage: Any) -> UsageInfo | None:
         if not isinstance(usage, dict):
             return None
 
@@ -908,9 +906,9 @@ class OpenAINormalizer(FormatNormalizer):
             extra={"openai": extra} if extra else {},
         )
 
-    def _blocks_to_openai_content(self, blocks: List[ContentBlock]) -> Optional[Union[str, List[Dict[str, Any]]]]:
-        parts: List[Dict[str, Any]] = []
-        text_parts: List[str] = []
+    def _blocks_to_openai_content(self, blocks: list[ContentBlock]) -> str | list[dict[str, Any]] | None:
+        parts: list[dict[str, Any]] = []
+        text_parts: list[str] = []
 
         for b in blocks:
             if isinstance(b, TextBlock):
@@ -948,9 +946,9 @@ class OpenAINormalizer(FormatNormalizer):
         # OpenAI content 可以是空字符串；但作为响应 message.content 通常允许为 ""/None。
         return ""
 
-    def _split_blocks(self, blocks: List[ContentBlock]) -> Tuple[List[ContentBlock], List[ToolUseBlock]]:
-        content_blocks: List[ContentBlock] = []
-        tool_blocks: List[ToolUseBlock] = []
+    def _split_blocks(self, blocks: list[ContentBlock]) -> tuple[list[ContentBlock], list[ToolUseBlock]]:
+        content_blocks: list[ContentBlock] = []
+        tool_blocks: list[ToolUseBlock] = []
         for b in blocks:
             if isinstance(b, ToolUseBlock):
                 tool_blocks.append(b)
@@ -963,7 +961,7 @@ class OpenAINormalizer(FormatNormalizer):
             content_blocks.append(b)
         return content_blocks, tool_blocks
 
-    def _internal_message_to_openai_messages(self, msg: InternalMessage) -> List[Dict[str, Any]]:
+    def _internal_message_to_openai_messages(self, msg: InternalMessage) -> list[dict[str, Any]]:
         if msg.role == Role.USER:
             return self._user_message_to_openai(msg)
         if msg.role == Role.ASSISTANT:
@@ -974,9 +972,9 @@ class OpenAINormalizer(FormatNormalizer):
             return [{"role": "tool", "content": content_value or ""}]
         return [{"role": "user", "content": ""}]
 
-    def _user_message_to_openai(self, msg: InternalMessage) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
-        pending: List[ContentBlock] = []
+    def _user_message_to_openai(self, msg: InternalMessage) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        pending: list[ContentBlock] = []
 
         def flush_user() -> None:
             nonlocal pending
@@ -1008,9 +1006,9 @@ class OpenAINormalizer(FormatNormalizer):
 
         return out
 
-    def _assistant_message_to_openai(self, msg: InternalMessage) -> Dict[str, Any]:
-        content_blocks: List[ContentBlock] = []
-        tool_blocks: List[ToolUseBlock] = []
+    def _assistant_message_to_openai(self, msg: InternalMessage) -> dict[str, Any]:
+        content_blocks: list[ContentBlock] = []
+        tool_blocks: list[ToolUseBlock] = []
 
         for b in msg.content:
             if isinstance(b, ToolUseBlock):
@@ -1022,7 +1020,7 @@ class OpenAINormalizer(FormatNormalizer):
                 continue
             content_blocks.append(b)
 
-        out: Dict[str, Any] = {"role": "assistant"}
+        out: dict[str, Any] = {"role": "assistant"}
         content_value = self._blocks_to_openai_content(content_blocks)
         out["content"] = content_value if content_value is not None else ""
 
@@ -1031,7 +1029,7 @@ class OpenAINormalizer(FormatNormalizer):
 
         return out
 
-    def _tool_result_block_to_openai_message(self, block: ToolResultBlock) -> Dict[str, Any]:
+    def _tool_result_block_to_openai_message(self, block: ToolResultBlock) -> dict[str, Any]:
         content: str
         if block.content_text is not None:
             content = block.content_text
@@ -1048,7 +1046,7 @@ class OpenAINormalizer(FormatNormalizer):
             "content": content,
         }
 
-    def _tool_use_block_to_openai_call(self, block: ToolUseBlock, index: int) -> Dict[str, Any]:
+    def _tool_use_block_to_openai_call(self, block: ToolUseBlock, index: int) -> dict[str, Any]:
         return {
             "index": index,
             "id": block.tool_id or f"call_{index}",
@@ -1085,7 +1083,7 @@ class OpenAINormalizer(FormatNormalizer):
         except ValueError:
             return ErrorType.UNKNOWN
 
-    def _optional_int(self, value: Any) -> Optional[int]:
+    def _optional_int(self, value: Any) -> int | None:
         if value is None:
             return None
         try:
@@ -1093,7 +1091,7 @@ class OpenAINormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _optional_float(self, value: Any) -> Optional[float]:
+    def _optional_float(self, value: Any) -> float | None:
         if value is None:
             return None
         try:
@@ -1101,7 +1099,7 @@ class OpenAINormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _coerce_str_list(self, value: Any) -> Optional[List[str]]:
+    def _coerce_str_list(self, value: Any) -> list[str] | None:
         if value is None:
             return None
         if isinstance(value, str):
@@ -1110,14 +1108,14 @@ class OpenAINormalizer(FormatNormalizer):
             return [str(x) for x in value if x is not None]
         return None
 
-    def _extract_extra(self, payload: Dict[str, Any], known_keys: set[str]) -> Dict[str, Any]:
+    def _extract_extra(self, payload: dict[str, Any], known_keys: set[str]) -> dict[str, Any]:
         return {k: v for k, v in payload.items() if k not in known_keys}
 
-    def _merge_dropped(self, target: Dict[str, int], source: Dict[str, int]) -> None:
+    def _merge_dropped(self, target: dict[str, int], source: dict[str, int]) -> None:
         for k, v in source.items():
             target[k] = target.get(k, 0) + int(v)
 
-    def _ensure_tool_block_index(self, ss: Dict[str, Any], tool_key: str) -> int:
+    def _ensure_tool_block_index(self, ss: dict[str, Any], tool_key: str) -> int:
         mapping = ss.get("tool_id_to_block_index")
         if not isinstance(mapping, dict):
             mapping = {}
@@ -1131,7 +1129,7 @@ class OpenAINormalizer(FormatNormalizer):
         ss["next_block_index"] = next_idx + 1
         return next_idx
 
-    def _ensure_tool_call_index(self, ss: Dict[str, Any], tool_id: str) -> int:
+    def _ensure_tool_call_index(self, ss: dict[str, Any], tool_id: str) -> int:
         mapping = ss.get("tool_id_to_index")
         if not isinstance(mapping, dict):
             mapping = {}

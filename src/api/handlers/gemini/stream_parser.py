@@ -15,7 +15,7 @@ Gemini streamGenerateContent 常见两种返回（与上游/代理实现有关�
 """
 
 import json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 
 class GeminiStreamParser:
@@ -43,7 +43,7 @@ class GeminiStreamParser:
         self._in_array = False
         self._brace_depth = 0
 
-    def parse_chunk(self, chunk: Union[bytes, str]) -> List[Dict[str, Any]]:
+    def parse_chunk(self, chunk: bytes | str) -> list[dict[str, Any]]:
         """
         解析流式数据块
 
@@ -58,7 +58,7 @@ class GeminiStreamParser:
         else:
             text = chunk
 
-        events: List[Dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
 
         for char in text:
             if char == "[" and not self._in_array:
@@ -97,7 +97,7 @@ class GeminiStreamParser:
 
         return events
 
-    def parse_line(self, line: str) -> Optional[Dict[str, Any]]:
+    def parse_line(self, line: str) -> dict[str, Any] | None:
         """
         解析单行 JSON 数据
 
@@ -118,7 +118,7 @@ class GeminiStreamParser:
         except json.JSONDecodeError:
             return None
 
-    def is_done_event(self, event: Dict[str, Any]) -> bool:
+    def is_done_event(self, event: dict[str, Any]) -> bool:
         """
         判断是否为结束事件
 
@@ -143,7 +143,7 @@ class GeminiStreamParser:
 
         return False
 
-    def is_error_event(self, event: Dict[str, Any]) -> bool:
+    def is_error_event(self, event: dict[str, Any]) -> bool:
         """
         判断是否为错误事件
 
@@ -171,7 +171,7 @@ class GeminiStreamParser:
 
         return False
 
-    def extract_error_info(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def extract_error_info(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """
         从事件中提取错误信息
 
@@ -208,7 +208,7 @@ class GeminiStreamParser:
 
         return None
 
-    def get_finish_reason(self, event: Dict[str, Any]) -> Optional[str]:
+    def get_finish_reason(self, event: dict[str, Any]) -> str | None:
         """
         获取结束原因
 
@@ -224,7 +224,7 @@ class GeminiStreamParser:
             return str(reason) if reason is not None else None
         return None
 
-    def extract_text_delta(self, event: Dict[str, Any]) -> Optional[str]:
+    def extract_text_delta(self, event: dict[str, Any]) -> str | None:
         """
         从响应中提取文本内容
 
@@ -248,7 +248,7 @@ class GeminiStreamParser:
 
         return "".join(text_parts) if text_parts else None
 
-    def extract_usage(self, event: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    def extract_usage(self, event: dict[str, Any]) -> dict[str, int] | None:
         """
         从事件中提取 token 使用量
 
@@ -280,7 +280,7 @@ class GeminiStreamParser:
             "cached_tokens": usage_metadata.get("cachedContentTokenCount", 0),
         }
 
-    def extract_model_version(self, event: Dict[str, Any]) -> Optional[str]:
+    def extract_model_version(self, event: dict[str, Any]) -> str | None:
         """
         从响应中提取模型版本
 
@@ -293,7 +293,7 @@ class GeminiStreamParser:
         version = event.get("modelVersion")
         return str(version) if version is not None else None
 
-    def extract_safety_ratings(self, event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    def extract_safety_ratings(self, event: dict[str, Any]) -> list[dict[str, Any]] | None:
         """
         从响应中提取安全评级
 

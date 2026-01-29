@@ -23,7 +23,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple
 
 from src.config.constants import CacheTTL
 from src.core.logger import logger
@@ -86,18 +86,18 @@ class CacheAffinityManager:
         """
         self.redis = redis_client
         self.default_ttl = default_ttl
-        self._memory_store: Dict[str, Dict[str, Any]] = {}
-        self._memory_lock: Optional[asyncio.Lock] = None
+        self._memory_store: dict[str, dict[str, Any]] = {}
+        self._memory_lock: asyncio.Lock | None = None
 
         # L1 缓存（即使使用 Redis 也启用，减少网络往返）
         self._l1_cache_ttl = int(os.getenv("CACHE_AFFINITY_L1_TTL", str(CacheTTL.L1_LOCAL)))
-        self._l1_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._l1_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._l1_lock = asyncio.Lock()
         self._l1_max_size = int(os.getenv("CACHE_AFFINITY_L1_MAX_SIZE", "1000"))  # 最大缓存条目数
         self._l1_last_cleanup = time.time()
 
         # 请求级别锁，避免同一用户+端点同时更新造成抖动
-        self._request_locks: Dict[str, asyncio.Lock] = {}
+        self._request_locks: dict[str, asyncio.Lock] = {}
 
         # 统计信息
         self._stats = {
@@ -138,7 +138,7 @@ class CacheAffinityManager:
         """
         return f"cache_affinity:{affinity_key}:{api_format}:{model_name}"
 
-    async def _get_l1_entry(self, cache_key: str) -> Optional[Dict[str, Any]]:
+    async def _get_l1_entry(self, cache_key: str) -> dict[str, Any] | None:
         async with self._l1_lock:
             record = self._l1_cache.get(cache_key)
             if not record:
@@ -149,7 +149,7 @@ class CacheAffinityManager:
                 return None
             return dict(payload)
 
-    async def _set_l1_entry(self, cache_key: str, payload: Optional[Dict[str, Any]]):
+    async def _set_l1_entry(self, cache_key: str, payload: dict[str, Any] | None):
         async with self._l1_lock:
             if not payload:
                 self._l1_cache.pop(cache_key, None)
@@ -205,7 +205,7 @@ class CacheAffinityManager:
         finally:
             lock.release()
 
-    async def _load_affinity_dict(self, cache_key: str) -> Optional[Dict[str, Any]]:
+    async def _load_affinity_dict(self, cache_key: str) -> dict[str, Any] | None:
         """读取缓存亲和性字典"""
         # 先尝试L1缓存
         l1_value = await self._get_l1_entry(cache_key)
@@ -228,7 +228,7 @@ class CacheAffinityManager:
             return dict(record) if record else None
 
     async def _save_affinity_dict(
-        self, cache_key: str, ttl: int, affinity_dict: Dict[str, Any]
+        self, cache_key: str, ttl: int, affinity_dict: dict[str, Any]
     ) -> None:
         """存储缓存亲和性字典"""
         if not self._is_memory_backend():
@@ -252,7 +252,7 @@ class CacheAffinityManager:
 
         await self._set_l1_entry(cache_key, None)
 
-    async def _snapshot_memory_items(self) -> Dict[str, Dict[str, Any]]:
+    async def _snapshot_memory_items(self) -> dict[str, dict[str, Any]]:
         """复制内存存储内容（仅内存模式使用）"""
         lock = self._get_memory_lock()
         async with lock:
@@ -260,7 +260,7 @@ class CacheAffinityManager:
 
     async def get_affinity(
         self, affinity_key: str, api_format: str, model_name: str
-    ) -> Optional[CacheAffinity]:
+    ) -> CacheAffinity | None:
         """
         获取指定亲和性标识符对特定API格式和模型的缓存亲和性
 
@@ -315,7 +315,7 @@ class CacheAffinityManager:
         api_format: str,
         model_name: str,
         supports_caching: bool = True,
-        ttl: Optional[int] = None,
+        ttl: int | None = None,
     ) -> None:
         """
         设置指定亲和性标识符对特定API格式和模型的缓存亲和性
@@ -345,7 +345,7 @@ class CacheAffinityManager:
         try:
             async with self._acquire_request_lock(cache_key):
                 existing_dict = await self._load_affinity_dict(cache_key)
-                existing_affinity: Optional[CacheAffinity] = None
+                existing_affinity: CacheAffinity | None = None
                 if existing_dict and current_time <= existing_dict.get("expire_at", 0):
                     existing_affinity = CacheAffinity(
                         provider_id=existing_dict["provider_id"],
@@ -408,9 +408,9 @@ class CacheAffinityManager:
         affinity_key: str,
         api_format: str,
         model_name: str,
-        key_id: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        endpoint_id: Optional[str] = None,
+        key_id: str | None = None,
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
     ) -> None:
         """
         失效指定亲和性标识符对特定API格式和模型的缓存亲和性
@@ -527,7 +527,7 @@ class CacheAffinityManager:
             logger.exception(f"清除缓存亲和性失败: {e}")
             return 0
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
         cache_hit_rate = 0.0
         total_requests = self._stats["cache_hits"] + self._stats["cache_misses"]
@@ -551,7 +551,7 @@ class CacheAffinityManager:
             },
         }
 
-    async def list_affinities(self) -> List[Dict[str, Any]]:
+    async def list_affinities(self) -> list[dict[str, Any]]:
         """获取所有缓存亲和性列表
 
         返回的每条记录包含：
@@ -560,7 +560,7 @@ class CacheAffinityManager:
         - api_format, model_name: API 格式和模型名称
         - created_at, expire_at, request_count: 缓存元数据
         """
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
 
         try:
             pattern = "cache_affinity:*"
@@ -605,7 +605,7 @@ class CacheAffinityManager:
                         break
             else:
                 snapshot = await self._snapshot_memory_items()
-                expired_keys: List[str] = []
+                expired_keys: list[str] = []
                 current_time = time.time()
 
                 for cache_key, affinity in snapshot.items():
@@ -644,7 +644,7 @@ class CacheAffinityManager:
 
 
 # 全局单例
-_affinity_manager: Optional[CacheAffinityManager] = None
+_affinity_manager: CacheAffinityManager | None = None
 
 
 async def get_affinity_manager(redis_client=None) -> CacheAffinityManager:

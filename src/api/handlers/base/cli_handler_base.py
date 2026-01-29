@@ -17,13 +17,10 @@ import time
 from typing import (
     TYPE_CHECKING,
     Any,
-    AsyncGenerator,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
 )
+
+from collections.abc import Callable
+from collections.abc import AsyncGenerator
 
 import httpx
 from fastapi import BackgroundTasks, Request
@@ -45,7 +42,6 @@ from src.api.handlers.base.request_builder import PassthroughRequestBuilder
 # 直接从具体模块导入，避免循环依赖
 from src.api.handlers.base.response_parser import (
     ResponseParser,
-    StreamStats,
 )
 from src.api.handlers.base.stream_context import StreamContext
 from src.api.handlers.base.utils import (
@@ -86,7 +82,7 @@ from src.utils.timeout import read_first_chunk_with_ttfb_timeout
 # ==============================================================================
 
 
-def _parse_sse_data_line(line: str) -> Tuple[Optional[Any], str]:
+def _parse_sse_data_line(line: str) -> tuple[Any | None, str]:
     """
     解析标准 SSE data 行
 
@@ -108,7 +104,7 @@ def _parse_sse_data_line(line: str) -> Tuple[Optional[Any], str]:
         return None, "invalid"
 
 
-def _parse_sse_event_data_line(line: str) -> Tuple[Optional[Any], str]:
+def _parse_sse_event_data_line(line: str) -> tuple[Any | None, str]:
     """
     解析 event + data 同行格式（如 "event: xxx data: {...}"）
 
@@ -126,7 +122,7 @@ def _parse_sse_event_data_line(line: str) -> Tuple[Optional[Any], str]:
         return None, "invalid"
 
 
-def _parse_gemini_json_array_line(line: str) -> Tuple[Optional[Any], str]:
+def _parse_gemini_json_array_line(line: str) -> tuple[Any | None, str]:
     """
     解析 Gemini JSON-array 格式的裸 JSON 行
 
@@ -151,9 +147,9 @@ def _parse_gemini_json_array_line(line: str) -> Tuple[Optional[Any], str]:
 
 
 def _format_converted_events_to_sse(
-    converted_events: List[Dict[str, Any]],
+    converted_events: list[dict[str, Any]],
     client_format: str,
-) -> List[str]:
+) -> list[str]:
     """
     将转换后的事件格式化为 SSE 行
 
@@ -164,7 +160,7 @@ def _format_converted_events_to_sse(
     Returns:
         SSE 行列表（每个元素是完整的 SSE 事件，包含尾部空行）
     """
-    result: List[str] = []
+    result: list[str] = []
     needs_event_line = client_format.upper() in ("CLAUDE", "CLAUDE_CLI")
 
     for evt in converted_events:
@@ -213,10 +209,10 @@ class CliMessageHandlerBase(BaseMessageHandler):
         client_ip: str,
         user_agent: str,
         start_time: float,
-        allowed_api_formats: Optional[list] = None,
-        adapter_detector: Optional[
-            Callable[[Dict[str, str], Optional[Dict[str, Any]]], Dict[str, bool]]
-        ] = None,
+        allowed_api_formats: list | None = None,
+        adapter_detector: None | (
+            Callable[[dict[str, str], dict[str, Any] | None], dict[str, bool]]
+        ) = None,
     ):
         allowed = allowed_api_formats or [self.FORMAT_ID]
         super().__init__(
@@ -230,7 +226,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
             allowed_api_formats=allowed,
             adapter_detector=adapter_detector,
         )
-        self._parser: Optional[ResponseParser] = None
+        self._parser: ResponseParser | None = None
         self._request_builder = PassthroughRequestBuilder()
 
     @property
@@ -253,7 +249,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         self,
         source_model: str,
         provider_id: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         获取模型映射后的实际模型名
 
@@ -296,8 +292,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def extract_model_from_request(
         self,
-        request_body: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,  # noqa: ARG002 - 子类使用
+        request_body: dict[str, Any],
+        path_params: dict[str, Any] | None = None,  # noqa: ARG002 - 子类使用
     ) -> str:
         """
         从请求中提取模型名 - 子类可覆盖
@@ -321,9 +317,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def apply_mapped_model(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         mapped_model: str,  # noqa: ARG002 - 子类使用
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         将映射后的模型名应用到请求体
 
@@ -342,8 +338,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def prepare_provider_request_body(
         self,
-        request_body: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        request_body: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         准备发送给 Provider 的请求体 - 子类可覆盖
 
@@ -359,7 +355,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         return request_body
 
     @staticmethod
-    def _get_format_metadata(format_id: str) -> Optional["ApiFormatDefinition"]:
+    def _get_format_metadata(format_id: str) -> ApiFormatDefinition | None:
         """获取格式元数据（解析失败返回 None）"""
         from src.core.api_format import APIFormat
         from src.core.api_format.metadata import API_FORMAT_DEFINITIONS
@@ -372,10 +368,10 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def _finalize_converted_request(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         client_api_format: str,
         provider_api_format: str,
-        mapped_model: Optional[str],
+        mapped_model: str | None,
         fallback_model: str,
         is_stream: bool,
     ) -> None:
@@ -418,13 +414,13 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def _convert_request_for_cross_format(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         client_api_format: str,
         provider_api_format: str,
-        mapped_model: Optional[str],
+        mapped_model: str | None,
         fallback_model: str,
         is_stream: bool,
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str]:
         """
         跨格式请求转换的公共逻辑
 
@@ -465,9 +461,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def get_model_for_url(
         self,
-        request_body: Dict[str, Any],
-        mapped_model: Optional[str],
-    ) -> Optional[str]:
+        request_body: dict[str, Any],
+        mapped_model: str | None,
+    ) -> str | None:
         """
         获取用于 URL 路径的模型名
 
@@ -485,8 +481,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def _extract_response_metadata(
         self,
-        response: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         从响应中提取 Provider 特有的元数据 - 子类可覆盖
 
@@ -503,11 +499,11 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     async def process_stream(
         self,
-        original_request_body: Dict[str, Any],
-        original_headers: Dict[str, str],
-        query_params: Optional[Dict[str, str]] = None,
-        path_params: Optional[Dict[str, Any]] = None,
-        http_request: Optional[Request] = None,
+        original_request_body: dict[str, Any],
+        original_headers: dict[str, str],
+        query_params: dict[str, str] | None = None,
+        path_params: dict[str, Any] | None = None,
+        http_request: Request | None = None,
     ) -> StreamingResponse:
         """
         处理流式请求
@@ -529,7 +525,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
         # 可变请求体容器：允许 orchestrator 在遇到 Thinking 签名错误时整流请求体后重试
         # 结构: {"body": 实际请求体, "_rectified": 是否已整流, "_rectified_this_turn": 本轮是否整流}
-        request_body_ref: Dict[str, Any] = {"body": original_request_body}
+        request_body_ref: dict[str, Any] = {"body": original_request_body}
 
         # 使用子类实现的方法提取 model（不同 API 格式的 model 位置不同）
         # 注意：使用 original_request_body，因为整流只修改 messages，不影响 model 字段
@@ -550,7 +546,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
             endpoint: ProviderEndpoint,
             key: ProviderAPIKey,
             candidate: ProviderCandidate,
-        ) -> AsyncGenerator[bytes, None]:
+        ) -> AsyncGenerator[bytes]:
             return await self._execute_stream_request(
                 ctx,
                 provider,
@@ -647,12 +643,12 @@ class CliMessageHandlerBase(BaseMessageHandler):
         provider: Provider,
         endpoint: ProviderEndpoint,
         key: ProviderAPIKey,
-        original_request_body: Dict[str, Any],
-        original_headers: Dict[str, str],
-        query_params: Optional[Dict[str, str]] = None,
-        candidate: Optional[ProviderCandidate] = None,
-        http_request: Optional[Request] = None,
-    ) -> AsyncGenerator[bytes, None]:
+        original_request_body: dict[str, Any],
+        original_headers: dict[str, str],
+        query_params: dict[str, str] | None = None,
+        candidate: ProviderCandidate | None = None,
+        http_request: Request | None = None,
+    ) -> AsyncGenerator[bytes]:
         """执行流式请求并返回流生成器"""
         # 重置上下文状态（重试时清除之前的数据，避免累积）
         ctx.parsed_chunks = []
@@ -812,7 +808,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
             else:
                 await asyncio.wait_for(_connect_and_prefetch(), timeout=request_timeout)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # 整体请求超时（建立连接 + 获取首字节）
             # 清理可能已建立的连接上下文
             if response_ctx is not None:
@@ -886,7 +882,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         stream_response: httpx.Response,
         response_ctx: Any,
         http_client: httpx.AsyncClient,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """创建响应流生成器（使用字节流）"""
         try:
             sse_parser = SSEEventParser()
@@ -949,9 +945,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                                 },
                             }
                             self._mark_first_output(ctx, output_state)
-                            yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode(
-                                "utf-8"
-                            )
+                            yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
                             return  # 结束生成器
 
                     # 格式转换或直接透传
@@ -1003,7 +997,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         "message": ctx.error_message,
                     },
                 }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             else:
                 logger.debug("流式数据转发完成")
                 # 为 OpenAI 客户端补齐 [DONE] 标记（非 CLI 格式）
@@ -1028,7 +1022,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         "message": ctx.error_message,
                     },
                 }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
         except httpx.RemoteProtocolError:
             if ctx.data_count > 0:
                 error_event = {
@@ -1038,7 +1032,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         "message": "上游连接意外关闭，部分响应已成功传输",
                     },
                 }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             else:
                 raise
         finally:
@@ -1229,7 +1223,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         except (EmbeddedErrorException, ProviderTimeoutException, ProviderNotAvailableException):
             # 重新抛出可重试的 Provider 异常，触发故障转移
             raise
-        except (OSError, IOError) as e:
+        except OSError as e:
             # 网络 I/O 异常：记录警告，可能需要重试
             logger.warning(f"  [{self.request_id}] 预读流时发生网络异常: {type(e).__name__}: {e}")
         except Exception as e:
@@ -1249,7 +1243,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         response_ctx: Any,
         http_client: httpx.AsyncClient,
         prefetched_chunks: list,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """创建响应流生成器（带预读数据，使用字节流）"""
         try:
             sse_parser = SSEEventParser()
@@ -1370,9 +1364,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                                 },
                             }
                             self._mark_first_output(ctx, output_state)
-                            yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode(
-                                "utf-8"
-                            )
+                            yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
                             return
 
                     # 格式转换或直接透传
@@ -1427,7 +1419,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         "message": ctx.error_message,
                     },
                 }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             else:
                 logger.debug("流式数据转发完成")
                 # 为 OpenAI 客户端补齐 [DONE] 标记（非 CLI 格式）
@@ -1451,7 +1443,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         "message": ctx.error_message,
                     },
                 }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
         except httpx.RemoteProtocolError:
             if ctx.data_count > 0:
                 error_event = {
@@ -1461,7 +1453,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         "message": "上游连接意外关闭，部分响应已成功传输",
                     },
                 }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             else:
                 raise
         finally:
@@ -1477,7 +1469,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
     def _handle_sse_event(
         self,
         ctx: StreamContext,
-        event_name: Optional[str],
+        event_name: str | None,
         data_str: str,
         record_chunk: bool = False,
     ) -> None:
@@ -1526,7 +1518,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         self,
         ctx: StreamContext,
         event_type: str,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> None:
         """
         处理解析后的事件数据 - 子类应覆盖此方法
@@ -1600,7 +1592,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
     def _record_converted_chunks(
         self,
         ctx: StreamContext,
-        converted_events: List[Dict[str, Any]],
+        converted_events: list[dict[str, Any]],
     ) -> None:
         """
         记录转换后的 chunk 数据到 parsed_chunks，并更新统计信息
@@ -1644,7 +1636,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
     def _extract_usage_from_converted_event(
         self,
         ctx: StreamContext,
-        evt: Dict[str, Any],
+        evt: dict[str, Any],
         event_type: str,
     ) -> None:
         """
@@ -1660,7 +1652,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
             evt: 转换后的事件
             event_type: 事件类型
         """
-        usage: Optional[Dict[str, Any]] = None
+        usage: dict[str, Any] | None = None
 
         # Claude 格式: message_delta 或 message_start
         if event_type == "message_delta":
@@ -1725,9 +1717,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
     async def _create_monitored_stream(
         self,
         ctx: StreamContext,
-        stream_generator: AsyncGenerator[bytes, None],
-        http_request: Optional[Request] = None,
-    ) -> AsyncGenerator[bytes, None]:
+        stream_generator: AsyncGenerator[bytes],
+        http_request: Request | None = None,
+    ) -> AsyncGenerator[bytes]:
         """
         创建带监控的流生成器
 
@@ -1821,8 +1813,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
     async def _record_stream_stats(
         self,
         ctx: StreamContext,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
     ) -> None:
         """在流完成后记录统计信息"""
         try:
@@ -1984,7 +1976,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
                     from src.services.request.candidate import RequestCandidateService
 
                     # 计算候选自身的 TTFB
-                    candidate_first_byte_time_ms: Optional[int] = None
+                    candidate_first_byte_time_ms: int | None = None
                     if ctx.first_byte_time_ms is not None:
                         candidate_first_byte_time_ms = (
                             RequestCandidateService.calculate_candidate_ttfb(
@@ -2049,8 +2041,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
         self,
         ctx: StreamContext,
         error: Exception,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
     ) -> None:
         """记录流式请求失败"""
         # 使用 self.start_time 作为时间基准，与首字时间保持一致
@@ -2099,10 +2091,10 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     async def process_sync(
         self,
-        original_request_body: Dict[str, Any],
-        original_headers: Dict[str, str],
-        query_params: Optional[Dict[str, str]] = None,
-        path_params: Optional[Dict[str, Any]] = None,
+        original_request_body: dict[str, Any],
+        original_headers: dict[str, str],
+        query_params: dict[str, str] | None = None,
+        path_params: dict[str, Any] | None = None,
     ) -> JSONResponse:
         """
         处理非流式请求
@@ -2130,19 +2122,19 @@ class CliMessageHandlerBase(BaseMessageHandler):
         endpoint_id = None  # Endpoint ID（用于失败记录）
         key_id = None  # Key ID（用于失败记录）
         mapped_model_result = None  # 映射后的目标模型名（用于 Usage 记录）
-        response_metadata_result: Dict[str, Any] = {}  # Provider 响应元数据
+        response_metadata_result: dict[str, Any] = {}  # Provider 响应元数据
         needs_conversion = False  # 是否需要格式转换（由 candidate 决定）
 
         # 可变请求体容器：允许 orchestrator 在遇到 Thinking 签名错误时整流请求体后重试
         # 结构: {"body": 实际请求体, "_rectified": 是否已整流, "_rectified_this_turn": 本轮是否整流}
-        request_body_ref: Dict[str, Any] = {"body": original_request_body}
+        request_body_ref: dict[str, Any] = {"body": original_request_body}
 
         async def sync_request_func(
             provider: Provider,
             endpoint: ProviderEndpoint,
             key: ProviderAPIKey,
             candidate: ProviderCandidate,
-        ) -> Dict[str, Any]:
+        ) -> dict[str, Any]:
             nonlocal provider_name, response_json, status_code, response_headers, provider_api_format, provider_request_headers, provider_request_body, mapped_model_result, response_metadata_result, needs_conversion
             provider_name = str(provider.name)
             provider_api_format = str(endpoint.api_format) if endpoint.api_format else ""
@@ -2446,7 +2438,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
             actual_request_body = provider_request_body or original_request_body
 
             # 尝试从异常中提取响应头
-            error_response_headers: Dict[str, str] = {}
+            error_response_headers: dict[str, str] = {}
             if isinstance(e, ProviderRateLimitException) and e.response_headers:
                 error_response_headers = e.response_headers
             elif isinstance(e, httpx.HTTPStatusError) and hasattr(e, "response"):
@@ -2557,7 +2549,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         )
         return True
 
-    def _mark_first_output(self, ctx: StreamContext, state: Dict[str, bool]) -> None:
+    def _mark_first_output(self, ctx: StreamContext, state: dict[str, bool]) -> None:
         """
         标记首次输出：记录 TTFB 并更新 streaming 状态
 
@@ -2581,7 +2573,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
         ctx: StreamContext,
         line: str,
         events: list,  # noqa: ARG002 - 预留给上下文感知转换
-    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """
         将 SSE 行从 Provider 格式转换为客户端格式
 
@@ -2666,7 +2658,7 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
     def _parse_sse_line_to_json(
         self, line: str, provider_format: str
-    ) -> Tuple[Optional[Any], str]:
+    ) -> tuple[Any | None, str]:
         """
         解析 SSE 行为 JSON 对象
 

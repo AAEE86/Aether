@@ -1,8 +1,7 @@
 """OAuth 用户端点（需登录）。"""
 
-from __future__ import annotations
 
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -53,7 +52,7 @@ async def bind_oauth_provider(
     provider_type: str,
     request: Request,
     db: Session = Depends(get_db),
-    bind_token: Optional[str] = None,
+    bind_token: str | None = None,
 ) -> RedirectResponse:
     """发起 OAuth 绑定流程，支持通过 bind_token 参数进行安全认证"""
     adapter = BindOAuthProviderAdapter(provider_type=provider_type, bind_token=bind_token)
@@ -115,10 +114,10 @@ class BindOAuthProviderAdapter(AuthenticatedApiAdapter):
     2. bind_token 参数 (浏览器跳转场景)
     """
 
-    def __init__(self, provider_type: str, bind_token: Optional[str] = None):
+    def __init__(self, provider_type: str, bind_token: str | None = None):
         self.provider_type = provider_type
         self.bind_token = bind_token
-        self._user_from_bind_token: Optional[User] = None
+        self._user_from_bind_token: User | None = None
 
     @property
     def mode(self) -> ApiMode:  # type: ignore[override]
@@ -136,7 +135,7 @@ class BindOAuthProviderAdapter(AuthenticatedApiAdapter):
             raise HTTPException(status_code=401, detail="未登录")
 
     async def handle(self, context: ApiRequestContext) -> RedirectResponse:  # type: ignore[override]
-        user: Optional[User] = context.user
+        user: User | None = context.user
 
         # 如果使用 bind_token，验证并获取用户
         if self.bind_token:

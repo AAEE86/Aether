@@ -8,8 +8,9 @@
 - 通过 PricingStrategy 抽象，支持自定义总输入上下文计算、缓存 TTL 差异化等
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Union
 
 from sqlalchemy.orm import Session
 
@@ -17,7 +18,7 @@ from src.core.logger import logger
 from src.models.database import GlobalModel, Model, Provider
 
 
-ProviderRef = Union[str, Provider, None]
+ProviderRef = str | Provider | None
 
 
 @dataclass
@@ -25,8 +26,8 @@ class TieredPriceResult:
     """阶梯计费价格查询结果"""
     input_price_per_1m: float
     output_price_per_1m: float
-    cache_creation_price_per_1m: Optional[float] = None
-    cache_read_price_per_1m: Optional[float] = None
+    cache_creation_price_per_1m: float | None = None
+    cache_read_price_per_1m: float | None = None
     tier_index: int = 0  # 命中的阶梯索引
 
 
@@ -45,9 +46,9 @@ class CostBreakdown:
 class ModelCostService:
     """集中负责模型价格与成本计算，避免在 mapper/usage 中重复实现。"""
 
-    _price_cache: Dict[str, Dict[str, float]] = {}
-    _cache_price_cache: Dict[str, Dict[str, float]] = {}
-    _tiered_pricing_cache: Dict[str, Optional[dict]] = {}
+    _price_cache: dict[str, dict[str, float]] = {}
+    _cache_price_cache: dict[str, dict[str, float]] = {}
+    _tiered_pricing_cache: dict[str, dict | None] = {}
 
     def __init__(self, db: Session):
         self.db = db
@@ -60,7 +61,7 @@ class ModelCostService:
     def get_tier_for_tokens(
         tiered_pricing: dict,
         total_input_tokens: int
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         根据总输入 token 数确定价格阶梯。
 
@@ -89,8 +90,8 @@ class ModelCostService:
     @staticmethod
     def get_cache_read_price_for_ttl(
         tier: dict,
-        cache_ttl_minutes: Optional[int] = None
-    ) -> Optional[float]:
+        cache_ttl_minutes: int | None = None
+    ) -> float | None:
         """
         根据缓存 TTL 获取缓存读取价格。
 
@@ -122,7 +123,7 @@ class ModelCostService:
 
     async def get_tiered_pricing_async(
         self, provider: ProviderRef, model: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         异步获取模型的阶梯计费配置。
 
@@ -138,7 +139,7 @@ class ModelCostService:
 
     async def get_tiered_pricing_with_source_async(
         self, provider: ProviderRef, model: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         异步获取模型的阶梯计费配置及来源信息。
 
@@ -205,7 +206,7 @@ class ModelCostService:
         self._tiered_pricing_cache[cache_key] = result
         return result
 
-    def get_tiered_pricing(self, provider: ProviderRef, model: str) -> Optional[dict]:
+    def get_tiered_pricing(self, provider: ProviderRef, model: str) -> dict | None:
         """同步获取模型的阶梯计费配置（直接查缓存和数据库，避免事件循环开销）。
 
         Returns:
@@ -261,7 +262,7 @@ class ModelCostService:
     # 公共方法
     # ------------------------------------------------------------------
 
-    async def get_model_price_async(self, provider: ProviderRef, model: str) -> Tuple[float, float]:
+    async def get_model_price_async(self, provider: ProviderRef, model: str) -> tuple[float, float]:
         """
         异步版本: 返回给定 provider/model 的 (input_price, output_price)。
 
@@ -352,7 +353,7 @@ class ModelCostService:
         self._price_cache[cache_key] = {"input": input_price, "output": output_price}
         return input_price, output_price
 
-    def get_model_price(self, provider: ProviderRef, model: str) -> Tuple[float, float]:
+    def get_model_price(self, provider: ProviderRef, model: str) -> tuple[float, float]:
         """
         返回给定 provider/model 的 (input_price, output_price)。
         直接查缓存和数据库，避免事件循环开销。
@@ -435,7 +436,7 @@ class ModelCostService:
 
     async def get_cache_prices_async(
         self, provider: ProviderRef, model: str, input_price: float
-    ) -> Tuple[Optional[float], Optional[float]]:
+    ) -> tuple[float | None, float | None]:
         """
         异步版本: 返回缓存创建/读取价格（每 1M tokens）。
 
@@ -517,7 +518,7 @@ class ModelCostService:
         }
         return cache_creation_price, cache_read_price
 
-    async def get_request_price_async(self, provider: ProviderRef, model: str) -> Optional[float]:
+    async def get_request_price_async(self, provider: ProviderRef, model: str) -> float | None:
         """
         异步版本: 返回按次计费价格（每次请求的固定费用）。
 
@@ -563,7 +564,7 @@ class ModelCostService:
 
         return price_per_request
 
-    def get_request_price(self, provider: ProviderRef, model: str) -> Optional[float]:
+    def get_request_price(self, provider: ProviderRef, model: str) -> float | None:
         """
         返回按次计费价格（每次请求的固定费用）。
         直接查数据库，避免事件循环开销。
@@ -608,7 +609,7 @@ class ModelCostService:
 
     def get_cache_prices(
         self, provider: ProviderRef, model: str, input_price: float
-    ) -> Tuple[Optional[float], Optional[float]]:
+    ) -> tuple[float | None, float | None]:
         """
         返回缓存创建/读取价格（每 1M tokens）。
         直接查缓存和数据库，避免事件循环开销。
@@ -689,7 +690,7 @@ class ModelCostService:
         model: str,
         input_tokens: int,
         output_tokens: int,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """返回与旧 ModelMapper.calculate_cost 相同结构的费用信息。"""
         input_price, output_price = self.get_model_price(provider, model)
         input_cost, output_cost, _, _, _, _, total_cost = self.compute_cost(
@@ -715,10 +716,10 @@ class ModelCostService:
         output_price_per_1m: float,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
-        cache_creation_price_per_1m: Optional[float] = None,
-        cache_read_price_per_1m: Optional[float] = None,
-        price_per_request: Optional[float] = None,
-    ) -> Tuple[float, float, float, float, float, float, float]:
+        cache_creation_price_per_1m: float | None = None,
+        cache_read_price_per_1m: float | None = None,
+        price_per_request: float | None = None,
+    ) -> tuple[float, float, float, float, float, float, float]:
         """成本计算核心逻辑（固定价格模式），供 UsageService 等复用。
 
         Returns:
@@ -760,15 +761,15 @@ class ModelCostService:
         output_tokens: int,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
-        tiered_pricing: Optional[dict] = None,
-        cache_ttl_minutes: Optional[int] = None,
-        price_per_request: Optional[float] = None,
+        tiered_pricing: dict | None = None,
+        cache_ttl_minutes: int | None = None,
+        price_per_request: float | None = None,
         # 回退价格（当没有阶梯配置时使用）
         fallback_input_price_per_1m: float = 0.0,
         fallback_output_price_per_1m: float = 0.0,
-        fallback_cache_creation_price_per_1m: Optional[float] = None,
-        fallback_cache_read_price_per_1m: Optional[float] = None,
-    ) -> Tuple[float, float, float, float, float, float, float, Optional[int]]:
+        fallback_cache_creation_price_per_1m: float | None = None,
+        fallback_cache_read_price_per_1m: float | None = None,
+    ) -> tuple[float, float, float, float, float, float, float, int | None]:
         """
         支持阶梯计费的成本计算核心逻辑。
 
@@ -872,7 +873,7 @@ class ModelCostService:
             return provider.name
         return provider or "unknown"
 
-    def _resolve_provider(self, provider: ProviderRef) -> Optional[Provider]:
+    def _resolve_provider(self, provider: ProviderRef) -> Provider | None:
         if isinstance(provider, Provider):
             return provider
         if not provider or provider == "unknown":
@@ -891,9 +892,9 @@ class ModelCostService:
         output_tokens: int,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
-        api_format: Optional[str] = None,
-        cache_ttl_minutes: Optional[int] = None,
-    ) -> Tuple[float, float, float, float, float, float, float, Optional[int]]:
+        api_format: str | None = None,
+        cache_ttl_minutes: int | None = None,
+    ) -> tuple[float, float, float, float, float, float, float, int | None]:
         """
         使用计费策略计算成本（异步版本）
 
@@ -981,21 +982,15 @@ class ModelCostService:
         output_tokens: int,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
-        api_format: Optional[str] = None,
-        cache_ttl_minutes: Optional[int] = None,
-    ) -> Tuple[float, float, float, float, float, float, float, Optional[int]]:
+        api_format: str | None = None,
+        cache_ttl_minutes: int | None = None,
+    ) -> tuple[float, float, float, float, float, float, float, int | None]:
         """
         使用计费策略计算成本（同步版本）
         """
         import asyncio
 
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        return loop.run_until_complete(
+        return asyncio.run(
             self.compute_cost_with_strategy_async(
                 provider=provider,
                 model=model,

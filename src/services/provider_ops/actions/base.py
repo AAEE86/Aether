@@ -3,8 +3,7 @@ Provider 操作抽象基类
 """
 
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -30,7 +29,7 @@ class ProviderAction(ABC):
     # 默认缓存时间（秒）
     default_cache_ttl: int = 300
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         """
         初始化操作
 
@@ -52,7 +51,7 @@ class ProviderAction(ABC):
         """
         pass
 
-    def _extract_field(self, data: Any, path: Optional[str]) -> Any:
+    def _extract_field(self, data: Any, path: str | None) -> Any:
         """
         从响应数据中提取字段
 
@@ -86,9 +85,9 @@ class ProviderAction(ABC):
     def _make_success_result(
         self,
         data: Any = None,
-        message: Optional[str] = None,
-        response_time_ms: Optional[int] = None,
-        raw_response: Optional[Dict[str, Any]] = None,
+        message: str | None = None,
+        response_time_ms: int | None = None,
+        raw_response: dict[str, Any] | None = None,
     ) -> ActionResult:
         """创建成功结果"""
         return ActionResult(
@@ -104,9 +103,9 @@ class ProviderAction(ABC):
     def _make_error_result(
         self,
         status: ActionStatus,
-        message: Optional[str] = None,
-        retry_after_seconds: Optional[int] = None,
-        raw_response: Optional[Dict[str, Any]] = None,
+        message: str | None = None,
+        retry_after_seconds: int | None = None,
+        raw_response: dict[str, Any] | None = None,
     ) -> ActionResult:
         """创建错误结果"""
         return ActionResult(
@@ -119,7 +118,7 @@ class ProviderAction(ABC):
         )
 
     def _handle_http_error(
-        self, response: httpx.Response, raw_data: Optional[Dict[str, Any]] = None
+        self, response: httpx.Response, raw_data: dict[str, Any] | None = None
     ) -> ActionResult:
         """处理 HTTP 错误响应"""
         status_code = response.status_code
@@ -153,7 +152,7 @@ class ProviderAction(ABC):
             )
 
     @classmethod
-    def get_config_schema(cls) -> Dict[str, Any]:
+    def get_config_schema(cls) -> dict[str, Any]:
         """
         获取操作配置 JSON Schema（用于前端表单生成）
 

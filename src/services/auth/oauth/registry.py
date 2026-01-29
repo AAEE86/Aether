@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 from src.core.logger import logger
 from src.services.auth.oauth.base import OAuthProviderBase
@@ -22,7 +19,7 @@ class OAuthProviderRegistry:
     """Provider 注册表（支持延迟 discover）。"""
 
     def __init__(self) -> None:
-        self._providers: Dict[str, OAuthProviderBase] = {}
+        self._providers: dict[str, OAuthProviderBase] = {}
         self._discovered: bool = False
 
     def discover_providers(self) -> None:
@@ -69,10 +66,10 @@ class OAuthProviderRegistry:
     def register(self, provider: OAuthProviderBase) -> None:
         self._providers[provider.provider_type] = provider
 
-    def get_provider(self, provider_type: str) -> Optional[OAuthProviderBase]:
+    def get_provider(self, provider_type: str) -> OAuthProviderBase | None:
         return self._providers.get(provider_type)
 
-    def get_supported_types(self) -> List[SupportedOAuthType]:
+    def get_supported_types(self) -> list[SupportedOAuthType]:
         return [
             SupportedOAuthType(
                 provider_type=p.provider_type,
@@ -86,7 +83,7 @@ class OAuthProviderRegistry:
         ]
 
 
-_registry: Optional[OAuthProviderRegistry] = None
+_registry: OAuthProviderRegistry | None = None
 
 
 def get_oauth_provider_registry() -> OAuthProviderRegistry:

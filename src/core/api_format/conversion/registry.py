@@ -9,12 +9,12 @@ source -> internal -> target
 - 转换失败将抛出 `FormatConversionError`（不再静默回退）。
 """
 
-from __future__ import annotations
 
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any
+from collections.abc import Generator
 
 from src.core.logger import logger
 from src.core.metrics import format_conversion_duration_seconds, format_conversion_total
@@ -29,7 +29,7 @@ def _track_conversion_metrics(
     direction: str,
     source: str,
     target: str,
-) -> Generator[None, None, None]:
+) -> Generator[None]:
     start = time.perf_counter()
     try:
         yield
@@ -47,13 +47,13 @@ class FormatConversionRegistry:
     """基于 Normalizer 的格式转换注册表"""
 
     def __init__(self) -> None:
-        self._normalizers: Dict[str, FormatNormalizer] = {}
+        self._normalizers: dict[str, FormatNormalizer] = {}
 
     def register(self, normalizer: FormatNormalizer) -> None:
         self._normalizers[str(normalizer.FORMAT_ID).upper()] = normalizer
         logger.info(f"[FormatConversionRegistry] 注册 normalizer: {normalizer.FORMAT_ID}")
 
-    def get_normalizer(self, format_id: str) -> Optional[FormatNormalizer]:
+    def get_normalizer(self, format_id: str) -> FormatNormalizer | None:
         return self._normalizers.get(str(format_id).upper())
 
     def _require_normalizer(self, format_id: str) -> FormatNormalizer:
@@ -66,10 +66,10 @@ class FormatConversionRegistry:
 
     def convert_request(
         self,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         source_format: str,
         target_format: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if str(source_format).upper() == str(target_format).upper():
             return request
 
@@ -85,12 +85,12 @@ class FormatConversionRegistry:
 
     def convert_response(
         self,
-        response: Dict[str, Any],
+        response: dict[str, Any],
         source_format: str,
         target_format: str,
         *,
-        requested_model: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
         """转换响应格式
 
         Args:
@@ -124,10 +124,10 @@ class FormatConversionRegistry:
 
     def convert_error_response(
         self,
-        error_response: Dict[str, Any],
+        error_response: dict[str, Any],
         source_format: str,
         target_format: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if str(source_format).upper() == str(target_format).upper():
             return error_response
 
@@ -152,11 +152,11 @@ class FormatConversionRegistry:
 
     def convert_stream_chunk(
         self,
-        chunk: Dict[str, Any],
+        chunk: dict[str, Any],
         source_format: str,
         target_format: str,
-        state: Optional[StreamState] = None,
-    ) -> List[Dict[str, Any]]:
+        state: StreamState | None = None,
+    ) -> list[dict[str, Any]]:
         if str(source_format).upper() == str(target_format).upper():
             return [chunk]
 
@@ -182,7 +182,7 @@ class FormatConversionRegistry:
         with _track_conversion_metrics("stream", str(source_format).upper(), str(target_format).upper()):
             try:
                 events = src.stream_chunk_to_internal(chunk, state)
-                out: List[Dict[str, Any]] = []
+                out: list[dict[str, Any]] = []
                 for event in events:
                     out.extend(tgt.stream_event_from_internal(event, state))
                 return out
@@ -226,10 +226,10 @@ class FormatConversionRegistry:
             return self.can_convert_stream(format_a, format_b) and self.can_convert_stream(format_b, format_a)
         return True
 
-    def list_normalizers(self) -> List[str]:
+    def list_normalizers(self) -> list[str]:
         return sorted(self._normalizers.keys())
 
-    def get_supported_targets(self, source_format: str) -> List[str]:
+    def get_supported_targets(self, source_format: str) -> list[str]:
         src = str(source_format).upper()
         if src not in self._normalizers:
             return []

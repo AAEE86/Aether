@@ -4,7 +4,7 @@ OAuth 认证模块
 提供可配置的 OAuth 登录/绑定能力。
 """
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING
 
 from src.core.modules.base import (
     ModuleCategory,
@@ -34,7 +34,7 @@ async def _health_check() -> ModuleHealth:
     return ModuleHealth.UNKNOWN
 
 
-def _validate_config(db: "Session") -> Tuple[bool, str]:
+def _validate_config(db: Session) -> tuple[bool, str]:
     """
     验证 OAuth 配置是否可以启用模块
 

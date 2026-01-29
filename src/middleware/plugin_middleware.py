@@ -8,7 +8,7 @@
 
 import hashlib
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from starlette.requests import Request
 
@@ -113,7 +113,7 @@ class PluginMiddleware:
             await send(message)
 
         # 3. 调用下游应用
-        exception_occurred: Optional[Exception] = None
+        exception_occurred: Exception | None = None
         try:
             await self.app(scope, receive, send_wrapper)
         except Exception as e:
@@ -160,7 +160,7 @@ class PluginMiddleware:
 
     def _finalize_db_session(
         self,
-        db: "Session",
+        db: Session,
         *,
         should_commit: bool,
         should_rollback: bool,
@@ -196,7 +196,7 @@ class PluginMiddleware:
                 logger.debug(f"{log_prefix}关闭数据库连接时出错（可忽略）: {close_error}")
 
     async def _cleanup_db_session(
-        self, request: Request, exception: Optional[Exception]
+        self, request: Request, exception: Exception | None
     ) -> None:
         """清理数据库会话
 
@@ -293,7 +293,7 @@ class PluginMiddleware:
 
     async def _get_rate_limit_key_and_config(
         self, request: Request
-    ) -> tuple[Optional[str], Optional[int]]:
+    ) -> tuple[str | None, int | None]:
         """
         获取速率限制的key和配置
 
@@ -344,7 +344,7 @@ class PluginMiddleware:
         # 其他端点不应用速率限制（或已在 skip_rate_limit_paths 中跳过）
         return None, None
 
-    async def _call_rate_limit_plugins(self, request: Request) -> Optional[RateLimitResult]:
+    async def _call_rate_limit_plugins(self, request: Request) -> RateLimitResult | None:
         """调用限流插件"""
 
         # 跳过不需要限流的路径（支持前缀匹配）

@@ -4,7 +4,9 @@
 负责执行单个候选请求
 """
 
-from typing import Any, Callable, Optional, Tuple
+from typing import Any
+
+from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
@@ -31,7 +33,7 @@ class RequestDispatcher:
         self,
         db: Session,
         request_executor: RequestExecutor,
-        cache_scheduler: Optional[CacheAwareScheduler] = None,
+        cache_scheduler: CacheAwareScheduler | None = None,
     ) -> None:
         """
         初始化请求分发器
@@ -53,7 +55,7 @@ class RequestDispatcher:
         candidate_record_id: str,
         user_api_key: ApiKey,
         request_func: Callable[..., Any],
-        request_id: Optional[str],
+        request_id: str | None,
         api_format: APIFormat,
         model_name: str,
         affinity_key: str,
@@ -61,7 +63,7 @@ class RequestDispatcher:
         attempt_counter: int,
         max_attempts: int,
         is_stream: bool = False,
-    ) -> Tuple[Any, str, str, str, str, str]:
+    ) -> tuple[Any, str, str, str, str, str]:
         """
         执行请求并返回结果
 
@@ -98,7 +100,7 @@ class RequestDispatcher:
         key_id = str(key.id)
         cache_ttl_minutes = int(key.cache_ttl_minutes or 0)
         provider_supports_caching = cache_ttl_minutes > 0
-        provider_cache_ttl_seconds: Optional[int] = (
+        provider_cache_ttl_seconds: int | None = (
             cache_ttl_minutes * 60 if cache_ttl_minutes > 0 else None
         )
 

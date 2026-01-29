@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -22,7 +21,7 @@ pipeline = ApiRequestPipeline()
 @router.get("/my-audit-logs")
 async def get_my_audit_logs(
     request: Request,
-    event_type: Optional[str] = Query(None, description="事件类型筛选"),
+    event_type: str | None = Query(None, description="事件类型筛选"),
     days: int = Query(30, description="查询天数"),
     limit: int = Query(50, description="返回数量限制"),
     offset: int = Query(0, ge=0, description="偏移量"),
@@ -86,7 +85,7 @@ class AuthenticatedApiAdapter(ApiAdapter):
 
 @dataclass
 class UserAuditLogsAdapter(AuthenticatedApiAdapter):
-    event_type: Optional[str]
+    event_type: str | None
     days: int
     limit: int
     offset: int

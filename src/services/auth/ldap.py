@@ -1,6 +1,6 @@
 """LDAP 认证服务"""
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -109,7 +109,7 @@ class LDAPService:
     """LDAP 认证服务"""
 
     @staticmethod
-    def get_config(db: Session) -> Optional[LDAPConfig]:
+    def get_config(db: Session) -> LDAPConfig | None:
         """获取 LDAP 配置"""
         return db.query(LDAPConfig).first()
 
@@ -127,7 +127,7 @@ class LDAPService:
         return LDAPService.get_config_data(db) is not None
 
     @staticmethod
-    def get_config_data(db: Session) -> Optional[Dict[str, Any]]:
+    def get_config_data(db: Session) -> dict[str, Any] | None:
         """
         提前获取并解密配置，供线程池使用，避免跨线程共享 Session。
 
@@ -172,7 +172,7 @@ class LDAPService:
         }
 
     @staticmethod
-    def authenticate_with_config(config: Dict[str, Any], username: str, password: str) -> Optional[dict]:
+    def authenticate_with_config(config: dict[str, Any], username: str, password: str) -> dict | None:
         """
         LDAP bind 验证
 
@@ -306,7 +306,7 @@ class LDAPService:
                         logger.warning(f"LDAP {name} 连接关闭失败: {e}")
 
     @staticmethod
-    def test_connection_with_config(config: Dict[str, Any]) -> Tuple[bool, str]:
+    def test_connection_with_config(config: dict[str, Any]) -> tuple[bool, str]:
         """
         测试 LDAP 连接
 
@@ -363,12 +363,12 @@ class LDAPService:
 
     # 兼容旧接口：如果其他代码直接调用
     @staticmethod
-    def authenticate(db: Session, username: str, password: str) -> Optional[dict]:
+    def authenticate(db: Session, username: str, password: str) -> dict | None:
         config = LDAPService.get_config_data(db)
         return LDAPService.authenticate_with_config(config, username, password) if config else None
 
     @staticmethod
-    def test_connection(db: Session) -> Tuple[bool, str]:
+    def test_connection(db: Session) -> tuple[bool, str]:
         config = LDAPService.get_config_data(db)
         if not config:
             return False, "LDAP 配置不存在或未启用"

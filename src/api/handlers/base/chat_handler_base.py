@@ -22,7 +22,10 @@ Chat Handler Base - Chat API 格式的通用基类
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Optional, Union
+from typing import Any
+
+from collections.abc import Callable
+from collections.abc import AsyncGenerator, Awaitable
 
 import httpx
 from fastapi import BackgroundTasks, Request
@@ -75,10 +78,10 @@ def _get_error_status_code(e: Exception, default: int = 400) -> int:
 
 
 def _convert_error_response_best_effort(
-    error_response: Dict[str, Any],
+    error_response: dict[str, Any],
     source_format: str,
     target_format: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     将上游错误响应 best-effort 转换为客户端格式。
 
@@ -97,7 +100,7 @@ def _convert_error_response_best_effort(
 def _build_client_error_response_best_effort(
     message: str,
     target_format: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     当无法解析上游错误 body 时，构造一个目标格式的错误响应（best-effort）。
     """
@@ -117,11 +120,11 @@ def _build_client_error_response_best_effort(
 
 
 def _build_error_json_payload(
-    e: Union[ThinkingSignatureException, UpstreamClientException],
+    e: ThinkingSignatureException | UpstreamClientException,
     client_format: str,
     provider_format: str,
     needs_conversion: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     构建错误 JSON 响应 payload（公共逻辑）。
 
@@ -185,10 +188,10 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         client_ip: str,
         user_agent: str,
         start_time: float,
-        allowed_api_formats: Optional[list] = None,
-        adapter_detector: Optional[
-            Callable[[Dict[str, str], Optional[Dict[str, Any]]], Dict[str, bool]]
-        ] = None,
+        allowed_api_formats: list | None = None,
+        adapter_detector: None | (
+            Callable[[dict[str, str], dict[str, Any] | None], dict[str, bool]]
+        ) = None,
     ):
         allowed = allowed_api_formats or [self.FORMAT_ID]
         super().__init__(
@@ -202,7 +205,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             allowed_api_formats=allowed,
             adapter_detector=adapter_detector,
         )
-        self._parser: Optional[ResponseParser] = None
+        self._parser: ResponseParser | None = None
         self._request_builder = PassthroughRequestBuilder()
 
     @property
@@ -228,7 +231,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         pass
 
     @abstractmethod
-    def _extract_usage(self, response: Dict) -> Dict[str, int]:
+    def _extract_usage(self, response: dict) -> dict[str, int]:
         """
         从响应中提取 token 使用情况
 
@@ -241,7 +244,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         """
         pass
 
-    def _normalize_response(self, response: Dict) -> Dict:
+    def _normalize_response(self, response: dict) -> dict:
         """
         规范化响应（可选覆盖）
 
@@ -257,8 +260,8 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
     def extract_model_from_request(
         self,
-        request_body: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,  # noqa: ARG002 - 子类使用
+        request_body: dict[str, Any],
+        path_params: dict[str, Any] | None = None,  # noqa: ARG002 - 子类使用
     ) -> str:
         """
         从请求中提取模型名 - 子类可覆盖
@@ -282,9 +285,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
     def apply_mapped_model(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         mapped_model: str,  # noqa: ARG002 - 子类使用
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         将映射后的模型名应用到请求体
 
@@ -303,9 +306,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
     def get_model_for_url(
         self,
-        request_body: Dict[str, Any],
-        mapped_model: Optional[str],
-    ) -> Optional[str]:
+        request_body: dict[str, Any],
+        mapped_model: str | None,
+    ) -> str | None:
         """
         获取用于 URL 路径的模型名
 
@@ -323,8 +326,8 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
     def prepare_provider_request_body(
         self,
-        request_body: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        request_body: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         准备发送给 Provider 的请求体 - 子类可覆盖
 
@@ -341,9 +344,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
     def _set_model_after_conversion(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         provider_api_format: str,
-        mapped_model: Optional[str],
+        mapped_model: str | None,
         fallback_model: str,
     ) -> None:
         """
@@ -372,7 +375,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
     def _set_stream_after_conversion(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         client_api_format: str,
         provider_api_format: str,
         is_stream: bool,
@@ -414,8 +417,8 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         self,
         source_model: str,
         provider_id: str,
-        api_format: Optional[str] = None,
-    ) -> Optional[str]:
+        api_format: str | None = None,
+    ) -> str | None:
         """
         获取模型映射后的实际模型名
 
@@ -452,10 +455,10 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         self,
         request: Any,
         http_request: Request,
-        original_headers: Dict[str, Any],
-        original_request_body: Dict[str, Any],
-        query_params: Optional[Dict[str, str]] = None,
-    ) -> Union[StreamingResponse, JSONResponse]:
+        original_headers: dict[str, Any],
+        original_request_body: dict[str, Any],
+        query_params: dict[str, str] | None = None,
+    ) -> StreamingResponse | JSONResponse:
         """处理流式响应"""
         logger.debug(f"开始流式响应处理 ({self.FORMAT_ID})")
 
@@ -466,7 +469,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
         # 可变请求体容器：允许 orchestrator 在遇到 Thinking 签名错误时整流请求体后重试
         # 结构: {"body": 实际请求体, "_rectified": 是否已整流, "_rectified_this_turn": 本轮是否整流}
-        request_body_ref: Dict[str, Any] = {"body": original_request_body}
+        request_body_ref: dict[str, Any] = {"body": original_request_body}
 
         # 创建类型安全的流式上下文
         ctx = StreamContext(model=model, api_format=api_format)
@@ -492,7 +495,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             endpoint: ProviderEndpoint,
             key: ProviderAPIKey,
             candidate: ProviderCandidate,
-        ) -> AsyncGenerator[bytes, None]:
+        ) -> AsyncGenerator[bytes]:
             return await self._execute_stream_request(
                 ctx,
                 stream_processor,
@@ -609,12 +612,12 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         provider: Provider,
         endpoint: ProviderEndpoint,
         key: ProviderAPIKey,
-        original_request_body: Dict[str, Any],
-        original_headers: Dict[str, str],
-        query_params: Optional[Dict[str, str]] = None,
-        candidate: Optional[ProviderCandidate] = None,
-        is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
-    ) -> AsyncGenerator[bytes, None]:
+        original_request_body: dict[str, Any],
+        original_headers: dict[str, str],
+        query_params: dict[str, str] | None = None,
+        candidate: ProviderCandidate | None = None,
+        is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+    ) -> AsyncGenerator[bytes]:
         """执行流式请求并返回流生成器"""
         # 重置上下文状态（重试时清除之前的数据）
         ctx.reset_for_retry()
@@ -787,7 +790,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             ctx.error_message = "client_disconnected_during_prefetch"
             raise
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # 整体请求超时（建立连接 + 获取首字节）
             # 清理可能已建立的连接上下文
             if response_ctx is not None:
@@ -844,8 +847,8 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         self,
         ctx: StreamContext,
         error: Exception,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
     ) -> None:
         """记录流式请求失败"""
         response_time_ms = self.elapsed_ms()
@@ -892,9 +895,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
         self,
         request: Any,
         http_request: Request,
-        original_headers: Dict[str, Any],
-        original_request_body: Dict[str, Any],
-        query_params: Optional[Dict[str, str]] = None,
+        original_headers: dict[str, Any],
+        original_request_body: dict[str, Any],
+        query_params: dict[str, str] | None = None,
     ) -> JSONResponse:
         """处理非流式响应"""
         logger.debug(f"开始非流式响应处理 ({self.FORMAT_ID})")
@@ -906,29 +909,29 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
         # 可变请求体容器：允许 orchestrator 在遇到 Thinking 签名错误时整流请求体后重试
         # 结构: {"body": 实际请求体, "_rectified": 是否已整流, "_rectified_this_turn": 本轮是否整流}
-        request_body_ref: Dict[str, Any] = {"body": original_request_body}
+        request_body_ref: dict[str, Any] = {"body": original_request_body}
 
         # 用于跟踪的变量
-        provider_name: Optional[str] = None
-        response_json: Optional[Dict[str, Any]] = None
+        provider_name: str | None = None
+        response_json: dict[str, Any] | None = None
         status_code = 200
-        response_headers: Dict[str, str] = {}
-        provider_request_headers: Dict[str, str] = {}
-        provider_request_body: Optional[Dict[str, Any]] = None
-        provider_api_format_for_error: Optional[str] = None
-        client_api_format_for_error: Optional[str] = None
+        response_headers: dict[str, str] = {}
+        provider_request_headers: dict[str, str] = {}
+        provider_request_body: dict[str, Any] | None = None
+        provider_api_format_for_error: str | None = None
+        client_api_format_for_error: str | None = None
         needs_conversion_for_error: bool = False
-        provider_id: Optional[str] = None  # Provider ID（用于失败记录）
-        endpoint_id: Optional[str] = None  # Endpoint ID（用于失败记录）
-        key_id: Optional[str] = None  # Key ID（用于失败记录）
-        mapped_model_result: Optional[str] = None  # 映射后的目标模型名（用于 Usage 记录）
+        provider_id: str | None = None  # Provider ID（用于失败记录）
+        endpoint_id: str | None = None  # Endpoint ID（用于失败记录）
+        key_id: str | None = None  # Key ID（用于失败记录）
+        mapped_model_result: str | None = None  # 映射后的目标模型名（用于 Usage 记录）
 
         async def sync_request_func(
             provider: Provider,
             endpoint: ProviderEndpoint,
             key: ProviderAPIKey,
             candidate: ProviderCandidate,
-        ) -> Dict[str, Any]:
+        ) -> dict[str, Any]:
             nonlocal provider_name, response_json, status_code, response_headers
             nonlocal provider_request_headers, provider_request_body, mapped_model_result
             nonlocal provider_api_format_for_error, client_api_format_for_error, needs_conversion_for_error
@@ -1269,7 +1272,7 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             actual_request_body = provider_request_body or original_request_body
 
             # 尝试从异常中提取响应头
-            error_response_headers: Dict[str, str] = {}
+            error_response_headers: dict[str, str] = {}
             if isinstance(e, ProviderRateLimitException) and e.response_headers:
                 error_response_headers = e.response_headers
             elif isinstance(e, httpx.HTTPStatusError) and hasattr(e, "response"):

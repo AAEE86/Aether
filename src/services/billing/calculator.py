@@ -8,16 +8,15 @@
 - 自定义计费维度
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from __future__ import annotations
+from typing import Any
 
 from src.services.billing.models import (
     BillingDimension,
-    BillingUnit,
     CostBreakdown,
     StandardizedUsage,
 )
 from src.services.billing.templates import (
-    BILLING_TEMPLATE_REGISTRY,
     BillingTemplates,
     get_template,
 )
@@ -50,8 +49,8 @@ class BillingCalculator:
 
     def __init__(
         self,
-        dimensions: Optional[List[BillingDimension]] = None,
-        template: Optional[str] = None,
+        dimensions: list[BillingDimension] | None = None,
+        template: str | None = None,
     ):
         """
         初始化计费计算器
@@ -73,10 +72,10 @@ class BillingCalculator:
     def calculate(
         self,
         usage: StandardizedUsage,
-        prices: Dict[str, float],
-        tiered_pricing: Optional[Dict[str, Any]] = None,
-        cache_ttl_minutes: Optional[int] = None,
-        total_input_context: Optional[int] = None,
+        prices: dict[str, float],
+        tiered_pricing: dict[str, Any] | None = None,
+        cache_ttl_minutes: int | None = None,
+        total_input_context: int | None = None,
     ) -> CostBreakdown:
         """
         计算费用
@@ -131,9 +130,9 @@ class BillingCalculator:
     def _get_tier(
         self,
         usage: StandardizedUsage,
-        tiered_pricing: Dict[str, Any],
-        total_input_context: Optional[int] = None,
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
+        tiered_pricing: dict[str, Any],
+        total_input_context: int | None = None,
+    ) -> tuple[dict[str, Any] | None, int | None]:
         """
         确定价格阶梯
 
@@ -178,9 +177,9 @@ class BillingCalculator:
 
     def _get_cache_read_price_for_ttl(
         self,
-        tier: Dict[str, Any],
+        tier: dict[str, Any],
         cache_ttl_minutes: int,
-    ) -> Optional[float]:
+    ) -> float | None:
         """
         根据缓存 TTL 获取缓存读取价格
 
@@ -212,7 +211,7 @@ class BillingCalculator:
         return None
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "BillingCalculator":
+    def from_config(cls, config: dict[str, Any]) -> BillingCalculator:
         """
         从配置创建计费计算器
 
@@ -238,15 +237,15 @@ class BillingCalculator:
 
         return cls(template=config.get("template", "claude"))
 
-    def get_dimension_names(self) -> List[str]:
+    def get_dimension_names(self) -> list[str]:
         """获取所有计费维度名称"""
         return [dim.name for dim in self.dimensions]
 
-    def get_required_price_fields(self) -> List[str]:
+    def get_required_price_fields(self) -> list[str]:
         """获取所需的价格字段名称"""
         return [dim.price_field for dim in self.dimensions]
 
-    def get_required_usage_fields(self) -> List[str]:
+    def get_required_usage_fields(self) -> list[str]:
         """获取所需的 usage 字段名称"""
         return [dim.usage_field for dim in self.dimensions]
 
@@ -258,14 +257,14 @@ def calculate_request_cost(
     cache_read_input_tokens: int,
     input_price_per_1m: float,
     output_price_per_1m: float,
-    cache_creation_price_per_1m: Optional[float],
-    cache_read_price_per_1m: Optional[float],
-    price_per_request: Optional[float],
-    tiered_pricing: Optional[Dict[str, Any]] = None,
-    cache_ttl_minutes: Optional[int] = None,
-    total_input_context: Optional[int] = None,
+    cache_creation_price_per_1m: float | None,
+    cache_read_price_per_1m: float | None,
+    price_per_request: float | None,
+    tiered_pricing: dict[str, Any] | None = None,
+    cache_ttl_minutes: int | None = None,
+    total_input_context: int | None = None,
     billing_template: str = "claude",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     计算请求成本的便捷函数
 
@@ -309,7 +308,7 @@ def calculate_request_cost(
     )
 
     # 构建价格配置
-    prices: Dict[str, float] = {
+    prices: dict[str, float] = {
         "input_price_per_1m": input_price_per_1m,
         "output_price_per_1m": output_price_per_1m,
     }

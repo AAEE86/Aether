@@ -7,7 +7,10 @@
 import functools
 import inspect
 from contextlib import contextmanager
-from typing import Any, Callable, Generator, Optional
+from typing import Any
+
+from collections.abc import Callable
+from collections.abc import Generator
 
 from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session
@@ -22,7 +25,7 @@ class TransactionError(Exception):
     pass
 
 
-def _find_db_session(args, kwargs) -> Optional[Session]:
+def _find_db_session(args, kwargs) -> Session | None:
     """从参数中查找数据库会话"""
     # 从位置参数中查找Session
     for arg in args:
@@ -152,8 +155,8 @@ def transaction_scope(
     db: Session,
     commit_on_success: bool = True,
     rollback_on_error: bool = True,
-    operation_name: Optional[str] = None,
-) -> Generator[Session, None, None]:
+    operation_name: str | None = None,
+) -> Generator[Session]:
     """
     事务上下文管理器
 

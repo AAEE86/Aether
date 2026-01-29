@@ -3,7 +3,8 @@
 """
 
 import time
-from typing import Any, Generator, Optional, cast
+from typing import Any, cast
+from collections.abc import Generator
 
 from starlette.requests import Request
 from sqlalchemy import create_engine, event
@@ -17,8 +18,8 @@ from ..models.database import Base, SystemConfig, User, UserRole
 
 
 # 延迟初始化的数据库引擎和会话工厂
-_engine: Optional[Engine] = None
-_SessionLocal: Optional[sessionmaker[Session]] = None
+_engine: Engine | None = None
+_SessionLocal: sessionmaker[Session] | None = None
 
 # 连接池监控
 _last_pool_warning: float = 0.0
@@ -161,7 +162,7 @@ def _log_pool_capacity() -> None:
         )
 
 
-def get_db(request: Request = None) -> Generator[Session, None, None]:  # type: ignore[assignment]
+def get_db(request: Request = None) -> Generator[Session]:  # type: ignore[assignment]
     """获取数据库会话
 
     事务策略说明

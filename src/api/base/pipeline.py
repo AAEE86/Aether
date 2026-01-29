@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
@@ -52,8 +50,8 @@ class ApiRequestPipeline:
         db: Session,
         *,
         mode: ApiMode = ApiMode.STANDARD,
-        api_format_hint: Optional[str] = None,
-        path_params: Optional[dict[str, Any]] = None,
+        api_format_hint: str | None = None,
+        path_params: dict[str, Any] | None = None,
     ):
         # 高频轮询端点抑制 debug 日志
         is_quiet = http_request.url.path in QUIET_POLLING_PATHS
@@ -95,7 +93,7 @@ class ApiRequestPipeline:
                 )
                 if not is_quiet:
                     logger.debug("[Pipeline] Raw body读取完成 | size=%d bytes", len(raw_body) if raw_body is not None else 0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timeout_sec = int(config.request_body_timeout)
                 logger.error(f"读取请求体超时({timeout_sec}s),可能客户端未发送完整请求体")
                 raise HTTPException(
@@ -166,7 +164,7 @@ class ApiRequestPipeline:
 
     def _authenticate_client(
         self, request: Request, db: Session, adapter: ApiAdapter, *, quiet: bool = False
-    ) -> Tuple[User, ApiKey]:
+    ) -> tuple[User, ApiKey]:
         if not quiet:
             logger.debug("[Pipeline._authenticate_client] 开始")
         # 使用 adapter 的 extract_api_key 方法，支持不同 API 格式的认证头
@@ -215,7 +213,7 @@ class ApiRequestPipeline:
 
     async def _authenticate_admin(
         self, request: Request, db: Session
-    ) -> Tuple[User, Optional["ManagementToken"]]:
+    ) -> tuple[User, ManagementToken | None]:
         """管理员认证，支持 JWT 和 Management Token 两种方式"""
         from src.models.database import ManagementToken
         from src.utils.request_utils import get_client_ip
@@ -278,7 +276,7 @@ class ApiRequestPipeline:
 
     async def _authenticate_user(
         self, request: Request, db: Session
-    ) -> Tuple[User, Optional["ManagementToken"]]:
+    ) -> tuple[User, ManagementToken | None]:
         """用户认证，支持 JWT 和 Management Token 两种方式"""
         from src.models.database import ManagementToken
         from src.utils.request_utils import get_client_ip
@@ -329,7 +327,7 @@ class ApiRequestPipeline:
 
     async def _authenticate_management(
         self, request: Request, db: Session
-    ) -> Tuple[User, "ManagementToken"]:
+    ) -> tuple[User, ManagementToken]:
         """Management Token 认证"""
         from src.models.database import ManagementToken
         from src.utils.request_utils import get_client_ip
@@ -362,7 +360,7 @@ class ApiRequestPipeline:
 
         return user, management_token
 
-    def _calculate_quota_remaining(self, user: Optional[User]) -> Optional[float]:
+    def _calculate_quota_remaining(self, user: User | None) -> float | None:
         if not user:
             return None
         if user.quota_usd is None or user.quota_usd < 0:
@@ -375,8 +373,8 @@ class ApiRequestPipeline:
         adapter: ApiAdapter,
         *,
         success: bool,
-        status_code: Optional[int] = None,
-        error: Optional[str] = None,
+        status_code: int | None = None,
+        error: str | None = None,
     ) -> None:
         """记录审计事件
 
@@ -432,8 +430,8 @@ class ApiRequestPipeline:
         adapter: ApiAdapter,
         *,
         success: bool,
-        status_code: Optional[int],
-        error: Optional[str],
+        status_code: int | None,
+        error: str | None,
     ) -> dict:
         duration_ms = max((time.time() - context.start_time) * 1000, 0.0)
         request = context.request

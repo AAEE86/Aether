@@ -39,7 +39,7 @@
 3. 在前端 auth-templates/ 添加对应的模板定义
 """
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 import httpx
 
@@ -67,14 +67,14 @@ class GenericApiKeyConnector(ProviderConnector):
     auth_type = ConnectorAuthType.API_KEY
     display_name = "API Key"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         super().__init__(base_url, config)
-        self._api_key: Optional[str] = None
+        self._api_key: str | None = None
         # 支持配置认证方式
         self._auth_method = self.config.get("auth_method", "bearer")
         self._header_name = self.config.get("header_name", "Authorization")
 
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """建立连接"""
         api_key = credentials.get("api_key")
         if not api_key:
@@ -107,7 +107,7 @@ class GenericApiKeyConnector(ProviderConnector):
         return request
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """获取凭据配置 schema"""
         return {
             "type": "object",
@@ -136,14 +136,14 @@ class GenericApiArchitecture(ProviderArchitecture):
     display_name = "通用 API"
     description = "可配置的通用 API 架构，适用于各种中转站"
 
-    supported_connectors: List[Type[ProviderConnector]] = [
+    supported_connectors: list[type[ProviderConnector]] = [
         GenericApiKeyConnector,
     ]
 
-    supported_actions: List[Type[ProviderAction]] = [NewApiBalanceAction]
+    supported_actions: list[type[ProviderAction]] = [NewApiBalanceAction]
 
     # 默认操作配置（可被用户配置覆盖）
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {
         ProviderActionType.QUERY_BALANCE: {
             "endpoint": "/api/user/balance",
             "method": "GET",
@@ -154,7 +154,7 @@ class GenericApiArchitecture(ProviderArchitecture):
         },
     }
 
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """通用架构只需要 api_key"""
         return GenericApiKeyConnector.get_credentials_schema()
 
@@ -164,11 +164,11 @@ class GenericApiArchitecture(ProviderArchitecture):
 
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """构建通用 API 的验证请求 Headers"""
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
 
         api_key = credentials.get("api_key", "")
         if api_key:
@@ -184,7 +184,7 @@ class GenericApiArchitecture(ProviderArchitecture):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """解析通用 API 验证响应"""
         if status_code == 401:

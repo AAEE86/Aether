@@ -10,9 +10,11 @@ import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any
+
+from collections.abc import Callable
 
 from ..core.exceptions import ProxyException
 from src.core.logger import logger
@@ -43,7 +45,7 @@ class ErrorPattern:
 
     def __init__(
         self,
-        error_types: List[Type[Exception]],
+        error_types: list[type[Exception]],
         severity: ErrorSeverity,
         recovery_strategy: RecoveryStrategy,
         user_message: str,
@@ -113,10 +115,10 @@ class ResilienceManager:
     """系统韧性管理器"""
 
     def __init__(self):
-        self.error_patterns: List[ErrorPattern] = []
-        self.circuit_breakers: Dict[str, CircuitBreaker] = {}
-        self.error_stats: Dict[str, int] = {}
-        self.last_errors: List[Dict[str, Any]] = []
+        self.error_patterns: list[ErrorPattern] = []
+        self.circuit_breakers: dict[str, CircuitBreaker] = {}
+        self.error_stats: dict[str, int] = {}
+        self.last_errors: list[dict[str, Any]] = []
         self._setup_default_patterns()
 
     def _setup_default_patterns(self):
@@ -196,8 +198,8 @@ class ResilienceManager:
         return self.circuit_breakers[key]
 
     def handle_error(
-        self, error: Exception, context: Dict[str, Any] = None, operation: str = "unknown"
-    ) -> Dict[str, Any]:
+        self, error: Exception, context: dict[str, Any] = None, operation: str = "unknown"
+    ) -> dict[str, Any]:
         """处理错误并返回处理结果"""
 
         error_id = str(uuid.uuid4())[:8]
@@ -250,14 +252,14 @@ class ResilienceManager:
                 "pattern": None,
             }
 
-    def _find_matching_pattern(self, error: Exception) -> Optional[ErrorPattern]:
+    def _find_matching_pattern(self, error: Exception) -> ErrorPattern | None:
         """查找匹配的错误处理模式"""
         for pattern in self.error_patterns:
             if any(isinstance(error, error_type) for error_type in pattern.error_types):
                 return pattern
         return None
 
-    def get_error_stats(self) -> Dict[str, Any]:
+    def get_error_stats(self) -> dict[str, Any]:
         """获取错误统计"""
         return {
             "total_errors": sum(self.error_stats.values()),
@@ -279,7 +281,7 @@ def resilient_operation(
     max_retries: int = None,
     retry_delay: float = None,
     circuit_breaker_key: str = None,
-    context: Dict[str, Any] = None,
+    context: dict[str, Any] = None,
 ):
     """
     韧性操作装饰器
@@ -354,7 +356,7 @@ def resilient_operation(
 
 
 @asynccontextmanager
-async def safe_operation(operation_name: str, context: Dict[str, Any] = None):
+async def safe_operation(operation_name: str, context: dict[str, Any] = None):
     """
     安全操作上下文管理器
     自动处理异常并提供用户友好的错误信息

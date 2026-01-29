@@ -5,7 +5,7 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -29,8 +29,8 @@ from src.services.system.config import SystemConfigService
 class UsageRecordParams:
     """用量记录参数数据类，用于在内部方法间传递数据"""
     db: Session
-    user: Optional[User]
-    api_key: Optional[ApiKey]
+    user: User | None
+    api_key: ApiKey | None
     provider: str
     model: str
     input_tokens: int
@@ -38,29 +38,29 @@ class UsageRecordParams:
     cache_creation_input_tokens: int
     cache_read_input_tokens: int
     request_type: str
-    api_format: Optional[str]
-    endpoint_api_format: Optional[str]  # 端点原生 API 格式
+    api_format: str | None
+    endpoint_api_format: str | None  # 端点原生 API 格式
     has_format_conversion: bool  # 是否发生了格式转换
     is_stream: bool
-    response_time_ms: Optional[int]
-    first_byte_time_ms: Optional[int]
+    response_time_ms: int | None
+    first_byte_time_ms: int | None
     status_code: int
-    error_message: Optional[str]
-    metadata: Optional[Dict[str, Any]]
-    request_headers: Optional[Dict[str, Any]]
-    request_body: Optional[Any]
-    provider_request_headers: Optional[Dict[str, Any]]
-    response_headers: Optional[Dict[str, Any]]
-    client_response_headers: Optional[Dict[str, Any]]
-    response_body: Optional[Any]
+    error_message: str | None
+    metadata: dict[str, Any] | None
+    request_headers: dict[str, Any] | None
+    request_body: Any | None
+    provider_request_headers: dict[str, Any] | None
+    response_headers: dict[str, Any] | None
+    client_response_headers: dict[str, Any] | None
+    response_body: Any | None
     request_id: str
-    provider_id: Optional[str]
-    provider_endpoint_id: Optional[str]
-    provider_api_key_id: Optional[str]
+    provider_id: str | None
+    provider_endpoint_id: str | None
+    provider_api_key_id: str | None
     status: str
-    cache_ttl_minutes: Optional[int]
+    cache_ttl_minutes: int | None
     use_tiered_pricing: bool
-    target_model: Optional[str]
+    target_model: str | None
 
     def __post_init__(self) -> None:
         """验证关键字段，确保数据完整性"""
@@ -110,7 +110,7 @@ class UsageService:
     # ==================== 热力图缓存 ====================
 
     @classmethod
-    def _get_heatmap_cache_key(cls, user_id: Optional[str], include_actual_cost: bool) -> str:
+    def _get_heatmap_cache_key(cls, user_id: str | None, include_actual_cost: bool) -> str:
         """生成热力图缓存键"""
         cost_suffix = "with_cost" if include_actual_cost else "no_cost"
         if user_id:
@@ -149,9 +149,9 @@ class UsageService:
     async def get_cached_heatmap(
         cls,
         db: Session,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
         include_actual_cost: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         获取带缓存的热力图数据
 
@@ -220,8 +220,8 @@ class UsageService:
     def _build_usage_params(
         *,
         db: Session,
-        user: Optional[User],
-        api_key: Optional[ApiKey],
+        user: User | None,
+        api_key: ApiKey | None,
         provider: str,
         model: str,
         input_tokens: int,
@@ -229,27 +229,27 @@ class UsageService:
         cache_creation_input_tokens: int,
         cache_read_input_tokens: int,
         request_type: str,
-        api_format: Optional[str],
-        endpoint_api_format: Optional[str],
+        api_format: str | None,
+        endpoint_api_format: str | None,
         has_format_conversion: bool,
         is_stream: bool,
-        response_time_ms: Optional[int],
-        first_byte_time_ms: Optional[int],
+        response_time_ms: int | None,
+        first_byte_time_ms: int | None,
         status_code: int,
-        error_message: Optional[str],
-        metadata: Optional[Dict[str, Any]],
-        request_headers: Optional[Dict[str, Any]],
-        request_body: Optional[Any],
-        provider_request_headers: Optional[Dict[str, Any]],
-        response_headers: Optional[Dict[str, Any]],
-        client_response_headers: Optional[Dict[str, Any]],
-        response_body: Optional[Any],
+        error_message: str | None,
+        metadata: dict[str, Any] | None,
+        request_headers: dict[str, Any] | None,
+        request_body: Any | None,
+        provider_request_headers: dict[str, Any] | None,
+        response_headers: dict[str, Any] | None,
+        client_response_headers: dict[str, Any] | None,
+        response_body: Any | None,
         request_id: str,
-        provider_id: Optional[str],
-        provider_endpoint_id: Optional[str],
-        provider_api_key_id: Optional[str],
+        provider_id: str | None,
+        provider_endpoint_id: str | None,
+        provider_api_key_id: str | None,
         status: str,
-        target_model: Optional[str],
+        target_model: str | None,
         # 成本计算结果
         input_cost: float,
         output_cost: float,
@@ -261,13 +261,13 @@ class UsageService:
         # 价格信息
         input_price: float,
         output_price: float,
-        cache_creation_price: Optional[float],
-        cache_read_price: Optional[float],
-        request_price: Optional[float],
+        cache_creation_price: float | None,
+        cache_read_price: float | None,
+        request_price: float | None,
         # 倍率
         actual_rate_multiplier: float,
         is_free_tier: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """构建 Usage 记录的参数字典（内部方法，避免代码重复）"""
 
         # 根据配置决定是否记录请求详情
@@ -388,10 +388,10 @@ class UsageService:
     async def _get_rate_multiplier_and_free_tier(
         cls,
         db: Session,
-        provider_api_key_id: Optional[str],
-        provider_id: Optional[str],
-        api_format: Optional[str] = None,
-    ) -> Tuple[float, bool]:
+        provider_api_key_id: str | None,
+        provider_id: str | None,
+        api_format: str | None = None,
+    ) -> tuple[float, bool]:
         """获取费率倍数和是否免费套餐（使用缓存）"""
         from src.services.cache.provider_cache import ProviderCacheService
 
@@ -409,12 +409,12 @@ class UsageService:
         output_tokens: int,
         cache_creation_input_tokens: int,
         cache_read_input_tokens: int,
-        api_format: Optional[str],
-        cache_ttl_minutes: Optional[int],
+        api_format: str | None,
+        cache_ttl_minutes: int | None,
         use_tiered_pricing: bool,
         is_failed_request: bool,
-    ) -> Tuple[float, float, float, float, float, float, float, float, float,
-               Optional[float], Optional[float], Optional[float], Optional[int]]:
+    ) -> tuple[float, float, float, float, float, float, float, float, float,
+               float | None, float | None, float | None, int | None]:
         """计算所有成本相关数据
 
         Returns:
@@ -430,7 +430,7 @@ class UsageService:
         price_task = service.get_model_price_async(provider, model)
         request_price_task = service.get_request_price_async(provider, model)
 
-        tiered_pricing: Optional[dict] = None
+        tiered_pricing: dict | None = None
         if use_tiered_pricing:
             tiered_pricing_task = service.get_tiered_pricing_async(provider, model)
             (input_price, output_price), request_price, tiered_pricing = await asyncio.gather(
@@ -544,8 +544,8 @@ class UsageService:
     @staticmethod
     def _update_existing_usage(
         existing_usage: Usage,
-        usage_params: Dict[str, Any],
-        target_model: Optional[str],
+        usage_params: dict[str, Any],
+        target_model: str | None,
     ) -> None:
         """更新已存在的 Usage 记录（内部方法）"""
         # 更新关键字段
@@ -630,7 +630,7 @@ class UsageService:
     @classmethod
     async def get_cache_prices_async(
         cls, db: Session, provider: str, model: str, input_price: float
-    ) -> Tuple[Optional[float], Optional[float]]:
+    ) -> tuple[float | None, float | None]:
         """异步获取模型缓存价格（缓存创建价格，缓存读取价格）每1M tokens"""
         service = ModelCostService(db)
         return await service.get_cache_prices_async(provider, model, input_price)
@@ -638,7 +638,7 @@ class UsageService:
     @classmethod
     def get_cache_prices(
         cls, db: Session, provider: str, model: str, input_price: float
-    ) -> Tuple[Optional[float], Optional[float]]:
+    ) -> tuple[float | None, float | None]:
         """获取模型缓存价格（缓存创建价格，缓存读取价格）每1M tokens"""
         service = ModelCostService(db)
         return service.get_cache_prices(provider, model, input_price)
@@ -646,13 +646,13 @@ class UsageService:
     @classmethod
     async def get_request_price_async(
         cls, db: Session, provider: str, model: str
-    ) -> Optional[float]:
+    ) -> float | None:
         """异步获取模型按次计费价格"""
         service = ModelCostService(db)
         return await service.get_request_price_async(provider, model)
 
     @classmethod
-    def get_request_price(cls, db: Session, provider: str, model: str) -> Optional[float]:
+    def get_request_price(cls, db: Session, provider: str, model: str) -> float | None:
         """获取模型按次计费价格"""
         service = ModelCostService(db)
         return service.get_request_price(provider, model)
@@ -665,9 +665,9 @@ class UsageService:
         output_price_per_1m: float,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
-        cache_creation_price_per_1m: Optional[float] = None,
-        cache_read_price_per_1m: Optional[float] = None,
-        price_per_request: Optional[float] = None,
+        cache_creation_price_per_1m: float | None = None,
+        cache_read_price_per_1m: float | None = None,
+        price_per_request: float | None = None,
     ) -> tuple[float, float, float, float, float, float, float]:
         """计算成本（价格是每百万tokens）- 固定价格模式
 
@@ -697,9 +697,9 @@ class UsageService:
         output_tokens: int,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
-        api_format: Optional[str] = None,
-        cache_ttl_minutes: Optional[int] = None,
-    ) -> tuple[float, float, float, float, float, float, float, Optional[int]]:
+        api_format: str | None = None,
+        cache_ttl_minutes: int | None = None,
+    ) -> tuple[float, float, float, float, float, float, float, int | None]:
         """使用策略模式计算成本（支持阶梯计费）
 
         根据 api_format 选择对应的计费策略，支持阶梯计费和 TTL 差异化。
@@ -724,7 +724,7 @@ class UsageService:
     async def _prepare_usage_record(
         cls,
         params: UsageRecordParams,
-    ) -> Tuple[Dict[str, Any], float]:
+    ) -> tuple[dict[str, Any], float]:
         """准备用量记录的共享逻辑
 
         此方法提取了 record_usage 和 record_usage_async 的公共处理逻辑：
@@ -817,8 +817,8 @@ class UsageService:
     @classmethod
     async def _prepare_usage_records_batch(
         cls,
-        params_list: List[UsageRecordParams],
-    ) -> List[Tuple[Dict[str, Any], float, Optional[Exception]]]:
+        params_list: list[UsageRecordParams],
+    ) -> list[tuple[dict[str, Any], float, Exception | None]]:
         """批量并行准备用量记录（性能优化）
 
         并行调用 _prepare_usage_record，提高批量处理效率。
@@ -832,7 +832,7 @@ class UsageService:
         """
         import asyncio
 
-        async def prepare_single(params: UsageRecordParams) -> Tuple[Dict[str, Any], float, Optional[Exception]]:
+        async def prepare_single(params: UsageRecordParams) -> tuple[dict[str, Any], float, Exception | None]:
             try:
                 usage_params, total_cost = await cls._prepare_usage_record(params)
                 return (usage_params, total_cost, None)
@@ -845,7 +845,7 @@ class UsageService:
         # 避免一次性创建过多 task（并且 _prepare_usage_record 内部也可能包含并行调用）
         # 这里采用分批 gather 来限制并发量。
         chunk_size = 50
-        results: List[Tuple[Dict[str, Any], float, Optional[Exception]]] = []
+        results: list[tuple[dict[str, Any], float, Exception | None]] = []
         for i in range(0, len(params_list), chunk_size):
             chunk = params_list[i : i + chunk_size]
             chunk_results = await asyncio.gather(*(prepare_single(p) for p in chunk))
@@ -856,8 +856,8 @@ class UsageService:
     async def record_usage_async(
         cls,
         db: Session,
-        user: Optional[User],
-        api_key: Optional[ApiKey],
+        user: User | None,
+        api_key: ApiKey | None,
         provider: str,
         model: str,
         input_tokens: int,
@@ -865,29 +865,29 @@ class UsageService:
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
         request_type: str = "chat",
-        api_format: Optional[str] = None,
-        endpoint_api_format: Optional[str] = None,
+        api_format: str | None = None,
+        endpoint_api_format: str | None = None,
         has_format_conversion: bool = False,
         is_stream: bool = False,
-        response_time_ms: Optional[int] = None,
-        first_byte_time_ms: Optional[int] = None,
+        response_time_ms: int | None = None,
+        first_byte_time_ms: int | None = None,
         status_code: int = 200,
-        error_message: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        request_headers: Optional[Dict[str, Any]] = None,
-        request_body: Optional[Any] = None,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
-        response_headers: Optional[Dict[str, Any]] = None,
-        client_response_headers: Optional[Dict[str, Any]] = None,
-        response_body: Optional[Any] = None,
-        request_id: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        provider_endpoint_id: Optional[str] = None,
-        provider_api_key_id: Optional[str] = None,
+        error_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        request_headers: dict[str, Any] | None = None,
+        request_body: Any | None = None,
+        provider_request_headers: dict[str, Any] | None = None,
+        response_headers: dict[str, Any] | None = None,
+        client_response_headers: dict[str, Any] | None = None,
+        response_body: Any | None = None,
+        request_id: str | None = None,
+        provider_id: str | None = None,
+        provider_endpoint_id: str | None = None,
+        provider_api_key_id: str | None = None,
         status: str = "completed",
-        cache_ttl_minutes: Optional[int] = None,
+        cache_ttl_minutes: int | None = None,
         use_tiered_pricing: bool = True,
-        target_model: Optional[str] = None,
+        target_model: str | None = None,
     ) -> Usage:
         """异步记录使用量（简化版，仅插入新记录）
 
@@ -953,8 +953,8 @@ class UsageService:
     async def record_usage(
         cls,
         db: Session,
-        user: Optional[User],
-        api_key: Optional[ApiKey],
+        user: User | None,
+        api_key: ApiKey | None,
         provider: str,
         model: str,
         input_tokens: int,
@@ -962,29 +962,29 @@ class UsageService:
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
         request_type: str = "chat",
-        api_format: Optional[str] = None,
-        endpoint_api_format: Optional[str] = None,
+        api_format: str | None = None,
+        endpoint_api_format: str | None = None,
         has_format_conversion: bool = False,
         is_stream: bool = False,
-        response_time_ms: Optional[int] = None,
-        first_byte_time_ms: Optional[int] = None,
+        response_time_ms: int | None = None,
+        first_byte_time_ms: int | None = None,
         status_code: int = 200,
-        error_message: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        request_headers: Optional[Dict[str, Any]] = None,
-        request_body: Optional[Any] = None,
-        provider_request_headers: Optional[Dict[str, Any]] = None,
-        response_headers: Optional[Dict[str, Any]] = None,
-        client_response_headers: Optional[Dict[str, Any]] = None,
-        response_body: Optional[Any] = None,
-        request_id: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        provider_endpoint_id: Optional[str] = None,
-        provider_api_key_id: Optional[str] = None,
+        error_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        request_headers: dict[str, Any] | None = None,
+        request_body: Any | None = None,
+        provider_request_headers: dict[str, Any] | None = None,
+        response_headers: dict[str, Any] | None = None,
+        client_response_headers: dict[str, Any] | None = None,
+        response_body: Any | None = None,
+        request_id: str | None = None,
+        provider_id: str | None = None,
+        provider_endpoint_id: str | None = None,
+        provider_api_key_id: str | None = None,
         status: str = "completed",
-        cache_ttl_minutes: Optional[int] = None,
+        cache_ttl_minutes: int | None = None,
         use_tiered_pricing: bool = True,
-        target_model: Optional[str] = None,
+        target_model: str | None = None,
     ) -> Usage:
         """记录使用量（完整版，支持更新已存在记录和用户统计）
 
@@ -1113,8 +1113,8 @@ class UsageService:
     async def record_usage_batch(
         cls,
         db: Session,
-        records: List[Dict[str, Any]],
-    ) -> List[Usage]:
+        records: list[dict[str, Any]],
+    ) -> list[Usage]:
         """批量记录使用量（高性能版，单次提交多条记录）
 
         此方法针对高并发场景优化，特点：
@@ -1139,9 +1139,9 @@ class UsageService:
 
         # 分离需要更新和需要新建的记录
         request_ids = [r.get("request_id") for r in records if r.get("request_id")]
-        existing_usages: Dict[str, Usage] = {}
-        records_to_update: List[Dict[str, Any]] = []
-        records_to_insert: List[Dict[str, Any]] = []
+        existing_usages: dict[str, Usage] = {}
+        records_to_update: list[dict[str, Any]] = []
+        records_to_insert: list[dict[str, Any]] = []
 
         if request_ids:
             # 查询已存在的 Usage 记录（包括 pending/streaming 状态）
@@ -1174,13 +1174,13 @@ class UsageService:
                 f"批量记录: 需要更新 {len(records_to_update)} 条已存在的 pending/streaming 记录"
             )
 
-        usages: List[Usage] = []
-        user_costs: Dict[str, float] = defaultdict(float)  # user_id -> total_cost
-        apikey_stats: Dict[str, Dict[str, Any]] = defaultdict(
+        usages: list[Usage] = []
+        user_costs: dict[str, float] = defaultdict(float)  # user_id -> total_cost
+        apikey_stats: dict[str, dict[str, Any]] = defaultdict(
             lambda: {"requests": 0, "cost": 0.0, "is_standalone": False}
         )
-        model_counts: Dict[str, int] = defaultdict(int)  # model -> count
-        provider_costs: Dict[str, float] = defaultdict(float)  # provider_id -> cost
+        model_counts: dict[str, int] = defaultdict(int)  # model -> count
+        provider_costs: dict[str, float] = defaultdict(float)  # provider_id -> cost
 
         # 合并所有需要处理的记录（用于预取 user/api_key）
         all_records = records_to_insert + records_to_update
@@ -1189,12 +1189,12 @@ class UsageService:
         user_ids = {r.get("user_id") for r in all_records if r.get("user_id")}
         api_key_ids = {r.get("api_key_id") for r in all_records if r.get("api_key_id")}
 
-        users_map: Dict[str, User] = {}
+        users_map: dict[str, User] = {}
         if user_ids:
             users = db.query(User).filter(User.id.in_(user_ids)).all()
             users_map = {str(u.id): u for u in users}
 
-        api_keys_map: Dict[str, ApiKey] = {}
+        api_keys_map: dict[str, ApiKey] = {}
         if api_key_ids:
             api_keys = db.query(ApiKey).filter(ApiKey.id.in_(api_key_ids)).all()
             api_keys_map = {str(k.id): k for k in api_keys}
@@ -1204,7 +1204,7 @@ class UsageService:
         total_count = len(all_records)
 
         # 辅助函数：构建 UsageRecordParams
-        def build_params(record: Dict[str, Any], request_id: str) -> UsageRecordParams:
+        def build_params(record: dict[str, Any], request_id: str) -> UsageRecordParams:
             user_id = record.get("user_id")
             api_key_id = record.get("api_key_id")
             user = users_map.get(str(user_id)) if user_id else None
@@ -1247,7 +1247,7 @@ class UsageService:
             )
 
         # 构建所有参数并并行准备
-        update_params_list: List[Tuple[Dict[str, Any], str, UsageRecordParams]] = []
+        update_params_list: list[tuple[dict[str, Any], str, UsageRecordParams]] = []
         for record in records_to_update:
             request_id = record.get("request_id")
             if request_id and request_id in existing_usages:
@@ -1260,7 +1260,7 @@ class UsageService:
                         skipped_count += 1
                         logger.warning("批量记录中参数构建失败: %s, request_id=%s", e, request_id)
 
-        insert_params_list: List[Tuple[Dict[str, Any], str, UsageRecordParams]] = []
+        insert_params_list: list[tuple[dict[str, Any], str, UsageRecordParams]] = []
         for record in records_to_insert:
             request_id = record.get("request_id") or str(uuid.uuid4())[:8]
             try:
@@ -1454,7 +1454,7 @@ class UsageService:
         user: User,
         estimated_tokens: int = 0,
         estimated_cost: float = 0,
-        api_key: Optional[ApiKey] = None,
+        api_key: ApiKey | None = None,
     ) -> tuple[bool, str]:
         """检查用户配额或独立Key余额
 
@@ -1513,12 +1513,12 @@ class UsageService:
     @staticmethod
     def get_usage_summary(
         db: Session,
-        user_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
+        user_id: str | None = None,
+        api_key_id: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
         group_by: str = "day",  # day, week, month
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """获取使用汇总"""
 
         query = db.query(Usage)
@@ -1596,12 +1596,12 @@ class UsageService:
     @staticmethod
     def get_daily_activity(
         db: Session,
-        user_id: Optional[int] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
+        user_id: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
         window_days: int = 365,
         include_actual_cost: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """按天统计请求活跃度，用于渲染热力图。
 
         优化策略：
@@ -1627,7 +1627,7 @@ class UsageService:
 
         today = now.date()
         today_start_dt = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
-        aggregated: Dict[str, Dict[str, Any]] = {}
+        aggregated: dict[str, dict[str, Any]] = {}
 
         # 1. 从预计算表读取历史数据（不包括今天）
         if user_id:
@@ -1724,7 +1724,7 @@ class UsageService:
                     )
 
         # 3. 构建返回结果
-        days: List[Dict[str, Any]] = []
+        days: list[dict[str, Any]] = []
         cursor = start_dt.date()
         end_date_only = end_dt.date()
         max_requests = 0
@@ -1736,7 +1736,7 @@ class UsageService:
             total_tokens = stats.get("total_tokens", 0)
             total_cost = stats.get("total_cost_usd", 0.0)
 
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "date": iso_date,
                 "requests": requests,
                 "total_tokens": total_tokens,
@@ -1762,10 +1762,10 @@ class UsageService:
     def get_top_users(
         db: Session,
         limit: int = 10,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
         order_by: str = "cost",  # cost, tokens, requests
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """获取使用量最高的用户"""
 
         query = (
@@ -1861,13 +1861,13 @@ class UsageService:
         cls,
         db: Session,
         request_id: str,
-        user: Optional[User],
-        api_key: Optional[ApiKey],
+        user: User | None,
+        api_key: ApiKey | None,
         model: str,
         is_stream: bool = False,
-        api_format: Optional[str] = None,
-        request_headers: Optional[Dict[str, Any]] = None,
-        request_body: Optional[Any] = None,
+        api_format: str | None = None,
+        request_headers: dict[str, Any] | None = None,
+        request_body: Any | None = None,
     ) -> Usage:
         """
         创建 pending 状态的使用记录（在请求开始时调用）
@@ -1935,17 +1935,17 @@ class UsageService:
         db: Session,
         request_id: str,
         status: str,
-        error_message: Optional[str] = None,
-        provider: Optional[str] = None,
-        target_model: Optional[str] = None,
-        first_byte_time_ms: Optional[int] = None,
-        provider_id: Optional[str] = None,
-        provider_endpoint_id: Optional[str] = None,
-        provider_api_key_id: Optional[str] = None,
-        api_format: Optional[str] = None,
-        endpoint_api_format: Optional[str] = None,
-        has_format_conversion: Optional[bool] = None,
-    ) -> Optional[Usage]:
+        error_message: str | None = None,
+        provider: str | None = None,
+        target_model: str | None = None,
+        first_byte_time_ms: int | None = None,
+        provider_id: str | None = None,
+        provider_endpoint_id: str | None = None,
+        provider_api_key_id: str | None = None,
+        api_format: str | None = None,
+        endpoint_api_format: str | None = None,
+        has_format_conversion: bool | None = None,
+    ) -> Usage | None:
         """
         快速更新使用记录状态
 
@@ -2016,8 +2016,8 @@ class UsageService:
     def _get_rate_multiplier_sync(
         db: Session,
         provider_api_key_id: str,
-        api_format: Optional[str] = None,
-    ) -> Optional[float]:
+        api_format: str | None = None,
+    ) -> float | None:
         """
         同步获取 ProviderAPIKey 的 rate_multiplier
 
@@ -2048,9 +2048,9 @@ class UsageService:
     def get_active_requests(
         cls,
         db: Session,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
         limit: int = 50,
-    ) -> List[Usage]:
+    ) -> list[Usage]:
         """
         获取活跃的请求（pending 或 streaming 状态）
 
@@ -2145,12 +2145,12 @@ class UsageService:
     def get_active_requests_status(
         cls,
         db: Session,
-        ids: Optional[List[str]] = None,
-        user_id: Optional[str] = None,
+        ids: list[str] | None = None,
+        user_id: str | None = None,
         default_timeout_seconds: int = 300,
         *,
         include_admin_fields: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         获取活跃请求状态（用于前端轮询），并自动清理超时的 pending/streaming 请求
 
@@ -2215,7 +2215,7 @@ class UsageService:
 
         # 检查超时的 pending/streaming 请求
         # 收集可能超时的 usage_id 列表
-        timeout_candidates: List[str] = []
+        timeout_candidates: list[str] = []
         for r in records:
             if r.status in ("pending", "streaming") and r.created_at:
                 # 使用全局配置的超时时间
@@ -2312,7 +2312,7 @@ class UsageService:
                     f"[Usage] 恢复 {len(completed_usage_ids)} 个已完成请求的状态（遥测回调丢失）"
                 )
 
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for r in records:
             api_format = getattr(r, "api_format", None)
             endpoint_api_format = getattr(r, "endpoint_api_format", None)
@@ -2326,7 +2326,7 @@ class UsageService:
             ):
                 has_format_conversion = not can_passthrough(api_format, endpoint_api_format)
 
-            item: Dict[str, Any] = {
+            item: dict[str, Any] = {
                 "id": r.id,
                 "status": "failed" if r.id in timeout_ids else r.status,
                 "input_tokens": r.input_tokens,
@@ -2357,10 +2357,10 @@ class UsageService:
     @staticmethod
     def analyze_cache_affinity_ttl(
         db: Session,
-        user_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
+        user_id: str | None = None,
+        api_key_id: str | None = None,
         hours: int = 168,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         分析用户请求间隔分布，推荐合适的缓存亲和性 TTL
 
@@ -2437,7 +2437,7 @@ class UsageService:
             ORDER BY request_count DESC
         """)
 
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "start_date": start_date,
         }
         if user_id:
@@ -2452,7 +2452,7 @@ class UsageService:
         group_ids = [row[0] for row in rows]
 
         # 如果是按 user_id 分组，查询用户信息
-        user_info_map: Dict[str, Dict[str, str]] = {}
+        user_info_map: dict[str, dict[str, str]] = {}
         if group_by_field == "user_id" and group_ids:
             users = db.query(User).filter(User.id.in_(group_ids)).all()
             for user in users:
@@ -2546,8 +2546,8 @@ class UsageService:
 
     @staticmethod
     def _calculate_recommended_ttl(
-        p75_interval: Optional[float],
-        p90_interval: Optional[float],
+        p75_interval: float | None,
+        p90_interval: float | None,
     ) -> int:
         """
         根据请求间隔分布计算推荐的缓存 TTL
@@ -2579,8 +2579,8 @@ class UsageService:
     @staticmethod
     def _get_ttl_recommendation_reason(
         ttl: int,
-        p75_interval: Optional[float],
-        p90_interval: Optional[float],
+        p75_interval: float | None,
+        p90_interval: float | None,
     ) -> str:
         """生成 TTL 推荐理由"""
         if p75_interval is None or p90_interval is None:
@@ -2598,10 +2598,10 @@ class UsageService:
     @staticmethod
     def get_cache_hit_analysis(
         db: Session,
-        user_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
+        user_id: str | None = None,
+        api_key_id: str | None = None,
         hours: int = 168,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         分析缓存命中情况
 
@@ -2697,9 +2697,9 @@ class UsageService:
         db: Session,
         hours: int = 24,
         limit: int = 10000,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
         include_user_info: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         获取请求间隔时间线数据，用于散点图展示
 
@@ -2808,7 +2808,7 @@ class UsageService:
                 LIMIT :limit
             """)
 
-        params: Dict[str, Any] = {"start_date": start_date, "limit": limit}
+        params: dict[str, Any] = {"start_date": start_date, "limit": limit}
         if user_id:
             params["user_id"] = user_id
 
@@ -2817,13 +2817,13 @@ class UsageService:
 
         # 转换为时间线数据点
         points = []
-        users_map: Dict[str, str] = {}  # user_id -> username
+        users_map: dict[str, str] = {}  # user_id -> username
         models_set: set = set()  # 收集所有出现的模型
 
         if include_user_info and not user_id:
             for row in rows:
                 created_at, row_user_id, model, username, interval_minutes = row
-                point_data: Dict[str, Any] = {
+                point_data: dict[str, Any] = {
                     "x": created_at.isoformat(),
                     "y": round(float(interval_minutes), 2),
                     "user_id": str(row_user_id),
@@ -2846,7 +2846,7 @@ class UsageService:
                     models_set.add(model)
                 points.append(point_data)
 
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "analysis_period_hours": hours,
             "total_points": len(points),
             "points": points,

@@ -3,8 +3,8 @@
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
@@ -25,15 +25,15 @@ class UserService:
     @retry_on_database_error(max_retries=3)
     def create_user(
         db: Session,
-        email: Optional[str],
+        email: str | None,
         username: str,
         password: str,
         role: UserRole = UserRole.USER,
-        quota_usd: Optional[float] = 10.0,
+        quota_usd: float | None = 10.0,
         email_verified: bool = False,
-        allowed_providers: Optional[List[str]] = None,
-        allowed_api_formats: Optional[List[str]] = None,
-        allowed_models: Optional[List[str]] = None,
+        allowed_providers: list[str] | None = None,
+        allowed_api_formats: list[str] | None = None,
+        allowed_models: list[str] | None = None,
     ) -> User:
         """创建新用户，quota_usd 为 None 表示无限制，email 为 None 表示无邮箱"""
 
@@ -90,7 +90,7 @@ class UserService:
         password: str,
         api_key_name: str = "默认密钥",
         role: UserRole = UserRole.USER,
-        quota_usd: Optional[float] = 10.0,
+        quota_usd: float | None = 10.0,
         concurrent_limit: int = 5,
     ) -> tuple[User, ApiKey]:
         """
@@ -131,7 +131,7 @@ class UserService:
         return user, api_key, plain_key
 
     @staticmethod
-    def get_user(db: Session, user_id: str) -> Optional[User]:
+    def get_user(db: Session, user_id: str) -> User | None:
         """获取用户"""
         import random
         import time
@@ -152,7 +152,7 @@ class UserService:
                     raise e
 
     @staticmethod
-    def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    def get_user_by_email(db: Session, email: str) -> User | None:
         """通过邮箱获取用户"""
         return db.query(User).filter(User.email == email).first()
 
@@ -161,9 +161,9 @@ class UserService:
         db: Session,
         skip: int = 0,
         limit: int = 100,
-        role: Optional[UserRole] = None,
-        is_active: Optional[bool] = None,
-    ) -> List[User]:
+        role: UserRole | None = None,
+        is_active: bool | None = None,
+    ) -> list[User]:
         """列出用户"""
         query = db.query(User)
 
@@ -176,7 +176,7 @@ class UserService:
 
     @staticmethod
     @transactional()
-    def update_user(db: Session, user_id: str, **kwargs) -> Optional[User]:
+    def update_user(db: Session, user_id: str, **kwargs) -> User | None:
         """更新用户信息"""
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -322,8 +322,8 @@ class UserService:
     def update_user_quota(
         db: Session,
         user_id: str,
-        quota_usd: Optional[float] = None,
-    ) -> Optional[User]:
+        quota_usd: float | None = None,
+    ) -> User | None:
         """更新用户配额"""
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -345,9 +345,9 @@ class UserService:
     def get_user_usage_stats(
         db: Session,
         user_id: str,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> dict[str, Any]:
         """获取用户使用统计"""
 
         query = db.query(Usage).filter(Usage.user_id == user_id)
@@ -404,7 +404,7 @@ class UserService:
         }
 
     @staticmethod
-    def get_user_available_models(db: Session, user: User) -> List[Model]:
+    def get_user_available_models(db: Session, user: User) -> list[Model]:
         """获取用户可用的模型
 
         通过 GlobalModel + Model 关联查询用户可用模型

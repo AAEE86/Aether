@@ -3,7 +3,6 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func
@@ -34,8 +33,8 @@ pipeline = ApiRequestPipeline()
 async def get_usage_aggregation(
     request: Request,
     group_by: str = Query(..., description="Aggregation dimension: model, user, provider, or api_format"),
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
@@ -75,8 +74,8 @@ async def get_usage_aggregation(
 @router.get("/stats")
 async def get_usage_stats(
     request: Request,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -122,14 +121,14 @@ async def get_activity_heatmap(
 @router.get("/records")
 async def get_usage_records(
     request: Request,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    search: Optional[str] = None,  # 通用搜索：用户名、密钥名、模型名、提供商名
-    user_id: Optional[str] = None,
-    username: Optional[str] = None,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    status: Optional[str] = None,  # stream, standard, error
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    search: str | None = None,  # 通用搜索：用户名、密钥名、模型名、提供商名
+    user_id: str | None = None,
+    username: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    status: str | None = None,  # stream, standard, error
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -179,7 +178,7 @@ async def get_usage_records(
 @router.get("/active")
 async def get_active_requests(
     request: Request,
-    ids: Optional[str] = Query(None, description="逗号分隔的请求 ID 列表，用于查询特定请求的状态"),
+    ids: str | None = Query(None, description="逗号分隔的请求 ID 列表，用于查询特定请求的状态"),
     db: Session = Depends(get_db),
 ):
     """
@@ -259,7 +258,7 @@ async def get_usage_detail(
 
 
 class AdminUsageStatsAdapter(AdminApiAdapter):
-    def __init__(self, start_date: Optional[datetime], end_date: Optional[datetime]):
+    def __init__(self, start_date: datetime | None, end_date: datetime | None):
         self.start_date = start_date
         self.end_date = end_date
 
@@ -339,7 +338,7 @@ class AdminActivityHeatmapAdapter(AdminApiAdapter):
 
 
 class AdminUsageByModelAdapter(AdminApiAdapter):
-    def __init__(self, start_date: Optional[datetime], end_date: Optional[datetime], limit: int):
+    def __init__(self, start_date: datetime | None, end_date: datetime | None, limit: int):
         self.start_date = start_date
         self.end_date = end_date
         self.limit = limit
@@ -386,7 +385,7 @@ class AdminUsageByModelAdapter(AdminApiAdapter):
 
 
 class AdminUsageByUserAdapter(AdminApiAdapter):
-    def __init__(self, start_date: Optional[datetime], end_date: Optional[datetime], limit: int):
+    def __init__(self, start_date: datetime | None, end_date: datetime | None, limit: int):
         self.start_date = start_date
         self.end_date = end_date
         self.limit = limit
@@ -436,7 +435,7 @@ class AdminUsageByUserAdapter(AdminApiAdapter):
 
 
 class AdminUsageByProviderAdapter(AdminApiAdapter):
-    def __init__(self, start_date: Optional[datetime], end_date: Optional[datetime], limit: int):
+    def __init__(self, start_date: datetime | None, end_date: datetime | None, limit: int):
         self.start_date = start_date
         self.end_date = end_date
         self.limit = limit
@@ -446,7 +445,7 @@ class AdminUsageByProviderAdapter(AdminApiAdapter):
 
         # 从 request_candidates 表统计每个 Provider 的尝试次数和成功率
         # 这样可以正确统计 Fallback 场景（一个请求可能尝试多个 Provider）
-        from sqlalchemy import case, Integer
+        from sqlalchemy import case
 
         attempt_query = db.query(
             RequestCandidate.provider_id,
@@ -550,7 +549,7 @@ class AdminUsageByProviderAdapter(AdminApiAdapter):
 
 
 class AdminUsageByApiFormatAdapter(AdminApiAdapter):
-    def __init__(self, start_date: Optional[datetime], end_date: Optional[datetime], limit: int):
+    def __init__(self, start_date: datetime | None, end_date: datetime | None, limit: int):
         self.start_date = start_date
         self.end_date = end_date
         self.limit = limit
@@ -608,14 +607,14 @@ class AdminUsageByApiFormatAdapter(AdminApiAdapter):
 class AdminUsageRecordsAdapter(AdminApiAdapter):
     def __init__(
         self,
-        start_date: Optional[datetime],
-        end_date: Optional[datetime],
-        search: Optional[str],
-        user_id: Optional[str],
-        username: Optional[str],
-        model: Optional[str],
-        provider: Optional[str],
-        status: Optional[str],
+        start_date: datetime | None,
+        end_date: datetime | None,
+        search: str | None,
+        user_id: str | None,
+        username: str | None,
+        model: str | None,
+        provider: str | None,
+        status: str | None,
         limit: int,
         offset: int,
     ):
@@ -744,7 +743,7 @@ class AdminUsageRecordsAdapter(AdminApiAdapter):
 
             for req_id, candidates in request_candidates.items():
                 # 提取所有不同的 candidate_index
-                unique_candidates = set(c[0] for c in candidates)
+                unique_candidates = {c[0] for c in candidates}
                 # 如果有多个不同的 candidate_index，说明发生了 Fallback（Provider 切换）
                 fallback_map[req_id] = len(unique_candidates) > 1
 
@@ -877,7 +876,7 @@ class AdminUsageRecordsAdapter(AdminApiAdapter):
 class AdminActiveRequestsAdapter(AdminApiAdapter):
     """轻量级活跃请求状态查询适配器"""
 
-    def __init__(self, ids: Optional[str]):
+    def __init__(self, ids: str | None):
         self.ids = ids
 
     async def handle(self, context):  # type: ignore[override]
@@ -1033,8 +1032,8 @@ class AdminUsageDetailAdapter(AdminApiAdapter):
 @router.get("/cache-affinity/ttl-analysis")
 async def analyze_cache_affinity_ttl(
     request: Request,
-    user_id: Optional[str] = Query(None, description="指定用户 ID"),
-    api_key_id: Optional[str] = Query(None, description="指定 API Key ID"),
+    user_id: str | None = Query(None, description="指定用户 ID"),
+    api_key_id: str | None = Query(None, description="指定 API Key ID"),
     hours: int = Query(168, ge=1, le=720, description="分析最近多少小时的数据"),
     db: Session = Depends(get_db),
 ):
@@ -1057,8 +1056,8 @@ async def analyze_cache_affinity_ttl(
 @router.get("/cache-affinity/hit-analysis")
 async def analyze_cache_hit(
     request: Request,
-    user_id: Optional[str] = Query(None, description="指定用户 ID"),
-    api_key_id: Optional[str] = Query(None, description="指定 API Key ID"),
+    user_id: str | None = Query(None, description="指定用户 ID"),
+    api_key_id: str | None = Query(None, description="指定 API Key ID"),
     hours: int = Query(168, ge=1, le=720, description="分析最近多少小时的数据"),
     db: Session = Depends(get_db),
 ):
@@ -1080,8 +1079,8 @@ class CacheAffinityTTLAnalysisAdapter(AdminApiAdapter):
 
     def __init__(
         self,
-        user_id: Optional[str],
-        api_key_id: Optional[str],
+        user_id: str | None,
+        api_key_id: str | None,
         hours: int,
     ):
         self.user_id = user_id
@@ -1114,8 +1113,8 @@ class CacheHitAnalysisAdapter(AdminApiAdapter):
 
     def __init__(
         self,
-        user_id: Optional[str],
-        api_key_id: Optional[str],
+        user_id: str | None,
+        api_key_id: str | None,
         hours: int,
     ):
         self.user_id = user_id
@@ -1147,7 +1146,7 @@ async def get_interval_timeline(
     request: Request,
     hours: int = Query(24, ge=1, le=720, description="分析最近多少小时的数据"),
     limit: int = Query(10000, ge=100, le=50000, description="最大返回数据点数量"),
-    user_id: Optional[str] = Query(None, description="指定用户 ID"),
+    user_id: str | None = Query(None, description="指定用户 ID"),
     include_user_info: bool = Query(False, description="是否包含用户信息（用于管理员多用户视图）"),
     db: Session = Depends(get_db),
 ):
@@ -1177,7 +1176,7 @@ class IntervalTimelineAdapter(AdminApiAdapter):
         self,
         hours: int,
         limit: int,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
         include_user_info: bool = False,
     ):
         self.hours = hours

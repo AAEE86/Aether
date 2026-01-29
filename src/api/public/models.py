@@ -7,8 +7,6 @@
 - Authorization: Bearer (bearer) -> OpenAI 格式
 """
 
-from typing import Optional, Tuple, Union
-
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -35,7 +33,6 @@ from src.core.logger import logger
 from src.database import get_db
 from src.models.database import ApiKey, User
 from src.services.auth.service import AuthService
-from src.services.system.config import SystemConfigService
 
 router = APIRouter(tags=["System Catalog"])
 
@@ -54,7 +51,7 @@ _ALL_CHAT_FORMATS = [
 
 def _extract_api_key_from_request(
     request: Request, definition: ApiFormatDefinition
-) -> Optional[str]:
+) -> str | None:
     """根据格式定义从请求中提取 API Key"""
     auth_header = definition.auth_header.lower()
     auth_type = definition.auth_type
@@ -76,7 +73,7 @@ def _extract_api_key_from_request(
         return header_value
 
 
-def _detect_api_format_and_key(request: Request) -> Tuple[str, Optional[str]]:
+def _detect_api_format_and_key(request: Request) -> tuple[str, str | None]:
     """
     根据请求头检测 API 格式并提取 API Key
 
@@ -163,7 +160,7 @@ def _build_empty_list_response(api_format: str) -> dict:
 
 def _filter_formats_by_restrictions(
     formats: list[str], restrictions: AccessRestrictions, api_format: str
-) -> Tuple[list[str], Optional[dict]]:
+) -> tuple[list[str], dict | None]:
     """
     根据访问限制过滤 API 格式
 
@@ -182,7 +179,7 @@ def _filter_formats_by_restrictions(
     return filtered, None
 
 
-def _authenticate(db: Session, api_key: Optional[str]) -> Tuple[Optional[User], Optional[ApiKey]]:
+def _authenticate(db: Session, api_key: str | None) -> tuple[User | None, ApiKey | None]:
     """
     认证 API Key
 
@@ -248,8 +245,8 @@ def _build_auth_error_response(api_format: str) -> JSONResponse:
 
 def _build_claude_list_response(
     models: list[ModelInfo],
-    before_id: Optional[str],
-    after_id: Optional[str],
+    before_id: str | None,
+    after_id: str | None,
     limit: int,
 ) -> dict:
     """构建 Claude 格式的列表响应"""
@@ -309,7 +306,7 @@ def _build_openai_list_response(models: list[ModelInfo]) -> dict:
 def _build_gemini_list_response(
     models: list[ModelInfo],
     page_size: int,
-    page_token: Optional[str],
+    page_token: str | None,
 ) -> dict:
     """构建 Gemini 格式的列表响应"""
     # 处理分页
@@ -435,14 +432,14 @@ def _build_404_response(model_id: str, api_format: str) -> JSONResponse:
 async def list_models(
     request: Request,
     # Claude 分页参数
-    before_id: Optional[str] = Query(None, description="返回此 ID 之前的结果 (Claude)"),
-    after_id: Optional[str] = Query(None, description="返回此 ID 之后的结果 (Claude)"),
+    before_id: str | None = Query(None, description="返回此 ID 之前的结果 (Claude)"),
+    after_id: str | None = Query(None, description="返回此 ID 之后的结果 (Claude)"),
     limit: int = Query(20, ge=1, le=1000, description="返回数量限制 (Claude)"),
     # Gemini 分页参数
     page_size: int = Query(50, alias="pageSize", ge=1, le=1000, description="每页数量 (Gemini)"),
-    page_token: Optional[str] = Query(None, alias="pageToken", description="分页 token (Gemini)"),
+    page_token: str | None = Query(None, alias="pageToken", description="分页 token (Gemini)"),
     db: Session = Depends(get_db),
-) -> Union[dict, JSONResponse]:
+) -> dict | JSONResponse:
     """
     列出可用模型（统一端点）
 
@@ -556,7 +553,7 @@ async def retrieve_model(
     model_id: str,
     request: Request,
     db: Session = Depends(get_db),
-) -> Union[dict, JSONResponse]:
+) -> dict | JSONResponse:
     """
     获取单个模型详情（统一端点）
 
@@ -658,9 +655,9 @@ async def retrieve_model(
 async def list_models_gemini(
     request: Request,
     page_size: int = Query(50, alias="pageSize", ge=1, le=1000),
-    page_token: Optional[str] = Query(None, alias="pageToken"),
+    page_token: str | None = Query(None, alias="pageToken"),
     db: Session = Depends(get_db),
-) -> Union[dict, JSONResponse]:
+) -> dict | JSONResponse:
     """
     列出可用模型（Gemini v1beta 专用端点）
 
@@ -741,7 +738,7 @@ async def get_model_gemini(
     request: Request,
     model_name: str,
     db: Session = Depends(get_db),
-) -> Union[dict, JSONResponse]:
+) -> dict | JSONResponse:
     """
     获取单个模型详情（Gemini v1beta 专用端点）
 

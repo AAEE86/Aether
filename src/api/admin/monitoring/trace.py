@@ -4,7 +4,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
@@ -28,29 +27,29 @@ class CandidateResponse(BaseModel):
     request_id: str
     candidate_index: int
     retry_index: int = 0  # 重试序号（从0开始）
-    provider_id: Optional[str] = None
-    provider_name: Optional[str] = None
-    provider_website: Optional[str] = None  # Provider 官网
-    endpoint_id: Optional[str] = None
-    endpoint_name: Optional[str] = None  # 端点显示名称（api_format）
-    key_id: Optional[str] = None
-    key_name: Optional[str] = None  # 密钥名称
-    key_preview: Optional[str] = None  # 密钥脱敏预览（如 sk-***abc）
-    key_capabilities: Optional[dict] = None  # Key 支持的能力
-    required_capabilities: Optional[dict] = None  # 请求实际需要的能力标签
+    provider_id: str | None = None
+    provider_name: str | None = None
+    provider_website: str | None = None  # Provider 官网
+    endpoint_id: str | None = None
+    endpoint_name: str | None = None  # 端点显示名称（api_format）
+    key_id: str | None = None
+    key_name: str | None = None  # 密钥名称
+    key_preview: str | None = None  # 密钥脱敏预览（如 sk-***abc）
+    key_capabilities: dict | None = None  # Key 支持的能力
+    required_capabilities: dict | None = None  # 请求实际需要的能力标签
     status: str  # 'pending', 'success', 'failed', 'skipped'
-    skip_reason: Optional[str] = None
+    skip_reason: str | None = None
     is_cached: bool = False
     # 执行结果字段
-    status_code: Optional[int] = None
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
-    latency_ms: Optional[int] = None
-    concurrent_requests: Optional[int] = None
-    extra_data: Optional[dict] = None
+    status_code: int | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    latency_ms: int | None = None
+    concurrent_requests: int | None = None
+    extra_data: dict | None = None
     created_at: datetime
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -62,7 +61,7 @@ class RequestTraceResponse(BaseModel):
     total_candidates: int
     final_status: str  # 'success', 'failed', 'cancelled', 'streaming', 'pending'
     total_latency_ms: int
-    candidates: List[CandidateResponse]
+    candidates: list[CandidateResponse]
 
 
 @router.get("/{request_id}", response_model=RequestTraceResponse)
@@ -253,7 +252,7 @@ class AdminGetRequestTraceAdapter(AdminApiAdapter):
                     key_preview_map[k.id] = "***"
 
         # 构建 candidate 响应列表
-        candidate_responses: List[CandidateResponse] = []
+        candidate_responses: list[CandidateResponse] = []
         for candidate in candidates:
             provider_name = (
                 provider_map.get(candidate.provider_id) if candidate.provider_id else None

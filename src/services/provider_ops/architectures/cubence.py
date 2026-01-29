@@ -4,7 +4,7 @@ Cubence 架构
 针对 Cubence 中转站的预设配置。
 """
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 import httpx
 
@@ -54,11 +54,11 @@ class CubenceConnector(ProviderConnector):
     auth_type = ConnectorAuthType.COOKIE
     display_name = "Cubence Cookie"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         super().__init__(base_url, config)
-        self._token_cookie: Optional[str] = None
+        self._token_cookie: str | None = None
 
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """建立连接"""
         token_cookie = credentials.get("token_cookie")
         if not token_cookie:
@@ -88,7 +88,7 @@ class CubenceConnector(ProviderConnector):
         return request
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """获取凭据配置 schema"""
         return {
             "type": "object",
@@ -120,15 +120,15 @@ class CubenceArchitecture(ProviderArchitecture):
     display_name = "Cubence"
     description = "Cubence 中转站预设配置，使用 Cookie 认证"
 
-    supported_connectors: List[Type[ProviderConnector]] = [
+    supported_connectors: list[type[ProviderConnector]] = [
         CubenceConnector,
     ]
 
-    supported_actions: List[Type[ProviderAction]] = [
+    supported_actions: list[type[ProviderAction]] = [
         CubenceBalanceAction,
     ]
 
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {
         ProviderActionType.QUERY_BALANCE: {
             "endpoint": "/api/v1/dashboard/overview",
             "method": "GET",
@@ -138,7 +138,7 @@ class CubenceArchitecture(ProviderArchitecture):
         },
     }
 
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """Cubence 使用 token_cookie 认证"""
         return CubenceConnector.get_credentials_schema()
 
@@ -148,15 +148,15 @@ class CubenceArchitecture(ProviderArchitecture):
 
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """
         构建 Cubence 的验证请求 Headers
 
         使用 Cookie 认证，不使用 Authorization。
         """
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
 
         # 添加 token Cookie
         cookie_input = credentials.get("token_cookie")
@@ -169,7 +169,7 @@ class CubenceArchitecture(ProviderArchitecture):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """解析 Cubence 验证响应"""
         if status_code == 401:
@@ -190,7 +190,7 @@ class CubenceArchitecture(ProviderArchitecture):
         subscription_limits = user_data.get("subscription_limits", {})
 
         # 构建 extra 信息，包含窗口限额
-        extra: Dict[str, Any] = {
+        extra: dict[str, Any] = {
             "role": user_info.get("role"),
             "invite_code": user_info.get("invite_code"),
         }

@@ -3,9 +3,8 @@
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from src.core.exceptions import ForbiddenException, NotFoundException
@@ -26,8 +25,8 @@ class AnnouncementService:
         type: str = "info",
         priority: int = 0,
         is_pinned: bool = False,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
     ) -> Announcement:
         """创建公告"""
         # 验证作者是否为管理员
@@ -61,7 +60,7 @@ class AnnouncementService:
     @staticmethod
     def get_announcements(
         db: Session,
-        user_id: Optional[str] = None,  # UUID
+        user_id: str | None = None,  # UUID
         active_only: bool = True,
         include_read_status: bool = False,
         limit: int = 50,
@@ -148,14 +147,14 @@ class AnnouncementService:
         db: Session,
         announcement_id: str,  # UUID
         user_id: str,  # UUID
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        type: Optional[str] = None,
-        priority: Optional[int] = None,
-        is_active: Optional[bool] = None,
-        is_pinned: Optional[bool] = None,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+        title: str | None = None,
+        content: str | None = None,
+        type: str | None = None,
+        priority: int | None = None,
+        is_active: bool | None = None,
+        is_pinned: bool | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
     ) -> Announcement:
         """更新公告"""
         # 验证用户是否为管理员
@@ -230,7 +229,7 @@ class AnnouncementService:
             logger.info(f"User {user_id} marked announcement {announcement_id} as read")
 
     @staticmethod
-    def get_active_announcements(db: Session, user_id: Optional[str] = None) -> dict:  # UUID
+    def get_active_announcements(db: Session, user_id: str | None = None) -> dict:  # UUID
         """获取当前有效的公告（首页展示用）"""
         return AnnouncementService.get_announcements(
             db=db,

@@ -5,7 +5,7 @@ Google Gemini API 请求/响应模型
 作为 API 网关，采用宽松类型定义以支持 API 新特性透传
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,8 +28,8 @@ class GeminiContent(BaseModelWithExtras):
     使用宽松类型定义，parts 接受任意字典列表以支持 API 新特性
     """
 
-    role: Optional[str] = None
-    parts: List[Dict[str, Any]]
+    role: str | None = None
+    parts: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -51,14 +51,14 @@ class GeminiRequest(BaseModelWithExtras):
     采用宽松类型定义，除必要字段外全部透传
     """
 
-    model: Optional[str] = Field(default=None, description="模型名称，从 URL 路径提取（内部使用）")
-    contents: List[GeminiContent]
+    model: str | None = Field(default=None, description="模型名称，从 URL 路径提取（内部使用）")
+    contents: list[GeminiContent]
     # 以下字段全部使用 Dict[str, Any] 透传，不做结构验证
-    system_instruction: Optional[Dict[str, Any]] = Field(default=None, alias="systemInstruction")
-    tools: Optional[List[Dict[str, Any]]] = None
-    tool_config: Optional[Dict[str, Any]] = Field(default=None, alias="toolConfig")
-    safety_settings: Optional[List[Dict[str, Any]]] = Field(default=None, alias="safetySettings")
-    generation_config: Optional[Dict[str, Any]] = Field(default=None, alias="generationConfig")
+    system_instruction: dict[str, Any] | None = Field(default=None, alias="systemInstruction")
+    tools: list[dict[str, Any]] | None = None
+    tool_config: dict[str, Any] | None = Field(default=None, alias="toolConfig")
+    safety_settings: list[dict[str, Any]] | None = Field(default=None, alias="safetySettings")
+    generation_config: dict[str, Any] | None = Field(default=None, alias="generationConfig")
 
 
 # ---------------------------------------------------------------------------

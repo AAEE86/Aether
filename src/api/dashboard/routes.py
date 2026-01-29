@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, func
@@ -952,7 +951,7 @@ class DashboardDailyStatsAdapter(DashboardAdapter):
         # 构建完整日期序列（使用业务时区日期）
         current_date = start_date_local.date()
         end_date_date = end_date_local.date()
-        formatted: List[dict] = []
+        formatted: list[dict] = []
         while current_date <= end_date_date:
             date_str = current_date.isoformat()
             stat = stats_map.get(date_str)

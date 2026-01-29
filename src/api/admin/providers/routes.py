@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -48,7 +47,7 @@ class MappingMatchingGlobalModel(BaseModel):
     global_model_name: str
     display_name: str
     is_active: bool
-    matched_models: List[MappingMatchedModel] = Field(
+    matched_models: list[MappingMatchedModel] = Field(
         default_factory=list, description="匹配到的模型列表"
     )
 
@@ -62,8 +61,8 @@ class MappingMatchingKey(BaseModel):
     key_name: str
     masked_key: str
     is_active: bool
-    allowed_models: List[str] = Field(default_factory=list, description="Key 的模型白名单")
-    matching_global_models: List[MappingMatchingGlobalModel] = Field(
+    allowed_models: list[str] = Field(default_factory=list, description="Key 的模型白名单")
+    matching_global_models: list[MappingMatchingGlobalModel] = Field(
         default_factory=list, description="匹配到的 GlobalModel 列表"
     )
 
@@ -75,7 +74,7 @@ class ProviderMappingPreviewResponse(BaseModel):
 
     provider_id: str
     provider_name: str
-    keys: List[MappingMatchingKey] = Field(
+    keys: list[MappingMatchingKey] = Field(
         default_factory=list, description="有白名单配置且匹配到映射的 Key 列表"
     )
     total_keys: int = Field(0, description="有匹配结果的 Key 数量")
@@ -95,7 +94,7 @@ async def list_providers(
     request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    is_active: Optional[bool] = None,
+    is_active: bool | None = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -209,7 +208,7 @@ async def delete_provider(provider_id: str, request: Request, db: Session = Depe
 
 
 class AdminListProvidersAdapter(AdminApiAdapter):
-    def __init__(self, skip: int, limit: int, is_active: Optional[bool]):
+    def __init__(self, skip: int, limit: int, is_active: bool | None):
         self.skip = skip
         self.limit = limit
         self.is_active = is_active
@@ -473,7 +472,7 @@ async def get_provider_mapping_preview(
             pipeline.run(adapter=adapter, http_request=request, db=db, mode=adapter.mode),
             timeout=MAPPING_PREVIEW_TIMEOUT_SECONDS,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(f"映射预览超时: provider_id={provider_id}")
         raise InvalidRequestException("映射预览超时，请简化配置或稍后重试")
 
@@ -565,7 +564,7 @@ class AdminGetProviderMappingPreviewAdapter(AdminApiAdapter):
             truncated_models = total_models_with_mappings - MAPPING_PREVIEW_MAX_MODELS
 
         # 构建有映射配置的 GlobalModel 映射
-        models_with_mappings: Dict[str, tuple] = {}  # id -> (model_info, mappings)
+        models_with_mappings: dict[str, tuple] = {}  # id -> (model_info, mappings)
         for gm in global_models:
             config = gm.config or {}
             mappings = config.get("model_mappings", [])
@@ -585,7 +584,7 @@ class AdminGetProviderMappingPreviewAdapter(AdminApiAdapter):
                 truncated_models=0,
             )
 
-        key_infos: List[MappingMatchingKey] = []
+        key_infos: list[MappingMatchingKey] = []
         total_matches = 0
 
         # 创建 CryptoService 实例
@@ -611,10 +610,10 @@ class AdminGetProviderMappingPreviewAdapter(AdminApiAdapter):
                     pass
 
             # 查找匹配的 GlobalModel
-            matching_global_models: List[MappingMatchingGlobalModel] = []
+            matching_global_models: list[MappingMatchingGlobalModel] = []
 
             for gm_id, (gm, mappings) in models_with_mappings.items():
-                matched_models: List[MappingMatchedModel] = []
+                matched_models: list[MappingMatchedModel] = []
 
                 for allowed_model in allowed_models_list:
                     for mapping_pattern in mappings:

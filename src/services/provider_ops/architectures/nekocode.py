@@ -4,7 +4,7 @@ NekoCode 架构
 针对 NekoCode 中转站的预设配置，使用 Cookie 认证。
 """
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 import httpx
 
@@ -56,11 +56,11 @@ class NekoCodeConnector(ProviderConnector):
     auth_type = ConnectorAuthType.COOKIE
     display_name = "NekoCode Cookie"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         super().__init__(base_url, config)
-        self._session_cookie: Optional[str] = None
+        self._session_cookie: str | None = None
 
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """建立连接"""
         session_cookie = credentials.get("session_cookie")
         if not session_cookie:
@@ -90,7 +90,7 @@ class NekoCodeConnector(ProviderConnector):
         return request
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """获取凭据配置 schema"""
         return {
             "type": "object",
@@ -121,20 +121,20 @@ class NekoCodeArchitecture(ProviderArchitecture):
     display_name = "NekoCode"
     description = "NekoCode 中转站预设配置，使用 Cookie 认证"
 
-    supported_connectors: List[Type[ProviderConnector]] = [
+    supported_connectors: list[type[ProviderConnector]] = [
         NekoCodeConnector,
     ]
 
-    supported_actions: List[Type[ProviderAction]] = [NekoCodeBalanceAction]
+    supported_actions: list[type[ProviderAction]] = [NekoCodeBalanceAction]
 
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {
         ProviderActionType.QUERY_BALANCE: {
             "endpoint": "/api/usage/summary",
             "method": "GET",
         },
     }
 
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """NekoCode 使用 session_cookie 认证"""
         return NekoCodeConnector.get_credentials_schema()
 
@@ -145,9 +145,9 @@ class NekoCodeArchitecture(ProviderArchitecture):
     async def prepare_verify_config(
         self,
         base_url: str,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         验证前获取 /api/usage/summary 数据（用于显示天卡信息）
 
@@ -161,7 +161,7 @@ class NekoCodeArchitecture(ProviderArchitecture):
         """
         try:
             # 构建请求头
-            headers: Dict[str, str] = {
+            headers: dict[str, str] = {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -176,7 +176,7 @@ class NekoCodeArchitecture(ProviderArchitecture):
                 headers["Cookie"] = f"session={session_value}"
 
             # 构建 client 参数
-            client_kwargs: Dict[str, Any] = {
+            client_kwargs: dict[str, Any] = {
                 "timeout": 10,
                 "verify": get_ssl_context(),
             }
@@ -202,15 +202,15 @@ class NekoCodeArchitecture(ProviderArchitecture):
 
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """
         构建 NekoCode 的验证请求 Headers
 
         使用 Cookie 认证，不使用 Authorization。
         """
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
 
         # 添加 session Cookie
         cookie_input = credentials.get("session_cookie")
@@ -224,7 +224,7 @@ class NekoCodeArchitecture(ProviderArchitecture):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """解析 NekoCode 验证响应（/api/user/self + _usage_summary）"""
         if status_code == 401:
@@ -249,7 +249,7 @@ class NekoCodeArchitecture(ProviderArchitecture):
             quota = None
 
         # 从 prepare_verify_config 获取的 _usage_summary 数据（天卡信息）
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
         usage_summary = data.get("_usage_summary", {})
         subscription = usage_summary.get("subscription", {})
 

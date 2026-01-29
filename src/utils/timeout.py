@@ -6,7 +6,9 @@
 
 import asyncio
 from functools import wraps
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
+
+from collections.abc import Callable
 
 from src.core.logger import logger
 
@@ -23,7 +25,7 @@ class AsyncTimeoutError(TimeoutError):
         self.timeout = timeout
 
 
-def with_timeout(seconds: float, operation_name: Optional[str] = None):
+def with_timeout(seconds: float, operation_name: str | None = None):
     """
     装饰器：为异步函数添加超时保护
 
@@ -47,7 +49,7 @@ def with_timeout(seconds: float, operation_name: Optional[str] = None):
             op_name = operation_name or func.__name__
             try:
                 return await asyncio.wait_for(func(*args, **kwargs), timeout=seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(f"操作超时: {op_name} (timeout={seconds}s)")
                 raise AsyncTimeoutError(
                     f"{op_name} 操作超时（{seconds}秒）",
@@ -89,7 +91,7 @@ async def run_with_timeout(
     """
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(f"操作超时: {operation_name} (timeout={timeout}s)")
         if raise_on_timeout:
             raise AsyncTimeoutError(
@@ -113,7 +115,7 @@ class TimeoutContext:
     def __init__(self, timeout: float, operation_name: str = "operation"):
         self.timeout = timeout
         self.operation_name = operation_name
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     async def __aenter__(self):
         return self
@@ -172,7 +174,7 @@ async def read_first_chunk_with_ttfb_timeout(
     try:
         first_chunk = await asyncio.wait_for(aiter.__anext__(), timeout=timeout)
         return first_chunk, aiter
-    except asyncio.TimeoutError:
+    except TimeoutError:
         # 完整的资源清理：先关闭迭代器，再关闭底层响应
         await _cleanup_iterator_resources(aiter, request_id)
         logger.warning(

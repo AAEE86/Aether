@@ -4,7 +4,6 @@
 统一管理各种缓存的失效逻辑
 """
 
-from typing import Optional
 
 from src.core.logger import logger
 
@@ -21,7 +20,7 @@ class CacheInvalidationService:
             self._model_mappers.append(model_mapper)
 
     async def on_global_model_changed(
-        self, model_name: str, global_model_id: Optional[str] = None
+        self, model_name: str, global_model_id: str | None = None
     ) -> None:
         """
         GlobalModel 变更时的缓存失效
@@ -96,7 +95,7 @@ class CacheInvalidationService:
 
 
 # 全局单例
-_cache_invalidation_service: Optional[CacheInvalidationService] = None
+_cache_invalidation_service: CacheInvalidationService | None = None
 
 
 def get_cache_invalidation_service() -> CacheInvalidationService:

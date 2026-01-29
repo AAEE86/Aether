@@ -2,14 +2,12 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
-from src.api.base.adapter import ApiAdapter, ApiMode
 from src.api.base.authenticated_adapter import AuthenticatedApiAdapter
 from src.api.base.pipeline import ApiRequestPipeline
 from src.core.crypto import crypto_service
@@ -170,9 +168,9 @@ async def toggle_my_api_key(key_id: str, request: Request, db: Session = Depends
 @router.get("/usage")
 async def get_my_usage(
     request: Request,
-    start_date: Optional[datetime] = Query(None, description="开始时间（ISO 格式）"),
-    end_date: Optional[datetime] = Query(None, description="结束时间（ISO 格式）"),
-    search: Optional[str] = Query(None, description="搜索关键词（密钥名、模型名）"),
+    start_date: datetime | None = Query(None, description="开始时间（ISO 格式）"),
+    end_date: datetime | None = Query(None, description="结束时间（ISO 格式）"),
+    search: str | None = Query(None, description="搜索关键词（密钥名、模型名）"),
     limit: int = Query(100, ge=1, le=200, description="每页记录数，默认100，最大200"),
     offset: int = Query(0, ge=0, le=2000, description="偏移量，用于分页，最大2000"),
     db: Session = Depends(get_db),
@@ -200,7 +198,7 @@ async def get_my_usage(
 @router.get("/usage/active")
 async def get_my_active_requests(
     request: Request,
-    ids: Optional[str] = Query(None, description="请求 ID 列表，逗号分隔"),
+    ids: str | None = Query(None, description="请求 ID 列表，逗号分隔"),
     db: Session = Depends(get_db),
 ):
     """
@@ -268,7 +266,7 @@ async def list_available_models(
     request: Request,
     skip: int = Query(0, ge=0, description="跳过记录数"),
     limit: int = Query(100, ge=1, le=1000, description="返回记录数限制"),
-    search: Optional[str] = Query(None, description="搜索关键词"),
+    search: str | None = Query(None, description="搜索关键词"),
     db: Session = Depends(get_db),
 ):
     """
@@ -721,9 +719,9 @@ class ToggleMyApiKeyAdapter(AuthenticatedApiAdapter):
 class GetUsageAdapter(AuthenticatedApiAdapter):
     """获取用户使用统计的适配器"""
 
-    start_date: Optional[datetime]
-    end_date: Optional[datetime]
-    search: Optional[str] = None
+    start_date: datetime | None
+    end_date: datetime | None
+    search: str | None = None
     limit: int = 100
     offset: int = 0
 
@@ -983,7 +981,7 @@ class GetUsageAdapter(AuthenticatedApiAdapter):
 class GetActiveRequestsAdapter(AuthenticatedApiAdapter):
     """轻量级活跃请求状态查询适配器（用于用户端轮询）"""
 
-    ids: Optional[str] = None
+    ids: str | None = None
 
     async def handle(self, context):  # type: ignore[override]
         from src.services.usage import UsageService
@@ -1045,7 +1043,7 @@ class ListAvailableModelsAdapter(AuthenticatedApiAdapter):
 
     skip: int
     limit: int
-    search: Optional[str]
+    search: str | None
 
     async def handle(self, context):  # type: ignore[override]
         from sqlalchemy import or_
@@ -1220,7 +1218,6 @@ class ListAvailableProvidersAdapter(AuthenticatedApiAdapter):
     async def handle(self, context):  # type: ignore[override]
         from sqlalchemy.orm import selectinload
 
-        from src.models.database import ProviderEndpoint
 
         db = context.db
 

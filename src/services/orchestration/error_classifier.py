@@ -6,7 +6,7 @@
 
 import json
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 import httpx
 from sqlalchemy.orm import Session
@@ -51,7 +51,7 @@ class ErrorClassifier:
     """
 
     # 需要触发故障转移的错误类型
-    RETRIABLE_ERRORS: Tuple[type, ...] = (
+    RETRIABLE_ERRORS: tuple[type, ...] = (
         ProviderException,  # 包含所有 Provider 异常子类
         ConnectionError,  # Python 标准连接错误
         TimeoutError,  # Python 标准超时错误
@@ -59,7 +59,7 @@ class ErrorClassifier:
     )
 
     # 不可重试的错误类型（直接抛出）
-    NON_RETRIABLE_ERRORS: Tuple[type, ...] = (
+    NON_RETRIABLE_ERRORS: tuple[type, ...] = (
         ValueError,  # 参数错误
         TypeError,  # 类型错误
         KeyError,  # 键错误
@@ -73,7 +73,7 @@ class ErrorClassifier:
     #
     # 重要：不要在此列表中包含 Provider Key 配置问题（如 invalid_api_key）
     # 这类错误应该触发故障转移，而不是直接返回给用户
-    CLIENT_ERROR_PATTERNS: Tuple[str, ...] = (
+    CLIENT_ERROR_PATTERNS: tuple[str, ...] = (
         "could not process image",  # 图片处理失败
         "image too large",  # 图片过大
         "invalid image",  # 无效图片
@@ -101,7 +101,7 @@ class ErrorClassifier:
         self,
         db: Session,
         adaptive_manager: Any = None,
-        cache_scheduler: Optional[CacheAwareScheduler] = None,
+        cache_scheduler: CacheAwareScheduler | None = None,
     ) -> None:
         """
         初始化错误分类器
@@ -117,7 +117,7 @@ class ErrorClassifier:
 
     # 表示客户端错误的 error type（不区分大小写）
     # 这些 type 表明是请求本身的问题，不应重试
-    CLIENT_ERROR_TYPES: Tuple[str, ...] = (
+    CLIENT_ERROR_TYPES: tuple[str, ...] = (
         # Claude/OpenAI 标准
         "invalid_request_error",
         # Gemini
@@ -131,7 +131,7 @@ class ErrorClassifier:
     )
 
     # 表示客户端错误的 reason/code 字段值
-    CLIENT_ERROR_REASONS: Tuple[str, ...] = (
+    CLIENT_ERROR_REASONS: tuple[str, ...] = (
         "CONTENT_LENGTH_EXCEEDS_THRESHOLD",
         "CONTEXT_LENGTH_EXCEEDED",
         "MAX_TOKENS_EXCEEDED",
@@ -141,7 +141,7 @@ class ErrorClassifier:
 
     # Provider 兼容性错误模式 - 这类错误应该触发故障转移
     # 因为换一个 Provider 可能就能成功
-    COMPATIBILITY_ERROR_PATTERNS: Tuple[str, ...] = (
+    COMPATIBILITY_ERROR_PATTERNS: tuple[str, ...] = (
         "unsupported parameter",  # 不支持的参数
         "unsupported model",  # 不支持的模型
         "unsupported feature",  # 不支持的功能
@@ -154,7 +154,7 @@ class ErrorClassifier:
 
     # Thinking 块相关错误模式 - 这类错误需要清洗 thinking 块或调整请求
     # 场景：多供应商环境下，Provider A 生成的 thinking 块被发送到 Provider B 时签名验证失败
-    THINKING_ERROR_PATTERNS: Tuple[str, ...] = (
+    THINKING_ERROR_PATTERNS: tuple[str, ...] = (
         # 签名错误：跨 Provider 发送 thinking 块时，签名无法被目标 Provider 验证
         # 例: "invalid `signature` in `thinking` block: signature is for a different request"
         "invalid `signature` in `thinking` block",
@@ -176,7 +176,7 @@ class ErrorClassifier:
         "expected `redacted_thinking`, found",
     )
 
-    def _parse_error_response(self, error_text: Optional[str]) -> Dict[str, Any]:
+    def _parse_error_response(self, error_text: str | None) -> dict[str, Any]:
         """
         解析错误响应为结构化数据
 
@@ -265,7 +265,7 @@ class ErrorClassifier:
 
         return result
 
-    def is_client_error(self, error_text: Optional[str]) -> bool:
+    def is_client_error(self, error_text: str | None) -> bool:
         """
         检测错误响应是否为客户端错误（不应重试）
 
@@ -301,7 +301,7 @@ class ErrorClassifier:
         search_text = f"{parsed['message']} {parsed['raw']}".lower()
         return any(pattern.lower() in search_text for pattern in self.CLIENT_ERROR_PATTERNS)
 
-    def _is_compatibility_error(self, error_text: Optional[str]) -> bool:
+    def _is_compatibility_error(self, error_text: str | None) -> bool:
         """
         检测错误响应是否为 Provider 兼容性错误（应触发故障转移）
 
@@ -320,7 +320,7 @@ class ErrorClassifier:
         search_text = error_text.lower()
         return any(pattern.lower() in search_text for pattern in self.COMPATIBILITY_ERROR_PATTERNS)
 
-    def _is_thinking_error(self, error_text: Optional[str]) -> bool:
+    def _is_thinking_error(self, error_text: str | None) -> bool:
         """
         检测错误响应是否为 Thinking 块相关错误（签名错误或结构错误）
 
@@ -339,7 +339,7 @@ class ErrorClassifier:
         search_text = error_text.lower()
         return any(p.lower() in search_text for p in self.THINKING_ERROR_PATTERNS)
 
-    def _extract_error_message(self, error_text: Optional[str]) -> Optional[str]:
+    def _extract_error_message(self, error_text: str | None) -> str | None:
         """
         从错误响应中提取错误消息
 
@@ -404,9 +404,9 @@ class ErrorClassifier:
         self,
         key: ProviderAPIKey,
         provider_name: str,
-        current_rpm: Optional[int],
+        current_rpm: int | None,
         exception: ProviderRateLimitException,
-        request_id: Optional[str] = None,
+        request_id: str | None = None,
     ) -> str:
         """
         处理 429 速率限制错误的自适应调整
@@ -468,8 +468,8 @@ class ErrorClassifier:
         self,
         error: httpx.HTTPStatusError,
         provider_name: str,
-        error_response_text: Optional[str] = None,
-    ) -> Union[ProviderException, UpstreamClientException]:
+        error_response_text: str | None = None,
+    ) -> ProviderException | UpstreamClientException:
         """
         转换 HTTP 错误为 Provider 异常
 
@@ -559,14 +559,14 @@ class ErrorClassifier:
         endpoint: ProviderEndpoint,
         key: ProviderAPIKey,
         affinity_key: str,
-        api_format: Union[str, APIFormat],
+        api_format: str | APIFormat,
         global_model_id: str,
-        request_id: Optional[str],
-        captured_key_concurrent: Optional[int],
-        elapsed_ms: Optional[int],
+        request_id: str | None,
+        captured_key_concurrent: int | None,
+        elapsed_ms: int | None,
         attempt: int,
         max_attempts: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         处理 HTTP 错误，返回 extra_data
 
@@ -609,7 +609,7 @@ class ErrorClassifier:
         converted_error = self.convert_http_error(http_error, provider_name, error_response_text)
 
         # 构建 extra_data，包含转换后的异常
-        extra_data: Dict[str, Any] = {
+        extra_data: dict[str, Any] = {
             "converted_error": converted_error,
         }
         if error_response_text:
@@ -702,11 +702,11 @@ class ErrorClassifier:
         endpoint: ProviderEndpoint,
         key: ProviderAPIKey,
         affinity_key: str,
-        api_format: Union[str, APIFormat],
+        api_format: str | APIFormat,
         global_model_id: str,
-        captured_key_concurrent: Optional[int],
-        elapsed_ms: Optional[int],
-        request_id: Optional[str],
+        captured_key_concurrent: int | None,
+        elapsed_ms: int | None,
+        request_id: str | None,
         attempt: int,
         max_attempts: int,
     ) -> None:

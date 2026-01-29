@@ -3,13 +3,18 @@ Webhook通知插件
 通过HTTP Webhook发送通知
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import hmac
 import json
 import time
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import aiohttp
 
 try:
     import aiohttp
@@ -17,7 +22,6 @@ try:
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
-    aiohttp = None
 
 from src.core.logger import logger
 
@@ -30,7 +34,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
     支持多种Webhook格式（Slack, Discord, 通用）
     """
 
-    def __init__(self, name: str = "webhook", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "webhook", config: dict[str, Any] = None):
         super().__init__(name, config)
 
         if not AIOHTTP_AVAILABLE:
@@ -48,9 +52,9 @@ class WebhookNotificationPlugin(NotificationPlugin):
         self.headers = config.get("headers", {}) if config else {}
 
         # 缓冲配置
-        self._buffer: List[Notification] = []
+        self._buffer: list[Notification] = []
         self._lock = asyncio.Lock()
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
         self._flush_task = None
 
         if not self.webhook_url:
@@ -89,7 +93,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
 
         return signature
 
-    def _format_for_slack(self, notification: Notification) -> Dict[str, Any]:
+    def _format_for_slack(self, notification: Notification) -> dict[str, Any]:
         """格式化为Slack消息"""
         # Slack颜色映射
         color_map = {
@@ -120,7 +124,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
             ],
         }
 
-    def _format_for_discord(self, notification: Notification) -> Dict[str, Any]:
+    def _format_for_discord(self, notification: Notification) -> dict[str, Any]:
         """格式化为Discord消息"""
         # Discord颜色映射
         color_map = {
@@ -150,7 +154,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
 
         return {"embeds": embeds}
 
-    def _format_for_teams(self, notification: Notification) -> Dict[str, Any]:
+    def _format_for_teams(self, notification: Notification) -> dict[str, Any]:
         """格式化为Microsoft Teams消息"""
         # Teams颜色映射
         color_map = {
@@ -176,7 +180,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
             "summary": notification.title,
         }
 
-    def _format_payload(self, notification: Notification) -> Dict[str, Any]:
+    def _format_payload(self, notification: Notification) -> dict[str, Any]:
         """根据Webhook类型格式化负载"""
         if self.webhook_type == "slack":
             return self._format_for_slack(notification)
@@ -208,7 +212,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
 
         return True
 
-    async def _do_send_batch(self, notifications: List[Notification]) -> Dict[str, Any]:
+    async def _do_send_batch(self, notifications: list[Notification]) -> dict[str, Any]:
         """实际批量发送通知"""
         success_count = 0
         failed_count = 0
@@ -272,7 +276,7 @@ class WebhookNotificationPlugin(NotificationPlugin):
         async with self._lock:
             return await self._flush_buffer()
 
-    async def _get_extra_stats(self) -> Dict[str, Any]:
+    async def _get_extra_stats(self) -> dict[str, Any]:
         """获取 Webhook 特定的统计信息"""
         return {
             "type": "webhook",

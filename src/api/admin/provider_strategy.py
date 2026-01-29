@@ -3,7 +3,6 @@
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -25,11 +24,11 @@ pipeline = ApiRequestPipeline()
 
 class ProviderBillingUpdate(BaseModel):
     billing_type: ProviderBillingType
-    monthly_quota_usd: Optional[float] = None
+    monthly_quota_usd: float | None = None
     quota_reset_day: int = Field(default=30, ge=1, le=365)  # 重置周期（天数）
-    quota_last_reset_at: Optional[str] = None  # 当前周期开始时间
-    quota_expires_at: Optional[str] = None
-    rpm_limit: Optional[int] = Field(default=None, ge=0)
+    quota_last_reset_at: str | None = None  # 当前周期开始时间
+    quota_expires_at: str | None = None
+    rpm_limit: int | None = Field(default=None, ge=0)
     provider_priority: int = Field(default=100, ge=0, le=200)
 
 
@@ -163,13 +162,12 @@ class AdminProviderBillingAdapter(AdminApiAdapter):
         provider.quota_reset_day = config.quota_reset_day
         provider.provider_priority = config.provider_priority
 
-        from dateutil import parser
         from sqlalchemy import func
 
         from src.models.database import Usage
 
         if config.quota_last_reset_at:
-            new_reset_at = parser.parse(config.quota_last_reset_at)
+            new_reset_at = datetime.fromisoformat(config.quota_last_reset_at)
             # 确保有时区信息，如果没有则假设为 UTC
             if new_reset_at.tzinfo is None:
                 new_reset_at = new_reset_at.replace(tzinfo=timezone.utc)
@@ -188,7 +186,7 @@ class AdminProviderBillingAdapter(AdminApiAdapter):
             logger.info(f"Synced usage for provider {provider.name}: ${period_usage:.4f} since {new_reset_at}")
 
         if config.quota_expires_at:
-            expires_at = parser.parse(config.quota_expires_at)
+            expires_at = datetime.fromisoformat(config.quota_expires_at)
             # 确保有时区信息，如果没有则假设为 UTC
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)

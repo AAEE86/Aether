@@ -1,7 +1,6 @@
 """管理员 Management Token 管理端点"""
 
 from dataclasses import dataclass
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -46,8 +45,8 @@ class AdminManagementTokenApiAdapter(AdminApiAdapter):
 @router.get("")
 async def list_all_management_tokens(
     request: Request,
-    user_id: Optional[str] = Query(None, description="筛选用户 ID"),
-    is_active: Optional[bool] = Query(None, description="筛选激活状态"),
+    user_id: str | None = Query(None, description="筛选用户 ID"),
+    is_active: bool | None = Query(None, description="筛选激活状态"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -174,8 +173,8 @@ class AdminListManagementTokensAdapter(AdminManagementTokenApiAdapter):
     """列出所有 Management Tokens"""
 
     name: str = "admin_list_management_tokens"
-    user_id: Optional[str] = None
-    is_active: Optional[bool] = None
+    user_id: str | None = None
+    is_active: bool | None = None
     skip: int = 0
     limit: int = 50
 
@@ -197,7 +196,7 @@ class AdminListManagementTokensAdapter(AdminManagementTokenApiAdapter):
         )
 
         # 预加载用户信息
-        user_ids = list(set(t.user_id for t in tokens))
+        user_ids = list({t.user_id for t in tokens})
         users = {u.id: u for u in context.db.query(User).filter(User.id.in_(user_ids)).all()}
         for token in tokens:
             token.user = users.get(token.user_id)

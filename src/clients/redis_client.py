@@ -9,10 +9,11 @@
 - 调用方可以根据状态决定降级策略
 """
 
+from __future__ import annotations
+
 import os
 import time
 from enum import Enum
-from typing import Optional
 
 import redis.asyncio as aioredis
 from src.core.logger import logger
@@ -35,8 +36,8 @@ class RedisClientManager:
     提供 Redis 连接管理、熔断器保护和状态监控。
     """
 
-    _instance: Optional["RedisClientManager"] = None
-    _redis: Optional[aioredis.Redis] = None
+    _instance: RedisClientManager | None = None
+    _redis: aioredis.Redis | None = None
 
     def __new__(cls):
         """单例模式"""
@@ -50,11 +51,11 @@ class RedisClientManager:
             return
 
         self._initialized = True
-        self._circuit_open_until: Optional[float] = None
+        self._circuit_open_until: float | None = None
         self._consecutive_failures: int = 0
         self._circuit_threshold = int(os.getenv("REDIS_CIRCUIT_BREAKER_THRESHOLD", "3"))
         self._circuit_reset_seconds = int(os.getenv("REDIS_CIRCUIT_BREAKER_RESET_SECONDS", "60"))
-        self._last_error: Optional[str] = None  # 记录最后一次错误
+        self._last_error: str | None = None  # 记录最后一次错误
 
     def get_state(self) -> RedisState:
         """
@@ -100,7 +101,7 @@ class RedisClientManager:
         self._consecutive_failures = 0
         self._last_error = None
 
-    async def initialize(self, require_redis: bool = False) -> Optional[aioredis.Redis]:
+    async def initialize(self, require_redis: bool = False) -> aioredis.Redis | None:
         """
         初始化Redis连接
 
@@ -236,7 +237,7 @@ class RedisClientManager:
             self._redis = None
             logger.info("全局Redis客户端已关闭")
 
-    def get_client(self) -> Optional[aioredis.Redis]:
+    def get_client(self) -> aioredis.Redis | None:
         """
         获取Redis客户端（非异步）
 
@@ -249,10 +250,10 @@ class RedisClientManager:
 
 
 # 全局单例
-_redis_manager: Optional[RedisClientManager] = None
+_redis_manager: RedisClientManager | None = None
 
 
-async def get_redis_client(require_redis: bool = False) -> Optional[aioredis.Redis]:
+async def get_redis_client(require_redis: bool = False) -> aioredis.Redis | None:
     """
     获取全局Redis客户端
 
@@ -277,7 +278,7 @@ async def get_redis_client(require_redis: bool = False) -> Optional[aioredis.Red
     return _redis_manager.get_client()
 
 
-def get_redis_client_sync() -> Optional[aioredis.Redis]:
+def get_redis_client_sync() -> aioredis.Redis | None:
     """
     同步获取Redis客户端（不会初始化）
 

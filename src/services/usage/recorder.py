@@ -22,7 +22,7 @@ await recorder.record(result)
 ```
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -52,7 +52,7 @@ class UsageRecorder:
         user: User,
         api_key: ApiKey,
         client_ip: str = "unknown",
-        request_id: Optional[str] = None,
+        request_id: str | None = None,
     ):
         self.db = db
         self.user = user
@@ -75,8 +75,8 @@ class UsageRecorder:
     async def record_success(
         self,
         result: RequestResult,
-        request_headers: Optional[Dict[str, str]] = None,
-        request_body: Optional[Dict[str, Any]] = None,
+        request_headers: dict[str, str] | None = None,
+        request_body: dict[str, Any] | None = None,
     ) -> None:
         """
         记录成功请求的 Usage
@@ -149,8 +149,8 @@ class UsageRecorder:
     async def record_failure(
         self,
         result: RequestResult,
-        request_headers: Optional[Dict[str, str]] = None,
-        request_body: Optional[Dict[str, Any]] = None,
+        request_headers: dict[str, str] | None = None,
+        request_body: dict[str, Any] | None = None,
     ) -> None:
         """
         记录失败请求的 Usage
@@ -222,8 +222,8 @@ class UsageRecorder:
         model: str,
         response_time_ms: int,
         is_stream: bool = False,
-        request_headers: Optional[Dict[str, str]] = None,
-        request_body: Optional[Dict[str, Any]] = None,
+        request_headers: dict[str, str] | None = None,
+        request_body: dict[str, Any] | None = None,
     ) -> None:
         """
         从异常创建 RequestResult 并记录失败

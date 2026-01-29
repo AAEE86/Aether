@@ -3,14 +3,14 @@
 定义认证插件的接口和认证上下文
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from ..common import BasePlugin, HealthStatus, PluginMetadata
+from ..common import BasePlugin
 
 
 @dataclass
@@ -22,11 +22,11 @@ class AuthContext:
 
     user_id: int
     user_name: str
-    api_key_id: Optional[int] = None
-    api_key_name: Optional[str] = None
-    permissions: Dict[str, bool] = None
-    quota_info: Dict[str, Any] = None
-    metadata: Dict[str, Any] = None
+    api_key_id: int | None = None
+    api_key_name: str | None = None
+    permissions: dict[str, bool] = None
+    quota_info: dict[str, Any] = None
+    metadata: dict[str, Any] = None
 
     def __post_init__(self):
         if self.permissions is None:
@@ -49,9 +49,9 @@ class AuthPlugin(BasePlugin):
         author: str = "Unknown",
         description: str = "",
         api_version: str = "1.0",
-        dependencies: List[str] = None,
-        provides: List[str] = None,
-        config: Dict[str, Any] = None,
+        dependencies: list[str] = None,
+        provides: list[str] = None,
+        config: dict[str, Any] = None,
     ):
         """
         初始化认证插件
@@ -80,7 +80,7 @@ class AuthPlugin(BasePlugin):
         )
 
     @abstractmethod
-    async def authenticate(self, request: Request, db: Session) -> Optional[AuthContext]:
+    async def authenticate(self, request: Request, db: Session) -> AuthContext | None:
         """
         执行认证
 
@@ -94,7 +94,7 @@ class AuthPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    def get_credentials(self, request: Request) -> Optional[str]:
+    def get_credentials(self, request: Request) -> str | None:
         """
         从请求中提取认证凭据
 

@@ -4,9 +4,8 @@ GlobalModel 服务层
 提供 GlobalModel 的 CRUD 操作、查询和统计功能
 """
 
-from typing import Dict, List, Optional, Set, cast
+from typing import cast
 
-from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, joinedload
 
 from src.core.exceptions import InvalidRequestException, NotFoundException
@@ -18,7 +17,7 @@ from src.models.pydantic_models import GlobalModelUpdate
 async def on_key_allowed_models_changed(
     db: Session,
     provider_id: str,
-    allowed_models: Optional[List[str]] = None,
+    allowed_models: list[str] | None = None,
     skip_disassociate: bool = False,
 ) -> None:
     """
@@ -84,7 +83,7 @@ class GlobalModelService:
         return global_model
 
     @staticmethod
-    def get_global_model_by_name(db: Session, name: str) -> Optional[GlobalModel]:
+    def get_global_model_by_name(db: Session, name: str) -> GlobalModel | None:
         """通过名称获取 GlobalModel"""
         return db.query(GlobalModel).filter(GlobalModel.name == name).first()
 
@@ -93,9 +92,9 @@ class GlobalModelService:
         db: Session,
         skip: int = 0,
         limit: int = 100,
-        is_active: Optional[bool] = None,
-        search: Optional[str] = None,
-    ) -> List[GlobalModel]:
+        is_active: bool | None = None,
+        search: str | None = None,
+    ) -> list[GlobalModel]:
         """列出 GlobalModel"""
         query = db.query(GlobalModel)
 
@@ -119,15 +118,15 @@ class GlobalModelService:
         db: Session,
         name: str,
         display_name: str,
-        is_active: Optional[bool] = True,
+        is_active: bool | None = True,
         # 按次计费配置
-        default_price_per_request: Optional[float] = None,
+        default_price_per_request: float | None = None,
         # 阶梯计费配置（必填）
         default_tiered_pricing: dict = None,
         # Key 能力配置
-        supported_capabilities: Optional[List[str]] = None,
+        supported_capabilities: list[str] | None = None,
         # 模型配置（JSON）
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> GlobalModel:
         """创建 GlobalModel"""
         # 检查名称是否已存在
@@ -219,7 +218,7 @@ class GlobalModelService:
         db.commit()
 
     @staticmethod
-    def get_global_model_stats(db: Session, global_model_id: str) -> Dict:
+    def get_global_model_stats(db: Session, global_model_id: str) -> dict:
         """获取 GlobalModel 统计信息"""
         global_model = GlobalModelService.get_global_model(db, global_model_id)
 
@@ -232,7 +231,7 @@ class GlobalModelService:
         )
 
         # 统计支持的 Provider 数量
-        provider_ids = set(model.provider_id for model in models)
+        provider_ids = {model.provider_id for model in models}
 
         # 从阶梯计费中提取价格范围
         input_prices = []
@@ -263,11 +262,10 @@ class GlobalModelService:
     def batch_assign_to_providers(
         db: Session,
         global_model_id: str,
-        provider_ids: List[str],
+        provider_ids: list[str],
         create_models: bool = False,
-    ) -> Dict:
+    ) -> dict:
         """批量为多个 Provider 添加 GlobalModel 实现"""
-        from .service import ModelService
 
         global_model = GlobalModelService.get_global_model(db, global_model_id)
 
@@ -338,8 +336,8 @@ class GlobalModelService:
     def auto_associate_provider_by_key_whitelist(
         db: Session,
         provider_id: str,
-        allowed_models: List[str],
-    ) -> Dict:
+        allowed_models: list[str],
+    ) -> dict:
         """
         根据 Key 白名单自动关联 Provider 到匹配的 GlobalModel
 
@@ -358,7 +356,7 @@ class GlobalModelService:
         from src.core.model_permissions import match_model_with_pattern
         from src.models.database import Provider
 
-        results: Dict[str, List[Dict]] = {
+        results: dict[str, list[dict]] = {
             "success": [],
             "errors": [],
         }
@@ -378,9 +376,9 @@ class GlobalModelService:
             .filter(Model.provider_id == provider_id)
             .all()
         )
-        linked_global_model_ids: Set[str] = {row[0] for row in existing_associations if row[0]}
+        linked_global_model_ids: set[str] = {row[0] for row in existing_associations if row[0]}
         # 同时获取已存在的 provider_model_name 集合，避免唯一约束冲突
-        existing_provider_model_names: Set[str] = {
+        existing_provider_model_names: set[str] = {
             row[1] for row in existing_associations if row[1]
         }
 
@@ -403,7 +401,7 @@ class GlobalModelService:
                 continue
 
             # 提取映射规则
-            model_mappings: List[str] = []
+            model_mappings: list[str] = []
             if global_model.config and isinstance(global_model.config, dict):
                 mappings = global_model.config.get("model_mappings")
                 if isinstance(mappings, list):
@@ -472,7 +470,7 @@ class GlobalModelService:
     def auto_disassociate_provider_by_key_whitelist(
         db: Session,
         provider_id: str,
-    ) -> Dict:
+    ) -> dict:
         """
         根据 Key 白名单自动解除 Provider 与不再匹配的 GlobalModel 的关联
 
@@ -491,7 +489,7 @@ class GlobalModelService:
         from src.core.model_permissions import match_model_with_pattern
         from src.models.database import Provider, ProviderAPIKey
 
-        results: Dict[str, List[Dict]] = {
+        results: dict[str, list[dict]] = {
             "success": [],
             "errors": [],
         }
@@ -514,7 +512,7 @@ class GlobalModelService:
 
         # 收集所有 Key 的 allowed_models 并集
         # 注意：allowed_models 为 null 表示允许所有模型，此时不应解除任何关联
-        all_allowed_models: Set[str] = set()
+        all_allowed_models: set[str] = set()
         has_unlimited_key = False  # 是否存在允许所有模型的 Key
 
         for key in keys:
@@ -542,7 +540,7 @@ class GlobalModelService:
         )
 
         # 3. 检查每个 Model 是否还能匹配，收集需要删除的 Model
-        models_to_delete: List[Model] = []
+        models_to_delete: list[Model] = []
 
         for model in models:
             # 跳过没有关联 GlobalModel 的
@@ -552,7 +550,7 @@ class GlobalModelService:
             global_model = cast(GlobalModel, model.global_model)
 
             # 提取映射规则
-            model_mappings: List[str] = []
+            model_mappings: list[str] = []
             config = global_model.config
             if config and isinstance(config, dict):
                 mappings = config.get("model_mappings")

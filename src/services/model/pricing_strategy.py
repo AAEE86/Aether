@@ -11,7 +11,6 @@
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -28,11 +27,11 @@ class PricingConfig:
     """价格配置"""
     input_price_per_1m: float = 0.0
     output_price_per_1m: float = 0.0
-    cache_creation_price_per_1m: Optional[float] = None
-    cache_read_price_per_1m: Optional[float] = None
-    price_per_request: Optional[float] = None
-    tiered_pricing: Optional[dict] = None
-    cache_ttl_minutes: Optional[int] = None
+    cache_creation_price_per_1m: float | None = None
+    cache_read_price_per_1m: float | None = None
+    price_per_request: float | None = None
+    tiered_pricing: dict | None = None
+    cache_ttl_minutes: int | None = None
 
 
 @dataclass
@@ -45,4 +44,4 @@ class CostResult:
     cache_cost: float = 0.0
     request_cost: float = 0.0
     total_cost: float = 0.0
-    tier_index: Optional[int] = None  # 命中的阶梯索引
+    tier_index: int | None = None  # 命中的阶梯索引

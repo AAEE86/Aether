@@ -7,7 +7,6 @@
 """
 
 import asyncio
-from typing import Dict, Optional
 
 import httpx
 
@@ -23,7 +22,7 @@ MAX_CONCURRENT_REQUESTS = 5
 MODEL_FETCH_FORMATS = [APIFormat.OPENAI, APIFormat.CLAUDE, APIFormat.GEMINI]
 
 
-def _get_adapter_for_format(api_format: str) -> Optional[type]:
+def _get_adapter_for_format(api_format: str) -> type | None:
     """根据 API 格式获取对应的 Adapter 类"""
     from src.api.handlers.base.chat_adapter_base import get_adapter_class
     from src.api.handlers.base.cli_adapter_base import get_cli_adapter_class
@@ -39,7 +38,7 @@ def _get_adapter_for_format(api_format: str) -> Optional[type]:
 
 def build_all_format_configs(
     api_key_value: str,
-    format_to_endpoint: Dict[str, ProviderEndpoint],
+    format_to_endpoint: dict[str, ProviderEndpoint],
 ) -> list[dict]:
     """
     构建所有 API 格式的端点配置
@@ -118,7 +117,7 @@ async def fetch_models_from_endpoints(
 
     async def fetch_one(
         client: httpx.AsyncClient, config: dict
-    ) -> tuple[list, Optional[str], bool]:
+    ) -> tuple[list, str | None, bool]:
         base_url = config["base_url"]
         if not base_url:
             return [], None, False

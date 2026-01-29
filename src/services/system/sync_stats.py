@@ -3,7 +3,6 @@ API密钥统计同步服务
 定期同步API密钥的统计数据，确保与实际使用记录一致
 """
 
-from typing import Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -20,7 +19,7 @@ class SyncStatsService:
     BATCH_SIZE = 100
 
     @staticmethod
-    def sync_api_key_stats(db: Session, api_key_id: Optional[str] = None) -> dict:  # UUID
+    def sync_api_key_stats(db: Session, api_key_id: str | None = None) -> dict:  # UUID
         """
         同步API密钥的统计数据
 

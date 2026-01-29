@@ -1,10 +1,8 @@
 """系统设置API端点。"""
 
-from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError
@@ -649,9 +647,8 @@ class AdminSystemStatsAdapter(AdminApiAdapter):
 class AdminTriggerCleanupAdapter(AdminApiAdapter):
     async def handle(self, context):  # type: ignore[override]
         """手动触发清理任务"""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone
 
-        from sqlalchemy import func
 
         from src.services.system.maintenance_scheduler import get_maintenance_scheduler
 

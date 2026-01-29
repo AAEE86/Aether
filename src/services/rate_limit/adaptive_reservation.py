@@ -13,9 +13,8 @@
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
-from src.core.logger import logger
 
 from src.config.constants import AdaptiveReservationDefaults
 
@@ -68,7 +67,7 @@ class ReservationResult:
     phase: str  # 当前阶段: "probe" | "stable"
     confidence: float  # 置信度 (0-1)
     load_factor: float  # 负载因子 (0-1)
-    details: Dict[str, Any]  # 详细信息
+    details: dict[str, Any]  # 详细信息
 
 
 class AdaptiveReservationManager:
@@ -91,15 +90,15 @@ class AdaptiveReservationManager:
     - 调整历史稳定性：最近调整的方差越小越稳定
     """
 
-    def __init__(self, config: Optional[ReservationConfig] = None):
+    def __init__(self, config: ReservationConfig | None = None):
         self.config = config or ReservationConfig()
-        self._cache: Dict[str, ReservationResult] = {}  # 简单的内存缓存
+        self._cache: dict[str, ReservationResult] = {}  # 简单的内存缓存
 
     def calculate_reservation(
         self,
-        key: "ProviderAPIKey",
+        key: ProviderAPIKey,
         current_usage: int = 0,
-        effective_limit: Optional[int] = None,
+        effective_limit: int | None = None,
     ) -> ReservationResult:
         """
         计算当前应使用的预留比例
@@ -148,7 +147,7 @@ class AdaptiveReservationManager:
             },
         )
 
-    def _get_total_requests(self, key: "ProviderAPIKey") -> int:
+    def _get_total_requests(self, key: ProviderAPIKey) -> int:
         """获取总请求数（用于判断是否过了探测阶段）"""
         # 使用总请求计数作为基准
         request_count = key.request_count or 0
@@ -165,14 +164,14 @@ class AdaptiveReservationManager:
         return request_count
 
     def _calculate_load_ratio(
-        self, current_usage: int, effective_limit: Optional[int]
+        self, current_usage: int, effective_limit: int | None
     ) -> float:
         """计算当前负载率"""
         if not effective_limit or effective_limit <= 0:
             return 0.0
         return min(current_usage / effective_limit, 1.0)
 
-    def _calculate_confidence(self, key: "ProviderAPIKey") -> float:
+    def _calculate_confidence(self, key: ProviderAPIKey) -> float:
         """
         计算学习值的置信度 (0-1)
 
@@ -186,7 +185,7 @@ class AdaptiveReservationManager:
             scores["success_score"] + scores["cooldown_score"] + scores["stability_score"], 1.0
         )
 
-    def _get_confidence_breakdown(self, key: "ProviderAPIKey") -> Dict[str, float]:
+    def _get_confidence_breakdown(self, key: ProviderAPIKey) -> dict[str, float]:
         """获取置信度各因素的详细分数"""
         # 因素1: 成功率（权重 40%）
         # 使用成功率而非连续成功次数，更准确反映 Key 的稳定性
@@ -308,7 +307,7 @@ class AdaptiveReservationManager:
 
         return f"置信度{confidence:.0%}，负载{load_ratio:.0%}，动态计算预留"
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取管理器统计信息"""
         return {
             "config": {
@@ -323,7 +322,7 @@ class AdaptiveReservationManager:
 
 
 # 全局单例
-_reservation_manager: Optional[AdaptiveReservationManager] = None
+_reservation_manager: AdaptiveReservationManager | None = None
 
 
 def get_adaptive_reservation_manager() -> AdaptiveReservationManager:

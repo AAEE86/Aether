@@ -4,7 +4,6 @@
 """
 
 import re
-from typing import List, Optional
 
 
 class PasswordValidator:
@@ -14,7 +13,7 @@ class PasswordValidator:
     MAX_LENGTH = 128
 
     @classmethod
-    def validate(cls, password: str) -> tuple[bool, Optional[str]]:
+    def validate(cls, password: str) -> tuple[bool, str | None]:
         """
         验证密码复杂度
 
@@ -109,7 +108,7 @@ class EmailValidator:
     EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
     @classmethod
-    def validate(cls, email: str) -> tuple[bool, Optional[str]]:
+    def validate(cls, email: str) -> tuple[bool, str | None]:
         """
         验证邮箱格式
 
@@ -139,7 +138,7 @@ class UsernameValidator:
     USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
     @classmethod
-    def validate(cls, username: str) -> tuple[bool, Optional[str]]:
+    def validate(cls, username: str) -> tuple[bool, str | None]:
         """
         验证用户名
 

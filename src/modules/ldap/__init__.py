@@ -4,7 +4,7 @@ LDAP 认证模块
 提供 LDAP/Active Directory 用户认证支持
 """
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING
 
 from src.core.modules.base import (
     ModuleCategory,
@@ -31,7 +31,7 @@ async def _health_check() -> ModuleHealth:
     return ModuleHealth.UNKNOWN
 
 
-def _validate_config(db: "Session") -> Tuple[bool, str]:
+def _validate_config(db: Session) -> tuple[bool, str]:
     """
     验证 LDAP 配置是否可以启用模块
 

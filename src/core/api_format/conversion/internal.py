@@ -10,11 +10,10 @@
 - 兼容优先：UnknownBlock 在内部保留，但默认在输出阶段丢弃（可观测、可随时调整策略）
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, FrozenSet, List, Optional, Union
+from typing import Any
 
 
 class Role(str, Enum):
@@ -65,7 +64,7 @@ class TextBlock:
 
     type: ContentType = field(default=ContentType.TEXT, init=False)
     text: str = ""
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,11 +73,11 @@ class ImageBlock:
 
     type: ContentType = field(default=ContentType.IMAGE, init=False)
     # base64 编码的图片数据（二选一）
-    data: Optional[str] = None
-    media_type: Optional[str] = None
+    data: str | None = None
+    media_type: str | None = None
     # 或者 URL 引用
-    url: Optional[str] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    url: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,8 +87,8 @@ class ToolUseBlock:
     type: ContentType = field(default=ContentType.TOOL_USE, init=False)
     tool_id: str = ""
     tool_name: str = ""
-    tool_input: Dict[str, Any] = field(default_factory=dict)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    tool_input: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -100,9 +99,9 @@ class ToolResultBlock:
     tool_use_id: str = ""  # 对应的 ToolUseBlock.tool_id
     # 工具输出可能是纯文本，也可能是结构化 JSON（Gemini functionResponse 等）
     output: Any = None
-    content_text: Optional[str] = None
+    content_text: str | None = None
     is_error: bool = False
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -111,11 +110,11 @@ class UnknownBlock:
 
     type: ContentType = field(default=ContentType.UNKNOWN, init=False)
     raw_type: str = ""  # 原始的类型字符串（各格式不一致）
-    payload: Dict[str, Any] = field(default_factory=dict)  # 原始结构（尽量保持）
-    extra: Dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict)  # 原始结构（尽量保持）
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
-ContentBlock = Union[TextBlock, ImageBlock, ToolUseBlock, ToolResultBlock, UnknownBlock]
+ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock | UnknownBlock
 
 
 @dataclass
@@ -123,8 +122,8 @@ class InternalMessage:
     """统一的消息表示"""
 
     role: Role
-    content: List[ContentBlock]  # 统一使用列表，纯文本用单个 TextBlock
-    extra: Dict[str, Any] = field(default_factory=dict)
+    content: list[ContentBlock]  # 统一使用列表，纯文本用单个 TextBlock
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -132,9 +131,9 @@ class ToolDefinition:
     """统一的工具定义"""
 
     name: str
-    description: Optional[str] = None
-    parameters: Optional[Dict[str, Any]] = None  # JSON Schema
-    extra: Dict[str, Any] = field(default_factory=dict)
+    description: str | None = None
+    parameters: dict[str, Any] | None = None  # JSON Schema
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolChoiceType(str, Enum):
@@ -149,8 +148,8 @@ class ToolChoice:
     """统一的工具选择"""
 
     type: ToolChoiceType
-    tool_name: Optional[str] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    tool_name: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -159,7 +158,7 @@ class InstructionSegment:
 
     role: Role  # 仅允许 Role.SYSTEM / Role.DEVELOPER
     text: str = ""
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -167,25 +166,25 @@ class InternalRequest:
     """统一的请求表示"""
 
     model: str
-    messages: List[InternalMessage]
+    messages: list[InternalMessage]
 
     # 指令层：保留 system/developer 结构与顺序
-    instructions: List[InstructionSegment] = field(default_factory=list)
+    instructions: list[InstructionSegment] = field(default_factory=list)
 
     # 兼容字段：instructions 的 join 文本（无 role 标签），用于 Claude/Gemini 这类仅接受字符串 system 的格式
-    system: Optional[str] = None
+    system: str | None = None
 
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    stop_sequences: Optional[List[str]] = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    stop_sequences: list[str] | None = None
     stream: bool = False
-    tools: Optional[List[ToolDefinition]] = None
-    tool_choice: Optional[ToolChoice] = None  # auto/none/required 或指定 tool_name
-    extra: Dict[str, Any] = field(default_factory=dict)  # 未识别字段透传
+    tools: list[ToolDefinition] | None = None
+    tool_choice: ToolChoice | None = None  # auto/none/required 或指定 tool_name
+    extra: dict[str, Any] = field(default_factory=dict)  # 未识别字段透传
 
-    def to_debug_dict(self) -> Dict[str, Any]:
+    def to_debug_dict(self) -> dict[str, Any]:
         """用于日志和调试的简化表示"""
         return {
             "model": self.model,
@@ -208,7 +207,7 @@ class UsageInfo:
     total_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -217,12 +216,12 @@ class InternalResponse:
 
     id: str
     model: str
-    content: List[ContentBlock]
-    stop_reason: Optional[StopReason] = None
-    usage: Optional[UsageInfo] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    content: list[ContentBlock]
+    stop_reason: StopReason | None = None
+    usage: UsageInfo | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_debug_dict(self) -> Dict[str, Any]:
+    def to_debug_dict(self) -> dict[str, Any]:
         """用于日志和调试的简化表示"""
         usage = None
         if self.usage:
@@ -246,12 +245,12 @@ class InternalError:
 
     type: ErrorType
     message: str
-    code: Optional[str] = None  # 原始错误码
-    param: Optional[str] = None  # 导致错误的参数
+    code: str | None = None  # 原始错误码
+    param: str | None = None  # 导致错误的参数
     retryable: bool = False  # 是否可重试
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_debug_dict(self) -> Dict[str, Any]:
+    def to_debug_dict(self) -> dict[str, Any]:
         """用于日志和调试"""
         return {
             "type": self.type.value,
@@ -269,7 +268,7 @@ class FormatCapabilities:
     supports_error_conversion: bool = True
     supports_tools: bool = True
     supports_images: bool = False
-    supported_features: FrozenSet[str] = field(default_factory=frozenset)
+    supported_features: frozenset[str] = field(default_factory=frozenset)
 
 
 __all__ = [

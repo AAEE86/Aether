@@ -14,7 +14,7 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -35,7 +35,7 @@ class CircuitState:
 
 
 # 默认健康度数据结构
-def _default_health_data() -> Dict[str, Any]:
+def _default_health_data() -> dict[str, Any]:
     return {
         "health_score": 1.0,
         "consecutive_failures": 0,
@@ -45,7 +45,7 @@ def _default_health_data() -> Dict[str, Any]:
 
 
 # 默认熔断器数据结构
-def _default_circuit_data() -> Dict[str, Any]:
+def _default_circuit_data() -> dict[str, Any]:
     return {
         "open": False,
         "open_at": None,
@@ -119,13 +119,13 @@ class HealthMonitor:
     CIRCUIT_HISTORY_LIMIT = int(os.getenv("HEALTH_CIRCUIT_HISTORY_LIMIT", "200"))
 
     # 进程级别状态缓存
-    _circuit_history: List[Dict[str, Any]] = []
+    _circuit_history: list[dict[str, Any]] = []
     _open_circuit_keys: int = 0
 
     # ==================== 数据访问辅助方法 ====================
 
     @classmethod
-    def _get_health_data(cls, key: ProviderAPIKey, api_format: str) -> Dict[str, Any]:
+    def _get_health_data(cls, key: ProviderAPIKey, api_format: str) -> dict[str, Any]:
         """获取指定格式的健康度数据，不存在则返回默认值"""
         health_by_format = key.health_by_format or {}
         if api_format not in health_by_format:
@@ -133,14 +133,14 @@ class HealthMonitor:
         return health_by_format[api_format]
 
     @classmethod
-    def _set_health_data(cls, key: ProviderAPIKey, api_format: str, data: Dict[str, Any]) -> None:
+    def _set_health_data(cls, key: ProviderAPIKey, api_format: str, data: dict[str, Any]) -> None:
         """设置指定格式的健康度数据"""
         health_by_format = dict(key.health_by_format or {})
         health_by_format[api_format] = data
         key.health_by_format = health_by_format  # type: ignore[assignment]
 
     @classmethod
-    def _get_circuit_data(cls, key: ProviderAPIKey, api_format: str) -> Dict[str, Any]:
+    def _get_circuit_data(cls, key: ProviderAPIKey, api_format: str) -> dict[str, Any]:
         """获取指定格式的熔断器数据，不存在则返回默认值"""
         circuit_by_format = key.circuit_breaker_by_format or {}
         if api_format not in circuit_by_format:
@@ -148,7 +148,7 @@ class HealthMonitor:
         return circuit_by_format[api_format]
 
     @classmethod
-    def _set_circuit_data(cls, key: ProviderAPIKey, api_format: str, data: Dict[str, Any]) -> None:
+    def _set_circuit_data(cls, key: ProviderAPIKey, api_format: str, data: dict[str, Any]) -> None:
         """设置指定格式的熔断器数据"""
         circuit_by_format = dict(key.circuit_breaker_by_format or {})
         circuit_by_format[api_format] = data
@@ -160,9 +160,9 @@ class HealthMonitor:
     def record_success(
         cls,
         db: Session,
-        key_id: Optional[str] = None,
-        api_format: Optional[str] = None,
-        response_time_ms: Optional[int] = None,
+        key_id: str | None = None,
+        api_format: str | None = None,
+        response_time_ms: int | None = None,
     ) -> None:
         """记录成功请求（按 API 格式）
 
@@ -285,9 +285,9 @@ class HealthMonitor:
     def record_failure(
         cls,
         db: Session,
-        key_id: Optional[str] = None,
-        api_format: Optional[str] = None,
-        error_type: Optional[str] = None,
+        key_id: str | None = None,
+        api_format: str | None = None,
+        error_type: str | None = None,
     ) -> None:
         """记录失败请求（按 API 格式）
 
@@ -433,7 +433,7 @@ class HealthMonitor:
 
     @classmethod
     def _calculate_error_rate_from_window(
-        cls, window: List[Dict[str, Any]], now_ts: float
+        cls, window: list[dict[str, Any]], now_ts: float
     ) -> float:
         """从窗口数据计算错误率"""
         if not window:
@@ -451,7 +451,7 @@ class HealthMonitor:
     # ==================== 熔断器状态方法（操作数据字典）====================
 
     @classmethod
-    def _get_circuit_state_from_data(cls, circuit_data: Dict[str, Any], now: datetime) -> str:
+    def _get_circuit_state_from_data(cls, circuit_data: dict[str, Any], now: datetime) -> str:
         """从数据字典获取当前熔断器状态"""
         if not circuit_data.get("open"):
             return CircuitState.CLOSED
@@ -475,7 +475,7 @@ class HealthMonitor:
     @classmethod
     def _open_circuit_data(
         cls,
-        circuit_data: Dict[str, Any],
+        circuit_data: dict[str, Any],
         now: datetime,
         recovery_seconds: int,
         reason: str,
@@ -489,7 +489,7 @@ class HealthMonitor:
         circuit_data["next_probe_at"] = (now + timedelta(seconds=recovery_seconds)).isoformat()
 
     @classmethod
-    def _enter_half_open_data(cls, circuit_data: Dict[str, Any], now: datetime) -> None:
+    def _enter_half_open_data(cls, circuit_data: dict[str, Any], now: datetime) -> None:
         """进入半开状态（操作数据字典）"""
         circuit_data["half_open_until"] = (
             now + timedelta(seconds=cls.HALF_OPEN_DURATION)
@@ -499,7 +499,7 @@ class HealthMonitor:
 
     @classmethod
     def _close_circuit_data(
-        cls, circuit_data: Dict[str, Any], health_data: Dict[str, Any], reason: str
+        cls, circuit_data: dict[str, Any], health_data: dict[str, Any], reason: str
     ) -> None:
         """关闭熔断器（操作数据字典）"""
         circuit_data["open"] = False
@@ -527,7 +527,7 @@ class HealthMonitor:
 
     @classmethod
     def is_circuit_breaker_closed(
-        cls, resource: ProviderAPIKey, api_format: Optional[str] = None
+        cls, resource: ProviderAPIKey, api_format: str | None = None
     ) -> bool:
         """检查熔断器是否允许请求通过（按 API 格式）"""
         if not api_format:
@@ -564,8 +564,8 @@ class HealthMonitor:
 
     @classmethod
     def get_circuit_breaker_status(
-        cls, resource: ProviderAPIKey, api_format: Optional[str] = None
-    ) -> Tuple[bool, Optional[str]]:
+        cls, resource: ProviderAPIKey, api_format: str | None = None
+    ) -> tuple[bool, str | None]:
         """获取熔断器详细状态（按 API 格式）"""
         if not api_format:
             # 兼容旧调用：返回第一个开启的熔断器状态
@@ -580,8 +580,8 @@ class HealthMonitor:
 
     @classmethod
     def _get_status_from_circuit_data(
-        cls, circuit_data: Dict[str, Any]
-    ) -> Tuple[bool, Optional[str]]:
+        cls, circuit_data: dict[str, Any]
+    ) -> tuple[bool, str | None]:
         """从熔断器数据获取状态描述"""
         if not circuit_data.get("open"):
             return True, None
@@ -611,8 +611,8 @@ class HealthMonitor:
 
     @classmethod
     def get_key_health(
-        cls, db: Session, key_id: str, api_format: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        cls, db: Session, key_id: str, api_format: str | None = None
+    ) -> dict[str, Any] | None:
         """获取 Key 健康状态（支持按格式查询）"""
         try:
             key = db.query(ProviderAPIKey).filter(ProviderAPIKey.id == key_id).first()
@@ -726,7 +726,7 @@ class HealthMonitor:
             return None
 
     @classmethod
-    def get_endpoint_health(cls, db: Session, endpoint_id: str) -> Optional[Dict[str, Any]]:
+    def get_endpoint_health(cls, db: Session, endpoint_id: str) -> dict[str, Any] | None:
         """获取 Endpoint 健康状态"""
         try:
             endpoint = (
@@ -753,7 +753,7 @@ class HealthMonitor:
 
     @classmethod
     def reset_health(
-        cls, db: Session, key_id: Optional[str] = None, api_format: Optional[str] = None
+        cls, db: Session, key_id: str | None = None, api_format: str | None = None
     ) -> bool:
         """重置健康度（支持按格式重置）"""
         try:
@@ -781,7 +781,7 @@ class HealthMonitor:
             return False
 
     @classmethod
-    def manually_enable(cls, db: Session, key_id: Optional[str] = None) -> bool:
+    def manually_enable(cls, db: Session, key_id: str | None = None) -> bool:
         """手动启用 Key"""
         try:
             if key_id:
@@ -803,7 +803,7 @@ class HealthMonitor:
             return False
 
     @classmethod
-    def get_all_health_status(cls, db: Session) -> Dict[str, Any]:
+    def get_all_health_status(cls, db: Session) -> dict[str, Any]:
         """获取所有健康状态摘要"""
         try:
             endpoint_stats = db.query(
@@ -861,13 +861,13 @@ class HealthMonitor:
     # ==================== 历史记录方法 ====================
 
     @classmethod
-    def _push_circuit_event(cls, event: Dict[str, Any]) -> None:
+    def _push_circuit_event(cls, event: dict[str, Any]) -> None:
         cls._circuit_history.append(event)
         if len(cls._circuit_history) > cls.CIRCUIT_HISTORY_LIMIT:
             cls._circuit_history.pop(0)
 
     @classmethod
-    def get_circuit_history(cls, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_circuit_history(cls, limit: int = 50) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
         return cls._circuit_history[-limit:]
@@ -878,9 +878,9 @@ class HealthMonitor:
     def is_eligible_for_probe(
         cls,
         db: Session,
-        endpoint_id: Optional[str] = None,
-        key_id: Optional[str] = None,
-        api_format: Optional[str] = None,
+        endpoint_id: str | None = None,
+        key_id: str | None = None,
+        api_format: str | None = None,
     ) -> bool:
         """检查是否有资格进行探测（按 API 格式）"""
         if not cls.ALLOW_AUTO_RECOVER:
@@ -914,7 +914,7 @@ class HealthMonitor:
 
     @classmethod
     def get_health_score(
-        cls, key: ProviderAPIKey, api_format: Optional[str] = None
+        cls, key: ProviderAPIKey, api_format: str | None = None
     ) -> float:
         """获取指定格式的健康度分数"""
         if not api_format:

@@ -4,14 +4,13 @@ Usage Redis Streams consumer.
 高性能消费者实现，支持批量处理和单次提交多条记录。
 """
 
-from __future__ import annotations
 
 import asyncio
 import json
 import os
 import socket
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from redis.exceptions import ResponseError
 from sqlalchemy.exc import IntegrityError
@@ -47,7 +46,7 @@ def _parse_body(value: Any) -> Any:
     return value
 
 
-def _event_to_record(event: UsageEvent) -> Dict[str, Any]:
+def _event_to_record(event: UsageEvent) -> dict[str, Any]:
     """将 UsageEvent 转换为 record_usage_batch 所需的字典格式"""
     data = event.data
     status = "completed"
@@ -121,7 +120,7 @@ class UsageQueueConsumer:
 
     def __init__(self) -> None:
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._consumer = _consumer_name()
         self._last_claim = 0.0
         self._last_metrics_log = 0.0
@@ -220,9 +219,9 @@ class UsageQueueConsumer:
             return
 
         # 分类消息
-        streaming_messages: List[Tuple[str, UsageEvent]] = []
-        record_messages: List[Tuple[str, Dict[str, Any], UsageEvent]] = []
-        failed_messages: List[Tuple[str, Dict[str, Any], Exception]] = []
+        streaming_messages: list[tuple[str, UsageEvent]] = []
+        record_messages: list[tuple[str, dict[str, Any], UsageEvent]] = []
+        failed_messages: list[tuple[str, dict[str, Any], Exception]] = []
 
         for message_id, fields in messages:
             try:
@@ -249,10 +248,10 @@ class UsageQueueConsumer:
     async def _process_streaming_batch(
         self,
         redis_client,
-        messages: List[Tuple[str, UsageEvent]],
+        messages: list[tuple[str, UsageEvent]],
     ) -> None:
         """批量处理 STREAMING 事件（状态更新）"""
-        success_ids: List[str] = []
+        success_ids: list[str] = []
         
         for message_id, event in messages:
             try:
@@ -271,16 +270,16 @@ class UsageQueueConsumer:
     async def _process_record_batch(
         self,
         redis_client,
-        messages: List[Tuple[str, Dict[str, Any], UsageEvent]],
+        messages: list[tuple[str, dict[str, Any], UsageEvent]],
     ) -> None:
         """批量处理记录类型的事件"""
         db = create_session()
 
         try:
             # 准备批量记录数据
-            records: List[Dict[str, Any]] = []
-            message_ids: List[str] = []
-            message_fields: List[Dict[str, Any]] = []
+            records: list[dict[str, Any]] = []
+            message_ids: list[str] = []
+            message_fields: list[dict[str, Any]] = []
 
             for message_id, fields, event in messages:
                 records.append(_event_to_record(event))
@@ -305,7 +304,7 @@ class UsageQueueConsumer:
                 db.rollback()  # 清理批量失败的事务状态
             except Exception:
                 pass
-            success_ids: List[str] = []
+            success_ids: list[str] = []
             for message_id, fields, event in messages:
                 try:
                     await self._apply_record_event(event, db=db)
@@ -338,7 +337,7 @@ class UsageQueueConsumer:
         self,
         redis_client,
         message_id: str,
-        fields: Dict[str, Any],
+        fields: dict[str, Any],
         error: Exception,
     ) -> None:
         retries = await self._get_delivery_count(redis_client, message_id)
@@ -410,7 +409,7 @@ class UsageQueueConsumer:
             db.close()
 
     async def _apply_record_event(
-        self, event: UsageEvent, db: Optional[Session] = None
+        self, event: UsageEvent, db: Session | None = None
     ) -> None:
         """处理记录类型事件（逐条写入，用于 fallback）
 
@@ -502,10 +501,10 @@ class UsageQueueConsumer:
             logger.debug(f"[usage-queue] metrics log failed: {exc}")
 
 
-_consumer_instance: Optional[UsageQueueConsumer] = None
+_consumer_instance: UsageQueueConsumer | None = None
 
 
-async def start_usage_queue_consumer() -> Optional[UsageQueueConsumer]:
+async def start_usage_queue_consumer() -> UsageQueueConsumer | None:
     global _consumer_instance
     if not config.usage_queue_enabled:
         return None

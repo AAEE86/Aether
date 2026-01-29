@@ -9,7 +9,6 @@
 - PER_REQUEST: 按次计费
 """
 
-from typing import Dict, List, Optional
 
 from src.services.billing.models import BillingDimension, BillingUnit
 
@@ -25,7 +24,7 @@ class BillingTemplates:
     # - 缓存读取（约 0.1x 输入价格）
     # - 按次计费（可选，配置 price_per_request 时生效）
     # =========================================================================
-    CLAUDE_STANDARD: List[BillingDimension] = [
+    CLAUDE_STANDARD: list[BillingDimension] = [
         BillingDimension(
             name="input",
             usage_field="input_tokens",
@@ -61,7 +60,7 @@ class BillingTemplates:
     # - 缓存读取（部分模型支持，无缓存创建费用）
     # - 按次计费（可选，配置 price_per_request 时生效）
     # =========================================================================
-    OPENAI_STANDARD: List[BillingDimension] = [
+    OPENAI_STANDARD: list[BillingDimension] = [
         BillingDimension(
             name="input",
             usage_field="input_tokens",
@@ -95,7 +94,7 @@ class BillingTemplates:
     #
     # 注意：豆包的缓存创建是免费的，但存储需要按时付费
     # =========================================================================
-    DOUBAO_STANDARD: List[BillingDimension] = [
+    DOUBAO_STANDARD: list[BillingDimension] = [
         BillingDimension(
             name="input",
             usage_field="input_tokens",
@@ -132,7 +131,7 @@ class BillingTemplates:
     # - 缓存读取
     # - 按次计费（用于图片生成等模型，需配置 price_per_request）
     # =========================================================================
-    GEMINI_STANDARD: List[BillingDimension] = [
+    GEMINI_STANDARD: list[BillingDimension] = [
         BillingDimension(
             name="input",
             usage_field="input_tokens",
@@ -161,7 +160,7 @@ class BillingTemplates:
     # - 适用于某些图片生成模型、特殊 API 等
     # - 仅按请求次数计费，不按 token 计费
     # =========================================================================
-    PER_REQUEST: List[BillingDimension] = [
+    PER_REQUEST: list[BillingDimension] = [
         BillingDimension(
             name="request",
             usage_field="request_count",
@@ -174,7 +173,7 @@ class BillingTemplates:
     # 混合计费（按次 + 按 token）
     # - 某些模型既有固定费用又有 token 费用
     # =========================================================================
-    HYBRID_STANDARD: List[BillingDimension] = [
+    HYBRID_STANDARD: list[BillingDimension] = [
         BillingDimension(
             name="input",
             usage_field="input_tokens",
@@ -198,7 +197,7 @@ class BillingTemplates:
 # 模板注册表
 # =========================================================================
 
-BILLING_TEMPLATE_REGISTRY: Dict[str, List[BillingDimension]] = {
+BILLING_TEMPLATE_REGISTRY: dict[str, list[BillingDimension]] = {
     # 按厂商名称
     "claude": BillingTemplates.CLAUDE_STANDARD,
     "anthropic": BillingTemplates.CLAUDE_STANDARD,
@@ -215,7 +214,7 @@ BILLING_TEMPLATE_REGISTRY: Dict[str, List[BillingDimension]] = {
 }
 
 
-def get_template(name: Optional[str]) -> List[BillingDimension]:
+def get_template(name: str | None) -> list[BillingDimension]:
     """
     获取计费模板
 
@@ -236,6 +235,6 @@ def get_template(name: Optional[str]) -> List[BillingDimension]:
     return template
 
 
-def list_templates() -> List[str]:
+def list_templates() -> list[str]:
     """列出所有可用的模板名称"""
     return list(BILLING_TEMPLATE_REGISTRY.keys())

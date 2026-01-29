@@ -10,7 +10,7 @@
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.core.api_format.conversion.stream_state import StreamState
@@ -35,16 +35,16 @@ class StreamContext:
     api_key_id: int = 0
 
     # Provider 信息（在请求执行时填充）
-    provider_name: Optional[str] = None
-    provider_id: Optional[str] = None
-    endpoint_id: Optional[str] = None
-    key_id: Optional[str] = None
-    attempt_id: Optional[str] = None
+    provider_name: str | None = None
+    provider_id: str | None = None
+    endpoint_id: str | None = None
+    key_id: str | None = None
+    attempt_id: str | None = None
     attempt_synced: bool = False
-    provider_api_format: Optional[str] = None  # Provider 的响应格式
+    provider_api_format: str | None = None  # Provider 的响应格式
 
     # 模型映射
-    mapped_model: Optional[str] = None
+    mapped_model: str | None = None
 
     # Token 统计
     input_tokens: int = 0
@@ -53,33 +53,33 @@ class StreamContext:
     cache_creation_tokens: int = 0
 
     # 响应内容
-    _collected_text_parts: List[str] = field(default_factory=list, repr=False)
-    response_id: Optional[str] = None
-    final_usage: Optional[Dict[str, Any]] = None
-    final_response: Optional[Dict[str, Any]] = None
+    _collected_text_parts: list[str] = field(default_factory=list, repr=False)
+    response_id: str | None = None
+    final_usage: dict[str, Any] | None = None
+    final_response: dict[str, Any] | None = None
 
     # 时间指标
-    first_byte_time_ms: Optional[int] = None  # 首字时间 (TTFB - Time To First Byte)
+    first_byte_time_ms: int | None = None  # 首字时间 (TTFB - Time To First Byte)
     start_time: float = field(default_factory=time.time)
 
     # 响应状态
     status_code: int = 200
-    error_message: Optional[str] = None  # 客户端友好的错误消息
-    upstream_response: Optional[str] = None  # 原始 Provider 响应（用于请求链路追踪）
+    error_message: str | None = None  # 客户端友好的错误消息
+    upstream_response: str | None = None  # 原始 Provider 响应（用于请求链路追踪）
     has_completion: bool = False
 
     # 请求/响应数据
-    response_headers: Dict[str, str] = field(default_factory=dict)  # 提供商响应头
-    client_response_headers: Dict[str, str] = field(default_factory=dict)  # 返回给客户端的响应头
-    provider_request_headers: Dict[str, str] = field(default_factory=dict)
-    provider_request_body: Optional[Dict[str, Any]] = None
+    response_headers: dict[str, str] = field(default_factory=dict)  # 提供商响应头
+    client_response_headers: dict[str, str] = field(default_factory=dict)  # 返回给客户端的响应头
+    provider_request_headers: dict[str, str] = field(default_factory=dict)
+    provider_request_body: dict[str, Any] | None = None
 
     # 格式转换信息（CLI handler 需要）
     client_api_format: str = ""
     needs_conversion: bool = False  # 是否需要跨格式转换（由 handler 层设置）
 
     # Provider 响应元数据（CLI handler 需要）
-    response_metadata: Dict[str, Any] = field(default_factory=dict)
+    response_metadata: dict[str, Any] = field(default_factory=dict)
 
     # 整流标记（Thinking Rectifier）
     rectified: bool = False  # 请求是否经过整流（移除 thinking 块后重试）
@@ -87,10 +87,10 @@ class StreamContext:
     # 流式处理统计
     data_count: int = 0
     chunk_count: int = 0
-    parsed_chunks: List[Dict[str, Any]] = field(default_factory=list)
+    parsed_chunks: list[dict[str, Any]] = field(default_factory=list)
 
     # 流式格式转换状态（跨 chunk 追踪）
-    stream_conversion_state: Optional["StreamState"] = None
+    stream_conversion_state: StreamState | None = None
 
     def reset_for_retry(self) -> None:
         """
@@ -138,7 +138,7 @@ class StreamContext:
         provider_id: str,
         endpoint_id: str,
         key_id: str,
-        provider_api_format: Optional[str] = None,
+        provider_api_format: str | None = None,
     ) -> None:
         """更新 Provider 信息"""
         self.provider_name = provider_name
@@ -149,10 +149,10 @@ class StreamContext:
 
     def update_usage(
         self,
-        input_tokens: Optional[int] = None,
-        output_tokens: Optional[int] = None,
-        cached_tokens: Optional[int] = None,
-        cache_creation_tokens: Optional[int] = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        cache_creation_tokens: int | None = None,
     ) -> None:
         """
         更新 Token 使用统计
@@ -194,7 +194,7 @@ class StreamContext:
         self,
         status_code: int,
         error_message: str,
-        upstream_response: Optional[str] = None,
+        upstream_response: str | None = None,
     ) -> None:
         """
         标记请求失败
@@ -230,7 +230,7 @@ class StreamContext:
         """检查是否因客户端断开连接而结束"""
         return self.status_code == 499
 
-    def build_response_body(self, response_time_ms: int) -> Dict[str, Any]:
+    def build_response_body(self, response_time_ms: int) -> dict[str, Any]:
         """
         构建响应体元数据
 

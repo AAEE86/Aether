@@ -8,12 +8,13 @@ RPM 限制管理器 - 支持 Redis 或内存的 Key 级别 RPM 限制
 4. 支持缓存用户优先级（预留槽位机制）
 """
 
+from __future__ import annotations
+
 import asyncio
 import math
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import redis.asyncio as aioredis
 
@@ -24,8 +25,8 @@ from src.core.logger import logger
 class ConcurrencyManager:
     """Key RPM 限制管理器"""
 
-    _instance: Optional["ConcurrencyManager"] = None
-    _redis: Optional[aioredis.Redis] = None
+    _instance: ConcurrencyManager | None = None
+    _redis: aioredis.Redis | None = None
     _key_rpm_bucket_seconds: int = 60
     _key_rpm_key_ttl_seconds: int = 120  # 2 分钟，足够覆盖当前分钟与边界
 
@@ -47,7 +48,7 @@ class ConcurrencyManager:
         self._last_cleanup_bucket: int = 0  # 上次清理时的 bucket，用于定期清理过期数据
         self._last_cleanup_time: float = 0  # 上次清理的时间戳，用于强制定期清理
         self._cleanup_interval_seconds: int = 300  # 强制清理间隔（5 分钟）
-        self._cleanup_task: Optional[asyncio.Task] = None  # 后台清理任务
+        self._cleanup_task: asyncio.Task | None = None  # 后台清理任务
 
         # 内存模式下的最大条目限制，防止内存泄漏（支持环境变量覆盖）
         self._max_memory_rpm_entries: int = int(
@@ -127,13 +128,13 @@ class ConcurrencyManager:
         self._owns_redis = False
 
     @classmethod
-    def _get_rpm_bucket(cls, now_ts: Optional[float] = None) -> int:
+    def _get_rpm_bucket(cls, now_ts: float | None = None) -> int:
         """获取当前 RPM 计数桶（按分钟）"""
         ts = now_ts if now_ts is not None else time.time()
         return int(ts // cls._key_rpm_bucket_seconds)
 
     @classmethod
-    def _get_key_key(cls, key_id: str, bucket: Optional[int] = None) -> str:
+    def _get_key_key(cls, key_id: str, bucket: int | None = None) -> str:
         """获取 ProviderAPIKey RPM 计数的 Redis Key（按分钟桶）"""
         b = bucket if bucket is not None else cls._get_rpm_bucket()
         return f"rpm:key:{key_id}:{b}"
@@ -261,9 +262,9 @@ class ConcurrencyManager:
     async def check_rpm_available(
         self,
         key_id: str,
-        key_rpm_limit: Optional[int],
+        key_rpm_limit: int | None,
         is_cached_user: bool = False,
-        cache_reservation_ratio: Optional[float] = None,
+        cache_reservation_ratio: float | None = None,
     ) -> bool:
         """
         检查是否可以通过 RPM 限制（不实际增加计数）
@@ -298,9 +299,9 @@ class ConcurrencyManager:
     async def acquire_rpm_slot(
         self,
         key_id: str,
-        key_rpm_limit: Optional[int],
+        key_rpm_limit: int | None,
         is_cached_user: bool = False,
-        cache_reservation_ratio: Optional[float] = None,
+        cache_reservation_ratio: float | None = None,
     ) -> bool:
         """
         尝试获取 RPM 槽位（支持缓存用户优先级）
@@ -448,9 +449,9 @@ class ConcurrencyManager:
     async def rpm_guard(
         self,
         key_id: str,
-        key_rpm_limit: Optional[int],
+        key_rpm_limit: int | None,
         is_cached_user: bool = False,
-        cache_reservation_ratio: Optional[float] = None,
+        cache_reservation_ratio: float | None = None,
     ):
         """
         RPM 限制上下文管理器（支持缓存用户优先级）
@@ -595,7 +596,7 @@ class ConcurrencyManager:
 
 
 # 全局单例
-_concurrency_manager: Optional[ConcurrencyManager] = None
+_concurrency_manager: ConcurrencyManager | None = None
 
 
 async def get_concurrency_manager() -> ConcurrencyManager:

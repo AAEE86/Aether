@@ -3,7 +3,6 @@
 """
 
 from datetime import datetime, timezone
-from typing import Dict, Optional
 
 from src.core.logger import logger
 
@@ -24,12 +23,12 @@ class RateLimitInfo:
     def __init__(
         self,
         limit_type: str,
-        retry_after: Optional[int] = None,
-        limit_value: Optional[int] = None,
-        remaining: Optional[int] = None,
-        reset_at: Optional[datetime] = None,
-        current_usage: Optional[int] = None,
-        raw_headers: Optional[Dict[str, str]] = None,
+        retry_after: int | None = None,
+        limit_value: int | None = None,
+        remaining: int | None = None,
+        reset_at: datetime | None = None,
+        current_usage: int | None = None,
+        raw_headers: dict[str, str] | None = None,
     ):
         self.limit_type = limit_type
         self.retry_after = retry_after  # 需要等待的秒数
@@ -60,9 +59,9 @@ class RateLimitDetector:
 
     @staticmethod
     def detect_from_headers(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         provider_name: str = "unknown",
-        current_usage: Optional[int] = None,
+        current_usage: int | None = None,
     ) -> RateLimitInfo:
         """
         从响应头中检测速率限制类型
@@ -88,8 +87,8 @@ class RateLimitDetector:
 
     @staticmethod
     def _parse_anthropic_headers(
-        headers: Dict[str, str],
-        current_usage: Optional[int] = None,
+        headers: dict[str, str],
+        current_usage: int | None = None,
     ) -> RateLimitInfo:
         """
         解析 Anthropic Claude API 的速率限制头
@@ -195,8 +194,8 @@ class RateLimitDetector:
 
     @staticmethod
     def _parse_openai_headers(
-        headers: Dict[str, str],
-        current_usage: Optional[int] = None,
+        headers: dict[str, str],
+        current_usage: int | None = None,
     ) -> RateLimitInfo:
         """
         解析 OpenAI API 的速率限制头
@@ -289,8 +288,8 @@ class RateLimitDetector:
 
     @staticmethod
     def _parse_generic_headers(
-        headers: Dict[str, str],
-        current_usage: Optional[int] = None,
+        headers: dict[str, str],
+        current_usage: int | None = None,
     ) -> RateLimitInfo:
         """
         解析通用的速率限制头
@@ -371,7 +370,7 @@ class RateLimitDetector:
         )
 
     @staticmethod
-    def _parse_retry_after(headers: Dict[str, str]) -> Optional[int]:
+    def _parse_retry_after(headers: dict[str, str]) -> int | None:
         """解析 Retry-After 头"""
         retry_after_str = headers.get("retry-after")
         if not retry_after_str:
@@ -390,7 +389,7 @@ class RateLimitDetector:
                 return None
 
     @staticmethod
-    def _parse_int(value: Optional[str]) -> Optional[int]:
+    def _parse_int(value: str | None) -> int | None:
         """安全解析整数"""
         if not value:
             return None
@@ -400,7 +399,7 @@ class RateLimitDetector:
             return None
 
     @staticmethod
-    def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    def _parse_datetime(value: str | None) -> datetime | None:
         """安全解析ISO 8601日期时间"""
         if not value:
             return None
@@ -415,9 +414,9 @@ class RateLimitDetector:
 
 # 便捷函数
 def detect_rate_limit_type(
-    headers: Dict[str, str],
+    headers: dict[str, str],
     provider_name: str = "unknown",
-    current_usage: Optional[int] = None,
+    current_usage: int | None = None,
 ) -> RateLimitInfo:
     """
     检测速率限制类型（便捷函数）

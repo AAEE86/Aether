@@ -9,7 +9,7 @@
 
 import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -58,8 +58,8 @@ class StreamTelemetryRecorder:
     async def record_stream_stats(
         self,
         ctx: StreamContext,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
         start_time: float,
     ) -> None:
         """
@@ -144,9 +144,9 @@ class StreamTelemetryRecorder:
         self,
         writer: TelemetryWriter,
         ctx: StreamContext,
-        original_headers: Dict[str, str],
-        actual_request_body: Dict[str, Any],
-        response_body: Optional[Dict[str, Any]],
+        original_headers: dict[str, str],
+        actual_request_body: dict[str, Any],
+        response_body: dict[str, Any] | None,
         response_time_ms: int,
     ) -> None:
         """记录成功的请求"""
@@ -193,9 +193,9 @@ class StreamTelemetryRecorder:
         self,
         writer: TelemetryWriter,
         ctx: StreamContext,
-        original_headers: Dict[str, str],
-        actual_request_body: Dict[str, Any],
-        response_body: Optional[Dict[str, Any]],
+        original_headers: dict[str, str],
+        actual_request_body: dict[str, Any],
+        response_body: dict[str, Any] | None,
         response_time_ms: int,
     ) -> None:
         """记录失败的请求"""
@@ -236,9 +236,9 @@ class StreamTelemetryRecorder:
         self,
         writer: TelemetryWriter,
         ctx: StreamContext,
-        original_headers: Dict[str, str],
-        actual_request_body: Dict[str, Any],
-        response_body: Optional[Dict[str, Any]],
+        original_headers: dict[str, str],
+        actual_request_body: dict[str, Any],
+        response_body: dict[str, Any] | None,
         response_time_ms: int,
     ) -> None:
         """记录客户端取消的请求"""
@@ -285,7 +285,7 @@ class StreamTelemetryRecorder:
 
         from src.services.request.candidate import RequestCandidateService
 
-        extra_data: Dict[str, Any] = {
+        extra_data: dict[str, Any] = {
             "stream_completed": ctx.is_success(),
             "data_count": ctx.data_count,
         }
@@ -358,7 +358,7 @@ class StreamTelemetryRecorder:
         status: str,
         response_time_ms: int,
         status_code: int = 200,
-        error_message: Optional[str] = None,
+        error_message: str | None = None,
     ) -> None:
         """直接更新 Usage 表的状态字段"""
         try:
@@ -378,7 +378,7 @@ class StreamTelemetryRecorder:
 
     async def _get_telemetry_writer(
         self, bg_db: Session, ctx: StreamContext, response_time_ms: int
-    ) -> Optional[TelemetryWriter]:
+    ) -> TelemetryWriter | None:
         if config.usage_queue_enabled and self.user_id and self.api_key_id:
             return QueueTelemetryWriter(
                 request_id=self.request_id,
@@ -400,9 +400,9 @@ class StreamTelemetryRecorder:
         self,
         writer: TelemetryWriter,
         ctx: StreamContext,
-        original_headers: Dict[str, str],
-        actual_request_body: Dict[str, Any],
-        response_body: Optional[Dict[str, Any]],
+        original_headers: dict[str, str],
+        actual_request_body: dict[str, Any],
+        response_body: dict[str, Any] | None,
         response_time_ms: int,
     ) -> None:
         """根据上下文状态分发到对应的记录方法"""
@@ -430,7 +430,7 @@ class StreamTelemetryRecorder:
             return "cancelled"
         return "failed"
 
-    def _build_db_writer(self, bg_db: Session) -> Optional[DbTelemetryWriter]:
+    def _build_db_writer(self, bg_db: Session) -> DbTelemetryWriter | None:
         user = bg_db.query(User).filter(User.id == self.user_id).first()
         api_key_obj = bg_db.query(ApiKey).filter(ApiKey.id == self.api_key_id).first()
 

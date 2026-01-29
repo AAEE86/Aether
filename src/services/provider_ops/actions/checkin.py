@@ -3,7 +3,7 @@
 """
 
 from abc import abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -44,10 +44,10 @@ class CheckinAction(ProviderAction):
 
     def _create_checkin_info(
         self,
-        reward: Optional[float] = None,
-        streak_days: Optional[int] = None,
-        message: Optional[str] = None,
-        extra: Optional[Dict[str, Any]] = None,
+        reward: float | None = None,
+        streak_days: int | None = None,
+        message: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> CheckinInfo:
         """
         创建签到信息对象
@@ -71,7 +71,7 @@ class CheckinAction(ProviderAction):
         )
 
     @classmethod
-    def get_config_schema(cls) -> Dict[str, Any]:
+    def get_config_schema(cls) -> dict[str, Any]:
         """获取操作配置 schema（子类可重写）"""
         return {
             "type": "object",

@@ -4,7 +4,7 @@ NekoCode 余额查询操作
 
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -122,7 +122,7 @@ class NekoCodeBalanceAction(BalanceAction):
                 logger.debug(f"解析 effective_start_date 失败: {e}")
 
         # 构建 extra 信息
-        extra: Dict[str, Any] = {
+        extra: dict[str, Any] = {
             "plan_name": plan_name,
             "subscription_status": status,
             "daily_quota_limit": daily_quota_limit,
@@ -161,7 +161,7 @@ class NekoCodeBalanceAction(BalanceAction):
         )
 
     def _handle_http_error(
-        self, response: httpx.Response, raw_data: Optional[Dict[str, Any]] = None
+        self, response: httpx.Response, raw_data: dict[str, Any] | None = None
     ) -> ActionResult:
         """处理 HTTP 错误响应"""
         status_code = response.status_code
@@ -178,7 +178,7 @@ class NekoCodeBalanceAction(BalanceAction):
         return super()._handle_http_error(response, raw_data)
 
     @classmethod
-    def get_config_schema(cls) -> Dict[str, Any]:
+    def get_config_schema(cls) -> dict[str, Any]:
         """获取操作配置 schema"""
         return {
             "type": "object",

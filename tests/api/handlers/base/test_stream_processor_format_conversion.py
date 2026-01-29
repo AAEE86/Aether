@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,16 +11,16 @@ from src.core.api_format.conversion import register_default_normalizers
 
 
 class DummyParser(ResponseParser):
-    def parse_sse_line(self, line: str, stats: StreamStats) -> Optional[Any]:  # noqa: ANN401
+    def parse_sse_line(self, line: str, stats: StreamStats) -> Any | None:  # noqa: ANN401
         return None
 
-    def parse_response(self, response: Dict[str, Any], status_code: int) -> ParsedResponse:
+    def parse_response(self, response: dict[str, Any], status_code: int) -> ParsedResponse:
         return ParsedResponse(raw_response=response, status_code=status_code)
 
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, int]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, int]:
         return {}
 
-    def extract_text_content(self, response: Dict[str, Any]) -> str:
+    def extract_text_content(self, response: dict[str, Any]) -> str:
         return ""
 
 

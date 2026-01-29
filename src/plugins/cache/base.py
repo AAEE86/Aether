@@ -5,11 +5,10 @@
 
 import hashlib
 import json
-from abc import ABC, abstractmethod
-from datetime import timedelta
-from typing import Any, Dict, List, Optional
+from abc import abstractmethod
+from typing import Any
 
-from ..common import BasePlugin, HealthStatus, PluginMetadata
+from ..common import BasePlugin
 
 
 class CachePlugin(BasePlugin):
@@ -26,9 +25,9 @@ class CachePlugin(BasePlugin):
         author: str = "Unknown",
         description: str = "",
         api_version: str = "1.0",
-        dependencies: List[str] = None,
-        provides: List[str] = None,
-        config: Dict[str, Any] = None,
+        dependencies: list[str] = None,
+        provides: list[str] = None,
+        config: dict[str, Any] = None,
     ):
         """
         初始化缓存插件
@@ -59,7 +58,7 @@ class CachePlugin(BasePlugin):
         self.max_size = self.config.get("max_size", 1000)  # 最大缓存项数
 
     @abstractmethod
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """
         获取缓存值
 
@@ -72,7 +71,7 @@ class CachePlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> bool:
         """
         设置缓存值
 
@@ -123,7 +122,7 @@ class CachePlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def get_many(self, keys: List[str]) -> Dict[str, Any]:
+    async def get_many(self, keys: list[str]) -> dict[str, Any]:
         """
         批量获取缓存值
 
@@ -136,7 +135,7 @@ class CachePlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def set_many(self, items: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set_many(self, items: dict[str, Any], ttl: int | None = None) -> bool:
         """
         批量设置缓存值
 
@@ -150,7 +149,7 @@ class CachePlugin(BasePlugin):
         pass
 
     @abstractmethod
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """
         获取缓存统计信息
 
@@ -206,7 +205,7 @@ class CachePlugin(BasePlugin):
         """
         return json.loads(value)
 
-    def configure(self, config: Dict[str, Any]):
+    def configure(self, config: dict[str, Any]):
         """
         配置插件
 

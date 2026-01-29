@@ -4,10 +4,9 @@ OpenAI SSE 流解析器
 解析 OpenAI Chat Completions API 的 Server-Sent Events 流。
 """
 
-from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class OpenAIStreamParser:
@@ -23,7 +22,7 @@ class OpenAIStreamParser:
     - 流结束时发送 data: [DONE]
     """
 
-    def parse_chunk(self, chunk: bytes | str) -> List[Dict[str, Any]]:
+    def parse_chunk(self, chunk: bytes | str) -> list[dict[str, Any]]:
         """
         解析 SSE 数据块
 
@@ -38,7 +37,7 @@ class OpenAIStreamParser:
         else:
             text = chunk
 
-        chunks: List[Dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
         lines = text.strip().split("\n")
 
         for line in lines:
@@ -64,7 +63,7 @@ class OpenAIStreamParser:
 
         return chunks
 
-    def parse_line(self, line: str) -> Optional[Dict[str, Any]]:
+    def parse_line(self, line: str) -> dict[str, Any] | None:
         """
         解析单行 SSE 数据
 
@@ -85,7 +84,7 @@ class OpenAIStreamParser:
         except json.JSONDecodeError:
             return None
 
-    def is_done_chunk(self, chunk: Dict[str, Any]) -> bool:
+    def is_done_chunk(self, chunk: dict[str, Any]) -> bool:
         """
         判断是否为结束 chunk
 
@@ -107,7 +106,7 @@ class OpenAIStreamParser:
 
         return False
 
-    def get_finish_reason(self, chunk: Dict[str, Any]) -> Optional[str]:
+    def get_finish_reason(self, chunk: dict[str, Any]) -> str | None:
         """
         获取结束原因
 
@@ -123,7 +122,7 @@ class OpenAIStreamParser:
             return str(reason) if reason is not None else None
         return None
 
-    def extract_text_delta(self, chunk: Dict[str, Any]) -> Optional[str]:
+    def extract_text_delta(self, chunk: dict[str, Any]) -> str | None:
         """
         从 chunk 中提取文本增量
 
@@ -145,7 +144,7 @@ class OpenAIStreamParser:
 
         return None
 
-    def extract_tool_calls_delta(self, chunk: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    def extract_tool_calls_delta(self, chunk: dict[str, Any]) -> list[dict[str, Any]] | None:
         """
         从 chunk 中提取工具调用增量
 
@@ -165,7 +164,7 @@ class OpenAIStreamParser:
             return tool_calls
         return None
 
-    def extract_role(self, chunk: Dict[str, Any]) -> Optional[str]:
+    def extract_role(self, chunk: dict[str, Any]) -> str | None:
         """
         从 chunk 中提取角色
 

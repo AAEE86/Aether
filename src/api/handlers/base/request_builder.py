@@ -11,10 +11,9 @@
     payload, headers = builder.build(original_body, original_headers, endpoint, key)
 """
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+from typing import Any
 
 from src.core.crypto import crypto_service
 from src.core.api_format import HeaderBuilder, UPSTREAM_DROP_HEADERS
@@ -24,7 +23,7 @@ from src.core.api_format import HeaderBuilder, UPSTREAM_DROP_HEADERS
 # ==============================================================================
 
 # 兼容别名：历史代码使用 SENSITIVE_HEADERS 命名
-SENSITIVE_HEADERS: FrozenSet[str] = UPSTREAM_DROP_HEADERS
+SENSITIVE_HEADERS: frozenset[str] = UPSTREAM_DROP_HEADERS
 
 
 # ==============================================================================
@@ -33,14 +32,14 @@ SENSITIVE_HEADERS: FrozenSet[str] = UPSTREAM_DROP_HEADERS
 
 # 标准测试请求体（OpenAI 格式）
 # 用于 check_endpoint 等测试场景，使用简单安全的消息内容避免触发安全过滤
-DEFAULT_TEST_REQUEST: Dict[str, Any] = {
+DEFAULT_TEST_REQUEST: dict[str, Any] = {
     "messages": [{"role": "user", "content": "Hi"}],
     "max_tokens": 5,
     "temperature": 0,
 }
 
 
-def get_test_request_data(request_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_test_request_data(request_data: dict[str, Any] | None = None) -> dict[str, Any]:
     """获取测试请求数据
 
     如果传入 request_data，则合并到默认测试请求中；
@@ -61,8 +60,8 @@ def get_test_request_data(request_data: Optional[Dict[str, Any]] = None) -> Dict
 
 def build_test_request_body(
     format_id: str,
-    request_data: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    request_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """构建测试请求体，自动处理格式转换
 
     使用格式转换注册表将 OpenAI 格式的测试请求转换为目标格式。
@@ -103,37 +102,37 @@ class RequestBuilder(ABC):
     @abstractmethod
     def build_payload(
         self,
-        original_body: Dict[str, Any],
+        original_body: dict[str, Any],
         *,
-        mapped_model: Optional[str] = None,
+        mapped_model: str | None = None,
         is_stream: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """构建请求体"""
         pass
 
     @abstractmethod
     def build_headers(
         self,
-        original_headers: Dict[str, str],
+        original_headers: dict[str, str],
         endpoint: Any,
         key: Any,
         *,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, str]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         """构建请求头"""
         pass
 
     def build(
         self,
-        original_body: Dict[str, Any],
-        original_headers: Dict[str, str],
+        original_body: dict[str, Any],
+        original_headers: dict[str, str],
         endpoint: Any,
         key: Any,
         *,
-        mapped_model: Optional[str] = None,
+        mapped_model: str | None = None,
         is_stream: bool = False,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[Dict[str, Any], Dict[str, str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
         """
         构建完整的请求（请求体 + 请求头）
 
@@ -174,11 +173,11 @@ class PassthroughRequestBuilder(RequestBuilder):
 
     def build_payload(
         self,
-        original_body: Dict[str, Any],
+        original_body: dict[str, Any],
         *,
-        mapped_model: Optional[str] = None,  # noqa: ARG002 - 由 apply_mapped_model 处理
+        mapped_model: str | None = None,  # noqa: ARG002 - 由 apply_mapped_model 处理
         is_stream: bool = False,  # noqa: ARG002 - 保留原始值，不自动添加
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         透传请求体 - 原样复制，不做任何修改
 
@@ -190,12 +189,12 @@ class PassthroughRequestBuilder(RequestBuilder):
 
     def build_headers(
         self,
-        original_headers: Dict[str, str],
+        original_headers: dict[str, str],
         endpoint: Any,
         key: Any,
         *,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, str]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         """
         透传请求头 - 清理敏感头部（黑名单），透传其他所有头部
 
@@ -254,11 +253,11 @@ class PassthroughRequestBuilder(RequestBuilder):
 
 
 def build_passthrough_request(
-    original_body: Dict[str, Any],
-    original_headers: Dict[str, str],
+    original_body: dict[str, Any],
+    original_headers: dict[str, str],
     endpoint: Any,
     key: Any,
-) -> Tuple[Dict[str, Any], Dict[str, str]]:
+) -> tuple[dict[str, Any], dict[str, str]]:
     """
     构建透传模式的请求
 

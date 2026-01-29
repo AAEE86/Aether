@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from src.core.api_format.conversion.normalizers.claude import ClaudeNormalizer
 from src.core.api_format.conversion.normalizers.gemini import GeminiNormalizer
@@ -28,7 +28,7 @@ def _scrub(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_scrub(x) for x in obj]
     if isinstance(obj, dict):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in obj.items():
             if k in {"created"}:
                 continue
@@ -93,7 +93,7 @@ def test_golden_streams() -> None:
     reg = _make_registry()
     formats = ["OPENAI", "CLAUDE", "GEMINI"]
 
-    inputs: Dict[str, List[Dict[str, Any]]] = {
+    inputs: dict[str, list[dict[str, Any]]] = {
         "OPENAI": _load_json(INPUT_DIR / "stream_openai.json"),
         "CLAUDE": _load_json(INPUT_DIR / "stream_claude.json"),
         "GEMINI": _load_json(INPUT_DIR / "stream_gemini.json"),
@@ -109,7 +109,7 @@ def test_golden_streams() -> None:
             if source == "GEMINI":
                 state.message_id = "gemini_1"
 
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for chunk in inputs[source]:
                 out.extend(reg.convert_stream_chunk(chunk, source, target, state=state))
 

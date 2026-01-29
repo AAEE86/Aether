@@ -6,7 +6,7 @@
 import html
 import re
 from html.parser import HTMLParser
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -219,7 +219,7 @@ class EmailTemplate:
 </html>"""
 
     @staticmethod
-    def get_default_template(template_type: str) -> Dict[str, str]:
+    def get_default_template(template_type: str) -> dict[str, str]:
         """
         获取默认模板
 
@@ -243,7 +243,7 @@ class EmailTemplate:
             return {"subject": "通知", "html": ""}
 
     @staticmethod
-    def get_template(db: Session, template_type: str) -> Dict[str, str]:
+    def get_template(db: Session, template_type: str) -> dict[str, str]:
         """
         从数据库获取模板，如果不存在则返回默认模板
 
@@ -269,7 +269,7 @@ class EmailTemplate:
         }
 
     @staticmethod
-    def render_template(template_html: str, variables: Dict[str, Any]) -> str:
+    def render_template(template_html: str, variables: dict[str, Any]) -> str:
         """
         渲染模板，替换 {{variable}} 格式的变量
 
@@ -310,7 +310,7 @@ class EmailTemplate:
 
     @staticmethod
     def get_verification_code_html(
-        code: str, expire_minutes: int = 5, db: Optional[Session] = None, **kwargs
+        code: str, expire_minutes: int = 5, db: Session | None = None, **kwargs
     ) -> str:
         """
         获取验证码邮件 HTML
@@ -345,7 +345,7 @@ class EmailTemplate:
 
     @staticmethod
     def get_verification_code_text(
-        code: str, expire_minutes: int = 5, db: Optional[Session] = None, **kwargs
+        code: str, expire_minutes: int = 5, db: Session | None = None, **kwargs
     ) -> str:
         """
         获取验证码邮件纯文本（从 HTML 自动生成）
@@ -364,7 +364,7 @@ class EmailTemplate:
 
     @staticmethod
     def get_password_reset_html(
-        reset_link: str, expire_minutes: int = 30, db: Optional[Session] = None, **kwargs
+        reset_link: str, expire_minutes: int = 30, db: Session | None = None, **kwargs
     ) -> str:
         """
         获取密码重置邮件 HTML
@@ -399,7 +399,7 @@ class EmailTemplate:
 
     @staticmethod
     def get_password_reset_text(
-        reset_link: str, expire_minutes: int = 30, db: Optional[Session] = None, **kwargs
+        reset_link: str, expire_minutes: int = 30, db: Session | None = None, **kwargs
     ) -> str:
         """
         获取密码重置邮件纯文本（从 HTML 自动生成）
@@ -418,7 +418,7 @@ class EmailTemplate:
 
     @staticmethod
     def get_subject(
-        template_type: str = "verification", db: Optional[Session] = None
+        template_type: str = "verification", db: Session | None = None
     ) -> str:
         """
         获取邮件主题

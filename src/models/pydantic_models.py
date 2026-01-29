@@ -2,8 +2,9 @@
 Pydantic 数据模型（阶段一统一模型管理）
 """
 
+from __future__ import annotations
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -21,20 +22,20 @@ class CacheTTLPricing(BaseModel):
 class PricingTier(BaseModel):
     """单个价格阶梯配置"""
 
-    up_to: Optional[int] = Field(
+    up_to: int | None = Field(
         None,
         ge=1,
         description="阶梯上限（tokens），null 表示无上限（最后一个阶梯）"
     )
     input_price_per_1m: float = Field(..., ge=0, description="输入价格/M tokens")
     output_price_per_1m: float = Field(..., ge=0, description="输出价格/M tokens")
-    cache_creation_price_per_1m: Optional[float] = Field(
+    cache_creation_price_per_1m: float | None = Field(
         None, ge=0, description="缓存创建价格/M tokens"
     )
-    cache_read_price_per_1m: Optional[float] = Field(
+    cache_read_price_per_1m: float | None = Field(
         None, ge=0, description="缓存读取价格/M tokens"
     )
-    cache_ttl_pricing: Optional[List[CacheTTLPricing]] = Field(
+    cache_ttl_pricing: list[CacheTTLPricing] | None = Field(
         None, description="按缓存时长分价格（可选）"
     )
 
@@ -42,14 +43,14 @@ class PricingTier(BaseModel):
 class TieredPricingConfig(BaseModel):
     """阶梯计费配置"""
 
-    tiers: List[PricingTier] = Field(
+    tiers: list[PricingTier] = Field(
         ...,
         min_length=1,
         description="价格阶梯列表，按 up_to 升序排列"
     )
 
     @model_validator(mode="after")
-    def validate_tiers(self) -> "TieredPricingConfig":
+    def validate_tiers(self) -> TieredPricingConfig:
         """验证阶梯配置的合法性"""
         tiers = self.tiers
         if not tiers:
@@ -103,10 +104,10 @@ class ModelCapabilities(BaseModel):
 class ModelPriceRange(BaseModel):
     """统一模型价格区间"""
 
-    min_input: Optional[float] = None
-    max_input: Optional[float] = None
-    min_output: Optional[float] = None
-    max_output: Optional[float] = None
+    min_input: float | None = None
+    max_input: float | None = None
+    min_output: float | None = None
+    max_output: float | None = None
 
 
 class ModelCatalogProviderDetail(BaseModel):
@@ -114,19 +115,19 @@ class ModelCatalogProviderDetail(BaseModel):
 
     provider_id: str
     provider_name: str
-    model_id: Optional[str]
+    model_id: str | None
     target_model: str
-    input_price_per_1m: Optional[float]
-    output_price_per_1m: Optional[float]
-    cache_creation_price_per_1m: Optional[float]
-    cache_read_price_per_1m: Optional[float]
-    cache_1h_creation_price_per_1m: Optional[float] = None  # 1h 缓存创建价格
-    price_per_request: Optional[float] = None  # 按次计费价格
-    effective_tiered_pricing: Optional[Dict[str, Any]] = None  # 有效阶梯计费配置（含继承）
+    input_price_per_1m: float | None
+    output_price_per_1m: float | None
+    cache_creation_price_per_1m: float | None
+    cache_read_price_per_1m: float | None
+    cache_1h_creation_price_per_1m: float | None = None  # 1h 缓存创建价格
+    price_per_request: float | None = None  # 按次计费价格
+    effective_tiered_pricing: dict[str, Any] | None = None  # 有效阶梯计费配置（含继承）
     tier_count: int = 1  # 阶梯数量
-    supports_vision: Optional[bool] = None
-    supports_function_calling: Optional[bool] = None
-    supports_streaming: Optional[bool] = None
+    supports_vision: bool | None = None
+    supports_function_calling: bool | None = None
+    supports_streaming: bool | None = None
     is_active: bool
 
 
@@ -135,8 +136,8 @@ class ModelCatalogItem(BaseModel):
 
     global_model_name: str  # GlobalModel.name
     display_name: str  # GlobalModel.display_name
-    description: Optional[str]  # GlobalModel.description
-    providers: List[ModelCatalogProviderDetail]  # 支持该模型的 Provider 列表
+    description: str | None  # GlobalModel.description
+    providers: list[ModelCatalogProviderDetail]  # 支持该模型的 Provider 列表
     price_range: ModelPriceRange  # 价格区间（从所有 Provider 的 Model 中聚合）
     total_providers: int
     capabilities: ModelCapabilities  # 能力聚合（从所有 Provider 的 Model 中聚合）
@@ -145,18 +146,18 @@ class ModelCatalogItem(BaseModel):
 class ModelCatalogResponse(BaseModel):
     """统一模型目录响应"""
 
-    models: List[ModelCatalogItem]
+    models: list[ModelCatalogItem]
     total: int
 
 
 class ProviderModelPriceInfo(BaseModel):
     """Provider 维度的模型价格信息"""
 
-    input_price_per_1m: Optional[float]
-    output_price_per_1m: Optional[float]
-    cache_creation_price_per_1m: Optional[float]
-    cache_read_price_per_1m: Optional[float]
-    price_per_request: Optional[float] = None  # 按次计费价格
+    input_price_per_1m: float | None
+    output_price_per_1m: float | None
+    cache_creation_price_per_1m: float | None
+    cache_read_price_per_1m: float | None
+    price_per_request: float | None = None  # 按次计费价格
 
 
 class ProviderAvailableSourceModel(BaseModel):
@@ -165,7 +166,7 @@ class ProviderAvailableSourceModel(BaseModel):
     global_model_name: str  # GlobalModel.name
     display_name: str  # GlobalModel.display_name
     provider_model_name: str  # Model.provider_model_name (Provider 侧的模型名)
-    model_id: Optional[str]  # Model.id
+    model_id: str | None  # Model.id
     price: ProviderModelPriceInfo
     capabilities: ModelCapabilities
     is_active: bool
@@ -174,7 +175,7 @@ class ProviderAvailableSourceModel(BaseModel):
 class ProviderAvailableSourceModelsResponse(BaseModel):
     """Provider 可用统一模型响应"""
 
-    models: List[ProviderAvailableSourceModel]
+    models: list[ProviderAvailableSourceModel]
     total: int
 
 
@@ -187,41 +188,41 @@ class GlobalModelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="统一模型名（唯一）")
     display_name: str = Field(..., min_length=1, max_length=100, description="显示名称")
     # 按次计费配置（可选，与阶梯计费叠加）
-    default_price_per_request: Optional[float] = Field(None, ge=0, description="每次请求固定费用")
+    default_price_per_request: float | None = Field(None, ge=0, description="每次请求固定费用")
     # 统一阶梯计费配置（必填）
     # 固定价格也用单阶梯表示: {"tiers": [{"up_to": null, "input_price_per_1m": X, ...}]}
     default_tiered_pricing: TieredPricingConfig = Field(
         ..., description="阶梯计费配置（固定价格用单阶梯表示）"
     )
     # Key 能力配置 - 模型支持的能力列表（如 ["cache_1h", "context_1m"]）
-    supported_capabilities: Optional[List[str]] = Field(
+    supported_capabilities: list[str] | None = Field(
         None, description="支持的 Key 能力列表"
     )
     # 模型配置（JSON格式）- 包含能力、规格、元信息等
-    config: Optional[Dict[str, Any]] = Field(
+    config: dict[str, Any] | None = Field(
         None,
         description="模型配置（streaming, vision, context_limit, description 等）"
     )
-    is_active: Optional[bool] = Field(True, description="是否激活")
+    is_active: bool | None = Field(True, description="是否激活")
 
 
 class GlobalModelUpdate(BaseModel):
     """更新 GlobalModel 请求"""
 
-    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
-    is_active: Optional[bool] = None
+    display_name: str | None = Field(None, min_length=1, max_length=100)
+    is_active: bool | None = None
     # 按次计费配置
-    default_price_per_request: Optional[float] = Field(None, ge=0, description="每次请求固定费用")
+    default_price_per_request: float | None = Field(None, ge=0, description="每次请求固定费用")
     # 阶梯计费配置
-    default_tiered_pricing: Optional[TieredPricingConfig] = Field(
+    default_tiered_pricing: TieredPricingConfig | None = Field(
         None, description="阶梯计费配置"
     )
     # Key 能力配置 - 模型支持的能力列表（如 ["cache_1h", "context_1m"]）
-    supported_capabilities: Optional[List[str]] = Field(
+    supported_capabilities: list[str] | None = Field(
         None, description="支持的 Key 能力列表"
     )
     # 模型配置（JSON格式）- 包含能力、规格、元信息等
-    config: Optional[Dict[str, Any]] = Field(
+    config: dict[str, Any] | None = Field(
         None,
         description="模型配置（streaming, vision, context_limit, description 等）"
     )
@@ -235,25 +236,25 @@ class GlobalModelResponse(BaseModel):
     display_name: str
     is_active: bool
     # 按次计费配置
-    default_price_per_request: Optional[float] = Field(None, description="每次请求固定费用")
+    default_price_per_request: float | None = Field(None, description="每次请求固定费用")
     # 阶梯计费配置
-    default_tiered_pricing: Optional[TieredPricingConfig] = Field(
+    default_tiered_pricing: TieredPricingConfig | None = Field(
         default=None, description="阶梯计费配置"
     )
     # Key 能力配置 - 模型支持的能力列表
-    supported_capabilities: Optional[List[str]] = Field(
+    supported_capabilities: list[str] | None = Field(
         default=None, description="支持的 Key 能力列表"
     )
     # 模型配置（JSON格式）
-    config: Optional[Dict[str, Any]] = Field(
+    config: dict[str, Any] | None = Field(
         default=None,
         description="模型配置（streaming, vision, context_limit, description 等）"
     )
     # 统计数据（可选）
-    provider_count: Optional[int] = Field(default=0, description="支持的 Provider 数量")
-    usage_count: Optional[int] = Field(default=0, description="调用次数")
+    provider_count: int | None = Field(default=0, description="支持的 Provider 数量")
+    usage_count: int | None = Field(default=0, description="调用次数")
     created_at: datetime
-    updated_at: Optional[datetime]
+    updated_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -269,54 +270,54 @@ class GlobalModelWithStats(GlobalModelResponse):
 class GlobalModelListResponse(BaseModel):
     """GlobalModel 列表响应"""
 
-    models: List[GlobalModelResponse]
+    models: list[GlobalModelResponse]
     total: int
 
 
 class GlobalModelProvidersResponse(BaseModel):
     """GlobalModel 关联提供商列表响应"""
 
-    providers: List[ModelCatalogProviderDetail]
+    providers: list[ModelCatalogProviderDetail]
     total: int
 
 
 class BatchAssignToProvidersRequest(BaseModel):
     """批量为 Provider 添加 GlobalModel 实现"""
 
-    provider_ids: List[str] = Field(..., min_length=1, description="Provider ID 列表")
+    provider_ids: list[str] = Field(..., min_length=1, description="Provider ID 列表")
     create_models: bool = Field(default=False, description="是否自动创建 Model 记录")
 
 
 class BatchAssignToProvidersResponse(BaseModel):
     """批量分配响应"""
 
-    success: List[dict]
-    errors: List[dict]
+    success: list[dict]
+    errors: list[dict]
 
 
 class BatchAssignModelsToProviderRequest(BaseModel):
     """批量为 Provider 关联 GlobalModel"""
 
-    global_model_ids: List[str] = Field(..., min_length=1, description="GlobalModel ID 列表")
+    global_model_ids: list[str] = Field(..., min_length=1, description="GlobalModel ID 列表")
 
 
 class BatchAssignModelsToProviderResponse(BaseModel):
     """批量关联 GlobalModel 到 Provider 的响应"""
 
-    success: List[dict]
-    errors: List[dict]
+    success: list[dict]
+    errors: list[dict]
 
 
 class ImportFromUpstreamRequest(BaseModel):
     """从上游提供商导入模型请求"""
 
-    model_ids: List[str] = Field(..., min_length=1, description="上游模型 ID 列表")
+    model_ids: list[str] = Field(..., min_length=1, description="上游模型 ID 列表")
     # 价格覆盖配置（应用于所有导入的模型）
-    tiered_pricing: Optional[Dict] = Field(
+    tiered_pricing: dict | None = Field(
         None,
         description="阶梯计费配置（可选），格式: {tiers: [{up_to, input_price_per_1m, output_price_per_1m, ...}]}"
     )
-    price_per_request: Optional[float] = Field(
+    price_per_request: float | None = Field(
         None,
         ge=0,
         description="按次计费价格（可选，单位：美元）"
@@ -328,8 +329,8 @@ class ImportFromUpstreamSuccessItem(BaseModel):
 
     model_id: str = Field(..., description="上游模型 ID")
     provider_model_id: str = Field(..., description="Provider Model ID")
-    global_model_id: Optional[str] = Field("", description="GlobalModel ID（如果已关联）")
-    global_model_name: Optional[str] = Field("", description="GlobalModel 名称（如果已关联）")
+    global_model_id: str | None = Field("", description="GlobalModel ID（如果已关联）")
+    global_model_name: str | None = Field("", description="GlobalModel 名称（如果已关联）")
     created_global_model: bool = Field(False, description="是否新创建了 GlobalModel（始终为 false）")
 
 
@@ -343,8 +344,8 @@ class ImportFromUpstreamErrorItem(BaseModel):
 class ImportFromUpstreamResponse(BaseModel):
     """从上游提供商导入模型响应"""
 
-    success: List[ImportFromUpstreamSuccessItem]
-    errors: List[ImportFromUpstreamErrorItem]
+    success: list[ImportFromUpstreamSuccessItem]
+    errors: list[ImportFromUpstreamErrorItem]
 
 
 __all__ = [

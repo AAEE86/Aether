@@ -4,7 +4,7 @@ Gemini CLI Message Handler - 基于通用 CLI Handler 基类的实现
 继承 CliMessageHandlerBase，处理 Gemini CLI API 格式的请求。
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.api.handlers.base.cli_handler_base import (
     CliMessageHandlerBase,
@@ -34,8 +34,8 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
 
     def extract_model_from_request(
         self,
-        request_body: Dict[str, Any],  # noqa: ARG002 - 基类签名要求
-        path_params: Optional[Dict[str, Any]] = None,
+        request_body: dict[str, Any],  # noqa: ARG002 - 基类签名要求
+        path_params: dict[str, Any] | None = None,
     ) -> str:
         """
         从请求中提取模型名 - Gemini 格式实现
@@ -57,8 +57,8 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
 
     def prepare_provider_request_body(
         self,
-        request_body: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        request_body: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         准备发送给 Gemini API 的请求体 - 移除 model 字段
 
@@ -77,9 +77,9 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
 
     def get_model_for_url(
         self,
-        request_body: Dict[str, Any],
-        mapped_model: Optional[str],
-    ) -> Optional[str]:
+        request_body: dict[str, Any],
+        mapped_model: str | None,
+    ) -> str | None:
         """
         Gemini 需要将 model 放入 URL 路径中
 
@@ -93,7 +93,7 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
         # 优先使用映射后的模型名，否则使用请求体中的
         return mapped_model or request_body.get("model")
 
-    def _extract_usage_from_event(self, event: Dict[str, Any]) -> Dict[str, int]:
+    def _extract_usage_from_event(self, event: dict[str, Any]) -> dict[str, int]:
         """
         从 Gemini 事件中提取 token 使用情况
 
@@ -126,7 +126,7 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
         self,
         ctx: StreamContext,
         _event_type: str,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> None:
         """
         处理 Gemini CLI 格式的流式事件
@@ -190,8 +190,8 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
 
     def _extract_response_metadata(
         self,
-        response: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         从 Gemini 响应中提取元数据
 
@@ -203,7 +203,7 @@ class GeminiCliMessageHandler(CliMessageHandlerBase):
         Returns:
             包含 model_version 的元数据字典
         """
-        metadata: Dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
         model_version = response.get("modelVersion")
         if model_version:
             metadata["model_version"] = model_version

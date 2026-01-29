@@ -11,7 +11,8 @@
 
 import asyncio
 import json
-from typing import Callable, Dict, Optional
+
+from collections.abc import Callable
 
 import redis.asyncio as aioredis
 from src.core.logger import logger
@@ -40,9 +41,9 @@ class CacheSyncService:
             redis_client: Redis 客户端实例
         """
         self._redis = redis_client
-        self._pubsub: Optional[aioredis.client.PubSub] = None
-        self._listener_task: Optional[asyncio.Task] = None
-        self._handlers: Dict[str, Callable] = {}
+        self._pubsub: aioredis.client.PubSub | None = None
+        self._listener_task: asyncio.Task | None = None
+        self._handlers: dict[str, Callable] = {}
         self._running = False
 
     async def start(self):
@@ -160,10 +161,10 @@ class CacheSyncService:
 
 
 # 全局单例
-_cache_sync_service: Optional[CacheSyncService] = None
+_cache_sync_service: CacheSyncService | None = None
 
 
-async def get_cache_sync_service(redis_client: aioredis.Redis = None) -> Optional[CacheSyncService]:
+async def get_cache_sync_service(redis_client: aioredis.Redis = None) -> CacheSyncService | None:
     """
     获取缓存同步服务实例
 

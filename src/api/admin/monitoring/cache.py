@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
-from src.api.base.pagination import PaginationMeta, build_pagination_payload, paginate_sequence
+from src.api.base.pagination import build_pagination_payload, paginate_sequence
 from src.api.base.pipeline import ApiRequestPipeline
 from src.clients.redis_client import get_redis_client_sync
 from src.core.crypto import crypto_service
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/admin/monitoring/cache", tags=["Admin - Monitori
 pipeline = ApiRequestPipeline()
 
 
-def mask_api_key(api_key: Optional[str], prefix_len: int = 8, suffix_len: int = 4) -> Optional[str]:
+def mask_api_key(api_key: str | None, prefix_len: int = 8, suffix_len: int = 4) -> str | None:
     """
     脱敏 API Key，显示前缀 + 星号 + 后缀
     例如: sk-jhiId-xxxxxxxxxxxAABB -> sk-jhiId-********AABB
@@ -47,7 +47,7 @@ def mask_api_key(api_key: Optional[str], prefix_len: int = 8, suffix_len: int = 
     return f"{api_key[:prefix_len]}********{api_key[-suffix_len:]}"
 
 
-def decrypt_and_mask(encrypted_key: Optional[str], prefix_len: int = 8) -> Optional[str]:
+def decrypt_and_mask(encrypted_key: str | None, prefix_len: int = 8) -> str | None:
     """
     解密 API Key 后脱敏显示
 
@@ -65,7 +65,7 @@ def decrypt_and_mask(encrypted_key: Optional[str], prefix_len: int = 8) -> Optio
         return None
 
 
-def resolve_user_identifier(db: Session, identifier: str) -> Optional[str]:
+def resolve_user_identifier(db: Session, identifier: str) -> str | None:
     """
     将用户标识符（username/email/user_id/api_key_id）解析为 user_id
 
@@ -181,7 +181,7 @@ async def get_user_affinity(
 @router.get("/affinities")
 async def list_affinities(
     request: Request,
-    keyword: Optional[str] = None,
+    keyword: str | None = None,
     limit: int = Query(100, ge=1, le=1000, description="返回数量限制"),
     offset: int = Query(0, ge=0, description="偏移量"),
     db: Session = Depends(get_db),
@@ -421,7 +421,7 @@ async def get_cache_metrics(
 
 
 class AdminCacheStatsAdapter(AdminApiAdapter):
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         try:
             redis_client = get_redis_client_sync()
             # 读取系统配置，确保监控接口与编排器使用一致的模式
@@ -487,14 +487,14 @@ class AdminCacheMetricsAdapter(AdminApiAdapter):
             logger.exception(f"导出缓存指标失败: {exc}")
             raise HTTPException(status_code=500, detail=f"导出缓存指标失败: {exc}")
 
-    def _format_prometheus(self, stats: Dict[str, Any]) -> str:
+    def _format_prometheus(self, stats: dict[str, Any]) -> str:
         """
         将 scheduler/affinity 指标转换为 Prometheus 文本格式。
         """
         scheduler_metrics = stats.get("scheduler_metrics", {})
         affinity_stats = stats.get("affinity_stats", {})
 
-        metric_map: List[Tuple[str, str, float]] = [
+        metric_map: list[tuple[str, str, float]] = [
             (
                 "cache_scheduler_total_batches",
                 "Total batches pulled from provider list",
@@ -542,7 +542,7 @@ class AdminCacheMetricsAdapter(AdminApiAdapter):
             ),
         ]
 
-        affinity_map: List[Tuple[str, str, float]] = [
+        affinity_map: list[tuple[str, str, float]] = [
             (
                 "cache_affinity_total",
                 "Total cache affinities stored",
@@ -596,7 +596,7 @@ class AdminCacheMetricsAdapter(AdminApiAdapter):
 class AdminGetUserAffinityAdapter(AdminApiAdapter):
     user_identifier: str
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         db = context.db
         try:
             user_id = resolve_user_identifier(db, self.user_identifier)
@@ -673,11 +673,11 @@ class AdminGetUserAffinityAdapter(AdminApiAdapter):
 
 @dataclass
 class AdminListAffinitiesAdapter(AdminApiAdapter):
-    keyword: Optional[str]
+    keyword: str | None
     limit: int
     offset: int
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         db = context.db
         redis_client = get_redis_client_sync()
         if not redis_client:
@@ -686,7 +686,7 @@ class AdminListAffinitiesAdapter(AdminApiAdapter):
         affinity_mgr = await get_affinity_manager(redis_client)
         matched_user_id = None
         matched_api_key_id = None
-        raw_affinities: List[Dict[str, Any]] = []
+        raw_affinities: list[dict[str, Any]] = []
 
         if self.keyword:
             # 首先检查是否是 API Key ID（affinity_key）
@@ -724,14 +724,14 @@ class AdminListAffinitiesAdapter(AdminApiAdapter):
         }
 
         # 批量查询用户 API Key 信息
-        user_api_key_map: Dict[str, ApiKey] = {}
+        user_api_key_map: dict[str, ApiKey] = {}
         if affinity_keys:
             user_api_keys = db.query(ApiKey).filter(ApiKey.id.in_(list(affinity_keys))).all()
             user_api_key_map = {str(k.id): k for k in user_api_keys}
 
         # 收集所有 user_id
         user_ids = {str(k.user_id) for k in user_api_key_map.values()}
-        user_map: Dict[str, User] = {}
+        user_map: dict[str, User] = {}
         if user_ids:
             users = db.query(User).filter(User.id.in_(list(user_ids))).all()
             user_map = {str(user.id): user for user in users}
@@ -771,7 +771,7 @@ class AdminListAffinitiesAdapter(AdminApiAdapter):
         global_model_ids = {
             item.get("model_name") for item in raw_affinities if item.get("model_name")
         }
-        global_model_map: Dict[str, GlobalModel] = {}
+        global_model_map: dict[str, GlobalModel] = {}
         if global_model_ids:
             # model_name 可能是 UUID 格式的 global_model_id，也可能是原始模型名称
             global_models = db.query(GlobalModel).filter(
@@ -885,7 +885,7 @@ class AdminListAffinitiesAdapter(AdminApiAdapter):
 class AdminClearUserCacheAdapter(AdminApiAdapter):
     user_identifier: str
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         db = context.db
         try:
             redis_client = get_redis_client_sync()
@@ -995,7 +995,7 @@ class AdminClearSingleAffinityAdapter(AdminApiAdapter):
     model_id: str
     api_format: str
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         db = context.db
         try:
             redis_client = get_redis_client_sync()
@@ -1048,7 +1048,7 @@ class AdminClearSingleAffinityAdapter(AdminApiAdapter):
 
 
 class AdminClearAllCacheAdapter(AdminApiAdapter):
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         try:
             redis_client = get_redis_client_sync()
             affinity_mgr = await get_affinity_manager(redis_client)
@@ -1068,7 +1068,7 @@ class AdminClearAllCacheAdapter(AdminApiAdapter):
 class AdminClearProviderCacheAdapter(AdminApiAdapter):
     provider_id: str
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         try:
             redis_client = get_redis_client_sync()
             affinity_mgr = await get_affinity_manager(redis_client)
@@ -1091,7 +1091,7 @@ class AdminClearProviderCacheAdapter(AdminApiAdapter):
 
 
 class AdminCacheConfigAdapter(AdminApiAdapter):
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         from src.services.cache.affinity_manager import CacheAffinityManager
         from src.config.constants import ConcurrencyDefaults
         from src.services.rate_limit.adaptive_reservation import get_adaptive_reservation_manager
@@ -1260,7 +1260,7 @@ async def clear_provider_model_mapping_cache(
 
 
 class AdminModelMappingCacheStatsAdapter(AdminApiAdapter):
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         import json
 
         from src.clients.redis_client import get_redis_client
@@ -1510,7 +1510,7 @@ class AdminModelMappingCacheStatsAdapter(AdminApiAdapter):
 
 
 class AdminClearAllModelMappingCacheAdapter(AdminApiAdapter):
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         from src.clients.redis_client import get_redis_client
 
         try:
@@ -1552,7 +1552,7 @@ class AdminClearAllModelMappingCacheAdapter(AdminApiAdapter):
 class AdminClearModelMappingCacheByNameAdapter(AdminApiAdapter):
     model_name: str
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         from src.clients.redis_client import get_redis_client
 
         try:
@@ -1599,7 +1599,7 @@ class AdminClearProviderModelMappingCacheAdapter(AdminApiAdapter):
     provider_id: str
     global_model_id: str
 
-    async def handle(self, context: ApiRequestContext) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context: ApiRequestContext) -> dict[str, Any]:  # type: ignore[override]
         from src.clients.redis_client import get_redis_client
 
         try:

@@ -3,12 +3,11 @@ Tiktoken Token计数插件
 支持OpenAI和其他使用tiktoken的模型
 """
 
-import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.core.logger import logger
 
-from .base import TokenCounterPlugin, TokenUsage
+from .base import TokenCounterPlugin
 
 # 尝试导入tiktoken
 try:
@@ -57,7 +56,7 @@ class TiktokenCounterPlugin(TokenCounterPlugin):
         "gpt-4o-mini": 3,
     }
 
-    def __init__(self, name: str = "tiktoken", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "tiktoken", config: dict[str, Any] = None):
         super().__init__(name, config)
 
         if not TIKTOKEN_AVAILABLE:
@@ -121,7 +120,7 @@ class TiktokenCounterPlugin(TokenCounterPlugin):
         openai_models = ["gpt-4", "gpt-3.5", "text-davinci", "text-embedding", "code-davinci", "o1"]
         return any(model.startswith(prefix) for prefix in openai_models)
 
-    async def count_tokens(self, text: str, model: Optional[str] = None) -> int:
+    async def count_tokens(self, text: str, model: str | None = None) -> int:
         """计算文本的Token数量"""
         if not self.enabled:
             return 0
@@ -138,7 +137,7 @@ class TiktokenCounterPlugin(TokenCounterPlugin):
             return int(len(text) * 0.75)
 
     async def count_messages(
-        self, messages: List[Dict[str, Any]], model: Optional[str] = None
+        self, messages: list[dict[str, Any]], model: str | None = None
     ) -> int:
         """计算消息列表的Token数量"""
         if not self.enabled:
@@ -203,7 +202,7 @@ class TiktokenCounterPlugin(TokenCounterPlugin):
 
         return total_tokens
 
-    async def get_model_info(self, model: str) -> Dict[str, Any]:
+    async def get_model_info(self, model: str) -> dict[str, Any]:
         """获取模型信息"""
         info = {"model": model, "supported": self.supports_model(model)}
 
@@ -260,7 +259,7 @@ class TiktokenCounterPlugin(TokenCounterPlugin):
         # 默认值
         return 4096
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
         stats = await super().get_stats()
         stats.update(

@@ -3,12 +3,12 @@
 定义速率限制策略的接口
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from ..common import BasePlugin, HealthStatus, PluginMetadata
+from ..common import BasePlugin
 
 
 @dataclass
@@ -19,10 +19,10 @@ class RateLimitResult:
 
     allowed: bool
     remaining: int
-    reset_at: Optional[datetime] = None
-    retry_after: Optional[int] = None
-    message: Optional[str] = None
-    headers: Optional[Dict[str, str]] = None
+    reset_at: datetime | None = None
+    retry_after: int | None = None
+    message: str | None = None
+    headers: dict[str, str] | None = None
 
     def __post_init__(self):
         if self.headers is None:
@@ -49,9 +49,9 @@ class RateLimitStrategy(BasePlugin):
         author: str = "Unknown",
         description: str = "",
         api_version: str = "1.0",
-        dependencies: List[str] = None,
-        provides: List[str] = None,
-        config: Dict[str, Any] = None,
+        dependencies: list[str] = None,
+        provides: list[str] = None,
+        config: dict[str, Any] = None,
     ):
         """
         初始化速率限制策略
@@ -119,7 +119,7 @@ class RateLimitStrategy(BasePlugin):
         pass
 
     @abstractmethod
-    async def get_stats(self, key: str) -> Dict[str, Any]:
+    async def get_stats(self, key: str) -> dict[str, Any]:
         """
         获取统计信息
 

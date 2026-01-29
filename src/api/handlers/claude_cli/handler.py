@@ -4,7 +4,7 @@ Claude CLI Message Handler - 基于通用 CLI Handler 基类的简化实现
 继承 CliMessageHandlerBase，只需覆盖格式特定的配置和事件处理逻辑。
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from src.api.handlers.base.cli_handler_base import (
     CliMessageHandlerBase,
@@ -33,8 +33,8 @@ class ClaudeCliMessageHandler(CliMessageHandlerBase):
 
     def extract_model_from_request(
         self,
-        request_body: Dict[str, Any],
-        path_params: Optional[Dict[str, Any]] = None,  # noqa: ARG002
+        request_body: dict[str, Any],
+        path_params: dict[str, Any] | None = None,  # noqa: ARG002
     ) -> str:
         """
         从请求中提取模型名 - Claude 格式实现
@@ -53,9 +53,9 @@ class ClaudeCliMessageHandler(CliMessageHandlerBase):
 
     def apply_mapped_model(
         self,
-        request_body: Dict[str, Any],
+        request_body: dict[str, Any],
         mapped_model: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Claude API 的 model 在请求体顶级
 
@@ -74,7 +74,7 @@ class ClaudeCliMessageHandler(CliMessageHandlerBase):
         self,
         ctx: StreamContext,
         event_type: str,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> None:
         """
         处理 Claude CLI 格式的 SSE 事件
@@ -142,8 +142,8 @@ class ClaudeCliMessageHandler(CliMessageHandlerBase):
 
     def _extract_response_metadata(
         self,
-        response: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         从 Claude 响应中提取元数据
 
@@ -155,7 +155,7 @@ class ClaudeCliMessageHandler(CliMessageHandlerBase):
         Returns:
             提取的元数据字典
         """
-        metadata: Dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
 
         # 提取模型名称（实际使用的模型）
         if "model" in response:

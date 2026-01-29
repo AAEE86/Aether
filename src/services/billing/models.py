@@ -8,9 +8,10 @@
 - CostBreakdown: 计费明细结果
 """
 
+from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class BillingUnit(str, Enum):
@@ -66,7 +67,7 @@ class BillingDimension:
 
         return 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典（用于序列化）"""
         return {
             "name": self.name,
@@ -77,7 +78,7 @@ class BillingDimension:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "BillingDimension":
+    def from_dict(cls, data: dict[str, Any]) -> BillingDimension:
         """从字典创建实例"""
         return cls(
             name=data["name"],
@@ -114,7 +115,7 @@ class StandardizedUsage:
     request_count: int = 1
 
     # 扩展字段（未来可能需要的额外维度）
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def get(self, field_name: str, default: Any = 0) -> Any:
         """
@@ -149,9 +150,9 @@ class StandardizedUsage:
         else:
             self.extra[field_name] = value
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_creation_tokens": self.cache_creation_tokens,
@@ -165,7 +166,7 @@ class StandardizedUsage:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StandardizedUsage":
+    def from_dict(cls, data: dict[str, Any]) -> StandardizedUsage:
         """从字典创建实例"""
         extra = data.pop("extra", {}) if "extra" in data else {}
         # 只取已知字段
@@ -191,19 +192,19 @@ class CostBreakdown:
     """
 
     # 各维度费用 {"input": 0.01, "output": 0.02, "cache_read": 0.001, ...}
-    costs: Dict[str, float] = field(default_factory=dict)
+    costs: dict[str, float] = field(default_factory=dict)
 
     # 总费用
     total_cost: float = 0.0
 
     # 命中的阶梯索引（如果使用阶梯计费）
-    tier_index: Optional[int] = None
+    tier_index: int | None = None
 
     # 货币单位
     currency: str = "USD"
 
     # 使用的价格（用于记录和审计）
-    effective_prices: Dict[str, float] = field(default_factory=dict)
+    effective_prices: dict[str, float] = field(default_factory=dict)
 
     # =========================================================================
     # 兼容旧接口的属性（便于渐进式迁移）
@@ -244,7 +245,7 @@ class CostBreakdown:
         """缓存存储费用（豆包等）"""
         return self.costs.get("cache_storage", 0.0)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
             "costs": self.costs,

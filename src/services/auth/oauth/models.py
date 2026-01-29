@@ -1,27 +1,25 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
 class OAuthToken:
     access_token: str
     token_type: str = "bearer"
-    refresh_token: Optional[str] = None
-    expires_in: Optional[int] = None
-    id_token: Optional[str] = None
-    scope: Optional[str] = None
-    raw: Optional[dict[str, Any]] = None
+    refresh_token: str | None = None
+    expires_in: int | None = None
+    id_token: str | None = None
+    scope: str | None = None
+    raw: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class OAuthUserInfo:
     id: str
-    username: Optional[str] = None
-    email: Optional[str] = None
-    email_verified: Optional[bool] = None
-    raw: Optional[dict[str, Any]] = None
+    username: str | None = None
+    email: str | None = None
+    email_verified: bool | None = None
+    raw: dict[str, Any] | None = None
 
 
 class OAuthFlowError(Exception):

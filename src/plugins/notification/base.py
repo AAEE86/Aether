@@ -8,7 +8,7 @@ import json
 from abc import abstractmethod
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.plugins.common import BasePlugin
 
@@ -30,12 +30,12 @@ class Notification:
         title: str,
         message: str,
         level: NotificationLevel = NotificationLevel.INFO,
-        notification_type: Optional[str] = None,
-        source: Optional[str] = None,
-        timestamp: Optional[datetime] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        recipient: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        notification_type: str | None = None,
+        source: str | None = None,
+        timestamp: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+        recipient: str | None = None,
+        tags: list[str] | None = None,
     ):
         self.title = title
         self.message = message
@@ -47,7 +47,7 @@ class Notification:
         self.recipient = recipient
         self.tags = tags or []
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
             "title": self.title,
@@ -65,7 +65,7 @@ class Notification:
         """转换为JSON"""
         return json.dumps(self.to_dict(), default=str)
 
-    def format_message(self, template: Optional[str] = None) -> str:
+    def format_message(self, template: str | None = None) -> str:
         """格式化消息"""
         if template:
             return template.format(
@@ -90,7 +90,7 @@ class NotificationPlugin(BasePlugin):
     提供统一的重试机制，子类只需实现 _do_send 和 _do_send_batch 方法
     """
 
-    def __init__(self, name: str = "notification", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "notification", config: dict[str, Any] = None):
         # 调用父类初始化，设置metadata
         super().__init__(
             name=name, config=config, description="Notification Plugin", version="1.0.0"
@@ -160,7 +160,7 @@ class NotificationPlugin(BasePlugin):
         """
         pass
 
-    async def send_batch(self, notifications: List[Notification]) -> Dict[str, Any]:
+    async def send_batch(self, notifications: list[Notification]) -> dict[str, Any]:
         """
         批量发送通知（带重试机制）
 
@@ -210,7 +210,7 @@ class NotificationPlugin(BasePlugin):
         }
 
     @abstractmethod
-    async def _do_send_batch(self, notifications: List[Notification]) -> Dict[str, Any]:
+    async def _do_send_batch(self, notifications: list[Notification]) -> dict[str, Any]:
         """
         实际批量发送通知（子类实现）
 
@@ -237,8 +237,8 @@ class NotificationPlugin(BasePlugin):
     async def send_error(
         self,
         error: Exception,
-        context: Optional[Dict[str, Any]] = None,
-        recipient: Optional[str] = None,
+        context: dict[str, Any] | None = None,
+        recipient: str | None = None,
     ) -> bool:
         """发送错误通知"""
         notification = Notification(
@@ -256,8 +256,8 @@ class NotificationPlugin(BasePlugin):
         self,
         title: str,
         message: str,
-        context: Optional[Dict[str, Any]] = None,
-        recipient: Optional[str] = None,
+        context: dict[str, Any] | None = None,
+        recipient: str | None = None,
     ) -> bool:
         """发送警告通知"""
         notification = Notification(
@@ -275,8 +275,8 @@ class NotificationPlugin(BasePlugin):
         self,
         title: str,
         message: str,
-        context: Optional[Dict[str, Any]] = None,
-        recipient: Optional[str] = None,
+        context: dict[str, Any] | None = None,
+        recipient: str | None = None,
     ) -> bool:
         """发送信息通知"""
         notification = Notification(
@@ -294,8 +294,8 @@ class NotificationPlugin(BasePlugin):
         self,
         title: str,
         message: str,
-        context: Optional[Dict[str, Any]] = None,
-        recipient: Optional[str] = None,
+        context: dict[str, Any] | None = None,
+        recipient: str | None = None,
     ) -> bool:
         """发送严重通知"""
         notification = Notification(
@@ -344,8 +344,8 @@ class NotificationPlugin(BasePlugin):
         self,
         provider: str,
         status: str,
-        error: Optional[str] = None,
-        latency: Optional[float] = None,
+        error: str | None = None,
+        latency: float | None = None,
     ) -> bool:
         """发送提供商状态通知"""
         level = NotificationLevel.INFO
@@ -370,7 +370,7 @@ class NotificationPlugin(BasePlugin):
         )
         return await self.send(notification)
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """
         获取统计信息
 
@@ -404,7 +404,7 @@ class NotificationPlugin(BasePlugin):
 
         return base_stats
 
-    async def _get_extra_stats(self) -> Dict[str, Any]:
+    async def _get_extra_stats(self) -> dict[str, Any]:
         """
         获取子类特定的统计信息（子类可选重写）
 

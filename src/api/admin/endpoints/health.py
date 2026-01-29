@@ -5,7 +5,6 @@ Endpoint 健康监控 API
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func
@@ -128,7 +127,7 @@ async def get_api_format_health_monitor(
 async def get_key_health(
     key_id: str,
     request: Request,
-    api_format: Optional[str] = Query(None, description="API 格式（可选，如 CLAUDE、OPENAI）"),
+    api_format: str | None = Query(None, description="API 格式（可选，如 CLAUDE、OPENAI）"),
     db: Session = Depends(get_db),
 ) -> HealthStatusResponse:
     """
@@ -161,7 +160,7 @@ async def get_key_health(
 async def recover_key_health(
     key_id: str,
     request: Request,
-    api_format: Optional[str] = Query(None, description="API 格式（可选，不指定则恢复所有格式）"),
+    api_format: str | None = Query(None, description="API 格式（可选，不指定则恢复所有格式）"),
     db: Session = Depends(get_db),
 ) -> dict:
     """
@@ -278,7 +277,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
         )
 
         # 构建所有格式的 provider_count 映射
-        all_formats: Dict[str, int] = {}
+        all_formats: dict[str, int] = {}
         for api_format_enum, provider_count in active_formats:
             api_format = (
                 api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
@@ -295,7 +294,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
             )
             .all()
         )
-        endpoint_map: Dict[str, List[str]] = defaultdict(list)
+        endpoint_map: dict[str, list[str]] = defaultdict(list)
         active_provider_formats: set[tuple[str, str]] = set()
         for api_format_enum, endpoint_id, provider_id in endpoint_rows:
             api_format = (
@@ -305,7 +304,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
             active_provider_formats.add((str(provider_id), api_format))
 
         # 1.2 统计每个 API 格式可用的活跃 Key 数量（Key 属于 Provider，通过 api_formats 关联格式）
-        key_counts: Dict[str, int] = {}
+        key_counts: dict[str, int] = {}
         if active_provider_formats:
             active_provider_keys = (
                 db.query(ProviderAPIKey.provider_id, ProviderAPIKey.api_formats)
@@ -342,7 +341,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
         )
 
         # 构建每个格式的状态统计
-        status_counts: Dict[str, Dict[str, int]] = {}
+        status_counts: dict[str, dict[str, int]] = {}
         for api_format_enum, status, count in status_counts_query:
             api_format = (
                 api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
@@ -370,7 +369,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
             .all()
         )
 
-        grouped_attempts: Dict[str, List[RequestCandidate]] = {}
+        grouped_attempts: dict[str, list[RequestCandidate]] = {}
 
         for attempt, api_format_enum, provider_id in rows:
             api_format = (
@@ -384,7 +383,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
                 grouped_attempts[api_format].append(attempt)
 
         # 4. 为所有活跃格式生成监控数据（包括没有请求记录的）
-        monitors: List[ApiFormatHealthMonitor] = []
+        monitors: list[ApiFormatHealthMonitor] = []
         for api_format in all_formats:
             attempts = grouped_attempts.get(api_format, [])
             # 获取窗口内的真实统计数据
@@ -399,7 +398,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
 
             # 时间线按时间正序
             attempts_sorted = list(reversed(attempts))
-            events: List[EndpointHealthEvent] = []
+            events: list[EndpointHealthEvent] = []
             for attempt in attempts_sorted:
                 event_timestamp = attempt.finished_at or attempt.started_at or attempt.created_at
                 events.append(
@@ -462,7 +461,7 @@ class AdminApiFormatHealthMonitorAdapter(AdminApiAdapter):
 @dataclass
 class AdminKeyHealthAdapter(AdminApiAdapter):
     key_id: str
-    api_format: Optional[str] = None
+    api_format: str | None = None
 
     async def handle(self, context):  # type: ignore[override]
         health_data = health_monitor.get_key_health(context.db, self.key_id, self.api_format)
@@ -500,7 +499,7 @@ class AdminKeyHealthAdapter(AdminApiAdapter):
 @dataclass
 class AdminRecoverKeyHealthAdapter(AdminApiAdapter):
     key_id: str
-    api_format: Optional[str] = None
+    api_format: str | None = None
 
     async def handle(self, context):  # type: ignore[override]
         db = context.db

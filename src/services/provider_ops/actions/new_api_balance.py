@@ -3,7 +3,7 @@ New API 余额查询操作
 """
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -111,7 +111,7 @@ class NewApiBalanceAction(BalanceAction):
             currency=self.config.get("currency", "USD"),
         )
 
-    async def _do_checkin(self, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
+    async def _do_checkin(self, client: httpx.AsyncClient) -> dict[str, Any] | None:
         """
         执行签到（静默，不抛出异常）
 
@@ -184,7 +184,7 @@ class NewApiBalanceAction(BalanceAction):
             return None
 
     @classmethod
-    def get_config_schema(cls) -> Dict[str, Any]:
+    def get_config_schema(cls) -> dict[str, Any]:
         """获取操作配置 schema"""
         return {
             "type": "object",

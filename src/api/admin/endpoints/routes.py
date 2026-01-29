@@ -5,10 +5,9 @@ ProviderEndpoint CRUD 管理 API
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import and_, func
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -29,7 +28,7 @@ router = APIRouter(tags=["Endpoint Management"])
 pipeline = ApiRequestPipeline()
 
 
-def mask_proxy_password(proxy_config: Optional[dict]) -> Optional[dict]:
+def mask_proxy_password(proxy_config: dict | None) -> dict | None:
     """对代理配置中的密码进行脱敏处理"""
     if not proxy_config:
         return None
@@ -39,14 +38,14 @@ def mask_proxy_password(proxy_config: Optional[dict]) -> Optional[dict]:
     return masked
 
 
-@router.get("/providers/{provider_id}/endpoints", response_model=List[ProviderEndpointResponse])
+@router.get("/providers/{provider_id}/endpoints", response_model=list[ProviderEndpointResponse])
 async def list_provider_endpoints(
     provider_id: str,
     request: Request,
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(100, ge=1, le=1000, description="返回的最大记录数"),
     db: Session = Depends(get_db),
-) -> List[ProviderEndpointResponse]:
+) -> list[ProviderEndpointResponse]:
     """
     获取指定 Provider 的所有 Endpoints
 
@@ -245,7 +244,7 @@ class AdminListProviderEndpointsAdapter(AdminApiAdapter):
                 if is_active:
                     active_keys_map[fmt] = active_keys_map.get(fmt, 0) + 1
 
-        result: List[ProviderEndpointResponse] = []
+        result: list[ProviderEndpointResponse] = []
         for endpoint in endpoints:
             endpoint_format = (
                 endpoint.api_format

@@ -1,7 +1,7 @@
 """LDAP配置管理API端点。"""
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -30,9 +30,9 @@ BCRYPT_HASH_PATTERN = re.compile(r"^\$2[aby]\$\d{2}\$.{53}$")
 class LDAPConfigResponse(BaseModel):
     """LDAP配置响应（不返回密码）"""
 
-    server_url: Optional[str] = None
-    bind_dn: Optional[str] = None
-    base_dn: Optional[str] = None
+    server_url: str | None = None
+    bind_dn: str | None = None
+    base_dn: str | None = None
     has_bind_password: bool = False
     user_search_filter: str
     username_attr: str
@@ -50,7 +50,7 @@ class LDAPConfigUpdate(BaseModel):
     server_url: str = Field(..., min_length=1, max_length=255)
     bind_dn: str = Field(..., min_length=1, max_length=255)
     # 允许空字符串表示"清除密码"；非空时自动 strip 并校验不能为空
-    bind_password: Optional[str] = Field(None, max_length=1024)
+    bind_password: str | None = Field(None, max_length=1024)
     base_dn: str = Field(..., min_length=1, max_length=255)
     user_search_filter: str = Field(default="(uid={username})", max_length=500)
     username_attr: str = Field(default="uid", max_length=50)
@@ -63,7 +63,7 @@ class LDAPConfigUpdate(BaseModel):
 
     @field_validator("bind_password")
     @classmethod
-    def validate_bind_password(cls, v: Optional[str]) -> Optional[str]:
+    def validate_bind_password(cls, v: str | None) -> str | None:
         if v is None or v == "":
             return v
         v = v.strip()
@@ -114,22 +114,22 @@ class LDAPTestResponse(BaseModel):
 class LDAPConfigTest(BaseModel):
     """LDAP配置测试请求（全部可选，用于临时覆盖）"""
 
-    server_url: Optional[str] = Field(None, min_length=1, max_length=255)
-    bind_dn: Optional[str] = Field(None, min_length=1, max_length=255)
-    bind_password: Optional[str] = Field(None, min_length=1)
-    base_dn: Optional[str] = Field(None, min_length=1, max_length=255)
-    user_search_filter: Optional[str] = Field(None, max_length=500)
-    username_attr: Optional[str] = Field(None, max_length=50)
-    email_attr: Optional[str] = Field(None, max_length=50)
-    display_name_attr: Optional[str] = Field(None, max_length=50)
-    is_enabled: Optional[bool] = None
-    is_exclusive: Optional[bool] = None
-    use_starttls: Optional[bool] = None
-    connect_timeout: Optional[int] = Field(None, ge=1, le=60)
+    server_url: str | None = Field(None, min_length=1, max_length=255)
+    bind_dn: str | None = Field(None, min_length=1, max_length=255)
+    bind_password: str | None = Field(None, min_length=1)
+    base_dn: str | None = Field(None, min_length=1, max_length=255)
+    user_search_filter: str | None = Field(None, max_length=500)
+    username_attr: str | None = Field(None, max_length=50)
+    email_attr: str | None = Field(None, max_length=50)
+    display_name_attr: str | None = Field(None, max_length=50)
+    is_enabled: bool | None = None
+    is_exclusive: bool | None = None
+    use_starttls: bool | None = None
+    connect_timeout: int | None = Field(None, ge=1, le=60)
 
     @field_validator("user_search_filter")
     @classmethod
-    def validate_search_filter(cls, v: Optional[str]) -> Optional[str]:
+    def validate_search_filter(cls, v: str | None) -> str | None:
         if v is None:
             return v
         if "{username}" not in v:
@@ -263,7 +263,7 @@ async def test_ldap_connection(request: Request, db: Session = Depends(get_db)) 
 
 
 class AdminGetLDAPConfigAdapter(AdminApiAdapter):
-    async def handle(self, context) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context) -> dict[str, Any]:  # type: ignore[override]
         db = context.db
         config = db.query(LDAPConfig).first()
 
@@ -300,7 +300,7 @@ class AdminGetLDAPConfigAdapter(AdminApiAdapter):
 
 
 class AdminUpdateLDAPConfigAdapter(AdminApiAdapter):
-    async def handle(self, context) -> Dict[str, str]:  # type: ignore[override]
+    async def handle(self, context) -> dict[str, str]:  # type: ignore[override]
         db = context.db
         payload = context.ensure_json_body()
 
@@ -421,7 +421,7 @@ class AdminUpdateLDAPConfigAdapter(AdminApiAdapter):
 
 
 class AdminTestLDAPConnectionAdapter(AdminApiAdapter):
-    async def handle(self, context) -> Dict[str, Any]:  # type: ignore[override]
+    async def handle(self, context) -> dict[str, Any]:  # type: ignore[override]
         from src.services.auth.ldap import LDAPService
 
         db = context.db
@@ -442,7 +442,7 @@ class AdminTestLDAPConnectionAdapter(AdminApiAdapter):
                 raise InvalidRequestException(translate_pydantic_error(errors[0]))
             raise InvalidRequestException("请求数据验证失败")
 
-        config_data: Dict[str, Any] = {}
+        config_data: dict[str, Any] = {}
 
         if saved_config:
             config_data = {

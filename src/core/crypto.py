@@ -8,6 +8,7 @@
 - 使用 PBKDF2 派生密钥时会使用应用级 salt
 """
 
+from __future__ import annotations
 import base64
 import hashlib
 
@@ -37,7 +38,7 @@ class CryptoService:
     # 注意：更改此值会导致所有已加密数据无法解密
     APP_SALT = hashlib.sha256(b"aether-v1").digest()[:16]
 
-    def __new__(cls) -> "CryptoService":
+    def __new__(cls) -> CryptoService:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialize()

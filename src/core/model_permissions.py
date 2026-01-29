@@ -13,7 +13,6 @@ allowed_models 格式: ["claude-sonnet-4", "gpt-4o"]
 
 import re
 from functools import lru_cache
-from typing import List, Optional, Tuple
 
 import regex
 
@@ -26,10 +25,10 @@ MAX_MODEL_NAME_LENGTH = 200  # 与 MAX_MAPPING_LENGTH 保持一致
 REGEX_MATCH_TIMEOUT_MS = 100  # 正则匹配超时（毫秒）
 
 # 类型别名
-AllowedModels = Optional[List[str]]
+type AllowedModels = list[str] | None
 
 
-def normalize_allowed_models(allowed_models: AllowedModels) -> Optional[set[str]]:
+def normalize_allowed_models(allowed_models: AllowedModels) -> set[str] | None:
     """
     将 allowed_models 规范化为模型名称集合
 
@@ -130,7 +129,7 @@ def get_allowed_models_preview(
     return preview
 
 
-def parse_allowed_models_to_list(allowed_models: AllowedModels) -> List[str]:
+def parse_allowed_models_to_list(allowed_models: AllowedModels) -> list[str]:
     """
     解析 allowed_models 为列表
 
@@ -146,7 +145,7 @@ def parse_allowed_models_to_list(allowed_models: AllowedModels) -> List[str]:
     return list(allowed_models)
 
 
-def validate_mapping_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
+def validate_mapping_pattern(pattern: str) -> tuple[bool, str | None]:
     """
     验证映射模式是否安全
 
@@ -171,7 +170,7 @@ def validate_mapping_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-def validate_model_mappings(mappings: Optional[List[str]]) -> Tuple[bool, Optional[str]]:
+def validate_model_mappings(mappings: list[str] | None) -> tuple[bool, str | None]:
     """
     验证映射列表是否合法
 
@@ -196,8 +195,8 @@ def validate_model_mappings(mappings: Optional[List[str]]) -> Tuple[bool, Option
 
 
 def validate_and_extract_model_mappings(
-    config: Optional[dict],
-) -> Tuple[bool, Optional[str], Optional[List[str]]]:
+    config: dict | None,
+) -> tuple[bool, str | None, list[str] | None]:
     """
     从 config 中验证并提取 model_mappings
 
@@ -238,7 +237,7 @@ def validate_and_extract_model_mappings(
 
 
 @lru_cache(maxsize=2000)
-def _compile_pattern_cached(pattern: str) -> Optional[regex.Pattern]:
+def _compile_pattern_cached(pattern: str) -> regex.Pattern | None:
     """
     编译正则模式（带 LRU 缓存）
 
@@ -267,7 +266,7 @@ def clear_regex_cache() -> None:
 
 def _match_with_timeout(
     compiled_regex: regex.Pattern, text: str, timeout_ms: int = REGEX_MATCH_TIMEOUT_MS
-) -> Optional[bool]:
+) -> bool | None:
     """
     带超时的正则匹配（使用 regex 库的原生超时支持）
 
@@ -342,9 +341,9 @@ def match_model_with_pattern(pattern: str, model_name: str) -> bool:
 def check_model_allowed_with_mappings(
     model_name: str,
     allowed_models: AllowedModels,
-    model_mappings: Optional[List[str]] = None,
-    candidate_models: Optional[set[str]] = None,
-) -> tuple[bool, Optional[str]]:
+    model_mappings: list[str] | None = None,
+    candidate_models: set[str] | None = None,
+) -> tuple[bool, str | None]:
     """
     检查模型是否被允许（支持映射通配符匹配）
 

@@ -4,7 +4,6 @@ JWT认证插件
 """
 
 import hashlib
-from typing import Optional
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -26,7 +25,7 @@ class JwtAuthPlugin(AuthPlugin):
     def __init__(self):
         super().__init__(name="jwt", priority=20)  # 高优先级，优先于API Key
 
-    def get_credentials(self, request: Request) -> Optional[str]:
+    def get_credentials(self, request: Request) -> str | None:
         """
         从Authorization header中提取JWT token
 
@@ -37,7 +36,7 @@ class JwtAuthPlugin(AuthPlugin):
             return auth_header.replace("Bearer ", "")
         return None
 
-    async def authenticate(self, request: Request, db: Session) -> Optional[AuthContext]:
+    async def authenticate(self, request: Request, db: Session) -> AuthContext | None:
         """
         使用JWT token进行认证
         """

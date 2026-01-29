@@ -1,9 +1,8 @@
 """公告系统 API 端点。"""
 
 from dataclasses import dataclass
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -12,7 +11,6 @@ from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.authenticated_adapter import AuthenticatedApiAdapter
 from src.api.base.pipeline import ApiRequestPipeline
 from src.core.exceptions import InvalidRequestException, translate_pydantic_error
-from src.core.logger import logger
 from src.database import get_db
 from src.models.api import CreateAnnouncementRequest, UpdateAnnouncementRequest
 from src.models.database import User
@@ -251,7 +249,7 @@ class AnnouncementOptionalAuthAdapter(ApiAdapter):
         context.extra["optional_user"] = await self._resolve_optional_user(context)
         return None
 
-    async def _resolve_optional_user(self, context) -> Optional[User]:
+    async def _resolve_optional_user(self, context) -> User | None:
         if context.user:
             return context.user
 
@@ -285,7 +283,7 @@ class AnnouncementOptionalAuthAdapter(ApiAdapter):
         except Exception:
             return None
 
-    def get_optional_user(self, context) -> Optional[User]:
+    def get_optional_user(self, context) -> User | None:
         return context.extra.get("optional_user")
 
 

@@ -12,7 +12,7 @@ OpenAINormalizer 单元测试
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 from src.core.api_format.conversion.internal import (
     ContentType,
@@ -35,14 +35,14 @@ from src.core.api_format.conversion.stream_events import (
 from src.core.api_format.conversion.stream_state import StreamState
 
 
-def _first_choice_message(response: Dict[str, Any]) -> Dict[str, Any]:
+def _first_choice_message(response: dict[str, Any]) -> dict[str, Any]:
     choices = response.get("choices") or []
     assert isinstance(choices, list) and choices
     c0 = choices[0]
     assert isinstance(c0, dict)
     msg = c0.get("message")
     assert isinstance(msg, dict)
-    return cast(Dict[str, Any], msg)
+    return cast(dict[str, Any], msg)
 
 
 def test_openai_request_instructions_roundtrip() -> None:
@@ -169,7 +169,7 @@ def test_openai_request_tool_calls_and_tool_role_roundtrip() -> None:
     assert tool_result.output == {"temp_c": 20, "unit": "C"}
 
     out = n.request_from_internal(internal)
-    out_messages: List[Dict[str, Any]] = out["messages"]
+    out_messages: list[dict[str, Any]] = out["messages"]
 
     roles = [m.get("role") for m in out_messages]
     assert roles == ["user", "assistant", "tool", "assistant"]
@@ -217,7 +217,7 @@ def test_openai_request_content_image_and_unknown_drop() -> None:
     out_msg = out["messages"][0]
     assert out_msg["role"] == "user"
     assert isinstance(out_msg["content"], list)
-    parts = cast(List[Dict[str, Any]], out_msg["content"])
+    parts = cast(list[dict[str, Any]], out_msg["content"])
     assert any(p.get("type") == "image_url" for p in parts)
     assert all(p.get("type") != "foo" for p in parts)
 
@@ -289,7 +289,7 @@ def test_openai_stream_chunk_and_event_roundtrip_basic() -> None:
         {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
     ]
 
-    events: List[Any] = []
+    events: list[Any] = []
     for ch in chunks:
         events.extend(n.stream_chunk_to_internal(ch, state))
 
@@ -301,7 +301,7 @@ def test_openai_stream_chunk_and_event_roundtrip_basic() -> None:
 
     # internal events -> OpenAI chunks（验证关键字段与 tool_calls index 稳定）
     state2 = StreamState()
-    out_chunks: List[Dict[str, Any]] = []
+    out_chunks: list[dict[str, Any]] = []
     for e in events:
         out_chunks.extend(n.stream_event_from_internal(e, state2))
 

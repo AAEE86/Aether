@@ -6,7 +6,7 @@
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Optional, Tuple, Union
+from typing import Any
 
 aiosmtplib: Any
 try:
@@ -69,7 +69,7 @@ class EmailSenderService:
         return config
 
     @staticmethod
-    def _validate_smtp_config(config: dict) -> Tuple[bool, Optional[str]]:
+    def _validate_smtp_config(config: dict) -> tuple[bool, str | None]:
         """
         验证 SMTP 配置
 
@@ -105,7 +105,7 @@ class EmailSenderService:
     @staticmethod
     async def send_verification_code(
         db: Session, to_email: str, code: str, expire_minutes: int = 30
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """
         发送验证码邮件
 
@@ -151,9 +151,9 @@ class EmailSenderService:
         config: dict,
         to_email: str,
         subject: str,
-        html_body: Optional[str] = None,
-        text_body: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
+        html_body: str | None = None,
+        text_body: str | None = None,
+    ) -> tuple[bool, str | None]:
         """
         发送邮件（内部方法）
 
@@ -181,9 +181,9 @@ class EmailSenderService:
         config: dict,
         to_email: str,
         subject: str,
-        html_body: Optional[str] = None,
-        text_body: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
+        html_body: str | None = None,
+        text_body: str | None = None,
+    ) -> tuple[bool, str | None]:
         """
         异步发送邮件（使用 aiosmtplib）
 
@@ -250,9 +250,9 @@ class EmailSenderService:
         config: dict,
         to_email: str,
         subject: str,
-        html_body: Optional[str] = None,
-        text_body: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
+        html_body: str | None = None,
+        text_body: str | None = None,
+    ) -> tuple[bool, str | None]:
         """
         同步邮件发送的异步包装器
 
@@ -280,9 +280,9 @@ class EmailSenderService:
         config: dict,
         to_email: str,
         subject: str,
-        html_body: Optional[str] = None,
-        text_body: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
+        html_body: str | None = None,
+        text_body: str | None = None,
+    ) -> tuple[bool, str | None]:
         """
         同步发送邮件（使用标准库 smtplib）
 
@@ -312,7 +312,7 @@ class EmailSenderService:
                 message.attach(MIMEText(html_body, "html", "utf-8"))
 
             # 连接 SMTP 服务器
-            server: Optional[smtplib.SMTP] = None
+            server: smtplib.SMTP | None = None
             ssl_context = get_ssl_context()
             try:
                 if config["smtp_use_ssl"]:
@@ -357,8 +357,8 @@ class EmailSenderService:
 
     @staticmethod
     async def test_smtp_connection(
-        db: Session, override_config: Optional[dict] = None
-    ) -> Tuple[bool, Optional[str]]:
+        db: Session, override_config: dict | None = None
+    ) -> tuple[bool, str | None]:
         """
         测试 SMTP 连接
 
@@ -405,7 +405,7 @@ class EmailSenderService:
                 await smtp.quit()
             else:
                 # 使用同步方式测试
-                server: Union[smtplib.SMTP, smtplib.SMTP_SSL]
+                server: smtplib.SMTP | smtplib.SMTP_SSL
                 if config["smtp_use_ssl"]:
                     server = smtplib.SMTP_SSL(
                         config["smtp_host"],

@@ -5,10 +5,9 @@
 每个 Normalizer 通过 `substate(format_id)` 获取自己的隔离状态字典。
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any
 
 
 @dataclass
@@ -26,12 +25,12 @@ class StreamState:
     message_id: str = ""
 
     # Registry/调用层的通用扩展信息（与具体格式无关）
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     # 各 Normalizer 的隔离状态（key: FORMAT_ID）
-    by_format: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    by_format: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def substate(self, format_id: str) -> Dict[str, Any]:
+    def substate(self, format_id: str) -> dict[str, Any]:
         """获取指定格式的隔离子状态"""
         key = str(format_id).upper()
         return self.by_format.setdefault(key, {})

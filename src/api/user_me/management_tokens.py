@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -55,13 +54,13 @@ class CreateManagementTokenRequest(BaseModel):
     """创建 Management Token 请求"""
 
     name: str = Field(..., min_length=1, max_length=100, description="Token 名称")
-    description: Optional[str] = Field(None, max_length=500, description="描述")
-    allowed_ips: Optional[list[str]] = Field(None, description="IP 白名单")
-    expires_at: Optional[datetime] = Field(None, description="过期时间")
+    description: str | None = Field(None, max_length=500, description="描述")
+    allowed_ips: list[str] | None = Field(None, description="IP 白名单")
+    expires_at: datetime | None = Field(None, description="过期时间")
 
     @field_validator("allowed_ips")
     @classmethod
-    def validate_allowed_ips(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+    def validate_allowed_ips(cls, v: list[str] | None) -> list[str] | None:
         return validate_ip_list(v)
 
     @field_validator("expires_at", mode="before")
@@ -81,10 +80,10 @@ class UpdateManagementTokenRequest(BaseModel):
 
     model_config = {"extra": "allow"}  # 允许额外字段以便检测哪些字段被显式提供
 
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    allowed_ips: Optional[list[str]] = None
-    expires_at: Optional[datetime] = None
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=500)
+    allowed_ips: list[str] | None = None
+    expires_at: datetime | None = None
 
     # 用于追踪哪些字段被显式提供（包括显式设为 null 的情况）
     _provided_fields: set[str] = set()
@@ -101,7 +100,7 @@ class UpdateManagementTokenRequest(BaseModel):
 
     @field_validator("allowed_ips")
     @classmethod
-    def validate_allowed_ips(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+    def validate_allowed_ips(cls, v: list[str] | None) -> list[str] | None:
         # 如果是 None，表示要清空，直接返回
         if v is None:
             return None
@@ -122,7 +121,7 @@ class UpdateManagementTokenRequest(BaseModel):
 @router.get("")
 async def list_my_management_tokens(
     request: Request,
-    is_active: Optional[bool] = Query(None, description="筛选激活状态"),
+    is_active: bool | None = Query(None, description="筛选激活状态"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -347,7 +346,7 @@ class ListMyManagementTokensAdapter(ManagementTokenApiAdapter):
     """列出用户的 Management Tokens"""
 
     name: str = "list_my_management_tokens"
-    is_active: Optional[bool] = None
+    is_active: bool | None = None
     skip: int = 0
     limit: int = 50
 

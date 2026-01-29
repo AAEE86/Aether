@@ -4,12 +4,10 @@
 """
 
 import asyncio
-import json
 import smtplib
-from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 aiosmtplib: Any
 try:
@@ -33,7 +31,7 @@ class EmailNotificationPlugin(NotificationPlugin):
     支持HTML和纯文本邮件
     """
 
-    def __init__(self, name: str = "email", config: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str = "email", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
 
         # SMTP配置
@@ -60,9 +58,9 @@ class EmailNotificationPlugin(NotificationPlugin):
         )
 
         # 缓冲配置
-        self._buffer: List[Notification] = []
+        self._buffer: list[Notification] = []
         self._lock = asyncio.Lock()
-        self._flush_task: Optional[asyncio.Task[None]] = None
+        self._flush_task: asyncio.Task[None] | None = None
 
         # 验证配置
         config_errors = []
@@ -116,7 +114,7 @@ class EmailNotificationPlugin(NotificationPlugin):
             logger.warning("Email 插件刷新任务等待事件循环创建")
             pass
 
-    def _format_html_email(self, notifications: List[Notification]) -> str:
+    def _format_html_email(self, notifications: list[Notification]) -> str:
         """格式化HTML邮件"""
         # 颜色映射
         color_map = {
@@ -172,7 +170,7 @@ class EmailNotificationPlugin(NotificationPlugin):
 
         return html
 
-    def _format_text_email(self, notifications: List[Notification]) -> str:
+    def _format_text_email(self, notifications: list[Notification]) -> str:
         """格式化纯文本邮件"""
         lines = ["Notifications from Aether", "=" * 50, ""]
 
@@ -303,7 +301,7 @@ class EmailNotificationPlugin(NotificationPlugin):
 
         return True
 
-    async def _do_send_batch(self, notifications: List[Notification]) -> Dict[str, int]:
+    async def _do_send_batch(self, notifications: list[Notification]) -> dict[str, int]:
         """实际批量发送通知"""
         if not notifications:
             return {"total": 0, "sent": 0, "failed": 0}
@@ -348,7 +346,7 @@ class EmailNotificationPlugin(NotificationPlugin):
         async with self._lock:
             return await self._flush_buffer()
 
-    async def _get_extra_stats(self) -> Dict[str, Any]:
+    async def _get_extra_stats(self) -> dict[str, Any]:
         """获取 Email 特定的统计信息"""
         return {
             "type": "email",

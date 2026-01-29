@@ -5,7 +5,7 @@ System Catalog / 健康检查相关端点
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -28,7 +28,7 @@ router = APIRouter(tags=["System Catalog"])
 # ============== 辅助函数 ==============
 
 
-def _as_bool(value: Optional[str], default: bool) -> bool:
+def _as_bool(value: str | None, default: bool) -> bool:
     """将字符串转换为布尔值"""
     if value is None:
         return default
@@ -39,9 +39,9 @@ def _serialize_provider(
     provider: Provider,
     include_models: bool,
     include_endpoints: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """序列化 Provider 对象"""
-    provider_data: Dict[str, Any] = {
+    provider_data: dict[str, Any] = {
         "id": provider.id,
         "name": provider.name,
         "is_active": provider.is_active,
@@ -81,7 +81,7 @@ def _serialize_provider(
     return provider_data
 
 
-def _select_provider(db: Session, provider_name: Optional[str]) -> Optional[Provider]:
+def _select_provider(db: Session, provider_name: str | None) -> Provider | None:
     """选择 Provider（按 provider_priority 优先级选择）"""
     query = db.query(Provider).filter(Provider.is_active == True)
     if provider_name:
@@ -104,7 +104,7 @@ async def service_health(db: Session = Depends(get_db)):
     )
     active_models = db.query(func.count(Model.id)).filter(Model.is_active == True).scalar() or 0
 
-    redis_info: Dict[str, Any] = {"status": "unknown"}
+    redis_info: dict[str, Any] = {"status": "unknown"}
     try:
         redis = await get_redis_client()
         if redis:
@@ -245,9 +245,9 @@ async def provider_detail(
 async def test_connection(
     request: Request,
     db: Session = Depends(get_db),
-    provider: Optional[str] = Query(None),
+    provider: str | None = Query(None),
     model: str = Query("claude-3-haiku-20240307"),
-    api_format: Optional[str] = Query(None),
+    api_format: str | None = Query(None),
 ):
     """测试 Provider 连接"""
     selected_provider = _select_provider(db, provider)

@@ -6,7 +6,6 @@
 import json
 import secrets
 from datetime import datetime, timezone
-from typing import Optional, Tuple
 
 from src.clients.redis_client import get_redis_client
 from src.config.settings import Config
@@ -42,8 +41,8 @@ class EmailVerificationService:
     @staticmethod
     async def send_verification_code(
         email: str,
-        expire_minutes: Optional[int] = None,
-    ) -> Tuple[bool, str, Optional[str]]:
+        expire_minutes: int | None = None,
+    ) -> tuple[bool, str, str | None]:
         """
         发送验证码（生成并存储到 Redis）
 
@@ -98,7 +97,7 @@ class EmailVerificationService:
             return False, "系统错误", str(e)
 
     @staticmethod
-    async def verify_code(email: str, code: str) -> Tuple[bool, str]:
+    async def verify_code(email: str, code: str) -> tuple[bool, str]:
         """
         验证验证码
 

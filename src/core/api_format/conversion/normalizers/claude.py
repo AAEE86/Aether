@@ -7,10 +7,9 @@ Claude Messages API Normalizer
 - 可选：Claude error <-> InternalError
 """
 
-from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from src.core.api_format.conversion.field_mappings import (
     ERROR_TYPE_MAPPINGS,
@@ -63,7 +62,7 @@ class ClaudeNormalizer(FormatNormalizer):
         supports_images=True,
     )
 
-    _CLAUDE_STOP_TO_INTERNAL: Dict[str, StopReason] = {
+    _CLAUDE_STOP_TO_INTERNAL: dict[str, StopReason] = {
         "end_turn": StopReason.END_TURN,
         "max_tokens": StopReason.MAX_TOKENS,
         "stop_sequence": StopReason.STOP_SEQUENCE,
@@ -73,7 +72,7 @@ class ClaudeNormalizer(FormatNormalizer):
         "content_filtered": StopReason.CONTENT_FILTERED,
     }
 
-    _ERROR_TYPE_TO_CLAUDE: Dict[ErrorType, str] = {
+    _ERROR_TYPE_TO_CLAUDE: dict[ErrorType, str] = {
         ErrorType.INVALID_REQUEST: "invalid_request_error",
         ErrorType.AUTHENTICATION: "authentication_error",
         ErrorType.PERMISSION_DENIED: "permission_error",
@@ -90,11 +89,11 @@ class ClaudeNormalizer(FormatNormalizer):
     # Requests
     # =========================
 
-    def request_to_internal(self, request: Dict[str, Any]) -> InternalRequest:
+    def request_to_internal(self, request: dict[str, Any]) -> InternalRequest:
         model = str(request.get("model") or "")
-        dropped: Dict[str, int] = {}
+        dropped: dict[str, int] = {}
 
-        instructions: List[InstructionSegment] = []
+        instructions: list[InstructionSegment] = []
 
         # 顶层 system 先进入 instructions（保持确定性优先级）
         sys_value = request.get("system")
@@ -103,7 +102,7 @@ class ClaudeNormalizer(FormatNormalizer):
         if sys_text:
             instructions.append(InstructionSegment(role=Role.SYSTEM, text=sys_text))
 
-        messages: List[InternalMessage] = []
+        messages: list[InternalMessage] = []
         for msg in request.get("messages") or []:
             if not isinstance(msg, dict):
                 dropped["claude_message_non_dict"] = dropped.get("claude_message_non_dict", 0) + 1
@@ -156,15 +155,15 @@ class ClaudeNormalizer(FormatNormalizer):
 
         return internal
 
-    def request_from_internal(self, internal: InternalRequest) -> Dict[str, Any]:
+    def request_from_internal(self, internal: InternalRequest) -> dict[str, Any]:
         system_text = internal.system or self._join_instructions(internal.instructions)
 
         # Claude Messages API: messages[] 仅允许 user/assistant，且需要交替；这里做最小修复
         fixed_messages = self._coerce_claude_message_sequence(internal.messages)
 
-        out_messages: List[Dict[str, Any]] = [self._internal_message_to_claude(m) for m in fixed_messages]
+        out_messages: list[dict[str, Any]] = [self._internal_message_to_claude(m) for m in fixed_messages]
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "model": internal.model,
             "messages": out_messages,
             "max_tokens": internal.max_tokens if internal.max_tokens is not None else 4096,
@@ -210,20 +209,20 @@ class ClaudeNormalizer(FormatNormalizer):
     # Responses
     # =========================
 
-    def response_to_internal(self, response: Dict[str, Any]) -> InternalResponse:
+    def response_to_internal(self, response: dict[str, Any]) -> InternalResponse:
         rid = str(response.get("id") or "")
         model = str(response.get("model") or "")
 
         blocks, dropped = self._claude_content_to_blocks(response.get("content"))
 
         raw_stop = response.get("stop_reason")
-        stop_reason: Optional[StopReason] = None
+        stop_reason: StopReason | None = None
         if raw_stop is not None:
             stop_reason = self._CLAUDE_STOP_TO_INTERNAL.get(str(raw_stop), StopReason.UNKNOWN)
 
         usage_info = self._claude_usage_to_internal(response.get("usage"))
 
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
         if raw_stop is not None:
             extra.setdefault("raw", {})["stop_reason"] = raw_stop
 
@@ -245,13 +244,13 @@ class ClaudeNormalizer(FormatNormalizer):
         self,
         internal: InternalResponse,
         *,
-        requested_model: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
         cid = internal.id or "unknown"
         if not cid.startswith("msg_"):
             cid = f"msg_{cid}"
 
-        content: List[Dict[str, Any]] = []
+        content: list[dict[str, Any]] = []
         for b in internal.content:
             if isinstance(b, TextBlock):
                 if b.text:
@@ -288,7 +287,7 @@ class ClaudeNormalizer(FormatNormalizer):
         if internal.stop_reason is not None:
             stop_reason = STOP_REASON_MAPPINGS.get("CLAUDE", {}).get(internal.stop_reason.value, "end_turn")
 
-        usage: Dict[str, Any] = {"input_tokens": 0, "output_tokens": 0}
+        usage: dict[str, Any] = {"input_tokens": 0, "output_tokens": 0}
         if internal.usage:
             usage = {
                 "input_tokens": int(internal.usage.input_tokens),
@@ -319,11 +318,11 @@ class ClaudeNormalizer(FormatNormalizer):
 
     def stream_chunk_to_internal(
         self,
-        chunk: Dict[str, Any],
+        chunk: dict[str, Any],
         state: StreamState,
-    ) -> List[InternalStreamEvent]:
+    ) -> list[InternalStreamEvent]:
         ss = state.substate(self.FORMAT_ID)
-        events: List[InternalStreamEvent] = []
+        events: list[InternalStreamEvent] = []
 
         event_type = chunk.get("type")
         if event_type is None:
@@ -335,7 +334,7 @@ class ClaudeNormalizer(FormatNormalizer):
 
         if event_type == "message_start":
             message_raw = chunk.get("message")
-            message: Dict[str, Any] = message_raw if isinstance(message_raw, dict) else {}
+            message: dict[str, Any] = message_raw if isinstance(message_raw, dict) else {}
             msg_id = str(message.get("id") or "")
             # 保留初始化时设置的 model（客户端请求的模型），仅在空时用上游值
             model = state.model or str(message.get("model") or "")
@@ -350,7 +349,7 @@ class ClaudeNormalizer(FormatNormalizer):
         if event_type == "content_block_start":
             index = int(chunk.get("index") or 0)
             block_raw = chunk.get("content_block")
-            block: Dict[str, Any] = block_raw if isinstance(block_raw, dict) else {}
+            block: dict[str, Any] = block_raw if isinstance(block_raw, dict) else {}
             btype = str(block.get("type") or "unknown")
 
             if btype == "text":
@@ -385,7 +384,7 @@ class ClaudeNormalizer(FormatNormalizer):
         if event_type == "content_block_delta":
             index = int(chunk.get("index") or 0)
             delta_raw = chunk.get("delta")
-            delta: Dict[str, Any] = delta_raw if isinstance(delta_raw, dict) else {}
+            delta: dict[str, Any] = delta_raw if isinstance(delta_raw, dict) else {}
             dtype = str(delta.get("type") or "unknown")
 
             if dtype == "text_delta":
@@ -415,7 +414,7 @@ class ClaudeNormalizer(FormatNormalizer):
 
         if event_type == "message_delta":
             delta_raw2 = chunk.get("delta")
-            delta2: Dict[str, Any] = delta_raw2 if isinstance(delta_raw2, dict) else {}
+            delta2: dict[str, Any] = delta_raw2 if isinstance(delta_raw2, dict) else {}
             raw_stop = delta2.get("stop_reason")
             if raw_stop is not None:
                 ss["stop_reason"] = str(raw_stop)
@@ -426,7 +425,7 @@ class ClaudeNormalizer(FormatNormalizer):
 
         if event_type == "message_stop":
             raw_stop = ss.get("stop_reason")
-            stop_reason: Optional[StopReason] = None
+            stop_reason: StopReason | None = None
             if raw_stop is not None:
                 stop_reason = self._CLAUDE_STOP_TO_INTERNAL.get(str(raw_stop), StopReason.UNKNOWN)
             usage_info = self._claude_usage_to_internal(ss.get("usage"))
@@ -444,9 +443,9 @@ class ClaudeNormalizer(FormatNormalizer):
         self,
         event: InternalStreamEvent,
         state: StreamState,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         ss = state.substate(self.FORMAT_ID)
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
 
         if isinstance(event, MessageStartEvent):
             state.message_id = event.message_id or state.message_id
@@ -454,7 +453,7 @@ class ClaudeNormalizer(FormatNormalizer):
             if not state.model:
                 state.model = event.model or ""
             ss.setdefault("block_index_to_tool_id", {})
-            message_obj: Dict[str, Any] = {
+            message_obj: dict[str, Any] = {
                 "id": state.message_id or "msg_stream",
                 "type": "message",
                 "role": "assistant",
@@ -531,7 +530,7 @@ class ClaudeNormalizer(FormatNormalizer):
             if event.stop_reason is not None:
                 stop_reason = STOP_REASON_MAPPINGS.get("CLAUDE", {}).get(event.stop_reason.value, "end_turn")
 
-            msg_delta: Dict[str, Any] = {
+            msg_delta: dict[str, Any] = {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason},
             }
@@ -553,15 +552,15 @@ class ClaudeNormalizer(FormatNormalizer):
     # Error conversion
     # =========================
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         if not isinstance(response, dict):
             return False
         if response.get("type") == "error":
             return True
         return "error" in response
 
-    def error_to_internal(self, error_response: Dict[str, Any]) -> InternalError:
-        err: Dict[str, Any] = {}
+    def error_to_internal(self, error_response: dict[str, Any]) -> InternalError:
+        err: dict[str, Any] = {}
         if isinstance(error_response, dict):
             err_raw = error_response.get("error")
             err = err_raw if isinstance(err_raw, dict) else {}
@@ -580,9 +579,9 @@ class ClaudeNormalizer(FormatNormalizer):
             extra={"claude": {"error": err}, "raw": {"type": raw_type}},
         )
 
-    def error_from_internal(self, internal: InternalError) -> Dict[str, Any]:
+    def error_from_internal(self, internal: InternalError) -> dict[str, Any]:
         type_str = self._ERROR_TYPE_TO_CLAUDE.get(internal.type, "api_error")
-        payload: Dict[str, Any] = {"type": type_str, "message": internal.message}
+        payload: dict[str, Any] = {"type": type_str, "message": internal.message}
         if internal.param is not None:
             payload["param"] = internal.param
         if internal.code is not None:
@@ -593,8 +592,8 @@ class ClaudeNormalizer(FormatNormalizer):
     # Helpers
     # =========================
 
-    def _claude_message_to_internal(self, msg: Dict[str, Any]) -> Tuple[Optional[InternalMessage], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _claude_message_to_internal(self, msg: dict[str, Any]) -> tuple[InternalMessage | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
         role_raw = str(msg.get("role") or "unknown")
 
         if role_raw == "user":
@@ -616,8 +615,8 @@ class ClaudeNormalizer(FormatNormalizer):
             dropped,
         )
 
-    def _claude_content_to_blocks(self, content: Any) -> Tuple[List[ContentBlock], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _claude_content_to_blocks(self, content: Any) -> tuple[list[ContentBlock], dict[str, int]]:
+        dropped: dict[str, int] = {}
         if content is None:
             return [], dropped
         if isinstance(content, str):
@@ -626,7 +625,7 @@ class ClaudeNormalizer(FormatNormalizer):
             dropped["claude_content_non_list"] = dropped.get("claude_content_non_list", 0) + 1
             return [], dropped
 
-        blocks: List[ContentBlock] = []
+        blocks: list[ContentBlock] = []
         for block in content:
             if not isinstance(block, dict):
                 dropped["claude_block_non_dict"] = dropped.get("claude_block_non_dict", 0) + 1
@@ -641,7 +640,7 @@ class ClaudeNormalizer(FormatNormalizer):
 
             if btype == "image":
                 src_raw = block.get("source")
-                src: Dict[str, Any] = src_raw if isinstance(src_raw, dict) else {}
+                src: dict[str, Any] = src_raw if isinstance(src_raw, dict) else {}
                 stype = src.get("type")
                 if stype == "base64":
                     data = src.get("data")
@@ -687,7 +686,7 @@ class ClaudeNormalizer(FormatNormalizer):
         tool_use_id: str,
         raw_content: Any,
         is_error: bool,
-        raw_block: Dict[str, Any],
+        raw_block: dict[str, Any],
     ) -> ToolResultBlock:
         if raw_content is None:
             return ToolResultBlock(
@@ -723,7 +722,7 @@ class ClaudeNormalizer(FormatNormalizer):
             )
 
         if isinstance(raw_content, list):
-            text_parts: List[str] = []
+            text_parts: list[str] = []
             for part in raw_content:
                 if isinstance(part, dict) and part.get("type") == "text":
                     text = part.get("text")
@@ -747,15 +746,15 @@ class ClaudeNormalizer(FormatNormalizer):
             extra={"claude": raw_block},
         )
 
-    def _collapse_claude_system(self, system_value: Any) -> Tuple[Optional[str], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _collapse_claude_system(self, system_value: Any) -> tuple[str | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
         if system_value is None:
             return None, dropped
         if isinstance(system_value, str):
             return (system_value or None), dropped
 
         if isinstance(system_value, list):
-            texts: List[str] = []
+            texts: list[str] = []
             for item in system_value:
                 if not isinstance(item, dict):
                     dropped["claude_system_item_non_dict"] = dropped.get("claude_system_item_non_dict", 0) + 1
@@ -773,16 +772,16 @@ class ClaudeNormalizer(FormatNormalizer):
         dropped["claude_system_unsupported"] = dropped.get("claude_system_unsupported", 0) + 1
         return None, dropped
 
-    def _join_instructions(self, instructions: List[InstructionSegment]) -> Optional[str]:
+    def _join_instructions(self, instructions: list[InstructionSegment]) -> str | None:
         parts = [seg.text for seg in instructions if seg.text]
         joined = "\n\n".join(parts)
         return joined or None
 
-    def _claude_tools_to_internal(self, tools: Any) -> Optional[List[ToolDefinition]]:
+    def _claude_tools_to_internal(self, tools: Any) -> list[ToolDefinition] | None:
         if not tools or not isinstance(tools, list):
             return None
 
-        out: List[ToolDefinition] = []
+        out: list[ToolDefinition] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
@@ -799,7 +798,7 @@ class ClaudeNormalizer(FormatNormalizer):
             )
         return out or None
 
-    def _claude_tool_choice_to_internal(self, tool_choice: Any) -> Optional[ToolChoice]:
+    def _claude_tool_choice_to_internal(self, tool_choice: Any) -> ToolChoice | None:
         if tool_choice is None:
             return None
         if not isinstance(tool_choice, dict):
@@ -818,7 +817,7 @@ class ClaudeNormalizer(FormatNormalizer):
 
         return ToolChoice(type=ToolChoiceType.AUTO, extra={"claude": tool_choice})
 
-    def _tool_choice_to_claude(self, tool_choice: ToolChoice) -> Dict[str, Any]:
+    def _tool_choice_to_claude(self, tool_choice: ToolChoice) -> dict[str, Any]:
         if tool_choice.type == ToolChoiceType.NONE:
             return {"type": "none"}
         if tool_choice.type == ToolChoiceType.AUTO:
@@ -829,11 +828,11 @@ class ClaudeNormalizer(FormatNormalizer):
             return {"type": "tool_use", "name": tool_choice.tool_name or ""}
         return {"type": "auto"}
 
-    def _internal_message_to_claude(self, msg: InternalMessage) -> Dict[str, Any]:
+    def _internal_message_to_claude(self, msg: InternalMessage) -> dict[str, Any]:
         role = "user" if msg.role == Role.USER else "assistant"
 
-        blocks: List[Dict[str, Any]] = []
-        text_parts: List[str] = []
+        blocks: list[dict[str, Any]] = []
+        text_parts: list[str] = []
 
         for b in msg.content:
             if isinstance(b, UnknownBlock):
@@ -902,8 +901,8 @@ class ClaudeNormalizer(FormatNormalizer):
 
         return {"role": role, "content": blocks}
 
-    def _coerce_claude_message_sequence(self, messages: List[InternalMessage]) -> List[InternalMessage]:
-        normalized: List[InternalMessage] = []
+    def _coerce_claude_message_sequence(self, messages: list[InternalMessage]) -> list[InternalMessage]:
+        normalized: list[InternalMessage] = []
         for m in messages:
             role = m.role
             if role not in (Role.USER, Role.ASSISTANT):
@@ -916,7 +915,7 @@ class ClaudeNormalizer(FormatNormalizer):
         if normalized[0].role != Role.USER:
             normalized = [InternalMessage(role=Role.USER, content=[])] + normalized
 
-        merged: List[InternalMessage] = []
+        merged: list[InternalMessage] = []
         for m in normalized:
             if merged and merged[-1].role == m.role:
                 merged[-1].content.extend(m.content)
@@ -925,12 +924,12 @@ class ClaudeNormalizer(FormatNormalizer):
 
         return merged
 
-    def _claude_usage_to_internal(self, usage: Any) -> Optional[UsageInfo]:
+    def _claude_usage_to_internal(self, usage: Any) -> UsageInfo | None:
         if not isinstance(usage, dict):
             return None
 
         mapping = USAGE_FIELD_MAPPINGS.get("CLAUDE", {})
-        fields: Dict[str, int] = {}
+        fields: dict[str, int] = {}
         extra = self._extract_extra(usage, set(mapping.keys()))
 
         for provider_key, internal_key in mapping.items():
@@ -952,8 +951,8 @@ class ClaudeNormalizer(FormatNormalizer):
             extra={"claude": extra} if extra else {},
         )
 
-    def _usage_to_claude(self, usage: UsageInfo) -> Dict[str, Any]:
-        result: Dict[str, Any] = {
+    def _usage_to_claude(self, usage: UsageInfo) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "input_tokens": int(usage.input_tokens),
             "output_tokens": int(usage.output_tokens),
         }
@@ -969,7 +968,7 @@ class ClaudeNormalizer(FormatNormalizer):
         except ValueError:
             return ErrorType.UNKNOWN
 
-    def _optional_int(self, value: Any) -> Optional[int]:
+    def _optional_int(self, value: Any) -> int | None:
         if value is None:
             return None
         try:
@@ -977,7 +976,7 @@ class ClaudeNormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _optional_float(self, value: Any) -> Optional[float]:
+    def _optional_float(self, value: Any) -> float | None:
         if value is None:
             return None
         try:
@@ -985,7 +984,7 @@ class ClaudeNormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _coerce_str_list(self, value: Any) -> Optional[List[str]]:
+    def _coerce_str_list(self, value: Any) -> list[str] | None:
         if value is None:
             return None
         if isinstance(value, str):
@@ -994,10 +993,10 @@ class ClaudeNormalizer(FormatNormalizer):
             return [str(x) for x in value if x is not None]
         return None
 
-    def _extract_extra(self, payload: Dict[str, Any], known_keys: set[str]) -> Dict[str, Any]:
+    def _extract_extra(self, payload: dict[str, Any], known_keys: set[str]) -> dict[str, Any]:
         return {k: v for k, v in payload.items() if k not in known_keys}
 
-    def _merge_dropped(self, target: Dict[str, int], source: Dict[str, int]) -> None:
+    def _merge_dropped(self, target: dict[str, int], source: dict[str, int]) -> None:
         for k, v in source.items():
             target[k] = target.get(k, 0) + int(v)
 

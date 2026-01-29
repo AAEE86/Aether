@@ -11,11 +11,9 @@ Gemini (GenerateContent / streamGenerateContent) Normalizer
 - 响应/流式通常为 camelCase（candidates/finishReason/usageMetadata/modelVersion）。
 """
 
-from __future__ import annotations
 
 import json
-import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from src.core.api_format.conversion.field_mappings import (
     ERROR_TYPE_MAPPINGS,
@@ -68,7 +66,7 @@ class GeminiNormalizer(FormatNormalizer):
         supports_images=True,
     )
 
-    _FINISH_REASON_TO_STOP: Dict[str, StopReason] = {
+    _FINISH_REASON_TO_STOP: dict[str, StopReason] = {
         "STOP": StopReason.END_TURN,
         "MAX_TOKENS": StopReason.MAX_TOKENS,
         "SAFETY": StopReason.CONTENT_FILTERED,
@@ -77,7 +75,7 @@ class GeminiNormalizer(FormatNormalizer):
         "OTHER": StopReason.UNKNOWN,
     }
 
-    _ERROR_TYPE_TO_GEMINI_STATUS: Dict[ErrorType, str] = {
+    _ERROR_TYPE_TO_GEMINI_STATUS: dict[ErrorType, str] = {
         ErrorType.INVALID_REQUEST: "INVALID_ARGUMENT",
         ErrorType.AUTHENTICATION: "UNAUTHENTICATED",
         ErrorType.PERMISSION_DENIED: "PERMISSION_DENIED",
@@ -94,11 +92,11 @@ class GeminiNormalizer(FormatNormalizer):
     # Requests
     # =========================
 
-    def request_to_internal(self, request: Dict[str, Any]) -> InternalRequest:
+    def request_to_internal(self, request: dict[str, Any]) -> InternalRequest:
         model = str(request.get("model") or "")
-        dropped: Dict[str, int] = {}
+        dropped: dict[str, int] = {}
 
-        instructions: List[InstructionSegment] = []
+        instructions: list[InstructionSegment] = []
         system_text, sys_dropped = self._collapse_system_instruction(
             request.get("system_instruction")
             if "system_instruction" in request
@@ -108,7 +106,7 @@ class GeminiNormalizer(FormatNormalizer):
         if system_text:
             instructions.append(InstructionSegment(role=Role.SYSTEM, text=system_text))
 
-        messages: List[InternalMessage] = []
+        messages: list[InternalMessage] = []
         contents = request.get("contents") or []
         if isinstance(contents, list):
             for content in contents:
@@ -152,7 +150,7 @@ class GeminiNormalizer(FormatNormalizer):
         )
 
         # 构建 extra，保留原始 gemini 字段
-        extra: Dict[str, Any] = {"gemini": self._extract_extra(request, {"contents"})}
+        extra: dict[str, Any] = {"gemini": self._extract_extra(request, {"contents"})}
 
         # 保留 generationConfig 中的特殊字段（responseModalities, thinkingConfig 等）
         # 这些字段在 _get_generation_config 中已提取，需要单独存储以便转换时使用
@@ -160,7 +158,7 @@ class GeminiNormalizer(FormatNormalizer):
             response_modalities = generation_config.get("response_modalities")
             thinking_config = generation_config.get("thinking_config")
             if response_modalities or thinking_config:
-                google_extra: Dict[str, Any] = {}
+                google_extra: dict[str, Any] = {}
                 if response_modalities:
                     google_extra["response_modalities"] = response_modalities
                 if thinking_config:
@@ -188,7 +186,7 @@ class GeminiNormalizer(FormatNormalizer):
 
         return internal
 
-    def request_from_internal(self, internal: InternalRequest) -> Dict[str, Any]:
+    def request_from_internal(self, internal: InternalRequest) -> dict[str, Any]:
         system_text = internal.system or self._join_instructions(internal.instructions)
 
         # tools/tool_choice
@@ -212,7 +210,7 @@ class GeminiNormalizer(FormatNormalizer):
         if internal.tool_choice:
             tool_config = self._tool_choice_to_gemini_tool_config(internal.tool_choice)
 
-        generation_config: Dict[str, Any] = {}
+        generation_config: dict[str, Any] = {}
         if internal.max_tokens is not None:
             generation_config["max_output_tokens"] = internal.max_tokens
         if internal.temperature is not None:
@@ -231,7 +229,7 @@ class GeminiNormalizer(FormatNormalizer):
             thinking_config = google_extra.get("thinking_config")
             if isinstance(thinking_config, dict):
                 # snake_case -> camelCase 转换
-                gemini_thinking: Dict[str, Any] = {}
+                gemini_thinking: dict[str, Any] = {}
                 if "thinking_budget" in thinking_config:
                     gemini_thinking["thinkingBudget"] = thinking_config["thinking_budget"]
                 if "include_thoughts" in thinking_config:
@@ -265,11 +263,11 @@ class GeminiNormalizer(FormatNormalizer):
                 if "thinking_config" in orig_gc and "thinkingConfig" not in generation_config:
                     generation_config["thinkingConfig"] = orig_gc["thinking_config"]
 
-        contents: List[Dict[str, Any]] = []
+        contents: list[dict[str, Any]] = []
         for msg in internal.messages:
             contents.append(self._internal_message_to_content(msg))
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "contents": contents,
         }
 
@@ -295,7 +293,7 @@ class GeminiNormalizer(FormatNormalizer):
     # Responses
     # =========================
 
-    def response_to_internal(self, response: Dict[str, Any]) -> InternalResponse:
+    def response_to_internal(self, response: dict[str, Any]) -> InternalResponse:
         rid = str(response.get("id") or "")
         model = str(response.get("modelVersion") or response.get("model") or "")
 
@@ -315,7 +313,7 @@ class GeminiNormalizer(FormatNormalizer):
 
         usage_info = self._usage_metadata_to_internal(response.get("usageMetadata"))
 
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
         if finish_reason is not None:
             extra.setdefault("raw", {})["finishReason"] = finish_reason
 
@@ -337,9 +335,9 @@ class GeminiNormalizer(FormatNormalizer):
         self,
         internal: InternalResponse,
         *,
-        requested_model: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        parts: List[Dict[str, Any]] = []
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
+        parts: list[dict[str, Any]] = []
         for b in internal.content:
             if isinstance(b, TextBlock):
                 if b.text:
@@ -374,7 +372,7 @@ class GeminiNormalizer(FormatNormalizer):
         if internal.stop_reason is not None:
             finish_reason = STOP_REASON_MAPPINGS.get("GEMINI", {}).get(internal.stop_reason.value, "OTHER")
 
-        usage_metadata: Dict[str, Any] = {}
+        usage_metadata: dict[str, Any] = {}
         if internal.usage:
             usage_metadata = {
                 "promptTokenCount": int(internal.usage.input_tokens),
@@ -384,7 +382,7 @@ class GeminiNormalizer(FormatNormalizer):
             if internal.usage.cache_read_tokens:
                 usage_metadata["cachedContentTokenCount"] = int(internal.usage.cache_read_tokens)
 
-        candidate: Dict[str, Any] = {
+        candidate: dict[str, Any] = {
             "content": {"parts": parts, "role": "model"},
             "index": 0,
         }
@@ -394,7 +392,7 @@ class GeminiNormalizer(FormatNormalizer):
         # 优先使用用户请求的原始模型名，回退到上游返回的模型名
         model_name = requested_model if requested_model else (internal.model or "gemini")
 
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "candidates": [candidate],
             "modelVersion": model_name,
         }
@@ -412,9 +410,9 @@ class GeminiNormalizer(FormatNormalizer):
     # Streaming
     # =========================
 
-    def stream_chunk_to_internal(self, chunk: Dict[str, Any], state: StreamState) -> List[InternalStreamEvent]:
+    def stream_chunk_to_internal(self, chunk: dict[str, Any], state: StreamState) -> list[InternalStreamEvent]:
         ss = state.substate(self.FORMAT_ID)
-        events: List[InternalStreamEvent] = []
+        events: list[InternalStreamEvent] = []
 
         if not ss.get("message_started"):
             # 保留初始化时设置的 model（客户端请求的模型），仅在空时用上游值
@@ -544,11 +542,11 @@ class GeminiNormalizer(FormatNormalizer):
         self,
         event: InternalStreamEvent,
         state: StreamState,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         ss = state.substate(self.FORMAT_ID)
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
 
-        def base_chunk(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        def base_chunk(parts: list[dict[str, Any]]) -> dict[str, Any]:
             return {
                 "candidates": [
                     {
@@ -622,7 +620,7 @@ class GeminiNormalizer(FormatNormalizer):
 
             name = str(entry.get("name") or "")
             raw_json = str(entry.get("json") or "")
-            args: Dict[str, Any] = {}
+            args: dict[str, Any] = {}
             if raw_json:
                 try:
                     parsed = json.loads(raw_json)
@@ -639,7 +637,7 @@ class GeminiNormalizer(FormatNormalizer):
             if event.stop_reason is not None:
                 finish_reason = STOP_REASON_MAPPINGS.get("GEMINI", {}).get(event.stop_reason.value, "OTHER")
 
-            chunk: Dict[str, Any] = base_chunk([])
+            chunk: dict[str, Any] = base_chunk([])
             if finish_reason is not None:
                 chunk["candidates"][0]["finishReason"] = finish_reason
 
@@ -665,10 +663,10 @@ class GeminiNormalizer(FormatNormalizer):
     # Error conversion
     # =========================
 
-    def is_error_response(self, response: Dict[str, Any]) -> bool:
+    def is_error_response(self, response: dict[str, Any]) -> bool:
         return isinstance(response, dict) and "error" in response
 
-    def error_to_internal(self, error_response: Dict[str, Any]) -> InternalError:
+    def error_to_internal(self, error_response: dict[str, Any]) -> InternalError:
         err = error_response.get("error") if isinstance(error_response, dict) else None
         err = err if isinstance(err, dict) else {}
 
@@ -691,9 +689,9 @@ class GeminiNormalizer(FormatNormalizer):
             extra={"gemini": {"error": err}, "raw": {"status": raw_status}},
         )
 
-    def error_from_internal(self, internal: InternalError) -> Dict[str, Any]:
+    def error_from_internal(self, internal: InternalError) -> dict[str, Any]:
         status = self._ERROR_TYPE_TO_GEMINI_STATUS.get(internal.type, "INTERNAL")
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "code": 400 if internal.type == ErrorType.INVALID_REQUEST else 500,
             "message": internal.message,
             "status": status,
@@ -704,8 +702,8 @@ class GeminiNormalizer(FormatNormalizer):
     # Helpers
     # =========================
 
-    def _content_to_internal_message(self, content: Dict[str, Any]) -> Tuple[Optional[InternalMessage], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _content_to_internal_message(self, content: dict[str, Any]) -> tuple[InternalMessage | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
 
         role_raw = str(content.get("role") or "user")
         if role_raw == "model":
@@ -727,15 +725,15 @@ class GeminiNormalizer(FormatNormalizer):
             dropped,
         )
 
-    def _parts_to_blocks(self, parts: Any) -> Tuple[List[ContentBlock], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _parts_to_blocks(self, parts: Any) -> tuple[list[ContentBlock], dict[str, int]]:
+        dropped: dict[str, int] = {}
         if parts is None:
             return [], dropped
         if not isinstance(parts, list):
             dropped["gemini_parts_non_list"] = dropped.get("gemini_parts_non_list", 0) + 1
             return [], dropped
 
-        blocks: List[ContentBlock] = []
+        blocks: list[ContentBlock] = []
         for part in parts:
             if not isinstance(part, dict):
                 dropped["gemini_part_non_dict"] = dropped.get("gemini_part_non_dict", 0) + 1
@@ -785,7 +783,7 @@ class GeminiNormalizer(FormatNormalizer):
                 name = str(func_resp.get("name") or "")
                 response = func_resp.get("response")
                 output: Any = None
-                content_text: Optional[str] = None
+                content_text: str | None = None
 
                 # 兼容历史：response 常见结构为 {"result": ...}
                 if isinstance(response, dict) and "result" in response:
@@ -815,10 +813,10 @@ class GeminiNormalizer(FormatNormalizer):
 
         return blocks, dropped
 
-    def _internal_message_to_content(self, msg: InternalMessage) -> Dict[str, Any]:
+    def _internal_message_to_content(self, msg: InternalMessage) -> dict[str, Any]:
         role = "model" if msg.role == Role.ASSISTANT else "user"
 
-        parts: List[Dict[str, Any]] = []
+        parts: list[dict[str, Any]] = []
         for b in msg.content:
             if isinstance(b, UnknownBlock):
                 continue
@@ -861,8 +859,8 @@ class GeminiNormalizer(FormatNormalizer):
 
         return {"role": role, "parts": parts}
 
-    def _collapse_system_instruction(self, system_instruction: Any) -> Tuple[Optional[str], Dict[str, int]]:
-        dropped: Dict[str, int] = {}
+    def _collapse_system_instruction(self, system_instruction: Any) -> tuple[str | None, dict[str, int]]:
+        dropped: dict[str, int] = {}
         if system_instruction is None:
             return None, dropped
 
@@ -870,7 +868,7 @@ class GeminiNormalizer(FormatNormalizer):
         if isinstance(system_instruction, dict):
             parts = system_instruction.get("parts")
             if isinstance(parts, list):
-                texts: List[str] = []
+                texts: list[str] = []
                 for part in parts:
                     if isinstance(part, dict) and "text" in part and part.get("text"):
                         texts.append(str(part.get("text")))
@@ -880,7 +878,7 @@ class GeminiNormalizer(FormatNormalizer):
         dropped["gemini_system_instruction_unsupported"] = dropped.get("gemini_system_instruction_unsupported", 0) + 1
         return None, dropped
 
-    def _get_generation_config(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_generation_config(self, request: dict[str, Any]) -> dict[str, Any]:
         # 兼容 snake_case 与 camelCase
         gc = request.get("generation_config") if "generation_config" in request else request.get("generationConfig")
         if not isinstance(gc, dict):
@@ -893,7 +891,7 @@ class GeminiNormalizer(FormatNormalizer):
                     return gc.get(k)
             return None
 
-        normalized: Dict[str, Any] = {}
+        normalized: dict[str, Any] = {}
         normalized["max_output_tokens"] = pick("max_output_tokens", "maxOutputTokens")
         normalized["temperature"] = pick("temperature")
         normalized["top_p"] = pick("top_p", "topP")
@@ -912,11 +910,11 @@ class GeminiNormalizer(FormatNormalizer):
 
         return {k: v for k, v in normalized.items() if v is not None}
 
-    def _gemini_tools_to_internal(self, tools: Any) -> Optional[List[ToolDefinition]]:
+    def _gemini_tools_to_internal(self, tools: Any) -> list[ToolDefinition] | None:
         if not tools or not isinstance(tools, list):
             return None
 
-        out: List[ToolDefinition] = []
+        out: list[ToolDefinition] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
@@ -945,7 +943,7 @@ class GeminiNormalizer(FormatNormalizer):
 
         return out or None
 
-    def _gemini_tool_config_to_tool_choice(self, tool_config: Any) -> Optional[ToolChoice]:
+    def _gemini_tool_config_to_tool_choice(self, tool_config: Any) -> ToolChoice | None:
         if tool_config is None:
             return None
         if not isinstance(tool_config, dict):
@@ -972,9 +970,9 @@ class GeminiNormalizer(FormatNormalizer):
 
         return ToolChoice(type=ToolChoiceType.AUTO, extra={"gemini": tool_config})
 
-    def _tool_choice_to_gemini_tool_config(self, tool_choice: ToolChoice) -> Dict[str, Any]:
+    def _tool_choice_to_gemini_tool_config(self, tool_choice: ToolChoice) -> dict[str, Any]:
         mode = "AUTO"
-        cfg: Dict[str, Any] = {}
+        cfg: dict[str, Any] = {}
 
         if tool_choice.type == ToolChoiceType.NONE:
             mode = "NONE"
@@ -987,12 +985,12 @@ class GeminiNormalizer(FormatNormalizer):
         cfg["mode"] = mode
         return {"function_calling_config": cfg}
 
-    def _usage_metadata_to_internal(self, usage_metadata: Any) -> Optional[UsageInfo]:
+    def _usage_metadata_to_internal(self, usage_metadata: Any) -> UsageInfo | None:
         if not isinstance(usage_metadata, dict):
             return None
 
         mapping = USAGE_FIELD_MAPPINGS.get("GEMINI", {})
-        fields: Dict[str, int] = {}
+        fields: dict[str, int] = {}
         extra = self._extract_extra(usage_metadata, set(mapping.keys()))
 
         # promptTokenCount/candidatesTokenCount/totalTokenCount/cachedContentTokenCount
@@ -1023,7 +1021,7 @@ class GeminiNormalizer(FormatNormalizer):
             extra={"gemini": extra} if extra else {},
         )
 
-    def _join_instructions(self, instructions: List[InstructionSegment]) -> Optional[str]:
+    def _join_instructions(self, instructions: list[InstructionSegment]) -> str | None:
         parts = [seg.text for seg in instructions if seg.text]
         joined = "\n\n".join(parts)
         return joined or None
@@ -1034,7 +1032,7 @@ class GeminiNormalizer(FormatNormalizer):
         except ValueError:
             return ErrorType.UNKNOWN
 
-    def _optional_int(self, value: Any) -> Optional[int]:
+    def _optional_int(self, value: Any) -> int | None:
         if value is None:
             return None
         try:
@@ -1042,7 +1040,7 @@ class GeminiNormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _optional_float(self, value: Any) -> Optional[float]:
+    def _optional_float(self, value: Any) -> float | None:
         if value is None:
             return None
         try:
@@ -1050,7 +1048,7 @@ class GeminiNormalizer(FormatNormalizer):
         except (TypeError, ValueError):
             return None
 
-    def _coerce_str_list(self, value: Any) -> Optional[List[str]]:
+    def _coerce_str_list(self, value: Any) -> list[str] | None:
         if value is None:
             return None
         if isinstance(value, str):
@@ -1059,10 +1057,10 @@ class GeminiNormalizer(FormatNormalizer):
             return [str(x) for x in value if x is not None]
         return None
 
-    def _extract_extra(self, payload: Dict[str, Any], known_keys: set[str]) -> Dict[str, Any]:
+    def _extract_extra(self, payload: dict[str, Any], known_keys: set[str]) -> dict[str, Any]:
         return {k: v for k, v in payload.items() if k not in known_keys}
 
-    def _merge_dropped(self, target: Dict[str, int], source: Dict[str, int]) -> None:
+    def _merge_dropped(self, target: dict[str, int], source: dict[str, int]) -> None:
         for k, v in source.items():
             target[k] = target.get(k, 0) + int(v)
 

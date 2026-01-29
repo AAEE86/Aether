@@ -6,7 +6,7 @@ Anyrouter 架构
 
 import base64
 import re
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 
@@ -118,7 +118,7 @@ def _extract_session_from_cookie(cookie_string: str) -> str:
     return cookie_string.strip()
 
 
-def _parse_session_user_id(cookie_input: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_session_user_id(cookie_input: str) -> tuple[str | None, str | None]:
     """
     从 session cookie 中解析用户 ID 和用户名
 
@@ -213,8 +213,8 @@ def _parse_session_user_id(cookie_input: str) -> Tuple[Optional[str], Optional[s
 
 
 async def _get_acw_cookie(
-    base_url: str, timeout: float = 10, proxy: Optional[str] = None
-) -> Optional[str]:
+    base_url: str, timeout: float = 10, proxy: str | None = None
+) -> str | None:
     """
     获取 acw_sc__v2 Cookie
 
@@ -230,7 +230,7 @@ async def _get_acw_cookie(
     """
     try:
         # 构建 client 参数
-        client_kwargs: Dict[str, Any] = {
+        client_kwargs: dict[str, Any] = {
             "timeout": timeout,
             "verify": get_ssl_context(),
         }
@@ -278,13 +278,13 @@ class AnyrouterConnector(ProviderConnector):
     auth_type = ConnectorAuthType.COOKIE
     display_name = "Anyrouter Cookie"
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, config: dict[str, Any] | None = None):
         super().__init__(base_url, config)
-        self._session_cookie: Optional[str] = None
-        self._acw_cookie: Optional[str] = None
-        self._user_id: Optional[str] = None
+        self._session_cookie: str | None = None
+        self._acw_cookie: str | None = None
+        self._user_id: str | None = None
 
-    async def connect(self, credentials: Dict[str, Any]) -> bool:
+    async def connect(self, credentials: dict[str, Any]) -> bool:
         """建立连接"""
         session_cookie = credentials.get("session_cookie")
         if not session_cookie:
@@ -336,7 +336,7 @@ class AnyrouterConnector(ProviderConnector):
         return request
 
     @classmethod
-    def get_credentials_schema(cls) -> Dict[str, Any]:
+    def get_credentials_schema(cls) -> dict[str, Any]:
         """获取凭据配置 schema"""
         return {
             "type": "object",
@@ -368,13 +368,13 @@ class AnyrouterArchitecture(ProviderArchitecture):
     display_name = "Anyrouter"
     description = "Anyrouter 中转站预设配置，使用 Cookie 认证"
 
-    supported_connectors: List[Type[ProviderConnector]] = [
+    supported_connectors: list[type[ProviderConnector]] = [
         AnyrouterConnector,
     ]
 
-    supported_actions: List[Type[ProviderAction]] = [AnyrouterBalanceAction]
+    supported_actions: list[type[ProviderAction]] = [AnyrouterBalanceAction]
 
-    default_action_configs: Dict[ProviderActionType, Dict[str, Any]] = {
+    default_action_configs: dict[ProviderActionType, dict[str, Any]] = {
         ProviderActionType.QUERY_BALANCE: {
             "endpoint": "/api/user/self",
             "method": "GET",
@@ -383,7 +383,7 @@ class AnyrouterArchitecture(ProviderArchitecture):
         },
     }
 
-    def get_credentials_schema(self) -> Dict[str, Any]:
+    def get_credentials_schema(self) -> dict[str, Any]:
         """Anyrouter 使用 session_cookie 认证"""
         return AnyrouterConnector.get_credentials_schema()
 
@@ -394,9 +394,9 @@ class AnyrouterArchitecture(ProviderArchitecture):
     async def prepare_verify_config(
         self,
         base_url: str,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         验证前获取 acw_sc__v2 Cookie
 
@@ -417,16 +417,16 @@ class AnyrouterArchitecture(ProviderArchitecture):
 
     def build_verify_headers(
         self,
-        config: Dict[str, Any],
-        credentials: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> dict[str, str]:
         """
         构建 Anyrouter 的验证请求 Headers
 
         使用 Cookie 认证，不使用 Authorization。
         同时添加 New-Api-User header。
         """
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
 
         cookies = []
 
@@ -455,7 +455,7 @@ class AnyrouterArchitecture(ProviderArchitecture):
     def parse_verify_response(
         self,
         status_code: int,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> VerifyResult:
         """解析 Anyrouter 验证响应"""
         if status_code == 401:

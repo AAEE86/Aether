@@ -7,7 +7,7 @@
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class SyncLRUCache:
@@ -26,7 +26,7 @@ class SyncLRUCache:
             ttl: 过期时间（秒）
         """
         self._cache: OrderedDict = OrderedDict()
-        self._expiry: Dict[Any, float] = {}
+        self._expiry: dict[Any, float] = {}
         self.max_size = max_size
         self.ttl = ttl
         self._lock = threading.RLock()
@@ -57,7 +57,7 @@ class SyncLRUCache:
             self._cache.move_to_end(key)
             return self._cache[key]
 
-    def set(self, key: Any, value: Any, ttl: Optional[int] = None) -> None:
+    def set(self, key: Any, value: Any, ttl: int | None = None) -> None:
         """设置缓存值"""
         with self._lock:
             if ttl is None:
@@ -123,7 +123,7 @@ class SyncLRUCache:
                 k for k in self._cache.keys() if k not in self._expiry or now <= self._expiry[k]
             ]
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取缓存统计信息"""
         with self._lock:
             return {

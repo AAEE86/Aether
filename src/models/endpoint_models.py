@@ -4,7 +4,7 @@ ProviderEndpoint 相关的 API 模型定义
 
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -17,7 +17,7 @@ from src.models.admin_requests import ProxyConfig
 # - drop: 删除请求头 {"action": "drop", "key": "X-Unwanted"}
 # - rename: 重命名请求头 {"action": "rename", "from": "X-Old", "to": "X-New"}
 # 实际验证在 headers.py 的 apply_rules 中处理
-HeaderRule = Dict[str, Any]
+HeaderRule = dict[str, Any]
 
 
 # ========== ProviderEndpoint CRUD ==========
@@ -29,10 +29,10 @@ class ProviderEndpointCreate(BaseModel):
     provider_id: str = Field(..., description="Provider ID")
     api_format: str = Field(..., description="API 格式 (CLAUDE, OPENAI, CLAUDE_CLI, OPENAI_CLI)")
     base_url: str = Field(..., min_length=1, max_length=500, description="API 基础 URL")
-    custom_path: Optional[str] = Field(default=None, max_length=200, description="自定义请求路径")
+    custom_path: str | None = Field(default=None, max_length=200, description="自定义请求路径")
 
     # 请求头配置
-    header_rules: Optional[List[HeaderRule]] = Field(
+    header_rules: list[HeaderRule] | None = Field(
         default=None,
         description="请求头规则列表，支持 set/drop/rename 操作",
     )
@@ -40,13 +40,13 @@ class ProviderEndpointCreate(BaseModel):
     max_retries: int = Field(default=2, ge=0, le=10, description="最大重试次数")
 
     # 额外配置
-    config: Optional[Dict[str, Any]] = Field(default=None, description="额外配置（JSON）")
+    config: dict[str, Any] | None = Field(default=None, description="额外配置（JSON）")
 
     # 代理配置
-    proxy: Optional[ProxyConfig] = Field(default=None, description="代理配置")
+    proxy: ProxyConfig | None = Field(default=None, description="代理配置")
 
     # 格式转换配置
-    format_acceptance_config: Optional[Dict[str, Any]] = Field(
+    format_acceptance_config: dict[str, Any] | None = Field(
         default=None,
         description="格式接受策略配置（跨格式转换开关/白黑名单等）",
     )
@@ -75,31 +75,31 @@ class ProviderEndpointCreate(BaseModel):
 class ProviderEndpointUpdate(BaseModel):
     """更新 Endpoint 请求"""
 
-    base_url: Optional[str] = Field(
+    base_url: str | None = Field(
         default=None, min_length=1, max_length=500, description="API 基础 URL"
     )
-    custom_path: Optional[str] = Field(default=None, max_length=200, description="自定义请求路径")
+    custom_path: str | None = Field(default=None, max_length=200, description="自定义请求路径")
 
     # 请求头配置
-    header_rules: Optional[List[HeaderRule]] = Field(
+    header_rules: list[HeaderRule] | None = Field(
         default=None,
         description="请求头规则列表，支持 set/drop/rename 操作",
     )
 
-    max_retries: Optional[int] = Field(default=None, ge=0, le=10, description="最大重试次数")
-    is_active: Optional[bool] = Field(default=None, description="是否启用")
-    config: Optional[Dict[str, Any]] = Field(default=None, description="额外配置")
-    proxy: Optional[ProxyConfig] = Field(default=None, description="代理配置")
+    max_retries: int | None = Field(default=None, ge=0, le=10, description="最大重试次数")
+    is_active: bool | None = Field(default=None, description="是否启用")
+    config: dict[str, Any] | None = Field(default=None, description="额外配置")
+    proxy: ProxyConfig | None = Field(default=None, description="代理配置")
 
     # 格式转换配置
-    format_acceptance_config: Optional[Dict[str, Any]] = Field(
+    format_acceptance_config: dict[str, Any] | None = Field(
         default=None,
         description="格式接受策略配置（跨格式转换开关/白黑名单等）",
     )
 
     @field_validator("base_url")
     @classmethod
-    def validate_base_url(cls, v: Optional[str]) -> Optional[str]:
+    def validate_base_url(cls, v: str | None) -> str | None:
         """验证 API URL"""
         if v is None:
             return v
@@ -120,10 +120,10 @@ class ProviderEndpointResponse(BaseModel):
     # API 配置
     api_format: str
     base_url: str
-    custom_path: Optional[str] = None
+    custom_path: str | None = None
 
     # 请求头配置
-    header_rules: Optional[List[HeaderRule]] = Field(
+    header_rules: list[HeaderRule] | None = Field(
         default=None, description="请求头规则列表"
     )
 
@@ -133,13 +133,13 @@ class ProviderEndpointResponse(BaseModel):
     is_active: bool
 
     # 额外配置
-    config: Optional[Dict[str, Any]] = None
+    config: dict[str, Any] | None = None
 
     # 代理配置（响应中密码已脱敏）
-    proxy: Optional[Dict[str, Any]] = Field(default=None, description="代理配置（密码已脱敏）")
+    proxy: dict[str, Any] | None = Field(default=None, description="代理配置（密码已脱敏）")
 
     # 格式转换配置
-    format_acceptance_config: Optional[Dict[str, Any]] = Field(
+    format_acceptance_config: dict[str, Any] | None = Field(
         default=None,
         description="格式接受策略配置（跨格式转换开关/白黑名单等）",
     )
@@ -161,8 +161,8 @@ class ProviderEndpointResponse(BaseModel):
 class EndpointAPIKeyCreate(BaseModel):
     """为 Provider 添加 API Key"""
 
-    provider_id: Optional[str] = Field(default=None, description="Provider ID（从 URL 获取）")
-    api_formats: Optional[List[str]] = Field(
+    provider_id: str | None = Field(default=None, description="Provider ID（从 URL 获取）")
+    api_formats: list[str] | None = Field(
         default=None, min_length=1, description="支持的 API 格式列表（必填，路由层校验）"
     )
 
@@ -170,23 +170,23 @@ class EndpointAPIKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="密钥名称（必填，用于识别）")
 
     # 成本计算
-    rate_multipliers: Optional[Dict[str, float]] = Field(
+    rate_multipliers: dict[str, float] | None = Field(
         default=None, description="按 API 格式的成本倍率，如 {'CLAUDE_CLI': 1.0, 'OPENAI_CLI': 0.8}"
     )
 
     # 优先级和限制（数字越小越优先）
     internal_priority: int = Field(default=50, description="Key 内部优先级（提供商优先模式）")
     # rpm_limit: NULL=自适应模式（系统自动学习），数字=固定限制模式
-    rpm_limit: Optional[int] = Field(
+    rpm_limit: int | None = Field(
         default=None, ge=1, le=10000, description="RPM 限制（NULL=自适应模式）"
     )
-    allowed_models: Optional[List[str]] = Field(
+    allowed_models: list[str] | None = Field(
         default=None,
         description="允许使用的模型列表（null=不限制）",
     )
 
     # 能力标签
-    capabilities: Optional[Dict[str, bool]] = Field(
+    capabilities: dict[str, bool] | None = Field(
         default=None, description="Key 能力标签，如 {'cache_1h': true, 'context_1m': true}"
     )
 
@@ -199,7 +199,7 @@ class EndpointAPIKeyCreate(BaseModel):
     )
 
     # 备注
-    note: Optional[str] = Field(default=None, max_length=500, description="备注说明（可选）")
+    note: str | None = Field(default=None, max_length=500, description="备注说明（可选）")
 
     # 自动获取模型
     auto_fetch_models: bool = Field(
@@ -207,21 +207,21 @@ class EndpointAPIKeyCreate(BaseModel):
     )
 
     # 锁定的模型列表
-    locked_models: Optional[List[str]] = Field(
+    locked_models: list[str] | None = Field(
         default=None, description="被锁定的模型列表（刷新时不会被删除）"
     )
 
     # 模型过滤规则（仅当 auto_fetch_models=True 时生效）
-    model_include_patterns: Optional[List[str]] = Field(
+    model_include_patterns: list[str] | None = Field(
         default=None, description="模型包含规则（支持 * 和 ? 通配符），空表示包含所有"
     )
-    model_exclude_patterns: Optional[List[str]] = Field(
+    model_exclude_patterns: list[str] | None = Field(
         default=None, description="模型排除规则（支持 * 和 ? 通配符），空表示不排除"
     )
 
     @field_validator("api_formats")
     @classmethod
-    def validate_api_formats(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def validate_api_formats(cls, v: list[str] | None) -> list[str] | None:
         """验证 API 格式列表"""
         if v is None:
             return v
@@ -243,7 +243,7 @@ class EndpointAPIKeyCreate(BaseModel):
 
     @field_validator("allowed_models")
     @classmethod
-    def validate_allowed_models(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def validate_allowed_models(cls, v: list[str] | None) -> list[str] | None:
         """
         规范化 allowed_models：去空、去重、保留顺序
         """
@@ -253,7 +253,7 @@ class EndpointAPIKeyCreate(BaseModel):
         if not isinstance(v, list):
             raise ValueError("allowed_models 必须是列表")
 
-        cleaned: List[str] = []
+        cleaned: list[str] = []
         seen: set[str] = set()
         for item in v:
             if not isinstance(item, str):
@@ -293,7 +293,7 @@ class EndpointAPIKeyCreate(BaseModel):
 
     @field_validator("note")
     @classmethod
-    def validate_note(cls, v: Optional[str]) -> Optional[str]:
+    def validate_note(cls, v: str | None) -> str | None:
         """验证备注（防止 XSS）"""
         if v is None:
             return v
@@ -308,62 +308,62 @@ class EndpointAPIKeyCreate(BaseModel):
 class EndpointAPIKeyUpdate(BaseModel):
     """更新 Endpoint API Key"""
 
-    api_formats: Optional[List[str]] = Field(
+    api_formats: list[str] | None = Field(
         default=None, min_length=1, description="支持的 API 格式列表"
     )
 
-    api_key: Optional[str] = Field(
+    api_key: str | None = Field(
         default=None, min_length=3, max_length=500, description="API Key（将自动加密）"
     )
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100, description="密钥名称")
-    rate_multipliers: Optional[Dict[str, float]] = Field(
+    name: str | None = Field(default=None, min_length=1, max_length=100, description="密钥名称")
+    rate_multipliers: dict[str, float] | None = Field(
         default=None, description="按 API 格式的成本倍率，如 {'CLAUDE_CLI': 1.0, 'OPENAI_CLI': 0.8}"
     )
-    internal_priority: Optional[int] = Field(
+    internal_priority: int | None = Field(
         default=None, description="Key 内部优先级（提供商优先模式，数字越小越优先）"
     )
-    global_priority_by_format: Optional[Dict[str, int]] = Field(
+    global_priority_by_format: dict[str, int] | None = Field(
         default=None, description="按 API 格式的全局优先级，如 {'CLAUDE': 1, 'CLAUDE_CLI': 2}"
     )
     # rpm_limit: 使用特殊标记区分"未提供"和"设置为 null（自适应模式）"
     # - 不提供字段：不更新
     # - 提供 null：切换为自适应模式
     # - 提供数字：设置固定 RPM 限制
-    rpm_limit: Optional[int] = Field(
+    rpm_limit: int | None = Field(
         default=None, ge=1, le=10000, description="RPM 限制（null=自适应模式）"
     )
-    allowed_models: Optional[List[str]] = Field(
+    allowed_models: list[str] | None = Field(
         default=None,
         description="允许使用的模型列表（null=不限制）",
     )
-    capabilities: Optional[Dict[str, bool]] = Field(
+    capabilities: dict[str, bool] | None = Field(
         default=None, description="Key 能力标签，如 {'cache_1h': true, 'context_1m': true}"
     )
-    cache_ttl_minutes: Optional[int] = Field(
+    cache_ttl_minutes: int | None = Field(
         default=None, ge=0, le=60, description="缓存 TTL（分钟），0=禁用"
     )
-    max_probe_interval_minutes: Optional[int] = Field(
+    max_probe_interval_minutes: int | None = Field(
         default=None, ge=2, le=32, description="熔断探测间隔（分钟），范围 2-32"
     )
-    is_active: Optional[bool] = Field(default=None, description="是否启用")
-    note: Optional[str] = Field(default=None, max_length=500, description="备注说明")
-    auto_fetch_models: Optional[bool] = Field(
+    is_active: bool | None = Field(default=None, description="是否启用")
+    note: str | None = Field(default=None, max_length=500, description="备注说明")
+    auto_fetch_models: bool | None = Field(
         default=None, description="是否启用自动获取模型"
     )
-    locked_models: Optional[List[str]] = Field(
+    locked_models: list[str] | None = Field(
         default=None, description="被锁定的模型列表（刷新时不会被删除）"
     )
     # 模型过滤规则（仅当 auto_fetch_models=True 时生效）
-    model_include_patterns: Optional[List[str]] = Field(
+    model_include_patterns: list[str] | None = Field(
         default=None, description="模型包含规则（支持 * 和 ? 通配符），空表示包含所有"
     )
-    model_exclude_patterns: Optional[List[str]] = Field(
+    model_exclude_patterns: list[str] | None = Field(
         default=None, description="模型排除规则（支持 * 和 ? 通配符），空表示不排除"
     )
 
     @field_validator("api_formats")
     @classmethod
-    def validate_api_formats(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def validate_api_formats(cls, v: list[str] | None) -> list[str] | None:
         """验证 API 格式列表"""
         if v is None:
             return v
@@ -385,13 +385,13 @@ class EndpointAPIKeyUpdate(BaseModel):
 
     @field_validator("allowed_models")
     @classmethod
-    def validate_allowed_models(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def validate_allowed_models(cls, v: list[str] | None) -> list[str] | None:
         # 与 EndpointAPIKeyCreate 保持一致
         return EndpointAPIKeyCreate.validate_allowed_models(v)
 
     @field_validator("api_key")
     @classmethod
-    def validate_api_key(cls, v: Optional[str]) -> Optional[str]:
+    def validate_api_key(cls, v: str | None) -> str | None:
         """验证 API Key 安全性"""
         if v is None:
             return v
@@ -409,7 +409,7 @@ class EndpointAPIKeyUpdate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+    def validate_name(cls, v: str | None) -> str | None:
         """验证名称（防止 XSS）"""
         if v is None:
             return v
@@ -422,7 +422,7 @@ class EndpointAPIKeyUpdate(BaseModel):
 
     @field_validator("note")
     @classmethod
-    def validate_note(cls, v: Optional[str]) -> Optional[str]:
+    def validate_note(cls, v: str | None) -> str | None:
         """验证备注（防止 XSS）"""
         if v is None:
             return v
@@ -440,52 +440,52 @@ class EndpointAPIKeyResponse(BaseModel):
     id: str
 
     provider_id: str = Field(..., description="Provider ID")
-    api_formats: List[str] = Field(default=[], description="支持的 API 格式列表")
+    api_formats: list[str] = Field(default=[], description="支持的 API 格式列表")
 
     # Key 信息（脱敏）
     api_key_masked: str = Field(..., description="脱敏后的 Key")
-    api_key_plain: Optional[str] = Field(default=None, description="完整的 Key")
+    api_key_plain: str | None = Field(default=None, description="完整的 Key")
     name: str = Field(..., description="密钥名称")
 
     # 成本计算
-    rate_multipliers: Optional[Dict[str, float]] = Field(
+    rate_multipliers: dict[str, float] | None = Field(
         default=None, description="按 API 格式的成本倍率，如 {'CLAUDE_CLI': 1.0, 'OPENAI_CLI': 0.8}"
     )
 
     # 优先级和限制
     internal_priority: int = Field(default=50, description="Endpoint 内部优先级")
-    global_priority_by_format: Optional[Dict[str, int]] = Field(
+    global_priority_by_format: dict[str, int] | None = Field(
         default=None, description="按 API 格式的全局优先级"
     )
-    rpm_limit: Optional[int] = None
-    allowed_models: Optional[List[str]] = None
-    capabilities: Optional[Dict[str, bool]] = Field(default=None, description="Key 能力标签")
+    rpm_limit: int | None = None
+    allowed_models: list[str] | None = None
+    capabilities: dict[str, bool] | None = Field(default=None, description="Key 能力标签")
 
     # 缓存与熔断配置
     cache_ttl_minutes: int = Field(default=5, description="缓存 TTL（分钟），0=禁用")
     max_probe_interval_minutes: int = Field(default=32, description="熔断探测间隔（分钟）")
 
     # 按格式的健康度数据
-    health_by_format: Optional[Dict[str, Any]] = Field(
+    health_by_format: dict[str, Any] | None = Field(
         default=None, description="按 API 格式存储的健康度数据"
     )
-    circuit_breaker_by_format: Optional[Dict[str, Any]] = Field(
+    circuit_breaker_by_format: dict[str, Any] | None = Field(
         default=None, description="按 API 格式存储的熔断器状态"
     )
 
     # 聚合字段（从 health_by_format 计算，用于列表显示）
     health_score: float = Field(default=1.0, description="健康度（所有格式中的最低值）")
     consecutive_failures: int = Field(default=0, description="连续失败次数")
-    last_failure_at: Optional[datetime] = None
+    last_failure_at: datetime | None = None
 
     # 聚合熔断器字段
     circuit_breaker_open: bool = Field(default=False, description="熔断器是否打开（任何格式）")
-    circuit_breaker_open_at: Optional[datetime] = Field(default=None, description="熔断器打开时间")
-    next_probe_at: Optional[datetime] = Field(default=None, description="下次进入半开状态时间")
-    half_open_until: Optional[datetime] = Field(default=None, description="半开状态结束时间")
-    half_open_successes: Optional[int] = Field(default=0, description="半开状态成功次数")
-    half_open_failures: Optional[int] = Field(default=0, description="半开状态失败次数")
-    request_results_window: Optional[List[dict]] = Field(None, description="请求结果滑动窗口")
+    circuit_breaker_open_at: datetime | None = Field(default=None, description="熔断器打开时间")
+    next_probe_at: datetime | None = Field(default=None, description="下次进入半开状态时间")
+    half_open_until: datetime | None = Field(default=None, description="半开状态结束时间")
+    half_open_successes: int | None = Field(default=0, description="半开状态成功次数")
+    half_open_failures: int | None = Field(default=0, description="半开状态失败次数")
+    request_results_window: list[dict] | None = Field(None, description="请求结果滑动窗口")
 
     # 使用统计
     request_count: int
@@ -499,30 +499,30 @@ class EndpointAPIKeyResponse(BaseModel):
 
     # 自适应 RPM 信息
     is_adaptive: bool = Field(default=False, description="是否为自适应模式（rpm_limit=NULL）")
-    learned_rpm_limit: Optional[int] = Field(None, description="学习到的 RPM 限制")
-    effective_limit: Optional[int] = Field(None, description="当前有效限制")
+    learned_rpm_limit: int | None = Field(None, description="学习到的 RPM 限制")
+    effective_limit: int | None = Field(None, description="当前有效限制")
     # 滑动窗口利用率采样
-    utilization_samples: Optional[List[dict]] = Field(None, description="利用率采样窗口")
-    last_probe_increase_at: Optional[datetime] = Field(None, description="上次探测性扩容时间")
-    concurrent_429_count: Optional[int] = None
-    rpm_429_count: Optional[int] = None
-    last_429_at: Optional[datetime] = None
-    last_429_type: Optional[str] = None
+    utilization_samples: list[dict] | None = Field(None, description="利用率采样窗口")
+    last_probe_increase_at: datetime | None = Field(None, description="上次探测性扩容时间")
+    concurrent_429_count: int | None = None
+    rpm_429_count: int | None = None
+    last_429_at: datetime | None = None
+    last_429_type: str | None = None
 
     # 备注
-    note: Optional[str] = None
+    note: str | None = None
 
     # 自动获取模型
     auto_fetch_models: bool = Field(default=False, description="是否启用自动获取模型")
-    last_models_fetch_at: Optional[datetime] = Field(None, description="最后获取模型时间")
-    last_models_fetch_error: Optional[str] = Field(None, description="最后获取模型错误信息")
-    locked_models: Optional[List[str]] = Field(None, description="被锁定的模型列表")
+    last_models_fetch_at: datetime | None = Field(None, description="最后获取模型时间")
+    last_models_fetch_error: str | None = Field(None, description="最后获取模型错误信息")
+    locked_models: list[str] | None = Field(None, description="被锁定的模型列表")
     # 模型过滤规则
-    model_include_patterns: Optional[List[str]] = Field(None, description="模型包含规则")
-    model_exclude_patterns: Optional[List[str]] = Field(None, description="模型排除规则")
+    model_include_patterns: list[str] | None = Field(None, description="模型包含规则")
+    model_exclude_patterns: list[str] | None = Field(None, description="模型排除规则")
 
     # 时间戳
-    last_used_at: Optional[datetime] = None
+    last_used_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -539,8 +539,8 @@ class FormatHealthData(BaseModel):
     error_rate: float = 0.0
     window_size: int = 0
     consecutive_failures: int = 0
-    last_failure_at: Optional[str] = None
-    circuit_breaker: Dict[str, Any] = Field(default_factory=dict)
+    last_failure_at: str | None = None
+    circuit_breaker: dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthStatusResponse(BaseModel):
@@ -549,25 +549,25 @@ class HealthStatusResponse(BaseModel):
     # 基础信息
     key_id: str
     key_is_active: bool
-    key_statistics: Optional[Dict[str, Any]] = None
+    key_statistics: dict[str, Any] | None = None
 
     # 整体健康度（取所有格式中的最低值）
     key_health_score: float = 1.0
     any_circuit_open: bool = False
 
     # 按格式的健康度数据
-    health_by_format: Optional[Dict[str, FormatHealthData]] = None
+    health_by_format: dict[str, FormatHealthData] | None = None
 
     # 单格式查询时的字段
-    api_format: Optional[str] = None
-    key_consecutive_failures: Optional[int] = None
-    key_last_failure_at: Optional[str] = None
+    api_format: str | None = None
+    key_consecutive_failures: int | None = None
+    key_last_failure_at: str | None = None
 
     # 单格式查询时的熔断器状态
     circuit_breaker_open: bool = False
-    circuit_breaker_open_at: Optional[str] = None
-    next_probe_at: Optional[str] = None
-    half_open_until: Optional[str] = None
+    circuit_breaker_open_at: str | None = None
+    next_probe_at: str | None = None
+    half_open_until: str | None = None
     half_open_successes: int = 0
     half_open_failures: int = 0
 
@@ -575,8 +575,8 @@ class HealthStatusResponse(BaseModel):
 class HealthSummaryResponse(BaseModel):
     """健康状态摘要"""
 
-    endpoints: Dict[str, int] = Field(..., description="Endpoint 统计 (total, active, unhealthy)")
-    keys: Dict[str, int] = Field(..., description="Key 统计 (total, active, unhealthy)")
+    endpoints: dict[str, int] = Field(..., description="Endpoint 统计 (total, active, unhealthy)")
+    keys: dict[str, int] = Field(..., description="Key 统计 (total, active, unhealthy)")
 
 
 # ========== RPM 控制相关 ==========
@@ -587,7 +587,7 @@ class KeyRpmStatusResponse(BaseModel):
 
     key_id: str = Field(..., description="Key ID")
     current_rpm: int = Field(default=0, description="当前 RPM 计数")
-    rpm_limit: Optional[int] = Field(default=None, description="RPM 限制")
+    rpm_limit: int | None = Field(default=None, description="RPM 限制")
 
 
 class KeyPriorityItem(BaseModel):
@@ -600,7 +600,7 @@ class KeyPriorityItem(BaseModel):
 class BatchUpdateKeyPriorityRequest(BaseModel):
     """批量更新 Key 优先级请求"""
 
-    priorities: List[KeyPriorityItem] = Field(..., min_length=1, description="Key 优先级列表")
+    priorities: list[KeyPriorityItem] = Field(..., min_length=1, description="Key 优先级列表")
 
 
 # ========== 提供商摘要（增强版） ==========
@@ -609,27 +609,27 @@ class BatchUpdateKeyPriorityRequest(BaseModel):
 class ProviderUpdateRequest(BaseModel):
     """Provider 基础配置更新请求"""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = None
-    website: Optional[str] = Field(None, max_length=500, description="主站网站")
-    provider_priority: Optional[int] = Field(None, description="提供商优先级(数字越小越优先)")
-    keep_priority_on_conversion: Optional[bool] = Field(
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = None
+    website: str | None = Field(None, max_length=500, description="主站网站")
+    provider_priority: int | None = Field(None, description="提供商优先级(数字越小越优先)")
+    keep_priority_on_conversion: bool | None = Field(
         None,
         description="格式转换时是否保持优先级（True=保持原优先级，False=需要转换时降级）",
     )
-    is_active: Optional[bool] = None
-    billing_type: Optional[str] = Field(
+    is_active: bool | None = None
+    billing_type: str | None = Field(
         None, description="计费类型：monthly_quota/pay_as_you_go/free_tier"
     )
-    monthly_quota_usd: Optional[float] = Field(None, ge=0, description="订阅配额（美元）")
-    quota_reset_day: Optional[int] = Field(None, ge=1, le=31, description="配额重置日（1-31）")
-    quota_expires_at: Optional[datetime] = Field(None, description="配额过期时间")
+    monthly_quota_usd: float | None = Field(None, ge=0, description="订阅配额（美元）")
+    quota_reset_day: int | None = Field(None, ge=1, le=31, description="配额重置日（1-31）")
+    quota_expires_at: datetime | None = Field(None, description="配额过期时间")
     # 请求配置（从 Endpoint 迁移）
-    max_retries: Optional[int] = Field(None, ge=0, le=10, description="最大重试次数")
-    proxy: Optional[Dict[str, Any]] = Field(None, description="代理配置")
+    max_retries: int | None = Field(None, ge=0, le=10, description="最大重试次数")
+    proxy: dict[str, Any] | None = Field(None, description="代理配置")
     # 超时配置（秒），为空时使用全局配置
-    stream_first_byte_timeout: Optional[float] = Field(None, ge=1, le=300, description="流式请求首字节超时（秒）")
-    request_timeout: Optional[float] = Field(None, ge=1, le=600, description="非流式请求整体超时（秒）")
+    stream_first_byte_timeout: float | None = Field(None, ge=1, le=300, description="流式请求首字节超时（秒）")
+    request_timeout: float | None = Field(None, ge=1, le=600, description="非流式请求整体超时（秒）")
 
 
 class ProviderWithEndpointsSummary(BaseModel):
@@ -638,8 +638,8 @@ class ProviderWithEndpointsSummary(BaseModel):
     # Provider 基本信息
     id: str
     name: str
-    description: Optional[str] = None
-    website: Optional[str] = None
+    description: str | None = None
+    website: str | None = None
     provider_priority: int = Field(default=100, description="提供商优先级(数字越小越优先)")
     keep_priority_on_conversion: bool = Field(
         default=False,
@@ -648,19 +648,19 @@ class ProviderWithEndpointsSummary(BaseModel):
     is_active: bool
 
     # 计费相关字段
-    billing_type: Optional[str] = None
-    monthly_quota_usd: Optional[float] = None
-    monthly_used_usd: Optional[float] = None
-    quota_reset_day: Optional[int] = Field(default=None, description="配额重置周期（天数）")
-    quota_last_reset_at: Optional[datetime] = Field(default=None, description="当前周期开始时间")
-    quota_expires_at: Optional[datetime] = Field(default=None, description="配额过期时间")
+    billing_type: str | None = None
+    monthly_quota_usd: float | None = None
+    monthly_used_usd: float | None = None
+    quota_reset_day: int | None = Field(default=None, description="配额重置周期（天数）")
+    quota_last_reset_at: datetime | None = Field(default=None, description="当前周期开始时间")
+    quota_expires_at: datetime | None = Field(default=None, description="配额过期时间")
 
     # 请求配置（从 Endpoint 迁移）
-    max_retries: Optional[int] = Field(default=2, description="最大重试次数")
-    proxy: Optional[Dict[str, Any]] = Field(default=None, description="代理配置")
+    max_retries: int | None = Field(default=2, description="最大重试次数")
+    proxy: dict[str, Any] | None = Field(default=None, description="代理配置")
     # 超时配置（秒），为空时使用全局配置
-    stream_first_byte_timeout: Optional[float] = Field(default=None, description="流式请求首字节超时（秒）")
-    request_timeout: Optional[float] = Field(default=None, description="非流式请求整体超时（秒）")
+    stream_first_byte_timeout: float | None = Field(default=None, description="流式请求首字节超时（秒）")
+    request_timeout: float | None = Field(default=None, description="非流式请求整体超时（秒）")
 
     # Endpoint 统计
     total_endpoints: int = Field(default=0, description="总 Endpoint 数量")
@@ -675,10 +675,10 @@ class ProviderWithEndpointsSummary(BaseModel):
     active_models: int = Field(default=0, description="活跃模型数量")
 
     # API 格式列表
-    api_formats: List[str] = Field(default=[], description="支持的 API 格式列表")
+    api_formats: list[str] = Field(default=[], description="支持的 API 格式列表")
 
     # Endpoint 健康度详情
-    endpoint_health_details: List[Dict[str, Any]] = Field(
+    endpoint_health_details: list[dict[str, Any]] = Field(
         default=[],
         description="每个 Endpoint 的健康度详情 [{api_format: str, health_score: float, is_active: bool}]",
     )
@@ -691,7 +691,7 @@ class ProviderWithEndpointsSummary(BaseModel):
 
     # Provider Ops 配置状态
     ops_configured: bool = Field(default=False, description="是否配置了扩展操作（余额监控等）")
-    ops_architecture_id: Optional[str] = Field(
+    ops_architecture_id: str | None = Field(
         default=None, description="扩展操作使用的架构 ID（如 cubence, anyrouter）"
     )
 
@@ -710,10 +710,10 @@ class EndpointHealthEvent(BaseModel):
 
     timestamp: datetime
     status: str
-    status_code: Optional[int] = None
-    latency_ms: Optional[int] = None
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
+    status_code: int | None = None
+    latency_ms: int | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 class EndpointHealthMonitor(BaseModel):
@@ -727,8 +727,8 @@ class EndpointHealthMonitor(BaseModel):
     failed_count: int
     skipped_count: int
     success_rate: float = Field(default=1.0, description="最近事件窗口的成功率")
-    last_event_at: Optional[datetime] = None
-    events: List[EndpointHealthEvent] = Field(default_factory=list)
+    last_event_at: datetime | None = None
+    events: list[EndpointHealthEvent] = Field(default_factory=list)
 
 
 class ProviderEndpointHealthMonitorResponse(BaseModel):
@@ -737,7 +737,7 @@ class ProviderEndpointHealthMonitorResponse(BaseModel):
     provider_id: str
     provider_name: str
     generated_at: datetime
-    endpoints: List[EndpointHealthMonitor] = Field(default_factory=list)
+    endpoints: list[EndpointHealthMonitor] = Field(default_factory=list)
 
 
 class ApiFormatHealthMonitor(BaseModel):
@@ -751,16 +751,16 @@ class ApiFormatHealthMonitor(BaseModel):
     success_rate: float = Field(default=1.0, description="最近事件窗口的成功率")
     provider_count: int = Field(default=0, description="参与统计的 Provider 数量")
     key_count: int = Field(default=0, description="参与统计的 API Key 数量")
-    last_event_at: Optional[datetime] = None
-    events: List[EndpointHealthEvent] = Field(default_factory=list)
-    timeline: List[str] = Field(
+    last_event_at: datetime | None = None
+    events: list[EndpointHealthEvent] = Field(default_factory=list)
+    timeline: list[str] = Field(
         default_factory=list,
         description="Usage 表生成的健康时间线（healthy/warning/unhealthy/unknown）",
     )
-    time_range_start: Optional[datetime] = Field(
+    time_range_start: datetime | None = Field(
         default=None, description="时间线所覆盖区间的开始时间"
     )
-    time_range_end: Optional[datetime] = Field(
+    time_range_end: datetime | None = Field(
         default=None, description="时间线所覆盖区间的结束时间"
     )
 
@@ -769,7 +769,7 @@ class ApiFormatHealthMonitorResponse(BaseModel):
     """所有 API 格式的健康监控汇总"""
 
     generated_at: datetime
-    formats: List[ApiFormatHealthMonitor] = Field(default_factory=list)
+    formats: list[ApiFormatHealthMonitor] = Field(default_factory=list)
 
 
 # ========== 公开健康监控模型（不含敏感信息） ==========
@@ -780,9 +780,9 @@ class PublicHealthEvent(BaseModel):
 
     timestamp: datetime
     status: str
-    status_code: Optional[int] = None
-    latency_ms: Optional[int] = None
-    error_type: Optional[str] = None
+    status_code: int | None = None
+    latency_ms: int | None = None
+    error_type: str | None = None
 
 
 class PublicApiFormatHealthMonitor(BaseModel):
@@ -795,18 +795,18 @@ class PublicApiFormatHealthMonitor(BaseModel):
     failed_count: int = Field(default=0, description="失败次数")
     skipped_count: int = Field(default=0, description="跳过次数")
     success_rate: float = Field(default=1.0, description="成功率")
-    last_event_at: Optional[datetime] = None
-    events: List[PublicHealthEvent] = Field(default_factory=list, description="事件列表")
-    timeline: List[str] = Field(
+    last_event_at: datetime | None = None
+    events: list[PublicHealthEvent] = Field(default_factory=list, description="事件列表")
+    timeline: list[str] = Field(
         default_factory=list,
         description="Usage 表生成的健康时间线（healthy/warning/unhealthy/unknown）",
     )
-    time_range_start: Optional[datetime] = Field(default=None, description="时间线覆盖区间开始时间")
-    time_range_end: Optional[datetime] = Field(default=None, description="时间线覆盖区间结束时间")
+    time_range_start: datetime | None = Field(default=None, description="时间线覆盖区间开始时间")
+    time_range_end: datetime | None = Field(default=None, description="时间线覆盖区间结束时间")
 
 
 class PublicApiFormatHealthMonitorResponse(BaseModel):
     """公开版健康监控汇总（不含敏感信息）"""
 
     generated_at: datetime
-    formats: List[PublicApiFormatHealthMonitor] = Field(default_factory=list)
+    formats: list[PublicApiFormatHealthMonitor] = Field(default_factory=list)

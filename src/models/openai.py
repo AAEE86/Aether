@@ -2,7 +2,7 @@
 OpenAI API 数据模型定义
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -16,18 +16,18 @@ class OpenAIMessage(BaseModelWithExtras):
     """OpenAI消息模型"""
 
     role: str
-    content: Optional[Union[str, List[Dict[str, Any]]]] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
-    tool_call_id: Optional[str] = None
-    name: Optional[str] = None
+    content: str | list[dict[str, Any]] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class OpenAIFunction(BaseModelWithExtras):
     """OpenAI函数定义"""
 
     name: str
-    description: Optional[str] = None
-    parameters: Dict[str, Any]
+    description: str | None = None
+    parameters: dict[str, Any]
 
 
 class OpenAITool(BaseModelWithExtras):
@@ -41,23 +41,23 @@ class OpenAIRequest(BaseModelWithExtras):
     """OpenAI请求模型"""
 
     model: str
-    messages: List[OpenAIMessage]
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = None
-    stream: Optional[bool] = False
-    stop: Optional[Union[str, List[str]]] = None
-    tools: Optional[List[OpenAITool]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    n: Optional[int] = None
-    seed: Optional[int] = None
-    response_format: Optional[Dict[str, Any]] = None
-    logit_bias: Optional[Dict[str, float]] = None
-    logprobs: Optional[bool] = None
-    top_logprobs: Optional[int] = None
-    user: Optional[str] = None
+    messages: list[OpenAIMessage]
+    max_tokens: int | None = None
+    temperature: float | None = 1.0
+    top_p: float | None = None
+    stream: bool | None = False
+    stop: str | list[str] | None = None
+    tools: list[OpenAITool] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    n: int | None = None
+    seed: int | None = None
+    response_format: dict[str, Any] | None = None
+    logit_bias: dict[str, float] | None = None
+    logprobs: bool | None = None
+    top_logprobs: int | None = None
+    user: str | None = None
 
 
 class ResponsesInputMessage(BaseModelWithExtras):
@@ -65,7 +65,7 @@ class ResponsesInputMessage(BaseModelWithExtras):
 
     type: str = "message"
     role: str
-    content: List[Dict[str, Any]]
+    content: list[dict[str, Any]]
 
 
 class ResponsesReasoningConfig(BaseModelWithExtras):
@@ -79,21 +79,21 @@ class ResponsesRequest(BaseModelWithExtras):
     """OpenAI Responses API 请求模型（用于 Claude Code 等客户端）"""
 
     model: str
-    instructions: Optional[str] = None
-    input: List[ResponsesInputMessage]
-    tools: Optional[List[Dict[str, Any]]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = "auto"
-    parallel_tool_calls: Optional[bool] = False
-    reasoning: Optional[ResponsesReasoningConfig] = None
-    store: Optional[bool] = False
-    stream: Optional[bool] = True
-    include: Optional[List[str]] = None
-    prompt_cache_key: Optional[str] = None
+    instructions: str | None = None
+    input: list[ResponsesInputMessage]
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = "auto"
+    parallel_tool_calls: bool | None = False
+    reasoning: ResponsesReasoningConfig | None = None
+    store: bool | None = False
+    stream: bool | None = True
+    include: list[str] | None = None
+    prompt_cache_key: str | None = None
     # 其他参数
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    stop: Optional[Union[str, List[str]]] = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    stop: str | list[str] | None = None
 
 
 class OpenAIUsage(BaseModelWithExtras):
@@ -109,8 +109,8 @@ class OpenAIChoice(BaseModelWithExtras):
 
     index: int
     message: OpenAIMessage
-    finish_reason: Optional[str] = None
-    logprobs: Optional[Dict[str, Any]] = None
+    finish_reason: str | None = None
+    logprobs: dict[str, Any] | None = None
 
 
 class OpenAIResponse(BaseModelWithExtras):
@@ -120,17 +120,17 @@ class OpenAIResponse(BaseModelWithExtras):
     object: str = "chat.completion"
     created: int
     model: str
-    choices: List[OpenAIChoice]
-    usage: Optional[OpenAIUsage] = None
-    system_fingerprint: Optional[str] = None
+    choices: list[OpenAIChoice]
+    usage: OpenAIUsage | None = None
+    system_fingerprint: str | None = None
 
 
 class OpenAIStreamDelta(BaseModelWithExtras):
     """OpenAI流式响应增量"""
 
-    role: Optional[str] = None
-    content: Optional[str] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    role: str | None = None
+    content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class OpenAIStreamChoice(BaseModelWithExtras):
@@ -138,8 +138,8 @@ class OpenAIStreamChoice(BaseModelWithExtras):
 
     index: int
     delta: OpenAIStreamDelta
-    finish_reason: Optional[str] = None
-    logprobs: Optional[Dict[str, Any]] = None
+    finish_reason: str | None = None
+    logprobs: dict[str, Any] | None = None
 
 
 class OpenAIStreamResponse(BaseModelWithExtras):
@@ -149,5 +149,5 @@ class OpenAIStreamResponse(BaseModelWithExtras):
     object: str = "chat.completion.chunk"
     created: int
     model: str
-    choices: List[OpenAIStreamChoice]
-    system_fingerprint: Optional[str] = None
+    choices: list[OpenAIStreamChoice]
+    system_fingerprint: str | None = None

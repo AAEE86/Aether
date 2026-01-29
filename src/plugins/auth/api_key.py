@@ -3,7 +3,6 @@ API Key认证插件
 支持从header中提取API Key进行认证
 """
 
-from typing import Optional
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -25,7 +24,7 @@ class ApiKeyAuthPlugin(AuthPlugin):
     def __init__(self):
         super().__init__(name="api_key", priority=10)
 
-    def get_credentials(self, request: Request) -> Optional[str]:
+    def get_credentials(self, request: Request) -> str | None:
         """
         从请求头中提取API Key
 
@@ -45,7 +44,7 @@ class ApiKeyAuthPlugin(AuthPlugin):
 
         return None
 
-    async def authenticate(self, request: Request, db: Session) -> Optional[AuthContext]:
+    async def authenticate(self, request: Request, db: Session) -> AuthContext | None:
         """
         使用API Key进行认证
         """

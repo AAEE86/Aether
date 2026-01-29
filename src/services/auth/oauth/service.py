@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -39,7 +37,7 @@ class OAuthService:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="OAuth 模块未启用")
 
     @staticmethod
-    def _get_provider_impl(provider_type: str) -> Optional[OAuthProviderBase]:
+    def _get_provider_impl(provider_type: str) -> OAuthProviderBase | None:
         registry = get_oauth_provider_registry()
         registry.discover_providers()
         provider = registry.get_provider(provider_type)
@@ -169,7 +167,7 @@ class OAuthService:
         return provider.get_authorization_url(config, state)
 
     @staticmethod
-    def _sanitize_username(raw: Optional[str]) -> str:
+    def _sanitize_username(raw: str | None) -> str:
         if not raw or not raw.strip():
             return f"user_{uuid.uuid4().hex[:8]}"
 
@@ -224,7 +222,7 @@ class OAuthService:
         return True
 
     @staticmethod
-    def _get_constraint_name(err: IntegrityError) -> Optional[str]:
+    def _get_constraint_name(err: IntegrityError) -> str | None:
         orig = getattr(err, "orig", None)
         diag = getattr(orig, "diag", None)
         name = getattr(diag, "constraint_name", None)
@@ -236,9 +234,9 @@ class OAuthService:
         db: Session,
         provider_type: str,
         state: str,
-        code: Optional[str],
-        error: Optional[str],
-        error_description: Optional[str],
+        code: str | None,
+        error: str | None,
+        error_description: str | None,
     ) -> str:
         OAuthService._require_module_active(db)
 
@@ -405,8 +403,8 @@ class OAuthService:
         default_quota = SystemConfigService.get_config(db, "default_user_quota_usd", default=10.0)
 
         # 生成唯一用户名 + 创建用户（简单重试）
-        user: Optional[User] = None
-        last_error: Optional[Exception] = None
+        user: User | None = None
+        last_error: Exception | None = None
         for _ in range(3):
             try:
                 username = OAuthService._generate_unique_username(db, base_username)
@@ -840,9 +838,9 @@ class OAuthService:
     async def test_provider_config_with_data(
         provider_type: str,
         client_id: str,
-        client_secret: Optional[str],
-        authorization_url_override: Optional[str],
-        token_url_override: Optional[str],
+        client_secret: str | None,
+        authorization_url_override: str | None,
+        token_url_override: str | None,
         redirect_uri: str,
     ) -> dict[str, Any]:
         """使用传入的表单数据测试配置，而非从数据库读取"""

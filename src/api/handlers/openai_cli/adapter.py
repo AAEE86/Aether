@@ -4,7 +4,7 @@ OpenAI CLI Adapter - 基于通用 CLI Adapter 基类的简化实现
 继承 CliAdapterBase，只需配置 FORMAT_ID 和 HANDLER_CLASS。
 """
 
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any
 
 import httpx
 
@@ -27,13 +27,13 @@ class OpenAICliAdapter(CliAdapterBase):
     name = "openai.cli"
 
     @property
-    def HANDLER_CLASS(self) -> Type[CliMessageHandlerBase]:
+    def HANDLER_CLASS(self) -> type[CliMessageHandlerBase]:
         """延迟导入 Handler 类避免循环依赖"""
         from src.api.handlers.openai_cli.handler import OpenAICliMessageHandler
 
         return OpenAICliMessageHandler
 
-    def __init__(self, allowed_api_formats: Optional[list[str]] = None):
+    def __init__(self, allowed_api_formats: list[str] | None = None):
         super().__init__(allowed_api_formats or ["OPENAI_CLI"])
 
     # =========================================================================
@@ -46,8 +46,8 @@ class OpenAICliAdapter(CliAdapterBase):
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Tuple[list, Optional[str]]:
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
         """查询 OpenAI 兼容 API 支持的模型列表（带 CLI User-Agent）"""
         # 复用 OpenAIChatAdapter 的实现，添加 CLI User-Agent
         cli_headers = {"User-Agent": config.internal_user_agent_openai_cli}
@@ -62,7 +62,7 @@ class OpenAICliAdapter(CliAdapterBase):
         return models, error
 
     @classmethod
-    def build_endpoint_url(cls, base_url: str, request_data: Dict[str, Any], model_name: Optional[str] = None) -> str:
+    def build_endpoint_url(cls, base_url: str, request_data: dict[str, Any], model_name: str | None = None) -> str:
         """构建OpenAI CLI API端点URL"""
         base_url = base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -74,7 +74,7 @@ class OpenAICliAdapter(CliAdapterBase):
     # OPENAI -> OPENAI_CLI 无转换器，会直接透传原始请求
 
     @classmethod
-    def get_cli_user_agent(cls) -> Optional[str]:
+    def get_cli_user_agent(cls) -> str | None:
         """获取OpenAI CLI User-Agent"""
         return config.internal_user_agent_openai_cli
 
