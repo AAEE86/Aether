@@ -72,8 +72,8 @@ def build_provider_url(
     query_params: dict[str, Any] | None = None,
     path_params: dict[str, Any] | None = None,
     is_stream: bool = False,
-    key: Optional["ProviderAPIKey"] = None,
-    decrypted_auth_config: Optional[Dict[str, Any]] = None,
+    key: "ProviderAPIKey" | None = None,
+    decrypted_auth_config: dict[str, Any] | None = None,
 ) -> str:
     """
     根据 endpoint 配置生成请求 URL
@@ -175,7 +175,7 @@ def _resolve_default_path(api_format: str | None) -> str:
 
 # Vertex AI 模型默认 region 映射
 # 用户可以通过 auth_config.model_regions 覆盖
-VERTEX_AI_DEFAULT_MODEL_REGIONS: Dict[str, str] = {
+VERTEX_AI_DEFAULT_MODEL_REGIONS: dict[str, str] = {
     # Gemini 3 系列（使用 global）
     "gemini-3-pro-image-preview": "global",
     # Gemini 2.0 系列
@@ -200,10 +200,10 @@ VERTEX_AI_DEFAULT_MODEL_REGIONS: Dict[str, str] = {
 def _build_vertex_ai_url(
     key: "ProviderAPIKey",
     *,
-    path_params: Optional[Dict[str, Any]] = None,
-    query_params: Optional[Dict[str, Any]] = None,
+    path_params: dict[str, Any] | None = None,
+    query_params: dict[str, Any] | None = None,
     is_stream: bool = False,
-    decrypted_auth_config: Optional[Dict[str, Any]] = None,
+    decrypted_auth_config: dict[str, Any] | None = None,
 ) -> str:
     """
     构建 Vertex AI URL
@@ -236,7 +236,7 @@ def _build_vertex_ai_url(
     from src.core.crypto import crypto_service
 
     # 优先使用传入的已解密配置，避免重复解密
-    auth_config: Dict[str, Any] = {}
+    auth_config: dict[str, Any] = {}
     if decrypted_auth_config:
         auth_config = decrypted_auth_config
     else:

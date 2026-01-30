@@ -27,8 +27,8 @@ class GeminiChatHandler(ChatHandlerBase):
     async def _resolve_preferred_key_ids(
         self,
         model_name: str,  # noqa: ARG002 - 仅做文件绑定
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Optional[list[str]]:
+        request_body: dict[str, Any] | None = None,
+    ) -> list[str] | None:
         """
         从 files/xxx 绑定关系中解析优先 Key ID 列表。
 

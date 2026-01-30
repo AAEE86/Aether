@@ -34,7 +34,7 @@ async def store_file_key_mapping(file_name: str, key_id: str) -> None:
     await CacheService.set(cache_key, str(key_id), ttl_seconds=FILE_MAPPING_TTL_SECONDS)
 
 
-async def get_file_key_mapping(file_name: str) -> Optional[str]:
+async def get_file_key_mapping(file_name: str) -> str | None:
     cache_key = build_file_mapping_key(file_name)
     if not cache_key:
         return None
@@ -50,7 +50,7 @@ async def delete_file_key_mapping(file_name: str) -> None:
         await CacheService.delete(cache_key)
 
 
-def _extract_file_name_from_uri(file_uri: str) -> Optional[str]:
+def _extract_file_name_from_uri(file_uri: str) -> str | None:
     """
     从 fileUri 提取 files/xxx 名称。
 
@@ -70,11 +70,11 @@ def _extract_file_name_from_uri(file_uri: str) -> Optional[str]:
     return None
 
 
-def extract_file_names_from_request(payload: Optional[Dict[str, Any]]) -> Set[str]:
+def extract_file_names_from_request(payload: dict[str, Any] | None) -> set[str]:
     """
     从 Gemini 请求体中提取 fileUri 使用到的 files/xxx 名称集合。
     """
-    results: Set[str] = set()
+    results: set[str] = set()
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):

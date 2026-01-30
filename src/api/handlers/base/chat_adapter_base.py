@@ -565,7 +565,7 @@ class ChatAdapterBase(ApiAdapter):
                 "cache_cost": float,
                 "request_cost": float,
                 "total_cost": float,
-                "tier_index": Optional[int],  # 命中的阶梯索引
+                "tier_index": int | None,  # 命中的阶梯索引
             }
         """
         # 计算总输入上下文（使用子类可覆盖的方法）

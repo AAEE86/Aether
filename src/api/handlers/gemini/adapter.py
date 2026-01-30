@@ -61,9 +61,9 @@ class GeminiChatAdapter(ChatAdapterBase):
 
     def detect_capability_requirements(
         self,
-        headers: Dict[str, str],  # noqa: ARG002 - 预留
-        request_body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, bool]:
+        headers: dict[str, str],  # noqa: ARG002 - 预留
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
         """检测是否需要 Gemini Files API 能力"""
         if request_body and extract_file_names_from_request(request_body):
             return {"gemini_files_api": True}

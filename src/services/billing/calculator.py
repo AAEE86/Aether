@@ -295,7 +295,7 @@ def calculate_request_cost(
             "cache_cost": float,
             "request_cost": float,
             "total_cost": float,
-            "tier_index": Optional[int],
+            "tier_index": int | None,
         }
     """
     # 构建标准化 usage

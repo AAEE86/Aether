@@ -55,7 +55,7 @@ class GeminiRequest(BaseModelWithExtras):
 
     model: str | None = Field(default=None, description="模型名称，从 URL 路径提取（内部使用）")
     contents: list[GeminiContent]
-    # 以下字段全部使用 Dict[str, Any] 透传，不做结构验证
+    # 以下字段全部使用 dict[str, Any] 透传，不做结构验证
     system_instruction: dict[str, Any] | None = Field(default=None, alias="systemInstruction")
     tools: list[dict[str, Any]] | None = None
     tool_config: dict[str, Any] | None = Field(default=None, alias="toolConfig")
@@ -88,7 +88,7 @@ class GeminiFileMetadata(BaseModelWithExtras):
     用于上传文件时指定的元数据信息
     """
 
-    display_name: Optional[str] = Field(default=None, alias="displayName")
+    display_name: str | None = Field(default=None, alias="displayName")
 
 
 class GeminiFileUploadRequest(BaseModelWithExtras):
@@ -98,7 +98,7 @@ class GeminiFileUploadRequest(BaseModelWithExtras):
     用于 media.upload API 的请求体
     """
 
-    file: Optional[GeminiFileMetadata] = None
+    file: GeminiFileMetadata | None = None
 
 
 class GeminiFile(BaseModelWithExtras):
@@ -108,20 +108,20 @@ class GeminiFile(BaseModelWithExtras):
     表示已上传到 Gemini API 的文件
     """
 
-    name: Optional[str] = None  # 文件名，格式：files/xxx
-    display_name: Optional[str] = Field(default=None, alias="displayName")
-    mime_type: Optional[str] = Field(default=None, alias="mimeType")
-    size_bytes: Optional[str] = Field(default=None, alias="sizeBytes")
-    create_time: Optional[str] = Field(default=None, alias="createTime")
-    update_time: Optional[str] = Field(default=None, alias="updateTime")
-    expiration_time: Optional[str] = Field(default=None, alias="expirationTime")
-    sha256_hash: Optional[str] = Field(default=None, alias="sha256Hash")
-    uri: Optional[str] = None  # 文件 URI，用于在请求中引用
-    download_uri: Optional[str] = Field(default=None, alias="downloadUri")
-    state: Optional[str] = None  # PROCESSING, ACTIVE, FAILED
-    error: Optional[Dict[str, Any]] = None
+    name: str | None = None  # 文件名，格式：files/xxx
+    display_name: str | None = Field(default=None, alias="displayName")
+    mime_type: str | None = Field(default=None, alias="mimeType")
+    size_bytes: str | None = Field(default=None, alias="sizeBytes")
+    create_time: str | None = Field(default=None, alias="createTime")
+    update_time: str | None = Field(default=None, alias="updateTime")
+    expiration_time: str | None = Field(default=None, alias="expirationTime")
+    sha256_hash: str | None = Field(default=None, alias="sha256Hash")
+    uri: str | None = None  # 文件 URI，用于在请求中引用
+    download_uri: str | None = Field(default=None, alias="downloadUri")
+    state: str | None = None  # PROCESSING, ACTIVE, FAILED
+    error: dict[str, Any] | None = None
     # 视频文件元数据
-    video_metadata: Optional[Dict[str, Any]] = Field(default=None, alias="videoMetadata")
+    video_metadata: dict[str, Any] | None = Field(default=None, alias="videoMetadata")
 
 
 class GeminiFileListResponse(BaseModelWithExtras):
@@ -131,8 +131,8 @@ class GeminiFileListResponse(BaseModelWithExtras):
     用于 files.list API 的响应体
     """
 
-    files: Optional[List["GeminiFile"]] = None
-    next_page_token: Optional[str] = Field(default=None, alias="nextPageToken")
+    files: list["GeminiFile"] | None = None
+    next_page_token: str | None = Field(default=None, alias="nextPageToken")
 
 
 class GeminiFileUploadResponse(BaseModelWithExtras):
@@ -142,7 +142,7 @@ class GeminiFileUploadResponse(BaseModelWithExtras):
     用于 media.upload API 的响应体
     """
 
-    file: Optional[GeminiFile] = None
+    file: GeminiFile | None = None
 
 
 class GeminiFilePart(BaseModelWithExtras):
@@ -153,7 +153,7 @@ class GeminiFilePart(BaseModelWithExtras):
     使用 file_data 字段引用文件 URI
     """
 
-    file_data: Optional[Dict[str, Any]] = Field(default=None, alias="fileData")
+    file_data: dict[str, Any] | None = Field(default=None, alias="fileData")
     # fileData 格式：{"mimeType": "...", "fileUri": "..."}
 
 

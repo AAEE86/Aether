@@ -10,18 +10,18 @@
         self,
         request: Any,                           # 解析后的请求模型
         http_request: Request,                  # FastAPI Request 对象
-        original_headers: Dict[str, str],       # 原始请求头
-        original_request_body: Dict[str, Any],  # 原始请求体
-        query_params: Optional[Dict[str, str]] = None,  # 查询参数
+        original_headers: dict[str, str],       # 原始请求头
+        original_request_body: dict[str, Any],  # 原始请求体
+        query_params: dict[str, str] | None = None,  # 查询参数
     ) -> StreamingResponse: ...
 
     async def process_sync(
         self,
         request: Any,
         http_request: Request,
-        original_headers: Dict[str, str],
-        original_request_body: Dict[str, Any],
-        query_params: Optional[Dict[str, str]] = None,
+        original_headers: dict[str, str],
+        original_request_body: dict[str, Any],
+        query_params: dict[str, str] | None = None,
     ) -> JSONResponse: ...
 """
 

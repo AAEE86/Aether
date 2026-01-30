@@ -51,7 +51,7 @@ class VertexAuthService:
 
     # Token 缓存：使用 OrderedDict 实现 LRU
     # key = client_email, value = (token, expires_at)
-    _token_cache: OrderedDict[str, Tuple[str, float]] = OrderedDict()
+    _token_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
     _cache_max_size: int = 100  # 最多缓存 100 个 Service Account 的 Token
 
     # Token 请求端点
@@ -168,7 +168,7 @@ class VertexAuthService:
             raise VertexAuthError(f"Failed to get access token: {e}")
 
     @classmethod
-    def clear_cache(cls, client_email: Optional[str] = None) -> None:
+    def clear_cache(cls, client_email: str | None = None) -> None:
         """
         清除 Token 缓存
 
@@ -181,7 +181,7 @@ class VertexAuthService:
             cls._token_cache.clear()
 
 
-async def get_vertex_access_token(service_account_json: str) -> Tuple[str, str]:
+async def get_vertex_access_token(service_account_json: str) -> tuple[str, str]:
     """
     便捷函数：获取 Vertex AI Access Token 和 Project ID
 

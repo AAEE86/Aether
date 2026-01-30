@@ -60,7 +60,7 @@ HEADERS_TO_REMOVE = frozenset({
 })
 
 
-def _extract_gemini_api_key(request: Request) -> Optional[str]:
+def _extract_gemini_api_key(request: Request) -> str | None:
     """
     从请求中提取 Gemini API Key
 
@@ -76,9 +76,9 @@ def _extract_gemini_api_key(request: Request) -> Optional[str]:
 
 
 def _build_upstream_headers(
-    original_headers: Dict[str, str],
+    original_headers: dict[str, str],
     upstream_api_key: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     构建上游请求头
 
@@ -105,7 +105,7 @@ def _build_upstream_headers(
 def _build_upstream_url(
     base_url: str,
     path: str,
-    query_params: Optional[Dict[str, Any]] = None,
+    query_params: dict[str, Any] | None = None,
     is_upload: bool = False,
 ) -> str:
     """
@@ -145,8 +145,8 @@ def _build_upstream_url(
 def _resolve_files_model_name(
     db: Session,
     user_api_key: ApiKey,
-    user: Optional[User],
-) -> Optional[str]:
+    user: User | None,
+) -> str | None:
     """
     为 Files API 选择一个可用的模型名（用于 Key 选择与权限过滤）
 
@@ -188,7 +188,7 @@ async def _select_provider_candidate(
     db: Session,
     user_api_key: ApiKey,
     model_name: str,
-) -> Optional[ProviderCandidate]:
+) -> ProviderCandidate | None:
     """选择支持 Files API 的 Provider/Endpoint/Key 组合"""
     scheduler = CacheAwareScheduler()
     candidates, _global_model_id = await scheduler.list_all_candidates(
@@ -210,7 +210,7 @@ async def _select_provider_candidate(
 async def _resolve_upstream_context(
     request: Request,
     db: Session,
-) -> Tuple[str, str, str]:
+) -> tuple[str, str, str]:
     """
     解析上游 Key 与 Base URL
 
@@ -291,10 +291,10 @@ async def _resolve_upstream_context(
 async def _proxy_request(
     method: str,
     upstream_url: str,
-    headers: Dict[str, str],
-    content: Optional[bytes] = None,
-    json_body: Optional[Dict[str, Any]] = None,
-    file_key_id: Optional[str] = None,
+    headers: dict[str, str],
+    content: bytes | None = None,
+    json_body: dict[str, Any] | None = None,
+    file_key_id: str | None = None,
 ) -> Response:
     """
     代理请求到上游 Gemini API
@@ -461,8 +461,8 @@ async def upload_file(
 async def list_files(
     request: Request,
     db: Session = Depends(get_db),
-    pageSize: Optional[int] = None,
-    pageToken: Optional[str] = None,
+    pageSize: int | None = None,
+    pageToken: str | None = None,
 ):
     """
     列出已上传的文件
