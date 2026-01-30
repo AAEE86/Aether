@@ -155,7 +155,7 @@ class NewApiBalanceAction(BalanceAction):
                     return {"success": True, "message": message or "签到成功"}
                 else:
                     # 检查是否是"已签到"的情况
-                    already_indicators = ["already", "已签到", "今日已签", "重复签到"]
+                    already_indicators = ["already", "已签到", "已经签到", "今日已签", "重复签到"]
                     is_already = any(ind in message.lower() for ind in already_indicators)
                     if is_already:
                         logger.debug(f"[{site}] 今日已签到: {message}")
