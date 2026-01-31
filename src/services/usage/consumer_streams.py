@@ -14,7 +14,9 @@ import socket
 import time
 from typing import Any
 
+from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -176,6 +178,9 @@ class UsageQueueConsumer:
                 await self._log_metrics(redis_client)
             except asyncio.CancelledError:
                 break
+            except (RedisTimeoutError, RedisConnectionError) as exc:
+                logger.warning(f"[usage-queue] Redis connection issue: {exc}")
+                await asyncio.sleep(1)
             except Exception as exc:
                 logger.exception(f"[usage-queue] Consumer loop error: {exc}")
                 await asyncio.sleep(1)
