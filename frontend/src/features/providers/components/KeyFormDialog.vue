@@ -48,18 +48,124 @@
               <SelectItem value="vertex_ai">
                 Vertex AI
               </SelectItem>
+              <SelectItem value="codex">
+                Codex
+              </SelectItem>
+              <SelectItem value="claude_code">
+                Claude Code
+              </SelectItem>
+              <SelectItem value="gemini_cli">
+                Gemini CLI
+              </SelectItem>
+              <SelectItem value="antigravity">
+                Antigravity
+              </SelectItem>
             </SelectContent>
           </Select>
         </div>
       </div>
 
-      <!-- API 密钥 / Service Account JSON -->
+      <!-- API 密钥 / Service Account JSON / OAuth2 授权 -->
       <div>
         <Label :for="apiKeyInputId">
-          {{ form.auth_type === 'vertex_ai' ? 'Service Account JSON' : 'API 密钥' }}
+          {{ authTypeLabel }}
           {{ editingKey ? '' : '*' }}
         </Label>
-        <template v-if="form.auth_type === 'vertex_ai'">
+        <!-- OAuth2 授权类型 -->
+        <template v-if="isOAuth2Type">
+          <div class="space-y-2">
+            <!-- 已授权状态 -->
+            <div
+              v-if="form.oauth2_token_data"
+              class="flex items-center gap-2 px-3 py-2 rounded-md border border-green-500/30 bg-green-500/5"
+            >
+              <span class="text-green-500">✓</span>
+              <span class="text-sm text-green-600 dark:text-green-400">已授权</span>
+              <span class="text-xs text-muted-foreground ml-2">
+                (过期时间: {{ formatTokenExpiry(form.oauth2_token_data.expires_at) }})
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                class="ml-auto h-7 text-xs"
+                @click="clearOAuth2Token"
+              >
+                清除
+              </Button>
+            </div>
+            <!-- 未授权状态 -->
+            <template v-else>
+              <!-- 手动模式：显示输入框让用户粘贴回调 URL -->
+              <template v-if="isManualCallbackMode">
+                <div class="space-y-2">
+                  <div class="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      :disabled="oauth2Authorizing"
+                      @click="startOAuth2Authorization"
+                    >
+                      {{ oauth2Authorizing ? '等待授权...' : (manualCallbackState ? '重新授权' : '开始授权') }}
+                    </Button>
+                    <span
+                      v-if="editingKey"
+                      class="text-xs text-muted-foreground"
+                    >
+                      留空表示不修改
+                    </span>
+                  </div>
+                  <!-- 粘贴回调 URL 的输入框 -->
+                  <div v-if="manualCallbackState" class="space-y-2">
+                    <p class="text-xs text-amber-600 dark:text-amber-400">
+                      请在新窗口中完成授权，然后复制浏览器地址栏中的完整 URL 并粘贴到下方：
+                    </p>
+                    <Textarea
+                      v-model="manualCallbackUrl"
+                      placeholder="粘贴授权完成后的完整 URL..."
+                      class="min-h-[60px] font-mono text-xs"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <Button
+                      type="button"
+                      variant="default"
+                      size="sm"
+                      :disabled="!manualCallbackUrl.trim() || !manualCallbackState"
+                      @click="submitManualCallbackUrl"
+                    >
+                      提交回调 URL
+                    </Button>
+                  </div>
+                </div>
+              </template>
+              <!-- 自动模式：只显示授权按钮 -->
+              <template v-else>
+                <div class="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    :disabled="oauth2Authorizing"
+                    @click="startOAuth2Authorization"
+                  >
+                    {{ oauth2Authorizing ? '授权中...' : '开始授权' }}
+                  </Button>
+                  <span
+                    v-if="editingKey"
+                    class="text-xs text-muted-foreground"
+                  >
+                    留空表示不修改
+                  </span>
+                </div>
+              </template>
+            </template>
+            <p class="text-xs text-muted-foreground">
+              {{ isManualCallbackMode ? '授权完成后需要手动复制回调 URL' : '点击授权按钮将打开新窗口完成 OAuth2 认证流程' }}
+            </p>
+          </div>
+        </template>
+        <!-- Vertex AI Service Account JSON -->
+        <template v-else-if="form.auth_type === 'vertex_ai'">
           <Textarea
             :id="apiKeyInputId"
             v-model="form.auth_config_text"
@@ -328,6 +434,10 @@ import {
   getAllCapabilities,
   API_FORMAT_LABELS,
   sortApiFormats,
+  isOAuth2AuthType,
+  AUTH_TYPE_LABELS,
+  type AuthType,
+  type OAuth2TokenData,
   type EndpointAPIKey,
   type EndpointAPIKeyUpdate,
   type ProviderEndpoint,
@@ -379,6 +489,30 @@ const switchingToApiKey = computed(() =>
   form.value.auth_type === 'api_key'
 )
 
+// 判断当前是否为 OAuth2 认证类型
+const isOAuth2Type = computed(() => isOAuth2AuthType(form.value.auth_type))
+
+// OAuth2 正在授权中
+const oauth2Authorizing = ref(false)
+
+// 认证类型显示标签
+const authTypeLabel = computed(() => {
+  if (isOAuth2Type.value) {
+    return `${AUTH_TYPE_LABELS[form.value.auth_type]} 授权`
+  }
+  if (form.value.auth_type === 'vertex_ai') {
+    return 'Service Account JSON'
+  }
+  return 'API 密钥'
+})
+
+// 检查是否正在切换到 OAuth2 类型
+const switchingToOAuth2 = computed(() =>
+  !!props.editingKey &&
+  !isOAuth2AuthType(props.editingKey.auth_type) &&
+  isOAuth2Type.value
+)
+
 // 表单是否可以保存
 const canSave = computed(() => {
   // 必须填写密钥名称
@@ -387,10 +521,14 @@ const canSave = computed(() => {
   if (!props.editingKey) {
     if (form.value.auth_type === 'api_key' && !form.value.api_key.trim()) return false
     if (form.value.auth_type === 'vertex_ai' && !form.value.auth_config_text.trim()) return false
+    // OAuth2 类型需要完成授权
+    if (isOAuth2Type.value && !form.value.oauth2_token_data) return false
   } else {
     // 编辑模式下切换认证类型时，必须填写对应字段
     if (switchingToApiKey.value && !form.value.api_key.trim()) return false
     if (switchingToVertexAI.value && !form.value.auth_config_text.trim()) return false
+    // 切换到 OAuth2 类型时需要完成授权
+    if (switchingToOAuth2.value && !form.value.oauth2_token_data) return false
   }
   // 必须至少选择一个 API 格式
   if (form.value.api_formats.length === 0) return false
@@ -415,8 +553,9 @@ const availableCapabilities = ref<CapabilityDefinition[]>([])
 const form = ref({
   name: '',
   api_key: '',  // 标准 API Key
-  auth_type: 'api_key' as 'api_key' | 'vertex_ai',  // 认证类型
+  auth_type: 'api_key' as AuthType,  // 认证类型
   auth_config_text: '',  // Service Account JSON 文本（用于表单输入）
+  oauth2_token_data: null as OAuth2TokenData | null,  // OAuth2 Token 数据
   api_formats: [] as string[],  // 支持的 API 格式列表
   rate_multipliers: {} as Record<string, number>,  // 按 API 格式的成本倍率
   internal_priority: 10,
@@ -442,6 +581,7 @@ async function loadCapabilities() {
 
 onMounted(() => {
   loadCapabilities()
+  loadOAuth2Providers()
 })
 
 // API 格式切换
@@ -505,6 +645,7 @@ function resetForm() {
     api_key: '',
     auth_type: 'api_key',
     auth_config_text: '',
+    oauth2_token_data: null,
     api_formats: [],  // 默认不选中任何格式
     rate_multipliers: {},
     internal_priority: 10,
@@ -526,6 +667,7 @@ function clearForNextAdd() {
   form.value.name = ''
   form.value.api_key = ''
   form.value.auth_config_text = ''
+  form.value.oauth2_token_data = null
 }
 
 // 加载密钥数据（编辑模式）
@@ -535,8 +677,9 @@ function loadKeyData() {
   form.value = {
     name: props.editingKey.name,
     api_key: '',
-    auth_type: props.editingKey.auth_type || 'api_key',
+    auth_type: (props.editingKey.auth_type || 'api_key') as AuthType,
     auth_config_text: '',  // auth_config 不返回给前端，编辑时需要重新输入
+    oauth2_token_data: null,  // OAuth2 token 不返回给前端，编辑时需要重新授权
     api_formats: props.editingKey.api_formats?.length > 0
       ? [...props.editingKey.api_formats]
       : [],  // 编辑模式下保持原有选择，不默认全选
@@ -663,6 +806,7 @@ async function handleSave() {
 
     // 准备认证相关数据
     const authConfig = parseAuthConfig()
+    const oauth2AuthConfig = buildOAuth2AuthConfig()
 
     if (props.editingKey) {
       // 更新模式
@@ -692,16 +836,27 @@ async function handleSave() {
       if (form.value.auth_type === 'vertex_ai' && authConfig) {
         updateData.auth_config = authConfig
       }
+      if (isOAuth2Type.value && oauth2AuthConfig) {
+        updateData.auth_config = oauth2AuthConfig
+      }
 
       await updateProviderKey(props.editingKey.id, updateData)
       success('密钥已更新', '成功')
     } else {
       // 新增模式
+      // 根据认证类型确定 auth_config
+      let finalAuthConfig: Record<string, any> | undefined
+      if (form.value.auth_type === 'vertex_ai' && authConfig) {
+        finalAuthConfig = authConfig
+      } else if (isOAuth2Type.value && oauth2AuthConfig) {
+        finalAuthConfig = oauth2AuthConfig
+      }
+
       await addProviderKey(props.providerId, {
         api_formats: form.value.api_formats,
         api_key: form.value.auth_type === 'api_key' ? form.value.api_key : '',
         auth_type: form.value.auth_type,
-        auth_config: authConfig || undefined,
+        auth_config: finalAuthConfig,
         name: form.value.name,
         rate_multipliers: rateMultipliersData,
         internal_priority: form.value.internal_priority,
@@ -728,6 +883,133 @@ async function handleSave() {
     showError(errorMessage, '错误')
   } finally {
     saving.value = false
+  }
+}
+
+// ========== OAuth2 相关函数 ==========
+
+import { OAuth2AuthFlow, OAuth2ManualAuthFlow, getOAuth2Providers, type OAuth2ProviderInfo } from '@/api/endpoints/oauth2'
+
+// OAuth2 Provider 信息缓存
+const oauth2ProvidersCache = ref<OAuth2ProviderInfo[]>([])
+
+// 手动模式相关状态
+const manualCallbackState = ref<string | null>(null)  // 存储授权 state
+const manualCallbackUrl = ref('')  // 用户粘贴的回调 URL
+let manualAuthFlow: OAuth2ManualAuthFlow | null = null
+
+// 判断当前 Provider 是否为手动回调模式
+const isManualCallbackMode = computed(() => {
+  if (!isOAuth2Type.value) return false
+  const provider = oauth2ProvidersCache.value.find(p => p.provider_id === form.value.auth_type)
+  return provider?.callback_mode === 'manual'
+})
+
+// 加载 OAuth2 Provider 信息
+async function loadOAuth2Providers() {
+  try {
+    oauth2ProvidersCache.value = await getOAuth2Providers()
+  } catch (err) {
+    log.error('Failed to load OAuth2 providers:', err)
+  }
+}
+
+// 格式化 Token 过期时间
+function formatTokenExpiry(expiresAt: number): string {
+  const date = new Date(expiresAt * 1000)
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+// 清除 OAuth2 Token
+function clearOAuth2Token() {
+  form.value.oauth2_token_data = null
+  manualCallbackState.value = null
+  manualCallbackUrl.value = ''
+}
+
+// OAuth2 授权流程实例（自动模式）
+let oauth2Flow: OAuth2AuthFlow | null = null
+
+// 开始 OAuth2 授权
+async function startOAuth2Authorization() {
+  if (oauth2Authorizing.value) return
+
+  oauth2Authorizing.value = true
+
+  // 清除之前的状态
+  manualCallbackState.value = null
+  manualCallbackUrl.value = ''
+
+  try {
+    if (isManualCallbackMode.value) {
+      // 手动模式：打开窗口，等待用户粘贴 URL
+      manualAuthFlow = new OAuth2ManualAuthFlow(form.value.auth_type)
+      const authResponse = await manualAuthFlow.start()
+      manualCallbackState.value = authResponse.state
+      // 手动模式不会自动结束，等待用户粘贴 URL
+      // 所以这里不设置 oauth2Authorizing.value = false
+    } else {
+      // 自动模式：打开窗口，轮询结果
+      oauth2Flow = new OAuth2AuthFlow(form.value.auth_type, {
+        pollInterval: 2000,
+        maxPollTime: 300000  // 5 分钟
+      })
+
+      const result = await oauth2Flow.start()
+
+      if (result.success && result.token_data) {
+        form.value.oauth2_token_data = result.token_data
+        success('授权成功', '成功')
+      } else {
+        showError(result.error || '授权失败', '错误')
+      }
+      oauth2Authorizing.value = false
+      oauth2Flow = null
+    }
+  } catch (err: any) {
+    showError(err.message || '授权过程中发生错误', '错误')
+    oauth2Authorizing.value = false
+    oauth2Flow = null
+    manualAuthFlow = null
+    manualCallbackState.value = null
+  }
+}
+
+// 提交手动复制的回调 URL
+async function submitManualCallbackUrl() {
+  if (!manualAuthFlow || !manualCallbackUrl.value.trim()) return
+
+  try {
+    const result = await manualAuthFlow.submitCallbackUrl(manualCallbackUrl.value.trim())
+
+    if (result.success && result.token_data) {
+      form.value.oauth2_token_data = result.token_data
+      success('授权成功', '成功')
+    } else {
+      showError(result.error || '授权失败', '错误')
+    }
+  } catch (err: any) {
+    showError(err.message || '处理回调 URL 失败', '错误')
+  } finally {
+    oauth2Authorizing.value = false
+    manualAuthFlow = null
+    manualCallbackState.value = null
+    manualCallbackUrl.value = ''
+  }
+}
+
+// 构建 OAuth2 auth_config
+function buildOAuth2AuthConfig(): Record<string, any> | null {
+  if (!isOAuth2Type.value || !form.value.oauth2_token_data) {
+    return null
+  }
+  return {
+    token_data: form.value.oauth2_token_data
   }
 }
 </script>

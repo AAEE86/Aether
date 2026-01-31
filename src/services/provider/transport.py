@@ -102,6 +102,19 @@ def build_provider_url(
             decrypted_auth_config=decrypted_auth_config,
         )
 
+    # 检查是否为 OAuth2 反代渠道
+    from src.core.oauth2_providers import OAuth2ProviderRegistry
+
+    if OAuth2ProviderRegistry.is_oauth2_auth_type(auth_type):
+        return _build_oauth2_provider_url(
+            auth_type=auth_type,
+            endpoint=endpoint,
+            path_params=path_params,
+            query_params=query_params,
+            is_stream=is_stream,
+            key=key,
+        )
+
     # 准备路径参数，添加 Gemini API 所需的 action 参数
     effective_path_params = dict(path_params) if path_params else {}
 
@@ -397,4 +410,131 @@ def _build_vertex_ai_url(
             url = f"{url}?{query_string}"
 
     logger.debug(f"Vertex AI URL: {redact_url_for_log(url)} (region={region})")
+    return url
+
+
+# ==============================================================================
+# OAuth2 反代渠道 URL 构建
+# ==============================================================================
+
+
+def _build_oauth2_provider_url(
+    auth_type: str,
+    endpoint: "ProviderEndpoint",
+    *,
+    path_params: dict[str, Any] | None = None,
+    query_params: dict[str, Any] | None = None,
+    is_stream: bool = False,
+    key: "ProviderAPIKey | None" = None,
+) -> str:
+    """
+    构建 OAuth2 反代渠道的 URL
+
+    OAuth2 反代渠道有固定的 base_url 和 api_path，
+    但也支持通过 auth_config.custom_base_url 覆盖。
+
+    Args:
+        auth_type: 认证类型 (codex, claude_code, gemini_cli, antigravity)
+        endpoint: 端点配置
+        path_params: 路径参数
+        query_params: 查询参数
+        is_stream: 是否为流式请求
+        key: Provider API Key
+
+    Returns:
+        完整的 API URL
+    """
+    import json
+
+    from src.core.crypto import crypto_service
+    from src.core.oauth2_providers import OAuth2ProviderRegistry
+
+    provider = OAuth2ProviderRegistry.get_provider(auth_type)
+    if not provider:
+        # 回退到 endpoint 配置
+        logger.warning(f"未知的 OAuth2 provider: {auth_type}，使用 endpoint 配置")
+        return _build_standard_url(endpoint, path_params, query_params, is_stream)
+
+    # 检查是否有自定义 base_url
+    custom_base_url = None
+    if key and key.auth_config:
+        try:
+            if isinstance(key.auth_config, dict):
+                auth_config = key.auth_config
+            else:
+                decrypted = crypto_service.decrypt(key.auth_config)
+                auth_config = json.loads(decrypted)
+            custom_base_url = auth_config.get("custom_base_url")
+        except Exception:
+            pass
+
+    # 使用自定义 URL 或 Provider 默认 URL
+    if custom_base_url:
+        base_url = custom_base_url.rstrip("/")
+        path = provider.config.default_api_path
+    else:
+        base_url = provider.config.base_url
+        path = provider.config.default_api_path
+
+    model = (path_params or {}).get("model")
+    url = provider.get_api_url(model)
+
+    # 如果 get_api_url 返回的不是完整 URL（没有使用自定义逻辑），手动拼接
+    if not url.startswith("http"):
+        url = f"{base_url}{path}"
+
+    # 处理查询参数
+    effective_query_params = dict(query_params) if query_params else {}
+
+    # Gemini CLI 格式的特殊处理
+    if provider.config.api_format in ("GEMINI_CLI",):
+        effective_query_params.pop("key", None)
+        if is_stream:
+            effective_query_params.setdefault("alt", "sse")
+
+    if effective_query_params:
+        query_string = urlencode(effective_query_params, doseq=True)
+        if query_string:
+            url = f"{url}?{query_string}"
+
+    logger.debug(f"OAuth2 Provider URL: {redact_url_for_log(url)} (provider={auth_type})")
+    return url
+
+
+def _build_standard_url(
+    endpoint: "ProviderEndpoint",
+    path_params: dict[str, Any] | None = None,
+    query_params: dict[str, Any] | None = None,
+    is_stream: bool = False,  # noqa: ARG001 - 保留参数以保持接口一致性
+) -> str:
+    """标准 URL 构建（回退方法）"""
+    effective_path_params = dict(path_params) if path_params else {}
+
+    if endpoint.custom_path:
+        path = endpoint.custom_path
+        if effective_path_params:
+            try:
+                path = path.format(**effective_path_params)
+            except KeyError:
+                pass
+    else:
+        path = _resolve_default_path(endpoint.api_format)
+        if effective_path_params:
+            try:
+                path = path.format(**effective_path_params)
+            except KeyError:
+                pass
+
+    if not path.startswith("/"):
+        path = f"/{path}"
+
+    base = _normalize_base_url(endpoint.base_url, path)  # type: ignore[arg-type]
+    url = f"{base}{path}"
+
+    effective_query_params = dict(query_params) if query_params else {}
+    if effective_query_params:
+        query_string = urlencode(effective_query_params, doseq=True)
+        if query_string:
+            url = f"{url}?{query_string}"
+
     return url

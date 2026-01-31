@@ -169,9 +169,9 @@ class EndpointAPIKeyCreate(BaseModel):
     )
 
     api_key: str = Field(default="", max_length=500, description="API Key（标准认证时必填，将自动加密）")
-    auth_type: Literal["api_key", "vertex_ai"] = Field(
+    auth_type: Literal["api_key", "vertex_ai", "codex", "claude_code", "gemini_cli", "antigravity"] = Field(
         default="api_key",
-        description="认证类型：api_key（标准 API Key）或 vertex_ai（Vertex AI Service Account）"
+        description="认证类型：api_key（标准 API Key）、vertex_ai（Vertex AI Service Account）或 OAuth2 反代渠道（codex、claude_code、gemini_cli、antigravity）"
     )
     auth_config: dict[str, Any] | None = Field(
         default=None,
@@ -325,9 +325,9 @@ class EndpointAPIKeyUpdate(BaseModel):
     api_key: str | None = Field(
         default=None, min_length=3, max_length=500, description="API Key（标准认证时使用，将自动加密）"
     )
-    auth_type: Literal["api_key", "vertex_ai"] | None = Field(
+    auth_type: Literal["api_key", "vertex_ai", "codex", "claude_code", "gemini_cli", "antigravity"] | None = Field(
         default=None,
-        description="认证类型：api_key（标准 API Key）或 vertex_ai（Vertex AI Service Account）"
+        description="认证类型：api_key（标准 API Key）、vertex_ai（Vertex AI Service Account）或 OAuth2 反代渠道（codex、claude_code、gemini_cli、antigravity）"
     )
     auth_config: dict[str, Any] | None = Field(
         default=None,

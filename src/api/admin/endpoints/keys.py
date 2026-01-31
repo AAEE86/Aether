@@ -241,18 +241,28 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
         # auth_type 切换校验 + 字段归一化
         if "auth_type" in update_data:
             if target_auth_type == "api_key":
-                if current_auth_type == "vertex_ai" and not update_data.get("api_key"):
+                if current_auth_type != "api_key" and not update_data.get("api_key"):
                     raise InvalidRequestException(
-                        "从 Vertex AI 切换到 API Key 认证模式时，必须提供新的 API Key"
+                        "切换到 API Key 认证模式时，必须提供新的 API Key"
                     )
-                # 切换回 API Key：清理 Service Account 配置
+                # 切换回 API Key：清理认证配置
                 update_data["auth_config"] = None
             elif target_auth_type == "vertex_ai":
                 if current_auth_type != "vertex_ai" and not update_data.get("auth_config"):
                     raise InvalidRequestException(
-                        "从 API Key 切换到 Vertex AI 认证模式时，必须提供 Service Account JSON"
+                        "切换到 Vertex AI 认证模式时，必须提供 Service Account JSON"
                     )
                 # Vertex AI 不使用 api_key：写入占位符（若未提供 api_key）
+                if "api_key" not in update_data:
+                    update_data["api_key"] = "__placeholder__"
+            elif target_auth_type in ("codex", "claude_code", "gemini_cli", "antigravity"):
+                # OAuth2 反代渠道
+                if current_auth_type not in ("codex", "claude_code", "gemini_cli", "antigravity"):
+                    if not update_data.get("auth_config"):
+                        raise InvalidRequestException(
+                            f"切换到 {target_auth_type} 认证模式时，必须提供 OAuth2 Token 配置（包含 token_data）"
+                        )
+                # OAuth2 不使用 api_key：写入占位符
                 if "api_key" not in update_data:
                     update_data["api_key"] = "__placeholder__"
 
@@ -724,6 +734,17 @@ class AdminCreateProviderKeyAdapter(AdminApiAdapter):
         elif auth_type == "vertex_ai":
             if not self.key_data.auth_config:
                 raise InvalidRequestException("Service Account 认证模式下 auth_config 为必填字段")
+        elif auth_type in ("codex", "claude_code", "gemini_cli", "antigravity"):
+            # OAuth2 反代渠道
+            if not self.key_data.auth_config:
+                raise InvalidRequestException(f"{auth_type} 认证模式下 auth_config 为必填字段（需要包含 token_data）")
+            # 验证 token_data 结构
+            auth_config = self.key_data.auth_config
+            token_data = auth_config.get("token_data", auth_config)
+            if not token_data.get("access_token") or not token_data.get("refresh_token"):
+                raise InvalidRequestException(
+                    f"{auth_type} 认证配置必须包含 access_token 和 refresh_token"
+                )
 
         # 允许同一个 API Key 在同一 Provider 下添加多次
         # 用户可以为不同的 API 格式创建独立的配置记录，便于分开管理

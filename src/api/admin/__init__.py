@@ -10,6 +10,7 @@ from .management_tokens import router as management_tokens_router
 from .models import router as models_router
 from .modules import router as modules_router
 from .monitoring import router as monitoring_router
+from .oauth2_callback import router as oauth2_callback_router
 from .provider_ops import router as provider_ops_router
 from .provider_query import router as provider_query_router
 from .provider_strategy import router as provider_strategy_router
@@ -38,6 +39,7 @@ router.include_router(management_tokens_router)
 router.include_router(modules_router)
 router.include_router(provider_ops_router)
 router.include_router(video_tasks_router)
+router.include_router(oauth2_callback_router)
 
 # 注意：ldap_router 已迁移到模块系统，由 ModuleRegistry 动态注册
 # 当 LDAP_AVAILABLE=true 时才会注册路由

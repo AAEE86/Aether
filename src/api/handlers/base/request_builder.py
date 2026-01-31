@@ -385,9 +385,31 @@ async def get_provider_auth(
         except Exception:
             raise InvalidRequestException("Vertex AI 认证失败，请检查 Key 的 auth_config")
 
-    # 其他认证类型可在此扩展
-    # elif auth_type == "oauth2":
-    #     ...
+    # OAuth2 反代渠道认证 (codex, claude_code, gemini_cli, antigravity)
+    from src.core.oauth2_providers import OAuth2ProviderRegistry
+
+    if OAuth2ProviderRegistry.is_oauth2_auth_type(auth_type):
+        from src.core.oauth2_providers.base import OAuth2AuthError
+        from src.core.oauth2_providers.token_store import OAuth2TokenStore
+
+        try:
+            access_token = await OAuth2TokenStore.get_access_token(key)
+            provider = OAuth2ProviderRegistry.get_provider(auth_type)
+            if not provider:
+                raise InvalidRequestException(f"未知的 OAuth2 认证类型: {auth_type}")
+
+            auth_header, auth_value = provider.build_auth_header(access_token)
+
+            return ProviderAuthInfo(
+                auth_header=auth_header,
+                auth_value=auth_value,
+            )
+        except OAuth2AuthError as e:
+            raise InvalidRequestException(f"OAuth2 认证失败 ({auth_type}): {e}")
+        except InvalidRequestException:
+            raise
+        except Exception:
+            raise InvalidRequestException(f"OAuth2 认证失败，请检查 Key 的 auth_config ({auth_type})")
 
     # 标准 API Key：返回 None，由 build_headers 处理
     return None

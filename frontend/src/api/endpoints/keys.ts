@@ -1,8 +1,15 @@
 import client from '../client'
-import type { EndpointAPIKey, AllowedModels } from './types'
+import type {
+  EndpointAPIKey,
+  AllowedModels,
+  OAuth2ProviderInfo,
+  OAuth2AuthorizeResponse,
+  OAuth2CallbackResponse,
+  AuthType,
+} from './types'
 
 // Re-export types for convenience
-export type { EndpointAPIKey, AllowedModels }
+export type { EndpointAPIKey, AllowedModels, OAuth2ProviderInfo, OAuth2AuthorizeResponse, OAuth2CallbackResponse }
 
 /**
  * 能力定义类型
@@ -56,7 +63,7 @@ export async function getModelCapabilities(modelName: string): Promise<ModelCapa
  * 获取完整的 API Key（用于查看和复制）
  */
 export interface RevealKeyResult {
-  auth_type: 'api_key' | 'vertex_ai'
+  auth_type: AuthType
   api_key?: string
   auth_config?: string | Record<string, any>
 }
@@ -94,8 +101,8 @@ export async function addProviderKey(
   data: {
     api_formats: string[]  // 支持的 API 格式列表（必填）
     api_key: string
-    auth_type?: 'api_key' | 'vertex_ai'  // 认证类型
-    auth_config?: Record<string, any>  // 认证配置（Vertex AI Service Account JSON）
+    auth_type?: AuthType  // 认证类型
+    auth_config?: Record<string, any>  // 认证配置（Vertex AI Service Account JSON 或 OAuth2 Token 配置）
     name: string
     rate_multipliers?: Record<string, number> | null  // 按 API 格式的成本倍率
     internal_priority?: number
@@ -122,8 +129,8 @@ export async function updateProviderKey(
   data: Partial<{
     api_formats: string[]  // 支持的 API 格式列表
     api_key: string
-    auth_type: 'api_key' | 'vertex_ai'  // 认证类型
-    auth_config: Record<string, any>  // 认证配置（Vertex AI Service Account JSON）
+    auth_type: AuthType  // 认证类型
+    auth_config: Record<string, any>  // 认证配置（Vertex AI Service Account JSON 或 OAuth2 Token 配置）
     name: string
     rate_multipliers: Record<string, number> | null  // 按 API 格式的成本倍率
     internal_priority: number

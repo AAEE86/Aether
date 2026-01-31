@@ -138,7 +138,7 @@ export interface EndpointAPIKey {
   api_formats: string[]  // 支持的 API 格式列表
   api_key_masked: string
   api_key_plain?: string | null
-  auth_type: 'api_key' | 'vertex_ai'  // 认证类型（必返回）
+  auth_type: 'api_key' | 'vertex_ai' | 'codex' | 'claude_code' | 'gemini_cli' | 'antigravity'  // 认证类型（必返回）
   name: string  // 密钥名称（必填，用于识别）
   rate_multipliers?: Record<string, number> | null  // 按 API 格式的成本倍率，如 {"CLAUDE_CLI": 1.0, "OPENAI_CLI": 0.8}
   internal_priority: number  // Key 内部优先级
@@ -219,8 +219,8 @@ export interface EndpointAPIKeyUpdate {
   api_formats?: string[]  // 支持的 API 格式列表
   name?: string
   api_key?: string  // 仅在需要更新时提供
-  auth_type?: 'api_key' | 'vertex_ai'  // 认证类型
-  auth_config?: Record<string, any>  // 认证配置（Vertex AI Service Account JSON）
+  auth_type?: 'api_key' | 'vertex_ai' | 'codex' | 'claude_code' | 'gemini_cli' | 'antigravity'  // 认证类型
+  auth_config?: Record<string, any>  // 认证配置（Vertex AI Service Account JSON 或 OAuth2 Token 配置）
   rate_multipliers?: Record<string, number> | null  // 按 API 格式的成本倍率
   internal_priority?: number
   global_priority_by_format?: Record<string, number> | null  // 按 API 格式的全局优先级
@@ -763,4 +763,71 @@ export interface ModelRoutingPreviewResponse {
   scheduling_mode: string
   priority_mode: string
   all_keys_whitelist: GlobalKeyWhitelistItem[]
+}
+
+// ========== OAuth2 认证类型 ==========
+
+/** OAuth2 认证类型 */
+export type OAuth2AuthType = 'codex' | 'claude_code' | 'gemini_cli' | 'antigravity'
+
+/** 所有认证类型 */
+export type AuthType = 'api_key' | 'vertex_ai' | OAuth2AuthType
+
+/** OAuth2 Token 数据 */
+export interface OAuth2TokenData {
+  access_token: string
+  refresh_token: string
+  expires_at: number  // Unix 时间戳
+  token_type: string
+  scope?: string
+  obtained_at?: number
+}
+
+/** OAuth2 认证配置 */
+export interface OAuth2AuthConfig {
+  token_data: OAuth2TokenData
+  custom_base_url?: string
+  extra_config?: Record<string, any>
+}
+
+/** OAuth2 Provider 信息 */
+export interface OAuth2ProviderInfo {
+  provider_id: string
+  display_name: string
+  api_format: string
+  pkce_required: boolean
+  device_flow_supported?: boolean
+  callback_mode: 'auto' | 'manual'  // 回调方式
+  redirect_uri?: string  // 固定的回调 URI（手动模式需要展示给用户）
+}
+
+/** OAuth2 授权响应 */
+export interface OAuth2AuthorizeResponse {
+  authorization_url: string
+  state: string
+  code_verifier?: string
+  provider_id: string
+}
+
+/** OAuth2 回调结果响应 */
+export interface OAuth2CallbackResponse {
+  success: boolean
+  error?: string
+  token_data?: OAuth2TokenData
+  provider_id: string
+}
+
+/** 认证类型显示名称 */
+export const AUTH_TYPE_LABELS: Record<AuthType, string> = {
+  api_key: 'API Key',
+  vertex_ai: 'Vertex AI',
+  codex: 'Codex (OpenAI CLI)',
+  claude_code: 'Claude Code',
+  gemini_cli: 'Gemini CLI',
+  antigravity: 'Antigravity',
+}
+
+/** 判断是否为 OAuth2 认证类型 */
+export function isOAuth2AuthType(authType: string): authType is OAuth2AuthType {
+  return ['codex', 'claude_code', 'gemini_cli', 'antigravity'].includes(authType)
 }
