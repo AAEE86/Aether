@@ -46,12 +46,15 @@ depends_on: Union[str, Sequence[str], None] = None
 def table_exists(table_name: str) -> bool:
     bind = op.get_bind()
     inspector = inspect(bind)
+    inspector.clear_cache()
     return table_name in inspector.get_table_names()
 
 
 def column_exists(table_name: str, column_name: str) -> bool:
     bind = op.get_bind()
     inspector = inspect(bind)
+    # Clear cached schema info to get fresh data
+    inspector.clear_cache()
     columns = [col["name"] for col in inspector.get_columns(table_name)]
     return column_name in columns
 
@@ -59,6 +62,7 @@ def column_exists(table_name: str, column_name: str) -> bool:
 def index_exists(table_name: str, index_name: str) -> bool:
     bind = op.get_bind()
     inspector = inspect(bind)
+    inspector.clear_cache()
     indexes = inspector.get_indexes(table_name)
     return any(idx.get("name") == index_name for idx in indexes)
 
@@ -66,6 +70,7 @@ def index_exists(table_name: str, index_name: str) -> bool:
 def unique_constraint_exists(table_name: str, constraint_name: str) -> bool:
     bind = op.get_bind()
     inspector = inspect(bind)
+    inspector.clear_cache()
     constraints = inspector.get_unique_constraints(table_name)
     return any(c.get("name") == constraint_name for c in constraints)
 
