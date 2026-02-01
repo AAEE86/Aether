@@ -65,7 +65,15 @@ class AntigravityProvider(OAuth2AuthProvider):
         if "error" in resp_data:
             error_code = resp_data.get("error", "")
             error_desc = resp_data.get("error_description", "")
-            if error_code in ("invalid_grant", "invalid_client", "unauthorized_client", "access_denied"):
+            # 不可重试的错误（与 done-hub 一致）
+            if error_code in (
+                "invalid_grant",
+                "invalid_client",
+                "unauthorized_client",
+                "access_denied",
+                "unsupported_grant_type",
+                "invalid_scope",
+            ):
                 raise OAuth2AuthError(
                     f"Non-retryable error from Antigravity: {error_code}: {error_desc}"
                 )

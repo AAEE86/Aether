@@ -750,6 +750,47 @@ class CliMessageHandlerBase(BaseMessageHandler):
             decrypted_auth_config=auth_info.decrypted_auth_config if auth_info else None,
         )
 
+        # CLI Provider 适配器：请求变换（仅对 CLI 提供商生效）
+        from src.services.cli_adapters import get_cli_adapter
+        from src.services.cli_adapters.base import AdapterContext
+        from src.services.cli_adapters.utils import extract_bearer_token
+
+        auth_type = getattr(key, "auth_type", "api_key")
+        cli_adapter = get_cli_adapter(auth_type)
+        if cli_adapter:
+            # 构建适配器上下文
+            access_token: str | None = None
+            if auth_info and auth_info.auth_value:
+                access_token = extract_bearer_token(auth_info.auth_value)
+
+            adapter_ctx = AdapterContext(
+                auth_type=auth_type,
+                model=ctx.model,
+                mapped_model=mapped_model,
+                is_stream=True,
+                original_request_body=request_body,
+                auth_config=auth_info.decrypted_auth_config if auth_info else None,
+                access_token=access_token,
+                original_headers=original_headers,
+            )
+
+            # 变换请求
+            transformed = cli_adapter.transform_request(
+                adapter_ctx, provider_payload, provider_headers, url
+            )
+            provider_payload = transformed.payload
+            provider_headers = transformed.headers
+            if transformed.url_override:
+                url = transformed.url_override
+
+            # 保存到 ctx 供响应变换使用
+            ctx.cli_adapter = cli_adapter
+            ctx.adapter_ctx = adapter_ctx
+
+            # 更新保存的请求信息（用于调试和统计）
+            ctx.provider_request_headers = provider_headers
+            ctx.provider_request_body = provider_payload
+
         # 配置 HTTP 超时
         # 注意：read timeout 用于检测连接断开，不是整体请求超时
         # 整体请求超时由 _connect_and_prefetch 内部的 asyncio.wait_for 控制
@@ -972,8 +1013,12 @@ class CliMessageHandlerBase(BaseMessageHandler):
                                 self._mark_first_output(ctx, output_state)
                                 yield (converted_line + "\n").encode("utf-8")
                     else:
+                        # CLI 适配器响应行变换（用于解包包装响应）
+                        line_bytes = self._apply_cli_adapter_response_transform(ctx, line)
+                        if line_bytes is None:
+                            continue
                         self._mark_first_output(ctx, output_state)
-                        yield (line + "\n").encode("utf-8")
+                        yield line_bytes
 
                 for event in events:
                     self._handle_sse_event(
@@ -1185,6 +1230,12 @@ class CliMessageHandlerBase(BaseMessageHandler):
                             break
                         continue
 
+                    # CLI 适配器预读数据解包（用于解包包装响应后再检测错误）
+                    if isinstance(data, dict) and ctx.cli_adapter and ctx.adapter_ctx:
+                        unwrapped = ctx.cli_adapter.transform_prefetch_data(ctx.adapter_ctx, data)
+                        if unwrapped is not None:
+                            data = unwrapped
+
                     # 使用解析器检查是否为错误响应
                     if isinstance(data, dict) and provider_parser.is_error_response(data):
                         # 提取错误信息
@@ -1314,8 +1365,12 @@ class CliMessageHandlerBase(BaseMessageHandler):
                                 self._mark_first_output(ctx, output_state)
                                 yield (converted_line + "\n").encode("utf-8")
                     else:
+                        # CLI 适配器响应行变换（用于解包包装响应）
+                        line_bytes = self._apply_cli_adapter_response_transform(ctx, line)
+                        if line_bytes is None:
+                            continue
                         self._mark_first_output(ctx, output_state)
-                        yield (line + "\n").encode("utf-8")
+                        yield line_bytes
 
                     for event in events:
                         self._handle_sse_event(
@@ -1391,8 +1446,12 @@ class CliMessageHandlerBase(BaseMessageHandler):
                                 self._mark_first_output(ctx, output_state)
                                 yield (converted_line + "\n").encode("utf-8")
                     else:
+                        # CLI 适配器响应行变换（用于解包包装响应）
+                        line_bytes = self._apply_cli_adapter_response_transform(ctx, line)
+                        if line_bytes is None:
+                            continue
                         self._mark_first_output(ctx, output_state)
-                        yield (line + "\n").encode("utf-8")
+                        yield line_bytes
 
                     for event in events:
                         self._handle_sse_event(
@@ -2593,6 +2652,31 @@ class CliMessageHandlerBase(BaseMessageHandler):
             if not state["streaming_updated"]:
                 self._update_usage_to_streaming_with_ctx(ctx)
                 state["streaming_updated"] = True
+
+    def _apply_cli_adapter_response_transform(
+        self,
+        ctx: StreamContext,
+        line: str,
+    ) -> bytes | None:
+        """
+        应用 CLI 适配器的响应行变换（用于解包包装响应）
+
+        Args:
+            ctx: 流上下文
+            line: 原始 SSE 行（不含换行符）
+
+        Returns:
+            变换后的字节，或 None 表示跳过此行
+        """
+        line_bytes = (line + "\n").encode("utf-8")
+        if ctx.cli_adapter and ctx.adapter_ctx:
+            transformed_line = ctx.cli_adapter.transform_response_line(
+                ctx.adapter_ctx, line_bytes
+            )
+            if transformed_line is None:
+                return None
+            return transformed_line
+        return line_bytes
 
     def _convert_sse_line(
         self,

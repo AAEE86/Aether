@@ -6,6 +6,7 @@ OAuth2 Provider 基类和配置定义
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 import time
@@ -96,6 +97,10 @@ class OAuth2AuthProvider(ABC):
 
     # HTTP 客户端超时
     HTTP_TIMEOUT = 30
+
+    # 重试配置（参考 done-hub）
+    MAX_RETRIES = 3
+    MAX_BACKOFF_SECONDS = 30
 
     @abstractmethod
     async def exchange_refresh_token(self, refresh_token: str) -> OAuth2TokenInfo:
@@ -211,19 +216,23 @@ class OAuth2AuthProvider(ABC):
         self,
         data: dict[str, str],
         headers: dict[str, str] | None = None,
+        proxy_url: str | None = None,
     ) -> dict[str, Any]:
         """
-        发送 Token 请求的通用方法
+        发送 Token 请求的通用方法（带重试和代理支持）
+
+        参考 done-hub providers/antigravity/type.go Refresh() 实现。
 
         Args:
             data: POST 数据
             headers: 额外的请求头
+            proxy_url: 代理 URL（可选）
 
         Returns:
             响应 JSON
 
         Raises:
-            OAuth2AuthError: 请求失败
+            OAuth2AuthError: 请求失败（重试后仍然失败）
         """
         request_headers = {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -231,27 +240,100 @@ class OAuth2AuthProvider(ABC):
         if headers:
             request_headers.update(headers)
 
-        try:
-            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT) as client:
-                resp = await client.post(
-                    self.config.token_url,
-                    data=data,
-                    headers=request_headers,
+        last_error: Exception | None = None
+
+        for attempt in range(self.MAX_RETRIES + 1):
+            if attempt > 0:
+                # 指数退避，最大 MAX_BACKOFF_SECONDS 秒
+                backoff = min(2 ** (attempt - 1), self.MAX_BACKOFF_SECONDS)
+                logger.info(
+                    f"[OAuth2:{self.config.provider_id}] Token request retry {attempt}/{self.MAX_RETRIES} after {backoff}s"
                 )
-                resp.raise_for_status()
-                return resp.json()
-        except httpx.HTTPStatusError as e:
-            error_body = e.response.text[:500] if e.response.text else "(empty)"
-            logger.error(
-                f"[OAuth2:{self.config.provider_id}] Token request failed: "
-                f"HTTP {e.response.status_code}: {error_body}"
-            )
-            raise OAuth2AuthError(
-                f"Token request failed: HTTP {e.response.status_code}: {error_body}"
-            )
-        except Exception as e:
-            logger.error(f"[OAuth2:{self.config.provider_id}] Token request error: {e}")
-            raise OAuth2AuthError(f"Token request error: {e}")
+                await asyncio.sleep(backoff)
+
+            try:
+                # 配置 HTTP 客户端（支持代理）
+                client_kwargs: dict[str, Any] = {"timeout": self.HTTP_TIMEOUT}
+                if proxy_url:
+                    client_kwargs["proxies"] = {"all://": proxy_url}
+
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    resp = await client.post(
+                        self.config.token_url,
+                        data=data,
+                        headers=request_headers,
+                    )
+
+                    # 尝试解析响应
+                    try:
+                        resp_data = resp.json()
+                    except Exception:
+                        resp_data = {}
+
+                    # 检查是否是不可重试的错误
+                    if "error" in resp_data:
+                        error_code = resp_data.get("error", "")
+                        if self._is_non_retryable_error(error_code):
+                            # 不可重试的错误，直接返回让调用方处理
+                            return resp_data
+
+                    # HTTP 错误，但可能可以重试
+                    if resp.status_code >= 400:
+                        error_body = resp.text[:500] if resp.text else "(empty)"
+                        last_error = OAuth2AuthError(
+                            f"Token request failed: HTTP {resp.status_code}: {error_body}"
+                        )
+                        logger.warning(
+                            f"[OAuth2:{self.config.provider_id}] Token request failed (attempt {attempt + 1}): "
+                            f"HTTP {resp.status_code}"
+                        )
+                        continue
+
+                    return resp_data
+
+            except httpx.TimeoutException as e:
+                last_error = OAuth2AuthError(f"Token request timeout: {e}")
+                logger.warning(
+                    f"[OAuth2:{self.config.provider_id}] Token request timeout (attempt {attempt + 1})"
+                )
+            except httpx.RequestError as e:
+                last_error = OAuth2AuthError(f"Token request error: {e}")
+                logger.warning(
+                    f"[OAuth2:{self.config.provider_id}] Token request error (attempt {attempt + 1}): {e}"
+                )
+            except Exception as e:
+                last_error = OAuth2AuthError(f"Token request error: {e}")
+                logger.error(f"[OAuth2:{self.config.provider_id}] Token request error: {e}")
+                # 未知错误不重试
+                break
+
+        # 所有重试都失败
+        logger.error(
+            f"[OAuth2:{self.config.provider_id}] Token request failed after {self.MAX_RETRIES} retries"
+        )
+        raise last_error or OAuth2AuthError("Token request failed after retries")
+
+    def _is_non_retryable_error(self, error_code: str) -> bool:
+        """
+        判断是否是不可重试的 OAuth2 错误
+
+        参考 done-hub providers/antigravity/type.go isNonRetryableError()
+
+        Args:
+            error_code: OAuth2 错误码
+
+        Returns:
+            True 表示不应该重试
+        """
+        non_retryable_errors = {
+            "invalid_grant",
+            "invalid_client",
+            "unauthorized_client",
+            "access_denied",
+            "unsupported_grant_type",
+            "invalid_scope",
+        }
+        return error_code in non_retryable_errors
 
     @staticmethod
     def generate_code_verifier() -> str:

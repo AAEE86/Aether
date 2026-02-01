@@ -400,9 +400,26 @@ async def get_provider_auth(
 
             auth_header, auth_value = provider.build_auth_header(access_token)
 
+            # 解密 auth_config 用于 CLI 适配器（如 project_id 等）
+            decrypted_auth_config: dict[str, Any] | None = None
+            encrypted_auth_config = getattr(key, "auth_config", None)
+            if encrypted_auth_config:
+                try:
+                    if isinstance(encrypted_auth_config, dict):
+                        decrypted_auth_config = encrypted_auth_config
+                    else:
+                        decrypted_config_str = crypto_service.decrypt(encrypted_auth_config)
+                        decrypted_auth_config = json.loads(decrypted_config_str)
+                except (json.JSONDecodeError, Exception) as e:
+                    # auth_config 解密失败不阻塞请求，适配器会使用默认值
+                    from src.core.logger import logger
+
+                    logger.debug(f"OAuth2 auth_config 解密失败 ({auth_type}): {e}")
+
             return ProviderAuthInfo(
                 auth_header=auth_header,
                 auth_value=auth_value,
+                decrypted_auth_config=decrypted_auth_config,
             )
         except OAuth2AuthError as e:
             raise InvalidRequestException(f"OAuth2 认证失败 ({auth_type}): {e}")

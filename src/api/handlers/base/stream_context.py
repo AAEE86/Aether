@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.core.api_format.conversion.stream_state import StreamState
+    from src.services.cli_adapters.base import AdapterContext, CliProviderAdapter
 
 
 @dataclass
@@ -93,6 +94,10 @@ class StreamContext:
 
     # 流式格式转换状态（跨 chunk 追踪）
     stream_conversion_state: StreamState | None = None
+
+    # CLI Provider 适配器（用于请求/响应变换）
+    cli_adapter: CliProviderAdapter | None = None
+    adapter_ctx: AdapterContext | None = None
 
     def reset_for_retry(self) -> None:
         """

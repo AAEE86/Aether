@@ -7,7 +7,9 @@ ClaudeCode OAuth2 Provider
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -20,6 +22,21 @@ from src.core.oauth2_providers.base import (
 )
 
 
+# 不可重试的 OAuth 错误类型
+# 参考: done-hub/providers/claudecode/type.go:isNonRetryableError
+NON_RETRYABLE_ERRORS = frozenset({
+    "invalid_grant",
+    "invalid_client",
+    "unauthorized_client",
+    "access_denied",
+    "unsupported_grant_type",
+    "invalid_scope",
+})
+
+# 默认重试次数
+DEFAULT_MAX_RETRIES = 3
+
+
 class ClaudeCodeProvider(OAuth2AuthProvider):
     """
     ClaudeCode (Anthropic CLI) OAuth2 Provider
@@ -27,8 +44,8 @@ class ClaudeCodeProvider(OAuth2AuthProvider):
     使用 Anthropic Console 进行 OAuth2 认证。
     回调方式：手动复制 URL
 
-    注意：Claude Code 的 token 端点要求 JSON 格式请求体，
-    而非标准的 application/x-www-form-urlencoded。
+    参考 done-hub providers/claudecode/type.go 实现，
+    使用 application/x-www-form-urlencoded 格式。
     """
 
     config = OAuth2ProviderConfig(
@@ -47,7 +64,7 @@ class ClaudeCodeProvider(OAuth2AuthProvider):
         redirect_uri="https://console.anthropic.com/oauth/code/callback",
         callback_mode="manual",  # 手动复制 URL
         extra_headers={
-            "User-Agent": "claude-cli/1.0.56 (external, cli)",
+            "User-Agent": "claude-cli/1.0.81 (external, cli)",
             "Accept": "application/json, text/plain, */*",
             "anthropic-version": "2023-06-01",
         },
@@ -57,48 +74,92 @@ class ClaudeCodeProvider(OAuth2AuthProvider):
         self,
         data: dict[str, str],
         headers: dict[str, str] | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> dict[str, Any]:
         """
-        覆盖基类方法：Claude Code token 端点要求 JSON 格式请求体
+        发送 token 请求，带指数退避重试
 
-        参考 done-hub claudecode_oauth.go: exchangeClaudeCodeForToken
-        使用 Content-Type: application/json 而非 application/x-www-form-urlencoded
+        参考 done-hub providers/claudecode/type.go: Refresh()
+        使用 Content-Type: application/x-www-form-urlencoded 格式
         """
         request_headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "claude-cli/1.0.56 (external, cli)",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "claude-cli/1.0.81 (external, cli)",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://claude.ai/",
-            "Origin": "https://claude.ai",
         }
         if headers:
             request_headers.update(headers)
 
-        try:
-            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT) as client:
-                resp = await client.post(
-                    self.config.token_url,
-                    json=data,
-                    headers=request_headers,
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            # 重试时使用指数退避
+            if attempt > 0:
+                backoff = min(2 ** (attempt - 1), 30)  # 1s, 2s, 4s, ... 最大 30s
+                logger.warning(
+                    f"[OAuth2:{self.config.provider_id}] Token refresh retry "
+                    f"{attempt}/{max_retries} after {backoff}s"
                 )
-                resp.raise_for_status()
-                return resp.json()
-        except httpx.HTTPStatusError as e:
-            error_body = e.response.text[:500] if e.response.text else "(empty)"
-            logger.error(
-                f"[OAuth2:{self.config.provider_id}] Token request failed: "
-                f"HTTP {e.response.status_code}: {error_body}"
-            )
-            raise OAuth2AuthError(
-                f"Token request failed: HTTP {e.response.status_code}: {error_body}"
-            )
-        except Exception as e:
-            logger.error(f"[OAuth2:{self.config.provider_id}] Token request error: {e}")
-            raise OAuth2AuthError(f"Token request error: {e}")
+                await asyncio.sleep(backoff)
+
+            try:
+                async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT) as client:
+                    resp = await client.post(
+                        self.config.token_url,
+                        content=urlencode(data),
+                        headers=request_headers,
+                    )
+
+                    # 解析响应
+                    try:
+                        resp_data = resp.json()
+                    except Exception:
+                        resp_data = {}
+
+                    # 非 200 响应
+                    if resp.status_code != 200:
+                        error_code = resp_data.get("error", "")
+                        error_desc = resp_data.get("error_description", "")
+
+                        # 不可重试的错误，立即抛出
+                        if error_code in NON_RETRYABLE_ERRORS:
+                            raise OAuth2AuthError(
+                                f"Token refresh failed (non-retryable): {error_code} - {error_desc}"
+                            )
+
+                        # 可重试的错误，记录后继续
+                        last_error = OAuth2AuthError(
+                            f"Token request failed: HTTP {resp.status_code}: "
+                            f"{error_code} - {error_desc}"
+                        )
+                        continue
+
+                    return resp_data
+
+            except OAuth2AuthError:
+                # 不可重试错误直接抛出
+                raise
+            except httpx.HTTPStatusError as e:
+                error_body = e.response.text[:500] if e.response.text else "(empty)"
+                last_error = OAuth2AuthError(
+                    f"Token request failed: HTTP {e.response.status_code}: {error_body}"
+                )
+            except Exception as e:
+                last_error = OAuth2AuthError(f"Token request error: {e}")
+
+        # 所有重试都失败
+        logger.error(
+            f"[OAuth2:{self.config.provider_id}] Token refresh failed after "
+            f"{max_retries} retries: {last_error}"
+        )
+        raise last_error or OAuth2AuthError("Token request failed after retries")
 
     async def exchange_refresh_token(self, refresh_token: str) -> OAuth2TokenInfo:
-        """使用 refresh_token 获取新的 access_token"""
+        """
+        使用 refresh_token 获取新的 access_token
+
+        参考: done-hub/providers/claudecode/type.go: Refresh()
+        """
         data = {
             "grant_type": "refresh_token",
             "client_id": self.config.client_id,
@@ -107,12 +168,13 @@ class ClaudeCodeProvider(OAuth2AuthProvider):
 
         resp_data = await self._make_token_request(data)
 
-        # 检查错误
+        # 检查错误（_make_token_request 已处理不可重试错误，这里做兜底）
         if "error" in resp_data:
             error_code = resp_data.get("error", "")
-            if error_code in ("invalid_grant", "invalid_client", "unauthorized_client", "access_denied"):
+            error_desc = resp_data.get("error_description", "")
+            if error_code in NON_RETRYABLE_ERRORS:
                 raise OAuth2AuthError(
-                    f"Non-retryable error from ClaudeCode: {error_code}: {resp_data.get('error_description', '')}"
+                    f"Token refresh failed (non-retryable): {error_code} - {error_desc}"
                 )
 
         return self._parse_token_response(resp_data, original_refresh_token=refresh_token)
@@ -123,7 +185,11 @@ class ClaudeCodeProvider(OAuth2AuthProvider):
         code_verifier: str | None = None,
         redirect_uri: str | None = None,
     ) -> OAuth2TokenInfo:
-        """使用授权码交换 Token"""
+        """
+        使用授权码交换 Token
+
+        参考: done-hub 实现
+        """
         data = {
             "grant_type": "authorization_code",
             "client_id": self.config.client_id,
