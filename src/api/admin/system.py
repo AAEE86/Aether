@@ -1295,6 +1295,8 @@ class AdminImportConfigAdapter(AdminApiAdapter):
                         stats["endpoints"]["created"] += 1
 
                 # 导入 Provider Keys（按 provider_id 归属）
+                from src.core.api_format.signature import normalize_signature_key
+
                 endpoint_format_rows = (
                     db.query(ProviderEndpoint.api_format)
                     .filter(ProviderEndpoint.provider_id == provider_id)
@@ -1303,8 +1305,6 @@ class AdminImportConfigAdapter(AdminApiAdapter):
                 endpoint_formats: set[str] = set()
                 for (api_format,) in endpoint_format_rows:
                     fmt = api_format.value if hasattr(api_format, "value") else str(api_format)
-                    from src.core.api_format.signature import normalize_signature_key
-
                     endpoint_formats.add(normalize_signature_key(fmt))
                 existing_keys = (
                     db.query(ProviderAPIKey).filter(ProviderAPIKey.provider_id == provider_id).all()
@@ -1340,14 +1340,24 @@ class AdminImportConfigAdapter(AdminApiAdapter):
                     for fmt in raw_formats:
                         if not isinstance(fmt, str):
                             continue
-                        fmt_upper = fmt.strip().upper()
-                        if not fmt_upper or fmt_upper in seen:
+                        fmt_stripped = fmt.strip()
+                        if not fmt_stripped:
                             continue
-                        seen.add(fmt_upper)
-                        if endpoint_formats and fmt_upper not in endpoint_formats:
-                            missing_formats.append(fmt_upper)
+                        # 使用 normalize_signature_key 归一化，与 endpoint_formats 保持一致
+                        try:
+                            fmt_normalized = normalize_signature_key(fmt_stripped)
+                        except (ValueError, KeyError):
+                            # 无效的格式字符串，跳过
+                            missing_formats.append(fmt_stripped.upper())
                             continue
-                        normalized_formats.append(fmt_upper)
+                        if fmt_normalized in seen:
+                            continue
+                        seen.add(fmt_normalized)
+                        if endpoint_formats and fmt_normalized not in endpoint_formats:
+                            missing_formats.append(fmt_normalized.upper())
+                            continue
+                        # 存储时使用大写格式以保持向后兼容
+                        normalized_formats.append(fmt_normalized.upper())
 
                     if missing_formats:
                         stats["errors"].append(
