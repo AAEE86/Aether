@@ -95,7 +95,7 @@
                     <Label class="text-xs text-muted-foreground">自定义路径</Label>
                     <Input
                       :model-value="getEndpointEditState(endpoint.id)?.path ?? (endpoint.custom_path || '')"
-                      :placeholder="getDefaultPath(endpoint.api_format) || '留空使用默认'"
+                      :placeholder="getDefaultPath(endpoint.api_format, endpoint.base_url) || '留空使用默认'"
                       :disabled="isFixedProvider"
                       @update:model-value="(v) => updateEndpointField(endpoint.id, 'path', v)"
                     />
@@ -673,9 +673,20 @@ const deleteConfirmDescription = computed(() => {
 })
 
 // 获取指定 API 格式的默认路径
-function getDefaultPath(apiFormat: string): string {
+function getDefaultPath(apiFormat: string, baseUrl?: string): string {
   const format = apiFormats.value.find(f => f.value === apiFormat)
-  return format?.default_path || ''
+  const defaultPath = format?.default_path || ''
+  // Codex 端点使用 /responses 而非 /v1/responses
+  if (apiFormat === 'openai:cli' && baseUrl && isCodexUrl(baseUrl)) {
+    return '/responses'
+  }
+  return defaultPath
+}
+
+// 判断是否是 Codex OAuth 端点
+function isCodexUrl(baseUrl: string): boolean {
+  const url = baseUrl.replace(/\/+$/, '')
+  return url.includes('/backend-api/codex') || url.endsWith('/codex')
 }
 
 // 初始化端点的编辑状态
@@ -1183,7 +1194,9 @@ function hasValidationErrorsForEndpoint(endpointId: string): boolean {
 
 // 新端点选择的格式的默认路径
 const newEndpointDefaultPath = computed(() => {
-  return getDefaultPath(newEndpoint.value.api_format)
+  // 使用填写的 base_url 或 provider 的 website 来判断是否是 Codex 端点
+  const baseUrl = newEndpoint.value.base_url || props.provider?.website || ''
+  return getDefaultPath(newEndpoint.value.api_format, baseUrl)
 })
 
 // 加载 API 格式列表

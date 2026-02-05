@@ -118,7 +118,7 @@ export const apiFormats = [
   },
   {
     name: 'OpenAI CLI',
-    endpoint: '/v1/responses',
+    endpoint: '/v1/responses (Codex: /responses)',
     auth: 'Authorization: Bearer xxx',
     clients: ['Codex CLI']
   },

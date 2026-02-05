@@ -146,6 +146,10 @@ def build_provider_url(
     else:
         # 使用 API 格式的默认路径
         path = _resolve_default_path(endpoint_sig)
+        # Codex OAuth 端点（chatgpt.com/backend-api/codex）使用 /responses 而非 /v1/responses
+        base_url = getattr(endpoint, "base_url", "") or ""
+        if endpoint_sig == "openai:cli" and _is_codex_url(base_url):
+            path = "/responses"
         if effective_path_params:
             try:
                 path = path.format(**effective_path_params)
@@ -189,6 +193,15 @@ def _resolve_default_path(endpoint_sig: str | None) -> str:
     except Exception:
         logger.warning(f"Unknown endpoint signature '{endpoint_sig}' for endpoint, fallback to '/'")
         return "/"
+
+
+def _is_codex_url(base_url: str) -> bool:
+    """判断是否是 Codex OAuth 端点（如 chatgpt.com/backend-api/codex）。
+
+    Codex 端点不走标准 /v1 前缀，直接使用 /responses。
+    """
+    url = base_url.rstrip("/")
+    return "/backend-api/codex" in url or url.endswith("/codex")
 
 
 # ==============================================================================
