@@ -80,18 +80,14 @@ def _is_format_conversion_enabled(db: Session) -> bool:
     return SystemConfigService.is_format_conversion_enabled(db)
 
 
-def _get_convertible_formats(client_format: str, global_conversion_enabled: bool) -> list[str]:
+def _get_convertible_formats(client_format: str) -> list[str]:
     """
     获取客户端格式可转换到的所有目标格式列表
 
-    当启用格式转换时，返回所有可以转换的格式；
-    否则只返回客户端格式本身（不包括同族的其他格式）。
+    始终返回所有有转换器的格式（包括客户端格式本身），
+    由下游 get_compatible_provider_formats 按三层开关（全局/Provider/端点）精确过滤。
     """
     client_format_norm = normalize_endpoint_signature(client_format)
-
-    # 格式转换关闭时，只返回客户端格式本身
-    if not global_conversion_enabled:
-        return [client_format_norm]
 
     # 收集所有可转换的格式
     register_default_normalizers()
@@ -501,7 +497,7 @@ async def list_models(
 
     # 获取可用格式（包括可转换的格式）
     global_conversion_enabled = _is_format_conversion_enabled(db)
-    candidate_formats = _get_convertible_formats(api_format, global_conversion_enabled)
+    candidate_formats = _get_convertible_formats(api_format)
     candidate_formats, empty_response = _filter_formats_by_restrictions(
         candidate_formats, restrictions, api_format
     )
@@ -605,7 +601,7 @@ async def retrieve_model(
 
     # 获取可用格式（包括可转换的格式）
     global_conversion_enabled = _is_format_conversion_enabled(db)
-    candidate_formats = _get_convertible_formats(api_format, global_conversion_enabled)
+    candidate_formats = _get_convertible_formats(api_format)
     candidate_formats, _ = _filter_formats_by_restrictions(
         candidate_formats, restrictions, api_format
     )
@@ -688,7 +684,7 @@ async def list_models_gemini(
 
     # 获取可用格式（包括可转换的格式）
     global_conversion_enabled = _is_format_conversion_enabled(db)
-    candidate_formats = _get_convertible_formats(api_format, global_conversion_enabled)
+    candidate_formats = _get_convertible_formats(api_format)
     candidate_formats, empty_response = _filter_formats_by_restrictions(
         candidate_formats, restrictions, api_format
     )
@@ -767,7 +763,7 @@ async def get_model_gemini(
 
     # 获取可用格式（包括可转换的格式）
     global_conversion_enabled = _is_format_conversion_enabled(db)
-    candidate_formats = _get_convertible_formats(api_format, global_conversion_enabled)
+    candidate_formats = _get_convertible_formats(api_format)
     candidate_formats, _ = _filter_formats_by_restrictions(
         candidate_formats, restrictions, api_format
     )

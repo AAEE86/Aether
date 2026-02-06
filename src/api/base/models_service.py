@@ -289,6 +289,7 @@ def get_compatible_provider_formats(
             ProviderEndpoint.api_family,
             ProviderEndpoint.endpoint_kind,
             ProviderEndpoint.format_acceptance_config,
+            Provider.enable_format_conversion,
         )
         .join(Provider, ProviderEndpoint.provider_id == Provider.id)
         .filter(
@@ -302,16 +303,24 @@ def get_compatible_provider_formats(
     )
 
     provider_to_formats: dict[str, set[str]] = {}
-    for provider_id, api_family, endpoint_kind, format_acceptance_config in endpoint_rows:
+    for (
+        provider_id,
+        api_family,
+        endpoint_kind,
+        format_acceptance_config,
+        provider_conversion_enabled,
+    ) in endpoint_rows:
         if not provider_id or not api_family or not endpoint_kind:
             continue
         endpoint_format = normalize_endpoint_signature(f"{api_family}:{endpoint_kind}")
+        skip_endpoint_check = global_conversion_enabled or bool(provider_conversion_enabled)
         is_compatible, _needs_conversion, _reason = is_format_compatible(
             client_format_norm,
             endpoint_format,
             format_acceptance_config,
             is_stream=False,
             effective_conversion_enabled=global_conversion_enabled,
+            skip_endpoint_check=skip_endpoint_check,
         )
         if not is_compatible:
             continue

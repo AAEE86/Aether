@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
+from src.api.base.models_service import invalidate_models_list_cache
 from src.api.base.pipeline import ApiRequestPipeline
 from src.core.enums import ProviderBillingType
 from src.core.exceptions import NotFoundException
@@ -31,6 +32,8 @@ from src.models.endpoint_models import (
     ProviderUpdateRequest,
     ProviderWithEndpointsSummary,
 )
+from src.services.cache.model_cache import ModelCacheService
+from src.services.cache.provider_cache import ProviderCacheService
 
 router = APIRouter(tags=["Provider Summary"])
 pipeline = ApiRequestPipeline()
@@ -499,10 +502,21 @@ class AdminUpdateProviderSettingsAdapter(AdminApiAdapter):
         for key, value in update_dict.items():
             setattr(provider, key, value)
 
+        provider.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(provider)
 
         admin_name = context.user.username if context.user else "admin"
         logger.info(f"Provider {provider.name} updated by {admin_name}: {update_dict}")
+
+        # 缓存失效
+        affects_model_visibility = {"is_active", "enable_format_conversion"} & update_dict.keys()
+        if affects_model_visibility:
+            await invalidate_models_list_cache()
+            if "is_active" in update_dict:
+                await ModelCacheService.invalidate_all_resolve_cache()
+
+        if "billing_type" in update_dict:
+            await ProviderCacheService.invalidate_provider_cache(provider.id)
 
         return _build_provider_summary(db, provider)

@@ -1261,6 +1261,7 @@ class ListAvailableModelsAdapter(AuthenticatedApiAdapter):
                 ProviderEndpoint.api_family,
                 ProviderEndpoint.endpoint_kind,
                 ProviderEndpoint.format_acceptance_config,
+                Provider.enable_format_conversion,
             )
             .join(Provider, ProviderEndpoint.provider_id == Provider.id)
             .filter(
@@ -1282,11 +1283,18 @@ class ListAvailableModelsAdapter(AuthenticatedApiAdapter):
         # 只要端点能被任意一种客户端格式访问，就将其 Provider 加入结果
         provider_to_formats: dict[str, set[str]] = {}
 
-        for provider_id, api_family, endpoint_kind, format_acceptance_config in endpoint_rows:
+        for (
+            provider_id,
+            api_family,
+            endpoint_kind,
+            format_acceptance_config,
+            provider_conversion_enabled,
+        ) in endpoint_rows:
             if not provider_id or not api_family or not endpoint_kind:
                 continue
 
             endpoint_format = make_signature_key(str(api_family), str(endpoint_kind))
+            skip_endpoint_check = global_conversion_enabled or bool(provider_conversion_enabled)
 
             # 检查该端点是否能被任意客户端格式访问
             for client_format in all_formats:
@@ -1296,6 +1304,7 @@ class ListAvailableModelsAdapter(AuthenticatedApiAdapter):
                     format_acceptance_config,
                     is_stream=False,
                     effective_conversion_enabled=global_conversion_enabled,
+                    skip_endpoint_check=skip_endpoint_check,
                 )
                 if is_compatible:
                     provider_to_formats.setdefault(provider_id, set()).add(endpoint_format)

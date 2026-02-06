@@ -1025,8 +1025,8 @@ async function toggleFormatConversion() {
   if (!provider.value) return
   const newValue = !provider.value.enable_format_conversion
   try {
-    await updateProvider(provider.value.id, { enable_format_conversion: newValue })
-    provider.value.enable_format_conversion = newValue
+    const updated = await updateProvider(provider.value.id, { enable_format_conversion: newValue })
+    provider.value = updated
     showSuccess(newValue ? '已启用格式转换' : '已禁用格式转换')
     emit('refresh')
   } catch {
