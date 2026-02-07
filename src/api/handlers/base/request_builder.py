@@ -660,7 +660,65 @@ async def get_provider_auth(
                     template = FIXED_PROVIDERS.get(ProviderType(provider_type))
                 except Exception:
                     template = None
-                if template:
+                if provider_type == ProviderType.KIRO.value:
+                    from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
+                    from src.services.provider.adapters.kiro.token_manager import (
+                        refresh_access_token,
+                        validate_refresh_token,
+                    )
+
+                    cfg = KiroAuthConfig.from_dict(token_meta or {})
+                    if not (cfg.refresh_token or "").strip():
+                        raise InvalidRequestException(
+                            "Kiro auth_config missing refresh_token; please re-import credentials."
+                        )
+
+                    redis = await get_redis_client(require_redis=False)
+                    lock_key = f"provider_oauth_refresh_lock:{key.id}"
+                    got_lock = False
+                    if redis is not None:
+                        try:
+                            got_lock = bool(await redis.set(lock_key, "1", ex=30, nx=True))
+                        except Exception:
+                            got_lock = False
+
+                    if got_lock or redis is None:
+                        try:
+                            proxy_config = None
+                            try:
+                                provider = getattr(key, "provider", None) or getattr(endpoint, "provider", None)
+                                proxy_config = getattr(provider, "proxy", None)
+                            except Exception:
+                                proxy_config = None
+
+                            validate_refresh_token(cfg.refresh_token)
+                            access_token, new_cfg = await refresh_access_token(
+                                cfg,
+                                proxy_config=proxy_config,
+                            )
+                            token_meta = new_cfg.to_dict()
+                            token_meta["updated_at"] = int(time.time())
+
+                            key.api_key = crypto_service.encrypt(access_token)
+                            key.auth_config = crypto_service.encrypt(json.dumps(token_meta))
+
+                            sess = object_session(key)
+                            if sess is not None:
+                                sess.add(key)
+                                sess.commit()
+                            else:
+                                logger.warning(
+                                    "[OAUTH_REFRESH] key {} refreshed but cannot persist (no session); "
+                                    "next request will refresh again",
+                                    key.id,
+                                )
+                        finally:
+                            if got_lock and redis is not None:
+                                try:
+                                    await redis.delete(lock_key)
+                                except Exception:
+                                    pass
+                elif template:
                     redis = await get_redis_client(require_redis=False)
                     lock_key = f"provider_oauth_refresh_lock:{key.id}"
                     got_lock = False
@@ -782,7 +840,6 @@ async def get_provider_auth(
             auth_value=f"Bearer {decrypted_key}",
             decrypted_auth_config=decrypted_auth_config,
         )
-
     if auth_type == "vertex_ai":
         from src.core.vertex_auth import VertexAuthError, VertexAuthService
 

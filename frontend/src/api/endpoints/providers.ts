@@ -24,7 +24,7 @@ export async function updateProvider(
   providerId: string,
   data: Partial<{
     name: string
-    provider_type: 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity'
+    provider_type: 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity' | 'kiro'
     description: string | null
     website: string
     provider_priority: number
@@ -53,7 +53,7 @@ export async function updateProvider(
 export async function createProvider(
   data: {
     name: string
-    provider_type?: 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity'
+    provider_type?: 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity' | 'kiro'
     description?: string
     website?: string
     billing_type?: 'monthly_quota' | 'pay_as_you_go' | 'free_tier'

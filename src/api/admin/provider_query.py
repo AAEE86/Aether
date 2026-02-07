@@ -68,7 +68,6 @@ async def _resolve_key_auth(
 
     api_key_value: str | None = None
     auth_config: dict[str, Any] | None = None
-
     if auth_type == "oauth":
         endpoint_api_format = "gemini:chat" if provider_type == ProviderType.ANTIGRAVITY else None
         try:

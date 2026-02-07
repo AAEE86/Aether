@@ -37,13 +37,16 @@
                 <SelectValue placeholder="请选择" />
               </SelectTrigger>
               <SelectContent>
-                <!-- 新建模式：允许自定义、Codex 和 Antigravity -->
+                <!-- 新建模式：允许自定义、Codex、Kiro 和 Antigravity -->
                 <template v-if="!isEditMode">
                   <SelectItem value="custom">
                     自定义
                   </SelectItem>
                   <SelectItem value="codex">
                     Codex
+                  </SelectItem>
+                  <SelectItem value="kiro">
+                    Kiro
                   </SelectItem>
                   <SelectItem value="antigravity">
                     Antigravity
@@ -62,6 +65,9 @@
                   </SelectItem>
                   <SelectItem value="gemini_cli">
                     GeminiCli
+                  </SelectItem>
+                  <SelectItem value="kiro">
+                    Kiro
                   </SelectItem>
                   <SelectItem value="antigravity">
                     Antigravity
@@ -337,7 +343,7 @@ const defaultPriority = computed(() => {
 // 表单数据
 const form = ref({
   name: '',
-  provider_type: 'custom' as 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity',
+  provider_type: 'custom' as 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity' | 'kiro',
   description: '',
   website: '',
   // 计费配置

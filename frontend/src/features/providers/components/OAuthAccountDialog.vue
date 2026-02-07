@@ -11,9 +11,13 @@
       <div class="flex rounded-lg border border-border p-0.5 bg-muted/30">
         <button
           class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-all"
-          :class="mode === 'oauth'
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground hover:text-foreground'"
+          :disabled="isKiroProvider"
+          :class="[
+            mode === 'oauth'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
+            isKiroProvider ? 'opacity-50 cursor-not-allowed' : ''
+          ]"
           @click="switchMode('oauth')"
         >
           获取授权
@@ -231,6 +235,7 @@ import {
 const props = defineProps<{
   open: boolean
   providerId: string | null
+  providerType: string | null
 }>()
 
 const emit = defineEmits<{
@@ -281,6 +286,9 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const isOpen = computed(() => props.open)
 
+const isKiroProvider = computed(() => (props.providerType || '').toLowerCase() === 'kiro')
+
+
 const oauthBusy = computed(() =>
   oauth.value.starting || oauth.value.completing
 )
@@ -304,7 +312,7 @@ function resetForm() {
   importing.value = false
   isDragging.value = false
   showManualInput.value = false
-  mode.value = 'oauth'
+  mode.value = isKiroProvider.value ? 'import' : 'oauth'
   if (fileInputRef.value) {
     fileInputRef.value.value = ''
   }
@@ -322,6 +330,13 @@ function clearImport() {
 
 function switchMode(newMode: DialogMode) {
   if (mode.value === newMode) return
+
+  if (newMode === 'oauth' && isKiroProvider.value) {
+    showError('Kiro \u4e0d\u652f\u6301 OAuth \u6388\u6743\uff0c\u8bf7\u4f7f\u7528\u5bfc\u5165\u6388\u6743', '\u63d0\u793a')
+    mode.value = 'import'
+    return
+  }
+
   mode.value = newMode
   if (newMode === 'oauth' && !oauth.value.authorization_url && !oauth.value.starting) {
     initOAuth()
@@ -347,6 +362,8 @@ function openAuthorizationUrl() {
 
 async function initOAuth() {
   if (!props.providerId) return
+  if (isKiroProvider.value) return
+
 
   oauth.value.starting = true
   try {
@@ -358,7 +375,7 @@ async function initOAuth() {
   } catch (err: any) {
     const errorMessage = parseApiError(err, '初始化授权失败')
     showError(errorMessage, '错误')
-    handleClose()
+    mode.value = 'import'
   } finally {
     oauth.value.starting = false
   }
@@ -384,24 +401,30 @@ async function handleCompleteOAuth() {
 
 function parseImportText(text: string): { refresh_token: string; name?: string } | null {
   const trimmed = text.trim()
+  if (!trimmed) return null
+
+  // Kiro: keep full JSON so backend can extract auth_method/region/client_id, etc.
+  if (isKiroProvider.value) {
+    return { refresh_token: trimmed }
+  }
+
   try {
     const parsed = JSON.parse(trimmed)
     if (typeof parsed === 'object' && parsed !== null) {
-      const refreshToken = parsed.refresh_token
+      const refreshToken = (parsed as any).refresh_token
       if (typeof refreshToken === 'string' && refreshToken.trim()) {
         return {
           refresh_token: refreshToken.trim(),
-          name: parsed.name || parsed.oauth_email || undefined,
+          name: (parsed as any).name || (parsed as any).oauth_email || undefined,
         }
       }
+      return null
     }
   } catch {
-    // 不是 JSON
+    // Not JSON: treat as raw token.
   }
-  if (trimmed) {
-    return { refresh_token: trimmed }
-  }
-  return null
+
+  return { refresh_token: trimmed }
 }
 
 function readFile(file: File) {
@@ -458,7 +481,11 @@ async function handleImport() {
 
 watch(() => props.open, (newOpen) => {
   if (newOpen) {
-    initOAuth()
+    if (isKiroProvider.value) {
+      mode.value = 'import'
+    } else {
+      initOAuth()
+    }
   } else {
     resetForm()
   }

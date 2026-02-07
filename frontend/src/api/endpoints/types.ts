@@ -421,7 +421,7 @@ export interface PublicEndpointStatusMonitorResponse {
   formats: PublicEndpointStatusMonitor[]
 }
 
-export type ProviderType = 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity'
+export type ProviderType = 'custom' | 'claude_code' | 'codex' | 'gemini_cli' | 'antigravity' | 'kiro'
 
 export interface ProviderWithEndpointsSummary {
   id: string

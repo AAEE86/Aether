@@ -83,6 +83,25 @@ FIXED_PROVIDERS: dict[ProviderType, FixedProviderTemplate] = {
             use_pkce=True,
         ),
     ),
+    ProviderType.KIRO: FixedProviderTemplate(
+        provider_type=ProviderType.KIRO,
+        display_name="Kiro",
+        # Region is resolved from per-key auth_config (imported credentials).
+        # Keep a templated base_url so endpoints remain fixed/locked.
+        api_base_url="https://q.{region}.amazonaws.com",
+        endpoint_signatures=["claude:cli"],
+        # Kiro does not support Aether's OAuth flow; credentials are imported.
+        # Keep a placeholder OAuth config so the fixed-provider template shape stays stable.
+        oauth=FixedProviderOAuth(
+            authorize_url="",
+            token_url="",
+            client_id="",
+            client_secret="",
+            scopes=[],
+            redirect_uri="",
+            use_pkce=False,
+        ),
+    ),
     ProviderType.GEMINI_CLI: FixedProviderTemplate(
         provider_type=ProviderType.GEMINI_CLI,
         display_name="GeminiCli",

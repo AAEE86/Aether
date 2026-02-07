@@ -293,7 +293,7 @@ class AdminCreateProviderAdapter(AdminApiAdapter):
             # 有 envelope 包装的 Provider 类型（如 Antigravity、Codex）需要格式转换来正确
             # 解包上游响应，创建时默认开启 enable_format_conversion。
             pt = (validated_data.provider_type or "custom").strip()
-            envelope_provider_types = {ProviderType.ANTIGRAVITY, ProviderType.CODEX}
+            envelope_provider_types = {ProviderType.ANTIGRAVITY, ProviderType.CODEX, ProviderType.KIRO}
             default_enable_format_conversion = pt in envelope_provider_types
 
             # 创建 Provider 对象

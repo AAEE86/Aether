@@ -896,8 +896,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             pre_computed_auth=auth_info.as_tuple() if auth_info else None,
         )
         if upstream_is_stream:
-            # Ensure upstream returns SSE payload when in streaming mode.
-            provider_headers["Accept"] = "text/event-stream"
+            # Ensure upstream returns SSE payload when in streaming mode (unless overridden).
+            if not any(k.lower() == "accept" for k in provider_headers):
+                provider_headers["Accept"] = "text/event-stream"
 
         ctx.provider_request_headers = provider_headers
         ctx.provider_request_body = provider_payload
@@ -1516,8 +1517,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
                 pre_computed_auth=auth_info.as_tuple() if auth_info else None,
             )
             if upstream_is_stream:
-                # Ensure upstream returns SSE payload when forced to streaming mode.
-                provider_hdrs["Accept"] = "text/event-stream"
+                # Ensure upstream returns SSE payload when forced to streaming mode (unless overridden).
+                if not any(k.lower() == "accept" for k in provider_hdrs):
+                    provider_hdrs["Accept"] = "text/event-stream"
 
             provider_request_headers = provider_hdrs
             provider_request_body = provider_payload
@@ -1596,8 +1598,26 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
                         stream_resp.raise_for_status()
 
+                        byte_iter = stream_resp.aiter_bytes()
+                        if provider_type == "kiro" and envelope and envelope.force_stream_rewrite():
+                            from src.services.provider.adapters.kiro.context import get_kiro_request_context
+                            from src.services.provider.adapters.kiro.eventstream_rewriter import (
+                                rewrite_eventstream_to_sse,
+                            )
+
+                            kiro_ctx = get_kiro_request_context()
+                            thinking_enabled = (
+                                bool(getattr(kiro_ctx, "thinking_enabled", False)) if kiro_ctx else False
+                            )
+
+                            byte_iter = rewrite_eventstream_to_sse(
+                                byte_iter,
+                                model=str(model or ""),
+                                thinking_enabled=thinking_enabled,
+                            )
+
                         internal_resp = await aggregate_upstream_stream_to_internal_response(
-                            stream_resp.aiter_bytes(),
+                            byte_iter,
                             provider_api_format=provider_api_format,
                             provider_name=str(provider.name),
                             model=str(model or ""),

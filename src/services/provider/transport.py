@@ -101,8 +101,18 @@ def get_antigravity_base_url() -> str | None:
     return get_selected_base_url()
 
 
-def _get_provider_type(endpoint: Any, key: "ProviderAPIKey" | None = None) -> str | None:
-    """尽力获取 Provider.provider_type（用于 Antigravity 等 Provider 特判）。"""
+def _get_provider_type(
+    endpoint: Any,
+    key: "ProviderAPIKey" | None = None,
+    decrypted_auth_config: dict[str, Any] | None = None,
+) -> str | None:
+    """尽力获取 Provider.provider_type（用于 Antigravity 等 Provider 特判）。
+
+    优先级:
+    1. endpoint.provider.provider_type
+    2. key.provider.provider_type
+    3. decrypted_auth_config["provider_type"]（OAuth 导入的凭证）
+    """
     try:
         provider = getattr(endpoint, "provider", None)
         if provider is not None:
@@ -121,6 +131,12 @@ def _get_provider_type(endpoint: Any, key: "ProviderAPIKey" | None = None) -> st
                     return str(pt).lower()
     except Exception:
         pass
+
+    # Fallback: OAuth 导入的凭证可能包含 provider_type（如 Kiro）
+    if decrypted_auth_config:
+        pt = decrypted_auth_config.get("provider_type")
+        if isinstance(pt, str) and pt.strip():
+            return pt.strip().lower()
 
     return None
 
@@ -179,7 +195,7 @@ def build_provider_url(
     # endpoint_sig 为空时保持为空（更安全：默认路径回退到 "/"，避免误判为 claude:chat）
     endpoint_sig = normalize_endpoint_signature(endpoint_sig) if endpoint_sig else ""
 
-    provider_type = _get_provider_type(endpoint, key)
+    provider_type = _get_provider_type(endpoint, key, decrypted_auth_config)
 
     # 合并查询参数（部分逻辑需要先拿到 query_params）
     effective_query_params = dict(query_params) if query_params else {}
