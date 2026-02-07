@@ -219,6 +219,8 @@ class StreamProcessor:
             endpoint_sig=str(getattr(ctx, "provider_api_format", "") or ""),
         )
         envelope = behavior.envelope
+        ctx_provider_type = str(getattr(ctx, "provider_type", "") or "").strip().lower()
+        kiro_binary_stream = ctx_provider_type == "kiro" and envelope and envelope.force_stream_rewrite()
         buffer = b""
         line_count = 0
         should_stop = False
@@ -238,6 +240,11 @@ class StreamProcessor:
             )
             prefetched_chunks.append(first_chunk)
             total_prefetched_bytes += len(first_chunk)
+
+            # Kiro upstream uses AWS Event Stream (binary). Do not attempt to split/decode lines here;
+            # we only enforce TTFB and let StreamProcessor rewrite bytes later.
+            if kiro_binary_stream:
+                return prefetched_chunks
             buffer += first_chunk
 
             # 继续读取剩余的预读数据
@@ -454,6 +461,41 @@ class StreamProcessor:
             if envelope and envelope.force_stream_rewrite():
                 needs_conversion = True
                 ctx.needs_conversion = True
+
+            ctx_provider_type = str(getattr(ctx, "provider_type", "") or "").strip().lower()
+            if ctx_provider_type == "kiro" and envelope and envelope.force_stream_rewrite():
+                from src.services.provider.adapters.kiro.context import get_kiro_request_context
+                from src.services.provider.adapters.kiro.eventstream_rewriter import (
+                    rewrite_eventstream_to_sse,
+                )
+
+                upstream_iter = byte_iterator
+                prefetch = list(prefetched_chunks) if prefetched_chunks else []
+
+                async def _combined_upstream() -> AsyncGenerator[bytes]:
+                    for c in prefetch:
+                        if c:
+                            yield c
+                    async for c in upstream_iter:
+                        if c:
+                            yield c
+
+                kiro_ctx = get_kiro_request_context()
+                thinking_enabled = bool(getattr(kiro_ctx, "thinking_enabled", False)) if kiro_ctx else False
+
+                byte_iterator = rewrite_eventstream_to_sse(
+                    _combined_upstream(),
+                    model=str(ctx.model or ""),
+                    thinking_enabled=thinking_enabled,
+                    estimated_input_tokens=int(ctx.input_tokens or 0),
+                )
+                prefetched_chunks = None
+
+                # Kiro 重写后输出的是 Claude SSE 格式（data: {...}\n\n）
+                # 如果客户端也是 Claude 格式，则不需要再进行格式转换
+                if client_family == "claude":
+                    needs_conversion = False
+                    ctx.needs_conversion = False
 
             # 安全检查：needs_conversion 为 True 时，provider_format 必须有值
             if needs_conversion and not provider_format:

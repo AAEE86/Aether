@@ -274,7 +274,8 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
         update_data = self.key_data.model_dump(exclude_unset=True)
 
         # 验证 auth_type 切换
-        current_auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+        raw_auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+        current_auth_type = "oauth" if raw_auth_type == "kiro" else raw_auth_type
         target_auth_type = update_data.get("auth_type", current_auth_type) or current_auth_type
 
         # auth_type 切换校验 + 字段归一化
@@ -299,7 +300,6 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
                 if "api_key" not in update_data:
                     update_data["api_key"] = "__placeholder__"
 
-        # 加密 api_key（非 None 时）
         if "api_key" in update_data and update_data["api_key"] is not None:
             update_data["api_key"] = crypto_service.encrypt(update_data["api_key"])
         # 加密 auth_config（包含敏感的 Service Account 凭证）
@@ -433,7 +433,8 @@ class AdminRevealEndpointKeyAdapter(AdminApiAdapter):
         if not key:
             raise NotFoundException(f"Key {self.key_id} 不存在")
 
-        auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+        raw_auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+        auth_type = "oauth" if raw_auth_type == "kiro" else raw_auth_type
 
         # Vertex AI 类型返回 auth_config（需要解密）
         if auth_type == "vertex_ai":
@@ -468,6 +469,7 @@ class AdminRevealEndpointKeyAdapter(AdminApiAdapter):
                     "无法解密认证配置，可能是加密密钥已更改。请重新添加该密钥。"
                 )
 
+
         # OAuth 类型：返回 access_token + refresh_token
         if auth_type == "oauth":
             try:
@@ -483,9 +485,18 @@ class AdminRevealEndpointKeyAdapter(AdminApiAdapter):
                 try:
                     decrypted_config = crypto_service.decrypt(encrypted_auth_config)
                     auth_config = json.loads(decrypted_config)
-                    refresh_token = auth_config.get("refresh_token")
-                    if refresh_token:
-                        result["refresh_token"] = refresh_token
+                    if isinstance(auth_config, dict):
+                        refresh_token = auth_config.get("refresh_token")
+                        if refresh_token:
+                            result["refresh_token"] = refresh_token
+
+                        provider_type = str(
+                            auth_config.get("provider_type")
+                            or auth_config.get("providerType")
+                            or ""
+                        )
+                        if provider_type == ProviderType.KIRO.value:
+                            result["auth_config"] = auth_config
                 except Exception as e:
                     logger.error(f"解密 auth_config 失败: ID={self.key_id}, Error={e}")
             logger.info(f"[REVEAL] 查看 OAuth Key: ID={self.key_id}, Name={key.name}")
@@ -586,9 +597,12 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
             if not api_formats:
                 continue  # 跳过没有 API 格式的 Key
 
-            auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+            raw_auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+            auth_type = "oauth" if raw_auth_type == "kiro" else raw_auth_type
             if auth_type == "vertex_ai":
                 masked_key = "[Service Account]"
+            elif auth_type == "oauth":
+                masked_key = "[OAuth Token]"
             else:
                 try:
                     decrypted_key = crypto_service.decrypt(key.api_key)
@@ -665,7 +679,8 @@ def _build_key_response(
     key: ProviderAPIKey, api_key_plain: str | None = None
 ) -> EndpointAPIKeyResponse:
     """构建 Key 响应对象的辅助函数"""
-    auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+    raw_auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+    auth_type = "oauth" if raw_auth_type == "kiro" else raw_auth_type
 
     if auth_type == "vertex_ai":
         # Vertex AI 使用 Service Account，不显示占位符
@@ -688,6 +703,7 @@ def _build_key_response(
     key_dict = key.__dict__.copy()
     key_dict.pop("_sa_instance_state", None)
     key_dict.pop("api_key", None)  # 移除敏感字段，避免泄露
+    key_dict["auth_type"] = auth_type
 
     # 提取 OAuth 元数据（如果是 OAuth 类型）
     oauth_expires_at = None

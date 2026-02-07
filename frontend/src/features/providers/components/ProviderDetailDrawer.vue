@@ -265,12 +265,22 @@
                               {{ key.auth_type === 'oauth' ? '[Refresh Token]' : (key.auth_type === 'vertex_ai' ? 'Vertex AI' : key.api_key_masked) }}
                             </span>
                             <Button
-                              v-if="key.auth_type === 'oauth'"
+                              v-if="key.auth_type === 'oauth' && provider.provider_type !== 'kiro'"
                               variant="ghost"
                               size="icon"
                               class="h-4 w-4 shrink-0"
                               title="下载 Refresh Token 授权文件"
                               @click.stop="downloadRefreshToken(key)"
+                            >
+                              <Download class="w-2.5 h-2.5" />
+                            </Button>
+                            <Button
+                              v-else-if="key.auth_type === 'oauth' && provider.provider_type === 'kiro'"
+                              variant="ghost"
+                              size="icon"
+                              class="h-4 w-4 shrink-0"
+                              title="Export credentials"
+                              @click.stop="downloadKiroCredentials(key)"
                             >
                               <Download class="w-2.5 h-2.5" />
                             </Button>
@@ -705,6 +715,7 @@
     v-if="open && provider"
     :open="oauthAccountDialogOpen"
     :provider-id="provider.id"
+    :provider-type="provider.provider_type"
     @close="oauthAccountDialogOpen = false"
     @saved="handleKeyChanged"
   />
@@ -1188,6 +1199,61 @@ async function downloadRefreshToken(key: EndpointAPIKey) {
     URL.revokeObjectURL(url)
   } catch (err: any) {
     showError(err.response?.data?.detail || '获取 Refresh Token 失败', '错误')
+  }
+}
+
+
+// Download Kiro credential export file
+async function downloadKiroCredentials(key: EndpointAPIKey) {
+  try {
+    const result = await revealEndpointKey(key.id)
+
+    if (result.auth_type !== 'oauth') {
+      showError('Not an OAuth credential', 'Error')
+      return
+    }
+
+    const refreshToken = result.refresh_token || ''
+    const accessToken = result.api_key || ''
+    const authConfig = result.auth_config
+
+    const credentialProviderType = String((authConfig as any)?.provider_type || (authConfig as any)?.providerType || '').toLowerCase()
+    if (credentialProviderType !== 'kiro') {
+      showError('Not a Kiro credential', 'Error')
+      return
+    }
+
+    if (!authConfig) {
+      showError('Missing Kiro auth_config', 'Error')
+      return
+    }
+
+    if (accessToken) {
+      revealedKeys.value.set(key.id, accessToken)
+    }
+
+    const data = {
+      auth_type: 'oauth',
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      auth_config: authConfig,
+      name: key.name || '',
+      exported_at: new Date().toISOString(),
+    }
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const providerType = provider.value?.provider_type || 'unknown'
+    const safeName = (key.name || key.id.slice(0, 8)).replace(/[^a-zA-Z0-9_\-@.]/g, '_')
+    a.download = `aether_${providerType}_${safeName}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err: any) {
+    showError(err.response?.data?.detail || 'Failed to export Kiro credentials', 'Error')
   }
 }
 

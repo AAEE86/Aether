@@ -872,8 +872,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
             pre_computed_auth=auth_info.as_tuple() if auth_info else None,
         )
         if upstream_is_stream:
-            # Ensure upstream returns SSE payload when in streaming mode.
-            provider_headers["Accept"] = "text/event-stream"
+            # Ensure upstream returns SSE payload when in streaming mode (unless overridden).
+            if not any(k.lower() == "accept" for k in provider_headers):
+                provider_headers["Accept"] = "text/event-stream"
 
         # 保存发送给 Provider 的请求信息（用于调试和统计）
         ctx.provider_request_headers = provider_headers
@@ -1272,25 +1273,179 @@ class CliMessageHandlerBase(BaseMessageHandler):
                 needs_conversion = True
                 ctx.needs_conversion = True
 
-            async for chunk in stream_response.aiter_bytes():
-                buffer += chunk
-                # 处理缓冲区中的完整行
-                while b"\n" in buffer:
-                    line_bytes, buffer = buffer.split(b"\n", 1)
-                    try:
-                        # 使用增量解码器，可以正确处理跨 chunk 的多字节字符
-                        line = decoder.decode(line_bytes + b"\n", False).rstrip("\n")
-                    except Exception as e:
-                        logger.warning(
-                            f"[{self.request_id}] UTF-8 解码失败: {e}, "
-                            f"bytes={line_bytes[:50]!r}"
-                        )
-                        continue
+            # Kiro 特殊处理：AWS Event Stream 二进制流需要重写为 SSE
+            ctx_provider_type = str(ctx.provider_type or "").strip().lower()
+            if ctx_provider_type == "kiro" and envelope and envelope.force_stream_rewrite():
+                from collections.abc import AsyncGenerator as AsyncGeneratorType
 
-                    normalized_line = line.rstrip("\r")
-                    events = sse_parser.feed_line(normalized_line)
+                from src.services.provider.adapters.kiro.context import get_kiro_request_context
+                from src.services.provider.adapters.kiro.eventstream_rewriter import (
+                    rewrite_eventstream_to_sse,
+                )
 
-                    if normalized_line == "":
+                original_iter = stream_response.aiter_bytes()
+
+                async def _wrap_upstream() -> AsyncGeneratorType[bytes, None]:
+                    async for c in original_iter:
+                        if c:
+                            yield c
+
+                kiro_ctx = get_kiro_request_context()
+                thinking_enabled = bool(getattr(kiro_ctx, "thinking_enabled", False)) if kiro_ctx else False
+
+                rewritten_iter = rewrite_eventstream_to_sse(
+                    _wrap_upstream(),
+                    model=str(ctx.model or ""),
+                    thinking_enabled=thinking_enabled,
+                    estimated_input_tokens=int(ctx.input_tokens or 0),
+                )
+
+                # Kiro 重写后输出的是 Claude SSE 格式
+                # 客户端也是 Claude CLI，不需要再进行格式转换
+                needs_conversion = False
+                ctx.needs_conversion = False
+
+                # 使用重写后的迭代器处理流
+                async for chunk in rewritten_iter:
+                    buffer += chunk
+                    # 处理缓冲区中的完整行
+                    while b"\n" in buffer:
+                        line_bytes, buffer = buffer.split(b"\n", 1)
+                        try:
+                            # 使用增量解码器，可以正确处理跨 chunk 的多字节字符
+                            line = decoder.decode(line_bytes + b"\n", False).rstrip("\n")
+                        except Exception as e:
+                            logger.warning(
+                                f"[{self.request_id}] UTF-8 解码失败: {e}, "
+                                f"bytes={line_bytes[:50]!r}"
+                            )
+                            continue
+
+                        normalized_line = line.rstrip("\r")
+                        events = sse_parser.feed_line(normalized_line)
+
+                        if normalized_line == "":
+                            for event in events:
+                                self._handle_sse_event(
+                                    ctx,
+                                    event.get("event"),
+                                    event.get("data") or "",
+                                    record_chunk=True,
+                                )
+                            self._mark_first_output(ctx, output_state)
+                            yield b"\n"
+                            continue
+
+                        ctx.chunk_count += 1
+
+                        # 直接透传（Kiro 重写后已是 Claude SSE 格式）
+                        self._mark_first_output(ctx, output_state)
+                        yield (line + "\n").encode("utf-8")
+
+                        for event in events:
+                            self._handle_sse_event(
+                                ctx,
+                                event.get("event"),
+                                event.get("data") or "",
+                                record_chunk=True,
+                            )
+
+                        if ctx.data_count > 0:
+                            last_data_time = time.time()
+
+                # 处理剩余事件
+                for event in sse_parser.flush():
+                    self._handle_sse_event(
+                        ctx,
+                        event.get("event"),
+                        event.get("data") or "",
+                        record_chunk=True,
+                    )
+
+                # 检查是否收到数据
+                if ctx.data_count == 0:
+                    logger.warning(f"Provider '{ctx.provider_name}' 返回空流式响应")
+                    ctx.status_code = 503
+                    ctx.error_message = "上游服务返回了空的流式响应"
+                    ctx.upstream_response = f"空流式响应: Provider={ctx.provider_name}, chunk_count={ctx.chunk_count}, data_count=0"
+                    error_event = {
+                        "type": "error",
+                        "error": {
+                            "type": "empty_response",
+                            "message": ctx.error_message,
+                        },
+                    }
+                    yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+
+            else:
+                # 非 Kiro：使用原始迭代器
+                async for chunk in stream_response.aiter_bytes():
+                    buffer += chunk
+                    # 处理缓冲区中的完整行
+                    while b"\n" in buffer:
+                        line_bytes, buffer = buffer.split(b"\n", 1)
+                        try:
+                            # 使用增量解码器，可以正确处理跨 chunk 的多字节字符
+                            line = decoder.decode(line_bytes + b"\n", False).rstrip("\n")
+                        except Exception as e:
+                            logger.warning(
+                                f"[{self.request_id}] UTF-8 解码失败: {e}, "
+                                f"bytes={line_bytes[:50]!r}"
+                            )
+                            continue
+
+                        normalized_line = line.rstrip("\r")
+                        events = sse_parser.feed_line(normalized_line)
+
+                        if normalized_line == "":
+                            for event in events:
+                                self._handle_sse_event(
+                                    ctx,
+                                    event.get("event"),
+                                    event.get("data") or "",
+                                    record_chunk=not needs_conversion,
+                                )
+                            self._mark_first_output(ctx, output_state)
+                            yield b"\n"
+                            continue
+
+                        ctx.chunk_count += 1
+
+                        # 空流检测：超过阈值且无数据，发送错误事件并结束
+                        if ctx.chunk_count > self.EMPTY_CHUNK_THRESHOLD and ctx.data_count == 0:
+                            elapsed = time.time() - last_data_time
+                            if elapsed > self.DATA_TIMEOUT:
+                                logger.warning(f"Provider '{ctx.provider_name}' 流超时且无数据")
+                                # 设置错误状态用于后续记录
+                                ctx.status_code = 504
+                                ctx.error_message = "流式响应超时，未收到有效数据"
+                                ctx.upstream_response = f"流超时: Provider={ctx.provider_name}, elapsed={elapsed:.1f}s, chunk_count={ctx.chunk_count}, data_count=0"
+                                error_event = {
+                                    "type": "error",
+                                    "error": {
+                                        "type": "empty_stream_timeout",
+                                        "message": ctx.error_message,
+                                    },
+                                }
+                                self._mark_first_output(ctx, output_state)
+                                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+                                return  # 结束生成器
+
+                        # 格式转换或直接透传
+                        if needs_conversion:
+                            converted_lines, converted_events = self._convert_sse_line(
+                                ctx, line, events
+                            )
+                            # 记录转换后的数据到 parsed_chunks
+                            self._record_converted_chunks(ctx, converted_events)
+                            for converted_line in converted_lines:
+                                if converted_line:
+                                    self._mark_first_output(ctx, output_state)
+                                    yield (converted_line + "\n").encode("utf-8")
+                        else:
+                            self._mark_first_output(ctx, output_state)
+                            yield (line + "\n").encode("utf-8")
+
                         for event in events:
                             self._handle_sse_event(
                                 ctx,
@@ -1298,48 +1453,12 @@ class CliMessageHandlerBase(BaseMessageHandler):
                                 event.get("data") or "",
                                 record_chunk=not needs_conversion,
                             )
-                        self._mark_first_output(ctx, output_state)
-                        yield b"\n"
-                        continue
 
-                    ctx.chunk_count += 1
+                        if ctx.data_count > 0:
+                            last_data_time = time.time()
 
-                    # 空流检测：超过阈值且无数据，发送错误事件并结束
-                    if ctx.chunk_count > self.EMPTY_CHUNK_THRESHOLD and ctx.data_count == 0:
-                        elapsed = time.time() - last_data_time
-                        if elapsed > self.DATA_TIMEOUT:
-                            logger.warning(f"Provider '{ctx.provider_name}' 流超时且无数据")
-                            # 设置错误状态用于后续记录
-                            ctx.status_code = 504
-                            ctx.error_message = "流式响应超时，未收到有效数据"
-                            ctx.upstream_response = f"流超时: Provider={ctx.provider_name}, elapsed={elapsed:.1f}s, chunk_count={ctx.chunk_count}, data_count=0"
-                            error_event = {
-                                "type": "error",
-                                "error": {
-                                    "type": "empty_stream_timeout",
-                                    "message": ctx.error_message,
-                                },
-                            }
-                            self._mark_first_output(ctx, output_state)
-                            yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
-                            return  # 结束生成器
-
-                    # 格式转换或直接透传
-                    if needs_conversion:
-                        converted_lines, converted_events = self._convert_sse_line(
-                            ctx, line, events
-                        )
-                        # 记录转换后的数据到 parsed_chunks
-                        self._record_converted_chunks(ctx, converted_events)
-                        for converted_line in converted_lines:
-                            if converted_line:
-                                self._mark_first_output(ctx, output_state)
-                                yield (converted_line + "\n").encode("utf-8")
-                    else:
-                        self._mark_first_output(ctx, output_state)
-                        yield (line + "\n").encode("utf-8")
-
-                for event in events:
+                # 处理剩余事件（非 Kiro 分支）
+                for event in sse_parser.flush():
                     self._handle_sse_event(
                         ctx,
                         event.get("event"),
@@ -1347,41 +1466,29 @@ class CliMessageHandlerBase(BaseMessageHandler):
                         record_chunk=not needs_conversion,
                     )
 
-                if ctx.data_count > 0:
-                    last_data_time = time.time()
-
-            # 处理剩余事件
-            for event in sse_parser.flush():
-                self._handle_sse_event(
-                    ctx,
-                    event.get("event"),
-                    event.get("data") or "",
-                    record_chunk=not needs_conversion,
-                )
-
-            # 检查是否收到数据
-            if ctx.data_count == 0:
-                # 流已开始，无法抛出异常进行故障转移
-                # 发送错误事件并记录日志
-                logger.warning(f"Provider '{ctx.provider_name}' 返回空流式响应")
-                # 设置错误状态用于后续记录
-                ctx.status_code = 503
-                ctx.error_message = "上游服务返回了空的流式响应"
-                ctx.upstream_response = f"空流式响应: Provider={ctx.provider_name}, chunk_count={ctx.chunk_count}, data_count=0"
-                error_event = {
-                    "type": "error",
-                    "error": {
-                        "type": "empty_response",
-                        "message": ctx.error_message,
-                    },
-                }
-                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
-            else:
-                logger.debug("流式数据转发完成")
-                # 为 OpenAI 客户端补齐 [DONE] 标记（非 CLI 格式）
-                client_fmt = (ctx.client_api_format or "").strip().lower()
-                if needs_conversion and client_fmt == "openai:chat":
-                    yield b"data: [DONE]\n\n"
+                # 检查是否收到数据（非 Kiro 分支）
+                if ctx.data_count == 0:
+                    # 流已开始，无法抛出异常进行故障转移
+                    # 发送错误事件并记录日志
+                    logger.warning(f"Provider '{ctx.provider_name}' 返回空流式响应")
+                    # 设置错误状态用于后续记录
+                    ctx.status_code = 503
+                    ctx.error_message = "上游服务返回了空的流式响应"
+                    ctx.upstream_response = f"空流式响应: Provider={ctx.provider_name}, chunk_count={ctx.chunk_count}, data_count=0"
+                    error_event = {
+                        "type": "error",
+                        "error": {
+                            "type": "empty_response",
+                            "message": ctx.error_message,
+                        },
+                    }
+                    yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+                else:
+                    logger.debug("流式数据转发完成")
+                    # 为 OpenAI 客户端补齐 [DONE] 标记（非 CLI 格式）
+                    client_fmt = (ctx.client_api_format or "").strip().lower()
+                    if needs_conversion and client_fmt == "openai:chat":
+                        yield b"data: [DONE]\n\n"
 
         except GeneratorExit:
             raise
@@ -1750,6 +1857,43 @@ class CliMessageHandlerBase(BaseMessageHandler):
             if envelope and envelope.force_stream_rewrite():
                 needs_conversion = True
                 ctx.needs_conversion = True
+
+            # Kiro 特殊处理：AWS Event Stream 二进制流需要重写为 SSE
+            ctx_provider_type = str(ctx.provider_type or "").strip().lower()
+            if ctx_provider_type == "kiro" and envelope and envelope.force_stream_rewrite():
+                from collections.abc import AsyncGenerator as AsyncGeneratorType
+
+                from src.services.provider.adapters.kiro.context import get_kiro_request_context
+                from src.services.provider.adapters.kiro.eventstream_rewriter import (
+                    rewrite_eventstream_to_sse,
+                )
+
+                upstream_iter = byte_iterator
+                prefetch = list(prefetched_chunks) if prefetched_chunks else []
+
+                async def _combined_upstream() -> AsyncGeneratorType[bytes, None]:
+                    for c in prefetch:
+                        if c:
+                            yield c
+                    async for c in upstream_iter:
+                        if c:
+                            yield c
+
+                kiro_ctx = get_kiro_request_context()
+                thinking_enabled = bool(getattr(kiro_ctx, "thinking_enabled", False)) if kiro_ctx else False
+
+                byte_iterator = rewrite_eventstream_to_sse(
+                    _combined_upstream(),
+                    model=str(ctx.model or ""),
+                    thinking_enabled=thinking_enabled,
+                    estimated_input_tokens=int(ctx.input_tokens or 0),
+                )
+                prefetched_chunks = []
+
+                # Kiro 重写后输出的是 Claude SSE 格式
+                # 客户端也是 Claude CLI，不需要再进行格式转换
+                needs_conversion = False
+                ctx.needs_conversion = False
 
             # 先处理预读的字节块
             for chunk in prefetched_chunks:
@@ -2890,8 +3034,9 @@ class CliMessageHandlerBase(BaseMessageHandler):
                 pre_computed_auth=auth_info.as_tuple() if auth_info else None,
             )
             if upstream_is_stream:
-                # Ensure upstream returns SSE payload when forced to streaming mode.
-                provider_headers["Accept"] = "text/event-stream"
+                # Ensure upstream returns SSE payload when forced to streaming mode (unless overridden).
+                if not any(k.lower() == "accept" for k in provider_headers):
+                    provider_headers["Accept"] = "text/event-stream"
 
             # 保存发送给 Provider 的请求信息（用于调试和统计）
             provider_request_headers = provider_headers
@@ -2973,8 +3118,26 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
                         stream_resp.raise_for_status()
 
+                        byte_iter = stream_resp.aiter_bytes()
+                        if provider_type == "kiro" and envelope and envelope.force_stream_rewrite():
+                            from src.services.provider.adapters.kiro.context import get_kiro_request_context
+                            from src.services.provider.adapters.kiro.eventstream_rewriter import (
+                                rewrite_eventstream_to_sse,
+                            )
+
+                            kiro_ctx = get_kiro_request_context()
+                            thinking_enabled = (
+                                bool(getattr(kiro_ctx, "thinking_enabled", False)) if kiro_ctx else False
+                            )
+
+                            byte_iter = rewrite_eventstream_to_sse(
+                                byte_iter,
+                                model=str(model or ""),
+                                thinking_enabled=thinking_enabled,
+                            )
+
                         internal_resp = await aggregate_upstream_stream_to_internal_response(
-                            stream_resp.aiter_bytes(),
+                            byte_iter,
                             provider_api_format=provider_api_format,
                             provider_name=str(provider.name),
                             model=str(model or ""),

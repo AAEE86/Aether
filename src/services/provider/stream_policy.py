@@ -78,10 +78,16 @@ def get_upstream_stream_policy(
                 and parsed == UpstreamStreamPolicy.FORCE_NON_STREAM
             ):
                 return UpstreamStreamPolicy.FORCE_STREAM
+            if pt == ProviderType.KIRO and parsed == UpstreamStreamPolicy.FORCE_NON_STREAM:
+                return UpstreamStreamPolicy.FORCE_STREAM
             return parsed
 
     # Safe-by-default: Codex Responses OAuth behaves like SSE-only.
     if pt == ProviderType.CODEX and sig == "openai:cli":
+        return UpstreamStreamPolicy.FORCE_STREAM
+
+    # Kiro upstream streams binary AWS Event Stream; treat as stream-only.
+    if pt == ProviderType.KIRO:
         return UpstreamStreamPolicy.FORCE_STREAM
 
     return UpstreamStreamPolicy.AUTO

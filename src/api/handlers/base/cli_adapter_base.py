@@ -643,10 +643,18 @@ class CliAdapterBase(ApiAdapter):
         from src.core.provider_types import ProviderType
 
         is_antigravity = provider_type == ProviderType.ANTIGRAVITY
+        is_kiro = provider_type == ProviderType.KIRO
         is_oauth = auth_type == "oauth"
 
         # ---- URL ----
-        if is_antigravity:
+        if is_kiro:
+            # Kiro 需要替换 base_url 中的 {region} 占位符，并使用专用路径
+            from src.services.provider.adapters.kiro.constants import KIRO_GENERATE_ASSISTANT_PATH
+
+            region = (decrypted_auth_config or {}).get("region", "us-east-1")
+            effective_base_url = base_url.replace("{region}", region) if "{region}" in base_url else base_url
+            url = f"{str(effective_base_url).rstrip('/')}{KIRO_GENERATE_ASSISTANT_PATH}"
+        elif is_antigravity:
             # Antigravity 走 v1internal 端点，模型名在请求体 envelope 中，不在 URL 路径里
             from src.services.provider.adapters.antigravity.constants import (
                 V1INTERNAL_PATH_TEMPLATE,
@@ -672,6 +680,25 @@ class CliAdapterBase(ApiAdapter):
         # Antigravity 需要特定的 User-Agent
         if is_antigravity:
             merged_extra["User-Agent"] = _get_antigravity_ua()
+
+        # Kiro 需要特定的请求头
+        if is_kiro:
+            from src.services.provider.adapters.kiro.headers import build_generate_assistant_headers
+            from src.services.provider.adapters.kiro.token_manager import generate_machine_id
+            from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
+
+            kiro_cfg = KiroAuthConfig.from_dict(decrypted_auth_config or {})
+            region = kiro_cfg.region or "us-east-1"
+            machine_id = generate_machine_id(kiro_cfg)
+            kiro_headers = build_generate_assistant_headers(
+                host=f"q.{region}.amazonaws.com",
+                access_token=api_key,
+                machine_id=machine_id,
+                kiro_version=kiro_cfg.kiro_version,
+                system_version=kiro_cfg.system_version,
+                node_version=kiro_cfg.node_version,
+            )
+            merged_extra.update(kiro_headers)
 
         headers = cls.build_headers_with_extra(api_key, merged_extra if merged_extra else None)
 
@@ -700,6 +727,21 @@ class CliAdapterBase(ApiAdapter):
                 project_id=project_id,
                 model=effective_model,
             )
+
+        # Kiro：用 conversationState envelope 包装请求体
+        if is_kiro:
+            from src.services.provider.adapters.kiro.converter import convert_claude_messages_to_conversation_state
+            from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
+
+            kiro_cfg = KiroAuthConfig.from_dict(decrypted_auth_config or {})
+            effective_model = model_name or request_data.get("model", "")
+            conversation_state = convert_claude_messages_to_conversation_state(
+                body,
+                model=effective_model,
+            )
+            body = {"conversationState": conversation_state}
+            if isinstance(kiro_cfg.profile_arn, str) and kiro_cfg.profile_arn.strip():
+                body["profileArn"] = kiro_cfg.profile_arn.strip()
 
         # ---- Header Rules ----
         if header_rules:

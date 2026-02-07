@@ -444,6 +444,48 @@ async def refresh_oauth(
         raise NotFoundException("Provider 不存在", "provider")
     provider_type = _require_fixed_provider(provider)
 
+    # Kiro 使用自定义 token refresh 机制
+    if provider_type == ProviderType.KIRO.value:
+        encrypted_auth_config = getattr(key, "auth_config", None)
+        if not encrypted_auth_config:
+            raise InvalidRequestException("缺少 auth_config，无法 refresh")
+
+        decrypted = crypto_service.decrypt(encrypted_auth_config)
+        parsed = json.loads(decrypted)
+
+        from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
+        from src.services.provider.adapters.kiro.token_manager import refresh_access_token
+
+        cfg = KiroAuthConfig.from_dict(parsed)
+        cfg.provider_type = ProviderType.KIRO.value
+
+        proxy_config = getattr(provider, "proxy", None)
+        try:
+            access_token, new_cfg = await refresh_access_token(cfg, proxy_config=proxy_config)
+        except Exception as e:
+            # 标记为失效
+            from datetime import datetime, timezone
+
+            key.oauth_invalid_at = datetime.now(timezone.utc)
+            key.oauth_invalid_reason = str(e)
+            db.commit()
+            logger.warning("Kiro Key {} token 刷新失败，已标记为失效: {}", key_id, e)
+            raise InvalidRequestException(f"Kiro token refresh 失败: {e}")
+
+        # 更新 key
+        key.api_key = crypto_service.encrypt(access_token)
+        key.auth_config = crypto_service.encrypt(json.dumps(new_cfg.to_dict()))
+        key.oauth_invalid_at = None
+        key.oauth_invalid_reason = None
+        db.commit()
+
+        return CompleteOAuthResponse(
+            provider_type=provider_type,
+            expires_at=new_cfg.expires_at or None,
+            has_refresh_token=bool(new_cfg.refresh_token),
+            email=None,
+        )
+
     try:
         template = FIXED_PROVIDERS.get(ProviderType(provider_type))
     except Exception:
@@ -598,6 +640,9 @@ async def start_provider_oauth(
         raise NotFoundException("Provider 不存在", "provider")
     provider_type = _require_fixed_provider(provider)
 
+    if provider_type == ProviderType.KIRO.value:
+        raise InvalidRequestException("Kiro 不支持 OAuth 授权，请使用导入授权。")
+
     try:
         template = FIXED_PROVIDERS.get(ProviderType(provider_type))
     except Exception:
@@ -684,6 +729,9 @@ async def complete_provider_oauth(
     if not provider:
         raise NotFoundException("Provider 不存在", "provider")
     provider_type = _require_fixed_provider(provider)
+
+    if provider_type == ProviderType.KIRO.value:
+        raise InvalidRequestException("Kiro 不支持 OAuth 授权，请使用导入授权。")
 
     try:
         template = FIXED_PROVIDERS.get(ProviderType(provider_type))
@@ -835,6 +883,87 @@ async def import_refresh_token(
     if not provider:
         raise NotFoundException("Provider 不存在", "provider")
     provider_type = _require_fixed_provider(provider)
+
+
+    if provider_type == ProviderType.KIRO.value:
+        raw_import = payload.refresh_token.strip()
+        if not raw_import:
+            raise InvalidRequestException("Refresh Token 不能为空")
+
+        raw_cfg: dict[str, Any] | None = None
+        if raw_import.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(raw_import)
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("auth_config"), dict):
+                        raw_cfg = parsed["auth_config"]
+                    elif isinstance(parsed.get("authConfig"), dict):
+                        raw_cfg = parsed["authConfig"]
+                    else:
+                        raw_cfg = parsed
+            except Exception:
+                raw_cfg = None
+
+        from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
+        from src.services.provider.adapters.kiro.token_manager import (
+            refresh_access_token,
+            validate_refresh_token,
+        )
+
+        cfg = (
+            KiroAuthConfig.from_dict(raw_cfg)
+            if raw_cfg is not None
+            else KiroAuthConfig.from_dict({"refresh_token": raw_import, "expires_at": 0})
+        )
+        cfg.provider_type = ProviderType.KIRO.value
+
+        try:
+            validate_refresh_token(cfg.refresh_token)
+        except Exception as e:
+            raise InvalidRequestException(f"Kiro Refresh Token 无效: {e}")
+
+        proxy_config = getattr(provider, "proxy", None)
+        try:
+            access_token, new_cfg = await refresh_access_token(cfg, proxy_config=proxy_config)
+        except Exception as e:
+            raise InvalidRequestException(f"Kiro Refresh Token 验证失败: {e}")
+
+        name = (payload.name or "").strip()
+        if not name:
+            region = (new_cfg.region or "").strip() or "us-east-1"
+            suffix = ""
+            if isinstance(new_cfg.profile_arn, str) and new_cfg.profile_arn.strip():
+                suffix = new_cfg.profile_arn.rsplit("/", 1)[-1]
+            name = f"Kiro_{region}_{suffix}" if suffix else f"Kiro_{region}_{int(time.time())}"
+
+        api_formats = [
+            ep.api_format
+            for ep in provider.endpoints
+            if getattr(ep, "api_format", None) and getattr(ep, "is_active", False)
+        ]
+
+        from src.models.database import ProviderAPIKey as ProviderAPIKeyModel
+
+        new_key = ProviderAPIKeyModel(
+            provider_id=provider_id,
+            name=name,
+            api_key=crypto_service.encrypt(access_token),
+            auth_type="oauth",
+            auth_config=crypto_service.encrypt(json.dumps(new_cfg.to_dict())),
+            api_formats=api_formats,
+            is_active=True,
+        )
+        db.add(new_key)
+        db.commit()
+        db.refresh(new_key)
+
+        return ProviderCompleteOAuthResponse(
+            key_id=str(new_key.id),
+            provider_type=provider_type,
+            expires_at=new_cfg.expires_at or None,
+            has_refresh_token=bool(new_cfg.refresh_token),
+            email=None,
+        )
 
     try:
         template = FIXED_PROVIDERS.get(ProviderType(provider_type))

@@ -17,6 +17,7 @@ class ProviderType(str, Enum):
 
     CUSTOM = "custom"
     CLAUDE_CODE = "claude_code"
+    KIRO = "kiro"
     CODEX = "codex"
     GEMINI_CLI = "gemini_cli"
     ANTIGRAVITY = "antigravity"
