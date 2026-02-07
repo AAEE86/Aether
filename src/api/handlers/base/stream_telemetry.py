@@ -351,6 +351,8 @@ class StreamTelemetryRecorder:
         }
         if ctx.rectified:
             extra_data["rectified"] = True
+        if ctx.proxy_info:
+            extra_data["proxy"] = ctx.proxy_info
         if ctx.first_byte_time_ms is not None:
             # 计算候选自身的 TTFB
             first_byte_time_ms = RequestCandidateService.calculate_candidate_ttfb(

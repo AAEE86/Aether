@@ -2654,6 +2654,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
                             "chunk_count": ctx.chunk_count,
                             "data_count": ctx.data_count,
                         }
+                        if ctx.proxy_info:
+                            extra_data["proxy"] = ctx.proxy_info
                         if candidate_first_byte_time_ms is not None:
                             extra_data["first_byte_time_ms"] = candidate_first_byte_time_ms
                         if ctx.is_client_disconnected():
@@ -2680,6 +2682,8 @@ class CliMessageHandlerBase(BaseMessageHandler):
                             "chunk_count": ctx.chunk_count,
                             "data_count": ctx.data_count,
                         }
+                        if ctx.proxy_info:
+                            extra_data["proxy"] = ctx.proxy_info
                         if ctx.rectified:
                             extra_data["rectified"] = True
                         if candidate_first_byte_time_ms is not None:

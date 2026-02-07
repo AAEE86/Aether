@@ -180,17 +180,23 @@ class RequestExecutor:
                     )
                 else:
                     # 非流式请求：标记为 success 状态
+                    from src.clients.http_client import resolve_proxy_info
+
+                    _extra: dict[str, Any] = {
+                        "is_cached_user": is_cached_user,
+                        "model_name": model_name,
+                        "api_format": api_format,
+                    }
+                    _pi = resolve_proxy_info(getattr(provider, "proxy", None))
+                    if _pi:
+                        _extra["proxy"] = _pi
                     RequestCandidateService.mark_candidate_success(
                         db=self.db,
                         candidate_id=candidate_id,
                         status_code=200,
                         latency_ms=context.elapsed_ms,
                         concurrent_requests=key_rpm_count,
-                        extra_data={
-                            "is_cached_user": is_cached_user,
-                            "model_name": model_name,
-                            "api_format": api_format,
-                        },
+                        extra_data=_extra,
                     )
 
                 return ExecutionResult(response=response, context=context)

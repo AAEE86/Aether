@@ -699,6 +699,7 @@ class TaskService:
         """
         import httpx
 
+        from src.clients.http_client import resolve_proxy_info
         from src.core.api_format.conversion.exceptions import FormatConversionError
         from src.core.error_utils import extract_error_message
         from src.core.exceptions import (
@@ -710,12 +711,17 @@ class TaskService:
         )
         from src.services.request.executor import ExecutionError
 
+        # 提前解析代理信息，写入候选记录的 extra_data（用于链路追踪展示）
+        _proxy_info = resolve_proxy_info(getattr(candidate.provider, "proxy", None))
+        _proxy_extra: dict[str, Any] | None = {"proxy": _proxy_info} if _proxy_info else None
+
         if not isinstance(exec_err, ExecutionError):
             RequestCandidateService.mark_candidate_failed(
                 db=self.db,
                 candidate_id=candidate_record_id,
                 error_type=type(exec_err).__name__,
                 error_message=str(exec_err),
+                extra_data=_proxy_extra,
             )
             return "raise"
 
@@ -762,6 +768,7 @@ class TaskService:
                 error_message=extract_error_message(cause),
                 latency_ms=elapsed_ms,
                 concurrent_requests=captured_key_concurrent,
+                extra_data=_proxy_extra,
             )
             return "break"
 
@@ -788,6 +795,7 @@ class TaskService:
                     status_code=embedded_status,
                     latency_ms=elapsed_ms,
                     concurrent_requests=captured_key_concurrent,
+                    extra_data=_proxy_extra,
                 )
                 client_error.request_metadata = {
                     "provider": provider.name,
@@ -811,6 +819,7 @@ class TaskService:
                 status_code=embedded_status,
                 latency_ms=elapsed_ms,
                 concurrent_requests=captured_key_concurrent,
+                extra_data=_proxy_extra,
             )
             return "continue" if has_retry_left else "break"
 
@@ -835,6 +844,8 @@ class TaskService:
             serializable_extra_data = {
                 k: v for k, v in extra_data.items() if k != "converted_error"
             }
+            if _proxy_info:
+                serializable_extra_data["proxy"] = _proxy_info
 
             if isinstance(converted_error, ThinkingSignatureException):
                 action = self._handle_thinking_signature_error(
@@ -910,6 +921,7 @@ class TaskService:
                 error_message=extract_error_message(cause),
                 latency_ms=elapsed_ms,
                 concurrent_requests=captured_key_concurrent,
+                extra_data=_proxy_extra,
             )
             return "continue" if has_retry_left else "break"
 
@@ -922,6 +934,7 @@ class TaskService:
                 error_message=str(cause),
                 latency_ms=elapsed_ms,
                 concurrent_requests=captured_key_concurrent,
+                extra_data=_proxy_extra,
             )
             return "break"
 
@@ -932,6 +945,7 @@ class TaskService:
             error_message=extract_error_message(cause),
             latency_ms=elapsed_ms,
             concurrent_requests=captured_key_concurrent,
+            extra_data=_proxy_extra,
         )
         return "raise"
 

@@ -199,6 +199,19 @@
                     </span>
                   </div>
                   <div
+                    v-if="currentAttempt.extra_data?.proxy"
+                    class="info-item"
+                  >
+                    <span class="info-label">代理</span>
+                    <span class="info-value">
+                      <span>{{ currentAttempt.extra_data.proxy.node_name || currentAttempt.extra_data.proxy.url || '未知' }}</span>
+                      <span
+                        v-if="currentAttempt.extra_data.proxy.source === 'system'"
+                        class="text-xs text-muted-foreground ml-1"
+                      >(系统)</span>
+                    </span>
+                  </div>
+                  <div
                     v-if="mergedCapabilities.length > 0"
                     class="info-item"
                   >
