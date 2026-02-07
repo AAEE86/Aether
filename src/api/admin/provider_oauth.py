@@ -184,6 +184,84 @@ def _parse_callback_params(callback_url: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in merged.items()}
 
 
+def _check_duplicate_oauth_account(
+    db: Session,
+    provider_id: str,
+    auth_config: dict[str, Any],
+    exclude_key_id: str | None = None,
+) -> None:
+    """
+    检查是否存在重复的 OAuth 账号
+
+    通过以下字段判断重复（按优先级）：
+    - account_id: Codex 等使用的账号 ID
+    - email: OAuth 账号邮箱
+    - profile_arn: Kiro 使用的 profile ARN
+
+    Args:
+        db: 数据库 session
+        provider_id: Provider ID
+        auth_config: 新账号的 auth_config
+        exclude_key_id: 排除的 Key ID（用于更新场景）
+
+    Raises:
+        InvalidRequestException: 如果发现重复账号
+    """
+    new_email = auth_config.get("email")
+    new_account_id = auth_config.get("account_id")
+    new_profile_arn = auth_config.get("profile_arn")
+
+    # 如果没有可用于识别的字段，跳过检查
+    if not new_email and not new_account_id and not new_profile_arn:
+        return
+
+    # 查询该 Provider 下所有 OAuth 类型的 Keys
+    query = db.query(ProviderAPIKey).filter(
+        ProviderAPIKey.provider_id == provider_id,
+        ProviderAPIKey.auth_type.in_(["oauth", "kiro"]),  # kiro 也是 OAuth 类型
+    )
+    if exclude_key_id:
+        query = query.filter(ProviderAPIKey.id != exclude_key_id)
+
+    existing_keys = query.all()
+
+    for existing_key in existing_keys:
+        if not existing_key.auth_config:
+            continue
+        try:
+            decrypted_config = json.loads(
+                crypto_service.decrypt(existing_key.auth_config, silent=True)
+            )
+            existing_email = decrypted_config.get("email")
+            existing_account_id = decrypted_config.get("account_id")
+            existing_profile_arn = decrypted_config.get("profile_arn")
+
+            # 优先使用 account_id 比较
+            if new_account_id and existing_account_id:
+                if new_account_id == existing_account_id:
+                    raise InvalidRequestException(
+                        f"该 OAuth 账号已存在于当前 Provider 中（名称: {existing_key.name}）"
+                    )
+            # 其次使用 profile_arn 比较（Kiro）
+            elif new_profile_arn and existing_profile_arn:
+                if new_profile_arn == existing_profile_arn:
+                    raise InvalidRequestException(
+                        f"该 Kiro 账号已存在于当前 Provider 中（名称: {existing_key.name}）"
+                    )
+            # 最后使用 email 比较
+            elif new_email and existing_email:
+                if new_email == existing_email:
+                    raise InvalidRequestException(
+                        f"该 OAuth 账号 ({new_email}) 已存在于当前 Provider 中"
+                        f"（名称: {existing_key.name}）"
+                    )
+        except InvalidRequestException:
+            raise
+        except Exception:
+            # 解密失败时跳过该 Key
+            continue
+
+
 # ==============================================================================
 # Routes
 # ==============================================================================
@@ -511,6 +589,7 @@ async def refresh_oauth(
             "grant_type": "refresh_token",
             "client_id": template.oauth.client_id,
             "refresh_token": refresh_token,
+            "scope": " ".join(template.oauth.scopes),
         }
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         data = None
@@ -520,6 +599,7 @@ async def refresh_oauth(
             "grant_type": "refresh_token",
             "client_id": template.oauth.client_id,
             "refresh_token": refresh_token,
+            "scope": " ".join(template.oauth.scopes),
         }
         if template.oauth.client_secret:
             form["client_secret"] = template.oauth.client_secret
@@ -822,6 +902,9 @@ async def complete_provider_oauth(
         proxy_config=proxy_config,
     )
 
+    # 检查是否存在重复的 OAuth 账号
+    _check_duplicate_oauth_account(db, provider_id, auth_config)
+
     # 确定账号名称
     name = (payload.name or "").strip()
     if not name:
@@ -928,6 +1011,9 @@ async def import_refresh_token(
         except Exception as e:
             raise InvalidRequestException(f"Kiro Refresh Token 验证失败: {e}")
 
+        # 检查是否存在重复的 Kiro 账号
+        _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
+
         name = (payload.name or "").strip()
         if not name:
             region = (new_cfg.region or "").strip() or "us-east-1"
@@ -982,6 +1068,7 @@ async def import_refresh_token(
             "grant_type": "refresh_token",
             "client_id": template.oauth.client_id,
             "refresh_token": refresh_token,
+            "scope": " ".join(template.oauth.scopes),
         }
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         data = None
@@ -991,6 +1078,7 @@ async def import_refresh_token(
             "grant_type": "refresh_token",
             "client_id": template.oauth.client_id,
             "refresh_token": refresh_token,
+            "scope": " ".join(template.oauth.scopes),
         }
         if template.oauth.client_secret:
             form["client_secret"] = template.oauth.client_secret
@@ -1054,6 +1142,9 @@ async def import_refresh_token(
         access_token=access_token,
         proxy_config=proxy_config,
     )
+
+    # 检查是否存在重复的 OAuth 账号
+    _check_duplicate_oauth_account(db, provider_id, auth_config)
 
     # 确定账号名称
     name = (payload.name or "").strip()

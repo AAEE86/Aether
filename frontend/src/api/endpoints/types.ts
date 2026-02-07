@@ -283,14 +283,18 @@ export interface EndpointAPIKey {
 // Codex 上游元数据类型
 export interface CodexUpstreamMetadata {
   plan_type?: string  // 套餐类型
-  primary_used_percent?: number  // 主限额窗口使用百分比
-  primary_reset_seconds?: number  // 主限额重置剩余秒数
-  primary_reset_at?: number  // 主限额重置时间（Unix 时间戳）
-  primary_window_minutes?: number  // 主限额窗口大小（分钟）
-  secondary_used_percent?: number  // 次级限额窗口使用百分比
-  secondary_reset_seconds?: number  // 次级限额重置剩余秒数
-  secondary_reset_at?: number  // 次级限额重置时间（Unix 时间戳）
-  secondary_window_minutes?: number  // 次级限额窗口大小（分钟）
+  primary_used_percent?: number  // 周限额窗口使用百分比
+  primary_reset_seconds?: number  // 周限额重置剩余秒数
+  primary_reset_at?: number  // 周限额重置时间（Unix 时间戳）
+  primary_window_minutes?: number  // 周限额窗口大小（分钟）
+  secondary_used_percent?: number  // 5H限额窗口使用百分比
+  secondary_reset_seconds?: number  // 5H限额重置剩余秒数
+  secondary_reset_at?: number  // 5H限额重置时间（Unix 时间戳）
+  secondary_window_minutes?: number  // 5H限额窗口大小（分钟）
+  code_review_used_percent?: number  // 代码审查限额使用百分比
+  code_review_reset_seconds?: number  // 代码审查限额重置剩余秒数
+  code_review_reset_at?: number  // 代码审查限额重置时间（Unix 时间戳）
+  code_review_window_minutes?: number  // 代码审查限额窗口大小（分钟）
   has_credits?: boolean  // 是否有积分
   credits_balance?: number  // 积分余额
 }
