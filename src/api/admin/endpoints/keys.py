@@ -245,6 +245,94 @@ async def add_provider_key(
 # -------- Adapters --------
 
 
+async def check_duplicate_key(
+    db: Session,
+    provider_id: str,
+    auth_type: str,
+    new_api_key: str | None = None,
+    new_auth_config: dict | None = None,
+    exclude_key_id: str | None = None,
+) -> None:
+    """
+    检查密钥是否与其他现有密钥重复
+
+    对于不同的认证类型，使用不同的比较方式：
+    - api_key: 比较 API Key 的哈希值
+    - vertex_ai: 比较 Service Account 的 client_email
+
+    Args:
+        db: 数据库会话
+        provider_id: Provider ID
+        auth_type: 认证类型 (api_key, vertex_ai, oauth)
+        new_api_key: 新的 API Key（用于 api_key 类型）
+        new_auth_config: 新的认证配置（用于 vertex_ai 类型）
+        exclude_key_id: 要排除的 Key ID（用于更新场景）
+    """
+    # 获取该 Provider 下所有现有的 Keys
+    query = db.query(ProviderAPIKey).filter(ProviderAPIKey.provider_id == provider_id)
+
+    # 如果指定了要排除的 Key ID（更新场景），则排除它
+    if exclude_key_id:
+        query = query.filter(ProviderAPIKey.id != exclude_key_id)
+
+    existing_keys = query.all()
+
+    if not existing_keys:
+        return
+
+    if auth_type == "api_key" and new_api_key:
+        # 跳过占位符
+        if new_api_key == "__placeholder__":
+            return
+
+        # 对于 api_key 类型，使用哈希值比较
+        new_key_hash = crypto_service.hash_api_key(new_api_key)
+        for existing_key in existing_keys:
+            if existing_key.auth_type != "api_key":
+                continue
+            try:
+                decrypted_key = crypto_service.decrypt(existing_key.api_key, silent=True)
+                # 跳过占位符
+                if decrypted_key == "__placeholder__":
+                    continue
+                existing_hash = crypto_service.hash_api_key(decrypted_key)
+                if new_key_hash == existing_hash:
+                    raise InvalidRequestException(
+                        f"该 API Key 已存在于当前 Provider 中（名称: {existing_key.name}）"
+                    )
+            except InvalidRequestException:
+                raise
+            except Exception:
+                # 解密失败时跳过该 Key
+                continue
+
+    elif auth_type == "vertex_ai" and new_auth_config:
+        # 对于 vertex_ai 类型，比较 Service Account 的 client_email
+        new_client_email = (
+            new_auth_config.get("client_email") if isinstance(new_auth_config, dict) else None
+        )
+        if new_client_email:
+            for existing_key in existing_keys:
+                if existing_key.auth_type != "vertex_ai":
+                    continue
+                if not existing_key.auth_config:
+                    continue
+                try:
+                    decrypted_config = json.loads(
+                        crypto_service.decrypt(existing_key.auth_config, silent=True)
+                    )
+                    existing_email = decrypted_config.get("client_email")
+                    if existing_email and existing_email == new_client_email:
+                        raise InvalidRequestException(
+                            f"该 Service Account ({new_client_email}) 已存在于当前 Provider 中"
+                            f"（名称: {existing_key.name}）"
+                        )
+                except InvalidRequestException:
+                    raise
+                except Exception:
+                    # 解密失败时跳过该 Key
+                    continue
+
 @dataclass
 class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
     key_id: str
@@ -299,7 +387,16 @@ class AdminUpdateEndpointKeyAdapter(AdminApiAdapter):
                 if "api_key" not in update_data:
                     update_data["api_key"] = "__placeholder__"
 
-        # 加密 api_key（非 None 时）
+        # 检查密钥是否与其他现有密钥重复（排除当前正在更新的密钥）
+        await check_duplicate_key(
+            db=db,
+            provider_id=key.provider_id,
+            auth_type=target_auth_type,
+            new_api_key=update_data.get("api_key"),
+            new_auth_config=update_data.get("auth_config"),
+            exclude_key_id=self.key_id,
+        )
+
         if "api_key" in update_data and update_data["api_key"] is not None:
             update_data["api_key"] = crypto_service.encrypt(update_data["api_key"])
         # 加密 auth_config（包含敏感的 Service Account 凭证）
@@ -829,8 +926,14 @@ class AdminCreateProviderKeyAdapter(AdminApiAdapter):
             if self.key_data.api_key:
                 raise InvalidRequestException("OAuth 认证模式下不允许直接填写 api_key")
 
-        # 允许同一个 API Key 在同一 Provider 下添加多次
-        # 用户可以为不同的 API 格式创建独立的配置记录，便于分开管理
+        # 检查密钥是否已存在（防止重复添加）
+        await check_duplicate_key(
+            db=db,
+            provider_id=self.provider_id,
+            auth_type=auth_type,
+            new_api_key=self.key_data.api_key,
+            new_auth_config=self.key_data.auth_config,
+        )
 
         # 加密 API Key（如果有）
         encrypted_key = (
@@ -929,8 +1032,114 @@ class AdminCreateProviderKeyAdapter(AdminApiAdapter):
 
 # ========== Codex Quota Refresh API ==========
 
-# Codex 限额刷新测试请求使用的模型（选择最小/最便宜的模型）
-CODEX_QUOTA_REFRESH_MODEL = "gpt-5.1-codex-mini"
+# Codex wham/usage API 地址（用于查询限额信息）
+CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+
+
+def _parse_codex_wham_usage_response(data: dict) -> dict | None:
+    """
+    解析 Codex wham/usage API 响应，提取限额信息
+
+    Free 账号:
+    - rate_limit.primary_window: 周限额
+    - code_review_rate_limit.primary_window: 代码审查周限额
+
+    Team/Plus/Enterprise 账号:
+    - rate_limit.primary_window: 5H 限额
+    - rate_limit.secondary_window: 周限额
+    - code_review_rate_limit.primary_window: 代码审查周限额
+    """
+    if not data:
+        return None
+
+    result: dict = {}
+
+    plan_type = data.get("plan_type")
+    if plan_type:
+        result["plan_type"] = plan_type
+
+    # 解析 rate_limit
+    rate_limit = data.get("rate_limit") or {}
+    primary_window = rate_limit.get("primary_window") or {}
+    secondary_window = rate_limit.get("secondary_window")
+
+    # 根据账号类型解析限额
+    # Free 账号: primary_window 是周限额，无 secondary_window
+    # Team/Plus/Enterprise: primary_window 是 5H 限额，secondary_window 是周限额
+    if plan_type == "free":
+        # Free 账号: primary_window 是周限额
+        if primary_window:
+            used_percent = primary_window.get("used_percent")
+            if used_percent is not None:
+                result["primary_used_percent"] = float(used_percent)
+            reset_seconds = primary_window.get("reset_after_seconds")
+            if reset_seconds is not None:
+                result["primary_reset_seconds"] = int(reset_seconds)
+            reset_at = primary_window.get("reset_at")
+            if reset_at is not None:
+                result["primary_reset_at"] = int(reset_at)
+            limit_window_seconds = primary_window.get("limit_window_seconds")
+            if limit_window_seconds is not None:
+                result["primary_window_minutes"] = int(limit_window_seconds) // 60
+    else:
+        # Team/Plus/Enterprise: primary_window 是 5H 限额, secondary_window 是周限额
+        if secondary_window:
+            # 周限额 (secondary_window)
+            used_percent = secondary_window.get("used_percent")
+            if used_percent is not None:
+                result["primary_used_percent"] = float(used_percent)
+            reset_seconds = secondary_window.get("reset_after_seconds")
+            if reset_seconds is not None:
+                result["primary_reset_seconds"] = int(reset_seconds)
+            reset_at = secondary_window.get("reset_at")
+            if reset_at is not None:
+                result["primary_reset_at"] = int(reset_at)
+            limit_window_seconds = secondary_window.get("limit_window_seconds")
+            if limit_window_seconds is not None:
+                result["primary_window_minutes"] = int(limit_window_seconds) // 60
+
+        if primary_window:
+            # 5H 限额 (primary_window)
+            used_percent = primary_window.get("used_percent")
+            if used_percent is not None:
+                result["secondary_used_percent"] = float(used_percent)
+            reset_seconds = primary_window.get("reset_after_seconds")
+            if reset_seconds is not None:
+                result["secondary_reset_seconds"] = int(reset_seconds)
+            reset_at = primary_window.get("reset_at")
+            if reset_at is not None:
+                result["secondary_reset_at"] = int(reset_at)
+            limit_window_seconds = primary_window.get("limit_window_seconds")
+            if limit_window_seconds is not None:
+                result["secondary_window_minutes"] = int(limit_window_seconds) // 60
+
+    # 解析 code_review_rate_limit (代码审查限额)
+    code_review_limit = data.get("code_review_rate_limit") or {}
+    code_review_primary = code_review_limit.get("primary_window") or {}
+    if code_review_primary:
+        used_percent = code_review_primary.get("used_percent")
+        if used_percent is not None:
+            result["code_review_used_percent"] = float(used_percent)
+        reset_seconds = code_review_primary.get("reset_after_seconds")
+        if reset_seconds is not None:
+            result["code_review_reset_seconds"] = int(reset_seconds)
+        reset_at = code_review_primary.get("reset_at")
+        if reset_at is not None:
+            result["code_review_reset_at"] = int(reset_at)
+        limit_window_seconds = code_review_primary.get("limit_window_seconds")
+        if limit_window_seconds is not None:
+            result["code_review_window_minutes"] = int(limit_window_seconds) // 60
+
+    # 解析 credits
+    credits = data.get("credits") or {}
+    has_credits = credits.get("has_credits")
+    if has_credits is not None:
+        result["has_credits"] = bool(has_credits)
+    balance = credits.get("balance")
+    if balance is not None:
+        result["credits_balance"] = float(balance)
+
+    return result if result else None
 
 
 @router.post("/providers/{provider_id}/refresh-quota")
@@ -969,15 +1178,7 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
         import httpx
 
         from src.api.handlers.base.request_builder import get_provider_auth
-        from src.services.provider.metadata_collectors import (
-            MetadataCollectorRegistry,
-            ensure_collectors_registered,
-        )
-        from src.services.provider.transport import build_provider_url
         from src.utils.ssl_utils import get_ssl_context
-
-        # 确保 Codex 采集器已注册
-        ensure_collectors_registered()
 
         db = context.db
         provider = db.query(Provider).filter(Provider.id == self.provider_id).first()
@@ -1041,15 +1242,11 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
         async def refresh_single_key(key: ProviderAPIKey) -> dict:
             try:
                 if provider_type == ProviderType.CODEX:
-                    # 获取认证信息
+                    # 获取认证信息（用于刷新 OAuth token）
                     auth_info = await get_provider_auth(endpoint, key)
-
-                    # 构建请求 URL
-                    url = build_provider_url(endpoint, key=key)
 
                     # 构建请求头
                     headers = {
-                        "Content-Type": "application/json",
                         "Accept": "application/json",
                     }
                     if auth_info:
@@ -1059,27 +1256,50 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                         decrypted_key = crypto_service.decrypt(key.api_key)
                         headers["Authorization"] = f"Bearer {decrypted_key}"
 
-                    # 发送最小的测试请求，使用 Codex Responses API 格式
-                    test_body = {
-                        "model": CODEX_QUOTA_REFRESH_MODEL,
-                        "input": [
-                            {
-                                "type": "message",
-                                "role": "user",
-                                "content": [{"type": "input_text", "text": "hi"}],
-                            }
-                        ],
-                        "instructions": "",
-                        "stream": True,
-                        "store": False,
-                    }
+                    # 从 auth_config 中解密获取 plan_type 和 account_id
+                    oauth_plan_type = None
+                    oauth_account_id = None
+                    raw_auth_type = getattr(key, "auth_type", "api_key") or "api_key"
+                    auth_type = "oauth" if raw_auth_type == "kiro" else raw_auth_type
+                    if auth_type == "oauth" and key.auth_config:
+                        try:
+                            decrypted_config = crypto_service.decrypt(key.auth_config)
+                            auth_config_data = json.loads(decrypted_config)
+                            oauth_plan_type = auth_config_data.get("plan_type")
+                            oauth_account_id = auth_config_data.get("account_id")
+                        except Exception:
+                            pass
 
+                    # 如果有 account_id 且不是 free 账号，添加 chatgpt-account-id 头
+                    if oauth_account_id and oauth_plan_type and oauth_plan_type.lower() != "free":
+                        headers["chatgpt-account-id"] = oauth_account_id
+
+                    # 使用 wham/usage API 获取限额信息
                     async with httpx.AsyncClient(timeout=30.0, verify=get_ssl_context()) as client:
-                        response = await client.post(url, json=test_body, headers=headers)
+                        response = await client.get(CODEX_WHAM_USAGE_URL, headers=headers)
 
-                    # 解析响应头中的限额信息
-                    response_headers = dict(response.headers)
-                    metadata = MetadataCollectorRegistry.collect("codex", response_headers)
+                    if response.status_code != 200:
+                        return {
+                            "key_id": key.id,
+                            "key_name": key.name,
+                            "status": "error",
+                            "message": f"wham/usage API 返回状态码 {response.status_code}",
+                            "status_code": response.status_code,
+                        }
+
+                    # 解析 JSON 响应
+                    try:
+                        data = response.json()
+                    except Exception:
+                        return {
+                            "key_id": key.id,
+                            "key_name": key.name,
+                            "status": "error",
+                            "message": "无法解析 wham/usage API 响应",
+                        }
+
+                    # 解析限额信息
+                    metadata = _parse_codex_wham_usage_response(data)
 
                     if metadata:
                         # 收集元数据，稍后统一更新数据库
@@ -1091,7 +1311,7 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                             "metadata": metadata,
                         }
 
-                    # 响应成功但没有限额头
+                    # 响应成功但没有限额信息
                     return {
                         "key_id": key.id,
                         "key_name": key.name,

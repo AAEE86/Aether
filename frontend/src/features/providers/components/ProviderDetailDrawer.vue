@@ -444,9 +444,12 @@
                       v-if="key.upstream_metadata && hasCodexQuotaData(key.upstream_metadata)"
                       class="mt-2 p-2 bg-muted/30 rounded-md"
                     >
-                      <!-- 限额并排显示 -->
-                      <div class="grid grid-cols-2 gap-3">
-                        <!-- 周限额（7天窗口） -->
+                      <!-- 限额并排显示：Team/Plus/Enterprise 账号 3列, Free 账号 2列 -->
+                      <div
+                        class="grid gap-3"
+                        :class="isCodexTeamPlan(key) ? 'grid-cols-3' : 'grid-cols-2'"
+                      >
+                        <!-- 周限额 -->
                         <div v-if="key.upstream_metadata.primary_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
                             <span class="text-muted-foreground">周限额</span>
@@ -468,8 +471,8 @@
                             {{ formatResetTime(key.upstream_metadata.primary_reset_seconds) }}后重置
                           </div>
                         </div>
-                        <!-- 5小时限额 -->
-                        <div v-if="key.upstream_metadata.secondary_used_percent !== undefined">
+                        <!-- 5H限额（仅 Team/Plus/Enterprise 显示） -->
+                        <div v-if="isCodexTeamPlan(key) && key.upstream_metadata.secondary_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
                             <span class="text-muted-foreground">5H限额</span>
                             <span :class="getQuotaRemainingClass(key.upstream_metadata.secondary_used_percent)">
@@ -490,6 +493,28 @@
                             <template v-else>
                               已重置
                             </template>
+                          </div>
+                        </div>
+                        <!-- 代码审查限额 -->
+                        <div v-if="key.upstream_metadata.code_review_used_percent !== undefined">
+                          <div class="flex items-center justify-between text-[10px] mb-0.5">
+                            <span class="text-muted-foreground">审查限额</span>
+                            <span :class="getQuotaRemainingClass(key.upstream_metadata.code_review_used_percent)">
+                              {{ (100 - key.upstream_metadata.code_review_used_percent).toFixed(1) }}%
+                            </span>
+                          </div>
+                          <div class="relative w-full h-1.5 bg-border rounded-full overflow-hidden">
+                            <div
+                              class="absolute left-0 top-0 h-full transition-all duration-300"
+                              :class="getQuotaRemainingBarColor(key.upstream_metadata.code_review_used_percent)"
+                              :style="{ width: `${Math.max(100 - key.upstream_metadata.code_review_used_percent, 0)}%` }"
+                            />
+                          </div>
+                          <div
+                            v-if="key.upstream_metadata.code_review_reset_seconds"
+                            class="text-[9px] text-muted-foreground/70 mt-0.5"
+                          >
+                            {{ formatResetTime(key.upstream_metadata.code_review_reset_seconds) }}后重置
                           </div>
                         </div>
                       </div>
@@ -1808,7 +1833,15 @@ function hasCodexQuotaData(metadata: UpstreamMetadata | null | undefined): boole
   if (!metadata) return false
   return metadata.primary_used_percent !== undefined ||
          metadata.secondary_used_percent !== undefined ||
+         metadata.code_review_used_percent !== undefined ||
          (metadata.has_credits && metadata.credits_balance !== undefined)
+}
+
+// 判断是否为 Codex Team/Plus/Enterprise 账号（有 5H 限额，显示 3 列）
+function isCodexTeamPlan(key: EndpointAPIKey): boolean {
+  const planType = key.oauth_plan_type?.toLowerCase() || key.upstream_metadata?.plan_type?.toLowerCase()
+  // Free 账号返回 false（2 列），其他所有账号返回 true（3 列）
+  return planType !== undefined && planType !== 'free'
 }
 
 interface AntigravityQuotaItem {
