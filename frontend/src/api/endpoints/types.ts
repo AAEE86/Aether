@@ -282,6 +282,7 @@ export interface EndpointAPIKey {
 
 // Codex 上游元数据类型
 export interface CodexUpstreamMetadata {
+  updated_at?: number  // 更新时间（Unix 时间戳）
   plan_type?: string  // 套餐类型
   primary_used_percent?: number  // 周限额窗口使用百分比
   primary_reset_seconds?: number  // 周限额重置剩余秒数
@@ -310,7 +311,8 @@ export interface AntigravityUpstreamMetadata {
   quota_by_model?: Record<string, AntigravityModelQuota>
 }
 
-export interface UpstreamMetadata extends CodexUpstreamMetadata {
+export interface UpstreamMetadata {
+  codex?: CodexUpstreamMetadata
   antigravity?: AntigravityUpstreamMetadata
 }
 

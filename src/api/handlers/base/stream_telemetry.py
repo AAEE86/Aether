@@ -97,10 +97,6 @@ class StreamTelemetryRecorder:
             bg_db = next(db_gen)
 
             try:
-                # 采集上游元数据（仅成功请求，放在 writer 获取之前以确保执行）
-                if ctx.is_success():
-                    self._collect_upstream_metadata(bg_db, ctx)
-
                 writer = await self._get_telemetry_writer(bg_db, ctx, response_time_ms)
                 if writer is None:
                     return
@@ -528,19 +524,6 @@ class StreamTelemetryRecorder:
                     status_code=ctx.status_code,
                     error_message=ctx.error_message or f"HTTP {ctx.status_code}",
                 )
-
-    @staticmethod
-    def _collect_upstream_metadata(db: Session, ctx: StreamContext) -> None:
-        """采集上游元数据并更新 ProviderAPIKey.upstream_metadata（带节流）"""
-        from src.services.provider.metadata_collectors import collect_and_save_upstream_metadata
-
-        collect_and_save_upstream_metadata(
-            db,
-            provider_type=ctx.provider_type or "",
-            key_id=ctx.key_id or "",
-            response_headers=ctx.response_headers or {},
-            request_id=ctx.request_id or "",
-        )
 
     def _get_status_from_ctx(self, ctx: StreamContext) -> str:
         """根据上下文获取状态字符串"""

@@ -1156,6 +1156,11 @@ def _parse_codex_wham_usage_response(data: dict) -> dict | None:
     if balance is not None:
         result["credits_balance"] = float(balance)
 
+    # 添加更新时间戳
+    if result:
+        import time
+        result["updated_at"] = int(time.time())
+
     return result if result else None
 
 
@@ -1319,8 +1324,8 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                     metadata = _parse_codex_wham_usage_response(data)
 
                     if metadata:
-                        # 收集元数据，稍后统一更新数据库
-                        metadata_updates[key.id] = metadata
+                        # 收集元数据，稍后统一更新数据库（存储到 codex 子对象）
+                        metadata_updates[key.id] = {"codex": metadata}
                         return {
                             "key_id": key.id,
                             "key_name": key.name,
