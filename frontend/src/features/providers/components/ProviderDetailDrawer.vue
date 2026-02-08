@@ -444,51 +444,66 @@
                       v-if="key.upstream_metadata && hasCodexQuotaData(key.upstream_metadata)"
                       class="mt-2 p-2 bg-muted/30 rounded-md"
                     >
+                      <div class="flex items-center justify-between mb-1">
+                        <span class="text-[10px] text-muted-foreground">账号配额</span>
+                        <div class="flex items-center gap-1">
+                          <RefreshCw
+                            v-if="refreshingQuota"
+                            class="w-3 h-3 text-muted-foreground/70 animate-spin"
+                          />
+                          <span
+                            v-if="key.upstream_metadata.codex?.updated_at"
+                            class="text-[9px] text-muted-foreground/70"
+                          >
+                            {{ formatCodexUpdatedAt(key.upstream_metadata.codex.updated_at) }}
+                          </span>
+                        </div>
+                      </div>
                       <!-- 限额并排显示：Team/Plus/Enterprise 账号 3列, Free 账号 2列 -->
                       <div
                         class="grid gap-3"
                         :class="isCodexTeamPlan(key) ? 'grid-cols-3' : 'grid-cols-2'"
                       >
                         <!-- 周限额 -->
-                        <div v-if="key.upstream_metadata.primary_used_percent !== undefined">
+                        <div v-if="key.upstream_metadata.codex?.primary_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
                             <span class="text-muted-foreground">周限额</span>
-                            <span :class="getQuotaRemainingClass(key.upstream_metadata.primary_used_percent)">
-                              {{ (100 - key.upstream_metadata.primary_used_percent).toFixed(1) }}%
+                            <span :class="getQuotaRemainingClass(key.upstream_metadata.codex.primary_used_percent)">
+                              {{ (100 - key.upstream_metadata.codex.primary_used_percent).toFixed(1) }}%
                             </span>
                           </div>
                           <div class="relative w-full h-1.5 bg-border rounded-full overflow-hidden">
                             <div
                               class="absolute left-0 top-0 h-full transition-all duration-300"
-                              :class="getQuotaRemainingBarColor(key.upstream_metadata.primary_used_percent)"
-                              :style="{ width: `${Math.max(100 - key.upstream_metadata.primary_used_percent, 0)}%` }"
+                              :class="getQuotaRemainingBarColor(key.upstream_metadata.codex.primary_used_percent)"
+                              :style="{ width: `${Math.max(100 - key.upstream_metadata.codex.primary_used_percent, 0)}%` }"
                             />
                           </div>
                           <div
-                            v-if="key.upstream_metadata.primary_reset_seconds"
+                            v-if="key.upstream_metadata.codex.primary_reset_seconds"
                             class="text-[9px] text-muted-foreground/70 mt-0.5"
                           >
-                            {{ formatResetTime(key.upstream_metadata.primary_reset_seconds) }}后重置
+                            {{ formatResetTime(key.upstream_metadata.codex.primary_reset_seconds) }}后重置
                           </div>
                         </div>
                         <!-- 5H限额（仅 Team/Plus/Enterprise 显示） -->
-                        <div v-if="isCodexTeamPlan(key) && key.upstream_metadata.secondary_used_percent !== undefined">
+                        <div v-if="isCodexTeamPlan(key) && key.upstream_metadata.codex?.secondary_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
                             <span class="text-muted-foreground">5H限额</span>
-                            <span :class="getQuotaRemainingClass(key.upstream_metadata.secondary_used_percent)">
-                              {{ (100 - key.upstream_metadata.secondary_used_percent).toFixed(1) }}%
+                            <span :class="getQuotaRemainingClass(key.upstream_metadata.codex.secondary_used_percent)">
+                              {{ (100 - key.upstream_metadata.codex.secondary_used_percent).toFixed(1) }}%
                             </span>
                           </div>
                           <div class="relative w-full h-1.5 bg-border rounded-full overflow-hidden">
                             <div
                               class="absolute left-0 top-0 h-full transition-all duration-300"
-                              :class="getQuotaRemainingBarColor(key.upstream_metadata.secondary_used_percent)"
-                              :style="{ width: `${Math.max(100 - key.upstream_metadata.secondary_used_percent, 0)}%` }"
+                              :class="getQuotaRemainingBarColor(key.upstream_metadata.codex.secondary_used_percent)"
+                              :style="{ width: `${Math.max(100 - key.upstream_metadata.codex.secondary_used_percent, 0)}%` }"
                             />
                           </div>
                           <div class="text-[9px] text-muted-foreground/70 mt-0.5">
-                            <template v-if="key.upstream_metadata.secondary_reset_seconds">
-                              {{ formatResetTime(key.upstream_metadata.secondary_reset_seconds) }}后重置
+                            <template v-if="key.upstream_metadata.codex.secondary_reset_seconds">
+                              {{ formatResetTime(key.upstream_metadata.codex.secondary_reset_seconds) }}后重置
                             </template>
                             <template v-else>
                               已重置
@@ -496,25 +511,25 @@
                           </div>
                         </div>
                         <!-- 代码审查限额 -->
-                        <div v-if="key.upstream_metadata.code_review_used_percent !== undefined">
+                        <div v-if="key.upstream_metadata.codex?.code_review_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
                             <span class="text-muted-foreground">审查限额</span>
-                            <span :class="getQuotaRemainingClass(key.upstream_metadata.code_review_used_percent)">
-                              {{ (100 - key.upstream_metadata.code_review_used_percent).toFixed(1) }}%
+                            <span :class="getQuotaRemainingClass(key.upstream_metadata.codex.code_review_used_percent)">
+                              {{ (100 - key.upstream_metadata.codex.code_review_used_percent).toFixed(1) }}%
                             </span>
                           </div>
                           <div class="relative w-full h-1.5 bg-border rounded-full overflow-hidden">
                             <div
                               class="absolute left-0 top-0 h-full transition-all duration-300"
-                              :class="getQuotaRemainingBarColor(key.upstream_metadata.code_review_used_percent)"
-                              :style="{ width: `${Math.max(100 - key.upstream_metadata.code_review_used_percent, 0)}%` }"
+                              :class="getQuotaRemainingBarColor(key.upstream_metadata.codex.code_review_used_percent)"
+                              :style="{ width: `${Math.max(100 - key.upstream_metadata.codex.code_review_used_percent, 0)}%` }"
                             />
                           </div>
                           <div
-                            v-if="key.upstream_metadata.code_review_reset_seconds"
+                            v-if="key.upstream_metadata.codex.code_review_reset_seconds"
                             class="text-[9px] text-muted-foreground/70 mt-0.5"
                           >
-                            {{ formatResetTime(key.upstream_metadata.code_review_reset_seconds) }}后重置
+                            {{ formatResetTime(key.upstream_metadata.codex.code_review_reset_seconds) }}后重置
                           </div>
                         </div>
                       </div>
@@ -1000,7 +1015,7 @@ watch(
       if (newOpen && !oldOpen) {
         startCountdownTimer()
       }
-      void autoRefreshAntigravityQuotaInBackground()
+      void autoRefreshQuotaInBackground()
     } else if (!newOpen && oldOpen) {
       // 停止倒计时定时器
       stopCountdownTimer()
@@ -1269,7 +1284,7 @@ async function handleRefreshOAuth(key: EndpointAPIKey) {
     await loadEndpoints()
     // Antigravity：token 刷新后可能完成了账号激活，触发配额获取
     // （不 emit('refresh')，避免触发全局 provider 余额刷新）
-    void autoRefreshAntigravityQuotaInBackground()
+    void autoRefreshQuotaInBackground()
   } catch (err: any) {
     showError(err.response?.data?.detail || 'Token 刷新失败', '错误')
   } finally {
@@ -1317,18 +1332,6 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
 async function handleRefreshQuota() {
   if (refreshingQuota.value || !props.providerId) return
 
-  // 确认对话框
-  const message = provider.value?.provider_type === 'codex'
-    ? '这将使用每个账号发送测试请求以获取最新限额信息，可能产生少量 API 调用费用。是否继续？'
-    : '这将向每个账号请求一次上游额度信息以更新限额显示。是否继续？'
-  const confirmed = await confirm({
-    title: '获取限额',
-    message,
-    confirmText: '继续',
-    variant: 'info'
-  })
-  if (!confirmed) return
-
   refreshingQuota.value = true
   try {
     const result = await refreshProviderQuota(props.providerId)
@@ -1348,24 +1351,45 @@ async function handleRefreshQuota() {
   }
 }
 
-// Antigravity：打开抽屉后自动后台刷新（配额缓存缺失/过期，或 Token 即将过期时触发）
-const ANTIGRAVITY_AUTO_QUOTA_REFRESH_STALE_SECONDS = 5 * 60
+// Codex / Antigravity：打开抽屉后自动后台刷新（配额缓存缺失/过期，或 Token 即将过期时触发）
+const AUTO_QUOTA_REFRESH_STALE_SECONDS = 5 * 60
 // 与后端 OAuth 懒刷新阈值对齐：到期前 2 分钟内视为需要刷新
-const ANTIGRAVITY_AUTO_TOKEN_REFRESH_SKEW_SECONDS = 2 * 60
+const AUTO_TOKEN_REFRESH_SKEW_SECONDS = 2 * 60
+
+// 检查 Codex 是否有配额数据
+function hasCodexQuotaData(meta: UpstreamMetadata | null | undefined): boolean {
+  if (!meta?.codex) return false
+  // Codex 配额数据存储在 codex 子对象中
+  return meta.codex.primary_used_percent !== undefined || meta.codex.secondary_used_percent !== undefined
+}
+
+function shouldAutoRefreshCodexQuota(): boolean {
+  if (provider.value?.provider_type !== 'codex') return false
+
+  for (const { key } of allKeys.value) {
+    if (!key.is_active) continue
+
+    const meta: UpstreamMetadata | null | undefined = key.upstream_metadata
+    // 只要有一个活跃 key 没有配额数据，就刷新一次
+    if (!hasCodexQuotaData(meta)) {
+      return true
+    }
+  }
+
+  return false
+}
 
 function shouldAutoRefreshAntigravityQuota(): boolean {
   if (provider.value?.provider_type !== 'antigravity') return false
   const now = Math.floor(Date.now() / 1000)
 
-  let hasActiveKey = false
   for (const { key } of allKeys.value) {
     if (!key.is_active) continue
-    hasActiveKey = true
 
     // Token 已过期 / 即将过期：即使配额缓存还新，也触发一次后台刷新，
-    // 这样不会出现“打开抽屉看到已过期但没有任何刷新动作”的体验。
+    // 这样不会出现"打开抽屉看到已过期但没有任何刷新动作"的体验。
     if (key.oauth_invalid_at == null && typeof key.oauth_expires_at === 'number') {
-      if ((key.oauth_expires_at - now) <= ANTIGRAVITY_AUTO_TOKEN_REFRESH_SKEW_SECONDS) {
+      if ((key.oauth_expires_at - now) <= AUTO_TOKEN_REFRESH_SKEW_SECONDS) {
         return true
       }
     }
@@ -1378,7 +1402,7 @@ function shouldAutoRefreshAntigravityQuota(): boolean {
     if (!quotaByModel || typeof quotaByModel !== 'object' || Object.keys(quotaByModel).length === 0) {
       return true
     }
-    if (typeof updatedAt !== 'number' || (now - updatedAt) > ANTIGRAVITY_AUTO_QUOTA_REFRESH_STALE_SECONDS) {
+    if (typeof updatedAt !== 'number' || (now - updatedAt) > AUTO_QUOTA_REFRESH_STALE_SECONDS) {
       return true
     }
   }
@@ -1386,17 +1410,23 @@ function shouldAutoRefreshAntigravityQuota(): boolean {
   return false
 }
 
-async function autoRefreshAntigravityQuotaInBackground() {
+// 通用的自动刷新配额函数（支持 Codex 和 Antigravity）
+async function autoRefreshQuotaInBackground() {
   if (!props.providerId) return
-  if (provider.value?.provider_type !== 'antigravity') return
   if (refreshingQuota.value) return
-  if (!shouldAutoRefreshAntigravityQuota()) return
 
-  const hadCachedQuota = allKeys.value.some(({ key }) => (
-    key.is_active &&
-    key.upstream_metadata &&
-    hasAntigravityQuotaData(key.upstream_metadata)
-  ))
+  const providerType = provider.value?.provider_type
+  if (providerType !== 'codex' && providerType !== 'antigravity') return
+
+  // 检查是否需要刷新
+  const shouldRefresh = providerType === 'codex'
+    ? shouldAutoRefreshCodexQuota()
+    : shouldAutoRefreshAntigravityQuota()
+  if (!shouldRefresh) return
+
+  const hadCachedQuota = providerType === 'codex'
+    ? allKeys.value.some(({ key }) => key.is_active && hasCodexQuotaData(key.upstream_metadata))
+    : allKeys.value.some(({ key }) => key.is_active && key.upstream_metadata && hasAntigravityQuotaData(key.upstream_metadata))
 
   refreshingQuota.value = true
   try {
@@ -1404,11 +1434,11 @@ async function autoRefreshAntigravityQuotaInBackground() {
     if (result.success > 0) {
       // 重新加载 keys 以更新配额显示
       await loadEndpoints()
-    } else if (!hadCachedQuota) {
+    } else if (!hadCachedQuota && providerType === 'antigravity') {
       showError('没有获取到配额信息（请检查账号是否已授权、project_id 是否存在）', '提示')
     }
   } catch (err: any) {
-    if (!hadCachedQuota) {
+    if (!hadCachedQuota && providerType === 'antigravity') {
       showError(err.response?.data?.detail || '后台刷新配额失败', '错误')
     }
   } finally {
@@ -1451,7 +1481,7 @@ async function handleKeyChanged() {
   ])
   emit('refresh')
   // 添加/修改 key 后自动获取 Antigravity 配额（新 key 的 upstream_metadata 为空）
-  void autoRefreshAntigravityQuotaInBackground()
+  void autoRefreshQuotaInBackground()
 }
 
 // 切换密钥启用状态
@@ -1828,18 +1858,9 @@ function getQuotaRemainingBarColor(usedPercent: number): string {
   return 'bg-green-500 dark:bg-green-400'
 }
 
-// 检查是否有 Codex 额度数据
-function hasCodexQuotaData(metadata: UpstreamMetadata | null | undefined): boolean {
-  if (!metadata) return false
-  return metadata.primary_used_percent !== undefined ||
-         metadata.secondary_used_percent !== undefined ||
-         metadata.code_review_used_percent !== undefined ||
-         (metadata.has_credits && metadata.credits_balance !== undefined)
-}
-
 // 判断是否为 Codex Team/Plus/Enterprise 账号（有 5H 限额，显示 3 列）
 function isCodexTeamPlan(key: EndpointAPIKey): boolean {
-  const planType = key.oauth_plan_type?.toLowerCase() || key.upstream_metadata?.plan_type?.toLowerCase()
+  const planType = key.oauth_plan_type?.toLowerCase() || key.upstream_metadata?.codex?.plan_type?.toLowerCase()
   // Free 账号返回 false（2 列），其他所有账号返回 true（3 列）
   return planType !== undefined && planType !== 'free'
 }
@@ -1857,7 +1878,7 @@ function hasAntigravityQuotaData(metadata: UpstreamMetadata | null | undefined):
   return !!quotaByModel && typeof quotaByModel === 'object' && Object.keys(quotaByModel).length > 0
 }
 
-function formatAntigravityUpdatedAt(updatedAt: number): string {
+function formatUpdatedAt(updatedAt: number): string {
   if (!updatedAt || typeof updatedAt !== 'number') return ''
   const now = Math.floor(Date.now() / 1000)
   const diff = now - updatedAt
@@ -1869,6 +1890,10 @@ function formatAntigravityUpdatedAt(updatedAt: number): string {
   const days = Math.floor(hours / 24)
   return `${days}天前更新`
 }
+
+// 兼容旧函数名
+const formatCodexUpdatedAt = formatUpdatedAt
+const formatAntigravityUpdatedAt = formatUpdatedAt
 
 function secondsUntilReset(resetTime: string): number | null {
   if (!resetTime) return null

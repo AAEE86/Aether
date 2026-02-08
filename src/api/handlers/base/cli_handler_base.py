@@ -2404,10 +2404,6 @@ class CliMessageHandlerBase(BaseMessageHandler):
             try:
                 from src.models.database import ApiKey as ApiKeyModel
 
-                # 采集上游元数据（仅成功请求）
-                if ctx.is_success():
-                    self._collect_upstream_metadata(bg_db, ctx)
-
                 user = bg_db.query(User).filter(User.id == ctx.user_id).first()
                 api_key = bg_db.query(ApiKeyModel).filter(ApiKeyModel.id == ctx.api_key_id).first()
 
@@ -2657,19 +2653,6 @@ class CliMessageHandlerBase(BaseMessageHandler):
 
         except Exception as e:
             logger.exception("记录流式统计信息时出错")
-
-    @staticmethod
-    def _collect_upstream_metadata(db: Session, ctx: StreamContext) -> None:
-        """采集上游元数据并更新 ProviderAPIKey.upstream_metadata（带节流）"""
-        from src.services.provider.metadata_collectors import collect_and_save_upstream_metadata
-
-        collect_and_save_upstream_metadata(
-            db,
-            provider_type=ctx.provider_type or "",
-            key_id=ctx.key_id or "",
-            response_headers=ctx.response_headers or {},
-            request_id=ctx.request_id or "",
-        )
 
     async def _record_stream_failure(
         self,
