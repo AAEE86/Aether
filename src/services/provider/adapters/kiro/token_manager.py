@@ -154,6 +154,9 @@ async def refresh_social_token(
     if not (cfg.machine_id or "").strip():
         new_cfg.machine_id = machine_id
 
+    # 缓存 access_token
+    new_cfg.access_token = access_token
+
     return access_token, new_cfg
 
 
@@ -226,6 +229,9 @@ async def refresh_idc_token(
     # Persist computed machine_id if user didn't provide one.
     if not (cfg.machine_id or "").strip():
         new_cfg.machine_id = generate_machine_id(cfg)
+
+    # 缓存 access_token
+    new_cfg.access_token = access_token
 
     return access_token, new_cfg
 

@@ -176,3 +176,33 @@ export async function refreshProviderQuota(providerId: string): Promise<RefreshQ
   const response = await client.post(`/api/admin/endpoints/providers/${providerId}/refresh-quota`)
   return response.data
 }
+
+/**
+ * 批量导入 OAuth 凭据（通用）
+ * 支持的 Provider 类型：Codex、Antigravity、GeminiCli、ClaudeCode、Kiro
+ */
+export interface BatchImportResultItem {
+  index: number
+  status: 'success' | 'error'
+  key_id?: string
+  key_name?: string
+  auth_method?: string
+  error?: string
+}
+
+export interface BatchImportResult {
+  total: number
+  success: number
+  failed: number
+  results: BatchImportResultItem[]
+}
+
+export async function batchImportOAuth(
+  providerId: string,
+  credentials: string
+): Promise<BatchImportResult> {
+  const response = await client.post(`/api/admin/provider-oauth/providers/${providerId}/batch-import`, {
+    credentials,
+  })
+  return response.data
+}

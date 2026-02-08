@@ -189,22 +189,6 @@
                       {{ provider.provider_type === 'custom' ? '密钥管理' : '账号管理' }}
                     </h3>
                     <div class="flex items-center gap-2">
-                      <!-- 刷新限额按钮（Codex：会产生少量调用费用；Antigravity 采用打开抽屉自动后台刷新） -->
-                      <Button
-                        v-if="provider.provider_type === 'codex' && allKeys.length > 0"
-                        variant="outline"
-                        size="sm"
-                        class="h-8"
-                        :disabled="refreshingQuota"
-                        title="刷新所有账号的限额信息"
-                        @click="handleRefreshQuota"
-                      >
-                        <RefreshCw
-                          class="w-3.5 h-3.5 mr-1.5"
-                          :class="{ 'animate-spin': refreshingQuota }"
-                        />
-                        刷新限额
-                      </Button>
                       <Button
                         v-if="endpoints.length > 0"
                         variant="outline"
@@ -249,8 +233,8 @@
                         </div>
                         <div class="flex flex-col min-w-0">
                           <div class="flex items-center gap-1.5">
-                            <span class="text-sm font-medium truncate">{{ key.name || '未命名密钥' }}</span>
-                            <!-- OAuth 订阅类型标签 -->
+                            <span class="text-sm font-medium truncate">{{ getKeyDisplayName(key) }}</span>
+                            <!-- OAuth 订阅类型标签 (Codex) -->
                             <Badge
                               v-if="key.oauth_plan_type"
                               variant="outline"
@@ -259,28 +243,27 @@
                             >
                               {{ formatOAuthPlanType(key.oauth_plan_type) }}
                             </Badge>
+                            <!-- Kiro 订阅类型标签 -->
+                            <Badge
+                              v-if="provider.provider_type === 'kiro' && key.upstream_metadata?.kiro?.subscription_title"
+                              variant="outline"
+                              class="text-[10px] px-1.5 py-0 shrink-0"
+                              :class="getOAuthPlanTypeClass(formatKiroSubscription(key.upstream_metadata?.kiro?.subscription_title))"
+                            >
+                              {{ formatKiroSubscription(key.upstream_metadata?.kiro?.subscription_title) }}
+                            </Badge>
                           </div>
                           <div class="flex items-center gap-1">
                             <span class="text-[11px] font-mono text-muted-foreground">
                               {{ key.auth_type === 'oauth' ? '[Refresh Token]' : (key.auth_type === 'vertex_ai' ? 'Vertex AI' : key.api_key_masked) }}
                             </span>
                             <Button
-                              v-if="key.auth_type === 'oauth' && provider.provider_type !== 'kiro'"
+                              v-if="key.auth_type === 'oauth'"
                               variant="ghost"
                               size="icon"
                               class="h-4 w-4 shrink-0"
                               title="下载 Refresh Token 授权文件"
                               @click.stop="downloadRefreshToken(key)"
-                            >
-                              <Download class="w-2.5 h-2.5" />
-                            </Button>
-                            <Button
-                              v-else-if="key.auth_type === 'oauth' && provider.provider_type === 'kiro'"
-                              variant="ghost"
-                              size="icon"
-                              class="h-4 w-4 shrink-0"
-                              title="Export credentials"
-                              @click.stop="downloadKiroCredentials(key)"
                             >
                               <Download class="w-2.5 h-2.5" />
                             </Button>
@@ -597,6 +580,55 @@
                             <template v-else>
                               重置时间未知
                             </template>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <!-- Kiro 上游额度信息（仅当有元数据时显示） -->
+                    <div
+                      v-if="provider.provider_type === 'kiro' && key.upstream_metadata && hasKiroQuotaData(key.upstream_metadata)"
+                      class="mt-2 p-2 bg-muted/30 rounded-md"
+                    >
+                      <div class="flex items-center justify-between mb-1">
+                        <span class="text-[10px] text-muted-foreground">账号配额</span>
+                        <div class="flex items-center gap-1">
+                          <RefreshCw
+                            v-if="refreshingQuota"
+                            class="w-3 h-3 text-muted-foreground/70 animate-spin"
+                          />
+                          <span
+                            v-if="key.upstream_metadata.kiro?.updated_at"
+                            class="text-[9px] text-muted-foreground/70"
+                          >
+                            {{ formatKiroUpdatedAt(key.upstream_metadata.kiro?.updated_at) }}
+                          </span>
+                        </div>
+                      </div>
+                      <!-- Kiro 额度显示：使用进度 -->
+                      <div>
+                        <!-- 使用额度进度条 -->
+                        <div>
+                          <div class="flex items-center justify-between text-[10px] mb-0.5">
+                            <span class="text-muted-foreground">使用额度</span>
+                            <span :class="getQuotaRemainingClass(key.upstream_metadata.kiro?.usage_percentage || 0)">
+                              {{ (100 - (key.upstream_metadata.kiro?.usage_percentage || 0)).toFixed(1) }}%
+                            </span>
+                          </div>
+                          <div class="relative w-full h-1.5 bg-border rounded-full overflow-hidden">
+                            <div
+                              class="absolute left-0 top-0 h-full transition-all duration-300"
+                              :class="getQuotaRemainingBarColor(key.upstream_metadata.kiro?.usage_percentage || 0)"
+                              :style="{ width: `${Math.max(100 - (key.upstream_metadata.kiro?.usage_percentage || 0), 0)}%` }"
+                            />
+                          </div>
+                          <div class="flex items-center justify-between text-[9px] text-muted-foreground/70 mt-0.5">
+                            <span>
+                              {{ formatKiroUsage(key.upstream_metadata.kiro?.current_usage) }} /
+                              {{ formatKiroUsage(key.upstream_metadata.kiro?.usage_limit) }}
+                            </span>
+                            <span v-if="key.upstream_metadata.kiro?.next_reset_at">
+                              {{ formatKiroResetTime(key.upstream_metadata.kiro?.next_reset_at) }}重置
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -1200,12 +1232,13 @@ async function copyFullKey(key: EndpointAPIKey) {
   }
 }
 
-// 下载 Refresh Token 授权文件
+// 下载 Refresh Token 授权文件（通用，支持所有 OAuth Provider）
 async function downloadRefreshToken(key: EndpointAPIKey) {
   try {
     const result = await revealEndpointKey(key.id)
     const refreshToken = result.refresh_token || ''
     const accessToken = result.api_key || ''
+    const authConfig = result.auth_config
 
     if (!refreshToken) {
       showError('该账号没有 Refresh Token，无法导出', '错误')
@@ -1217,21 +1250,32 @@ async function downloadRefreshToken(key: EndpointAPIKey) {
       revealedKeys.value.set(key.id, accessToken)
     }
 
-    const data = {
+    // 优先从 upstream_metadata.kiro.email 获取邮箱
+    const email = key.upstream_metadata?.kiro?.email || key.oauth_email || ''
+    const providerType = provider.value?.provider_type || 'unknown'
+
+    // 构建导出数据
+    const data: Record<string, any> = {
       auth_type: 'oauth',
       access_token: accessToken,
       refresh_token: refreshToken,
       name: key.name || '',
-      oauth_email: key.oauth_email || '',
       exported_at: new Date().toISOString(),
+    }
+
+    // Kiro 类型需要包含 auth_config（导入时需要 clientId/clientSecret 等信息）
+    if (providerType === 'kiro' && authConfig) {
+      data.auth_config = authConfig
+      data.email = email
+    } else {
+      data.oauth_email = email
     }
 
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    const providerType = provider.value?.provider_type || 'unknown'
-    const safeName = (key.name || key.oauth_email || key.id.slice(0, 8)).replace(/[^a-zA-Z0-9_\-@.]/g, '_')
+    const safeName = (email || key.name || key.id.slice(0, 8)).replace(/[^a-zA-Z0-9_\-@.]/g, '_')
     a.download = `aether_${providerType}_${safeName}.json`
     document.body.appendChild(a)
     a.click()
@@ -1242,60 +1286,6 @@ async function downloadRefreshToken(key: EndpointAPIKey) {
   }
 }
 
-
-// Download Kiro credential export file
-async function downloadKiroCredentials(key: EndpointAPIKey) {
-  try {
-    const result = await revealEndpointKey(key.id)
-
-    if (result.auth_type !== 'oauth') {
-      showError('Not an OAuth credential', 'Error')
-      return
-    }
-
-    const refreshToken = result.refresh_token || ''
-    const accessToken = result.api_key || ''
-    const authConfig = result.auth_config
-
-    const credentialProviderType = String((authConfig as any)?.provider_type || (authConfig as any)?.providerType || '').toLowerCase()
-    if (credentialProviderType !== 'kiro') {
-      showError('Not a Kiro credential', 'Error')
-      return
-    }
-
-    if (!authConfig) {
-      showError('Missing Kiro auth_config', 'Error')
-      return
-    }
-
-    if (accessToken) {
-      revealedKeys.value.set(key.id, accessToken)
-    }
-
-    const data = {
-      auth_type: 'oauth',
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      auth_config: authConfig,
-      name: key.name || '',
-      exported_at: new Date().toISOString(),
-    }
-
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    const providerType = provider.value?.provider_type || 'unknown'
-    const safeName = (key.name || key.id.slice(0, 8)).replace(/[^a-zA-Z0-9_\-@.]/g, '_')
-    a.download = `aether_${providerType}_${safeName}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  } catch (err: any) {
-    showError(err.response?.data?.detail || 'Failed to export Kiro credentials', 'Error')
-  }
-}
 
 function handleDeleteKey(key: EndpointAPIKey) {
   keyToDelete.value = key
@@ -1394,30 +1384,7 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
   }
 }
 
-// 刷新所有账号限额（Codex / Antigravity）
-async function handleRefreshQuota() {
-  if (refreshingQuota.value || !props.providerId) return
-
-  refreshingQuota.value = true
-  try {
-    const result = await refreshProviderQuota(props.providerId)
-    if (result.success > 0) {
-      showSuccess(`成功刷新 ${result.success}/${result.total} 个账号的限额`)
-      // 重新加载数据以更新 UI
-      await loadEndpoints()
-    } else if (result.failed > 0) {
-      showError(`刷新失败: ${result.results.map(r => r.message).filter(Boolean).join(', ')}`, '错误')
-    } else {
-      showError('没有获取到限额信息', '警告')
-    }
-  } catch (err: any) {
-    showError(err.response?.data?.detail || '刷新限额失败', '错误')
-  } finally {
-    refreshingQuota.value = false
-  }
-}
-
-// Codex / Antigravity：打开抽屉后自动后台刷新（配额缓存缺失/过期，或 Token 即将过期时触发）
+// Codex / Antigravity / Kiro：打开抽屉后自动后台刷新（配额缓存缺失/过期，或 Token 即将过期时触发）
 const AUTO_QUOTA_REFRESH_STALE_SECONDS = 5 * 60
 // 与后端 OAuth 懒刷新阈值对齐：到期前 2 分钟内视为需要刷新
 const AUTO_TOKEN_REFRESH_SKEW_SECONDS = 2 * 60
@@ -1427,6 +1394,78 @@ function hasCodexQuotaData(meta: UpstreamMetadata | null | undefined): boolean {
   if (!meta?.codex) return false
   // Codex 配额数据存储在 codex 子对象中
   return meta.codex.primary_used_percent !== undefined || meta.codex.secondary_used_percent !== undefined
+}
+
+// 检查 Kiro 是否有配额数据
+function hasKiroQuotaData(meta: UpstreamMetadata | null | undefined): boolean {
+  if (!meta?.kiro) return false
+  return meta.kiro.usage_percentage !== undefined || meta.kiro.usage_limit !== undefined
+}
+
+// 格式化 Kiro 更新时间
+const formatKiroUpdatedAt = formatUpdatedAt
+
+// 格式化 Kiro 使用量（带单位）
+function formatKiroUsage(value: number | undefined): string {
+  if (value === undefined || value === null) return '-'
+  if (value >= 1000000) {
+    return `${(value / 1000000).toFixed(1)}M`
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}K`
+  }
+  return value.toFixed(1)
+}
+
+// 格式化 Kiro 重置时间
+function formatKiroResetTime(timestamp: number | undefined): string {
+  if (!timestamp) return ''
+  // timestamp 可能是毫秒或秒，需要判断
+  const ts = timestamp > 1e12 ? timestamp : timestamp * 1000
+  const now = Date.now()
+  const diff = ts - now
+
+  if (diff <= 0) {
+    return '已重置'
+  }
+
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+
+  if (days > 0) {
+    return `${days}天${hours}小时后`
+  }
+
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟后`
+  }
+
+  return `${minutes}分钟后`
+}
+
+// 格式化 Kiro 订阅类型显示
+function formatKiroSubscription(title: string | undefined): string {
+  if (!title) return ''
+  // 简化显示：KIRO PRO+ -> Pro+, KIRO FREE -> Free（首字母大写，与 Codex 保持一致）
+  const upper = title.toUpperCase()
+  if (upper.includes('POWER')) return 'Power'
+  if (upper.includes('PRO+')) return 'Pro+'
+  if (upper.includes('PRO')) return 'Pro'
+  if (upper.includes('FREE')) return 'Free'
+  return title
+}
+
+// 获取 Key 的显示名称（Kiro 优先显示邮箱）
+function getKeyDisplayName(key: EndpointAPIKey): string {
+  // Kiro 类型优先显示邮箱（从 upstream_metadata.kiro.email 获取）
+  if (provider.value?.provider_type === 'kiro') {
+    const kiroEmail = key.upstream_metadata?.kiro?.email
+    if (kiroEmail) {
+      return kiroEmail
+    }
+  }
+  return key.name || '未命名密钥'
 }
 
 function shouldAutoRefreshCodexQuota(): boolean {
@@ -1445,6 +1484,13 @@ function shouldAutoRefreshCodexQuota(): boolean {
   return false
 }
 
+// 检查 OAuth Token 是否即将过期（Antigravity / Kiro ）
+function isTokenExpiringSoon(key: EndpointAPIKey, now: number): boolean {
+  return key.oauth_invalid_at == null
+    && typeof key.oauth_expires_at === 'number'
+    && (key.oauth_expires_at - now) <= AUTO_TOKEN_REFRESH_SKEW_SECONDS
+}
+
 function shouldAutoRefreshAntigravityQuota(): boolean {
   if (provider.value?.provider_type !== 'antigravity') return false
   const now = Math.floor(Date.now() / 1000)
@@ -1452,15 +1498,9 @@ function shouldAutoRefreshAntigravityQuota(): boolean {
   for (const { key } of allKeys.value) {
     if (!key.is_active) continue
 
-    // Token 已过期 / 即将过期：即使配额缓存还新，也触发一次后台刷新，
-    // 这样不会出现"打开抽屉看到已过期但没有任何刷新动作"的体验。
-    if (key.oauth_invalid_at == null && typeof key.oauth_expires_at === 'number') {
-      if ((key.oauth_expires_at - now) <= AUTO_TOKEN_REFRESH_SKEW_SECONDS) {
-        return true
-      }
-    }
+    if (isTokenExpiringSoon(key, now)) return true
 
-    const meta: UpstreamMetadata | null | undefined = key.upstream_metadata
+    const meta = key.upstream_metadata
     const updatedAt = meta?.antigravity?.updated_at
     const quotaByModel = meta?.antigravity?.quota_by_model
 
@@ -1476,23 +1516,51 @@ function shouldAutoRefreshAntigravityQuota(): boolean {
   return false
 }
 
-// 通用的自动刷新配额函数（支持 Codex 和 Antigravity）
+function shouldAutoRefreshKiroQuota(): boolean {
+  if (provider.value?.provider_type !== 'kiro') return false
+  const now = Math.floor(Date.now() / 1000)
+
+  for (const { key } of allKeys.value) {
+    if (!key.is_active) continue
+
+    if (isTokenExpiringSoon(key, now)) return true
+
+    // 只要有一个活跃 key 没有配额数据，就刷新一次
+    if (!hasKiroQuotaData(key.upstream_metadata)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+// 通用的自动刷新配额函数（支持 Codex、Antigravity 和 Kiro）
 async function autoRefreshQuotaInBackground() {
   if (!props.providerId) return
   if (refreshingQuota.value) return
 
   const providerType = provider.value?.provider_type
-  if (providerType !== 'codex' && providerType !== 'antigravity') return
+  if (providerType !== 'codex' && providerType !== 'antigravity' && providerType !== 'kiro') return
 
   // 检查是否需要刷新
-  const shouldRefresh = providerType === 'codex'
-    ? shouldAutoRefreshCodexQuota()
-    : shouldAutoRefreshAntigravityQuota()
+  let shouldRefresh = false
+  if (providerType === 'codex') {
+    shouldRefresh = shouldAutoRefreshCodexQuota()
+  } else if (providerType === 'antigravity') {
+    shouldRefresh = shouldAutoRefreshAntigravityQuota()
+  } else if (providerType === 'kiro') {
+    shouldRefresh = shouldAutoRefreshKiroQuota()
+  }
   if (!shouldRefresh) return
 
-  const hadCachedQuota = providerType === 'codex'
-    ? allKeys.value.some(({ key }) => key.is_active && hasCodexQuotaData(key.upstream_metadata))
-    : allKeys.value.some(({ key }) => key.is_active && key.upstream_metadata && hasAntigravityQuotaData(key.upstream_metadata))
+  let hadCachedQuota = false
+  if (providerType === 'codex') {
+    hadCachedQuota = allKeys.value.some(({ key }) => key.is_active && hasCodexQuotaData(key.upstream_metadata))
+  } else if (providerType === 'antigravity') {
+    hadCachedQuota = allKeys.value.some(({ key }) => key.is_active && key.upstream_metadata && hasAntigravityQuotaData(key.upstream_metadata))
+  } else if (providerType === 'kiro') {
+    hadCachedQuota = allKeys.value.some(({ key }) => key.is_active && hasKiroQuotaData(key.upstream_metadata))
+  }
 
   refreshingQuota.value = true
   try {
@@ -2106,6 +2174,8 @@ function getOAuthPlanTypeClass(planType: string): string {
     team: 'border-purple-500/50 text-purple-600 dark:text-purple-400',
     enterprise: 'border-amber-500/50 text-amber-600 dark:text-amber-400',
     ultra: 'border-amber-500/50 text-amber-600 dark:text-amber-400',
+    'pro+': 'border-purple-500/50 text-purple-600 dark:text-purple-400',
+    power: 'border-amber-500/50 text-amber-600 dark:text-amber-400',
   }
   return classes[planType.toLowerCase()] || ''
 }

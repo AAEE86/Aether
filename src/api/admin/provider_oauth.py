@@ -943,9 +943,134 @@ async def complete_provider_oauth(
 # ==============================================================================
 
 
+def _parse_tokens_input(raw_input: str) -> list[str]:
+    """
+    解析通用 Token 导入输入，支持多种格式。
+
+    支持的格式：
+    1. 单个 Token 字符串
+    2. JSON 数组: ["token1", "token2", ...]
+    3. 纯 Token 导入（一行一个）: "token1\\ntoken2\\ntoken3"
+
+    返回: Token 字符串列表
+    """
+    raw = raw_input.strip()
+    if not raw:
+        return []
+
+    result: list[str] = []
+
+    # 尝试解析为 JSON 数组
+    if raw.startswith('['):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str) and item.strip():
+                        result.append(item.strip())
+                return result
+        except json.JSONDecodeError:
+            pass  # 不是有效 JSON，继续尝试其他格式
+
+    # 纯 Token 导入（一行一个）
+    lines = raw.splitlines()
+    for line in lines:
+        token = line.strip()
+        if token and not token.startswith('#'):  # 忽略空行和注释行
+            result.append(token)
+
+    return result
+
+
+def _parse_kiro_import_input(raw_input: str) -> list[dict[str, Any]]:
+    """
+    解析 Kiro 凭据导入输入，支持多种格式。
+
+    支持的格式：
+    1. 单凭据 JSON 对象: {"refreshToken": "..."}
+    2. 批量导入 JSON 数组: [{"refreshToken": "..."}, ...]
+    3. 纯 Token 导入（一行一个）: "token1\\ntoken2\\ntoken3"
+
+    返回: 凭据字典列表（每个字典代表一个凭据）
+    """
+    raw = raw_input.strip()
+    if not raw:
+        return []
+
+    result: list[dict[str, Any]] = []
+
+    # 尝试解析为 JSON
+    if raw.startswith('{') or raw.startswith('['):
+        try:
+            parsed = json.loads(raw)
+
+            # JSON 数组（批量导入）
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        result.append(item)
+                    elif isinstance(item, str) and item.strip():
+                        # 数组中的纯字符串当作 refreshToken
+                        result.append({'refreshToken': item.strip()})
+                return result
+
+            # 单个 JSON 对象
+            if isinstance(parsed, dict):
+                # 检查是否有嵌套的 auth_config
+                if isinstance(parsed.get('auth_config'), dict):
+                    result.append(parsed['auth_config'])
+                elif isinstance(parsed.get('authConfig'), dict):
+                    result.append(parsed['authConfig'])
+                else:
+                    result.append(parsed)
+                return result
+
+        except json.JSONDecodeError:
+            pass  # 不是有效 JSON，继续尝试其他格式
+
+    # 纯 Token 导入（一行一个）
+    lines = raw.splitlines()
+    for line in lines:
+        token = line.strip()
+        if token and not token.startswith('#'):  # 忽略空行和注释行
+            result.append({'refreshToken': token})
+
+    return result
+
+
 class ImportRefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., min_length=1, description="Refresh Token")
     name: str | None = Field(None, max_length=100, description="账号名称（可选）")
+
+
+class BatchImportRequest(BaseModel):
+    """批量导入 Kiro 凭据请求"""
+
+    credentials: str = Field(
+        ...,
+        min_length=1,
+        description="凭据数据，支持多种格式：JSON 对象、JSON 数组、纯 Token（一行一个）",
+    )
+
+
+class BatchImportResultItem(BaseModel):
+    """单个凭据导入结果"""
+
+    index: int = Field(..., description="凭据在输入中的索引（从 0 开始）")
+    status: str = Field(..., description="状态：success / error")
+    key_id: str | None = Field(None, description="创建的 Key ID（成功时）")
+    key_name: str | None = Field(None, description="创建的 Key 名称（成功时）")
+    auth_method: str | None = Field(None, description="认证类型（成功时）")
+    error: str | None = Field(None, description="错误信息（失败时）")
+
+
+class BatchImportResponse(BaseModel):
+    """批量导入响应"""
+
+    total: int = Field(..., description="总凭据数")
+    success: int = Field(..., description="成功导入数")
+    failed: int = Field(..., description="失败数")
+    results: list[BatchImportResultItem] = Field(..., description="每个凭据的导入结果")
 
 
 @router.post(
@@ -973,37 +1098,25 @@ async def import_refresh_token(
         if not raw_import:
             raise InvalidRequestException("Refresh Token 不能为空")
 
-        raw_cfg: dict[str, Any] | None = None
-        if raw_import.lstrip().startswith("{"):
-            try:
-                parsed = json.loads(raw_import)
-                if isinstance(parsed, dict):
-                    if isinstance(parsed.get("auth_config"), dict):
-                        raw_cfg = parsed["auth_config"]
-                    elif isinstance(parsed.get("authConfig"), dict):
-                        raw_cfg = parsed["authConfig"]
-                    else:
-                        raw_cfg = parsed
-            except Exception:
-                raw_cfg = None
+        # 使用统一的解析函数
+        credentials = _parse_kiro_import_input(raw_import)
+        if not credentials:
+            raise InvalidRequestException("无法解析凭据数据")
+
+        # 单条导入只取第一个
+        raw_cfg = credentials[0]
 
         from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
-        from src.services.provider.adapters.kiro.token_manager import (
-            refresh_access_token,
-            validate_refresh_token,
-        )
+        from src.services.provider.adapters.kiro.token_manager import refresh_access_token
 
-        cfg = (
-            KiroAuthConfig.from_dict(raw_cfg)
-            if raw_cfg is not None
-            else KiroAuthConfig.from_dict({"refresh_token": raw_import, "expires_at": 0})
-        )
+        # 验证必需字段
+        is_valid, error_msg = KiroAuthConfig.validate_required_fields(raw_cfg)
+        if not is_valid:
+            raise InvalidRequestException(error_msg)
+
+        # 解析配置（自动推断 auth_method）
+        cfg = KiroAuthConfig.from_dict(raw_cfg)
         cfg.provider_type = ProviderType.KIRO.value
-
-        try:
-            validate_refresh_token(cfg.refresh_token)
-        except Exception as e:
-            raise InvalidRequestException(f"Kiro Refresh Token 无效: {e}")
 
         proxy_config = getattr(provider, "proxy", None)
         try:
@@ -1017,10 +1130,17 @@ async def import_refresh_token(
         name = (payload.name or "").strip()
         if not name:
             region = (new_cfg.region or "").strip() or "us-east-1"
+            auth_method = new_cfg.auth_method or "social"
             suffix = ""
-            if isinstance(new_cfg.profile_arn, str) and new_cfg.profile_arn.strip():
+            if new_cfg.email:
+                suffix = new_cfg.email
+            elif isinstance(new_cfg.profile_arn, str) and new_cfg.profile_arn.strip():
                 suffix = new_cfg.profile_arn.rsplit("/", 1)[-1]
-            name = f"Kiro_{region}_{suffix}" if suffix else f"Kiro_{region}_{int(time.time())}"
+            else:
+                suffix = str(int(time.time()))
+            name = f"Kiro_{auth_method}_{region}_{suffix}"
+            if len(name) > 100:
+                name = name[:100]
 
         api_formats = [
             ep.api_format
@@ -1176,4 +1296,423 @@ async def import_refresh_token(
         expires_at=expires_at,
         has_refresh_token=bool(new_refresh_token),
         email=auth_config.get("email"),
+    )
+
+
+# ==============================================================================
+# 通用批量导入（支持所有 OAuth Provider）
+# ==============================================================================
+
+
+@router.post(
+    "/providers/{provider_id}/batch-import",
+    response_model=BatchImportResponse,
+)
+async def batch_import_oauth(
+    provider_id: str,
+    payload: BatchImportRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> BatchImportResponse:
+    """批量导入 OAuth 凭据（通用）。
+
+    支持的 Provider 类型：Codex、Antigravity、GeminiCli、ClaudeCode、Kiro
+
+    支持多种格式：
+    1. JSON 数组: ["token1", "token2", ...]
+    2. 纯 Token 导入（一行一个）
+    3. Kiro 专用：JSON 对象或对象数组（含 refreshToken/clientId 等字段）
+
+    批量导入时自动跳过错误，不中断导入。
+    """
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise NotFoundException("Provider 不存在", "provider")
+
+    provider_type = _require_fixed_provider(provider)
+
+    # Kiro 使用专用逻辑
+    if provider_type == ProviderType.KIRO.value:
+        return await _batch_import_kiro_internal(
+            provider_id=provider_id,
+            provider=provider,
+            raw_credentials=payload.credentials,
+            db=db,
+        )
+
+    # 标准 OAuth Provider（Codex、Antigravity、GeminiCli、ClaudeCode）
+    try:
+        template = FIXED_PROVIDERS.get(ProviderType(provider_type))
+    except Exception:
+        template = None
+    if not template:
+        raise InvalidRequestException(f"不支持的 provider_type: {provider_type}")
+
+    # 解析 Token 列表
+    tokens = _parse_tokens_input(payload.credentials)
+    if not tokens:
+        raise InvalidRequestException("未找到有效的 Token 数据")
+
+    from src.models.database import ProviderAPIKey as ProviderAPIKeyModel
+
+    # 获取 Provider 的 api_formats
+    api_formats = [
+        ep.api_format
+        for ep in provider.endpoints
+        if getattr(ep, "api_format", None) and getattr(ep, "is_active", False)
+    ]
+
+    proxy_config = getattr(provider, "proxy", None)
+    token_url = template.oauth.token_url
+    is_json = "anthropic.com" in token_url
+
+    results: list[BatchImportResultItem] = []
+    success_count = 0
+    failed_count = 0
+
+    for idx, refresh_token in enumerate(tokens):
+        try:
+            # 验证 Token 非空
+            if not refresh_token or len(refresh_token) < 10:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error="Token 无效或过短",
+                    )
+                )
+                failed_count += 1
+                continue
+
+            # 使用 refresh_token 换取 access_token
+            if is_json:
+                body: dict[str, Any] = {
+                    "grant_type": "refresh_token",
+                    "client_id": template.oauth.client_id,
+                    "refresh_token": refresh_token,
+                    "scope": " ".join(template.oauth.scopes),
+                }
+                headers = {"Content-Type": "application/json", "Accept": "application/json"}
+                data = None
+                json_body = body
+            else:
+                form: dict[str, str] = {
+                    "grant_type": "refresh_token",
+                    "client_id": template.oauth.client_id,
+                    "refresh_token": refresh_token,
+                    "scope": " ".join(template.oauth.scopes),
+                }
+                if template.oauth.client_secret:
+                    form["client_secret"] = template.oauth.client_secret
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                }
+                data = form
+                json_body = None
+
+            try:
+                resp = await post_oauth_token(
+                    provider_type=provider_type,
+                    token_url=token_url,
+                    headers=headers,
+                    data=data,
+                    json_body=json_body,
+                    proxy_config=proxy_config,
+                    timeout_seconds=30.0,
+                )
+            except Exception as e:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error=f"Token 刷新请求失败: {e}",
+                    )
+                )
+                failed_count += 1
+                continue
+
+            if resp.status_code < 200 or resp.status_code >= 300:
+                error_reason = f"HTTP {resp.status_code}"
+                try:
+                    error_body = resp.json()
+                    if "error" in error_body:
+                        error_reason = str(
+                            error_body.get("error_description") or error_body.get("error")
+                        )
+                except Exception:
+                    error_reason = resp.text[:100] if resp.text else f"HTTP {resp.status_code}"
+
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error=f"Token 验证失败: {error_reason}",
+                    )
+                )
+                failed_count += 1
+                continue
+
+            token_data = resp.json()
+            access_token = str(token_data.get("access_token") or "")
+            new_refresh_token = str(token_data.get("refresh_token") or "") or refresh_token
+
+            if not access_token:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error="Token 刷新返回缺少 access_token",
+                    )
+                )
+                failed_count += 1
+                continue
+
+            expires_in = token_data.get("expires_in")
+            expires_at: int | None = None
+            try:
+                if expires_in is not None:
+                    expires_at = int(time.time()) + int(expires_in)
+            except Exception:
+                expires_at = None
+
+            # 构建 auth_config
+            auth_config: dict[str, Any] = {
+                "provider_type": provider_type,
+                "token_type": token_data.get("token_type"),
+                "refresh_token": new_refresh_token or None,
+                "expires_at": expires_at,
+                "scope": token_data.get("scope"),
+                "updated_at": int(time.time()),
+            }
+
+            # 获取额外信息（email 等）
+            try:
+                auth_config = await enrich_auth_config(
+                    provider_type=provider_type,
+                    auth_config=auth_config,
+                    token_response=token_data,
+                    access_token=access_token,
+                    proxy_config=proxy_config,
+                )
+            except Exception as e:
+                logger.warning(f"批量导入: enrich_auth_config 失败 (index={idx}): {e}")
+                # 不中断，继续使用基本 auth_config
+
+            # 检查是否存在重复
+            try:
+                _check_duplicate_oauth_account(db, provider_id, auth_config)
+            except InvalidRequestException as e:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error=str(e),
+                    )
+                )
+                failed_count += 1
+                continue
+
+            # 生成名称
+            email = auth_config.get("email")
+            if email:
+                name = f"{provider_type}_{email}"
+            else:
+                name = f"{provider_type}_{int(time.time())}_{idx}"
+            if len(name) > 100:
+                name = name[:100]
+
+            # 创建 Key
+            new_key = ProviderAPIKeyModel(
+                provider_id=provider_id,
+                name=name,
+                api_key=crypto_service.encrypt(access_token),
+                auth_type="oauth",
+                auth_config=crypto_service.encrypt(json.dumps(auth_config)),
+                api_formats=api_formats,
+                is_active=True,
+            )
+            db.add(new_key)
+            db.flush()
+
+            results.append(
+                BatchImportResultItem(
+                    index=idx,
+                    status="success",
+                    key_id=str(new_key.id),
+                    key_name=name,
+                )
+            )
+            success_count += 1
+
+        except Exception as e:
+            logger.error(f"批量导入 OAuth 凭据失败 (index={idx}): {e}")
+            results.append(
+                BatchImportResultItem(
+                    index=idx,
+                    status="error",
+                    error=f"导入失败: {e}",
+                )
+            )
+            failed_count += 1
+
+    # 提交所有成功的记录
+    if success_count > 0:
+        db.commit()
+
+    logger.info(
+        f"[BATCH_IMPORT] Provider {provider_id} ({provider_type}): "
+        f"成功 {success_count}/{len(tokens)}, 失败 {failed_count}"
+    )
+
+    return BatchImportResponse(
+        total=len(tokens),
+        success=success_count,
+        failed=failed_count,
+        results=results,
+    )
+
+
+async def _batch_import_kiro_internal(
+    provider_id: str,
+    provider: Provider,
+    raw_credentials: str,
+    db: Session,
+) -> BatchImportResponse:
+    """Kiro 批量导入内部实现（供通用端点调用）。"""
+    from src.models.database import ProviderAPIKey as ProviderAPIKeyModel
+    from src.services.provider.adapters.kiro.models.credentials import KiroAuthConfig
+    from src.services.provider.adapters.kiro.token_manager import refresh_access_token
+
+    # 解析输入
+    credentials = _parse_kiro_import_input(raw_credentials)
+    if not credentials:
+        raise InvalidRequestException("未找到有效的凭据数据")
+
+    # 获取 Provider 的 api_formats
+    api_formats = [
+        ep.api_format
+        for ep in provider.endpoints
+        if getattr(ep, "api_format", None) and getattr(ep, "is_active", False)
+    ]
+
+    proxy_config = getattr(provider, "proxy", None)
+
+    results: list[BatchImportResultItem] = []
+    success_count = 0
+    failed_count = 0
+
+    for idx, cred in enumerate(credentials):
+        try:
+            # 验证必需字段
+            is_valid, error_msg = KiroAuthConfig.validate_required_fields(cred)
+            if not is_valid:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error=error_msg,
+                    )
+                )
+                failed_count += 1
+                continue
+
+            # 解析凭据配置
+            cfg = KiroAuthConfig.from_dict(cred)
+            cfg.provider_type = ProviderType.KIRO.value
+
+            # 刷新 Token 以验证有效性
+            try:
+                access_token, new_cfg = await refresh_access_token(
+                    cfg, proxy_config=proxy_config
+                )
+            except Exception as e:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error=f"Token 验证失败: {e}",
+                    )
+                )
+                failed_count += 1
+                continue
+
+            # 检查是否存在重复
+            try:
+                _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
+            except InvalidRequestException as e:
+                results.append(
+                    BatchImportResultItem(
+                        index=idx,
+                        status="error",
+                        error=str(e),
+                    )
+                )
+                failed_count += 1
+                continue
+
+            # 生成名称
+            region = (new_cfg.region or "").strip() or "us-east-1"
+            auth_method = new_cfg.auth_method or "social"
+            suffix = ""
+            if new_cfg.email:
+                suffix = new_cfg.email
+            elif isinstance(new_cfg.profile_arn, str) and new_cfg.profile_arn.strip():
+                suffix = new_cfg.profile_arn.rsplit("/", 1)[-1]
+            else:
+                suffix = str(int(time.time()))
+
+            name = f"Kiro_{auth_method}_{region}_{suffix}"
+            if len(name) > 100:
+                name = name[:100]
+
+            # 创建 Key
+            new_key = ProviderAPIKeyModel(
+                provider_id=provider_id,
+                name=name,
+                api_key=crypto_service.encrypt(access_token),
+                auth_type="oauth",
+                auth_config=crypto_service.encrypt(json.dumps(new_cfg.to_dict())),
+                api_formats=api_formats,
+                is_active=True,
+            )
+            db.add(new_key)
+            db.flush()
+
+            results.append(
+                BatchImportResultItem(
+                    index=idx,
+                    status="success",
+                    key_id=str(new_key.id),
+                    key_name=name,
+                    auth_method=auth_method,
+                )
+            )
+            success_count += 1
+
+        except Exception as e:
+            logger.error(f"批量导入 Kiro 凭据失败 (index={idx}): {e}")
+            results.append(
+                BatchImportResultItem(
+                    index=idx,
+                    status="error",
+                    error=f"导入失败: {e}",
+                )
+            )
+            failed_count += 1
+
+    # 提交所有成功的记录
+    if success_count > 0:
+        db.commit()
+
+    logger.info(
+        f"[KIRO_BATCH_IMPORT] Provider {provider_id}: "
+        f"成功 {success_count}/{len(credentials)}, 失败 {failed_count}"
+    )
+
+    return BatchImportResponse(
+        total=len(credentials),
+        success=success_count,
+        failed=failed_count,
+        results=results,
     )

@@ -1164,6 +1164,15 @@ def _parse_codex_wham_usage_response(data: dict) -> dict | None:
     return result if result else None
 
 
+# ========== Kiro Quota Refresh API ==========
+
+# Kiro 配额刷新函数已移至 adapter 层
+from src.services.provider.adapters.kiro.usage import (
+    fetch_kiro_usage_limits as _fetch_kiro_usage_limits,
+    parse_kiro_usage_response as _parse_kiro_usage_response,
+)
+
+
 @router.post("/providers/{provider_id}/refresh-quota")
 async def refresh_provider_quota(
     provider_id: str,
@@ -1171,10 +1180,12 @@ async def refresh_provider_quota(
     db: Session = Depends(get_db),
 ) -> dict:
     """
-    刷新 Provider 所有 Keys 的限额信息（Codex）
+    刷新 Provider 所有 Keys 的限额信息
 
-    向每个 Key 发送一个测试请求，从响应头中获取最新的限额信息。
-    仅适用于 Codex 类型的 Provider。
+    支持的 Provider 类型：
+    - Codex: 调用 wham/usage API 获取限额
+    - Antigravity: 调用 fetchAvailableModels 获取配额
+    - Kiro: 调用 getUsageLimits API 获取使用额度
 
     **路径参数**:
     - `provider_id`: Provider ID
@@ -1208,8 +1219,8 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
             raise NotFoundException(f"Provider {self.provider_id} 不存在")
 
         provider_type = str(getattr(provider, "provider_type", "") or "").strip().lower()
-        if provider_type not in {ProviderType.CODEX, ProviderType.ANTIGRAVITY}:
-            raise InvalidRequestException("仅支持 Codex / Antigravity 类型的 Provider 刷新限额")
+        if provider_type not in {ProviderType.CODEX, ProviderType.ANTIGRAVITY, ProviderType.KIRO}:
+            raise InvalidRequestException("仅支持 Codex / Antigravity / Kiro 类型的 Provider 刷新限额")
 
         # 获取所有活跃的 Keys
         keys = (
@@ -1233,6 +1244,7 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
         # 获取端点：
         # - Codex: openai:cli
         # - Antigravity: gemini:chat（用于触发 oauth 刷新 + 提供 auth_config.project_id）
+        # - Kiro: 不需要特定端点，直接使用 auth_config 中的凭据
         endpoint = None
         if provider_type == ProviderType.CODEX:
             for ep in provider.endpoints:
@@ -1241,7 +1253,7 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                     break
             if not endpoint:
                 raise InvalidRequestException("找不到有效的 openai:cli 端点")
-        else:
+        elif provider_type == ProviderType.ANTIGRAVITY:
             # Prefer the new signature, but keep backward-compat with existing DB rows.
             for sig in ("gemini:chat", "gemini:cli"):
                 for ep in provider.endpoints:
@@ -1252,6 +1264,7 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                     break
             if not endpoint:
                 raise InvalidRequestException("找不到有效的 gemini:chat/gemini:cli 端点")
+        # Kiro 不需要端点检查，直接使用 auth_config
 
         results: list[dict] = []
         success_count = 0
@@ -1416,6 +1429,85 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                         "key_name": key.name,
                         "status": "error",
                         "message": error_msg,
+                    }
+
+                elif provider_type == ProviderType.KIRO:
+                    # Kiro: 直接使用 auth_config 调用 getUsageLimits API
+                    if not key.auth_config:
+                        return {
+                            "key_id": key.id,
+                            "key_name": key.name,
+                            "status": "error",
+                            "message": "缺少 Kiro 认证配置 (auth_config)",
+                        }
+
+                    # 解密 auth_config
+                    try:
+                        decrypted_config = crypto_service.decrypt(key.auth_config)
+                        auth_config_data = json.loads(decrypted_config)
+                    except Exception as e:
+                        return {
+                            "key_id": key.id,
+                            "key_name": key.name,
+                            "status": "error",
+                            "message": f"无法解密 auth_config: {e}",
+                        }
+
+                    # 获取代理配置
+                    proxy_config = getattr(provider, "proxy", None)
+
+                    # 调用 Kiro getUsageLimits API
+                    try:
+                        result = await _fetch_kiro_usage_limits(
+                            auth_config=auth_config_data,
+                            proxy_config=proxy_config,
+                        )
+                    except RuntimeError as e:
+                        error_msg = str(e)
+                        # 检查是否需要标记账号异常
+                        if "401" in error_msg or "认证失败" in error_msg:
+                            key.oauth_invalid_at = datetime.now(timezone.utc)
+                            key.oauth_invalid_reason = "Kiro Token 无效或已过期"
+                            db.commit()
+                            logger.warning("[KIRO_QUOTA] Key {} Token 无效，已标记为异常", key.id)
+                        return {
+                            "key_id": key.id,
+                            "key_name": key.name,
+                            "status": "error",
+                            "message": error_msg,
+                        }
+
+                    usage_data = result.get("usage_data")
+                    updated_auth_config = result.get("updated_auth_config")
+
+                    # 解析限额信息
+                    metadata = _parse_kiro_usage_response(usage_data)
+
+                    if metadata:
+                        # 收集元数据，稍后统一更新数据库（存储到 kiro 子对象）
+                        metadata_updates[key.id] = {"kiro": metadata}
+
+                        # 如果 auth_config 有更新（例如 token 刷新），也需要更新
+                        if updated_auth_config:
+                            try:
+                                new_auth_config_json = json.dumps(updated_auth_config)
+                                key.auth_config = crypto_service.encrypt(new_auth_config_json)
+                            except Exception:
+                                pass  # 忽略更新失败
+
+                        return {
+                            "key_id": key.id,
+                            "key_name": key.name,
+                            "status": "success",
+                            "metadata": metadata,
+                        }
+
+                    # 响应成功但没有限额信息
+                    return {
+                        "key_id": key.id,
+                        "key_name": key.name,
+                        "status": "no_metadata",
+                        "message": "响应中未包含限额信息",
                     }
 
             except Exception as e:

@@ -230,6 +230,7 @@ import {
   startProviderLevelOAuth,
   completeProviderLevelOAuth,
   importProviderRefreshToken,
+  batchImportOAuth,
 } from '@/api/endpoints'
 
 const props = defineProps<{
@@ -399,6 +400,23 @@ async function handleCompleteOAuth() {
   }
 }
 
+// 检测是否为批量导入格式
+function isBatchImport(text: string): boolean {
+  const trimmed = text.trim()
+  // JSON 数组
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      return Array.isArray(parsed) && parsed.length > 1
+    } catch {
+      return false
+    }
+  }
+  // 多行文本（纯 Token 一行一个）
+  const lines = trimmed.split('\n').filter(line => line.trim() && !line.trim().startsWith('#'))
+  return lines.length > 1
+}
+
 function parseImportText(text: string): { refresh_token: string; name?: string } | null {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -428,8 +446,8 @@ function parseImportText(text: string): { refresh_token: string; name?: string }
 }
 
 function readFile(file: File) {
-  if (!file.name.endsWith('.json') && file.type !== 'application/json') {
-    showError('仅支持 .json 文件', '格式错误')
+  if (!file.name.endsWith('.json') && !file.name.endsWith('.txt') && file.type !== 'application/json' && file.type !== 'text/plain') {
+    showError('仅支持 .json 或 .txt 文件', '格式错误')
     return
   }
   importFileName.value = file.name
@@ -458,19 +476,43 @@ function handleFileDrop(event: DragEvent) {
 async function handleImport() {
   if (!canImport.value || !props.providerId) return
 
-  const inputText = importText.value || manualPasteText.value
-  const parsed = parseImportText(inputText)
-  if (!parsed) {
-    showError('无法解析输入内容，请检查格式', '格式错误')
+  const inputText = (importText.value || manualPasteText.value).trim()
+  if (!inputText) {
+    showError('请输入凭据数据', '格式错误')
     return
   }
 
   importing.value = true
   try {
-    await importProviderRefreshToken(props.providerId, parsed)
-    success('导入成功，账号已添加')
-    emit('saved')
-    handleClose()
+    // 检测是否为批量导入
+    if (isBatchImport(inputText)) {
+      // 批量导入
+      const result = await batchImportOAuth(props.providerId, inputText)
+      if (result.success > 0) {
+        if (result.failed > 0) {
+          success(`批量导入完成：成功 ${result.success} 个，失败 ${result.failed} 个`)
+        } else {
+          success(`批量导入成功：${result.success} 个账号已添加`)
+        }
+        emit('saved')
+        handleClose()
+      } else {
+        // 全部失败，显示第一个错误
+        const firstError = result.results.find(r => r.status === 'error')
+        showError(firstError?.error || '批量导入失败', '导入失败')
+      }
+    } else {
+      // 单条导入
+      const parsed = parseImportText(inputText)
+      if (!parsed) {
+        showError('无法解析输入内容，请检查格式', '格式错误')
+        return
+      }
+      await importProviderRefreshToken(props.providerId, parsed)
+      success('导入成功，账号已添加')
+      emit('saved')
+      handleClose()
+    }
   } catch (err: any) {
     const errorMessage = parseApiError(err, '导入失败')
     showError(errorMessage, '错误')

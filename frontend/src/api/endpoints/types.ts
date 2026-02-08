@@ -311,9 +311,22 @@ export interface AntigravityUpstreamMetadata {
   quota_by_model?: Record<string, AntigravityModelQuota>
 }
 
+// Kiro 上游配额信息
+export interface KiroUpstreamMetadata {
+  subscription_title?: string  // 订阅类型 (如 "KIRO PRO+")
+  current_usage?: number  // 当前使用量
+  usage_limit?: number  // 使用限额
+  remaining?: number  // 剩余额度
+  usage_percentage?: number  // 使用百分比 (0-100)
+  next_reset_at?: number  // 下次重置时间（Unix 时间戳，毫秒）
+  email?: string  // 用户邮箱
+  updated_at?: number  // Unix 时间戳（秒）
+}
+
 export interface UpstreamMetadata {
   codex?: CodexUpstreamMetadata
   antigravity?: AntigravityUpstreamMetadata
+  kiro?: KiroUpstreamMetadata
 }
 
 // 按格式的健康度数据
