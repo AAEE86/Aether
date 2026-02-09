@@ -161,8 +161,8 @@ def _inject_claude_tool_ids_request(inner_request: dict[str, Any], model: str) -
             if not isinstance(part, dict):
                 continue
 
-            # 1. functionCall（Assistant 请求调用工具）
-            fc = part.get("functionCall")
+            # 1. functionCall（Assistant 请求调用工具）- 支持 camelCase 和 snake_case
+            fc = part.get("functionCall") or part.get("function_call")
             if isinstance(fc, dict) and fc.get("id") is None:
                 name = fc.get("name", "unknown")
                 if not isinstance(name, str):
@@ -171,8 +171,8 @@ def _inject_claude_tool_ids_request(inner_request: dict[str, Any], model: str) -
                 fc["id"] = f"call_{name}_{count}"
                 name_counters[name] = count + 1
 
-            # 2. functionResponse（User 回复工具结果）
-            fr = part.get("functionResponse")
+            # 2. functionResponse（User 回复工具结果）- 支持 camelCase 和 snake_case
+            fr = part.get("functionResponse") or part.get("function_response")
             if isinstance(fr, dict) and fr.get("id") is None:
                 name = fr.get("name", "unknown")
                 if not isinstance(name, str):

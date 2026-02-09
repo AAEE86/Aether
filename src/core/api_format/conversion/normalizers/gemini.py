@@ -480,14 +480,14 @@ class GeminiNormalizer(FormatNormalizer):
                     parts.append({"text": b.text})
                 continue
             if isinstance(b, ToolUseBlock):
-                parts.append(
-                    {
-                        "functionCall": {
-                            "name": b.tool_name,
-                            "args": b.tool_input or {},
-                        }
-                    }
-                )
+                fc: dict[str, Any] = {
+                    "name": b.tool_name,
+                    "args": b.tool_input or {},
+                }
+                # 保留 tool_id 用于 Claude/Antigravity 兼容
+                if b.tool_id:
+                    fc["id"] = b.tool_id
+                parts.append({"functionCall": fc})
                 continue
             if isinstance(b, ImageBlock):
                 if b.data and b.media_type:
@@ -672,6 +672,10 @@ class GeminiNormalizer(FormatNormalizer):
                     if not isinstance(args, dict):
                         args = {}
 
+                    # 优先使用 Antigravity/Claude 注入的 id
+                    fc_id = func_call.get("id")
+                    tool_id = fc_id if isinstance(fc_id, str) and fc_id else None
+
                     block_index = int(ss.get("next_block_index") or 2)
                     ss["next_block_index"] = block_index + 1
 
@@ -679,7 +683,7 @@ class GeminiNormalizer(FormatNormalizer):
                         ContentBlockStartEvent(
                             block_index=block_index,
                             block_type=ContentType.TOOL_USE,
-                            tool_id=None,
+                            tool_id=tool_id,
                             tool_name=name or None,
                         )
                     )
@@ -687,7 +691,7 @@ class GeminiNormalizer(FormatNormalizer):
                         events.append(
                             ToolCallDeltaEvent(
                                 block_index=block_index,
-                                tool_id="",
+                                tool_id=tool_id or "",
                                 input_delta=json.dumps(args, ensure_ascii=False),
                             )
                         )
@@ -801,6 +805,7 @@ class GeminiNormalizer(FormatNormalizer):
             tool_blocks[int(event.block_index)] = {
                 "name": event.tool_name or "",
                 "json": "",
+                "id": event.tool_id or "",  # 保留 tool_id 用于 Claude/Antigravity 兼容
             }
             return out
 
@@ -842,6 +847,7 @@ class GeminiNormalizer(FormatNormalizer):
 
             name = str(entry.get("name") or "")
             raw_json = str(entry.get("json") or "")
+            tool_id = str(entry.get("id") or "")
             args: dict[str, Any] = {}
             if raw_json:
                 try:
@@ -851,7 +857,11 @@ class GeminiNormalizer(FormatNormalizer):
                 except json.JSONDecodeError:
                     args = {}
 
-            out.append(base_chunk([{"functionCall": {"name": name, "args": args}}]))
+            fc: dict[str, Any] = {"name": name, "args": args}
+            # 保留 tool_id 用于 Claude/Antigravity 兼容
+            if tool_id:
+                fc["id"] = tool_id
+            out.append(base_chunk([{"functionCall": fc}]))
             return out
 
         if isinstance(event, MessageStopEvent):
@@ -1286,9 +1296,15 @@ class GeminiNormalizer(FormatNormalizer):
                 args = func_call.get("args")
                 if not isinstance(args, dict):
                     args = {}
+                # 优先使用 Antigravity/Claude 注入的 id，回退到生成的 id
+                fc_id = func_call.get("id")
+                if isinstance(fc_id, str) and fc_id:
+                    tool_id = fc_id
+                else:
+                    tool_id = f"toolu_{name}" if name else "toolu_0"
                 blocks.append(
                     ToolUseBlock(
-                        tool_id=f"toolu_{name}" if name else "toolu_0",
+                        tool_id=tool_id,
                         tool_name=name,
                         tool_input=args,
                         extra={"gemini": part},
@@ -1314,9 +1330,17 @@ class GeminiNormalizer(FormatNormalizer):
                 else:
                     output = response
 
+                # 优先使用 Antigravity/Claude 注入的 id，回退到 name
+                fr_id = func_resp.get("id")
+                if isinstance(fr_id, str) and fr_id:
+                    tool_use_id = fr_id
+                else:
+                    tool_use_id = name
+
                 blocks.append(
                     ToolResultBlock(
-                        tool_use_id=name,
+                        tool_use_id=tool_use_id,
+                        tool_name=name or None,  # 保留工具名称用于输出
                         output=output,
                         content_text=content_text,
                         is_error=False,
@@ -1372,11 +1396,16 @@ class GeminiNormalizer(FormatNormalizer):
                 continue
 
             if isinstance(b, ToolUseBlock) and role == "model":
-                parts.append({"function_call": {"name": b.tool_name, "args": b.tool_input or {}}})
+                fc: dict[str, Any] = {"name": b.tool_name, "args": b.tool_input or {}}
+                # 保留 tool_id 用于 Claude/Antigravity 兼容
+                if b.tool_id:
+                    fc["id"] = b.tool_id
+                parts.append({"function_call": fc})
                 continue
 
             if isinstance(b, ToolResultBlock) and role == "user":
-                # 兼容旧转换器：name 直接使用 tool_use_id，response 固定包一层 result
+                # name 使用 tool_name（工具名称），id 使用 tool_use_id（call id）
+                # 如果没有 tool_name，回退到 tool_use_id 以保持向后兼容
                 value: Any
                 if b.content_text is not None:
                     value = b.content_text
@@ -1385,14 +1414,16 @@ class GeminiNormalizer(FormatNormalizer):
                 else:
                     value = b.output
 
-                parts.append(
-                    {
-                        "function_response": {
-                            "name": b.tool_use_id,
-                            "response": {"result": value},
-                        }
-                    }
-                )
+                # 优先使用 tool_name 作为 name，回退到 tool_use_id
+                name = b.tool_name if b.tool_name else b.tool_use_id
+                fr: dict[str, Any] = {
+                    "name": name,
+                    "response": {"result": value},
+                }
+                # 保留 tool_use_id 作为 id 用于 Claude/Antigravity 兼容
+                if b.tool_use_id:
+                    fr["id"] = b.tool_use_id
+                parts.append({"function_response": fr})
                 continue
 
         return {"role": role, "parts": parts}

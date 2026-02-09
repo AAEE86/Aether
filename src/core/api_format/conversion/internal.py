@@ -106,7 +106,8 @@ class ToolResultBlock:
     """工具结果内容块"""
 
     type: ContentType = field(default=ContentType.TOOL_RESULT, init=False)
-    tool_use_id: str = ""  # 对应的 ToolUseBlock.tool_id
+    tool_use_id: str = ""  # 对应的 ToolUseBlock.tool_id（用于 Claude/Antigravity id 字段）
+    tool_name: str | None = None  # 工具名称（用于 Gemini function_response.name 字段）
     # 工具输出可能是纯文本，也可能是结构化 JSON（Gemini functionResponse 等）
     output: Any = None
     content_text: str | None = None
