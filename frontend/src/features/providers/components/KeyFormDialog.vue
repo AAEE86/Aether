@@ -83,13 +83,7 @@
           />
         </template>
         <p
-          v-if="apiKeyError"
-          class="text-xs text-destructive mt-1"
-        >
-          {{ apiKeyError }}
-        </p>
-        <p
-          v-else-if="editingKey && form.auth_type === 'api_key'"
+          v-if="editingKey && form.auth_type === 'api_key'"
           class="text-xs text-muted-foreground mt-1"
         >
           留空表示不修改
@@ -400,8 +394,6 @@ const canSave = computed(() => {
   }
   // 必须至少选择一个 API 格式
   if (form.value.api_formats.length === 0) return false
-  // API 密钥格式验证（如果有输入）
-  if (form.value.auth_type === 'api_key' && form.value.api_key.trim() && form.value.api_key.trim().length < 3) return false
   return true
 })
 
@@ -486,26 +478,6 @@ function updateRateMultiplier(format: string, value: string | number) {
   form.value.rate_multipliers = newMultipliers
 }
 
-
-// API 密钥验证错误信息
-const apiKeyError = computed(() => {
-  const apiKey = form.value.api_key.trim()
-  if (!apiKey) {
-    // 新增模式下必填
-    if (!props.editingKey) {
-      return ''  // 空值由 required 属性处理
-    }
-    // 编辑模式下可以为空（表示不修改）
-    return ''
-  }
-
-  // 如果输入了值，检查长度
-  if (apiKey.length < 3) {
-    return 'API 密钥至少需要 3 个字符'
-  }
-
-  return ''
-})
 
 // 重置表单
 function resetForm() {
@@ -606,12 +578,6 @@ async function handleSave() {
   // 必须有 providerId
   if (!props.providerId) {
     showError('无法保存：缺少提供商信息', '错误')
-    return
-  }
-
-  // 提交前验证
-  if (apiKeyError.value) {
-    showError(apiKeyError.value, '验证失败')
     return
   }
 

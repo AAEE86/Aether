@@ -349,7 +349,7 @@ class CreateAPIKeyRequest(BaseModel):
     """创建 API Key 请求"""
 
     endpoint_id: str = Field(..., description="Endpoint ID")
-    api_key: str = Field(..., min_length=1, max_length=500, description="API Key")
+    api_key: str = Field(..., min_length=1, max_length=10000, description="API Key")
     priority: int | None = Field(100, ge=0, le=1000, description="优先级")
     is_active: bool | None = Field(True, description="是否启用")
     rpm_limit: int | None = Field(None, ge=0, description="RPM 限制（NULL=自适应）")
@@ -361,10 +361,6 @@ class CreateAPIKeyRequest(BaseModel):
         """验证 API Key"""
         # 移除首尾空白
         v = v.strip()
-
-        # 检查最小长度
-        if len(v) < 3:
-            raise ValueError("API Key 长度不能少于 3 个字符")
 
         # 检查危险字符（不应包含 SQL 注入字符）
         dangerous_chars = ["'", '"', ";", "--", "/*", "*/", "<", ">"]

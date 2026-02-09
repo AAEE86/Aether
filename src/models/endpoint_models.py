@@ -322,7 +322,7 @@ class EndpointAPIKeyCreate(BaseModel):
     )
 
     api_key: str = Field(
-        default="", max_length=500, description="API Key（标准认证时必填，将自动加密）"
+        default="", max_length=10000, description="API Key（标准认证时必填，将自动加密）"
     )
     auth_type: Literal["api_key", "vertex_ai", "oauth"] = Field(
         default="api_key",
@@ -484,8 +484,7 @@ class EndpointAPIKeyUpdate(BaseModel):
 
     api_key: str | None = Field(
         default=None,
-        min_length=3,
-        max_length=500,
+        max_length=10000,
         description="API Key（标准认证时使用，将自动加密）",
     )
     auth_type: Literal["api_key", "vertex_ai", "oauth"] | None = Field(
@@ -576,8 +575,6 @@ class EndpointAPIKeyUpdate(BaseModel):
             return v
 
         v = v.strip()
-        if len(v) < 3:
-            raise ValueError("API Key 长度不能少于 3 个字符")
 
         dangerous_chars = ["'", '"', ";", "--", "/*", "*/", "<", ">"]
         for char in dangerous_chars:

@@ -47,9 +47,7 @@ export const BUSINESS_CONSTANTS = {
   PROVIDER_MIN_PRIORITY: 0,
   PROVIDER_MAX_PRIORITY: 999,
 
-  // API Key 相关
-  API_KEY_MIN_LENGTH: 10,
-  API_KEY_MAX_LENGTH: 500,
+  // API Key 相关（不限制长度）
 
   // 分页配置
   DEFAULT_PAGE_SIZE: 20,
