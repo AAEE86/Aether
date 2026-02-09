@@ -236,7 +236,8 @@ class GlobalModelResponse(BaseModel):
         default=None, description="模型配置（streaming, vision, context_limit, description 等）"
     )
     # 统计数据（可选）
-    provider_count: int | None = Field(default=0, description="支持的 Provider 数量")
+    provider_count: int | None = Field(default=0, description="支持的 Provider 总数量")
+    active_provider_count: int | None = Field(default=0, description="可用的 Provider 数量")
     usage_count: int | None = Field(default=0, description="调用次数")
     created_at: datetime
     updated_at: datetime | None

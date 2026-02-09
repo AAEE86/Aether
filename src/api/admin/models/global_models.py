@@ -261,9 +261,9 @@ class AdminListGlobalModelsAdapter(AdminApiAdapter):
     search: str | None
 
     async def handle(self, context: ApiRequestContext) -> Any:  # type: ignore[override]
-        from sqlalchemy import func
+        from sqlalchemy import and_, case, func
 
-        from src.models.database import Model
+        from src.models.database import Model, Provider
 
         models = GlobalModelService.list_global_models(
             db=context.db,
@@ -274,24 +274,44 @@ class AdminListGlobalModelsAdapter(AdminApiAdapter):
         )
 
         # 一次性查询所有 GlobalModel 的 provider_count（优化 N+1 问题）
+        # 用条件聚合同时获取总数和活跃数，减少一次 DB 往返
         model_ids = [gm.id for gm in models]
         provider_counts = {}
+        active_provider_counts = {}
         if model_ids:
             count_results = (
                 context.db.query(
-                    Model.global_model_id, func.count(func.distinct(Model.provider_id))
+                    Model.global_model_id,
+                    func.count(func.distinct(Model.provider_id)),
+                    func.count(
+                        func.distinct(
+                            case(
+                                (
+                                    and_(
+                                        Model.is_active.is_(True),
+                                        Provider.is_active.is_(True),
+                                    ),
+                                    Model.provider_id,
+                                ),
+                                else_=None,
+                            )
+                        )
+                    ),
                 )
+                .join(Provider, Model.provider_id == Provider.id)
                 .filter(Model.global_model_id.in_(model_ids))
                 .group_by(Model.global_model_id)
                 .all()
             )
-            provider_counts = {gm_id: count for gm_id, count in count_results}
+            provider_counts = {gm_id: total for gm_id, total, _ in count_results}
+            active_provider_counts = {gm_id: active for gm_id, _, active in count_results}
 
         # 构建响应
         model_responses = []
         for gm in models:
             response = GlobalModelResponse.model_validate(gm)
             response.provider_count = provider_counts.get(gm.id, 0)
+            response.active_provider_count = active_provider_counts.get(gm.id, 0)
             model_responses.append(response)
 
         return GlobalModelListResponse(
@@ -307,11 +327,44 @@ class AdminGetGlobalModelAdapter(AdminApiAdapter):
     global_model_id: str
 
     async def handle(self, context: ApiRequestContext) -> Any:  # type: ignore[override]
+        from sqlalchemy import and_, case, func
+
+        from src.models.database import Model, Provider
+
         global_model = GlobalModelService.get_global_model(context.db, self.global_model_id)
         stats = GlobalModelService.get_global_model_stats(context.db, self.global_model_id)
 
+        # 查询 provider_count 和 active_provider_count（与列表 API 一致）
+        count_row = (
+            context.db.query(
+                func.count(func.distinct(Model.provider_id)),
+                func.count(
+                    func.distinct(
+                        case(
+                            (
+                                and_(
+                                    Model.is_active.is_(True),
+                                    Provider.is_active.is_(True),
+                                ),
+                                Model.provider_id,
+                            ),
+                            else_=None,
+                        )
+                    )
+                ),
+            )
+            .join(Provider, Model.provider_id == Provider.id)
+            .filter(Model.global_model_id == global_model.id)
+            .first()
+        )
+        total_count, active_count = count_row if count_row else (0, 0)
+
+        response = GlobalModelResponse.model_validate(global_model)
+        response.provider_count = total_count
+        response.active_provider_count = active_count
+
         return GlobalModelWithStats(
-            **GlobalModelResponse.model_validate(global_model).model_dump(),
+            **response.model_dump(),
             total_models=stats["total_models"],
             total_providers=stats["total_providers"],
             price_range=stats["price_range"],

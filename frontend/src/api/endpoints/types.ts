@@ -810,6 +810,7 @@ export interface GlobalModelResponse {
   config?: Record<string, any> | null
   // 统计数据
   provider_count?: number
+  active_provider_count?: number
   usage_count?: number
   created_at: string
   updated_at?: string

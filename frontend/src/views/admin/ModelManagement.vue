@@ -168,7 +168,7 @@
                 </TableCell>
                 <TableCell class="text-center">
                   <Badge variant="secondary">
-                    {{ model.provider_count || 0 }}
+                    {{ model.active_provider_count || 0 }}/{{ model.provider_count || 0 }}
                   </Badge>
                 </TableCell>
                 <TableCell class="text-center">
@@ -302,7 +302,7 @@
 
             <!-- 第三行：统计信息 -->
             <div class="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>提供商 {{ model.provider_count || 0 }}</span>
+              <span>提供商 {{ model.active_provider_count || 0 }}/{{ model.provider_count || 0 }}</span>
               <span>调用 {{ formatUsageCount(model.usage_count || 0) }}</span>
               <span
                 v-if="getFirstTierPrice(model, 'input') || getFirstTierPrice(model, 'output')"

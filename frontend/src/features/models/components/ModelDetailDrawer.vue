@@ -386,7 +386,7 @@
                       <Building2 class="w-4 h-4 text-muted-foreground" />
                     </div>
                     <p class="text-2xl font-bold mt-1">
-                      {{ model.provider_count || 0 }}
+                      {{ model.active_provider_count || 0 }}<span class="text-sm text-muted-foreground font-normal">/{{ model.provider_count || 0 }}</span>
                     </p>
                   </div>
                   <div class="p-3 rounded-lg border bg-muted/20">
