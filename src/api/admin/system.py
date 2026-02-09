@@ -634,6 +634,38 @@ class AdminSetSystemConfigAdapter(AdminApiAdapter):
             except Exception as e:
                 logger.warning(f"更新用户配额重置任务时间失败: {e}")
 
+        # 如果更新的是调度模式或优先级模式，立即更新当前 Worker 的 Scheduler 单例
+        if self.key in ("scheduling_mode", "provider_priority_mode"):
+            try:
+                from src.clients.redis_client import get_redis_client_sync
+                from src.services.cache.aware_scheduler import get_cache_aware_scheduler
+
+                redis_client = get_redis_client_sync()
+                # 从数据库读取两个调度配置的最新值，确保一致性
+                priority_mode = SystemConfigService.get_config(
+                    context.db,
+                    "provider_priority_mode",
+                    "provider",
+                )
+                scheduling_mode = SystemConfigService.get_config(
+                    context.db,
+                    "scheduling_mode",
+                    "cache_affinity",
+                )
+                await get_cache_aware_scheduler(
+                    redis_client,
+                    priority_mode=priority_mode,
+                    scheduling_mode=scheduling_mode,
+                )
+                logger.info(
+                    "[AdminSetSystemConfig] 已同步更新 Scheduler: "
+                    "priority_mode={}, scheduling_mode={}",
+                    priority_mode,
+                    scheduling_mode,
+                )
+            except Exception as e:
+                logger.warning("同步更新 Scheduler 失败: {}", e)
+
         # 返回时不暴露加密后的值
         display_value = "********" if self.key in self.ENCRYPTED_KEYS else config.value
 

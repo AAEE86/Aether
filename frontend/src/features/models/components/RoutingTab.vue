@@ -110,12 +110,12 @@
                     v-for="(keyGroup, groupIndex) in formatGroup.keyGroups"
                     :key="groupIndex"
                   >
-                    <!-- 第一组且有多个 key 时显示负载均衡标签 -->
+                    <!-- 第一组且有多个 key 时显示调度行为标签 -->
                     <div
                       v-if="groupIndex === 0 && keyGroup.keys.length > 1"
                       class="ml-6 mr-3 mb-1 flex items-center gap-1 text-[10px] text-muted-foreground/60"
                     >
-                      <span>负载均衡</span>
+                      <span>{{ samePriorityLabel }}</span>
                     </div>
 
                     <!-- 该优先级组内的 Keys -->
@@ -248,7 +248,7 @@
                       </div>
                     </div>
 
-                    <!-- 降级标记（如果下一组有多个 key，显示"降级 · 负载均衡"） -->
+                    <!-- 降级标记 -->
                     <div
                       v-if="groupIndex < formatGroup.keyGroups.length - 1"
                       class="flex py-0.5"
@@ -259,7 +259,7 @@
                       <div class="flex items-center gap-1 text-[10px] text-muted-foreground/50">
                         <ArrowDown class="w-3 h-3" />
                         <span>
-                          {{ formatGroup.keyGroups[groupIndex + 1].keys.length > 1 ? '降级 · 负载均衡' : '降级' }}
+                          {{ getDemoteLabel(formatGroup.keyGroups[groupIndex + 1].keys.length) }}
                         </span>
                       </div>
                     </div>
@@ -404,12 +404,12 @@
                                   v-for="(group, groupIndex) in getKeyPriorityGroups(providerEntry.keys)"
                                   :key="groupIndex"
                                 >
-                                  <!-- 第一组且有多个 key 时显示负载均衡标签 -->
+                                  <!-- 第一组且有多个 key 时显示调度行为标签 -->
                                   <div
                                     v-if="groupIndex === 0 && group.keys.length > 1"
                                     class="flex items-center gap-1 text-[10px] text-muted-foreground/60 mb-0.5 ml-4"
                                   >
-                                    <span>负载均衡</span>
+                                    <span>{{ samePriorityLabel }}</span>
                                   </div>
 
                                   <!-- 该优先级组内的 Keys -->
@@ -510,7 +510,7 @@
                                     </div>
                                   </div>
 
-                                  <!-- 优先级组之间的降级标记（如果下一组有多个 key，显示"降级 · 负载均衡"） -->
+                                  <!-- 优先级组之间的降级标记 -->
                                   <div
                                     v-if="groupIndex < getKeyPriorityGroups(providerEntry.keys).length - 1"
                                     class="flex items-center my-0.5 text-[10px] text-muted-foreground/50"
@@ -520,7 +520,7 @@
                                       <ArrowDown class="w-3 h-3" />
                                     </div>
                                     <span>
-                                      {{ getKeyPriorityGroups(providerEntry.keys)[groupIndex + 1].keys.length > 1 ? '降级 · 负载均衡' : '降级' }}
+                                      {{ getDemoteLabel(getKeyPriorityGroups(providerEntry.keys)[groupIndex + 1].keys.length) }}
                                     </span>
                                   </div>
                                 </div>
@@ -718,9 +718,13 @@ const apiFormatGroups = computed<ApiFormatGroup[]>(() => {
     })
 
     // Key 按全局优先级分组排序（全局 Key 优先模式）
+    // 从 global_priority_by_format 中提取当前 API 格式的优先级
     const keyGroupMap = new Map<number, GlobalKeyEntry[]>()
     for (const keyEntry of data.allKeys) {
-      const priority = keyEntry.key.global_priority ?? 999
+      const priorityByFormat = keyEntry.key.global_priority_by_format
+      const priority = (priorityByFormat && format in priorityByFormat)
+        ? priorityByFormat[format]
+        : 999
       if (!keyGroupMap.has(priority)) {
         keyGroupMap.set(priority, [])
       }
@@ -841,6 +845,19 @@ function getSchedulingModeLabel(mode: string): string {
     load_balance: '负载均衡'
   }
   return labels[mode] || mode
+}
+
+// 当前调度模式的显示标签（复用 getSchedulingModeLabel，computed 缓存避免重复计算）
+const samePriorityLabel = computed(() =>
+  getSchedulingModeLabel(routingData.value?.scheduling_mode || 'cache_affinity')
+)
+
+// 获取降级标签（含同优先级调度行为）
+function getDemoteLabel(nextGroupKeyCount: number): string {
+  if (nextGroupKeyCount > 1) {
+    return `降级 · ${samePriorityLabel.value}`
+  }
+  return '降级'
 }
 
 // 获取优先级模式标签

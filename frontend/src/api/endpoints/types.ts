@@ -876,7 +876,7 @@ export interface RoutingKeyInfo {
   name: string
   masked_key: string
   internal_priority: number
-  global_priority?: number | null
+  global_priority_by_format?: Record<string, number> | null  // 按 API 格式的全局优先级
   rpm_limit?: number | null
   is_adaptive: boolean
   effective_rpm?: number | null

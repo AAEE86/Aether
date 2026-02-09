@@ -712,13 +712,10 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
         db = context.db
 
         # Key 属于 Provider：按 key.api_formats 分组展示
+        # 包含所有 Key（含停用的 Key 和停用的 Provider），前端可显示停用标签和快捷开关
         keys = (
             db.query(ProviderAPIKey, Provider)
             .join(Provider, ProviderAPIKey.provider_id == Provider.id)
-            .filter(
-                ProviderAPIKey.is_active.is_(True),
-                Provider.is_active.is_(True),
-            )
             .order_by(
                 ProviderAPIKey.internal_priority.asc(),
             )
@@ -789,6 +786,7 @@ class AdminGetKeysGroupedByFormatAdapter(AdminApiAdapter):
                 "global_priority_by_format": key.global_priority_by_format,
                 "rate_multipliers": key.rate_multipliers,
                 "is_active": key.is_active,
+                "provider_active": provider.is_active,
                 "provider_name": provider.name,
                 "api_formats": api_formats,
                 "capabilities": caps_list,

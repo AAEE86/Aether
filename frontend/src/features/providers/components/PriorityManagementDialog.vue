@@ -2,7 +2,7 @@
   <Dialog
     :model-value="internalOpen"
     title="优先级管理"
-    description="调整提供商和 API Key 的优先级顺序，保存后自动切换对应的调度策略"
+    description="拖拽调整顺序，点击序号可编辑（相同数字为同级），保存后自动切换对应的调度策略"
     :icon="ListOrdered"
     size="2xl"
     @update:model-value="handleDialogUpdate"
@@ -38,19 +38,13 @@
         </button>
       </div>
 
-      <!-- 内容区域 -->
-      <div class="max-h-[70vh]">
+      <!-- 内容区域：固定高度，切换 tab 时不跳动 -->
+      <div class="h-[min(65vh,520px)]">
         <!-- 提供商优先级 -->
         <div
           v-show="activeMainTab === 'provider'"
-          class="space-y-4"
+          class="h-full"
         >
-          <!-- 提示信息 -->
-          <div class="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground bg-muted/30 rounded-md">
-            <Info class="w-3.5 h-3.5 shrink-0" />
-            <span>拖拽调整顺序，点击序号可编辑（相同数字为同级，负载均衡）</span>
-          </div>
-
           <!-- 空状态 -->
           <div
             v-if="sortedProviders.length === 0"
@@ -63,7 +57,7 @@
           <!-- 提供商列表 -->
           <div
             v-else
-            class="space-y-1 max-h-[calc(70vh-80px)] overflow-y-auto pr-1"
+            class="space-y-1 h-full overflow-y-auto pr-1"
           >
             <div
               v-for="(provider, index) in sortedProviders"
@@ -104,7 +98,7 @@
                 <div
                   v-else
                   class="w-6 h-6 rounded-md bg-muted/50 flex items-center justify-center text-xs font-medium text-muted-foreground cursor-pointer hover:bg-primary/10 hover:text-primary transition-colors"
-                  title="点击编辑优先级，相同数字为同级（负载均衡）"
+                  title="点击编辑优先级，相同数字为同级"
                   @click.stop="startEditProviderPriority(provider)"
                 >
                   {{ provider.provider_priority }}
@@ -153,14 +147,8 @@
         <!-- Key 优先级 -->
         <div
           v-show="activeMainTab === 'key'"
-          class="space-y-3"
+          class="h-full"
         >
-          <!-- 提示信息 -->
-          <div class="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground bg-muted/30 rounded-md">
-            <Info class="w-3.5 h-3.5 shrink-0" />
-            <span>拖拽调整顺序，点击序号可编辑（相同数字为同级，负载均衡）</span>
-          </div>
-
           <!-- 加载状态 -->
           <div
             v-if="loadingKeys"
@@ -184,10 +172,10 @@
           <!-- 左右布局：格式列表 + Key 列表 -->
           <div
             v-else
-            class="flex gap-4"
+            class="flex gap-4 h-full"
           >
             <!-- 左侧：API 格式列表 -->
-            <div class="w-32 shrink-0 space-y-1">
+            <div class="w-32 shrink-0 space-y-1 overflow-y-auto">
               <button
                 v-for="format in availableFormats"
                 :key="format"
@@ -200,12 +188,12 @@
                 ]"
                 @click="activeFormatTab = format"
               >
-                {{ format }}
+                {{ API_FORMAT_LABELS[format] || format }}
               </button>
             </div>
 
             <!-- 右侧：Key 列表 -->
-            <div class="flex-1 min-w-0">
+            <div class="flex-1 min-w-0 h-full overflow-hidden">
               <div
                 v-for="format in availableFormats"
                 v-show="activeFormatTab === format"
@@ -213,29 +201,36 @@
               >
                 <div
                   v-if="keysByFormat[format]?.length > 0"
-                  class="space-y-2 max-h-[calc(70vh-80px)] overflow-y-auto pr-1"
+                  class="space-y-1 h-full overflow-y-auto pr-1"
                 >
                   <div
                     v-for="(key, index) in keysByFormat[format]"
                     :key="key.id"
-                    class="group flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all duration-200"
+                    class="group flex items-center gap-2 px-2.5 py-2 rounded-lg border transition-all duration-200"
                     :class="[
-                      draggedKey[format] === index
-                        ? 'border-primary/50 bg-primary/5 shadow-md scale-[1.01]'
-                        : dragOverKey[format] === index
-                          ? 'border-primary/30 bg-primary/5'
-                          : 'border-border/50 bg-background hover:border-border hover:bg-muted/30'
+                      !(key.is_active && key.provider_active)
+                        ? 'border-border/30 bg-muted/20 opacity-50'
+                        : draggedKey[format] === index
+                          ? 'border-primary/50 bg-primary/5 shadow-md scale-[1.01]'
+                          : dragOverKey[format] === index
+                            ? 'border-primary/30 bg-primary/5'
+                            : 'border-border/50 bg-background hover:border-border hover:bg-muted/30'
                     ]"
-                    draggable="true"
-                    @dragstart="handleKeyDragStart(format, index, $event)"
+                    :draggable="key.is_active && key.provider_active"
+                    @dragstart="(key.is_active && key.provider_active) && handleKeyDragStart(format, index, $event)"
                     @dragend="handleKeyDragEnd(format)"
                     @dragover.prevent="handleKeyDragOver(format, index)"
                     @dragleave="handleKeyDragLeave(format)"
                     @drop="handleKeyDrop(format, index)"
                   >
                     <!-- 拖拽手柄 -->
-                    <div class="cursor-grab active:cursor-grabbing p-1 rounded hover:bg-muted text-muted-foreground/40 group-hover:text-muted-foreground transition-colors shrink-0">
-                      <GripVertical class="w-4 h-4" />
+                    <div
+                      class="p-0.5 rounded transition-colors shrink-0"
+                      :class="(key.is_active && key.provider_active)
+                        ? 'cursor-grab active:cursor-grabbing text-muted-foreground/30 group-hover:text-muted-foreground'
+                        : 'text-muted-foreground/15 cursor-default'"
+                    >
+                      <GripVertical class="w-3.5 h-3.5" />
                     </div>
 
                     <!-- 可编辑序号 -->
@@ -245,7 +240,7 @@
                         type="number"
                         min="1"
                         :value="key.priority"
-                        class="w-8 h-6 rounded-md bg-background border border-primary text-xs font-medium text-center focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        class="w-7 h-5 rounded bg-background border border-primary text-[11px] font-medium text-center focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         autofocus
                         @blur="finishEditKeyPriority(format, key, $event)"
                         @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -253,87 +248,86 @@
                       >
                       <div
                         v-else
-                        class="w-6 h-6 rounded-md bg-muted/50 flex items-center justify-center text-xs font-medium text-muted-foreground cursor-pointer hover:bg-primary/10 hover:text-primary transition-colors"
-                        title="点击编辑优先级，相同数字为同级（负载均衡）"
+                        class="w-5 h-5 rounded bg-muted/50 flex items-center justify-center text-[11px] font-medium text-muted-foreground cursor-pointer hover:bg-primary/10 hover:text-primary transition-colors"
+                        title="点击编辑优先级"
                         @click.stop="startEditKeyPriority(format, key)"
                       >
                         {{ key.priority }}
                       </div>
                     </div>
 
-                    <!-- Key 信息 -->
-                    <div class="flex-1 min-w-0 flex items-center gap-3">
-                      <!-- 左侧：名称和来源 -->
-                      <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-2">
-                          <span class="font-medium text-sm">{{ key.name }}</span>
-                          <Badge
-                            v-if="key.circuit_breaker_open"
-                            variant="destructive"
-                            class="text-[10px] h-5 px-1.5 shrink-0"
-                          >
-                            熔断
-                          </Badge>
-                          <Badge
-                            v-else-if="!key.is_active"
-                            variant="secondary"
-                            class="text-[10px] h-5 px-1.5 shrink-0"
-                          >
-                            停用
-                          </Badge>
-                          <!-- 能力标签紧跟名称 -->
-                          <template v-if="key.capabilities?.length">
-                            <span
-                              v-for="cap in key.capabilities.slice(0, 2)"
-                              :key="cap"
-                              class="px-1 py-0.5 bg-muted text-muted-foreground rounded text-[10px]"
-                            >{{ cap }}</span>
-                            <span
-                              v-if="key.capabilities.length > 2"
-                              class="text-[10px] text-muted-foreground"
-                            >+{{ key.capabilities.length - 2 }}</span>
-                          </template>
-                        </div>
-                        <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
-                          <span class="text-[10px] font-medium shrink-0">{{ key.provider_name }}</span>
-                          <span class="font-mono text-[10px] opacity-60 truncate">{{ key.api_key_masked }}</span>
-                        </div>
+                    <!-- Key 信息（两行） -->
+                    <div class="flex-1 min-w-0">
+                      <!-- 第一行：Key 名称 + Key 级别状态 -->
+                      <div class="flex items-center gap-1.5">
+                        <span
+                          class="text-sm font-medium truncate"
+                          :class="!(key.is_active && key.provider_active) ? 'text-muted-foreground' : ''"
+                        >{{ key.name }}</span>
+                        <Badge
+                          v-if="key.circuit_breaker_open"
+                          variant="destructive"
+                          class="text-[9px] h-4 px-1 shrink-0"
+                        >
+                          熔断
+                        </Badge>
+                        <Badge
+                          v-else-if="!key.is_active && key.provider_active"
+                          variant="secondary"
+                          class="text-[9px] h-4 px-1 shrink-0"
+                        >
+                          停用
+                        </Badge>
                       </div>
+                      <!-- 第二行：密钥脱敏 · Provider 名称 + Provider 级别状态 -->
+                      <div class="flex items-center gap-0 mt-0.5">
+                        <span class="font-mono text-[10px] text-muted-foreground/50 truncate">{{ key.api_key_masked }}</span>
+                        <span class="text-[10px] text-muted-foreground/40 mx-1">·</span>
+                        <span class="text-[10px] text-muted-foreground shrink-0">{{ key.provider_name }}</span>
+                        <Badge
+                          v-if="!key.provider_active"
+                          variant="secondary"
+                          class="text-[9px] h-4 px-1 shrink-0 ml-1"
+                        >
+                          停用
+                        </Badge>
+                      </div>
+                    </div>
 
-                      <!-- 右侧：健康度 + 速率 -->
-                      <div class="shrink-0 flex items-center gap-3">
-                        <!-- 健康度 -->
+                    <!-- 右侧：健康度/倍率 + 开关 -->
+                    <div class="shrink-0 flex items-center gap-2">
+                      <!-- 健康度 + 倍率（两行） -->
+                      <div class="text-right min-w-[36px]">
                         <div
                           v-if="key.health_score != null"
-                          class="text-xs text-right"
+                          class="text-[11px] font-medium tabular-nums text-foreground"
                         >
-                          <div
-                            class="font-medium tabular-nums"
-                            :class="[
-                              key.health_score >= 0.95 ? 'text-green-600' :
-                              key.health_score >= 0.5 ? 'text-yellow-600' : 'text-red-500'
-                            ]"
-                          >
-                            {{ ((key.health_score || 0) * 100).toFixed(0) }}%
-                          </div>
-                          <div class="text-[10px] text-muted-foreground opacity-70">
-                            {{ key.request_count }} reqs
-                          </div>
+                          {{ ((key.health_score || 0) * 100).toFixed(0) }}%
                         </div>
                         <div
                           v-else
-                          class="text-xs text-muted-foreground/50 text-right"
+                          class="text-[11px] text-muted-foreground/40"
                         >
-                          <div>--</div>
-                          <div class="text-[10px]">
-                            无数据
-                          </div>
+                          --
                         </div>
-                        <!-- 速率倍数 -->
-                        <div class="text-sm font-medium tabular-nums text-primary min-w-[40px] text-right">
+                        <div class="text-[10px] text-muted-foreground tabular-nums">
                           {{ key.rate_multipliers?.[format] ?? 1 }}x
                         </div>
                       </div>
+                      <!-- 快捷启用/禁用开关 -->
+                      <button
+                        class="p-0.5 rounded transition-colors shrink-0"
+                        :class="!key.provider_active
+                          ? 'text-muted-foreground/20 cursor-not-allowed'
+                          : key.is_active
+                            ? 'text-foreground/70 hover:bg-muted hover:text-foreground'
+                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                        :title="!key.provider_active ? 'Provider 已停用' : key.is_active ? '点击停用' : '点击启用'"
+                        :disabled="!key.provider_active"
+                        @click.stop="toggleKeyActive(format, key)"
+                      >
+                        <Power class="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -432,7 +426,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { GripVertical, Layers, Key, Info, Loader2, ListOrdered } from 'lucide-vue-next'
+import { GripVertical, Layers, Key, Loader2, ListOrdered, Power } from 'lucide-vue-next'
 import { Dialog } from '@/components/ui'
 import Button from '@/components/ui/button.vue'
 import Badge from '@/components/ui/badge.vue'
@@ -441,7 +435,7 @@ import { updateProvider, updateProviderKey } from '@/api/endpoints'
 import type { ProviderWithEndpointsSummary } from '@/api/endpoints'
 import { adminApi } from '@/api/admin'
 import { batchQueryBalance, type ActionResultResponse, type BalanceInfo } from '@/api/providerOps'
-import { API_FORMAT_SHORT } from '@/api/endpoints/types'
+import { API_FORMAT_SHORT, API_FORMAT_LABELS } from '@/api/endpoints/types'
 
 interface KeyWithMeta {
   id: string
@@ -453,6 +447,7 @@ interface KeyWithMeta {
   priority: number  // 用于编辑的优先级
   rate_multipliers: Record<string, number> | null
   is_active: boolean
+  provider_active: boolean
   circuit_breaker_open: boolean
   provider_name: string
   endpoint_base_url: string
@@ -567,6 +562,16 @@ const availableFormats = computed(() => {
   return Object.keys(keysByFormat.value).sort()
 })
 
+// 排序 Key：活跃的在前，停用的(Key或Provider)在后，各自按优先级排序
+function sortKeysByActiveAndPriority(keys: KeyWithMeta[]): KeyWithMeta[] {
+  return [...keys].sort((a, b) => {
+    const aActive = a.is_active && a.provider_active
+    const bActive = b.is_active && b.provider_active
+    if (aActive !== bActive) return aActive ? -1 : 1
+    return a.priority - b.priority
+  })
+}
+
 // 排序 providers：启用的在前，停用的在后，各自按优先级排序
 function sortProvidersByActiveAndPriority(providers: ProviderWithEndpointsSummary[]) {
   return [...providers].sort((a, b) => {
@@ -640,8 +645,8 @@ async function loadKeysByFormat() {
         // 使用格式特定优先级，如果没有则分配默认值
         priority: key.format_priority ?? nextPriority++
       }))
-      // 按优先级排序
-      data[format].sort((a, b) => a.priority - b.priority)
+      // 按优先级排序：活跃的在前，停用的(Key或Provider)在后，各自按优先级排序
+      data[format] = sortKeysByActiveAndPriority(data[format])
     }
     keysByFormat.value = data
 
@@ -653,6 +658,29 @@ async function loadKeysByFormat() {
     showError(err.response?.data?.detail || '加载 Key 列表失败', '错误')
   } finally {
     loadingKeys.value = false
+  }
+}
+
+// 快捷切换 Key 启用/禁用状态
+async function toggleKeyActive(format: string, key: KeyWithMeta) {
+  const newStatus = !key.is_active
+  try {
+    await updateProviderKey(key.id, { is_active: newStatus })
+    // 更新本地状态（该 key 可能出现在多个格式中）
+    for (const fmt of Object.keys(keysByFormat.value)) {
+      const keys = keysByFormat.value[fmt]
+      const found = keys.find(k => k.id === key.id)
+      if (found) {
+        found.is_active = newStatus
+      }
+    }
+    // 重新排序所有格式（该 key 可能出现在多个格式中，状态变更后都需要重排）
+    for (const fmt of Object.keys(keysByFormat.value)) {
+      keysByFormat.value[fmt] = sortKeysByActiveAndPriority(keysByFormat.value[fmt])
+    }
+    success(newStatus ? 'Key 已启用' : 'Key 已停用')
+  } catch (err: any) {
+    showError(err.response?.data?.detail || '操作失败', '错误')
   }
 }
 
@@ -673,7 +701,7 @@ function finishEditKeyPriority(format: string, key: KeyWithMeta, event: FocusEve
     // 每个格式独立管理优先级，只更新当前格式
     key.priority = newPriority
     // 重新排序当前格式
-    keysByFormat.value[format] = [...keysByFormat.value[format]].sort((a, b) => a.priority - b.priority)
+    keysByFormat.value[format] = sortKeysByActiveAndPriority(keysByFormat.value[format])
   }
 
   editingKeyPriority.value[format] = null
@@ -871,7 +899,7 @@ function handleKeyDrop(format: string, dropIndex: number) {
   })
 
   // 按优先级重新排序
-  keysByFormat.value[format] = [...items].sort((a, b) => a.priority - b.priority)
+  keysByFormat.value[format] = sortKeysByActiveAndPriority(items)
   draggedKey.value[format] = null
   dragOverKey.value[format] = null
 }
@@ -883,20 +911,8 @@ async function save() {
 
     const newMode = activeMainTab.value === 'key' ? 'global_key' : 'provider'
 
-    // 保存优先级模式和调度模式
-    await Promise.all([
-      adminApi.updateSystemConfig(
-        'provider_priority_mode',
-        newMode,
-        'Provider/Key 优先级策略：provider(提供商优先模式) 或 global_key(全局Key优先模式)'
-      ),
-      adminApi.updateSystemConfig(
-        'scheduling_mode',
-        schedulingMode.value,
-        '调度模式：fixed_order(固定顺序模式) 或 cache_affinity(缓存亲和模式)'
-      )
-    ])
-
+    // 第一步：先保存所有 Provider 和 Key 的优先级数据
+    // 确保优先级数据全部到位后，再切换调度模式，避免瞬态不一致
     const providerUpdates = sortedProviders.value.map((provider) =>
       updateProvider(provider.id, { provider_priority: provider.provider_priority })
     )
@@ -918,6 +934,19 @@ async function save() {
     )
 
     await Promise.all([...providerUpdates, ...keyUpdates])
+
+    // 第二步：优先级数据全部就绪后，顺序保存调度配置
+    // 先保存优先级模式，再保存调度模式，确保 Scheduler 状态完整切换
+    await adminApi.updateSystemConfig(
+      'provider_priority_mode',
+      newMode,
+      'Provider/Key 优先级策略：provider(提供商优先模式) 或 global_key(全局Key优先模式)'
+    )
+    await adminApi.updateSystemConfig(
+      'scheduling_mode',
+      schedulingMode.value,
+      '调度模式：cache_affinity(缓存亲和模式) 或 load_balance(负载均衡模式) 或 fixed_order(固定顺序模式)'
+    )
 
     await loadKeysByFormat()
 

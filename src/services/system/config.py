@@ -29,6 +29,13 @@ class RequestRecordLevel(str, Enum):
 # 进程内缓存 TTL（秒）- 系统配置变化不频繁，使用较长的 TTL
 _CONFIG_CACHE_TTL = 60  # 1 分钟
 
+# 调度相关配置使用更短的缓存 TTL，确保多 Worker 部署时快速收敛
+# 当管理员切换调度模式时，其他 Worker 最多延迟 5 秒即可感知变更
+_SCHEDULING_CONFIG_CACHE_TTL = 5  # 5 秒
+
+# 需要跨 Worker 快速同步的调度相关配置 key
+SCHEDULING_CONFIG_KEYS = frozenset({"scheduling_mode", "provider_priority_mode"})
+
 # 进程内缓存存储: {key: (value, expire_time)}
 _config_cache: dict[str, tuple[Any, float]] = {}
 
@@ -49,8 +56,12 @@ def _get_cached_config(key: str) -> tuple[bool, Any]:
 
 
 def _set_cached_config(key: str, value: Any) -> None:
-    """设置进程内缓存"""
-    _config_cache[key] = (value, time.time() + _CONFIG_CACHE_TTL)
+    """设置进程内缓存
+
+    调度相关配置使用更短的 TTL（5秒），确保多 Worker 部署时快速收敛。
+    """
+    ttl = _SCHEDULING_CONFIG_CACHE_TTL if key in SCHEDULING_CONFIG_KEYS else _CONFIG_CACHE_TTL
+    _config_cache[key] = (value, time.time() + ttl)
 
 
 def invalidate_config_cache(key: str | None = None) -> None:
