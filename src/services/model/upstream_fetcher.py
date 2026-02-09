@@ -140,13 +140,7 @@ def get_adapter_for_format(api_format: str) -> type | None:
     from src.api.handlers.base.chat_adapter_base import get_adapter_class
     from src.api.handlers.base.cli_adapter_base import get_cli_adapter_class
 
-    adapter_class = get_adapter_class(api_format)
-    if adapter_class:
-        return adapter_class
-    cli_adapter_class = get_cli_adapter_class(api_format)
-    if cli_adapter_class:
-        return cli_adapter_class
-    return None
+    return get_adapter_class(api_format) or get_cli_adapter_class(api_format)
 
 
 def build_all_format_configs(
@@ -156,8 +150,8 @@ def build_all_format_configs(
     """
     构建所有 API 格式的端点配置
 
-    从基础 endpoint signature 列表构建配置，如果该格式有专门的端点配置则使用，
-    否则使用基础端点的 base_url 尝试。
+    只对实际配置了端点的格式构建请求配置，不同端点的 base_url 可能不同，
+    不应使用某个端点的 base_url 去尝试其他格式。
 
     Args:
         api_key_value: 解密后的 API Key
@@ -169,44 +163,17 @@ def build_all_format_configs(
     if not format_to_endpoint:
         return []
 
-    # 获取任意一个端点的 base_url 作为基础（用于尝试所有格式）
-    # 优先使用 OPENAI 格式的端点，因为它最通用
-    base_endpoint = (
-        format_to_endpoint.get("openai:chat")
-        or format_to_endpoint.get("claude:chat")
-        or format_to_endpoint.get("gemini:chat")
-        or next(iter(format_to_endpoint.values()))
-    )
-    base_url = base_endpoint.base_url
-    extra_headers = get_extra_headers_from_endpoint(base_endpoint)
-
     # 只对基础 API 格式获取模型，CLI 格式使用相同的上游 API
-    endpoint_configs: list[dict] = []
-    for fmt in MODEL_FETCH_FORMATS:
-        fmt_value = fmt
-        # 如果该格式有专门的端点配置，使用其 base_url 和 headers
-        if fmt_value in format_to_endpoint:
-            ep = format_to_endpoint[fmt_value]
-            endpoint_configs.append(
-                {
-                    "api_key": api_key_value,
-                    "base_url": ep.base_url,
-                    "api_format": fmt_value,
-                    "extra_headers": get_extra_headers_from_endpoint(ep),
-                }
-            )
-        else:
-            # 没有专门配置，使用基础端点的 base_url 尝试
-            endpoint_configs.append(
-                {
-                    "api_key": api_key_value,
-                    "base_url": base_url,
-                    "api_format": fmt_value,
-                    "extra_headers": extra_headers,
-                }
-            )
-
-    return endpoint_configs
+    return [
+        {
+            "api_key": api_key_value,
+            "base_url": ep.base_url,
+            "api_format": fmt,
+            "extra_headers": get_extra_headers_from_endpoint(ep),
+        }
+        for fmt in MODEL_FETCH_FORMATS
+        if (ep := format_to_endpoint.get(fmt)) is not None
+    ]
 
 
 async def fetch_models_from_endpoints(
@@ -255,10 +222,10 @@ async def fetch_models_from_endpoints(
             success = error is None
             return models, error, success
         except httpx.TimeoutException:
-            logger.warning(f"获取 {api_format} 模型超时")
+            logger.warning("获取 {} 模型超时", api_format)
             return [], f"{api_format}: timeout", False
         except Exception:
-            logger.exception(f"获取 {api_format} 模型出错")
+            logger.exception("获取 {} 模型出错", api_format)
             return [], f"{api_format}: error", False
 
     async with httpx.AsyncClient(timeout=timeout, verify=get_ssl_context()) as client:

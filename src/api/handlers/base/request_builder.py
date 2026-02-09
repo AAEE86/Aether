@@ -1047,8 +1047,9 @@ async def get_provider_auth(
 
         # Kiro 特殊处理：如果没有缓存的 access_token 或 key.api_key 是占位符，强制刷新
         if provider_type == "kiro" and not should_refresh:
-            decrypted_api_key = crypto_service.decrypt(key.api_key)
-            if not cached_access_token or decrypted_api_key == "__placeholder__":
+            if not cached_access_token:
+                should_refresh = True
+            elif crypto_service.decrypt(key.api_key) == "__placeholder__":
                 should_refresh = True
 
         if should_refresh and refresh_token and provider_type:
@@ -1079,16 +1080,11 @@ async def get_provider_auth(
 
         # 获取最终使用的 access_token
         # Kiro 优先使用 token_meta 中缓存的 access_token（刷新后会更新到 token_meta）
-        effective_access_token: str
         if provider_type == "kiro":
-            # Kiro: 优先使用 token_meta 中的 access_token，回退到 key.api_key
-            cached_token = str(token_meta.get("access_token") or "").strip()
-            if cached_token:
-                effective_access_token = cached_token
-            else:
-                effective_access_token = crypto_service.decrypt(key.api_key)
+            refreshed_token = str(token_meta.get("access_token") or "").strip()
+            effective_token = refreshed_token or crypto_service.decrypt(key.api_key)
         else:
-            effective_access_token = crypto_service.decrypt(key.api_key)
+            effective_token = crypto_service.decrypt(key.api_key)
 
         decrypted_auth_config: dict[str, Any] | None = None
         if isinstance(token_meta, dict) and token_meta:
@@ -1096,7 +1092,7 @@ async def get_provider_auth(
 
         return ProviderAuthInfo(
             auth_header="Authorization",
-            auth_value=f"Bearer {effective_access_token}",
+            auth_value=f"Bearer {effective_token}",
             decrypted_auth_config=decrypted_auth_config,
         )
     if auth_type == "vertex_ai":
