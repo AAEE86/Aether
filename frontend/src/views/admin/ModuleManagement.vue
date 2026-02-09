@@ -32,6 +32,57 @@
     </div>
 
     <div>
+      <!-- 内置工具 -->
+      <div
+        v-if="filteredBuiltinTools.length > 0"
+        class="mb-8"
+      >
+        <h3 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+          内置工具
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+          <div
+            v-for="tool in filteredBuiltinTools"
+            :key="tool.name"
+            class="group relative border rounded-2xl p-6 transition-all duration-200 hover:shadow-lg border-border bg-card hover:border-primary/20 cursor-pointer"
+            @click="router.push(tool.href)"
+          >
+            <div class="flex items-start gap-4 mb-3">
+              <div class="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-colors bg-primary/15 text-primary">
+                <component
+                  :is="tool.icon"
+                  class="w-5 h-5"
+                />
+              </div>
+              <div class="flex-1 min-w-0 pt-1">
+                <h4 class="font-semibold text-base truncate">
+                  {{ tool.name }}
+                </h4>
+              </div>
+            </div>
+            <p class="text-sm text-muted-foreground leading-relaxed line-clamp-2 min-h-[2.5rem]">
+              {{ tool.description }}
+            </p>
+            <div class="mt-5 pt-4 border-t border-border/50 flex items-center justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                class="gap-1.5"
+                @click.stop="router.push(tool.href)"
+              >
+                <Settings class="w-3.5 h-3.5" />
+                管理
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 扩展模块 -->
+      <h3 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+        扩展模块
+      </h3>
+
       <!-- 模块卡片网格 -->
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
         <div
@@ -130,7 +181,7 @@
 
       <!-- 搜索无结果 -->
       <div
-        v-if="filteredModules.length === 0 && searchQuery && !loading"
+        v-if="filteredModules.length === 0 && filteredBuiltinTools.length === 0 && searchQuery && !loading"
         class="text-center py-16"
       >
         <Search class="w-12 h-12 mx-auto text-muted-foreground/50 mb-4" />
@@ -163,6 +214,7 @@ import Input from '@/components/ui/input.vue'
 import { PageHeader, PageContainer } from '@/components/layout'
 import { useToast } from '@/composables/useToast'
 import { useModuleStore } from '@/stores/modules'
+import { BUILTIN_TOOLS } from '@/config/builtin-tools'
 import { log } from '@/utils/logger'
 import { getErrorMessage } from '@/types/api-error'
 
@@ -173,6 +225,15 @@ const moduleStore = useModuleStore()
 const loading = ref(false)
 const toggling = ref<Record<string, boolean>>({})
 const searchQuery = ref('')
+
+// 过滤后的内置工具
+const filteredBuiltinTools = computed(() => {
+  if (!searchQuery.value.trim()) return BUILTIN_TOOLS
+  const query = searchQuery.value.toLowerCase()
+  return BUILTIN_TOOLS.filter(
+    t => t.name.toLowerCase().includes(query) || t.description.toLowerCase().includes(query)
+  )
+})
 
 // 获取分类图标
 function getCategoryIcon(category: string) {

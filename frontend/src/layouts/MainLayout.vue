@@ -363,7 +363,6 @@ import {
   Megaphone,
   Menu,
   X,
-  Mail,
   Puzzle,
   Zap,
   FileUp,
@@ -372,6 +371,7 @@ import {
 } from 'lucide-vue-next'
 
 import GithubIcon from '@/components/icons/GithubIcon.vue'
+import { BUILTIN_TOOL_BREADCRUMBS } from '@/config/builtin-tools'
 
 const router = useRouter()
 const route = useRoute()
@@ -507,9 +507,6 @@ const navigation = computed(() => {
   const systemItems: { name: string; href: string; icon: LucideIcon }[] = [
     { name: '公告管理', href: '/admin/announcements', icon: Megaphone },
     { name: '缓存监控', href: '/admin/cache-monitoring', icon: Gauge },
-    { name: 'IP 安全', href: '/admin/ip-security', icon: Shield },
-    { name: '审计日志', href: '/admin/audit-logs', icon: AlertTriangle },
-    { name: '邮件配置', href: '/admin/email', icon: Mail },
   ]
 
   // 动态添加已激活模块的菜单项
@@ -594,6 +591,15 @@ const breadcrumbs = computed((): BreadcrumbItem[] => {
       { label: '系统' },
       { label: '模块管理', href: '/admin/modules' },
       { label: displayName }
+    ]
+  }
+
+  // Special case: built-in tools under module management
+  if (BUILTIN_TOOL_BREADCRUMBS[route.path]) {
+    return [
+      { label: '系统' },
+      { label: '模块管理', href: '/admin/modules' },
+      { label: BUILTIN_TOOL_BREADCRUMBS[route.path] }
     ]
   }
 
