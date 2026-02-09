@@ -160,13 +160,22 @@ class ClaudeChatAdapter(ChatAdapterBase):
         api_key: str,
         extra_headers: dict[str, str] | None = None,
     ) -> tuple[list, str | None]:
-        """查询 Claude API 支持的模型列表
+        """查询 Claude API 支持的模型列表（使用 x-api-key 认证）"""
+        headers = cls.build_headers_with_extra(api_key, extra_headers)
+        return await cls._fetch_models_paginated(client, base_url, headers, cls.FORMAT_ID)
+
+    @staticmethod
+    async def _fetch_models_paginated(
+        client: httpx.AsyncClient,
+        base_url: str,
+        headers: dict[str, str],
+        format_id: str,
+    ) -> tuple[list, str | None]:
+        """Claude 模型列表分页获取核心逻辑
 
         Anthropic 的 /v1/models 是分页接口（has_more/first_id/last_id），
         默认只返回一页。这里做 best-effort 的全量拉取，确保管理端能展示完整模型列表。
         """
-        headers = cls.build_headers_with_extra(api_key, extra_headers)
-
         # 构建 /v1/models URL
         base_url = base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -210,7 +219,7 @@ class ClaudeChatAdapter(ChatAdapterBase):
                         continue
                     if isinstance(mid, str) and mid:
                         seen_ids.add(mid)
-                    m["api_format"] = cls.FORMAT_ID
+                    m["api_format"] = format_id
                     all_models.append(m)
 
                 # Pagination (Anthropic list response shape)

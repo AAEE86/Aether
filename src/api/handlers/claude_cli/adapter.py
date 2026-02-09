@@ -110,16 +110,15 @@ class ClaudeCliAdapter(CliAdapterBase):
         api_key: str,
         extra_headers: dict[str, str] | None = None,
     ) -> tuple[list, str | None]:
-        """查询 Claude API 支持的模型列表（带 CLI User-Agent）"""
-        # 复用 ClaudeChatAdapter 的实现，添加 CLI User-Agent
+        """查询 Claude API 支持的模型列表（使用 CLI Bearer 认证）"""
         cli_headers = {"User-Agent": config.internal_user_agent_claude_cli}
         if extra_headers:
             cli_headers.update(extra_headers)
-        models, error = await ClaudeChatAdapter.fetch_models(client, base_url, api_key, cli_headers)
-        # 更新 api_format 为 CLI 格式
-        for m in models:
-            m["api_format"] = cls.FORMAT_ID
-        return models, error
+        # 使用 CLI adapter 自己的认证头（Authorization: Bearer），而非 Chat 的 x-api-key
+        headers = cls.build_headers_with_extra(api_key, cli_headers)
+        return await ClaudeChatAdapter._fetch_models_paginated(
+            client, base_url, headers, cls.FORMAT_ID
+        )
 
     @classmethod
     def build_endpoint_url(
