@@ -1282,7 +1282,6 @@ onMounted(async () => {
   }
   await Promise.all([
     loadDashboardData(),
-    loadDailyStats(),
     loadAnnouncements()
   ])
   await nextTick()
