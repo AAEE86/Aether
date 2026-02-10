@@ -300,165 +300,252 @@
                     </div>
 
                     <!-- 请求体规则列表 - 次要色边框 -->
-                    <div
+                    <template
                       v-for="(rule, index) in getEndpointEditBodyRules(endpoint.id)"
                       :key="`body-${index}`"
-                      class="flex items-center gap-1.5 px-2 py-1.5 rounded-md border-l-4 border-muted-foreground/40 bg-muted/30"
                     >
-                      <span
-                        class="text-[10px] font-semibold text-muted-foreground shrink-0"
-                        title="请求体"
-                      >B</span>
-                      <Select
-                        :model-value="rule.action"
-                        :open="bodyRuleSelectOpen[`${endpoint.id}-${index}`]"
-                        @update:model-value="(v: string) => updateEndpointBodyRuleAction(endpoint.id, index, v as BodyRuleAction)"
-                        @update:open="(v) => handleBodyRuleSelectOpen(endpoint.id, index, v)"
+                      <div
+                        class="flex items-center gap-1.5 px-2 py-1.5 rounded-md border-l-4 border-muted-foreground/40 bg-muted/30"
                       >
-                        <SelectTrigger class="w-[96px] h-7 text-xs shrink-0">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="set">
-                            覆写
-                          </SelectItem>
-                          <SelectItem value="drop">
-                            删除
-                          </SelectItem>
-                          <SelectItem value="rename">
-                            重命名
-                          </SelectItem>
-                          <SelectItem value="insert">
-                            插入
-                          </SelectItem>
-                          <SelectItem value="regex_replace">
-                            正则替换
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <template v-if="rule.action === 'set'">
+                        <span
+                          class="text-[10px] font-semibold text-muted-foreground shrink-0"
+                          title="请求体"
+                        >B</span>
+                        <Select
+                          :model-value="rule.action"
+                          :open="bodyRuleSelectOpen[`${endpoint.id}-${index}`]"
+                          @update:model-value="(v: string) => updateEndpointBodyRuleAction(endpoint.id, index, v as BodyRuleAction)"
+                          @update:open="(v) => handleBodyRuleSelectOpen(endpoint.id, index, v)"
+                        >
+                          <SelectTrigger class="w-[96px] h-7 text-xs shrink-0">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="set">
+                              覆写
+                            </SelectItem>
+                            <SelectItem value="drop">
+                              删除
+                            </SelectItem>
+                            <SelectItem value="rename">
+                              重命名
+                            </SelectItem>
+                            <SelectItem value="insert">
+                              插入
+                            </SelectItem>
+                            <SelectItem value="regex_replace">
+                              正则替换
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <template v-if="rule.action === 'set'">
+                          <Input
+                            :model-value="rule.path"
+                            placeholder="字段路径（如 metadata.user_id）"
+                            size="sm"
+                            class="flex-1 min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
+                          />
+                          <span class="text-muted-foreground text-xs">=</span>
+                          <Input
+                            :model-value="rule.value"
+                            placeholder="123 / &quot;text&quot; / {{$original}}"
+                            size="sm"
+                            class="flex-1 min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'value', v)"
+                          />
+                          <CheckCircle
+                            class="w-4 h-4 shrink-0"
+                            :class="getBodySetValueValidation(rule) === true ? 'text-green-600' : getBodySetValueValidation(rule) === false ? 'text-destructive' : 'text-muted-foreground/40'"
+                            :title="getBodySetValueValidationTip(rule)"
+                          />
+                        </template>
+                        <template v-else-if="rule.action === 'drop'">
+                          <Input
+                            :model-value="rule.path"
+                            placeholder="要删除的字段路径"
+                            size="sm"
+                            class="flex-1 min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
+                          />
+                        </template>
+                        <template v-else-if="rule.action === 'rename'">
+                          <Input
+                            :model-value="rule.from"
+                            placeholder="原路径"
+                            size="sm"
+                            class="flex-1 min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'from', v)"
+                          />
+                          <span class="text-muted-foreground text-xs">→</span>
+                          <Input
+                            :model-value="rule.to"
+                            placeholder="新路径"
+                            size="sm"
+                            class="flex-1 min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'to', v)"
+                          />
+                        </template>
+                        <template v-else-if="rule.action === 'insert' || rule.action === 'append'">
+                          <Input
+                            :model-value="rule.path"
+                            placeholder="数组路径（如 messages）"
+                            size="sm"
+                            class="flex-[2] min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
+                          />
+                          <Input
+                            :model-value="rule.index"
+                            placeholder="末尾"
+                            size="sm"
+                            class="w-14 h-7 text-xs shrink-0"
+                            title="插入位置（留空=追加到末尾）"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'index', v)"
+                          />
+                          <Input
+                            :model-value="rule.value"
+                            placeholder="值 (JSON)"
+                            size="sm"
+                            class="flex-[3] min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'value', v)"
+                          />
+                          <CheckCircle
+                            class="w-4 h-4 shrink-0"
+                            :class="getBodySetValueValidation(rule) === true ? 'text-green-600' : getBodySetValueValidation(rule) === false ? 'text-destructive' : 'text-muted-foreground/40'"
+                            :title="getBodySetValueValidationTip(rule)"
+                          />
+                        </template>
+                        <template v-else-if="rule.action === 'regex_replace'">
+                          <Input
+                            :model-value="rule.path"
+                            placeholder="字段路径"
+                            size="sm"
+                            class="flex-[2] min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
+                          />
+                          <Input
+                            :model-value="rule.pattern"
+                            placeholder="正则"
+                            size="sm"
+                            class="flex-[2] min-w-0 h-7 text-xs font-mono"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'pattern', v)"
+                          />
+                          <span class="text-muted-foreground text-xs">→</span>
+                          <Input
+                            :model-value="rule.replacement"
+                            placeholder="替换为"
+                            size="sm"
+                            class="flex-[2] min-w-0 h-7 text-xs"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'replacement', v)"
+                          />
+                          <Input
+                            :model-value="rule.flags"
+                            placeholder="ims"
+                            size="sm"
+                            class="w-12 h-7 text-xs shrink-0 font-mono"
+                            title="正则标志：i=忽略大小写 m=多行 s=dotall"
+                            @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'flags', v)"
+                          />
+                          <CheckCircle
+                            class="w-4 h-4 shrink-0"
+                            :class="getRegexPatternValidation(rule) === true ? 'text-green-600' : getRegexPatternValidation(rule) === false ? 'text-destructive' : 'text-muted-foreground/40'"
+                            :title="getRegexPatternValidationTip(rule)"
+                          />
+                        </template>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="h-7 w-7 shrink-0"
+                          :class="rule.conditionEnabled ? 'text-primary' : ''"
+                          title="条件触发"
+                          @click="toggleBodyRuleCondition(endpoint.id, index)"
+                        >
+                          <Filter class="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="h-7 w-7 shrink-0"
+                          @click="removeEndpointBodyRule(endpoint.id, index)"
+                        >
+                          <X class="w-3 h-3" />
+                        </Button>
+                      </div>
+                      <!-- 条件编辑行 -->
+                      <div
+                        v-if="rule.conditionEnabled"
+                        class="flex items-center gap-1.5 px-2 py-1 ml-6 rounded-md bg-muted/20"
+                      >
+                        <span class="text-[10px] font-semibold text-muted-foreground shrink-0">IF</span>
                         <Input
-                          :model-value="rule.path"
-                          placeholder="字段路径（如 metadata.user_id）"
-                          size="sm"
-                          class="flex-1 min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
-                        />
-                        <span class="text-muted-foreground text-xs">=</span>
-                        <Input
-                          :model-value="rule.value"
-                          placeholder="123 / &quot;text&quot; / {{$original}}"
-                          size="sm"
-                          class="flex-1 min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'value', v)"
-                        />
-                        <CheckCircle
-                          class="w-4 h-4 shrink-0"
-                          :class="getBodySetValueValidation(rule) === true ? 'text-green-600' : getBodySetValueValidation(rule) === false ? 'text-destructive' : 'text-muted-foreground/40'"
-                          :title="getBodySetValueValidationTip(rule)"
-                        />
-                      </template>
-                      <template v-else-if="rule.action === 'drop'">
-                        <Input
-                          :model-value="rule.path"
-                          placeholder="要删除的字段路径"
-                          size="sm"
-                          class="flex-1 min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
-                        />
-                      </template>
-                      <template v-else-if="rule.action === 'rename'">
-                        <Input
-                          :model-value="rule.from"
-                          placeholder="原路径"
-                          size="sm"
-                          class="flex-1 min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'from', v)"
-                        />
-                        <span class="text-muted-foreground text-xs">→</span>
-                        <Input
-                          :model-value="rule.to"
-                          placeholder="新路径"
-                          size="sm"
-                          class="flex-1 min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'to', v)"
-                        />
-                      </template>
-                      <template v-else-if="rule.action === 'insert' || rule.action === 'append'">
-                        <Input
-                          :model-value="rule.path"
-                          placeholder="数组路径（如 messages）"
-                          size="sm"
-                          class="flex-[2] min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
-                        />
-                        <Input
-                          :model-value="rule.index"
-                          placeholder="末尾"
-                          size="sm"
-                          class="w-14 h-7 text-xs shrink-0"
-                          title="插入位置（留空=追加到末尾）"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'index', v)"
-                        />
-                        <Input
-                          :model-value="rule.value"
-                          placeholder="值 (JSON)"
-                          size="sm"
-                          class="flex-[3] min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'value', v)"
-                        />
-                        <CheckCircle
-                          class="w-4 h-4 shrink-0"
-                          :class="getBodySetValueValidation(rule) === true ? 'text-green-600' : getBodySetValueValidation(rule) === false ? 'text-destructive' : 'text-muted-foreground/40'"
-                          :title="getBodySetValueValidationTip(rule)"
-                        />
-                      </template>
-                      <template v-else-if="rule.action === 'regex_replace'">
-                        <Input
-                          :model-value="rule.path"
+                          :model-value="rule.conditionPath"
                           placeholder="字段路径"
                           size="sm"
-                          class="flex-[2] min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'path', v)"
+                          class="flex-1 min-w-0 h-7 text-xs"
+                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'conditionPath', v)"
                         />
+                        <Select
+                          :model-value="rule.conditionOp"
+                          @update:model-value="(v: string) => updateEndpointBodyRuleField(endpoint.id, index, 'conditionOp', v)"
+                        >
+                          <SelectTrigger class="w-[100px] h-7 text-xs shrink-0">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="eq">
+                              等于
+                            </SelectItem>
+                            <SelectItem value="neq">
+                              不等于
+                            </SelectItem>
+                            <SelectItem value="gt">
+                              大于
+                            </SelectItem>
+                            <SelectItem value="lt">
+                              小于
+                            </SelectItem>
+                            <SelectItem value="gte">
+                              大于等于
+                            </SelectItem>
+                            <SelectItem value="lte">
+                              小于等于
+                            </SelectItem>
+                            <SelectItem value="starts_with">
+                              开头匹配
+                            </SelectItem>
+                            <SelectItem value="ends_with">
+                              结尾匹配
+                            </SelectItem>
+                            <SelectItem value="contains">
+                              包含
+                            </SelectItem>
+                            <SelectItem value="matches">
+                              正则匹配
+                            </SelectItem>
+                            <SelectItem value="exists">
+                              存在
+                            </SelectItem>
+                            <SelectItem value="not_exists">
+                              不存在
+                            </SelectItem>
+                            <SelectItem value="in">
+                              在列表中
+                            </SelectItem>
+                            <SelectItem value="type_is">
+                              类型是
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
                         <Input
-                          :model-value="rule.pattern"
-                          placeholder="正则"
+                          v-if="rule.conditionOp !== 'exists' && rule.conditionOp !== 'not_exists'"
+                          :model-value="rule.conditionValue"
+                          :placeholder="rule.conditionOp === 'in' ? '[&quot;a&quot;, &quot;b&quot;]' : rule.conditionOp === 'type_is' ? 'string/number/boolean/...' : '值'"
                           size="sm"
-                          class="flex-[2] min-w-0 h-7 text-xs font-mono"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'pattern', v)"
+                          class="flex-1 min-w-0 h-7 text-xs"
+                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'conditionValue', v)"
                         />
-                        <span class="text-muted-foreground text-xs">→</span>
-                        <Input
-                          :model-value="rule.replacement"
-                          placeholder="替换为"
-                          size="sm"
-                          class="flex-[2] min-w-0 h-7 text-xs"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'replacement', v)"
-                        />
-                        <Input
-                          :model-value="rule.flags"
-                          placeholder="ims"
-                          size="sm"
-                          class="w-12 h-7 text-xs shrink-0 font-mono"
-                          title="正则标志：i=忽略大小写 m=多行 s=dotall"
-                          @update:model-value="(v) => updateEndpointBodyRuleField(endpoint.id, index, 'flags', v)"
-                        />
-                        <CheckCircle
-                          class="w-4 h-4 shrink-0"
-                          :class="getRegexPatternValidation(rule) === true ? 'text-green-600' : getRegexPatternValidation(rule) === false ? 'text-destructive' : 'text-muted-foreground/40'"
-                          :title="getRegexPatternValidationTip(rule)"
-                        />
-                      </template>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        class="h-7 w-7 shrink-0"
-                        @click="removeEndpointBodyRule(endpoint.id, index)"
-                      >
-                        <X class="w-3 h-3" />
-                      </Button>
-                    </div>
+                      </div>
+                    </template>
                   </div>
                 </CollapsibleContent>
               </Collapsible>
@@ -578,7 +665,7 @@ import {
   CollapsibleTrigger,
   CollapsibleContent,
 } from '@/components/ui'
-import { Settings, Trash2, Check, X, Power, ChevronRight, Plus, Shuffle, RotateCcw, Radio, CheckCircle, Save } from 'lucide-vue-next'
+import { Settings, Trash2, Check, X, Power, ChevronRight, Plus, Shuffle, RotateCcw, Radio, CheckCircle, Save, Filter } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { log } from '@/utils/logger'
 import AlertDialog from '@/components/common/AlertDialog.vue'
@@ -592,6 +679,8 @@ import {
   type HeaderRule,
   type BodyRule,
   type BodyRuleRegexReplace,
+  type BodyRuleCondition,
+  type BodyRuleConditionOp,
 } from '@/api/endpoints'
 import { adminApi } from '@/api/admin'
 
@@ -617,6 +706,10 @@ interface EditableBodyRule {
   pattern: string  // regex_replace 用
   replacement: string // regex_replace 用
   flags: string    // regex_replace 用（i/m/s）
+  conditionEnabled: boolean  // 是否启用条件
+  conditionPath: string
+  conditionOp: string
+  conditionValue: string     // JSON 格式字符串（保存时 parse）
 }
 
 // 端点编辑状态（仅 URL、路径、规则，格式转换是直接保存的）
@@ -771,7 +864,7 @@ function prepareValueForJsonParse(raw: string): string {
       continue
     }
     if (!inStr && result.startsWith(ORIGINAL_SENTINEL, i)) {
-      out += '"' + ORIGINAL_SENTINEL + '"'
+      out += `"${  ORIGINAL_SENTINEL  }"`
       i += ORIGINAL_SENTINEL.length
       continue
     }
@@ -919,27 +1012,38 @@ function initEndpointEditState(endpoint: ProviderEndpoint): EndpointEditState {
 
   const emptyBodyRule = (): Omit<EditableBodyRule, 'action'> => ({
     path: '', value: '', from: '', to: '', index: '', pattern: '', replacement: '', flags: '',
+    conditionEnabled: false, conditionPath: '', conditionOp: 'eq', conditionValue: '',
   })
 
   const bodyRules: EditableBodyRule[] = []
   if (endpoint.body_rules && endpoint.body_rules.length > 0) {
     for (const rule of endpoint.body_rules) {
+      // 提取 condition 信息
+      const conditionFields = rule.condition ? {
+        conditionEnabled: true,
+        conditionPath: rule.condition.path || '',
+        conditionOp: rule.condition.op || 'eq',
+        conditionValue: rule.condition.value !== undefined
+          ? (typeof rule.condition.value === 'string' ? rule.condition.value : JSON.stringify(rule.condition.value))
+          : '',
+      } : {}
+
       if (rule.action === 'set') {
         const { value } = initBodyRuleSetValueForEditor(rule.value)
-        bodyRules.push({ ...emptyBodyRule(), action: 'set', path: rule.path, value })
+        bodyRules.push({ ...emptyBodyRule(), action: 'set', path: rule.path, value, ...conditionFields })
       } else if (rule.action === 'drop') {
-        bodyRules.push({ ...emptyBodyRule(), action: 'drop', path: rule.path })
+        bodyRules.push({ ...emptyBodyRule(), action: 'drop', path: rule.path, ...conditionFields })
       } else if (rule.action === 'rename') {
-        bodyRules.push({ ...emptyBodyRule(), action: 'rename', from: rule.from, to: rule.to })
+        bodyRules.push({ ...emptyBodyRule(), action: 'rename', from: rule.from, to: rule.to, ...conditionFields })
       } else if (rule.action === 'append') {
         // 前端将 append 统一展示为 insert（index 留空），保存时再根据 index 是否为空转回 append
         const { value } = initBodyRuleSetValueForEditor(rule.value)
-        bodyRules.push({ ...emptyBodyRule(), action: 'insert', path: rule.path || '', value, index: '' })
+        bodyRules.push({ ...emptyBodyRule(), action: 'insert', path: rule.path || '', value, index: '', ...conditionFields })
       } else if (rule.action === 'insert') {
         const { value } = initBodyRuleSetValueForEditor(rule.value)
-        bodyRules.push({ ...emptyBodyRule(), action: 'insert', path: rule.path || '', value, index: String(rule.index ?? '') })
+        bodyRules.push({ ...emptyBodyRule(), action: 'insert', path: rule.path || '', value, index: String(rule.index ?? ''), ...conditionFields })
       } else if (rule.action === 'regex_replace') {
-        bodyRules.push({ ...emptyBodyRule(), action: 'regex_replace', path: rule.path || '', pattern: rule.pattern || '', replacement: rule.replacement || '', flags: rule.flags || '' })
+        bodyRules.push({ ...emptyBodyRule(), action: 'regex_replace', path: rule.path || '', pattern: rule.pattern || '', replacement: rule.replacement || '', flags: rule.flags || '', ...conditionFields })
       }
     }
   }
@@ -1128,7 +1232,7 @@ function getEndpointEditBodyRules(endpointId: string): EditableBodyRule[] {
 // 添加请求体规则（同时自动展开折叠）
 function handleAddEndpointBodyRule(endpointId: string) {
   const rules = getEndpointEditBodyRules(endpointId)
-  rules.push({ action: 'set', path: '', value: '', from: '', to: '', index: '', pattern: '', replacement: '', flags: '' })
+  rules.push({ action: 'set', path: '', value: '', from: '', to: '', index: '', pattern: '', replacement: '', flags: '', conditionEnabled: false, conditionPath: '', conditionOp: 'eq', conditionValue: '' })
   // 自动展开折叠
   endpointRulesExpanded.value[endpointId] = true
 }
@@ -1156,10 +1260,18 @@ function updateEndpointBodyRuleAction(endpointId: string, index: number, action:
 }
 
 // 更新请求体规则字段
-function updateEndpointBodyRuleField(endpointId: string, index: number, field: 'path' | 'value' | 'from' | 'to' | 'index' | 'pattern' | 'replacement' | 'flags', value: string) {
+function updateEndpointBodyRuleField(endpointId: string, index: number, field: 'path' | 'value' | 'from' | 'to' | 'index' | 'pattern' | 'replacement' | 'flags' | 'conditionPath' | 'conditionOp' | 'conditionValue', value: string) {
   const rules = getEndpointEditBodyRules(endpointId)
   if (rules[index]) {
     rules[index][field] = value
+  }
+}
+
+// 切换请求体规则的条件启用状态
+function toggleBodyRuleCondition(endpointId: string, index: number) {
+  const rules = getEndpointEditBodyRules(endpointId)
+  if (rules[index]) {
+    rules[index].conditionEnabled = !rules[index].conditionEnabled
   }
 }
 
@@ -1447,6 +1559,17 @@ function hasBodyRulesChanges(endpoint: ProviderEndpoint): boolean {
       if (edited.replacement !== (original.replacement ?? '')) return true
       if (edited.flags !== (original.flags ?? '')) return true
     }
+    // 条件变更检测
+    const origCond = original.condition
+    if (edited.conditionEnabled !== !!origCond) return true
+    if (edited.conditionEnabled && origCond) {
+      if (edited.conditionPath !== origCond.path) return true
+      if (edited.conditionOp !== origCond.op) return true
+      const origVal = origCond.value !== undefined
+        ? (typeof origCond.value === 'string' ? origCond.value : JSON.stringify(origCond.value))
+        : ''
+      if (edited.conditionValue !== origVal) return true
+    }
   }
   return false
 }
@@ -1455,26 +1578,40 @@ function hasBodyRulesChanges(endpoint: ProviderEndpoint): boolean {
 function rulesToBodyRules(rules: EditableBodyRule[]): BodyRule[] | null {
   const result: BodyRule[] = []
 
+  // 构建 condition 对象（如果启用且有效）
+  function buildCondition(rule: EditableBodyRule): BodyRuleCondition | undefined {
+    if (!rule.conditionEnabled || !rule.conditionPath.trim() || !rule.conditionOp.trim()) return undefined
+    const op = rule.conditionOp as BodyRuleConditionOp
+    if (op === 'exists' || op === 'not_exists') {
+      return { path: rule.conditionPath.trim(), op }
+    }
+    const raw = rule.conditionValue.trim()
+    let val: any = raw
+    try { val = JSON.parse(raw) } catch { /* 保留原字符串 */ }
+    return { path: rule.conditionPath.trim(), op, value: val }
+  }
+
   for (const rule of rules) {
+    const condition = buildCondition(rule)
     if (rule.action === 'set' && rule.path.trim()) {
       let value: any = rule.value
       try { value = restoreOriginalPlaceholder(JSON.parse(prepareValueForJsonParse(rule.value.trim()))) } catch { value = rule.value }
-      result.push({ action: 'set', path: rule.path.trim(), value })
+      result.push({ action: 'set', path: rule.path.trim(), value, ...(condition ? { condition } : {}) })
     } else if (rule.action === 'drop' && rule.path.trim()) {
-      result.push({ action: 'drop', path: rule.path.trim() })
+      result.push({ action: 'drop', path: rule.path.trim(), ...(condition ? { condition } : {}) })
     } else if (rule.action === 'rename' && rule.from.trim() && rule.to.trim()) {
-      result.push({ action: 'rename', from: rule.from.trim(), to: rule.to.trim() })
+      result.push({ action: 'rename', from: rule.from.trim(), to: rule.to.trim(), ...(condition ? { condition } : {}) })
     } else if ((rule.action === 'insert' || rule.action === 'append') && rule.path.trim()) {
       let value: any = rule.value
       try { value = restoreOriginalPlaceholder(JSON.parse(prepareValueForJsonParse(rule.value.trim()))) } catch { value = rule.value }
       const indexStr = rule.index.trim()
       if (indexStr === '') {
         // 索引留空 → append 到末尾
-        result.push({ action: 'append', path: rule.path.trim(), value })
+        result.push({ action: 'append', path: rule.path.trim(), value, ...(condition ? { condition } : {}) })
       } else {
         const idx = parseInt(indexStr, 10)
         if (isNaN(idx)) continue
-        result.push({ action: 'insert', path: rule.path.trim(), index: idx, value })
+        result.push({ action: 'insert', path: rule.path.trim(), index: idx, value, ...(condition ? { condition } : {}) })
       }
     } else if (rule.action === 'regex_replace' && rule.path.trim() && rule.pattern.trim()) {
       const entry: BodyRuleRegexReplace = {
@@ -1484,7 +1621,7 @@ function rulesToBodyRules(rules: EditableBodyRule[]): BodyRule[] | null {
         replacement: rule.replacement || '',
         ...(rule.flags.trim() ? { flags: rule.flags.trim() } : {}),
       }
-      result.push(entry)
+      result.push({ ...entry, ...(condition ? { condition } : {}) })
     }
   }
 

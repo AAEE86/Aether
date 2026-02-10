@@ -42,6 +42,31 @@ _BODY_RULE_ACTIONS: frozenset[str] = frozenset(
 # regex_replace 允许的 flags 字符
 _REGEX_FLAG_CHARS: frozenset[str] = frozenset({"i", "m", "s"})
 
+# condition 允许的操作符
+_CONDITION_OPS: frozenset[str] = frozenset(
+    {
+        "eq",
+        "neq",
+        "gt",
+        "lt",
+        "gte",
+        "lte",
+        "starts_with",
+        "ends_with",
+        "contains",
+        "matches",
+        "exists",
+        "not_exists",
+        "in",
+        "type_is",
+    }
+)
+
+# type_is 允许的类型值
+_TYPE_IS_VALUES: frozenset[str] = frozenset(
+    {"string", "number", "boolean", "array", "object", "null"}
+)
+
 
 def parse_re_flags(flags_str: str) -> int:
     """将 flags 字符串（i/m/s）转换为 re 标志位。
@@ -57,6 +82,65 @@ def parse_re_flags(flags_str: str) -> int:
         elif f == "s":
             result |= re.DOTALL
     return result
+
+
+def _validate_condition(condition: Any, rule_idx: int) -> None:
+    """校验单条规则的 condition 结构"""
+    if not isinstance(condition, dict):
+        raise ValueError(f"body_rules[{rule_idx}]: condition 必须是 JSON 对象")
+
+    op = condition.get("op")
+    if not isinstance(op, str) or op not in _CONDITION_OPS:
+        raise ValueError(
+            f"body_rules[{rule_idx}]: condition.op 必须是 {sorted(_CONDITION_OPS)} 之一，"
+            f"当前值: {op!r}"
+        )
+
+    path = condition.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"body_rules[{rule_idx}]: condition 必须提供非空 path")
+
+    # exists / not_exists 不需要 value
+    if op in ("exists", "not_exists"):
+        return
+
+    value = condition.get("value")
+
+    # 数值操作符校验
+    if op in ("gt", "lt", "gte", "lte"):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"body_rules[{rule_idx}]: condition op={op!r} 的 value 必须为数值")
+
+    # matches 正则校验
+    if op == "matches":
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"body_rules[{rule_idx}]: condition op=matches 的 value 必须为非空字符串"
+            )
+        try:
+            re.compile(value)
+        except re.error as e:
+            raise ValueError(
+                f"body_rules[{rule_idx}]: condition op=matches 的 value 不是合法正则: {e}"
+            )
+
+    # in 校验
+    if op == "in":
+        if not isinstance(value, list):
+            raise ValueError(f"body_rules[{rule_idx}]: condition op=in 的 value 必须为数组")
+
+    # type_is 校验
+    if op == "type_is":
+        if not isinstance(value, str) or value not in _TYPE_IS_VALUES:
+            raise ValueError(
+                f"body_rules[{rule_idx}]: condition op=type_is 的 value 必须是 "
+                f"{sorted(_TYPE_IS_VALUES)} 之一"
+            )
+
+    # starts_with / ends_with / contains 对 value 做字符串校验
+    if op in ("starts_with", "ends_with"):
+        if not isinstance(value, str):
+            raise ValueError(f"body_rules[{rule_idx}]: condition op={op!r} 的 value 必须为字符串")
 
 
 def _validate_body_rules(rules: list[BodyRule]) -> list[BodyRule]:
@@ -137,6 +221,11 @@ def _validate_body_rules(rules: list[BodyRule]) -> list[BodyRule]:
             count = rule.get("count", 0)
             if not isinstance(count, int) or count < 0:
                 raise ValueError(f"body_rules[{idx}]: regex_replace 的 count 必须为非负整数")
+
+        # ---------- condition 校验 ----------
+        condition = rule.get("condition")
+        if condition is not None:
+            _validate_condition(condition, idx)
 
     return rules
 

@@ -34,7 +34,7 @@ from src.core.api_format import (
 from src.core.crypto import crypto_service
 from src.core.logger import logger
 from src.core.provider_oauth_utils import enrich_auth_config, post_oauth_token
-from src.models.endpoint_models import parse_re_flags
+from src.models.endpoint_models import _CONDITION_OPS, _TYPE_IS_VALUES, parse_re_flags
 
 if TYPE_CHECKING:
     from src.models.database import ProviderAPIKey, ProviderEndpoint
@@ -539,6 +539,117 @@ def _resolve_original_placeholder(template: Any, original: Any) -> Any:
     return template
 
 
+# ==============================================================================
+# 条件评估器
+# ==============================================================================
+
+# _CONDITION_OPS / _TYPE_IS_VALUES 从 endpoint_models 导入，避免重复定义
+
+_SIMPLE_TYPE_MAP: dict[str, type] = {
+    "string": str,
+    "array": list,
+    "object": dict,
+}
+
+
+def _evaluate_condition(body: dict[str, Any], condition: dict[str, Any]) -> bool:
+    """
+    评估单个条件表达式，决定规则是否应该执行。
+
+    条件格式: {"path": "model", "op": "starts_with", "value": "claude"}
+
+    条件无效时返回 False（跳过该规则，fail-closed）。
+    """
+    if not isinstance(condition, dict):
+        return False
+
+    op = condition.get("op")
+    if not isinstance(op, str) or op not in _CONDITION_OPS:
+        return False
+
+    path = condition.get("path")
+    if not isinstance(path, str) or not path.strip():
+        return False
+
+    found, current_val = _get_nested_value(body, path.strip())
+
+    # 存在性检查：不需要 value
+    if op == "exists":
+        return found
+    if op == "not_exists":
+        return not found
+
+    # 其他操作符要求字段存在
+    if not found:
+        return False
+
+    expected = condition.get("value")
+
+    # 相等/不等
+    if op == "eq":
+        return current_val == expected
+    if op == "neq":
+        return current_val != expected
+
+    # 数值比较
+    if op in ("gt", "lt", "gte", "lte"):
+        if not isinstance(current_val, (int, float)) or not isinstance(expected, (int, float)):
+            return False
+        if op == "gt":
+            return current_val > expected
+        if op == "lt":
+            return current_val < expected
+        if op == "gte":
+            return current_val >= expected
+        return current_val <= expected  # lte
+
+    # 字符串操作
+    if op == "starts_with":
+        return (
+            isinstance(current_val, str)
+            and isinstance(expected, str)
+            and current_val.startswith(expected)
+        )
+    if op == "ends_with":
+        return (
+            isinstance(current_val, str)
+            and isinstance(expected, str)
+            and current_val.endswith(expected)
+        )
+    if op == "contains":
+        if isinstance(current_val, str) and isinstance(expected, str):
+            return expected in current_val
+        if isinstance(current_val, list):
+            return expected in current_val
+        return False
+    if op == "matches":
+        if not isinstance(current_val, str) or not isinstance(expected, str):
+            return False
+        try:
+            return re.search(expected, current_val) is not None
+        except re.error:
+            return False
+
+    # 列表包含
+    if op == "in":
+        return isinstance(expected, list) and current_val in expected
+
+    # 类型判断
+    if op == "type_is":
+        if not isinstance(expected, str) or expected not in _TYPE_IS_VALUES:
+            return False
+        # bool 是 int 的子类，需要特殊处理
+        if expected == "number":
+            return isinstance(current_val, (int, float)) and not isinstance(current_val, bool)
+        if expected == "boolean":
+            return isinstance(current_val, bool)
+        if expected == "null":
+            return current_val is None
+        return isinstance(current_val, _SIMPLE_TYPE_MAP[expected])
+
+    return False
+
+
 def apply_body_rules(
     body: dict[str, Any],
     rules: list[dict[str, Any]],
@@ -583,6 +694,11 @@ def apply_body_rules(
 
     for rule in rules:
         if not isinstance(rule, dict):
+            continue
+
+        # 条件触发：condition 存在且不满足时跳过规则
+        condition = rule.get("condition")
+        if condition is not None and not _evaluate_condition(result, condition):
             continue
 
         action = rule.get("action")

@@ -203,7 +203,22 @@ export interface BodyRuleRegexReplace {
   count?: number
 }
 
-export type BodyRule = BodyRuleSet | BodyRuleDrop | BodyRuleRename | BodyRuleAppend | BodyRuleInsert | BodyRuleRegexReplace
+export type BodyRuleConditionOp =
+  | 'eq' | 'neq'
+  | 'gt' | 'lt' | 'gte' | 'lte'
+  | 'starts_with' | 'ends_with' | 'contains' | 'matches'
+  | 'exists' | 'not_exists'
+  | 'in' | 'type_is'
+
+export interface BodyRuleCondition {
+  path: string
+  op: BodyRuleConditionOp
+  value?: any  // exists / not_exists 不需要 value
+}
+
+export type BodyRule = (BodyRuleSet | BodyRuleDrop | BodyRuleRename | BodyRuleAppend | BodyRuleInsert | BodyRuleRegexReplace) & {
+  condition?: BodyRuleCondition
+}
 
 /**
  * 格式接受策略配置

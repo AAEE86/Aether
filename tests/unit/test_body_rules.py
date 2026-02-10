@@ -218,3 +218,774 @@ class TestSetWithOriginalPlaceholder:
             [{"action": "set", "path": "data", "value": {"a": {"b": [{"c": "{{$original}}"}]}}}],
         )
         assert result == {"data": {"a": {"b": [{"c": "hello"}]}}}
+
+
+class TestConditionalBodyRules:
+    """条件触发 body_rules 的测试"""
+
+    # ---- 向后兼容 ----
+
+    def test_no_condition_always_executes(self) -> None:
+        """无 condition 字段的规则无条件执行"""
+        body = {"a": 1}
+        result = apply_body_rules(body, [{"action": "set", "path": "b", "value": 2}])
+        assert result == {"a": 1, "b": 2}
+
+    def test_condition_none_always_executes(self) -> None:
+        """condition 为 None 时无条件执行"""
+        body = {"a": 1}
+        result = apply_body_rules(
+            body, [{"action": "set", "path": "b", "value": 2, "condition": None}]
+        )
+        assert result == {"a": 1, "b": 2}
+
+    # ---- 无效 condition -> 跳过规则 (fail-closed) ----
+
+    def test_invalid_condition_not_dict_skips(self) -> None:
+        body = {"a": 1}
+        result = apply_body_rules(
+            body, [{"action": "set", "path": "b", "value": 2, "condition": "bad"}]
+        )
+        assert result == {"a": 1}
+
+    def test_invalid_condition_missing_op_skips(self) -> None:
+        body = {"a": 1}
+        result = apply_body_rules(
+            body, [{"action": "set", "path": "b", "value": 2, "condition": {"path": "a"}}]
+        )
+        assert result == {"a": 1}
+
+    def test_invalid_condition_missing_path_skips(self) -> None:
+        body = {"a": 1}
+        result = apply_body_rules(
+            body,
+            [{"action": "set", "path": "b", "value": 2, "condition": {"op": "eq", "value": 1}}],
+        )
+        assert result == {"a": 1}
+
+    def test_invalid_condition_unknown_op_skips(self) -> None:
+        body = {"a": 1}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "b",
+                    "value": 2,
+                    "condition": {"path": "a", "op": "like", "value": 1},
+                }
+            ],
+        )
+        assert result == {"a": 1}
+
+    # ---- eq / neq ----
+
+    def test_eq_match(self) -> None:
+        body = {"model": "claude-3"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "temp",
+                    "value": 0.5,
+                    "condition": {"path": "model", "op": "eq", "value": "claude-3"},
+                }
+            ],
+        )
+        assert result["temp"] == 0.5
+
+    def test_eq_no_match(self) -> None:
+        body = {"model": "gpt-4"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "temp",
+                    "value": 0.5,
+                    "condition": {"path": "model", "op": "eq", "value": "claude-3"},
+                }
+            ],
+        )
+        assert "temp" not in result
+
+    def test_neq_match(self) -> None:
+        body = {"model": "gpt-4"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "temp",
+                    "value": 0.5,
+                    "condition": {"path": "model", "op": "neq", "value": "claude-3"},
+                }
+            ],
+        )
+        assert result["temp"] == 0.5
+
+    def test_neq_no_match(self) -> None:
+        body = {"model": "claude-3"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "temp",
+                    "value": 0.5,
+                    "condition": {"path": "model", "op": "neq", "value": "claude-3"},
+                }
+            ],
+        )
+        assert "temp" not in result
+
+    # ---- gt / lt / gte / lte ----
+
+    def test_gt_match(self) -> None:
+        body = {"score": 80}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "passed",
+                    "value": True,
+                    "condition": {"path": "score", "op": "gt", "value": 60},
+                }
+            ],
+        )
+        assert result["passed"] is True
+
+    def test_gt_no_match(self) -> None:
+        body = {"score": 60}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "passed",
+                    "value": True,
+                    "condition": {"path": "score", "op": "gt", "value": 60},
+                }
+            ],
+        )
+        assert "passed" not in result
+
+    def test_lt_match(self) -> None:
+        body = {"temp": 0.3}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "low",
+                    "value": True,
+                    "condition": {"path": "temp", "op": "lt", "value": 0.5},
+                }
+            ],
+        )
+        assert result["low"] is True
+
+    def test_gte_match_equal(self) -> None:
+        body = {"count": 10}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "count", "op": "gte", "value": 10},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_lte_match(self) -> None:
+        body = {"count": 5}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "count", "op": "lte", "value": 5},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_numeric_op_on_non_numeric_returns_false(self) -> None:
+        body = {"val": "hello"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "gt", "value": 0},
+                }
+            ],
+        )
+        assert "ok" not in result
+
+    # ---- starts_with / ends_with ----
+
+    def test_starts_with_match(self) -> None:
+        body = {"model": "claude-3-opus"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "provider",
+                    "value": "anthropic",
+                    "condition": {"path": "model", "op": "starts_with", "value": "claude"},
+                }
+            ],
+        )
+        assert result["provider"] == "anthropic"
+
+    def test_starts_with_no_match(self) -> None:
+        body = {"model": "gpt-4"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "provider",
+                    "value": "anthropic",
+                    "condition": {"path": "model", "op": "starts_with", "value": "claude"},
+                }
+            ],
+        )
+        assert "provider" not in result
+
+    def test_ends_with_match(self) -> None:
+        body = {"model": "claude-3-opus"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "tier",
+                    "value": "top",
+                    "condition": {"path": "model", "op": "ends_with", "value": "opus"},
+                }
+            ],
+        )
+        assert result["tier"] == "top"
+
+    def test_starts_with_on_non_string_returns_false(self) -> None:
+        body = {"val": 123}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "starts_with", "value": "1"},
+                }
+            ],
+        )
+        assert "ok" not in result
+
+    # ---- contains ----
+
+    def test_contains_string_match(self) -> None:
+        body = {"prompt": "hello world"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "found",
+                    "value": True,
+                    "condition": {"path": "prompt", "op": "contains", "value": "world"},
+                }
+            ],
+        )
+        assert result["found"] is True
+
+    def test_contains_array_match(self) -> None:
+        body = {"tags": ["a", "b", "c"]}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "found",
+                    "value": True,
+                    "condition": {"path": "tags", "op": "contains", "value": "b"},
+                }
+            ],
+        )
+        assert result["found"] is True
+
+    def test_contains_array_no_match(self) -> None:
+        body = {"tags": ["a", "b"]}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "found",
+                    "value": True,
+                    "condition": {"path": "tags", "op": "contains", "value": "z"},
+                }
+            ],
+        )
+        assert "found" not in result
+
+    # ---- matches (regex) ----
+
+    def test_matches_regex_match(self) -> None:
+        body = {"model": "claude-3.5-sonnet"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "matched",
+                    "value": True,
+                    "condition": {"path": "model", "op": "matches", "value": r"claude-\d+"},
+                }
+            ],
+        )
+        assert result["matched"] is True
+
+    def test_matches_regex_no_match(self) -> None:
+        body = {"model": "gpt-4o"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "matched",
+                    "value": True,
+                    "condition": {"path": "model", "op": "matches", "value": r"^claude"},
+                }
+            ],
+        )
+        assert "matched" not in result
+
+    def test_matches_invalid_regex_returns_false(self) -> None:
+        body = {"val": "test"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "matches", "value": "[invalid"},
+                }
+            ],
+        )
+        assert "ok" not in result
+
+    # ---- exists / not_exists ----
+
+    def test_exists_match(self) -> None:
+        body = {"metadata": {"key": "val"}}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "has_meta",
+                    "value": True,
+                    "condition": {"path": "metadata", "op": "exists"},
+                }
+            ],
+        )
+        assert result["has_meta"] is True
+
+    def test_exists_no_match(self) -> None:
+        body = {"a": 1}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "has_meta",
+                    "value": True,
+                    "condition": {"path": "metadata", "op": "exists"},
+                }
+            ],
+        )
+        assert "has_meta" not in result
+
+    def test_not_exists_match(self) -> None:
+        body = {"a": 1}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "metadata",
+                    "value": {},
+                    "condition": {"path": "metadata", "op": "not_exists"},
+                }
+            ],
+        )
+        assert result["metadata"] == {}
+
+    def test_not_exists_no_match(self) -> None:
+        body = {"metadata": "exists"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "created",
+                    "value": True,
+                    "condition": {"path": "metadata", "op": "not_exists"},
+                }
+            ],
+        )
+        assert "created" not in result
+
+    # ---- in ----
+
+    def test_in_match(self) -> None:
+        body = {"model": "claude-3"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "supported",
+                    "value": True,
+                    "condition": {
+                        "path": "model",
+                        "op": "in",
+                        "value": ["claude-3", "claude-3.5", "gpt-4"],
+                    },
+                }
+            ],
+        )
+        assert result["supported"] is True
+
+    def test_in_no_match(self) -> None:
+        body = {"model": "gemini-pro"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "supported",
+                    "value": True,
+                    "condition": {"path": "model", "op": "in", "value": ["claude-3", "gpt-4"]},
+                }
+            ],
+        )
+        assert "supported" not in result
+
+    def test_in_non_list_value_returns_false(self) -> None:
+        body = {"model": "claude"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "model", "op": "in", "value": "claude"},
+                }
+            ],
+        )
+        assert "ok" not in result
+
+    # ---- type_is ----
+
+    def test_type_is_string(self) -> None:
+        body = {"val": "hello"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "string"},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_type_is_number_excludes_bool(self) -> None:
+        body = {"val": True}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "number"},
+                }
+            ],
+        )
+        assert "ok" not in result
+
+    def test_type_is_number_int(self) -> None:
+        body = {"val": 42}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "number"},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_type_is_boolean(self) -> None:
+        body = {"val": False}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "boolean"},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_type_is_array(self) -> None:
+        body = {"val": [1, 2]}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "array"},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_type_is_object(self) -> None:
+        body = {"val": {"a": 1}}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "object"},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_type_is_null(self) -> None:
+        body = {"val": None}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "null"},
+                }
+            ],
+        )
+        assert result["ok"] is True
+
+    def test_type_is_invalid_type_name(self) -> None:
+        body = {"val": "hello"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "ok",
+                    "value": True,
+                    "condition": {"path": "val", "op": "type_is", "value": "str"},
+                }
+            ],
+        )
+        assert "ok" not in result
+
+    # ---- 链式触发 ----
+
+    def test_chain_second_rule_sees_first_rule_changes(self) -> None:
+        """第二条规则的 condition 评估的是第一条规则修改后的 body"""
+        body: dict[str, Any] = {"a": 1}
+        result = apply_body_rules(
+            body,
+            [
+                # 规则 1: 无条件创建 metadata
+                {"action": "set", "path": "metadata", "value": {}},
+                # 规则 2: 仅当 metadata 存在且是 object 时设置子字段
+                {
+                    "action": "set",
+                    "path": "metadata.gateway",
+                    "value": "aether",
+                    "condition": {"path": "metadata", "op": "type_is", "value": "object"},
+                },
+            ],
+        )
+        assert result == {"a": 1, "metadata": {"gateway": "aether"}}
+
+    def test_chain_condition_on_previously_set_value(self) -> None:
+        """条件引用前序规则 set 的值"""
+        body: dict[str, Any] = {}
+        result = apply_body_rules(
+            body,
+            [
+                # 规则 1: 创建标记
+                {"action": "set", "path": "flag", "value": "enabled"},
+                # 规则 2: 当 flag == "enabled" 时设置
+                {
+                    "action": "set",
+                    "path": "extra",
+                    "value": 42,
+                    "condition": {"path": "flag", "op": "eq", "value": "enabled"},
+                },
+            ],
+        )
+        assert result == {"flag": "enabled", "extra": 42}
+
+    def test_chain_not_exists_then_set(self) -> None:
+        """经典链式模式: not_exists 创建 → 后续规则 condition 检测已创建"""
+        body: dict[str, Any] = {}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "metadata",
+                    "value": {},
+                    "condition": {"path": "metadata", "op": "not_exists"},
+                },
+                {
+                    "action": "set",
+                    "path": "metadata.source",
+                    "value": "api",
+                    "condition": {"path": "metadata", "op": "exists"},
+                },
+            ],
+        )
+        assert result == {"metadata": {"source": "api"}}
+
+    def test_chain_skipped_rule_does_not_affect_subsequent(self) -> None:
+        """被跳过的规则不影响后续规则的 condition 评估"""
+        body = {"x": 1}
+        result = apply_body_rules(
+            body,
+            [
+                # 规则 1: 条件不满足，跳过
+                {
+                    "action": "set",
+                    "path": "y",
+                    "value": 2,
+                    "condition": {"path": "x", "op": "eq", "value": 999},
+                },
+                # 规则 2: y 不存在（因为规则 1 被跳过了）
+                {
+                    "action": "set",
+                    "path": "z",
+                    "value": 3,
+                    "condition": {"path": "y", "op": "not_exists"},
+                },
+            ],
+        )
+        assert "y" not in result
+        assert result["z"] == 3
+
+    # ---- 条件与其他 action 类型配合 ----
+
+    def test_condition_with_drop_action(self) -> None:
+        body = {"temp": 0.5, "model": "claude-3"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "drop",
+                    "path": "temp",
+                    "condition": {"path": "model", "op": "starts_with", "value": "claude"},
+                }
+            ],
+        )
+        assert "temp" not in result
+
+    def test_condition_with_rename_action(self) -> None:
+        body = {"old_key": "value", "model": "gpt-4"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "rename",
+                    "from": "old_key",
+                    "to": "new_key",
+                    "condition": {"path": "model", "op": "starts_with", "value": "gpt"},
+                }
+            ],
+        )
+        assert "old_key" not in result
+        assert result["new_key"] == "value"
+
+    def test_condition_prevents_rename(self) -> None:
+        body = {"old_key": "value", "model": "claude-3"}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "rename",
+                    "from": "old_key",
+                    "to": "new_key",
+                    "condition": {"path": "model", "op": "starts_with", "value": "gpt"},
+                }
+            ],
+        )
+        assert result["old_key"] == "value"
+        assert "new_key" not in result
+
+    # ---- 嵌套路径条件 ----
+
+    def test_condition_on_nested_path(self) -> None:
+        body = {"config": {"mode": "advanced"}, "extra": 1}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "feature",
+                    "value": True,
+                    "condition": {"path": "config.mode", "op": "eq", "value": "advanced"},
+                }
+            ],
+        )
+        assert result["feature"] is True
+
+    def test_condition_on_missing_nested_path(self) -> None:
+        body = {"config": {}}
+        result = apply_body_rules(
+            body,
+            [
+                {
+                    "action": "set",
+                    "path": "feature",
+                    "value": True,
+                    "condition": {"path": "config.mode", "op": "eq", "value": "advanced"},
+                }
+            ],
+        )
+        assert "feature" not in result
