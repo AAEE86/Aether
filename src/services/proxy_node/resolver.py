@@ -292,6 +292,66 @@ def resolve_effective_proxy(
     return provider_proxy
 
 
+def resolve_proxy_param(
+    proxy_config: dict[str, Any] | None = None,
+) -> str | httpx.Proxy | None:
+    """
+    将代理配置解析为 httpx 可接受的代理参数（含系统默认回退）
+
+    优先级：proxy_config -> 系统默认代理 -> None（直连）
+
+    Args:
+        proxy_config: 代理配置字典（通常来自 resolve_effective_proxy 的返回值）
+
+    Returns:
+        httpx 可接受的 proxy 参数，或 None
+    """
+    url = build_proxy_url(proxy_config) if proxy_config else None
+    if not url:
+        sys_proxy = get_system_proxy_config()
+        if sys_proxy:
+            try:
+                url = build_proxy_url(sys_proxy)
+            except Exception as exc:
+                logger.warning("resolve_proxy_param: 构建系统默认代理 URL 失败: {}", exc)
+                url = None
+    return make_proxy_param(url)
+
+
+def build_proxy_client_kwargs(
+    proxy_config: dict[str, Any] | None = None,
+    *,
+    timeout: float = 30.0,
+    verify: Any | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """
+    构建包含代理配置的 httpx.AsyncClient 初始化参数。
+
+    将 resolve_proxy_param + dict 构建 + 条件 proxy 赋值合并为一步，
+    减少调用方的样板代码。
+
+    Args:
+        proxy_config: 代理配置字典（通常来自 resolve_effective_proxy）
+        timeout: 请求超时（秒）
+        verify: SSL 验证参数，None 时自动使用 get_ssl_context()
+        **extra: 其他 httpx.AsyncClient 参数（如 follow_redirects）
+
+    Returns:
+        可直接解包传给 httpx.AsyncClient 的参数字典
+    """
+    if verify is None:
+        from src.utils.ssl_utils import get_ssl_context
+
+        verify = get_ssl_context()
+
+    kwargs: dict[str, Any] = {"timeout": timeout, "verify": verify, **extra}
+    proxy_param = resolve_proxy_param(proxy_config)
+    if proxy_param:
+        kwargs["proxy"] = proxy_param
+    return kwargs
+
+
 # ---------------------------------------------------------------------------
 # 代理 URL 构建
 # ---------------------------------------------------------------------------

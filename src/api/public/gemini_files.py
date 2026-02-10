@@ -778,7 +778,11 @@ async def download_file(
 
     # 使用 follow_redirects=True 跟随重定向（Gemini 文件下载会重定向）
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(300.0)) as client:
+        from src.services.proxy_node.resolver import build_proxy_client_kwargs
+
+        async with httpx.AsyncClient(
+            **build_proxy_client_kwargs(timeout=httpx.Timeout(300.0), follow_redirects=True)
+        ) as client:
             response = await client.get(upstream_url, headers=headers)
     except Exception as exc:
         logger.error("Gemini Files download failed: {}", exc)

@@ -1130,27 +1130,18 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
             return _streamified()
 
-        # 配置 HTTP 超时
-        # 注意：read timeout 用于检测连接断开，不是整体请求超时
-        # 整体请求超时由 asyncio.wait_for 控制，使用全局配置
-        timeout_config = httpx.Timeout(
-            connect=config.http_connect_timeout,
-            read=config.http_read_timeout,  # 使用全局配置，用于检测连接断开
-            write=config.http_write_timeout,
-            pool=config.http_pool_timeout,
-        )
-
         # 流式请求使用 stream_first_byte_timeout 作为首字节超时
         # 优先使用 Provider 配置，否则使用全局配置
         request_timeout = provider.stream_first_byte_timeout or config.stream_first_byte_timeout
 
-        # 创建 HTTP 客户端（支持代理配置，Key 级别优先于 Provider 级别）
+        # 获取 HTTP 客户端（支持代理配置，Key 级别优先于 Provider 级别）
+        # 使用连接池复用客户端，避免每次流式请求都新建 TCP/TLS 连接
         from src.clients.http_client import HTTPClientPool
         from src.services.proxy_node.resolver import build_stream_kwargs, resolve_delegate_config
 
         delegate_cfg = resolve_delegate_config(effective_proxy)
-        http_client = HTTPClientPool.create_upstream_stream_client(
-            delegate_cfg, proxy_config=effective_proxy, timeout=timeout_config
+        http_client = await HTTPClientPool.get_upstream_client(
+            delegate_cfg, proxy_config=effective_proxy
         )
 
         # 用于存储内部函数的结果（必须在函数定义前声明，供 nonlocal 使用）
@@ -1214,13 +1205,12 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
                 break
 
             except ClientDisconnectedException:
-                # 客户端断开连接，清理资源
+                # 客户端断开连接，清理响应上下文（不关闭池中复用的客户端）
                 if response_ctx is not None:
                     try:
                         await response_ctx.__aexit__(None, None, None)
                     except Exception:
                         pass
-                await http_client.aclose()
                 logger.warning(f"  [{self.request_id}] 客户端在等待首字节时断开连接")
                 ctx.status_code = 499
                 ctx.error_message = "client_disconnected_during_prefetch"
@@ -1228,13 +1218,12 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
 
             except TimeoutError:
                 # 整体请求超时（建立连接 + 获取首字节）
-                # 清理可能已建立的连接上下文
+                # 清理可能已建立的连接上下文（不关闭池中复用的客户端）
                 if response_ctx is not None:
                     try:
                         await response_ctx.__aexit__(None, None, None)
                     except Exception:
                         pass
-                await http_client.aclose()
                 logger.warning(
                     f"  [{self.request_id}] 请求超时: Provider={provider.name}, timeout={request_timeout}s"
                 )
@@ -1244,13 +1233,12 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
                 )
 
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as e:
-                # 连接/读写超时：清理可能已建立的连接上下文
+                # 连接/读写超时：清理可能已建立的连接上下文（不关闭池中复用的客户端）
                 if response_ctx is not None:
                     try:
                         await response_ctx.__aexit__(None, None, None)
                     except Exception:
                         pass
-                await http_client.aclose()
                 if envelope:
                     envelope.on_connection_error(base_url=ctx.selected_base_url, exc=e)
                     if ctx.selected_base_url:
@@ -1289,7 +1277,6 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
                 logger.error(
                     f"Provider 返回错误: {e.response.status_code}\n  Response: {error_text}"
                 )
-                await http_client.aclose()
                 # 将上游错误信息附加到异常，以便故障转移时能够返回给客户端
                 e.upstream_response = error_text  # type: ignore[attr-defined]
                 raise
@@ -1300,11 +1287,9 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
                         await response_ctx.__aexit__(None, None, None)
                 except Exception:
                     pass
-                await http_client.aclose()
                 raise
 
             except Exception:
-                await http_client.aclose()
                 raise
 
         # 类型断言：成功执行后这些变量不会为 None
@@ -1317,7 +1302,6 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             ctx,
             byte_iterator,
             response_ctx,
-            http_client,
             prefetched_chunks,
             start_time=self.start_time,
         )

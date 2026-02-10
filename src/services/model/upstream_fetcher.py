@@ -15,7 +15,6 @@ import httpx
 
 from src.core.api_format import get_extra_headers_from_endpoint
 from src.core.logger import logger
-from src.utils.ssl_utils import get_ssl_context
 
 # 并发请求限制
 MAX_CONCURRENT_REQUESTS = 5
@@ -100,7 +99,7 @@ async def _fetch_models_default(
 ) -> tuple[list[dict], list[str], bool, dict[str, Any] | None]:
     endpoint_configs = build_all_format_configs(ctx.api_key_value, ctx.format_to_endpoint)
     models, errors, has_success = await fetch_models_from_endpoints(
-        endpoint_configs, timeout=timeout_seconds
+        endpoint_configs, timeout=timeout_seconds, proxy_config=ctx.proxy_config
     )
     return models, errors, has_success, None
 
@@ -230,6 +229,7 @@ def build_all_format_configs(
 async def fetch_models_from_endpoints(
     endpoint_configs: list[dict],
     timeout: float = 30.0,
+    proxy_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict], list[str], bool]:
     """
     从多个端点并发获取模型
@@ -237,10 +237,13 @@ async def fetch_models_from_endpoints(
     Args:
         endpoint_configs: 端点配置列表，每个配置包含 api_key, base_url, api_format, extra_headers
         timeout: 请求超时时间（秒）
+        proxy_config: 代理配置（可选），支持系统默认回退
 
     Returns:
         (模型列表, 错误列表, 是否有成功)
     """
+    from src.services.proxy_node.resolver import build_proxy_client_kwargs
+
     all_models: list[dict] = []
     errors: list[str] = []
     has_success = False
@@ -279,7 +282,9 @@ async def fetch_models_from_endpoints(
             logger.exception("获取 {} 模型出错", api_format)
             return [], f"{api_format}: error", False
 
-    async with httpx.AsyncClient(timeout=timeout, verify=get_ssl_context()) as client:
+    async with httpx.AsyncClient(
+        **build_proxy_client_kwargs(proxy_config, timeout=timeout)
+    ) as client:
         results = await asyncio.gather(*[fetch_one(client, c) for c in endpoint_configs])
         for models, error, success in results:
             all_models.extend(models)

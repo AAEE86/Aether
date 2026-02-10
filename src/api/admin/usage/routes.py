@@ -1475,6 +1475,7 @@ async def _resolve_provider_auth(
 
     if auth_type == "oauth":
         from src.services.provider.oauth_token import resolve_oauth_access_token
+        from src.services.proxy_node.resolver import resolve_effective_proxy
 
         # 获取 Provider 对象以读取 proxy 和 provider_type
         provider_obj = db.query(Provider).filter(Provider.id == provider_key.provider_id).first()
@@ -1495,7 +1496,14 @@ async def _resolve_provider_auth(
                 if getattr(provider_key, "auth_config", None) is not None
                 else None
             ),
-            provider_proxy_config=getattr(provider_obj, "proxy", None) if provider_obj else None,
+            provider_proxy_config=(
+                resolve_effective_proxy(
+                    getattr(provider_obj, "proxy", None),
+                    getattr(provider_key, "proxy", None),
+                )
+                if provider_obj
+                else None
+            ),
             endpoint_api_format=ep_format,
         )
         access_token = resolved.access_token or ""
@@ -1784,12 +1792,25 @@ class AdminUsageReplayAdapter(AdminApiAdapter):
 
         # 发送请求
         try:
-            from src.utils.ssl_utils import get_ssl_context
+            from src.services.proxy_node.resolver import (
+                build_proxy_client_kwargs,
+                resolve_effective_proxy,
+            )
+
+            # 解析代理（key > provider > 系统默认）
+            replay_provider = (
+                db.query(Provider).filter(Provider.id == endpoint.provider_id).first()
+                if endpoint
+                else None
+            )
+            eff_proxy = resolve_effective_proxy(
+                getattr(replay_provider, "proxy", None) if replay_provider else None,
+                getattr(provider_key, "proxy", None) if provider_key else None,
+            )
 
             start_time = time.monotonic()
             async with httpx.AsyncClient(
-                timeout=60.0,
-                verify=get_ssl_context(),
+                **build_proxy_client_kwargs(eff_proxy, timeout=60.0)
             ) as client:
                 response = await client.post(
                     url,

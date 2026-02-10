@@ -449,9 +449,25 @@ class GeminiVeoHandler(VideoHandlerBase):
         import httpx
 
         try:
+            # 解析代理配置（key > provider > 系统默认）
+            from src.services.proxy_node.resolver import (
+                build_proxy_client_kwargs,
+                resolve_effective_proxy,
+            )
+
+            provider = getattr(endpoint, "provider", None) if endpoint else None
+            eff_proxy = resolve_effective_proxy(
+                getattr(provider, "proxy", None) if provider else None,
+                getattr(key, "proxy", None),
+            )
+
             # 使用 follow_redirects=True 跟随重定向
             async with httpx.AsyncClient(
-                follow_redirects=True, timeout=httpx.Timeout(300.0)
+                **build_proxy_client_kwargs(
+                    eff_proxy,
+                    timeout=httpx.Timeout(300.0),
+                    follow_redirects=True,
+                )
             ) as client:
                 response = await client.get(task.video_url, headers=download_headers)
         except Exception as exc:

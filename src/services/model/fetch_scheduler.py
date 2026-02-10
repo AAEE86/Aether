@@ -35,6 +35,7 @@ from src.services.model.upstream_fetcher import (
     merge_upstream_metadata,
 )
 from src.services.provider.oauth_token import resolve_oauth_access_token
+from src.services.proxy_node.resolver import resolve_effective_proxy
 from src.services.system.scheduler import get_scheduler
 
 # 从环境变量读取间隔，默认 1440 分钟（1 天），限制在 60-10080 分钟之间
@@ -448,7 +449,9 @@ class ModelFetchScheduler:
                     encrypted_auth_config if isinstance(encrypted_auth_config, str) else None
                 ),
                 format_to_endpoint=format_to_endpoint,
-                proxy_config=getattr(provider, "proxy", None),
+                proxy_config=resolve_effective_proxy(
+                    getattr(provider, "proxy", None), getattr(key, "proxy", None)
+                ),
             )
 
     async def _update_key_after_fetch(

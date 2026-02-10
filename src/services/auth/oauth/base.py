@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 import httpx
 
 from src.services.auth.oauth.models import OAuthToken, OAuthUserInfo
-from src.utils.ssl_utils import get_ssl_context
 
 if TYPE_CHECKING:
     from src.models.database import OAuthProvider
@@ -98,9 +97,8 @@ class OAuthProviderBase(ABC):
         timeout_seconds: float = 5.0,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds), verify=get_ssl_context()
-        ) as client:
+        client_kwargs = self._build_http_client_kwargs(timeout_seconds)
+        async with httpx.AsyncClient(**client_kwargs) as client:
             return await client.post(url, data=data, headers=headers)
 
     async def _http_get(
@@ -110,7 +108,12 @@ class OAuthProviderBase(ABC):
         timeout_seconds: float = 5.0,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds), verify=get_ssl_context()
-        ) as client:
+        client_kwargs = self._build_http_client_kwargs(timeout_seconds)
+        async with httpx.AsyncClient(**client_kwargs) as client:
             return await client.get(url, headers=headers)
+
+    @staticmethod
+    def _build_http_client_kwargs(timeout_seconds: float = 5.0) -> dict[str, Any]:
+        from src.services.proxy_node.resolver import build_proxy_client_kwargs
+
+        return build_proxy_client_kwargs(timeout=httpx.Timeout(timeout_seconds))

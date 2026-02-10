@@ -24,7 +24,17 @@ from src.services.auth.oauth.state import consume_oauth_state, create_oauth_stat
 from src.services.auth.service import AuthService
 from src.services.cache.user_cache import UserCacheService
 from src.services.system.config import SystemConfigService
-from src.utils.ssl_utils import get_ssl_context
+
+
+def _build_oauth_client_kwargs(
+    timeout_seconds: float = 5.0, follow_redirects: bool = False
+) -> dict[str, Any]:
+    """构建 OAuth HTTP 客户端参数（含系统默认代理）"""
+    from src.services.proxy_node.resolver import build_proxy_client_kwargs
+
+    return build_proxy_client_kwargs(
+        timeout=httpx.Timeout(timeout_seconds), follow_redirects=follow_redirects
+    )
 
 
 class OAuthService:
@@ -835,7 +845,7 @@ class OAuthService:
         async def _reachable(url: str) -> bool:
             try:
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(5.0), follow_redirects=False, verify=get_ssl_context()
+                    **_build_oauth_client_kwargs(5.0, follow_redirects=False)
                 ) as client:
                     await client.get(url)
                 return True
@@ -851,9 +861,7 @@ class OAuthService:
         if has_secret and client_secret:
             # 使用无效 code 做一次 token 请求（仅做粗略判定）
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(5.0), verify=get_ssl_context()
-                ) as client:
+                async with httpx.AsyncClient(**_build_oauth_client_kwargs(5.0)) as client:
                     resp = await client.post(
                         token_url,
                         data={
@@ -914,7 +922,7 @@ class OAuthService:
         async def _reachable(url: str) -> bool:
             try:
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(5.0), follow_redirects=False, verify=get_ssl_context()
+                    **_build_oauth_client_kwargs(5.0, follow_redirects=False)
                 ) as client:
                     await client.get(url)
                 return True
@@ -930,9 +938,7 @@ class OAuthService:
         if client_secret:
             # 使用无效 code 做一次 token 请求（仅做粗略判定）
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(5.0), verify=get_ssl_context()
-                ) as client:
+                async with httpx.AsyncClient(**_build_oauth_client_kwargs(5.0)) as client:
                     resp = await client.post(
                         token_url,
                         data={

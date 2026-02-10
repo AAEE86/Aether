@@ -416,18 +416,60 @@ const MOCK_ALIASES = [
   { id: 'alias-004', source_model: 'gemini-pro', target_global_model_id: 'gm-005', target_global_model_name: 'gemini-3-pro-preview', target_global_model_display_name: 'Gemini 3 Pro Preview', provider_id: null, provider_name: null, scope: 'global', mapping_type: 'alias', is_active: true, created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z' }
 ]
 
+function normalizeApiFormat(apiFormat: string): string {
+  return apiFormat.toLowerCase().replace(/_/g, ':')
+}
+
+function getMockEndpointExtras(apiFormat: string) {
+  const normalizedFormat = normalizeApiFormat(apiFormat)
+  const extras: Record<string, any> = {}
+
+  if (normalizedFormat === 'claude:chat') {
+    extras.header_rules = [
+      { action: 'set', key: 'x-app-id', value: 'demo-app' },
+      { action: 'rename', from: 'x-client-id', to: 'x-client' },
+      { action: 'drop', key: 'x-debug' }
+    ]
+    extras.body_rules = [
+      { action: 'set', path: 'metadata.user_id', value: 'demo-user' },
+      { action: 'insert', path: 'messages', index: 0, value: { role: 'system', content: 'You are a helpful assistant.' } },
+      { action: 'regex_replace', path: 'messages[0].content', pattern: '\\s+', replacement: ' ', flags: 'm', condition: { path: 'metadata.source', op: 'eq', value: 'internal' } }
+    ]
+  } else if (normalizedFormat === 'openai:chat') {
+    extras.custom_path = '/v1/chat/completions'
+    extras.header_rules = [
+      { action: 'set', key: 'x-client', value: 'demo' }
+    ]
+    extras.format_acceptance_config = {
+      enabled: true,
+      accept_formats: ['openai:chat', 'claude:chat']
+    }
+    extras.config = { upstream_stream_policy: 'force_stream' }
+  } else if (normalizedFormat === 'openai:cli') {
+    extras.config = { upstream_stream_policy: 'force_non_stream' }
+  } else if (normalizedFormat === 'gemini:chat') {
+    extras.custom_path = '/v1beta/models/gemini-3-pro-preview:generateContent'
+    extras.body_rules = [
+      { action: 'drop', path: 'metadata.debug' }
+    ]
+  }
+
+  return extras
+}
+
+
 // Mock Endpoint Keys
 const MOCK_ENDPOINT_KEYS = [
-  { id: 'ekey-001', provider_id: 'provider-001', api_formats: ['claude:chat'], api_key_masked: 'sk-ant...abc1', name: 'Primary Key', rate_multiplier: 1.0, internal_priority: 1, health_score: 0.98, consecutive_failures: 0, request_count: 5000, success_count: 4950, error_count: 50, success_rate: 0.99, avg_response_time_ms: 1200, cache_ttl_minutes: 5, max_probe_interval_minutes: 32, is_active: true, created_at: '2024-01-01T00:00:00Z', updated_at: new Date().toISOString() },
-  { id: 'ekey-002', provider_id: 'provider-001', api_formats: ['claude:chat'], api_key_masked: 'sk-ant...def2', name: 'Backup Key', rate_multiplier: 1.0, internal_priority: 2, health_score: 0.95, consecutive_failures: 1, request_count: 2000, success_count: 1950, error_count: 50, success_rate: 0.975, avg_response_time_ms: 1350, cache_ttl_minutes: 5, max_probe_interval_minutes: 32, is_active: true, created_at: '2024-02-01T00:00:00Z', updated_at: new Date().toISOString() },
-  { id: 'ekey-003', provider_id: 'provider-002', api_formats: ['openai:chat'], api_key_masked: 'sk-oai...ghi3', name: 'OpenAI Main', rate_multiplier: 1.0, internal_priority: 1, health_score: 0.97, consecutive_failures: 0, request_count: 3500, success_count: 3450, error_count: 50, success_rate: 0.986, avg_response_time_ms: 900, cache_ttl_minutes: 5, max_probe_interval_minutes: 32, is_active: true, created_at: '2024-01-15T00:00:00Z', updated_at: new Date().toISOString() }
+  { id: 'ekey-001', provider_id: 'provider-001', api_formats: ['claude:chat'], api_key_masked: 'sk-ant...abc1', auth_type: 'api_key', name: 'Primary Key', rate_multiplier: 1.0, internal_priority: 1, health_score: 0.98, consecutive_failures: 0, request_count: 5000, success_count: 4950, error_count: 50, success_rate: 0.99, avg_response_time_ms: 1200, cache_ttl_minutes: 5, max_probe_interval_minutes: 32, is_active: true, created_at: '2024-01-01T00:00:00Z', updated_at: new Date().toISOString() },
+  { id: 'ekey-002', provider_id: 'provider-001', api_formats: ['claude:chat'], api_key_masked: 'sk-ant...def2', auth_type: 'api_key', name: 'Backup Key', rate_multiplier: 1.0, internal_priority: 2, health_score: 0.95, consecutive_failures: 1, request_count: 2000, success_count: 1950, error_count: 50, success_rate: 0.975, avg_response_time_ms: 1350, cache_ttl_minutes: 5, max_probe_interval_minutes: 32, is_active: true, created_at: '2024-02-01T00:00:00Z', updated_at: new Date().toISOString() },
+  { id: 'ekey-003', provider_id: 'provider-002', api_formats: ['openai:chat'], api_key_masked: 'sk-oai...ghi3', auth_type: 'oauth', name: 'OpenAI OAuth', oauth_email: 'oauth-demo@aether.dev', oauth_expires_at: Math.floor(Date.now() / 1000) + 6 * 3600, oauth_plan_type: 'pro', oauth_account_id: 'acct-demo-002', rate_multiplier: 1.0, internal_priority: 1, health_score: 0.97, consecutive_failures: 0, request_count: 3500, success_count: 3450, error_count: 50, success_rate: 0.986, avg_response_time_ms: 900, cache_ttl_minutes: 5, max_probe_interval_minutes: 32, is_active: true, created_at: '2024-01-15T00:00:00Z', updated_at: new Date().toISOString() }
 ]
 
 // Mock Endpoints
 const MOCK_ENDPOINTS = [
-  { id: 'ep-001', provider_id: 'provider-001', provider_name: 'anthropic', api_format: 'claude:chat', base_url: 'https://api.anthropic.com', max_retries: 2, is_active: true, total_keys: 2, active_keys: 2, created_at: '2024-01-01T00:00:00Z', updated_at: new Date().toISOString() },
-  { id: 'ep-002', provider_id: 'provider-002', provider_name: 'openai', api_format: 'openai:chat', base_url: 'https://api.openai.com', max_retries: 2, is_active: true, total_keys: 1, active_keys: 1, created_at: '2024-01-01T00:00:00Z', updated_at: new Date().toISOString() },
-  { id: 'ep-003', provider_id: 'provider-003', provider_name: 'google', api_format: 'gemini:chat', base_url: 'https://generativelanguage.googleapis.com', max_retries: 2, is_active: true, total_keys: 1, active_keys: 1, created_at: '2024-01-15T00:00:00Z', updated_at: new Date().toISOString() }
+  { id: 'ep-001', provider_id: 'provider-001', provider_name: 'anthropic', api_format: 'claude:chat', base_url: 'https://api.anthropic.com', max_retries: 2, is_active: true, total_keys: 2, active_keys: 2, created_at: '2024-01-01T00:00:00Z', updated_at: new Date().toISOString(), ...getMockEndpointExtras('claude:chat') },
+  { id: 'ep-002', provider_id: 'provider-002', provider_name: 'openai', api_format: 'openai:chat', base_url: 'https://api.openai.com', max_retries: 2, is_active: true, total_keys: 1, active_keys: 1, created_at: '2024-01-01T00:00:00Z', updated_at: new Date().toISOString(), ...getMockEndpointExtras('openai:chat') },
+  { id: 'ep-003', provider_id: 'provider-003', provider_name: 'google', api_format: 'gemini:chat', base_url: 'https://generativelanguage.googleapis.com', max_retries: 2, is_active: true, total_keys: 1, active_keys: 1, created_at: '2024-01-15T00:00:00Z', updated_at: new Date().toISOString(), ...getMockEndpointExtras('gemini:chat') }
 ]
 
 // Mock 能力定义
@@ -1212,21 +1254,24 @@ function generateMockEndpointsForProvider(providerId: string) {
   if (!provider || provider.api_formats.length === 0) return []
 
   return provider.api_formats.map((format, index) => {
+    const normalizedFormat = normalizeApiFormat(format)
     const healthDetail = provider.endpoint_health_details.find(h => h.api_format === format)
+    const baseUrl = normalizedFormat.includes('claude') ? 'https://api.anthropic.com' :
+      normalizedFormat.includes('openai') ? 'https://api.openai.com' :
+        'https://generativelanguage.googleapis.com'
     return {
       id: `ep-${providerId}-${index + 1}`,
       provider_id: providerId,
       provider_name: provider.name,
       api_format: format,
-      base_url: format.includes('claude') ? 'https://api.anthropic.com' :
-        format.includes('openai') ? 'https://api.openai.com' :
-          'https://generativelanguage.googleapis.com',
+      base_url: baseUrl,
       max_retries: 2,
       is_active: healthDetail?.is_active ?? true,
       total_keys: Math.ceil(Math.random() * 3) + 1,
       active_keys: Math.ceil(Math.random() * 2) + 1,
       created_at: provider.created_at,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      ...getMockEndpointExtras(normalizedFormat)
     }
   })
 }
@@ -1236,28 +1281,44 @@ const PROVIDER_KEYS_CACHE: Record<string, any[]> = {}
 function generateMockKeysForProvider(providerId: string, count: number = 2) {
   const provider = MOCK_PROVIDERS.find(p => p.id === providerId)
   const formats = provider?.api_formats || []
+  const nowSec = Math.floor(Date.now() / 1000)
 
-  return Array.from({ length: count }, (_, i) => ({
-    id: `key-${providerId}-${i + 1}`,
-    provider_id: providerId,
-    api_formats: i === 0 ? formats : formats.slice(0, 1),
-    api_key_masked: `sk-***...${Math.random().toString(36).substring(2, 6)}`,
-    name: i === 0 ? 'Primary Key' : `Backup Key ${i}`,
-    rate_multiplier: 1.0,
-    internal_priority: i + 1,
-    health_score: 0.90 + Math.random() * 0.10,  // 0.90-1.00
-    consecutive_failures: Math.random() > 0.8 ? 1 : 0,
-    request_count: 1000 + Math.floor(Math.random() * 5000),
-    success_count: 950 + Math.floor(Math.random() * 4800),
-    error_count: Math.floor(Math.random() * 100),
-    success_rate: 0.95 + Math.random() * 0.04,  // 0.95-0.99
-    avg_response_time_ms: 800 + Math.floor(Math.random() * 600),
-    cache_ttl_minutes: 5,
-    max_probe_interval_minutes: 32,
-    is_active: true,
-    created_at: '2024-01-01T00:00:00Z',
-    updated_at: new Date().toISOString()
-  }))
+  return Array.from({ length: count }, (_, i) => {
+    const isOAuth = i === 1
+    const markInvalid = isOAuth && providerId.endsWith('3')
+    const oauthFields = isOAuth ? {
+      auth_type: 'oauth',
+      oauth_email: 'oauth-demo@aether.dev',
+      oauth_expires_at: markInvalid ? null : nowSec + 6 * 3600,
+      oauth_invalid_at: markInvalid ? nowSec - 3600 : null,
+      oauth_invalid_reason: markInvalid ? '[ACCOUNT_BLOCK] Demo verification required' : null,
+      oauth_plan_type: 'pro',
+      oauth_account_id: `acct-${providerId}`
+    } : { auth_type: 'api_key' }
+
+    return {
+      id: `key-${providerId}-${i + 1}`,
+      provider_id: providerId,
+      api_formats: i === 0 ? formats : formats.slice(0, 1),
+      api_key_masked: `sk-***...${Math.random().toString(36).substring(2, 6)}`,
+      name: i === 0 ? 'Primary Key' : `Backup Key ${i}`,
+      ...oauthFields,
+      rate_multiplier: 1.0,
+      internal_priority: i + 1,
+      health_score: 0.90 + Math.random() * 0.10,
+      consecutive_failures: Math.random() > 0.8 ? 1 : 0,
+      request_count: 1000 + Math.floor(Math.random() * 5000),
+      success_count: 950 + Math.floor(Math.random() * 4800),
+      error_count: Math.floor(Math.random() * 100),
+      success_rate: 0.95 + Math.random() * 0.04,
+      avg_response_time_ms: 800 + Math.floor(Math.random() * 600),
+      cache_ttl_minutes: 5,
+      max_probe_interval_minutes: 32,
+      is_active: true,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: new Date().toISOString()
+    }
+  })
 }
 
 // 为 provider 生成 models
@@ -1492,6 +1553,7 @@ registerDynamicRoute('POST', '/api/admin/endpoints/providers/:providerId/keys', 
     api_formats: body.api_formats || [],
     api_key_masked: masked,
     api_key_plain: null,
+    auth_type: body.auth_type || 'api_key',
     name: body.name || 'New Key',
     note: body.note,
     rate_multiplier: body.rate_multiplier ?? 1.0,
@@ -1522,6 +1584,102 @@ registerDynamicRoute('POST', '/api/admin/endpoints/providers/:providerId/keys', 
   return createMockResponse(newKey)
 })
 
+registerDynamicRoute('POST', '/api/admin/endpoints/providers/:providerId/refresh-quota', async (_config, params) => {
+  await delay()
+  requireAdmin()
+  if (!PROVIDER_KEYS_CACHE[params.providerId]) {
+    PROVIDER_KEYS_CACHE[params.providerId] = generateMockKeysForProvider(params.providerId, 2)
+  }
+  const keys = PROVIDER_KEYS_CACHE[params.providerId] || []
+  const results = keys.map(key => ({
+    key_id: key.id,
+    key_name: key.name || key.id.slice(0, 8),
+    status: 'success',
+    metadata: { updated_at: new Date().toISOString() }
+  }))
+  return createMockResponse({
+    success: results.length,
+    failed: 0,
+    total: results.length,
+    results
+  })
+})
+
+registerDynamicRoute('POST', '/api/admin/provider-oauth/keys/:keyId/refresh', async (_config, params) => {
+  await delay()
+  requireAdmin()
+  return createMockResponse({
+    provider_type: 'codex',
+    expires_at: Math.floor(Date.now() / 1000) + 6 * 3600,
+    has_refresh_token: true,
+    email: 'oauth-demo@aether.dev',
+    key_id: params.keyId
+  })
+})
+
+registerDynamicRoute('POST', '/api/admin/provider-oauth/providers/:providerId/start', async (_config, params) => {
+  await delay()
+  requireAdmin()
+  return createMockResponse({
+    authorization_url: `https://example.com/oauth/authorize?provider=${params.providerId}`,
+    redirect_uri: 'https://aether.local/oauth/callback',
+    provider_type: 'codex',
+    instructions: 'Open the authorization URL and paste the callback URL here.'
+  })
+})
+
+registerDynamicRoute('POST', '/api/admin/provider-oauth/providers/:providerId/complete', async (config, _params) => {
+  await delay()
+  requireAdmin()
+  const body = JSON.parse(config.data || '{}')
+  return createMockResponse({
+    key_id: `key-oauth-${Date.now()}`,
+    provider_type: 'codex',
+    expires_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+    has_refresh_token: true,
+    email: body.name ? `${body.name}@demo.dev` : 'oauth-demo@aether.dev'
+  })
+})
+
+registerDynamicRoute('POST', '/api/admin/provider-oauth/providers/:providerId/import-refresh-token', async (config, _params) => {
+  await delay()
+  requireAdmin()
+  const body = JSON.parse(config.data || '{}')
+  return createMockResponse({
+    key_id: `key-oauth-${Date.now()}`,
+    provider_type: 'codex',
+    expires_at: Math.floor(Date.now() / 1000) + 24 * 3600,
+    has_refresh_token: true,
+    email: body.name ? `${body.name}@demo.dev` : 'oauth-demo@aether.dev'
+  })
+})
+
+registerDynamicRoute('POST', '/api/admin/provider-oauth/providers/:providerId/batch-import', async (config, _params) => {
+  await delay()
+  requireAdmin()
+  const body = JSON.parse(config.data || '{}')
+  const raw = typeof body.credentials === 'string' ? body.credentials.trim() : ''
+  const lines = raw ? raw.split('\n').filter(line => line.trim() && !line.trim().startsWith('#')) : []
+  const total = Math.max(Math.min(lines.length, 5), 2)
+  const results = []
+  for (let index = 0; index < total; index++) {
+    results.push({
+      index,
+      status: 'success',
+      key_id: `key-oauth-${Date.now()}-${index}`,
+      key_name: `Imported OAuth ${index + 1}`,
+      auth_method: 'oauth'
+    })
+  }
+  return createMockResponse({
+    total,
+    success: results.length,
+    failed: 0,
+    results
+  })
+})
+
+
 // Key 更新
 registerDynamicRoute('PUT', '/api/admin/endpoints/keys/:keyId', async (config, params) => {
   await delay()
@@ -1543,6 +1701,26 @@ registerDynamicRoute('GET', '/api/admin/endpoints/keys/:keyId/reveal', async (_c
   requireAdmin()
   return createMockResponse({ api_key: 'sk-demo-reveal' })
 })
+
+registerDynamicRoute('GET', '/api/admin/endpoints/keys/:keyId/export', async (_config, params) => {
+  await delay()
+  requireAdmin()
+  return createMockResponse({
+    key_id: params.keyId,
+    provider_type: 'codex',
+    auth_method: 'oauth',
+    refresh_token: 'rt-demo',
+    email: 'oauth-demo@aether.dev',
+    exported_at: new Date().toISOString()
+  })
+})
+
+registerDynamicRoute('POST', '/api/admin/endpoints/keys/:keyId/clear-oauth-invalid', async (_config, params) => {
+  await delay()
+  requireAdmin()
+  return createMockResponse({ message: 'OAuth invalid cleared (demo)', key_id: params.keyId })
+})
+
 
 // Keys grouped by format
 mockHandlers['GET /api/admin/endpoints/keys/grouped-by-format'] = async () => {
@@ -1762,6 +1940,19 @@ registerDynamicRoute('GET', '/api/admin/endpoints/health/key/:keyId', async (_co
     avg_response_time_ms: 1100,
     last_success_at: new Date().toISOString(),
     last_failure_at: new Date(Date.now() - 7200000).toISOString()
+  })
+})
+
+registerDynamicRoute('PATCH', '/api/admin/endpoints/health/keys', async () => {
+  await delay()
+  requireAdmin()
+  return createMockResponse({
+    message: 'All key health recovered (demo)',
+    recovered_count: 2,
+    recovered_keys: [
+      { key_id: 'key-demo-1', key_name: 'Primary Key', endpoint_id: 'ep-demo-1' },
+      { key_id: 'key-demo-2', key_name: 'Backup Key', endpoint_id: 'ep-demo-2' }
+    ]
   })
 })
 

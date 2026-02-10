@@ -73,6 +73,7 @@ async def run_endpoint_check(
     provider_id: str | None = None,
     db: Any | None = None,  # Session对象，需要时才导入
     user: Any | None = None,  # User对象
+    proxy_param: Any | None = None,  # httpx 可接受的代理参数
 ) -> dict[str, Any]:
     """
     执行端点检查（重构版本，使用新的架构）：
@@ -94,6 +95,7 @@ async def run_endpoint_check(
         db=db,
         user=user,
         request_id=str(uuid.uuid4())[:8],
+        proxy_param=proxy_param,
     )
 
     # 使用协调器执行检查
@@ -565,6 +567,7 @@ class EndpointCheckRequest:
     user: Any | None = None
     request_id: str | None = None
     timeout: float = 30.0
+    proxy_param: Any | None = None  # httpx 可接受的代理参数
 
 
 @dataclass
@@ -595,7 +598,21 @@ class HttpRequestExecutor:
         is_stream = request.json_body.get("stream", False) if request.json_body else False
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout, verify=get_ssl_context()) as client:
+            from src.services.proxy_node.resolver import build_proxy_client_kwargs
+
+            if request.proxy_param is not None:
+                # 调用方已提供解析好的代理参数，直接使用（跳过系统默认回退）
+                client_kwargs: dict[str, Any] = {
+                    "timeout": self.timeout,
+                    "verify": get_ssl_context(),
+                }
+                if request.proxy_param:
+                    client_kwargs["proxy"] = request.proxy_param
+            else:
+                # 未提供代理参数，通过 build_proxy_client_kwargs 统一解析（含系统默认回退）
+                client_kwargs = build_proxy_client_kwargs(timeout=self.timeout)
+
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 if is_stream:
                     # 流式请求：读取 SSE 事件直到完成
                     response_data = await self._execute_stream_request(client, request)

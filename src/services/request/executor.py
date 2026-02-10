@@ -175,14 +175,20 @@ class RequestExecutor:
                     )
                 else:
                     # 非流式请求：标记为 success 状态
-                    from src.services.proxy_node.resolver import resolve_proxy_info
+                    from src.services.proxy_node.resolver import (
+                        resolve_effective_proxy,
+                        resolve_proxy_info,
+                    )
 
+                    _eff_proxy = resolve_effective_proxy(
+                        getattr(provider, "proxy", None), getattr(key, "proxy", None)
+                    )
                     _extra: dict[str, Any] = {
                         "is_cached_user": is_cached_user,
                         "model_name": model_name,
                         "api_format": api_format,
                     }
-                    _pi = resolve_proxy_info(getattr(provider, "proxy", None))
+                    _pi = resolve_proxy_info(_eff_proxy)
                     if _pi:
                         _extra["proxy"] = _pi
                     RequestCandidateService.mark_candidate_success(

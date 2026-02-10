@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import time
 from collections import OrderedDict
-from typing import Optional, Tuple
 
 import httpx
 import jwt
@@ -129,7 +128,11 @@ class VertexAuthService:
         # 获取新 Token
         try:
             signed_jwt = self._create_jwt()
-            async with httpx.AsyncClient(timeout=30) as client:
+
+            # 使用系统默认代理（Vertex AI token endpoint 是外部服务）
+            from src.services.proxy_node.resolver import build_proxy_client_kwargs
+
+            async with httpx.AsyncClient(**build_proxy_client_kwargs(timeout=30)) as client:
                 resp = await client.post(
                     self.TOKEN_URL,
                     data={

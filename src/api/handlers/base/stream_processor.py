@@ -575,7 +575,6 @@ class StreamProcessor:
         ctx: StreamContext,
         byte_iterator: Any,
         response_ctx: Any,
-        http_client: httpx.AsyncClient,
         prefetched_chunks: list | None = None,
         *,
         start_time: float | None = None,
@@ -589,7 +588,6 @@ class StreamProcessor:
             ctx: 流式上下文
             byte_iterator: 字节流迭代器
             response_ctx: HTTP 响应上下文管理器
-            http_client: HTTP 客户端
             prefetched_chunks: 预读的字节块列表（可选）
             start_time: 请求开始时间,用于计算 TTFB（可选）
 
@@ -867,7 +865,11 @@ class StreamProcessor:
                             self._extract_usage_from_converted_event(ctx, evt, event_type)
 
                         # 根据客户端格式生成 SSE 事件
-                        out.append(_format_sse_event(evt) if isinstance(evt, dict) else f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode())
+                        out.append(
+                            _format_sse_event(evt)
+                            if isinstance(evt, dict)
+                            else f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode()
+                        )
                     return out
 
                 # 统一处理 prefetched + iterator
@@ -1109,7 +1111,7 @@ class StreamProcessor:
                     ctx.perf_metrics["stream_chunks"] = int(ctx.chunk_count)
                 if ctx.data_count:
                     ctx.perf_metrics["stream_data_events"] = int(ctx.data_count)
-            await self._cleanup(response_ctx, http_client)
+            await self._cleanup(response_ctx)
 
     def _process_line(
         self,
@@ -1363,15 +1365,10 @@ class StreamProcessor:
     async def _cleanup(
         self,
         response_ctx: Any,
-        http_client: httpx.AsyncClient,
     ) -> None:
-        """清理资源"""
+        """清理响应上下文（不关闭池中复用的客户端）"""
         try:
             await response_ctx.__aexit__(None, None, None)
-        except Exception:
-            pass
-        try:
-            await http_client.aclose()
         except Exception:
             pass
 

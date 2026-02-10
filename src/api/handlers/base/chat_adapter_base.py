@@ -638,6 +638,8 @@ class ChatAdapterBase(ApiAdapter):
         auth_type: str | None = None,  # noqa: ARG003
         provider_type: str | None = None,  # noqa: ARG003
         decrypted_auth_config: dict[str, Any] | None = None,  # noqa: ARG003
+        # 代理参数（已解析，直接传递给 run_endpoint_check）
+        proxy_param: Any | None = None,
     ) -> dict[str, Any]:
         """
         测试模型连接性（非流式）
@@ -700,6 +702,7 @@ class ChatAdapterBase(ApiAdapter):
             provider_id=provider_id,
             api_key_id=api_key_id,
             model_name=model_name or request_data.get("model"),
+            proxy_param=proxy_param,
         )
 
 

@@ -36,8 +36,8 @@ from src.services.model.upstream_fetcher import (
     get_adapter_for_format,
 )
 from src.services.provider.oauth_token import resolve_oauth_access_token
+from src.services.proxy_node.resolver import resolve_effective_proxy, resolve_proxy_param
 from src.utils.auth_utils import get_current_user
-from src.utils.ssl_utils import get_ssl_context
 
 router = APIRouter(prefix="/api/admin/provider-query", tags=["Provider Query"])
 
@@ -110,8 +110,14 @@ class _KeyAuthError(Exception):
 async def _resolve_key_auth(
     api_key: Any,
     provider: Any,
+    provider_proxy_config: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """统一解析 Key 的 api_key_value 和 auth_config。
+
+    Args:
+        api_key: ProviderAPIKey 对象
+        provider: Provider 对象
+        provider_proxy_config: 已解析的有效代理配置（key > provider 级别）
 
     Returns:
         (api_key_value, auth_config)
@@ -135,7 +141,7 @@ async def _resolve_key_auth(
                     if getattr(api_key, "auth_config", None) is not None
                     else None
                 ),
-                provider_proxy_config=getattr(provider, "proxy", None),
+                provider_proxy_config=provider_proxy_config,
                 endpoint_api_format=endpoint_api_format,
             )
             api_key_value = resolved.access_token
@@ -267,7 +273,12 @@ async def query_available_models(
 
         # 缓存未命中或强制刷新，实时获取
         try:
-            api_key_value, auth_config = await _resolve_key_auth(api_key, provider)
+            effective_proxy = resolve_effective_proxy(
+                getattr(provider, "proxy", None), getattr(api_key, "proxy", None)
+            )
+            api_key_value, auth_config = await _resolve_key_auth(
+                api_key, provider, provider_proxy_config=effective_proxy
+            )
         except _KeyAuthError as e:
             return [], f"Key {api_key.name or api_key.id}: {e.message}", False
 
@@ -275,7 +286,7 @@ async def query_available_models(
             provider_type=str(getattr(provider, "provider_type", "") or ""),
             api_key_value=str(api_key_value or ""),
             format_to_endpoint=format_to_endpoint,
-            proxy_config=getattr(provider, "proxy", None),
+            proxy_config=effective_proxy,
             auth_config=auth_config,
         )
         models, errors, has_success, _meta = await fetch_models_for_key(
@@ -433,7 +444,12 @@ async def _fetch_models_antigravity_ordered(
 
         # 实时获取
         try:
-            api_key_value, auth_config = await _resolve_key_auth(api_key, provider)
+            effective_proxy = resolve_effective_proxy(
+                getattr(provider, "proxy", None), getattr(api_key, "proxy", None)
+            )
+            api_key_value, auth_config = await _resolve_key_auth(
+                api_key, provider, provider_proxy_config=effective_proxy
+            )
         except _KeyAuthError as e:
             all_errors.append(f"Key {key_label}: {e.message}")
             continue
@@ -442,7 +458,7 @@ async def _fetch_models_antigravity_ordered(
             provider_type=str(getattr(provider, "provider_type", "") or ""),
             api_key_value=str(api_key_value or ""),
             format_to_endpoint=format_to_endpoint,
-            proxy_config=getattr(provider, "proxy", None),
+            proxy_config=effective_proxy,
             auth_config=auth_config,
         )
         models, errors, has_success, _meta = await fetch_models_for_key(
@@ -528,7 +544,12 @@ async def _fetch_models_for_single_key(
 
     # 缓存未命中或强制刷新，实时获取
     try:
-        api_key_value, auth_config = await _resolve_key_auth(api_key, provider)
+        effective_proxy = resolve_effective_proxy(
+            getattr(provider, "proxy", None), getattr(api_key, "proxy", None)
+        )
+        api_key_value, auth_config = await _resolve_key_auth(
+            api_key, provider, provider_proxy_config=effective_proxy
+        )
     except _KeyAuthError as e:
         raise HTTPException(status_code=500, detail=e.message)
 
@@ -536,7 +557,7 @@ async def _fetch_models_for_single_key(
         provider_type=str(getattr(provider, "provider_type", "") or ""),
         api_key_value=str(api_key_value or ""),
         format_to_endpoint=format_to_endpoint,
-        proxy_config=getattr(provider, "proxy", None),
+        proxy_config=effective_proxy,
         auth_config=auth_config,
     )
     all_models, errors, has_success, _meta = await fetch_models_for_key(
@@ -703,7 +724,9 @@ async def test_model(
                 encrypted_auth_config=(
                     str(api_key.auth_config) if getattr(api_key, "auth_config", None) else None
                 ),
-                provider_proxy_config=getattr(provider, "proxy", None),
+                provider_proxy_config=resolve_effective_proxy(
+                    getattr(provider, "proxy", None), getattr(api_key, "proxy", None)
+                ),
                 endpoint_api_format=str(getattr(endpoint, "api_format", "") or ""),
             )
             api_key_value = resolved.access_token
@@ -780,186 +803,187 @@ async def test_model(
         if header_rules:
             logger.debug(f"[test-model] 将传递 header_rules 给 check_endpoint: {header_rules}")
 
-        # 发送测试请求
-        async with httpx.AsyncClient(
-            timeout=endpoint_config["timeout"], verify=get_ssl_context()
-        ) as client:
-            logger.debug("[test-model] 开始端点测试...")
+        # 发送测试请求（使用代理配置）
+        test_proxy = resolve_effective_proxy(
+            getattr(provider, "proxy", None), getattr(api_key, "proxy", None)
+        )
+        test_proxy_param = resolve_proxy_param(test_proxy)
 
-            # Provider 上下文：auth_type 用于 OAuth 认证头处理，provider_type 用于特殊路由
-            p_type = str(getattr(provider, "provider_type", "") or "").lower()
+        logger.debug("[test-model] 开始端点测试...")
 
-            async def _do_check(req: dict) -> dict:
-                return await adapter_class.check_endpoint(
-                    client,
-                    endpoint_config["base_url"],
-                    endpoint_config["api_key"],
-                    req,
-                    extra_headers if extra_headers else None,
-                    body_rules=body_rules,
-                    header_rules=header_rules,
-                    db=db,
-                    user=current_user,
-                    provider_name=provider.name,
-                    provider_id=provider.id,
-                    api_key_id=endpoint_config.get("api_key_id"),
-                    model_name=request.model_name,
-                    auth_type=auth_type,
-                    provider_type=p_type if p_type else None,
-                    decrypted_auth_config=oauth_meta if oauth_meta else None,
-                )
+        # Provider 上下文：auth_type 用于 OAuth 认证头处理，provider_type 用于特殊路由
+        p_type = str(getattr(provider, "provider_type", "") or "").lower()
 
-            def _response_has_error(resp: dict) -> bool:
-                """快速判断响应是否包含错误"""
-                if "error" in resp:
-                    return True
-                if resp.get("status_code", 0) != 200:
-                    return True
-                resp_data = resp.get("response", {})
-                resp_body = resp_data.get("response_body", {})
-                parsed = resp_body
-                if isinstance(resp_body, str):
-                    try:
-                        parsed = json.loads(resp_body)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                if isinstance(parsed, dict) and "error" in parsed:
-                    return True
-                return False
+        async def _do_check(req: dict) -> dict:
+            return await adapter_class.check_endpoint(
+                None,  # client 参数已不被 run_endpoint_check 使用
+                endpoint_config["base_url"],
+                endpoint_config["api_key"],
+                req,
+                extra_headers if extra_headers else None,
+                body_rules=body_rules,
+                header_rules=header_rules,
+                db=db,
+                user=current_user,
+                provider_name=provider.name,
+                provider_id=provider.id,
+                api_key_id=endpoint_config.get("api_key_id"),
+                model_name=request.model_name,
+                auth_type=auth_type,
+                provider_type=p_type if p_type else None,
+                decrypted_auth_config=oauth_meta if oauth_meta else None,
+                proxy_param=test_proxy_param,
+            )
 
-            # 策略：优先流式，若失败回退到非流式
-            used_stream = True
-            logger.debug("[test-model] 尝试流式请求...")
+        def _response_has_error(resp: dict) -> bool:
+            """快速判断响应是否包含错误"""
+            if "error" in resp:
+                return True
+            if resp.get("status_code", 0) != 200:
+                return True
+            resp_data = resp.get("response", {})
+            resp_body = resp_data.get("response_body", {})
+            parsed = resp_body
+            if isinstance(resp_body, str):
+                try:
+                    parsed = json.loads(resp_body)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if isinstance(parsed, dict) and "error" in parsed:
+                return True
+            return False
+
+        # 策略：优先流式，若失败回退到非流式
+        used_stream = True
+        logger.debug("[test-model] 尝试流式请求...")
+        response = await _do_check(check_request)
+
+        if _response_has_error(response):
+            logger.info(
+                "[test-model] 流式请求失败 (status={})，回退到非流式请求",
+                response.get("status_code", "?"),
+            )
+            check_request["stream"] = False
+            used_stream = False
             response = await _do_check(check_request)
 
-            if _response_has_error(response):
-                logger.info(
-                    "[test-model] 流式请求失败 (status={})，回退到非流式请求",
-                    response.get("status_code", "?"),
-                )
-                check_request["stream"] = False
-                used_stream = False
-                response = await _do_check(check_request)
+        # 记录提供商返回信息
+        logger.debug("[test-model] 端点测试结果:")
+        logger.debug(f"[test-model] Status Code: {response.get('status_code')}")
+        logger.debug(f"[test-model] Response Headers: {response.get('headers', {})}")
+        response_data = response.get("response", {})
+        response_body = response_data.get("response_body", {})
+        logger.debug(f"[test-model] Response Data: {response_data}")
+        logger.debug(f"[test-model] Response Body: {response_body}")
+        # 尝试解析 response_body (通常是 JSON 字符串)
+        parsed_body = response_body
+        import json
 
-            # 记录提供商返回信息
-            logger.debug("[test-model] 端点测试结果:")
-            logger.debug(f"[test-model] Status Code: {response.get('status_code')}")
-            logger.debug(f"[test-model] Response Headers: {response.get('headers', {})}")
-            response_data = response.get("response", {})
-            response_body = response_data.get("response_body", {})
-            logger.debug(f"[test-model] Response Data: {response_data}")
-            logger.debug(f"[test-model] Response Body: {response_body}")
-            # 尝试解析 response_body (通常是 JSON 字符串)
-            parsed_body = response_body
-            import json
+        if isinstance(response_body, str):
+            try:
+                parsed_body = json.loads(response_body)
+            except json.JSONDecodeError:
+                pass
 
-            if isinstance(response_body, str):
-                try:
-                    parsed_body = json.loads(response_body)
-                except json.JSONDecodeError:
-                    pass
+        if isinstance(parsed_body, dict) and "error" in parsed_body:
+            error_obj = parsed_body["error"]
+            # 兼容 error 可能是字典或字符串的情况
+            if isinstance(error_obj, dict):
+                error_message = error_obj.get("message", "")
+                logger.debug(f"[test-model] Error Message: {error_message}")
 
-            if isinstance(parsed_body, dict) and "error" in parsed_body:
-                error_obj = parsed_body["error"]
-                # 兼容 error 可能是字典或字符串的情况
-                if isinstance(error_obj, dict):
-                    error_message = error_obj.get("message", "")
-                    logger.debug(f"[test-model] Error Message: {error_message}")
-
-                    # Antigravity 403 "verify your account" → 标记账号异常
-                    if (
-                        api_key
-                        and auth_type == "oauth"
-                        and error_obj.get("code") == 403
-                        and (
-                            "verify" in error_message.lower()
-                            or "permission" in str(error_obj.get("status", "")).lower()
-                        )
-                    ):
-                        from datetime import datetime, timezone
-
-                        from src.services.provider.oauth_token import (
-                            OAUTH_ACCOUNT_BLOCK_PREFIX,
-                        )
-
-                        api_key.oauth_invalid_at = datetime.now(timezone.utc)
-                        api_key.oauth_invalid_reason = (
-                            f"{OAUTH_ACCOUNT_BLOCK_PREFIX}Google 要求验证账号"
-                        )
-                        api_key.is_active = False
-                        db.commit()
-                        oauth_email = None
-                        if getattr(api_key, "auth_config", None):
-                            try:
-                                decrypted = crypto_service.decrypt(api_key.auth_config)
-                                parsed = json.loads(decrypted)
-                                if isinstance(parsed, dict):
-                                    email_val = parsed.get("email")
-                                    if isinstance(email_val, str) and email_val.strip():
-                                        oauth_email = email_val.strip()
-                            except Exception:
-                                oauth_email = None
-                        if oauth_email:
-                            logger.warning(
-                                "[test-model] Key {} (email={}) 因 403 verify 已标记为异常",
-                                api_key.id,
-                                oauth_email,
-                            )
-                        else:
-                            logger.warning(
-                                "[test-model] Key {} 因 403 verify 已标记为异常", api_key.id
-                            )
-
-                    raise HTTPException(
-                        status_code=500,
-                        detail=str(error_message)[:500] if error_message else "Provider error",
+                # Antigravity 403 "verify your account" → 标记账号异常
+                if (
+                    api_key
+                    and auth_type == "oauth"
+                    and error_obj.get("code") == 403
+                    and (
+                        "verify" in error_message.lower()
+                        or "permission" in str(error_obj.get("status", "")).lower()
                     )
-                else:
-                    logger.debug(f"[test-model] Error: {error_obj}")
-                    # error_obj 可能是字符串，截断以避免泄露过多上游信息
-                    raise HTTPException(
-                        status_code=500,
-                        detail=str(error_obj)[:500] if error_obj else "Provider error",
+                ):
+                    from datetime import datetime, timezone
+
+                    from src.services.provider.oauth_token import (
+                        OAUTH_ACCOUNT_BLOCK_PREFIX,
                     )
-            elif "error" in response:
-                logger.debug(f"[test-model] Error: {response['error']}")
+
+                    api_key.oauth_invalid_at = datetime.now(timezone.utc)
+                    api_key.oauth_invalid_reason = (
+                        f"{OAUTH_ACCOUNT_BLOCK_PREFIX}Google 要求验证账号"
+                    )
+                    api_key.is_active = False
+                    db.commit()
+                    oauth_email = None
+                    if getattr(api_key, "auth_config", None):
+                        try:
+                            decrypted = crypto_service.decrypt(api_key.auth_config)
+                            parsed = json.loads(decrypted)
+                            if isinstance(parsed, dict):
+                                email_val = parsed.get("email")
+                                if isinstance(email_val, str) and email_val.strip():
+                                    oauth_email = email_val.strip()
+                        except Exception:
+                            oauth_email = None
+                    if oauth_email:
+                        logger.warning(
+                            "[test-model] Key {} (email={}) 因 403 verify 已标记为异常",
+                            api_key.id,
+                            oauth_email,
+                        )
+                    else:
+                        logger.warning("[test-model] Key {} 因 403 verify 已标记为异常", api_key.id)
+
                 raise HTTPException(
                     status_code=500,
-                    detail=str(response["error"])[:500],
+                    detail=str(error_message)[:500] if error_message else "Provider error",
                 )
             else:
-                # 如果有选择或消息，记录内容预览
-                if isinstance(response_data, dict):
-                    if "choices" in response_data and response_data["choices"]:
-                        choice = response_data["choices"][0]
-                        if "message" in choice:
-                            content = choice["message"].get("content", "")
-                            logger.debug(f"[test-model] Content Preview: {content[:200]}...")
-                    elif "content" in response_data and response_data["content"]:
-                        content = str(response_data["content"])
+                logger.debug(f"[test-model] Error: {error_obj}")
+                # error_obj 可能是字符串，截断以避免泄露过多上游信息
+                raise HTTPException(
+                    status_code=500,
+                    detail=str(error_obj)[:500] if error_obj else "Provider error",
+                )
+        elif "error" in response:
+            logger.debug(f"[test-model] Error: {response['error']}")
+            raise HTTPException(
+                status_code=500,
+                detail=str(response["error"])[:500],
+            )
+        else:
+            # 如果有选择或消息，记录内容预览
+            if isinstance(response_data, dict):
+                if "choices" in response_data and response_data["choices"]:
+                    choice = response_data["choices"][0]
+                    if "message" in choice:
+                        content = choice["message"].get("content", "")
                         logger.debug(f"[test-model] Content Preview: {content[:200]}...")
+                elif "content" in response_data and response_data["content"]:
+                    content = str(response_data["content"])
+                    logger.debug(f"[test-model] Content Preview: {content[:200]}...")
 
-            # 检查测试是否成功（基于HTTP状态码）
-            status_code = response.get("status_code", 0)
-            is_success = status_code == 200 and "error" not in response
+        # 检查测试是否成功（基于HTTP状态码）
+        status_code = response.get("status_code", 0)
+        is_success = status_code == 200 and "error" not in response
 
-            return {
-                "success": is_success,
-                "data": {
-                    "stream": used_stream,
-                    "response": response,
-                },
-                "provider": {
-                    "id": provider.id,
-                    "name": provider.name,
-                },
-                "model": request.model_name,
-                "endpoint": {
-                    "id": endpoint.id,
-                    "api_format": endpoint.api_format,
-                    "base_url": endpoint.base_url,
-                },
-            }
+        return {
+            "success": is_success,
+            "data": {
+                "stream": used_stream,
+                "response": response,
+            },
+            "provider": {
+                "id": provider.id,
+                "name": provider.name,
+            },
+            "model": request.model_name,
+            "endpoint": {
+                "id": endpoint.id,
+                "api_format": endpoint.api_format,
+                "base_url": endpoint.base_url,
+            },
+        }
 
     except Exception as e:
         logger.error(f"[test-model] Error testing model {request.model_name}: {e}")

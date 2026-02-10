@@ -202,7 +202,9 @@ async def clear_oauth_invalid(
     key.is_active = True
     db.commit()
 
-    logger.info("[OK] 手动清除 Key {}... 的 OAuth 失效标记并自动启用 (原因: {})", key_id[:8], old_reason)
+    logger.info(
+        "[OK] 手动清除 Key {}... 的 OAuth 失效标记并自动启用 (原因: {})", key_id[:8], old_reason
+    )
 
     return {"message": "已清除 OAuth 失效标记，Key 已自动启用"}
 
@@ -1256,7 +1258,6 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
         import httpx
 
         from src.api.handlers.base.request_builder import get_provider_auth
-        from src.utils.ssl_utils import get_ssl_context
 
         db = context.db
         provider = db.query(Provider).filter(Provider.id == self.provider_id).first()
@@ -1355,8 +1356,21 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                     if oauth_account_id and oauth_plan_type and oauth_plan_type.lower() != "free":
                         headers["chatgpt-account-id"] = oauth_account_id
 
+                    # 解析代理配置（key 级别 > provider 级别 > 系统默认）
+                    from src.services.proxy_node.resolver import (
+                        build_proxy_client_kwargs,
+                        resolve_effective_proxy,
+                    )
+
+                    effective_proxy = resolve_effective_proxy(
+                        getattr(provider, "proxy", None),
+                        getattr(key, "proxy", None),
+                    )
+
                     # 使用 wham/usage API 获取限额信息
-                    async with httpx.AsyncClient(timeout=30.0, verify=get_ssl_context()) as client:
+                    async with httpx.AsyncClient(
+                        **build_proxy_client_kwargs(effective_proxy, timeout=30.0)
+                    ) as client:
                         response = await client.get(CODEX_WHAM_USAGE_URL, headers=headers)
 
                     if response.status_code != 200:
@@ -1421,13 +1435,19 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                     from src.services.provider.adapters.antigravity.client import (
                         AntigravityAccountForbiddenException,
                     )
+                    from src.services.proxy_node.resolver import resolve_effective_proxy
+
+                    effective_proxy = resolve_effective_proxy(
+                        getattr(provider, "proxy", None),
+                        getattr(key, "proxy", None),
+                    )
 
                     fetch_ctx = UpstreamModelsFetchContext(
                         provider_type="antigravity",
                         api_key_value=access_token,
                         # antigravity fetcher 不依赖 endpoint mapping
                         format_to_endpoint={},
-                        proxy_config=getattr(provider, "proxy", None),
+                        proxy_config=effective_proxy,
                         auth_config=auth_info.decrypted_auth_config,
                     )
 
@@ -1530,8 +1550,13 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                             "message": "无法解密 auth_config，可能是加密密钥已更改",
                         }
 
-                    # 获取代理配置
-                    proxy_config = getattr(provider, "proxy", None)
+                    # 获取代理配置（key 级别 > provider 级别）
+                    from src.services.proxy_node.resolver import resolve_effective_proxy
+
+                    proxy_config = resolve_effective_proxy(
+                        getattr(provider, "proxy", None),
+                        getattr(key, "proxy", None),
+                    )
 
                     # 调用 Kiro getUsageLimits API
                     try:
@@ -1578,7 +1603,9 @@ class AdminRefreshProviderQuotaAdapter(AdminApiAdapter):
                             key.oauth_invalid_reason = "Kiro Token 无效或已过期"
                             key.is_active = False
                             db.commit()
-                            logger.warning("[KIRO_QUOTA] Key {} Token 无效，已标记为异常并自动停用", key.id)
+                            logger.warning(
+                                "[KIRO_QUOTA] Key {} Token 无效，已标记为异常并自动停用", key.id
+                            )
                         return {
                             "key_id": key.id,
                             "key_name": key.name,

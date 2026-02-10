@@ -604,6 +604,8 @@ class CliAdapterBase(ApiAdapter):
         auth_type: str | None = None,
         provider_type: str | None = None,
         decrypted_auth_config: dict[str, Any] | None = None,
+        # 代理参数（已解析，直接传递给 run_endpoint_check）
+        proxy_param: Any | None = None,
     ) -> dict[str, Any]:
         """
         测试模型连接性（非流式）
@@ -779,6 +781,7 @@ class CliAdapterBase(ApiAdapter):
             provider_id=provider_id,
             api_key_id=api_key_id,
             model_name=effective_model_name,
+            proxy_param=proxy_param,
         )
 
     # =========================================================================

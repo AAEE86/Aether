@@ -294,9 +294,71 @@
 
                     <div
                       v-if="getEndpointEditBodyRules(endpoint.id).length > 0"
-                      class="text-xs text-muted-foreground px-2"
+                      class="flex items-center gap-1 text-xs text-muted-foreground px-2"
                     >
-                      <code class="bg-muted px-1 rounded">.</code> 嵌套字段 / <code class="bg-muted px-1 rounded">[N]</code> 数组索引；值为 JSON 格式
+                      <span><code class="bg-muted px-1 rounded">.</code> 嵌套字段 / <code class="bg-muted px-1 rounded">[N]</code> 数组索引；值为 JSON 格式</span>
+                      <div class="flex-1" />
+                      <Popover
+                        :open="bodyRuleHelpOpenEndpointId === endpoint.id"
+                        @update:open="(v: boolean) => setBodyRuleHelpOpen(endpoint.id, v)"
+                      >
+                        <PopoverTrigger as-child>
+                          <button
+                            type="button"
+                            class="shrink-0 h-6 w-6 inline-flex items-center justify-center rounded-md hover:bg-muted/60"
+                            title="规则说明"
+                            aria-label="规则说明"
+                          >
+                            <HelpCircle class="w-3.5 h-3.5 text-muted-foreground/60" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          side="bottom"
+                          align="end"
+                          :side-offset="6"
+                          class="w-80 p-3 !z-[90]"
+                        >
+                          <div class="text-xs space-y-2">
+                            <div>
+                              <div class="font-medium mb-0.5">
+                                路径语法
+                              </div>
+                              <div class="text-muted-foreground">
+                                <code>metadata.user_id</code> 嵌套字段<br>
+                                <code>messages[0].content</code> 数组索引<br>
+                                <code>config\.v1.key</code> 转义点号
+                              </div>
+                            </div>
+                            <div>
+                              <div class="font-medium mb-0.5">
+                                值格式 (JSON)
+                              </div>
+                              <div class="text-muted-foreground">
+                                <code>123</code> 数字 / <code>"text"</code> 字符串 / <code>true</code> 布尔<br>
+                                <code>{"k":"v"}</code> 对象 / <code>[1,2]</code> 数组 / <code>null</code><br>
+                                <code v-pre>{{$original}}</code> 引用原值
+                              </div>
+                            </div>
+                            <div>
+                              <div class="font-medium mb-0.5">
+                                条件运算符
+                              </div>
+                              <div class="text-muted-foreground">
+                                <code>eq</code> <code>neq</code> 等于/不等于<br>
+                                <code>gt</code> <code>lt</code> <code>gte</code> <code>lte</code> 大小比较<br>
+                                <code>starts_with</code> <code>ends_with</code> <code>contains</code> 字符串匹配<br>
+                                <code>matches</code> 正则匹配<br>
+                                <code>exists</code> <code>not_exists</code> 字段存在性<br>
+                                <code>in</code> 在列表中（值填 <code>["a","b"]</code>）<br>
+                                <code>type_is</code> 类型判断（string/number/boolean/array/object/null）
+                              </div>
+                            </div>
+                            <div class="text-muted-foreground">
+                              规则按顺序执行，前面的修改对后续规则可见。
+                            </div>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
                     </div>
 
                     <!-- 请求体规则列表 - 次要色边框 -->
@@ -338,6 +400,16 @@
                             </SelectItem>
                           </SelectContent>
                         </Select>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="h-7 w-7 shrink-0"
+                          :class="rule.conditionEnabled ? 'text-primary' : ''"
+                          title="条件触发"
+                          @click="toggleBodyRuleCondition(endpoint.id, index)"
+                        >
+                          <Filter class="w-3 h-3" />
+                        </Button>
                         <template v-if="rule.action === 'set'">
                           <Input
                             :model-value="rule.path"
@@ -452,16 +524,6 @@
                             :title="getRegexPatternValidationTip(rule)"
                           />
                         </template>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 shrink-0"
-                          :class="rule.conditionEnabled ? 'text-primary' : ''"
-                          title="条件触发"
-                          @click="toggleBodyRuleCondition(endpoint.id, index)"
-                        >
-                          <Filter class="w-3 h-3" />
-                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -664,8 +726,11 @@ import {
   Collapsible,
   CollapsibleTrigger,
   CollapsibleContent,
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
 } from '@/components/ui'
-import { Settings, Trash2, Check, X, Power, ChevronRight, Plus, Shuffle, RotateCcw, Radio, CheckCircle, Save, Filter } from 'lucide-vue-next'
+import { Settings, Trash2, Check, X, Power, ChevronRight, Plus, Shuffle, RotateCcw, Radio, CheckCircle, Save, Filter, HelpCircle } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { log } from '@/utils/logger'
 import AlertDialog from '@/components/common/AlertDialog.vue'
@@ -814,6 +879,13 @@ const endpointRulesExpanded = ref<Record<string, boolean>>({})
 
 // 请求体规则 Select 的展开状态
 const bodyRuleSelectOpen = ref<Record<string, boolean>>({})
+
+// 请求体规则说明 Popover 的展开状态
+const bodyRuleHelpOpenEndpointId = ref<string | null>(null)
+
+function setBodyRuleHelpOpen(endpointId: string, open: boolean) {
+  bodyRuleHelpOpenEndpointId.value = open ? endpointId : null
+}
 
 // 每个端点的编辑状态（内联编辑）
 const endpointEditStates = ref<Record<string, EndpointEditState>>({})
@@ -1783,6 +1855,7 @@ onMounted(() => {
 
 // 监听 props 变化
 watch(() => props.modelValue, (open) => {
+  bodyRuleHelpOpenEndpointId.value = null
   if (open) {
     localEndpoints.value = [...(props.endpoints || [])]
     // 清空编辑状态，重新从端点加载
