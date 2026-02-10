@@ -712,6 +712,17 @@ class StreamProcessor:
                     },
                 }
 
+            def _format_sse_event(evt: dict) -> bytes:
+                """根据客户端格式生成 SSE 事件字节。
+
+                Claude 格式需要 event: 行，OpenAI/Gemini 只需要 data: 行。
+                """
+                if client_family == "claude":
+                    event_type_str = evt.get("type", "")
+                    if event_type_str:
+                        return f"event: {event_type_str}\ndata: {json.dumps(evt, ensure_ascii=False)}\n\n".encode()
+                return f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode()
+
             # 处理预读数据
             if needs_conversion:
                 registry = get_format_converter_registry()
@@ -822,9 +833,7 @@ class StreamProcessor:
                         # 日志记录完整错误（内部排查），客户端只返回脱敏消息
                         logger.warning(f"[{self.request_id}] 流式格式转换失败: {conv_err}")
                         payload = _build_stream_error_payload("响应格式转换失败，请稍后重试")
-                        error_bytes = (
-                            f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
-                        )
+                        error_bytes = _format_sse_event(payload)
                         done_bytes = b"data: [DONE]\n\n" if client_family == "openai" else b""
                         if done_bytes:
                             openai_done_sent = True
@@ -857,9 +866,8 @@ class StreamProcessor:
                             # 从转换后的事件中补充 usage 信息
                             self._extract_usage_from_converted_event(ctx, evt, event_type)
 
-                        # 统一使用 SSE 格式输出（Gemini streamGenerateContent 也使用 SSE）
-                        # 参考: https://ai.google.dev/api/generate-content
-                        out.append(f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode())
+                        # 根据客户端格式生成 SSE 事件
+                        out.append(_format_sse_event(evt) if isinstance(evt, dict) else f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode())
                     return out
 
                 # 统一处理 prefetched + iterator
