@@ -126,11 +126,48 @@ const canUseHourly = computed(() => {
   return false
 })
 
+// 记录上次 emit 的值，避免重复触发
+let lastEmittedValue: string | null = null
+
+function buildEmitValue(): DateRangeParams {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const tz_offset_minutes = -new Date().getTimezoneOffset()
+
+  if (selectedPreset.value === 'custom') {
+    const start = startDate.value <= endDate.value ? startDate.value : endDate.value
+    const end = endDate.value >= startDate.value ? endDate.value : startDate.value
+    return {
+      start_date: start,
+      end_date: end,
+      granularity: selectedGranularity.value,
+      timezone,
+      tz_offset_minutes
+    }
+  }
+
+  return {
+    preset: selectedPreset.value,
+    granularity: selectedGranularity.value,
+    timezone,
+    tz_offset_minutes
+  }
+}
+
+function getValueKey(value: DateRangeParams): string {
+  // 只比较核心字段，忽略 timezone 和 tz_offset_minutes（这些每次都会重新计算）
+  if (value.preset) {
+    return `preset:${value.preset}:${value.granularity}`
+  }
+  return `custom:${value.start_date}:${value.end_date}:${value.granularity}`
+}
+
 watch(() => props.modelValue, (value) => {
   if (value.preset) selectedPreset.value = value.preset
   if (value.start_date !== undefined) startDate.value = value.start_date || ''
   if (value.end_date !== undefined) endDate.value = value.end_date || ''
   if (value.granularity) selectedGranularity.value = value.granularity
+  // 同步更新 lastEmittedValue，避免外部设置值后触发重复 emit
+  lastEmittedValue = getValueKey(value)
 }, { deep: true })
 
 watch([selectedPreset, startDate, endDate, selectedGranularity], () => {
@@ -140,28 +177,17 @@ watch([selectedPreset, startDate, endDate, selectedGranularity], () => {
     }
   }
 
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const tz_offset_minutes = -new Date().getTimezoneOffset()
-
   if (selectedPreset.value === 'custom') {
     if (!startDate.value || !endDate.value) return
-    const start = startDate.value <= endDate.value ? startDate.value : endDate.value
-    const end = endDate.value >= startDate.value ? endDate.value : startDate.value
-    emit('update:modelValue', {
-      start_date: start,
-      end_date: end,
-      granularity: selectedGranularity.value,
-      timezone,
-      tz_offset_minutes
-    })
-    return
   }
 
-  emit('update:modelValue', {
-    preset: selectedPreset.value,
-    granularity: selectedGranularity.value,
-    timezone,
-    tz_offset_minutes
-  })
+  const newValue = buildEmitValue()
+  const newKey = getValueKey(newValue)
+
+  // 只有当值真正变化时才 emit，避免初始化时的重复触发
+  if (newKey !== lastEmittedValue) {
+    lastEmittedValue = newKey
+    emit('update:modelValue', newValue)
+  }
 }, { immediate: true })
 </script>
