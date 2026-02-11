@@ -152,6 +152,7 @@ class ProviderCompleteOAuthResponse(BaseModel):
     expires_at: int | None = None
     has_refresh_token: bool = False
     email: str | None = None
+    replaced: bool = False
 
 
 # ==============================================================================
@@ -271,6 +272,35 @@ def _create_oauth_key(
     return new_key
 
 
+def _update_existing_oauth_key(
+    db: Session,
+    existing_key: "ProviderAPIKey",
+    access_token: str,
+    auth_config: dict[str, Any],
+    flush_only: bool = False,
+    proxy: dict[str, Any] | None = None,
+) -> "ProviderAPIKey":
+    """覆盖更新已失效的 OAuth Key，恢复为活跃状态。"""
+    existing_key.api_key = crypto_service.encrypt(access_token)
+    existing_key.auth_config = crypto_service.encrypt(json.dumps(auth_config))
+    existing_key.is_active = True
+    existing_key.oauth_invalid_at = None
+    existing_key.oauth_invalid_reason = None
+    existing_key.health_by_format = {}  # type: ignore[assignment]
+    existing_key.circuit_breaker_by_format = {}  # type: ignore[assignment]
+    existing_key.error_count = 0
+    existing_key.last_error_at = None
+    existing_key.last_error_msg = None
+    if proxy:
+        existing_key.proxy = proxy
+    if flush_only:
+        db.flush()
+    else:
+        db.commit()
+        db.refresh(existing_key)
+    return existing_key
+
+
 async def _trigger_auto_fetch_models(key_ids: list[str]) -> None:
     """为启用了 auto_fetch_models 的新建 Key 触发模型获取。"""
     if not key_ids:
@@ -317,9 +347,9 @@ def _check_duplicate_oauth_account(
     provider_id: str,
     auth_config: dict[str, Any],
     exclude_key_id: str | None = None,
-) -> None:
+) -> ProviderAPIKey | None:
     """
-    检查是否存在重复的 OAuth 账号
+    检查是否存在重复的 OAuth 账号。
 
     通过以下字段判断重复：
     - user_id: Codex 等使用用户级别 ID（同 team 下不同成员共享 account_id 但 user_id 不同）
@@ -327,14 +357,12 @@ def _check_duplicate_oauth_account(
       （同一邮箱可能通过 Social 和 IdC 两种方式登录，视为不同账号）
     - email: 其他 OAuth Provider 使用邮箱判断
 
-    Args:
-        db: 数据库 session
-        provider_id: Provider ID
-        auth_config: 新账号的 auth_config
-        exclude_key_id: 排除的 Key ID（用于更新场景）
+    Returns:
+        None: 无重复，可以新建
+        ProviderAPIKey: 找到已失效的重复账号，调用方应覆盖此 key
 
     Raises:
-        InvalidRequestException: 如果发现重复账号
+        InvalidRequestException: 如果发现活跃的重复账号
     """
     new_email = auth_config.get("email")
     new_user_id = auth_config.get("user_id")
@@ -343,7 +371,7 @@ def _check_duplicate_oauth_account(
 
     # 如果没有可用于识别的字段，跳过检查
     if not new_email and not new_user_id:
-        return
+        return None
 
     # 查询该 Provider 下所有 OAuth 类型的 Keys
     query = db.query(ProviderAPIKey).filter(
@@ -367,39 +395,62 @@ def _check_duplicate_oauth_account(
             existing_auth_method = decrypted_config.get("auth_method")
             existing_provider_type = decrypted_config.get("provider_type")
 
+            is_duplicate = False
+
             # user_id 相同即重复（Codex 等，同一 team 下不同成员共享 account_id 但 user_id 不同）
             if new_user_id and existing_user_id and new_user_id == existing_user_id:
-                raise InvalidRequestException(
-                    f"该 OAuth 账号已存在于当前 Provider 中（名称: {existing_key.name}）"
-                )
+                is_duplicate = True
 
             # email 判断
-            if new_email and existing_email and new_email == existing_email:
+            if not is_duplicate and new_email and existing_email and new_email == existing_email:
                 is_kiro = new_provider_type == "kiro" or existing_provider_type == "kiro"
                 if is_kiro:
                     # Kiro: 只有 email + auth_method 都相同才视为重复
-                    # 同一邮箱可能通过 Social 和 IdC 两种方式登录，视为不同账号
-                    if new_auth_method and existing_auth_method:
-                        if new_auth_method.lower() == existing_auth_method.lower():
-                            auth_method_display = (
-                                "Social" if new_auth_method.lower() == "social" else "IdC"
-                            )
-                            raise InvalidRequestException(
-                                f"该 Kiro 账号 ({new_email}, {auth_method_display}) "
-                                f"已存在于当前 Provider 中（名称: {existing_key.name}）"
-                            )
-                    # auth_method 不同，不视为重复
+                    if (
+                        new_auth_method
+                        and existing_auth_method
+                        and new_auth_method.lower() == existing_auth_method.lower()
+                    ):
+                        is_duplicate = True
                 else:
-                    # 非 Kiro Provider: 仅 email 相同即视为重复
+                    is_duplicate = True
+
+            if is_duplicate:
+                # 如果已有账号已失效（is_active=False），允许覆盖
+                if not existing_key.is_active:
+                    logger.info(
+                        "重复 OAuth 账号已失效，将覆盖更新（key_id={}, name={}）",
+                        existing_key.id,
+                        existing_key.name,
+                    )
+                    return existing_key
+
+                # 活跃的重复账号，拒绝添加
+                is_kiro = new_provider_type == "kiro" or existing_provider_type == "kiro"
+                if is_kiro and new_email:
+                    auth_method_display = (
+                        "Social" if (new_auth_method or "").lower() == "social" else "IdC"
+                    )
+                    raise InvalidRequestException(
+                        f"该 Kiro 账号 ({new_email}, {auth_method_display}) "
+                        f"已存在于当前 Provider 中（名称: {existing_key.name}）"
+                    )
+                elif new_email:
                     raise InvalidRequestException(
                         f"该 OAuth 账号 ({new_email}) 已存在于当前 Provider 中"
                         f"（名称: {existing_key.name}）"
+                    )
+                else:
+                    raise InvalidRequestException(
+                        f"该 OAuth 账号已存在于当前 Provider 中（名称: {existing_key.name}）"
                     )
         except InvalidRequestException:
             raise
         except Exception:
             # 解密失败时跳过该 Key
             continue
+
+    return None
 
 
 # ==============================================================================
@@ -791,7 +842,9 @@ async def refresh_oauth(
             key.oauth_invalid_reason = error_reason
             key.is_active = False
             db.commit()
-            logger.warning("Key {} OAuth token 刷新失败，已标记为失效并自动停用: {}", key_id, error_reason)
+            logger.warning(
+                "Key {} OAuth token 刷新失败，已标记为失效并自动停用: {}", key_id, error_reason
+            )
 
         raise InvalidRequestException(f"token refresh 失败: {error_reason}")
 
@@ -1058,23 +1111,30 @@ async def complete_provider_oauth(
         proxy_config=proxy_config,
     )
 
-    # 检查是否存在重复的 OAuth 账号
-    _check_duplicate_oauth_account(db, provider_id, auth_config)
+    # 检查是否存在重复的 OAuth 账号（失效账号允许覆盖）
+    existing_key = _check_duplicate_oauth_account(db, provider_id, auth_config)
+    replaced = False
 
-    # 确定账号名称
-    name = (payload.name or "").strip()
-    if not name:
-        name = auth_config.get("email") or f"账号_{int(time.time())}"
+    if existing_key:
+        new_key = _update_existing_oauth_key(
+            db, existing_key, access_token, auth_config, proxy=key_proxy
+        )
+        replaced = True
+    else:
+        # 确定账号名称
+        name = (payload.name or "").strip()
+        if not name:
+            name = auth_config.get("email") or f"账号_{int(time.time())}"
 
-    new_key = _create_oauth_key(
-        db,
-        provider_id=provider_id,
-        name=name,
-        access_token=access_token,
-        auth_config=auth_config,
-        api_formats=_get_provider_api_formats(provider),
-        proxy=key_proxy,
-    )
+        new_key = _create_oauth_key(
+            db,
+            provider_id=provider_id,
+            name=name,
+            access_token=access_token,
+            auth_config=auth_config,
+            api_formats=_get_provider_api_formats(provider),
+            proxy=key_proxy,
+        )
 
     # 默认开启了 auto_fetch_models，触发模型获取
     await _trigger_auto_fetch_models([str(new_key.id)])
@@ -1085,6 +1145,7 @@ async def complete_provider_oauth(
         expires_at=expires_at,
         has_refresh_token=bool(refresh_token),
         email=auth_config.get("email"),
+        replaced=replaced,
     )
 
 
@@ -1212,6 +1273,7 @@ class BatchImportResultItem(BaseModel):
     key_name: str | None = Field(None, description="创建的 Key 名称（成功时）")
     auth_method: str | None = Field(None, description="认证类型（成功时）")
     error: str | None = Field(None, description="错误信息（失败时）")
+    replaced: bool = Field(False, description="是否覆盖了已失效的重复账号")
 
 
 class BatchImportResponse(BaseModel):
@@ -1278,29 +1340,39 @@ async def import_refresh_token(
             logger.warning("Kiro Refresh Token 验证失败: {}", e)
             raise InvalidRequestException("Kiro Refresh Token 验证失败，请检查凭据是否有效")
 
-        # 检查是否存在重复的 Kiro 账号
-        _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
+        # 检查是否存在重复的 Kiro 账号（失效账号允许覆盖）
+        existing_key = _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
+        replaced = False
 
         # Kiro 确定账号名称（与 Codex/Antigravity 保持一致，使用 email）
-        name = (payload.name or "").strip()
         email: str | None = None
-        if not name:
+        if not existing_key:
+            name = (payload.name or "").strip()
+            if not name:
+                email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
+                name = email or f"账号_{int(time.time())}"
+        else:
             email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
-            name = email or f"账号_{int(time.time())}"
 
         # 将获取到的 email 写回 auth_config，确保持久化
         if email and not new_cfg.email:
             new_cfg.email = email
 
-        new_key = _create_oauth_key(
-            db,
-            provider_id=provider_id,
-            name=name,
-            access_token=access_token,
-            auth_config=new_cfg.to_dict(),
-            api_formats=_get_provider_api_formats(provider),
-            proxy=key_proxy,
-        )
+        if existing_key:
+            new_key = _update_existing_oauth_key(
+                db, existing_key, access_token, new_cfg.to_dict(), proxy=key_proxy
+            )
+            replaced = True
+        else:
+            new_key = _create_oauth_key(
+                db,
+                provider_id=provider_id,
+                name=name,
+                access_token=access_token,
+                auth_config=new_cfg.to_dict(),
+                api_formats=_get_provider_api_formats(provider),
+                proxy=key_proxy,
+            )
 
         # 默认开启了 auto_fetch_models，触发模型获取
         await _trigger_auto_fetch_models([str(new_key.id)])
@@ -1311,6 +1383,7 @@ async def import_refresh_token(
             expires_at=new_cfg.expires_at or None,
             has_refresh_token=bool(new_cfg.refresh_token),
             email=email,
+            replaced=replaced,
         )
 
     try:
@@ -1408,23 +1481,30 @@ async def import_refresh_token(
         proxy_config=proxy_config,
     )
 
-    # 检查是否存在重复的 OAuth 账号
-    _check_duplicate_oauth_account(db, provider_id, auth_config)
+    # 检查是否存在重复的 OAuth 账号（失效账号允许覆盖）
+    existing_key = _check_duplicate_oauth_account(db, provider_id, auth_config)
+    replaced = False
 
-    # 确定账号名称
-    name = (payload.name or "").strip()
-    if not name:
-        name = auth_config.get("email") or f"账号_{int(time.time())}"
+    if existing_key:
+        new_key = _update_existing_oauth_key(
+            db, existing_key, access_token, auth_config, proxy=key_proxy
+        )
+        replaced = True
+    else:
+        # 确定账号名称
+        name = (payload.name or "").strip()
+        if not name:
+            name = auth_config.get("email") or f"账号_{int(time.time())}"
 
-    new_key = _create_oauth_key(
-        db,
-        provider_id=provider_id,
-        name=name,
-        access_token=access_token,
-        auth_config=auth_config,
-        api_formats=_get_provider_api_formats(provider),
-        proxy=key_proxy,
-    )
+        new_key = _create_oauth_key(
+            db,
+            provider_id=provider_id,
+            name=name,
+            access_token=access_token,
+            auth_config=auth_config,
+            api_formats=_get_provider_api_formats(provider),
+            proxy=key_proxy,
+        )
 
     # 默认开启了 auto_fetch_models，触发模型获取
     await _trigger_auto_fetch_models([str(new_key.id)])
@@ -1435,6 +1515,7 @@ async def import_refresh_token(
         expires_at=expires_at,
         has_refresh_token=bool(new_refresh_token),
         email=auth_config.get("email"),
+        replaced=replaced,
     )
 
 
@@ -1639,9 +1720,9 @@ async def batch_import_oauth(
                 logger.warning("批量导入: enrich_auth_config 失败 (index={}): {}", idx, e)
                 # 不中断，继续使用基本 auth_config
 
-            # 检查是否存在重复
+            # 检查是否存在重复（失效账号允许覆盖）
             try:
-                _check_duplicate_oauth_account(db, provider_id, auth_config)
+                existing_key = _check_duplicate_oauth_account(db, provider_id, auth_config)
             except InvalidRequestException as e:
                 results.append(
                     BatchImportResultItem(
@@ -1653,25 +1734,38 @@ async def batch_import_oauth(
                 failed_count += 1
                 continue
 
-            # 生成名称
-            email = auth_config.get("email")
-            if email:
-                name = f"{provider_type}_{email}"
+            replaced = False
+            if existing_key:
+                new_key = _update_existing_oauth_key(
+                    db,
+                    existing_key,
+                    access_token,
+                    auth_config,
+                    flush_only=True,
+                    proxy=key_proxy,
+                )
+                name = existing_key.name
+                replaced = True
             else:
-                name = f"{provider_type}_{int(time.time())}_{idx}"
-            if len(name) > 100:
-                name = name[:100]
+                # 生成名称
+                email = auth_config.get("email")
+                if email:
+                    name = f"{provider_type}_{email}"
+                else:
+                    name = f"{provider_type}_{int(time.time())}_{idx}"
+                if len(name) > 100:
+                    name = name[:100]
 
-            new_key = _create_oauth_key(
-                db,
-                provider_id=provider_id,
-                name=name,
-                access_token=access_token,
-                auth_config=auth_config,
-                api_formats=api_formats,
-                flush_only=True,
-                proxy=key_proxy,
-            )
+                new_key = _create_oauth_key(
+                    db,
+                    provider_id=provider_id,
+                    name=name,
+                    access_token=access_token,
+                    auth_config=auth_config,
+                    api_formats=api_formats,
+                    flush_only=True,
+                    proxy=key_proxy,
+                )
 
             results.append(
                 BatchImportResultItem(
@@ -1679,6 +1773,7 @@ async def batch_import_oauth(
                     status="success",
                     key_id=str(new_key.id),
                     key_name=name,
+                    replaced=replaced,
                 )
             )
             success_count += 1
@@ -1781,9 +1876,9 @@ async def _batch_import_kiro_internal(
                 failed_count += 1
                 continue
 
-            # 检查是否存在重复
+            # 检查是否存在重复（失效账号允许覆盖）
             try:
-                _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
+                existing_key = _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
             except InvalidRequestException as e:
                 results.append(
                     BatchImportResultItem(
@@ -1797,22 +1892,35 @@ async def _batch_import_kiro_internal(
 
             # Kiro 确定账号名称（与 Codex/Antigravity 保持一致，使用 email）
             email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
-            name = email or f"账号_{int(time.time())}"
 
             # 将获取到的 email 写回 auth_config，确保持久化
             if email and not new_cfg.email:
                 new_cfg.email = email
 
-            new_key = _create_oauth_key(
-                db,
-                provider_id=provider_id,
-                name=name,
-                access_token=access_token,
-                auth_config=new_cfg.to_dict(),
-                api_formats=api_formats,
-                flush_only=True,
-                proxy=key_proxy,
-            )
+            replaced = False
+            if existing_key:
+                new_key = _update_existing_oauth_key(
+                    db,
+                    existing_key,
+                    access_token,
+                    new_cfg.to_dict(),
+                    flush_only=True,
+                    proxy=key_proxy,
+                )
+                name = existing_key.name
+                replaced = True
+            else:
+                name = email or f"账号_{int(time.time())}"
+                new_key = _create_oauth_key(
+                    db,
+                    provider_id=provider_id,
+                    name=name,
+                    access_token=access_token,
+                    auth_config=new_cfg.to_dict(),
+                    api_formats=api_formats,
+                    flush_only=True,
+                    proxy=key_proxy,
+                )
 
             results.append(
                 BatchImportResultItem(
@@ -1821,6 +1929,7 @@ async def _batch_import_kiro_internal(
                     key_id=str(new_key.id),
                     key_name=name,
                     auth_method=new_cfg.auth_method or "social",
+                    replaced=replaced,
                 )
             )
             success_count += 1

@@ -208,6 +208,7 @@
                   v-if="allKeys.length > 0"
                   ref="keysListRef"
                   class="divide-y divide-border/40"
+                  :style="keysFixedHeight ? { minHeight: keysFixedHeight + 'px' } : undefined"
                 >
                   <div
                     v-for="({ key, endpoint }, localIdx) in paginatedKeys"
@@ -1227,6 +1228,7 @@ const {
   totalPages: totalKeyPages,
   shouldPaginate: shouldPaginateKeys,
   paginatedItems: paginatedKeys,
+  fixedHeight: keysFixedHeight,
   getGlobalIndex: getGlobalKeyIndex,
   reset: resetKeysPagination,
 } = useSmartPagination(allKeys, keysListRef)
@@ -1494,8 +1496,13 @@ async function handleRefreshOAuth(key: EndpointAPIKey) {
     if (keyInList) {
       keyInList.oauth_expires_at = result.expires_at
     }
-    // 重新加载 key 数据（token 刷新可能补上了 project_id 等信息）
-    await loadEndpoints()
+    // 只重新加载 keys 数据，避免整个表格刷新
+    if (props.providerId) {
+      const freshKeys = await getProviderKeys(props.providerId).catch(() => null)
+      if (freshKeys) {
+        providerKeys.value = freshKeys
+      }
+    }
     // Antigravity：token 刷新后可能完成了账号激活，触发配额获取
     // （不 emit('refresh')，避免触发全局 provider 余额刷新）
     void autoRefreshQuotaInBackground()

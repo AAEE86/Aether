@@ -39,6 +39,12 @@ export function useSmartPagination<T>(
     return Math.ceil(items.value.length / itemsPerPage.value)
   })
 
+  /** 分页激活时的固定高度（px），用于防止翻页时容器高度跳动 */
+  const fixedHeight = computed(() => {
+    if (!shouldPaginate.value || cachedAvgItemHeight.value <= 0) return undefined
+    return itemsPerPage.value * cachedAvgItemHeight.value
+  })
+
   /** 将当前页内的局部索引转换为全局索引 */
   function getGlobalIndex(localIdx: number): number {
     if (!shouldPaginate.value) return localIdx
@@ -165,6 +171,7 @@ export function useSmartPagination<T>(
     totalPages,
     shouldPaginate,
     paginatedItems,
+    fixedHeight,
     getGlobalIndex,
     detect,
     reset,
