@@ -720,7 +720,10 @@ watch(groupedTimeline, (newGroups) => {
   const activeIdx = newGroups.findIndex(g => g.primaryStatus === 'pending' || g.primaryStatus === 'streaming')
   if (activeIdx >= 0) {
     selectedGroupIndex.value = activeIdx
-    selectedAttemptIndex.value = newGroups[activeIdx].allAttempts.length - 1
+    // 选中正在进行的尝试，而非最后一个
+    const group = newGroups[activeIdx]
+    const attemptIdx = group.allAttempts.findIndex(a => a.status === 'pending' || a.status === 'streaming')
+    selectedAttemptIndex.value = attemptIdx >= 0 ? attemptIdx : group.allAttempts.length - 1
     return
   }
 
