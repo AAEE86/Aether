@@ -4,8 +4,6 @@ import { ArrowRight, Shuffle, FileCode, Globe, Shield, Check, Info, AlertTriangl
 import { panelClasses } from './guide-config'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 
-const { siteName } = useSiteInfo()
-
 withDefaults(
   defineProps<{
     baseUrl?: string
@@ -14,6 +12,8 @@ withDefaults(
     baseUrl: typeof window !== 'undefined' ? window.location.origin : 'https://your-aether.com'
   }
 )
+
+const { siteName } = useSiteInfo()
 
 // 格式转换示例
 const conversionExamples = [

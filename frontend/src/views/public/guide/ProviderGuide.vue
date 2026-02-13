@@ -4,8 +4,6 @@ import { ArrowRight, Server, Settings, Check, AlertTriangle, Info } from 'lucide
 import { apiFormats, panelClasses } from './guide-config'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 
-const { siteName } = useSiteInfo()
-
 withDefaults(
   defineProps<{
     baseUrl?: string
@@ -14,6 +12,8 @@ withDefaults(
     baseUrl: typeof window !== 'undefined' ? window.location.origin : 'https://your-aether.com'
   }
 )
+
+const { siteName } = useSiteInfo()
 
 // 端点配置字段说明
 const endpointFields = [

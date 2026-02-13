@@ -1,748 +1,784 @@
 <template>
   <PageContainer>
-    <PageHeader
-      title="系统设置"
-      description="管理系统级别的配置和参数"
-    />
-
-    <div class="mt-6 space-y-6">
-      <!-- 站点信息 -->
-      <CardSection
-        title="站点信息"
-        description="自定义站点名称和副标题，影响导航栏、登录页、指南页面和邮件等全站显示"
-      >
-        <template #actions>
-          <Button
-            size="sm"
-            :disabled="siteInfoLoading || !hasSiteInfoChanges"
-            @click="saveSiteInfo"
-          >
-            {{ siteInfoLoading ? '保存中...' : '保存' }}
-          </Button>
-        </template>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <Label
-              for="site-name"
-              class="block text-sm font-medium"
+    <div class="relative flex gap-6">
+      <!-- 左侧悬浮目录 -->
+      <nav class="hidden lg:block w-44 shrink-0">
+        <div class="sticky top-20 pt-20">
+          <ul class="space-y-0.5 text-sm border-l border-border">
+            <li
+              v-for="item in tocItems"
+              :key="item.id"
             >
-              站点名称
-            </Label>
-            <Input
-              id="site-name"
-              v-model="systemConfig.site_name"
-              type="text"
-              placeholder="Aether"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              显示在导航栏、登录页标题和邮件中
-            </p>
-          </div>
-          <div>
-            <Label
-              for="site-subtitle"
-              class="block text-sm font-medium"
-            >
-              站点副标题
-            </Label>
-            <Input
-              id="site-subtitle"
-              v-model="systemConfig.site_subtitle"
-              type="text"
-              placeholder="AI Gateway"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              显示在导航栏品牌名称下方
-            </p>
-          </div>
-        </div>
-      </CardSection>
-
-      <!-- 配置导出/导入 -->
-      <CardSection
-        title="配置管理"
-        description="导出或导入提供商和模型配置，便于备份或迁移"
-      >
-        <div class="flex flex-wrap gap-4">
-          <div class="flex-1 min-w-[200px]">
-            <p class="text-sm text-muted-foreground mb-3">
-              导出当前所有提供商、端点、API Key 和模型配置到 JSON 文件
-            </p>
-            <Button
-              variant="outline"
-              :disabled="exportLoading"
-              @click="handleExportConfig"
-            >
-              <Download class="w-4 h-4 mr-2" />
-              {{ exportLoading ? '导出中...' : '导出配置' }}
-            </Button>
-          </div>
-          <div class="flex-1 min-w-[200px]">
-            <p class="text-sm text-muted-foreground mb-3">
-              从 JSON 文件导入配置，支持跳过、覆盖或报错三种冲突处理模式
-            </p>
-            <div class="flex items-center gap-2">
-              <input
-                ref="configFileInput"
-                type="file"
-                accept=".json"
-                class="hidden"
-                @change="handleConfigFileSelect"
+              <button
+                class="block w-full text-left px-3 py-1.5 transition-colors duration-200 -ml-px border-l-2"
+                :class="activeSection === item.id
+                  ? 'border-primary text-primary font-medium'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'"
+                @click="scrollToSection(item.id)"
               >
+                {{ item.label }}
+              </button>
+            </li>
+          </ul>
+        </div>
+      </nav>
+
+      <!-- 右侧主内容 -->
+      <div class="flex-1 min-w-0">
+        <PageHeader
+          title="系统设置"
+          description="管理系统级别的配置和参数"
+        />
+
+        <div class="mt-6 space-y-6">
+          <!-- 站点信息 -->
+          <CardSection
+            id="section-site-info"
+            title="站点信息"
+            description="自定义站点名称和副标题，影响导航栏、登录页、指南页面和邮件等全站显示"
+          >
+            <template #actions>
               <Button
-                variant="outline"
-                :disabled="importLoading"
-                @click="triggerConfigFileSelect"
+                size="sm"
+                :disabled="siteInfoLoading || !hasSiteInfoChanges"
+                @click="saveSiteInfo"
               >
-                <Upload class="w-4 h-4 mr-2" />
-                {{ importLoading ? '导入中...' : '导入配置' }}
+                {{ siteInfoLoading ? '保存中...' : '保存' }}
               </Button>
-            </div>
-          </div>
-        </div>
-      </CardSection>
-
-      <!-- 用户数据导出/导入 -->
-      <CardSection
-        title="用户数据管理"
-        description="导出或导入用户及其 API Keys 数据（不含管理员）"
-      >
-        <div class="flex flex-wrap gap-4">
-          <div class="flex-1 min-w-[200px]">
-            <p class="text-sm text-muted-foreground mb-3">
-              导出所有普通用户及其 API Keys 到 JSON 文件
-            </p>
-            <Button
-              variant="outline"
-              :disabled="exportUsersLoading"
-              @click="handleExportUsers"
-            >
-              <Download class="w-4 h-4 mr-2" />
-              {{ exportUsersLoading ? '导出中...' : '导出用户数据' }}
-            </Button>
-          </div>
-          <div class="flex-1 min-w-[200px]">
-            <p class="text-sm text-muted-foreground mb-3">
-              从 JSON 文件导入用户数据（需相同 ENCRYPTION_KEY）
-            </p>
-            <div class="flex items-center gap-2">
-              <input
-                ref="usersFileInput"
-                type="file"
-                accept=".json"
-                class="hidden"
-                @change="handleUsersFileSelect"
-              >
-              <Button
-                variant="outline"
-                :disabled="importUsersLoading"
-                @click="triggerUsersFileSelect"
-              >
-                <Upload class="w-4 h-4 mr-2" />
-                {{ importUsersLoading ? '导入中...' : '导入用户数据' }}
-              </Button>
-            </div>
-          </div>
-        </div>
-      </CardSection>
-
-      <!-- 网络代理 -->
-      <CardSection
-        title="网络代理"
-        description="配置提供商出站请求的默认代理，仅影响大模型 API、余额查询、OAuth 等提供商请求"
-      >
-        <template #actions>
-          <Button
-            size="sm"
-            :disabled="proxyConfigLoading || !hasProxyConfigChanges"
-            @click="saveProxyConfig"
-          >
-            {{ proxyConfigLoading ? '保存中...' : '保存' }}
-          </Button>
-        </template>
-        <div class="max-w-md">
-          <Label class="block text-sm font-medium mb-1">
-            默认代理节点
-          </Label>
-          <Select
-            :model-value="systemConfig.system_proxy_node_id || '__direct__'"
-            @update:model-value="(v: string) => systemConfig.system_proxy_node_id = v === '__direct__' ? null : v"
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="直连（不使用代理）" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__direct__">
-                直连（不使用代理）
-              </SelectItem>
-              <SelectItem
-                v-for="node in proxyNodesStore.onlineNodes"
-                :key="node.id"
-                :value="node.id"
-              >
-                {{ node.name }}{{ node.region ? ` · ${node.region}` : '' }} ({{ node.ip }}:{{ node.port }})
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          <p class="mt-1 text-xs text-muted-foreground">
-            对未单独配置代理的提供商生效，覆盖大模型 API 请求、余额查询、OAuth 刷新等。不影响系统内部接口。
-          </p>
-        </div>
-      </CardSection>
-
-      <!-- 基础配置 -->
-      <CardSection
-        title="基础配置"
-        description="配置系统默认参数"
-      >
-        <template #actions>
-          <Button
-            size="sm"
-            :disabled="basicConfigLoading || !hasBasicConfigChanges"
-            @click="saveBasicConfig"
-          >
-            {{ basicConfigLoading ? '保存中...' : '保存' }}
-          </Button>
-        </template>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <Label
-              for="default-quota"
-              class="block text-sm font-medium"
-            >
-              默认用户配额(美元)
-            </Label>
-            <Input
-              id="default-quota"
-              v-model.number="systemConfig.default_user_quota_usd"
-              type="number"
-              step="0.01"
-              placeholder="10.00"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              新用户注册时的默认配额
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="rate-limit"
-              class="block text-sm font-medium"
-            >
-              每分钟请求限制
-            </Label>
-            <Input
-              id="rate-limit"
-              v-model.number="systemConfig.rate_limit_per_minute"
-              type="number"
-              placeholder="0"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              0 表示不限制
-            </p>
-          </div>
-
-          <div class="flex items-center h-full">
-            <div class="flex items-center space-x-2">
-              <Checkbox
-                id="enable-registration"
-                v-model:checked="systemConfig.enable_registration"
-              />
+            </template>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <Label
-                  for="enable-registration"
-                  class="cursor-pointer"
+                  for="site-name"
+                  class="block text-sm font-medium"
                 >
-                  开放用户注册
+                  站点名称
                 </Label>
-                <p class="text-xs text-muted-foreground">
-                  允许新用户自助注册账户
+                <Input
+                  id="site-name"
+                  v-model="systemConfig.site_name"
+                  type="text"
+                  placeholder="Aether"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  显示在导航栏、登录页标题和邮件中
+                </p>
+              </div>
+              <div>
+                <Label
+                  for="site-subtitle"
+                  class="block text-sm font-medium"
+                >
+                  站点副标题
+                </Label>
+                <Input
+                  id="site-subtitle"
+                  v-model="systemConfig.site_subtitle"
+                  type="text"
+                  placeholder="AI Gateway"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  显示在导航栏品牌名称下方
                 </p>
               </div>
             </div>
-          </div>
+          </CardSection>
 
-          <div class="flex items-center h-full">
-            <div class="flex items-center space-x-2">
-              <Checkbox
-                id="auto-delete-expired-keys"
-                v-model:checked="systemConfig.auto_delete_expired_keys"
-              />
-              <div>
-                <Label
-                  for="auto-delete-expired-keys"
-                  class="cursor-pointer"
-                >
-                  自动删除过期 Key
-                </Label>
-                <p class="text-xs text-muted-foreground">
-                  关闭时仅禁用过期的独立余额 Key
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div class="flex items-center h-full">
-            <div class="flex items-center space-x-2">
-              <Checkbox
-                id="enable-format-conversion"
-                v-model:checked="systemConfig.enable_format_conversion"
-              />
-              <div>
-                <Label
-                  for="enable-format-conversion"
-                  class="cursor-pointer"
-                >
-                  全局格式转换
-                </Label>
-                <p class="text-xs text-muted-foreground">
-                  开启后强制允许所有提供商接受跨格式请求
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </CardSection>
-
-      <!-- 请求记录配置 -->
-      <CardSection
-        title="请求记录"
-        description="控制请求/响应详情的入库方式和内容"
-      >
-        <template #actions>
-          <Button
-            size="sm"
-            :disabled="logConfigLoading || !hasLogConfigChanges"
-            @click="saveLogConfig"
+          <!-- 配置导出/导入 -->
+          <CardSection
+            id="section-config-mgmt"
+            title="配置管理"
+            description="导出或导入提供商和模型配置，便于备份或迁移"
           >
-            {{ logConfigLoading ? '保存中...' : '保存' }}
-          </Button>
-        </template>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <Label
-              for="request-log-level"
-              class="block text-sm font-medium mb-2"
-            >
-              记录详细程度
-            </Label>
-            <Select
-              v-model="systemConfig.request_record_level"
-            >
-              <SelectTrigger
-                id="request-log-level"
-                class="mt-1"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="basic">
-                  BASIC - 基本信息 (~1KB/条)
-                </SelectItem>
-                <SelectItem value="headers">
-                  HEADERS - 含请求头 (~2-3KB/条)
-                </SelectItem>
-                <SelectItem value="full">
-                  FULL - 完整请求响应 (~50KB/条)
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <p class="mt-1 text-xs text-muted-foreground">
-              敏感信息会自动脱敏
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="max-request-body-size"
-              class="block text-sm font-medium"
-            >
-              最大请求体大小 (KB)
-            </Label>
-            <Input
-              id="max-request-body-size"
-              v-model.number="maxRequestBodySizeKB"
-              type="number"
-              placeholder="512"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过此大小的请求体将被截断记录
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="max-response-body-size"
-              class="block text-sm font-medium"
-            >
-              最大响应体大小 (KB)
-            </Label>
-            <Input
-              id="max-response-body-size"
-              v-model.number="maxResponseBodySizeKB"
-              type="number"
-              placeholder="512"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过此大小的响应体将被截断记录
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="sensitive-headers"
-              class="block text-sm font-medium"
-            >
-              敏感请求头
-            </Label>
-            <Input
-              id="sensitive-headers"
-              v-model="sensitiveHeadersStr"
-              placeholder="authorization, x-api-key, cookie"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              逗号分隔，这些请求头会被脱敏处理
-            </p>
-          </div>
-        </div>
-      </CardSection>
-
-      <!-- 请求记录清理策略 -->
-      <CardSection
-        title="请求记录清理策略"
-        description="配置请求记录的分级保留和自动清理"
-      >
-        <template #actions>
-          <div class="flex items-center gap-4">
-            <div class="flex items-center gap-2">
-              <Switch
-                id="enable-auto-cleanup"
-                :model-value="systemConfig.enable_auto_cleanup"
-                @update:model-value="handleAutoCleanupToggle"
-              />
-              <div>
-                <Label
-                  for="enable-auto-cleanup"
-                  class="text-sm cursor-pointer"
-                >
-                  启用自动清理
-                </Label>
-                <p class="text-xs text-muted-foreground">
-                  每天凌晨执行
+            <div class="flex flex-wrap gap-4">
+              <div class="flex-1 min-w-[200px]">
+                <p class="text-sm text-muted-foreground mb-3">
+                  导出当前所有提供商、端点、API Key 和模型配置到 JSON 文件
                 </p>
+                <Button
+                  variant="outline"
+                  :disabled="exportLoading"
+                  @click="handleExportConfig"
+                >
+                  <Download class="w-4 h-4 mr-2" />
+                  {{ exportLoading ? '导出中...' : '导出配置' }}
+                </Button>
               </div>
-            </div>
-            <Button
-              size="sm"
-              :disabled="cleanupConfigLoading || !hasCleanupConfigChanges"
-              @click="saveCleanupConfig"
-            >
-              {{ cleanupConfigLoading ? '保存中...' : '保存' }}
-            </Button>
-          </div>
-        </template>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <Label
-              for="detail-log-retention-days"
-              class="block text-sm font-medium"
-            >
-              详细记录保留天数
-            </Label>
-            <Input
-              id="detail-log-retention-days"
-              v-model.number="systemConfig.detail_log_retention_days"
-              type="number"
-              placeholder="7"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过后压缩 body 字段
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="compressed-log-retention-days"
-              class="block text-sm font-medium"
-            >
-              压缩记录保留天数
-            </Label>
-            <Input
-              id="compressed-log-retention-days"
-              v-model.number="systemConfig.compressed_log_retention_days"
-              type="number"
-              placeholder="90"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过后删除 body 字段
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="header-retention-days"
-              class="block text-sm font-medium"
-            >
-              请求头保留天数
-            </Label>
-            <Input
-              id="header-retention-days"
-              v-model.number="systemConfig.header_retention_days"
-              type="number"
-              placeholder="90"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过后清空 headers 字段
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="log-retention-days"
-              class="block text-sm font-medium"
-            >
-              完整记录保留天数
-            </Label>
-            <Input
-              id="log-retention-days"
-              v-model.number="systemConfig.log_retention_days"
-              type="number"
-              placeholder="365"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过后删除整条记录
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="cleanup-batch-size"
-              class="block text-sm font-medium"
-            >
-              每批次清理记录数
-            </Label>
-            <Input
-              id="cleanup-batch-size"
-              v-model.number="systemConfig.cleanup_batch_size"
-              type="number"
-              placeholder="1000"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              避免单次操作过大影响性能
-            </p>
-          </div>
-
-          <div>
-            <Label
-              for="audit-log-retention-days"
-              class="block text-sm font-medium"
-            >
-              审计日志保留天数
-            </Label>
-            <Input
-              id="audit-log-retention-days"
-              v-model.number="systemConfig.audit_log_retention_days"
-              type="number"
-              placeholder="30"
-              class="mt-1"
-            />
-            <p class="mt-1 text-xs text-muted-foreground">
-              超过后删除审计日志记录
-            </p>
-          </div>
-        </div>
-
-        <!-- 清理策略说明 -->
-        <div class="mt-4 p-4 bg-muted/50 rounded-lg">
-          <h4 class="text-sm font-medium mb-2">
-            清理策略说明
-          </h4>
-          <div class="text-xs text-muted-foreground space-y-1">
-            <p>1. <strong>详细日志阶段</strong>: 保留完整的 request_body 和 response_body</p>
-            <p>2. <strong>压缩日志阶段</strong>: body 字段被压缩存储，节省空间</p>
-            <p>3. <strong>统计阶段</strong>: 仅保留 tokens、成本等统计信息</p>
-            <p>4. <strong>归档删除</strong>: 超过保留期限后完全删除记录</p>
-            <p>5. <strong>审计日志</strong>: 独立清理，记录用户登录、操作等安全事件</p>
-          </div>
-        </div>
-      </CardSection>
-
-      <!-- 定时任务 -->
-      <CardSection
-        title="定时任务"
-        description="配置系统后台定时任务"
-      >
-        <div class="space-y-3">
-          <template
-            v-for="task in scheduledTasks"
-            :key="task.id"
-          >
-            <div
-              class="group relative rounded-xl border transition-all duration-300"
-              :class="task.enabled
-                ? 'border-primary/30 bg-primary/[0.02] shadow-sm shadow-primary/5'
-                : 'border-border bg-card hover:border-border/80'"
-            >
-              <!-- 主行 -->
-              <div class="flex items-center gap-4 p-4">
-                <!-- 左侧：开关 -->
-                <div class="shrink-0">
-                  <Switch
-                    :id="`enable-${task.id}`"
-                    :model-value="task.enabled"
-                    @update:model-value="task.onToggle"
-                  />
-                </div>
-
-                <!-- 中间：图标、标题、描述 -->
-                <div class="flex items-center gap-3 flex-1 min-w-0">
-                  <div
-                    class="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300"
-                    :class="task.enabled
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-foreground'"
+              <div class="flex-1 min-w-[200px]">
+                <p class="text-sm text-muted-foreground mb-3">
+                  从 JSON 文件导入配置，支持跳过、覆盖或报错三种冲突处理模式
+                </p>
+                <div class="flex items-center gap-2">
+                  <input
+                    ref="configFileInput"
+                    type="file"
+                    accept=".json"
+                    class="hidden"
+                    @change="handleConfigFileSelect"
                   >
-                    <component
-                      :is="task.icon"
-                      class="w-4.5 h-4.5"
-                    />
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <h4 class="font-medium text-sm">
-                      {{ task.title }}
-                    </h4>
-                    <p class="text-xs text-muted-foreground mt-0.5 truncate">
-                      {{ task.description }}
-                    </p>
-                  </div>
-                </div>
-
-                <!-- 右侧：时间选择器 + 保存按钮 -->
-                <div
-                  v-if="task.enabled && task.hasTimeConfig"
-                  class="flex items-center gap-2 shrink-0"
-                >
-                  <Clock class="w-4 h-4 text-muted-foreground" />
-                  <Select
-                    :model-value="task.hour"
-                    @update:model-value="(val: string) => task.updateTime(val, task.minute)"
-                  >
-                    <SelectTrigger class="w-14 h-8 text-xs">
-                      <SelectValue placeholder="时" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem
-                        v-for="h in 24"
-                        :key="h - 1"
-                        :value="String(h - 1).padStart(2, '0')"
-                      >
-                        {{ String(h - 1).padStart(2, '0') }}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <span class="text-sm text-muted-foreground">:</span>
-                  <Select
-                    :model-value="task.minute"
-                    @update:model-value="(val: string) => task.updateTime(task.hour, val)"
-                  >
-                    <SelectTrigger class="w-14 h-8 text-xs">
-                      <SelectValue placeholder="分" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem
-                        v-for="m in 60"
-                        :key="m - 1"
-                        :value="String(m - 1).padStart(2, '0')"
-                      >
-                        {{ String(m - 1).padStart(2, '0') }}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
                   <Button
-                    v-if="task.hasChanges"
-                    variant="default"
-                    size="sm"
-                    class="h-8 px-2.5 text-xs"
-                    :disabled="task.loading"
-                    @click="task.onSave"
+                    variant="outline"
+                    :disabled="importLoading"
+                    @click="triggerConfigFileSelect"
                   >
-                    <Check
-                      v-if="!task.loading"
-                      class="w-3.5 h-3.5"
-                    />
-                    <Loader2
-                      v-else
-                      class="w-3.5 h-3.5 animate-spin"
-                    />
+                    <Upload class="w-4 h-4 mr-2" />
+                    {{ importLoading ? '导入中...' : '导入配置' }}
                   </Button>
                 </div>
               </div>
+            </div>
+          </CardSection>
 
-              <!-- 额外配置区域（仅用户配额重置任务有） -->
-              <div
-                v-if="task.id === 'user-quota-reset' && task.enabled"
-                class="px-4 pb-4 pt-0"
+          <!-- 用户数据导出/导入 -->
+          <CardSection
+            id="section-user-data"
+            title="用户数据管理"
+            description="导出或导入用户及其 API Keys 数据（不含管理员）"
+          >
+            <div class="flex flex-wrap gap-4">
+              <div class="flex-1 min-w-[200px]">
+                <p class="text-sm text-muted-foreground mb-3">
+                  导出所有普通用户及其 API Keys 到 JSON 文件
+                </p>
+                <Button
+                  variant="outline"
+                  :disabled="exportUsersLoading"
+                  @click="handleExportUsers"
+                >
+                  <Download class="w-4 h-4 mr-2" />
+                  {{ exportUsersLoading ? '导出中...' : '导出用户数据' }}
+                </Button>
+              </div>
+              <div class="flex-1 min-w-[200px]">
+                <p class="text-sm text-muted-foreground mb-3">
+                  从 JSON 文件导入用户数据（需相同 ENCRYPTION_KEY）
+                </p>
+                <div class="flex items-center gap-2">
+                  <input
+                    ref="usersFileInput"
+                    type="file"
+                    accept=".json"
+                    class="hidden"
+                    @change="handleUsersFileSelect"
+                  >
+                  <Button
+                    variant="outline"
+                    :disabled="importUsersLoading"
+                    @click="triggerUsersFileSelect"
+                  >
+                    <Upload class="w-4 h-4 mr-2" />
+                    {{ importUsersLoading ? '导入中...' : '导入用户数据' }}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardSection>
+
+          <!-- 网络代理 -->
+          <CardSection
+            id="section-proxy"
+            title="网络代理"
+            description="配置提供商出站请求的默认代理，仅影响大模型 API、余额查询、OAuth 等提供商请求"
+          >
+            <template #actions>
+              <Button
+                size="sm"
+                :disabled="proxyConfigLoading || !hasProxyConfigChanges"
+                @click="saveProxyConfig"
               >
-                <div class="flex items-center gap-3 p-3 rounded-lg bg-muted/30 border border-border/50">
-                  <div class="flex items-center gap-2 text-sm">
-                    <span class="text-muted-foreground">重置周期</span>
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-muted-foreground">每</span>
-                      <Input
-                        v-model.number="systemConfig.user_quota_reset_interval_days"
-                        type="number"
-                        min="1"
-                        step="1"
-                        class="w-14 h-7 text-xs text-center px-2"
-                      />
-                      <span class="text-muted-foreground">天</span>
-                    </div>
+                {{ proxyConfigLoading ? '保存中...' : '保存' }}
+              </Button>
+            </template>
+            <div class="max-w-md">
+              <Label class="block text-sm font-medium mb-1">
+                默认代理节点
+              </Label>
+              <Select
+                :model-value="systemConfig.system_proxy_node_id || '__direct__'"
+                @update:model-value="(v: string) => systemConfig.system_proxy_node_id = v === '__direct__' ? null : v"
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="直连（不使用代理）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__direct__">
+                    直连（不使用代理）
+                  </SelectItem>
+                  <SelectItem
+                    v-for="node in proxyNodesStore.onlineNodes"
+                    :key="node.id"
+                    :value="node.id"
+                  >
+                    {{ node.name }}{{ node.region ? ` · ${node.region}` : '' }} ({{ node.ip }}:{{ node.port }})
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p class="mt-1 text-xs text-muted-foreground">
+                对未单独配置代理的提供商生效，覆盖大模型 API 请求、余额查询、OAuth 刷新等。不影响系统内部接口。
+              </p>
+            </div>
+          </CardSection>
+
+          <!-- 基础配置 -->
+          <CardSection
+            id="section-basic"
+            title="基础配置"
+            description="配置系统默认参数"
+          >
+            <template #actions>
+              <Button
+                size="sm"
+                :disabled="basicConfigLoading || !hasBasicConfigChanges"
+                @click="saveBasicConfig"
+              >
+                {{ basicConfigLoading ? '保存中...' : '保存' }}
+              </Button>
+            </template>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <Label
+                  for="default-quota"
+                  class="block text-sm font-medium"
+                >
+                  默认用户配额(美元)
+                </Label>
+                <Input
+                  id="default-quota"
+                  v-model.number="systemConfig.default_user_quota_usd"
+                  type="number"
+                  step="0.01"
+                  placeholder="10.00"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  新用户注册时的默认配额
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="rate-limit"
+                  class="block text-sm font-medium"
+                >
+                  每分钟请求限制
+                </Label>
+                <Input
+                  id="rate-limit"
+                  v-model.number="systemConfig.rate_limit_per_minute"
+                  type="number"
+                  placeholder="0"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  0 表示不限制
+                </p>
+              </div>
+
+              <div class="flex items-center h-full">
+                <div class="flex items-center space-x-2">
+                  <Checkbox
+                    id="enable-registration"
+                    v-model:checked="systemConfig.enable_registration"
+                  />
+                  <div>
+                    <Label
+                      for="enable-registration"
+                      class="cursor-pointer"
+                    >
+                      开放用户注册
+                    </Label>
+                    <p class="text-xs text-muted-foreground">
+                      允许新用户自助注册账户
+                    </p>
                   </div>
                 </div>
-                <p class="text-[11px] text-muted-foreground mt-2 ml-1">
-                  滚动计算：距离上次成功执行满 N 天后再次执行
+              </div>
+
+              <div class="flex items-center h-full">
+                <div class="flex items-center space-x-2">
+                  <Checkbox
+                    id="auto-delete-expired-keys"
+                    v-model:checked="systemConfig.auto_delete_expired_keys"
+                  />
+                  <div>
+                    <Label
+                      for="auto-delete-expired-keys"
+                      class="cursor-pointer"
+                    >
+                      自动删除过期 Key
+                    </Label>
+                    <p class="text-xs text-muted-foreground">
+                      关闭时仅禁用过期的独立余额 Key
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center h-full">
+                <div class="flex items-center space-x-2">
+                  <Checkbox
+                    id="enable-format-conversion"
+                    v-model:checked="systemConfig.enable_format_conversion"
+                  />
+                  <div>
+                    <Label
+                      for="enable-format-conversion"
+                      class="cursor-pointer"
+                    >
+                      全局格式转换
+                    </Label>
+                    <p class="text-xs text-muted-foreground">
+                      开启后强制允许所有提供商接受跨格式请求
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardSection>
+
+          <!-- 请求记录配置 -->
+          <CardSection
+            id="section-request-log"
+            title="请求记录"
+            description="控制请求/响应详情的入库方式和内容"
+          >
+            <template #actions>
+              <Button
+                size="sm"
+                :disabled="logConfigLoading || !hasLogConfigChanges"
+                @click="saveLogConfig"
+              >
+                {{ logConfigLoading ? '保存中...' : '保存' }}
+              </Button>
+            </template>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <Label
+                  for="request-log-level"
+                  class="block text-sm font-medium mb-2"
+                >
+                  记录详细程度
+                </Label>
+                <Select
+                  v-model="systemConfig.request_record_level"
+                >
+                  <SelectTrigger
+                    id="request-log-level"
+                    class="mt-1"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="basic">
+                      BASIC - 基本信息 (~1KB/条)
+                    </SelectItem>
+                    <SelectItem value="headers">
+                      HEADERS - 含请求头 (~2-3KB/条)
+                    </SelectItem>
+                    <SelectItem value="full">
+                      FULL - 完整请求响应 (~50KB/条)
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p class="mt-1 text-xs text-muted-foreground">
+                  敏感信息会自动脱敏
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="max-request-body-size"
+                  class="block text-sm font-medium"
+                >
+                  最大请求体大小 (KB)
+                </Label>
+                <Input
+                  id="max-request-body-size"
+                  v-model.number="maxRequestBodySizeKB"
+                  type="number"
+                  placeholder="512"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过此大小的请求体将被截断记录
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="max-response-body-size"
+                  class="block text-sm font-medium"
+                >
+                  最大响应体大小 (KB)
+                </Label>
+                <Input
+                  id="max-response-body-size"
+                  v-model.number="maxResponseBodySizeKB"
+                  type="number"
+                  placeholder="512"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过此大小的响应体将被截断记录
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="sensitive-headers"
+                  class="block text-sm font-medium"
+                >
+                  敏感请求头
+                </Label>
+                <Input
+                  id="sensitive-headers"
+                  v-model="sensitiveHeadersStr"
+                  placeholder="authorization, x-api-key, cookie"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  逗号分隔，这些请求头会被脱敏处理
                 </p>
               </div>
             </div>
-          </template>
-        </div>
-      </CardSection>
+          </CardSection>
 
-      <!-- 系统版本信息 -->
-      <CardSection
-        title="系统信息"
-        description="当前系统版本和构建信息"
-      >
-        <div class="flex items-center gap-4">
-          <div class="flex items-center gap-2">
-            <Label class="text-sm font-medium text-muted-foreground">版本:</Label>
-            <span
-              v-if="systemVersion"
-              class="text-sm font-mono"
-            >
-              {{ systemVersion }}
-            </span>
-            <span
-              v-else
-              class="text-sm text-muted-foreground"
-            >
-              加载中...
-            </span>
-          </div>
+          <!-- 请求记录清理策略 -->
+          <CardSection
+            id="section-cleanup"
+            title="请求记录清理策略"
+            description="配置请求记录的分级保留和自动清理"
+          >
+            <template #actions>
+              <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2">
+                  <Switch
+                    id="enable-auto-cleanup"
+                    :model-value="systemConfig.enable_auto_cleanup"
+                    @update:model-value="handleAutoCleanupToggle"
+                  />
+                  <div>
+                    <Label
+                      for="enable-auto-cleanup"
+                      class="text-sm cursor-pointer"
+                    >
+                      启用自动清理
+                    </Label>
+                    <p class="text-xs text-muted-foreground">
+                      每天凌晨执行
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  :disabled="cleanupConfigLoading || !hasCleanupConfigChanges"
+                  @click="saveCleanupConfig"
+                >
+                  {{ cleanupConfigLoading ? '保存中...' : '保存' }}
+                </Button>
+              </div>
+            </template>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <Label
+                  for="detail-log-retention-days"
+                  class="block text-sm font-medium"
+                >
+                  详细记录保留天数
+                </Label>
+                <Input
+                  id="detail-log-retention-days"
+                  v-model.number="systemConfig.detail_log_retention_days"
+                  type="number"
+                  placeholder="7"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过后压缩 body 字段
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="compressed-log-retention-days"
+                  class="block text-sm font-medium"
+                >
+                  压缩记录保留天数
+                </Label>
+                <Input
+                  id="compressed-log-retention-days"
+                  v-model.number="systemConfig.compressed_log_retention_days"
+                  type="number"
+                  placeholder="90"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过后删除 body 字段
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="header-retention-days"
+                  class="block text-sm font-medium"
+                >
+                  请求头保留天数
+                </Label>
+                <Input
+                  id="header-retention-days"
+                  v-model.number="systemConfig.header_retention_days"
+                  type="number"
+                  placeholder="90"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过后清空 headers 字段
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="log-retention-days"
+                  class="block text-sm font-medium"
+                >
+                  完整记录保留天数
+                </Label>
+                <Input
+                  id="log-retention-days"
+                  v-model.number="systemConfig.log_retention_days"
+                  type="number"
+                  placeholder="365"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过后删除整条记录
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="cleanup-batch-size"
+                  class="block text-sm font-medium"
+                >
+                  每批次清理记录数
+                </Label>
+                <Input
+                  id="cleanup-batch-size"
+                  v-model.number="systemConfig.cleanup_batch_size"
+                  type="number"
+                  placeholder="1000"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  避免单次操作过大影响性能
+                </p>
+              </div>
+
+              <div>
+                <Label
+                  for="audit-log-retention-days"
+                  class="block text-sm font-medium"
+                >
+                  审计日志保留天数
+                </Label>
+                <Input
+                  id="audit-log-retention-days"
+                  v-model.number="systemConfig.audit_log_retention_days"
+                  type="number"
+                  placeholder="30"
+                  class="mt-1"
+                />
+                <p class="mt-1 text-xs text-muted-foreground">
+                  超过后删除审计日志记录
+                </p>
+              </div>
+            </div>
+
+            <!-- 清理策略说明 -->
+            <div class="mt-4 p-4 bg-muted/50 rounded-lg">
+              <h4 class="text-sm font-medium mb-2">
+                清理策略说明
+              </h4>
+              <div class="text-xs text-muted-foreground space-y-1">
+                <p>1. <strong>详细日志阶段</strong>: 保留完整的 request_body 和 response_body</p>
+                <p>2. <strong>压缩日志阶段</strong>: body 字段被压缩存储，节省空间</p>
+                <p>3. <strong>统计阶段</strong>: 仅保留 tokens、成本等统计信息</p>
+                <p>4. <strong>归档删除</strong>: 超过保留期限后完全删除记录</p>
+                <p>5. <strong>审计日志</strong>: 独立清理，记录用户登录、操作等安全事件</p>
+              </div>
+            </div>
+          </CardSection>
+
+          <!-- 定时任务 -->
+          <CardSection
+            id="section-scheduled"
+            title="定时任务"
+            description="配置系统后台定时任务"
+          >
+            <div class="space-y-3">
+              <template
+                v-for="task in scheduledTasks"
+                :key="task.id"
+              >
+                <div
+                  class="group relative rounded-xl border transition-all duration-300"
+                  :class="task.enabled
+                    ? 'border-primary/30 bg-primary/[0.02] shadow-sm shadow-primary/5'
+                    : 'border-border bg-card hover:border-border/80'"
+                >
+                  <!-- 主行 -->
+                  <div class="flex items-center gap-4 p-4">
+                    <!-- 左侧：开关 -->
+                    <div class="shrink-0">
+                      <Switch
+                        :id="`enable-${task.id}`"
+                        :model-value="task.enabled"
+                        @update:model-value="task.onToggle"
+                      />
+                    </div>
+
+                    <!-- 中间：图标、标题、描述 -->
+                    <div class="flex items-center gap-3 flex-1 min-w-0">
+                      <div
+                        class="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300"
+                        :class="task.enabled
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-muted-foreground'"
+                      >
+                        <component
+                          :is="task.icon"
+                          class="w-4.5 h-4.5"
+                        />
+                      </div>
+                      <div class="flex-1 min-w-0">
+                        <h4 class="font-medium text-sm">
+                          {{ task.title }}
+                        </h4>
+                        <p class="text-xs text-muted-foreground mt-0.5 truncate">
+                          {{ task.description }}
+                        </p>
+                      </div>
+                    </div>
+
+                    <!-- 右侧：时间选择器 + 保存按钮 -->
+                    <div
+                      v-if="task.enabled && task.hasTimeConfig"
+                      class="flex items-center gap-2 shrink-0"
+                    >
+                      <Clock class="w-4 h-4 text-muted-foreground" />
+                      <Select
+                        :model-value="task.hour"
+                        @update:model-value="(val: string) => task.updateTime(val, task.minute)"
+                      >
+                        <SelectTrigger class="w-14 h-8 text-xs">
+                          <SelectValue placeholder="时" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem
+                            v-for="h in 24"
+                            :key="h - 1"
+                            :value="String(h - 1).padStart(2, '0')"
+                          >
+                            {{ String(h - 1).padStart(2, '0') }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <span class="text-sm text-muted-foreground">:</span>
+                      <Select
+                        :model-value="task.minute"
+                        @update:model-value="(val: string) => task.updateTime(task.hour, val)"
+                      >
+                        <SelectTrigger class="w-14 h-8 text-xs">
+                          <SelectValue placeholder="分" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem
+                            v-for="m in 60"
+                            :key="m - 1"
+                            :value="String(m - 1).padStart(2, '0')"
+                          >
+                            {{ String(m - 1).padStart(2, '0') }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        v-if="task.hasChanges"
+                        variant="default"
+                        size="sm"
+                        class="h-8 px-2.5 text-xs"
+                        :disabled="task.loading"
+                        @click="task.onSave"
+                      >
+                        <Check
+                          v-if="!task.loading"
+                          class="w-3.5 h-3.5"
+                        />
+                        <Loader2
+                          v-else
+                          class="w-3.5 h-3.5 animate-spin"
+                        />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <!-- 额外配置区域（仅用户配额重置任务有） -->
+                  <div
+                    v-if="task.id === 'user-quota-reset' && task.enabled"
+                    class="px-4 pb-4 pt-0"
+                  >
+                    <div class="flex items-center gap-3 p-3 rounded-lg bg-muted/30 border border-border/50">
+                      <div class="flex items-center gap-2 text-sm">
+                        <span class="text-muted-foreground">重置周期</span>
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-muted-foreground">每</span>
+                          <Input
+                            v-model.number="systemConfig.user_quota_reset_interval_days"
+                            type="number"
+                            min="1"
+                            step="1"
+                            class="w-14 h-7 text-xs text-center px-2"
+                          />
+                          <span class="text-muted-foreground">天</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p class="text-[11px] text-muted-foreground mt-2 ml-1">
+                      滚动计算：距离上次成功执行满 N 天后再次执行
+                    </p>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </CardSection>
+
+          <!-- 系统版本信息 -->
+          <CardSection
+            id="section-sysinfo"
+            title="系统信息"
+            description="当前系统版本和构建信息"
+          >
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2">
+                <Label class="text-sm font-medium text-muted-foreground">版本:</Label>
+                <span
+                  v-if="systemVersion"
+                  class="text-sm font-mono"
+                >
+                  {{ systemVersion }}
+                </span>
+                <span
+                  v-else
+                  class="text-sm text-muted-foreground"
+                >
+                  加载中...
+                </span>
+              </div>
+            </div>
+          </CardSection>
         </div>
-      </CardSection>
+      </div>
     </div>
 
     <!-- 导入配置对话框 -->
@@ -1089,7 +1125,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { Download, Upload, CalendarCheck, RotateCcw, RefreshCw, Clock, Check, Loader2 } from 'lucide-vue-next'
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
@@ -1114,6 +1150,67 @@ import { useSiteInfo } from '@/composables/useSiteInfo'
 const { success, error } = useToast()
 const { refreshSiteInfo } = useSiteInfo()
 const proxyNodesStore = useProxyNodesStore()
+
+// 目录项定义
+const tocItems = [
+  { id: 'section-site-info', label: '站点信息' },
+  { id: 'section-config-mgmt', label: '配置管理' },
+  { id: 'section-user-data', label: '用户数据管理' },
+  { id: 'section-proxy', label: '网络代理' },
+  { id: 'section-basic', label: '基础配置' },
+  { id: 'section-request-log', label: '请求记录' },
+  { id: 'section-cleanup', label: '记录清理策略' },
+  { id: 'section-scheduled', label: '定时任务' },
+  { id: 'section-sysinfo', label: '系统信息' },
+]
+
+const activeSection = ref(tocItems[0].id)
+let observer: IntersectionObserver | null = null
+
+function getScrollContainer(): HTMLElement | null {
+  return document.querySelector('.app-shell__content')
+}
+
+function scrollToSection(id: string) {
+  const el = document.getElementById(id)
+  const container = getScrollContainer()
+  if (el && container) {
+    const offset = 80
+    const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop - offset
+    container.scrollTo({ top, behavior: 'smooth' })
+  }
+}
+
+function setupScrollSpy() {
+  const sectionIds = tocItems.map(item => item.id)
+  const container = getScrollContainer()
+  if (!container) return
+
+  const visibleSections = new Set<string>()
+
+  observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          visibleSections.add(entry.target.id)
+        } else {
+          visibleSections.delete(entry.target.id)
+        }
+      }
+      // 利用 sectionIds 的有序性，取可见中最靠前的
+      const topId = sectionIds.find(id => visibleSections.has(id))
+      if (topId) {
+        activeSection.value = topId
+      }
+    },
+    { root: container, rootMargin: '-80px 0px -60% 0px', threshold: 0 }
+  )
+
+  for (const id of sectionIds) {
+    const el = document.getElementById(id)
+    if (el) observer.observe(el)
+  }
+}
 
 interface SystemConfig {
   // 站点信息
@@ -1295,6 +1392,15 @@ onMounted(async () => {
     loadSystemVersion(),
     proxyNodesStore.ensureLoaded(),
   ])
+  await nextTick()
+  setupScrollSpy()
+})
+
+onBeforeUnmount(() => {
+  if (observer) {
+    observer.disconnect()
+    observer = null
+  }
 })
 
 async function loadSystemVersion() {

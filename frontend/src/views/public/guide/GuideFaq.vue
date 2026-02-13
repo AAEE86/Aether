@@ -4,8 +4,6 @@ import { Search, ChevronDown, ExternalLink, HelpCircle } from 'lucide-vue-next'
 import { faqItems, panelClasses } from './guide-config'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 
-const { siteName } = useSiteInfo()
-
 withDefaults(
   defineProps<{
     baseUrl?: string
@@ -14,6 +12,8 @@ withDefaults(
     baseUrl: typeof window !== 'undefined' ? window.location.origin : 'https://your-aether.com'
   }
 )
+
+const { siteName } = useSiteInfo()
 
 // 搜索关键词
 const searchQuery = ref('')

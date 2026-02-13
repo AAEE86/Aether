@@ -4,8 +4,6 @@ import { ArrowRight, Users, Key, Shield, Check, Info, AlertTriangle, Clock } fro
 import { panelClasses } from './guide-config'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 
-const { siteName } = useSiteInfo()
-
 withDefaults(
   defineProps<{
     baseUrl?: string
@@ -14,6 +12,8 @@ withDefaults(
     baseUrl: typeof window !== 'undefined' ? window.location.origin : 'https://your-aether.com'
   }
 )
+
+const { siteName } = useSiteInfo()
 
 // API Key 字段说明
 const keyFields = [

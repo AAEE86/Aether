@@ -4,8 +4,6 @@ import { ArrowRight, Server, Layers, Key, Box, ChevronRight } from 'lucide-vue-n
 import { coreConcepts, apiFormats, configSteps, panelClasses } from './guide-config'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 
-const { siteName } = useSiteInfo()
-
 withDefaults(
   defineProps<{
     baseUrl?: string
@@ -14,6 +12,8 @@ withDefaults(
     baseUrl: typeof window !== 'undefined' ? window.location.origin : 'https://your-aether.com'
   }
 )
+
+const { siteName } = useSiteInfo()
 
 // 概念图标映射
 const conceptIcons = {
