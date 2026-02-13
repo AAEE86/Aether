@@ -181,6 +181,89 @@ def test_openai_cli_function_call_to_claude() -> None:
     assert content2[0]["content"] == "file1.txt\nfile2.txt"
 
 
+def test_openai_cli_empty_call_id_repaired_when_convert_to_openai_chat() -> None:
+    """空 call_id 会在转换链路中被自动修复，并保持 tool 调用关联。"""
+    reg = _make_registry_with_cli()
+
+    openai_cli_req = {
+        "model": "gpt-5",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "请读取 config"}],
+            },
+            {
+                "type": "function_call",
+                "name": "read_file",
+                "arguments": '{"path": "config.yaml"}',
+                "call_id": "",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "",
+                "output": "ok",
+            },
+        ],
+    }
+
+    out = reg.convert_request(openai_cli_req, "openai:cli", "openai:chat")
+    messages = cast(list[dict[str, Any]], out.get("messages") or [])
+
+    assistant_msg = next((m for m in messages if m.get("role") == "assistant"), {})
+    tool_calls = cast(list[dict[str, Any]], assistant_msg.get("tool_calls") or [])
+    assert len(tool_calls) == 1
+
+    generated_id = str(tool_calls[0].get("id") or "")
+    assert generated_id.startswith("call_auto_")
+
+    tool_msg = next((m for m in messages if m.get("role") == "tool"), {})
+    assert tool_msg.get("tool_call_id") == generated_id
+
+
+def test_openai_chat_empty_tool_call_id_repaired_when_convert_to_openai_cli() -> None:
+    """openai:chat 的空 tool_call_id 转 openai:cli 时应生成有效 call_id。"""
+    reg = _make_registry_with_cli()
+
+    openai_chat_req = {
+        "model": "gpt-5",
+        "messages": [
+            {"role": "user", "content": "帮我读取 README"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "",
+                "content": "done",
+            },
+        ],
+    }
+
+    out = reg.convert_request(openai_chat_req, "openai:chat", "openai:cli")
+    input_items = cast(list[dict[str, Any]], out.get("input") or [])
+
+    function_call = next((i for i in input_items if i.get("type") == "function_call"), {})
+    function_call_output = next(
+        (i for i in input_items if i.get("type") == "function_call_output"), {}
+    )
+
+    generated_id = str(function_call.get("call_id") or "")
+    assert generated_id.startswith("call_auto_")
+    assert function_call_output.get("call_id") == generated_id
+
+
 def test_openai_cli_reasoning_preserved_in_roundtrip() -> None:
     """测试 OpenAI CLI 的 reasoning block 在 roundtrip 中被保留"""
     reg = _make_registry_with_cli()

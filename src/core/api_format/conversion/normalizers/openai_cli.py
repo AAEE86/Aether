@@ -1054,7 +1054,7 @@ class OpenAICliNormalizer(FormatNormalizer):
             content_text=content_text,
             extra={"openai_cli": self._extract_extra(item, {"type", "call_id", "id", "output"})},
         )
-        return InternalMessage(role=Role.TOOL, content=[result_block])
+        return InternalMessage(role=Role.USER, content=[result_block])
 
     def _parse_reasoning_item(self, item: dict[str, Any]) -> InternalMessage:
         summary_parts: list[str] = []

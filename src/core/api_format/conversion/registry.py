@@ -15,6 +15,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+from src.core.api_format.conversion.internal import InternalRequest, ToolResultBlock, ToolUseBlock
 from src.core.api_format.conversion.exceptions import FormatConversionError
 from src.core.api_format.conversion.normalizer import FormatNormalizer
 from src.core.api_format.conversion.stream_state import StreamState
@@ -60,6 +61,40 @@ class FormatConversionRegistry:
             raise FormatConversionError(format_id, format_id, f"未注册 Normalizer: {format_id}")
         return normalizer
 
+    def _repair_internal_tool_call_ids(self, internal: InternalRequest) -> None:
+        """修复 InternalRequest 中空的 tool id/tool_use_id，避免上游校验报错。"""
+
+        pending_tool_ids: list[str] = []
+        auto_counter = 0
+
+        def next_tool_id() -> str:
+            nonlocal auto_counter
+            auto_counter += 1
+            return f"call_auto_{auto_counter}"
+
+        for message in internal.messages:
+            for block in message.content:
+                if isinstance(block, ToolUseBlock):
+                    tool_id = str(block.tool_id or "").strip()
+                    if not tool_id:
+                        tool_id = next_tool_id()
+                        block.tool_id = tool_id
+                    pending_tool_ids.append(tool_id)
+                    continue
+
+                if isinstance(block, ToolResultBlock):
+                    tool_use_id = str(block.tool_use_id or "").strip()
+                    if tool_use_id:
+                        block.tool_use_id = tool_use_id
+                        if tool_use_id in pending_tool_ids:
+                            pending_tool_ids.remove(tool_use_id)
+                        continue
+
+                    if pending_tool_ids:
+                        block.tool_use_id = pending_tool_ids.pop(0)
+                    else:
+                        block.tool_use_id = next_tool_id()
+
     # ==================== 请求/响应转换（严格） ====================
 
     def convert_request(
@@ -81,6 +116,7 @@ class FormatConversionRegistry:
         ):
             try:
                 internal = src.request_to_internal(request)
+                self._repair_internal_tool_call_ids(internal)
                 return tgt.request_from_internal(internal, target_variant=target_variant)
             except Exception as e:
                 raise FormatConversionError(source_format, target_format, str(e)) from e
