@@ -493,7 +493,12 @@ async function handleVerify() {
         verifyStatus.value = 'success'
         formChanged.value = false
         const displayName = result.data?.display_name || result.data?.username
-        showSuccess(`用户: ${displayName} | 余额: ${formatQuota(quota)}`, '验证成功')
+        const extra = result.data?.extra
+        let balanceText = `余额: ${formatQuota(quota)}`
+        if (extra && extra.balance !== undefined && extra.points !== undefined) {
+          balanceText = `余额: ${formatQuota(extra.balance)} | 积分: ${formatQuota(extra.points)}`
+        }
+        showSuccess(`用户: ${displayName} | ${balanceText}`, '验证成功')
       }
     } else {
       verifyStatus.value = 'error'

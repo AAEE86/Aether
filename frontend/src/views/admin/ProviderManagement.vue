@@ -216,10 +216,26 @@
                   v-else-if="provider.ops_configured && getProviderBalance(provider.id)"
                   class="flex items-center gap-2 text-xs"
                 >
-                  <!-- 余额文字 -->
-                  <span class="font-semibold text-foreground/90 min-w-[4.5rem] tabular-nums">
-                    {{ formatBalanceDisplay(getProviderBalance(provider.id)) }}
-                  </span>
+                  <!-- 余额文字：balance + points 分开显示，或普通余额 -->
+                  <template v-for="bd in [getProviderBalanceBreakdown(provider.id)]" :key="'bd'">
+                    <div
+                      v-if="bd"
+                      class="min-w-[4.5rem] tabular-nums leading-tight"
+                    >
+                      <div class="font-semibold text-foreground/90">
+                        ${{ bd.balance.toFixed(2) }}
+                      </div>
+                      <div class="text-muted-foreground/70 text-[10px]">
+                        ${{ bd.points.toFixed(2) }}
+                      </div>
+                    </div>
+                    <span
+                      v-else
+                      class="font-semibold text-foreground/90 min-w-[4.5rem] tabular-nums"
+                    >
+                      {{ formatBalanceDisplay(getProviderBalance(provider.id)) }}
+                    </span>
+                  </template>
                   <!-- 窗口限额 + 签到状态 + Cookie 失效警告 -->
                   <div
                     v-if="getProviderBalanceExtra(provider.id, provider.ops_architecture_id).length > 0 || getProviderCheckin(provider.id) || getProviderCookieExpired(provider.id)"
@@ -1013,6 +1029,24 @@ function getProviderBalance(providerId: string): { available: number | null; cur
   return {
     available: result.data.total_available,
     currency: result.data.currency || 'USD'
+  }
+}
+
+// 获取 provider 余额明细（balance + points 分开显示）
+function getProviderBalanceBreakdown(providerId: string): { balance: number; points: number; currency: string } | null {
+  const result = balanceCache.value[providerId]
+  if (!result || (result.status !== 'success' && result.status !== 'auth_expired') || !result.data) {
+    return null
+  }
+  const data = result.data as Record<string, any>
+  const extra = data.extra
+  if (!extra || extra.balance === undefined || extra.points === undefined) {
+    return null
+  }
+  return {
+    balance: extra.balance,
+    points: extra.points,
+    currency: data.currency || 'USD',
   }
 }
 

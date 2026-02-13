@@ -16,6 +16,7 @@ from src.services.provider_ops.architectures import (
     NekoCodeArchitecture,
     NewApiArchitecture,
     ProviderArchitecture,
+    Sub2ApiArchitecture,
     YesCodeArchitecture,
 )
 
@@ -57,6 +58,7 @@ class ArchitectureRegistry:
             GenericApiArchitecture,
             NekoCodeArchitecture,
             NewApiArchitecture,
+            Sub2ApiArchitecture,
             YesCodeArchitecture,
         ]
 
