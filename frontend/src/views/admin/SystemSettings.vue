@@ -672,7 +672,7 @@
                         :model-value="task.hour"
                         @update:model-value="(val: string) => task.updateTime(val, task.minute)"
                       >
-                        <SelectTrigger class="w-14 h-8 text-xs">
+                        <SelectTrigger class="w-[4.5rem] h-8 text-xs">
                           <SelectValue placeholder="时" />
                         </SelectTrigger>
                         <SelectContent>
@@ -690,7 +690,7 @@
                         :model-value="task.minute"
                         @update:model-value="(val: string) => task.updateTime(task.hour, val)"
                       >
-                        <SelectTrigger class="w-14 h-8 text-xs">
+                        <SelectTrigger class="w-[4.5rem] h-8 text-xs">
                           <SelectValue placeholder="分" />
                         </SelectTrigger>
                         <SelectContent>
