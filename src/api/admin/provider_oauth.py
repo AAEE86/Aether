@@ -1340,23 +1340,19 @@ async def import_refresh_token(
             logger.warning("Kiro Refresh Token 验证失败: {}", e)
             raise InvalidRequestException("Kiro Refresh Token 验证失败，请检查凭据是否有效")
 
+        # 先获取 email，确保重复检查时有 email 可用
+        email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
+        if email and not new_cfg.email:
+            new_cfg.email = email
+
         # 检查是否存在重复的 Kiro 账号（失效账号允许覆盖）
         existing_key = _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
         replaced = False
 
         # Kiro 确定账号名称（与 Codex/Antigravity 保持一致，使用 email）
-        email: str | None = None
-        if not existing_key:
-            name = (payload.name or "").strip()
-            if not name:
-                email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
-                name = email or f"账号_{int(time.time())}"
-        else:
-            email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
-
-        # 将获取到的 email 写回 auth_config，确保持久化
-        if email and not new_cfg.email:
-            new_cfg.email = email
+        name = (payload.name or "").strip()
+        if not name:
+            name = email or f"账号_{int(time.time())}"
 
         if existing_key:
             new_key = _update_existing_oauth_key(
@@ -1876,6 +1872,11 @@ async def _batch_import_kiro_internal(
                 failed_count += 1
                 continue
 
+            # 先获取 email，确保重复检查时有 email 可用
+            email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
+            if email and not new_cfg.email:
+                new_cfg.email = email
+
             # 检查是否存在重复（失效账号允许覆盖）
             try:
                 existing_key = _check_duplicate_oauth_account(db, provider_id, new_cfg.to_dict())
@@ -1889,13 +1890,6 @@ async def _batch_import_kiro_internal(
                 )
                 failed_count += 1
                 continue
-
-            # Kiro 确定账号名称（与 Codex/Antigravity 保持一致，使用 email）
-            email = await _fetch_kiro_email(new_cfg.to_dict(), proxy_config=proxy_config)
-
-            # 将获取到的 email 写回 auth_config，确保持久化
-            if email and not new_cfg.email:
-                new_cfg.email = email
 
             replaced = False
             if existing_key:
