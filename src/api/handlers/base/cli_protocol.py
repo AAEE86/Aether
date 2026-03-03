@@ -87,6 +87,17 @@ class CliHandlerProtocol(Protocol):
         http_request: Any | None = ...,
     ) -> dict[str, Any] | None: ...
 
+    def _merge_scheduling_metadata(
+        self,
+        request_metadata: dict[str, Any] | None,
+        *,
+        exec_result: Any | None = ...,
+        selected_key_id: str | None = ...,
+        candidate_keys: list[Any] | None = ...,
+        pool_summary: dict[str, Any] | None = ...,
+        fallback_from_request: bool = ...,
+    ) -> dict[str, Any] | None: ...
+
     def _resolve_capability_requirements(
         self,
         model_name: str,

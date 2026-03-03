@@ -1,4 +1,5 @@
 import client from '../client'
+import type { AllowedModels, ProxyConfig } from './types/provider'
 
 export interface PoolKeyStatus {
   key_id: string
@@ -78,15 +79,80 @@ export interface PoolKeyDetail {
   key_name: string
   is_active: boolean
   auth_type: string
+  oauth_expires_at?: number | null
+  oauth_invalid_at?: number | null
+  oauth_invalid_reason?: string | null
+  oauth_plan_type?: string | null
+  quota_updated_at?: number | null
+  health_score?: number
+  circuit_breaker_open?: boolean
+  api_formats?: string[]
+  rate_multipliers?: Record<string, number> | null
+  internal_priority?: number
+  rpm_limit?: number | null
+  cache_ttl_minutes?: number
+  max_probe_interval_minutes?: number
+  note?: string | null
+  allowed_models?: AllowedModels
+  capabilities?: Record<string, boolean> | null
+  auto_fetch_models?: boolean
+  locked_models?: string[] | null
+  model_include_patterns?: string[] | null
+  model_exclude_patterns?: string[] | null
+  proxy?: ProxyConfig | null
   account_quota: string | null
   cooldown_reason: string | null
   cooldown_ttl_seconds: number | null
   cost_window_usage: number
   cost_limit: number | null
+  request_count: number
+  total_tokens: number
+  total_cost_usd: number
   sticky_sessions: number
   lru_score: number | null
   created_at: string | null
   last_used_at: string | null
+  scheduling_status?: 'available' | 'degraded' | 'blocked'
+  scheduling_reason?:
+    | 'available'
+    | 'manual_disabled'
+    | 'cooldown'
+    | 'circuit_open'
+    | 'cost_exhausted'
+    | 'cost_soft'
+    | 'cost'
+    | 'health_low'
+    | 'health_degraded'
+    | 'health'
+    | string
+  scheduling_label?: string
+  scheduling_reasons?: PoolSchedulingReason[]
+  scheduling_score?: number
+  candidate_eligible?: boolean
+  scheduling_blocked_count?: number
+  scheduling_degraded_count?: number
+  scheduling_dimensions?: PoolSchedulingDimension[]
+}
+
+export interface PoolSchedulingReason {
+  code: string
+  label: string
+  blocking: boolean
+  source: 'manual' | 'pool' | 'health' | 'policy' | string
+  ttl_seconds?: number | null
+  detail?: string | null
+}
+
+export interface PoolSchedulingDimension {
+  code: string
+  label: string
+  status: 'ok' | 'degraded' | 'blocked' | string
+  blocking: boolean
+  source: 'manual' | 'pool' | 'health' | 'policy' | string
+  weight: number
+  score: number
+  ttl_seconds?: number | null
+  detail?: string | null
 }
 
 export interface PoolKeysPageResponse {
@@ -101,18 +167,6 @@ export interface PoolKeysQuery {
   page_size?: number
   search?: string
   status?: 'all' | 'active' | 'cooldown' | 'inactive'
-}
-
-export interface PoolKeyImportItem {
-  name: string
-  api_key: string
-  auth_type?: string
-}
-
-export interface BatchImportResponse {
-  imported: number
-  skipped: number
-  errors: { index: number; reason: string }[]
 }
 
 export interface PoolBatchAction {
@@ -133,18 +187,17 @@ export async function listPoolKeys(
   return response.data
 }
 
-export async function batchImportPoolKeys(
-  providerId: string,
-  keys: PoolKeyImportItem[],
-): Promise<BatchImportResponse> {
-  const response = await client.post(`/api/admin/pool/${providerId}/keys/batch-import`, { keys })
-  return response.data
-}
-
 export async function batchActionPoolKeys(
   providerId: string,
   body: PoolBatchAction,
 ): Promise<{ affected: number; message: string }> {
   const response = await client.post(`/api/admin/pool/${providerId}/keys/batch-action`, body)
+  return response.data
+}
+
+export async function cleanupBannedPoolKeys(
+  providerId: string,
+): Promise<{ affected: number; message: string }> {
+  const response = await client.post(`/api/admin/pool/${providerId}/keys/cleanup-banned`)
   return response.data
 }

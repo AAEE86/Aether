@@ -167,6 +167,43 @@ async def test_trace_build_summary_matches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_trace_build_summary_uses_attempted_key_ids_when_provided() -> None:
+    pool = PoolManager("prov-1", PoolConfig())
+    c1 = _make_candidate("key-1")
+    c2 = _make_candidate("key-2")
+
+    with (
+        patch(
+            "src.services.provider.pool.redis_ops.get_sticky_binding",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "src.services.provider.pool.redis_ops.batch_get_cooldowns",
+            new_callable=AsyncMock,
+            return_value={"key-1": (None, None), "key-2": (None, None)},
+        ),
+        patch(
+            "src.services.provider.pool.redis_ops.get_lru_scores",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+    ):
+        result = await pool.reorder_candidates(None, [c1, c2])
+
+    trace = getattr(result[0], "_pool_scheduling_trace", None)
+    assert trace is not None
+
+    summary = trace.build_summary(
+        success_key_id="key-1",
+        attempted_key_ids={"key-1"},
+    )
+    assert summary["total_keys"] == 2
+    assert summary["attempted"] == 1
+    assert summary["success_key_id"] == "key-1"[:8]
+
+
+@pytest.mark.asyncio
 async def test_sticky_trace_info() -> None:
     pool = PoolManager("prov-1", PoolConfig(sticky_session_ttl_seconds=3600))
     c1 = _make_candidate("key-1")

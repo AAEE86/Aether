@@ -145,6 +145,284 @@ class BaseMessageHandler:
             return None
         return {"perf": self.perf_metrics}
 
+    @staticmethod
+    def _normalize_candidate_status(candidate: dict[str, Any]) -> str:
+        status = candidate.get("status")
+        if isinstance(status, str) and status.strip():
+            return status.strip().lower()
+
+        attempt_status = candidate.get("attempt_status")
+        if isinstance(attempt_status, str) and attempt_status.strip():
+            return attempt_status.strip().lower()
+
+        if candidate.get("skipped"):
+            return "skipped"
+        return ""
+
+    @staticmethod
+    def _to_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def _load_request_candidate_keys(self) -> list[Any]:
+        if not self.request_id:
+            return []
+        try:
+            from src.services.candidate.recorder import CandidateRecorder
+
+            return CandidateRecorder(self.db).get_candidate_keys(self.request_id)
+        except Exception:
+            return []
+
+    def _compact_candidate_key_snapshot(self, item: Any) -> dict[str, Any] | None:
+        raw: dict[str, Any] | None = None
+        if isinstance(item, dict):
+            raw = dict(item)
+        elif hasattr(item, "to_dict"):
+            try:
+                converted = item.to_dict()
+                if isinstance(converted, dict):
+                    raw = dict(converted)
+            except Exception:
+                raw = None
+        if raw is None:
+            return None
+
+        status = self._normalize_candidate_status(raw)
+        candidate_index = raw.get("candidate_index", raw.get("index", 0))
+        retry_index = raw.get("retry_index", 0)
+        snapshot: dict[str, Any] = {
+            "candidate_index": self._to_int(candidate_index, 0),
+            "retry_index": self._to_int(retry_index, 0),
+        }
+
+        passthrough_fields = (
+            "provider_id",
+            "provider_name",
+            "endpoint_id",
+            "key_id",
+            "key_name",
+            "auth_type",
+            "priority",
+            "is_cached",
+            "skip_reason",
+            "error_type",
+            "status_code",
+            "latency_ms",
+        )
+        for field in passthrough_fields:
+            value = raw.get(field)
+            if value is not None and value != "":
+                snapshot[field] = value
+
+        if status:
+            snapshot["status"] = status
+        if raw.get("skipped"):
+            snapshot["skipped"] = True
+            snapshot.setdefault("status", "skipped")
+        if "selected" in raw:
+            snapshot["selected"] = bool(raw.get("selected"))
+
+        error_message = raw.get("error_message")
+        if isinstance(error_message, str) and error_message:
+            snapshot["error_message"] = error_message[:240]
+
+        return snapshot
+
+    def _collect_candidate_snapshots(
+        self,
+        *,
+        candidate_keys: list[Any] | None = None,
+        fallback_from_request: bool = False,
+    ) -> list[dict[str, Any]]:
+        source = candidate_keys
+        if (not source) and fallback_from_request:
+            source = self._load_request_candidate_keys()
+
+        snapshots: list[dict[str, Any]] = []
+        for item in source or []:
+            snapshot = self._compact_candidate_key_snapshot(item)
+            if snapshot:
+                snapshots.append(snapshot)
+
+        snapshots.sort(
+            key=lambda it: (
+                self._to_int(it.get("candidate_index"), 0),
+                self._to_int(it.get("retry_index"), 0),
+            )
+        )
+        return snapshots[:64]
+
+    def _build_scheduling_audit(
+        self,
+        snapshots: list[dict[str, Any]],
+        *,
+        selected_key_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not snapshots:
+            return None
+
+        # "unused" means the candidate was pre-created for audit but never actually attempted.
+        executed_status_exclude = {"", "available", "pending", "skipped", "unused"}
+        executed_count = 0
+        attempts: list[dict[str, Any]] = []
+        account_map: dict[str, dict[str, Any]] = {}
+        candidate_indices: set[int] = set()
+        key_ids: set[str] = set()
+
+        for snapshot in snapshots:
+            status = str(snapshot.get("status", "") or "").lower()
+            if status in executed_status_exclude:
+                continue
+
+            executed_count += 1
+            candidate_index = self._to_int(snapshot.get("candidate_index"), 0)
+            retry_index = self._to_int(snapshot.get("retry_index"), 0)
+            key_id = snapshot.get("key_id")
+            key_name = snapshot.get("key_name")
+            provider_id = snapshot.get("provider_id")
+            provider_name = snapshot.get("provider_name")
+
+            candidate_indices.add(candidate_index)
+            if isinstance(key_id, str) and key_id:
+                key_ids.add(key_id)
+
+            if len(attempts) < 24:
+                attempts.append(
+                    {
+                        "candidate_index": candidate_index,
+                        "retry_index": retry_index,
+                        "provider_id": provider_id,
+                        "provider_name": provider_name,
+                        "key_id": key_id,
+                        "key_name": key_name,
+                        "status": status,
+                        "status_code": snapshot.get("status_code"),
+                        "error_type": snapshot.get("error_type"),
+                    }
+                )
+
+            if not isinstance(key_id, str) or not key_id:
+                continue
+            account = account_map.get(key_id)
+            if account is None:
+                account = {
+                    "key_id": key_id,
+                    "key_name": key_name,
+                    "provider_id": provider_id,
+                    "provider_name": provider_name,
+                    "attempts": 0,
+                    "successes": 0,
+                    "last_status": status,
+                }
+                account_map[key_id] = account
+            account["attempts"] = self._to_int(account.get("attempts"), 0) + 1
+            if status in {"success", "streaming"}:
+                account["successes"] = self._to_int(account.get("successes"), 0) + 1
+            account["last_status"] = status
+
+        if executed_count == 0:
+            return {
+                "mode": "internal",
+                "attempted_count": 0,
+                "account_count": 0,
+                "retry_occurred": False,
+                "failover_occurred": False,
+                "accounts": [],
+                "attempts": [],
+            }
+
+        selected_key_id_norm = str(selected_key_id) if selected_key_id else None
+        accounts = list(account_map.values())[:12]
+        selected_account: dict[str, Any] | None = None
+        if selected_key_id_norm and selected_key_id_norm in account_map:
+            selected_account = dict(account_map[selected_key_id_norm])
+        else:
+            for account in account_map.values():
+                if self._to_int(account.get("successes"), 0) > 0:
+                    selected_account = dict(account)
+                    selected_key_id_norm = str(account.get("key_id", ""))
+                    break
+
+        if selected_account is not None:
+            for account in accounts:
+                if account.get("key_id") == selected_account.get("key_id"):
+                    account["selected"] = True
+
+        failover_occurred = executed_count > 1 and (len(candidate_indices) > 1 or len(key_ids) > 1)
+
+        return {
+            "mode": "internal",
+            "attempted_count": executed_count,
+            "account_count": len(account_map),
+            "retry_occurred": executed_count > 1,
+            "failover_occurred": bool(failover_occurred),
+            "selected_key_id": selected_key_id_norm,
+            "selected_account": selected_account,
+            "accounts": accounts,
+            "attempts": attempts,
+        }
+
+    def _build_scheduling_metadata(
+        self,
+        *,
+        candidate_keys: list[Any] | None = None,
+        selected_key_id: str | None = None,
+        pool_summary: dict[str, Any] | None = None,
+        fallback_from_request: bool = False,
+    ) -> dict[str, Any]:
+        snapshots = self._collect_candidate_snapshots(
+            candidate_keys=candidate_keys,
+            fallback_from_request=fallback_from_request,
+        )
+
+        metadata: dict[str, Any] = {}
+        if pool_summary:
+            metadata["pool_summary"] = pool_summary
+        if snapshots:
+            metadata["candidate_keys"] = snapshots
+
+        scheduling_audit = self._build_scheduling_audit(
+            snapshots,
+            selected_key_id=selected_key_id,
+        )
+        if scheduling_audit:
+            metadata["scheduling_audit"] = scheduling_audit
+        return metadata
+
+    def _merge_scheduling_metadata(
+        self,
+        request_metadata: dict[str, Any] | None,
+        *,
+        exec_result: Any | None = None,
+        selected_key_id: str | None = None,
+        candidate_keys: list[Any] | None = None,
+        pool_summary: dict[str, Any] | None = None,
+        fallback_from_request: bool = True,
+    ) -> dict[str, Any] | None:
+        merged = dict(request_metadata or {})
+
+        resolved_candidate_keys = (
+            candidate_keys
+            if candidate_keys is not None
+            else getattr(exec_result, "candidate_keys", None)
+        )
+        resolved_key_id = selected_key_id or getattr(exec_result, "key_id", None)
+        resolved_pool_summary = (
+            pool_summary if pool_summary is not None else getattr(exec_result, "pool_summary", None)
+        )
+        merged.update(
+            self._build_scheduling_metadata(
+                candidate_keys=resolved_candidate_keys,
+                selected_key_id=resolved_key_id,
+                pool_summary=resolved_pool_summary,
+                fallback_from_request=fallback_from_request,
+            )
+        )
+        return merged or None
+
     def _resolve_capability_requirements(
         self,
         model_name: str,

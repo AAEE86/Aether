@@ -1368,6 +1368,61 @@ def _parse_kiro_import_input(raw_input: str) -> list[dict[str, Any]]:
 
     返回: 凭据字典列表
     """
+
+    def _normalize_item(item: Any) -> dict[str, Any] | None:
+        """规范化单条 Kiro 导入项，兼容导出结构。"""
+        if isinstance(item, str) and item.strip():
+            return {"refreshToken": item.strip()}
+        if not isinstance(item, dict):
+            return None
+
+        nested = item.get("auth_config") or item.get("authConfig")
+        if isinstance(nested, dict):
+            # 优先使用 auth_config，兼容导出对象形态：
+            # {"name": "...", "auth_config": {...}, ...}
+            merged = dict(nested)
+            # 若顶层也包含关键字段，允许覆盖 nested（便于手工修正）
+            for key in (
+                "provider_type",
+                "providerType",
+                "auth_method",
+                "authMethod",
+                "auth_type",
+                "authType",
+                "refresh_token",
+                "refreshToken",
+                "expires_at",
+                "expiresAt",
+                "profile_arn",
+                "profileArn",
+                "region",
+                "auth_region",
+                "authRegion",
+                "api_region",
+                "apiRegion",
+                "client_id",
+                "clientId",
+                "client_secret",
+                "clientSecret",
+                "machine_id",
+                "machineId",
+                "kiro_version",
+                "kiroVersion",
+                "system_version",
+                "systemVersion",
+                "node_version",
+                "nodeVersion",
+                "email",
+                "access_token",
+                "accessToken",
+            ):
+                value = item.get(key)
+                if value is not None and value != "":
+                    merged[key] = value
+            return merged
+
+        return item
+
     raw = raw_input.strip()
     if not raw:
         return []
@@ -1380,18 +1435,15 @@ def _parse_kiro_import_input(raw_input: str) -> list[dict[str, Any]]:
             if isinstance(parsed, list):
                 result: list[dict[str, Any]] = []
                 for item in parsed:
-                    if isinstance(item, dict):
-                        result.append(item)
-                    elif isinstance(item, str) and item.strip():
-                        result.append({"refreshToken": item.strip()})
+                    normalized = _normalize_item(item)
+                    if normalized:
+                        result.append(normalized)
                 return result
 
             if isinstance(parsed, dict):
-                # 兼容嵌套格式: {"auth_config": {...}} / {"authConfig": {...}}
-                nested = parsed.get("auth_config") or parsed.get("authConfig")
-                if isinstance(nested, dict):
-                    return [nested]
-                return [parsed]
+                normalized = _normalize_item(parsed)
+                if normalized:
+                    return [normalized]
 
         except json.JSONDecodeError:
             pass

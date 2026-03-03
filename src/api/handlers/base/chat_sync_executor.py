@@ -216,8 +216,11 @@ class ChatSyncExecutor:
             request_metadata = handler._build_request_metadata() or {}
             if ctx.sync_proxy_info:
                 request_metadata["proxy"] = ctx.sync_proxy_info
-            if getattr(exec_result, "pool_summary", None):
-                request_metadata["pool_summary"] = exec_result.pool_summary
+            request_metadata = handler._merge_scheduling_metadata(
+                request_metadata,
+                exec_result=exec_result,
+                selected_key_id=ctx.key_id,
+            )
             total_cost = await handler.telemetry.record_success(  # noqa: F841
                 provider=ctx.provider_name,
                 model=model,
@@ -251,7 +254,7 @@ class ChatSyncExecutor:
                 provider_api_key_id=ctx.key_id,
                 # 模型映射信息
                 target_model=ctx.mapped_model_result,
-                request_metadata=request_metadata or None,
+                request_metadata=request_metadata,
             )
 
             logger.debug(f"{handler.FORMAT_ID} 非流式响应完成")
@@ -273,6 +276,12 @@ class ChatSyncExecutor:
             request_metadata = handler._build_request_metadata() or {}
             if ctx.sync_proxy_info:
                 request_metadata["proxy"] = ctx.sync_proxy_info
+            request_metadata = handler._merge_scheduling_metadata(
+                request_metadata,
+                selected_key_id=ctx.key_id,
+                pool_summary=ctx.pool_summary,
+                fallback_from_request=True,
+            )
             await handler.telemetry.record_failure(
                 provider=ctx.provider_name or "unknown",
                 model=model,
@@ -286,7 +295,7 @@ class ChatSyncExecutor:
                 provider_id=ctx.provider_id,
                 provider_endpoint_id=ctx.endpoint_id,
                 provider_api_key_id=ctx.key_id,
-                request_metadata=request_metadata or None,
+                request_metadata=request_metadata,
             )
             client_format = (ctx.client_api_format_for_error or "").upper()
             provider_format = (ctx.provider_api_format_for_error or client_format).upper()
@@ -308,6 +317,12 @@ class ChatSyncExecutor:
             request_metadata = handler._build_request_metadata() or {}
             if ctx.sync_proxy_info:
                 request_metadata["proxy"] = ctx.sync_proxy_info
+            request_metadata = handler._merge_scheduling_metadata(
+                request_metadata,
+                selected_key_id=ctx.key_id,
+                pool_summary=ctx.pool_summary,
+                fallback_from_request=True,
+            )
             client_format = (ctx.client_api_format_for_error or "").upper()
             provider_format = (ctx.provider_api_format_for_error or client_format).upper()
             payload = _build_error_json_payload(
@@ -372,6 +387,12 @@ class ChatSyncExecutor:
             request_metadata = handler._build_request_metadata() or {}
             if ctx.sync_proxy_info:
                 request_metadata["proxy"] = ctx.sync_proxy_info
+            request_metadata = handler._merge_scheduling_metadata(
+                request_metadata,
+                selected_key_id=ctx.key_id,
+                pool_summary=ctx.pool_summary,
+                fallback_from_request=True,
+            )
             await handler.telemetry.record_failure(
                 provider=ctx.provider_name or "unknown",
                 model=model,
@@ -750,6 +771,12 @@ class ChatSyncExecutor:
         stream_fail_metadata: dict[str, Any] | None = None
         if ctx.proxy_info:
             stream_fail_metadata = {"proxy": ctx.proxy_info}
+        stream_fail_metadata = handler._merge_scheduling_metadata(
+            stream_fail_metadata,
+            selected_key_id=ctx.key_id,
+            pool_summary=ctx.pool_summary,
+            fallback_from_request=True,
+        )
 
         await handler.telemetry.record_failure(
             provider=ctx.provider_name or "unknown",

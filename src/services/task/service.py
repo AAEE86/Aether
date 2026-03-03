@@ -119,6 +119,7 @@ class TaskService:
                 allow_format_conversion=allow_format_conversion,
                 capability_requirements=capability_requirements,
                 max_candidates=max_candidates,
+                request_body=request_body,
             )
 
             candidate_keys = []
@@ -598,8 +599,22 @@ class TaskService:
             # Build pool scheduling summary from traces collected during reorder.
             if pool_traces and result.key_id:
                 try:
+                    attempted_key_ids: set[str] = set()
+                    for ck in result.candidate_keys or []:
+                        status = str(getattr(ck, "status", "") or "").strip().lower()
+                        if status in {"", "available", "pending", "skipped", "unused"}:
+                            continue
+                        kid = getattr(ck, "key_id", None)
+                        if isinstance(kid, str) and kid:
+                            attempted_key_ids.add(kid)
+                    if not attempted_key_ids:
+                        attempted_key_ids.add(str(result.key_id))
+
                     for pt in pool_traces:
-                        summary = pt.build_summary(result.key_id)
+                        summary = pt.build_summary(
+                            result.key_id,
+                            attempted_key_ids=attempted_key_ids,
+                        )
                         if summary:
                             result.pool_summary = summary
                             break
@@ -1204,6 +1219,7 @@ class TaskService:
         allow_format_conversion: bool = False,
         capability_requirements: dict[str, bool] | None = None,
         max_candidates: int | None = None,
+        request_body: dict[str, Any] | None = None,
     ) -> Any:
         """
         Unified ASYNC submit entrypoint (Phase 3.2).
@@ -1300,6 +1316,7 @@ class TaskService:
                 request_id=request_id,
                 is_stream=False,
                 capability_requirements=capability_requirements,
+                request_body=request_body,
             )
 
             if not candidates:
@@ -1308,6 +1325,12 @@ class TaskService:
                     candidate_keys=[],
                     last_status_code=None,
                 )
+
+            # Account Pool: keep internal key failover order/skip behavior
+            # consistent with the SYNC path.
+            candidates, _pool_traces = await self._apply_pool_reorder(
+                candidates, request_body=request_body
+            )
 
             if max_candidates is not None and max_candidates > 0:
                 candidates = candidates[:max_candidates]

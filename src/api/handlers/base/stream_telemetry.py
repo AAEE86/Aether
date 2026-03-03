@@ -210,6 +210,10 @@ class StreamTelemetryRecorder:
             metadata["proxy"] = ctx.proxy_info
         if ctx.pool_summary:
             metadata["pool_summary"] = ctx.pool_summary
+        if ctx.candidate_keys:
+            metadata["candidate_keys"] = ctx.candidate_keys
+        if ctx.scheduling_audit:
+            metadata["scheduling_audit"] = ctx.scheduling_audit
 
         await writer.record_success(
             provider=ctx.provider_name or "unknown",
@@ -268,6 +272,12 @@ class StreamTelemetryRecorder:
             metadata["perf"] = ctx.perf_metrics
         if ctx.proxy_info:
             metadata["proxy"] = ctx.proxy_info
+        if ctx.pool_summary:
+            metadata["pool_summary"] = ctx.pool_summary
+        if ctx.candidate_keys:
+            metadata["candidate_keys"] = ctx.candidate_keys
+        if ctx.scheduling_audit:
+            metadata["scheduling_audit"] = ctx.scheduling_audit
 
         await writer.record_failure(
             provider=ctx.provider_name or "unknown",
@@ -327,6 +337,12 @@ class StreamTelemetryRecorder:
             metadata["perf"] = ctx.perf_metrics
         if ctx.proxy_info:
             metadata["proxy"] = ctx.proxy_info
+        if ctx.pool_summary:
+            metadata["pool_summary"] = ctx.pool_summary
+        if ctx.candidate_keys:
+            metadata["candidate_keys"] = ctx.candidate_keys
+        if ctx.scheduling_audit:
+            metadata["scheduling_audit"] = ctx.scheduling_audit
 
         await writer.record_cancelled(
             provider=ctx.provider_name or "unknown",

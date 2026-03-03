@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,31 @@ class PoolOverviewResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PoolSchedulingReason(BaseModel):
+    """Structured scheduling reason for a key."""
+
+    code: str
+    label: str
+    blocking: bool = False
+    source: str = "pool"  # manual / pool / health / policy
+    ttl_seconds: int | None = None
+    detail: str | None = None
+
+
+class PoolSchedulingDimension(BaseModel):
+    """Detailed scheduling dimension status."""
+
+    code: str
+    label: str
+    status: str = "ok"  # ok / degraded / blocked
+    blocking: bool = False
+    source: str = "pool"
+    weight: int = 1
+    score: float = 1.0  # normalized 0~1
+    ttl_seconds: int | None = None
+    detail: str | None = None
+
+
 class PoolKeyDetail(BaseModel):
     """Detailed status of a single pool key."""
 
@@ -39,15 +66,50 @@ class PoolKeyDetail(BaseModel):
     key_name: str
     is_active: bool
     auth_type: str = "api_key"
+    oauth_expires_at: int | None = None
+    oauth_invalid_at: int | None = None
+    oauth_invalid_reason: str | None = None
+    oauth_plan_type: str | None = None
+    quota_updated_at: int | None = None
+    # 健康度聚合字段（与 Provider Key 列表口径一致）
+    health_score: float = 1.0
+    circuit_breaker_open: bool = False
+    # 编辑/权限/代理所需字段
+    api_formats: list[str] = Field(default_factory=list)
+    rate_multipliers: dict[str, float] | None = None
+    internal_priority: int = 50
+    rpm_limit: int | None = None
+    cache_ttl_minutes: int = 5
+    max_probe_interval_minutes: int = 32
+    note: str | None = None
+    allowed_models: list[str] | None = None
+    capabilities: dict[str, bool] | None = None
+    auto_fetch_models: bool = False
+    locked_models: list[str] | None = None
+    model_include_patterns: list[str] | None = None
+    model_exclude_patterns: list[str] | None = None
+    proxy: dict[str, Any] | None = None
     account_quota: str | None = None
     cooldown_reason: str | None = None
     cooldown_ttl_seconds: int | None = None
     cost_window_usage: int = 0
     cost_limit: int | None = None
+    request_count: int = 0
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
     sticky_sessions: int = 0
     lru_score: float | None = None
     created_at: str | None = None
     last_used_at: str | None = None
+    scheduling_status: str = "available"  # available / degraded / blocked
+    scheduling_reason: str = "available"
+    scheduling_label: str = "可用"
+    scheduling_reasons: list[PoolSchedulingReason] = Field(default_factory=list)
+    scheduling_score: float = 100.0
+    candidate_eligible: bool = True
+    scheduling_blocked_count: int = 0
+    scheduling_degraded_count: int = 0
+    scheduling_dimensions: list[PoolSchedulingDimension] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,6 +138,10 @@ class PoolKeyImportItem(BaseModel):
 
 class BatchImportRequest(BaseModel):
     keys: list[PoolKeyImportItem] = Field(..., max_length=500)
+    proxy_node_id: str | None = Field(
+        default=None,
+        description="导入时绑定到账号的代理节点 ID（可选）",
+    )
 
 
 class BatchImportError(BaseModel):

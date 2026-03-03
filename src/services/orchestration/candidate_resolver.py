@@ -214,6 +214,11 @@ class CandidateResolver:
             provider = candidate.provider
             endpoint = candidate.endpoint
             key = candidate.key
+            pool_extra = (
+                getattr(candidate, "_pool_extra_data", None)
+                if isinstance(getattr(candidate, "_pool_extra_data", None), dict)
+                else {}
+            )
 
             if candidate.is_skipped:
                 record_id = str(uuid.uuid4())
@@ -235,6 +240,7 @@ class CandidateResolver:
                             "needs_conversion": candidate.needs_conversion,
                             "provider_api_format": candidate.provider_api_format or None,
                             "mapping_matched_model": candidate.mapping_matched_model or None,
+                            **pool_extra,
                         },
                         "required_capabilities": active_capabilities,
                         "created_at": datetime.now(timezone.utc),
@@ -269,6 +275,7 @@ class CandidateResolver:
                                 "needs_conversion": candidate.needs_conversion,
                                 "provider_api_format": candidate.provider_api_format or None,
                                 "mapping_matched_model": candidate.mapping_matched_model or None,
+                                **pool_extra,
                             },
                             "required_capabilities": active_capabilities,
                             "created_at": datetime.now(timezone.utc),

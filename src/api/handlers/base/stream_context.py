@@ -139,6 +139,10 @@ class StreamContext:
 
     # 号池调度摘要（来自 ExecutionResult.pool_summary）
     pool_summary: dict[str, Any] | None = None
+    # 候选轨迹（来自 ExecutionResult.candidate_keys，写入 usage metadata）
+    candidate_keys: list[dict[str, Any]] = field(default_factory=list)
+    # 内部调度审计摘要（重试/故障转移/账号使用轨迹）
+    scheduling_audit: dict[str, Any] | None = None
 
     # 流式格式转换状态（跨 chunk 追踪）
     stream_conversion_state: StreamState | None = None
@@ -175,6 +179,9 @@ class StreamContext:
         self.final_usage = None
         self.final_response = None
         self.proxy_info = None
+        self.pool_summary = None
+        self.candidate_keys = []
+        self.scheduling_audit = None
         self.stream_conversion_state = None
         self.stream_conversion_event_count = 0
         self.needs_conversion = False

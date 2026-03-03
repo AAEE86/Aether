@@ -589,6 +589,21 @@ class ChatHandlerBase(BaseMessageHandler, ABC):
             ctx.key_id = key_id
             if getattr(exec_result, "pool_summary", None):
                 ctx.pool_summary = exec_result.pool_summary
+            scheduling_metadata = (
+                self._merge_scheduling_metadata(
+                    {},
+                    exec_result=exec_result,
+                    selected_key_id=key_id,
+                    fallback_from_request=False,
+                )
+                or {}
+            )
+            candidate_keys = scheduling_metadata.get("candidate_keys")
+            if isinstance(candidate_keys, list):
+                ctx.candidate_keys = candidate_keys
+            scheduling_audit = scheduling_metadata.get("scheduling_audit")
+            if isinstance(scheduling_audit, dict):
+                ctx.scheduling_audit = scheduling_audit
             # 同步整流状态（如果请求体被整流过）
             ctx.rectified = request_body_ref.get("_rectified", False)
 

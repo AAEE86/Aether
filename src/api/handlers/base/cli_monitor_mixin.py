@@ -299,7 +299,13 @@ class CliMonitorMixin:
 
                     if ctx.is_client_disconnected():
                         # 客户端取消：记录为 cancelled（不算系统失败）
-                        request_metadata = {"perf": ctx.perf_metrics} if ctx.perf_metrics else None
+                        request_metadata = self._merge_scheduling_metadata(
+                            {"perf": ctx.perf_metrics} if ctx.perf_metrics else None,
+                            selected_key_id=ctx.key_id,
+                            candidate_keys=ctx.candidate_keys,
+                            pool_summary=ctx.pool_summary,
+                            fallback_from_request=True,
+                        )
                         await bg_telemetry.record_cancelled(
                             provider=ctx.provider_name or "unknown",
                             model=ctx.model,
@@ -334,7 +340,13 @@ class CliMonitorMixin:
                         )
                     else:
                         # 服务端/上游异常：记录为失败
-                        request_metadata = {"perf": ctx.perf_metrics} if ctx.perf_metrics else None
+                        request_metadata = self._merge_scheduling_metadata(
+                            {"perf": ctx.perf_metrics} if ctx.perf_metrics else None,
+                            selected_key_id=ctx.key_id,
+                            candidate_keys=ctx.candidate_keys,
+                            pool_summary=ctx.pool_summary,
+                            fallback_from_request=True,
+                        )
                         await bg_telemetry.record_failure(
                             provider=ctx.provider_name or "unknown",
                             model=ctx.model,
@@ -412,7 +424,13 @@ class CliMonitorMixin:
                         f"provider={ctx.provider_name}, model={ctx.model}, "
                         f"in={ctx.input_tokens}, out={ctx.output_tokens}"
                     )
-                    request_metadata = {"perf": ctx.perf_metrics} if ctx.perf_metrics else None
+                    request_metadata = self._merge_scheduling_metadata(
+                        {"perf": ctx.perf_metrics} if ctx.perf_metrics else None,
+                        selected_key_id=ctx.key_id,
+                        candidate_keys=ctx.candidate_keys,
+                        pool_summary=ctx.pool_summary,
+                        fallback_from_request=True,
+                    )
                     total_cost = await bg_telemetry.record_success(
                         provider=ctx.provider_name,
                         model=ctx.model,
@@ -570,7 +588,13 @@ class CliMonitorMixin:
         # 失败时返回给客户端的是 JSON 错误响应
         client_response_headers = {"content-type": "application/json"}
 
-        request_metadata = {"perf": ctx.perf_metrics} if ctx.perf_metrics else None
+        request_metadata = self._merge_scheduling_metadata(
+            {"perf": ctx.perf_metrics} if ctx.perf_metrics else None,
+            selected_key_id=ctx.key_id,
+            candidate_keys=ctx.candidate_keys,
+            pool_summary=ctx.pool_summary,
+            fallback_from_request=True,
+        )
         await self.telemetry.record_failure(
             provider=ctx.provider_name or "unknown",
             model=ctx.model,

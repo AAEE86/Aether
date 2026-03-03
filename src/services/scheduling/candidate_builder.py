@@ -576,32 +576,21 @@ class CandidateBuilder:
                 if not active_keys:
                     continue
 
-                # --- Pool branch: select a single key internally ------
+                # Pool provider should still expose all key candidates here.
+                # Runtime pool scheduling/failover is handled later by TaskService._apply_pool_reorder.
+                use_random = all((key.cache_ttl_minutes or 0) == 0 for key in active_keys)
                 if pool_cfg is not None:
-                    selected_key = await self._pool_select_key(
-                        db, provider, pool_cfg, active_keys, request_body
+                    use_random = False
+                elif use_random and len(active_keys) > 1:
+                    logger.debug(
+                        "  Provider {} 启用 Key 轮换模式 (endpoint_format={}, {} keys)",
+                        provider.name,
+                        endpoint_format_str,
+                        len(active_keys),
                     )
-                    if selected_key is None:
-                        logger.debug(
-                            "Pool[{}]: no schedulable key for endpoint {}",
-                            str(provider.id)[:8],
-                            endpoint_format_str,
-                        )
-                        continue
-                    keys_to_check: list[ProviderAPIKey] = [selected_key]
-                else:
-                    # --- Normal branch: check all keys ----
-                    use_random = all((key.cache_ttl_minutes or 0) == 0 for key in active_keys)
-                    if use_random and len(active_keys) > 1:
-                        logger.debug(
-                            "  Provider {} 启用 Key 轮换模式 (endpoint_format={}, {} keys)",
-                            provider.name,
-                            endpoint_format_str,
-                            len(active_keys),
-                        )
-                    keys_to_check = self._sorter.shuffle_keys_by_internal_priority(
-                        active_keys, affinity_key, use_random
-                    )
+                keys_to_check = self._sorter.shuffle_keys_by_internal_priority(
+                    active_keys, affinity_key, use_random
+                )
 
                 for key in keys_to_check:
                     # Key 级别检查（健康度/熔断按 provider_format bucket）
@@ -660,22 +649,3 @@ class CandidateBuilder:
             candidates = candidates[:max_candidates]
 
         return candidates
-
-    async def _pool_select_key(
-        self,
-        db: Session,
-        provider: Provider,
-        pool_cfg: "PoolConfig",
-        active_keys: list[ProviderAPIKey],
-        request_body: dict | None,
-    ) -> ProviderAPIKey | None:
-        """Select a single key via pool scheduling (sticky -> cooldown/cost -> LRU)."""
-        from src.services.provider.pool.hooks import get_pool_hook
-        from src.services.provider.pool.manager import PoolManager
-
-        provider_type = str(getattr(provider, "provider_type", "") or "")
-        hook = get_pool_hook(provider_type)
-        session_uuid = hook.extract_session_uuid(request_body) if hook and request_body else None
-        mgr = PoolManager(str(provider.id), pool_cfg)
-        release_db_connection_before_await(db)
-        return await mgr.select_key(session_uuid, active_keys)

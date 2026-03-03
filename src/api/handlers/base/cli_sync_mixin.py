@@ -101,6 +101,7 @@ class CliSyncMixin:
         provider_id = None  # Provider ID（用于失败记录）
         endpoint_id = None  # Endpoint ID（用于失败记录）
         key_id = None  # Key ID（用于失败记录）
+        exec_result = None
         mapped_model_result = None  # 映射后的目标模型名（用于 Usage 记录）
         response_metadata_result: dict[str, Any] = {}  # Provider 响应元数据
         needs_conversion = False  # 是否需要格式转换（由 candidate 决定）
@@ -558,8 +559,11 @@ class CliSyncMixin:
             request_metadata = self._build_request_metadata() or {}
             if sync_proxy_info:
                 request_metadata["proxy"] = sync_proxy_info
-            if getattr(exec_result, "pool_summary", None):
-                request_metadata["pool_summary"] = exec_result.pool_summary
+            request_metadata = self._merge_scheduling_metadata(
+                request_metadata,
+                exec_result=exec_result,
+                selected_key_id=key_id,
+            )
             total_cost = await self.telemetry.record_success(
                 provider=provider_name,
                 model=model,
@@ -592,7 +596,7 @@ class CliSyncMixin:
                 target_model=mapped_model_result,
                 # Provider 响应元数据（如 Gemini 的 modelVersion）
                 response_metadata=response_metadata_result if response_metadata_result else None,
-                request_metadata=request_metadata or None,
+                request_metadata=request_metadata,
             )
 
             logger.info("{} 非流式响应处理完成", self.FORMAT_ID)
@@ -607,6 +611,12 @@ class CliSyncMixin:
             request_metadata = self._build_request_metadata() or {}
             if sync_proxy_info:
                 request_metadata["proxy"] = sync_proxy_info
+            request_metadata = self._merge_scheduling_metadata(
+                request_metadata,
+                selected_key_id=key_id,
+                pool_summary=getattr(exec_result, "pool_summary", None),
+                fallback_from_request=True,
+            )
             await self.telemetry.record_failure(
                 provider=provider_name or "unknown",
                 model=model,
@@ -620,7 +630,7 @@ class CliSyncMixin:
                 api_format=api_format,
                 api_family=self.api_family,
                 endpoint_kind=self.endpoint_kind,
-                request_metadata=request_metadata or None,
+                request_metadata=request_metadata,
             )
             raise
 
@@ -645,6 +655,12 @@ class CliSyncMixin:
             request_metadata = self._build_request_metadata() or {}
             if sync_proxy_info:
                 request_metadata["proxy"] = sync_proxy_info
+            request_metadata = self._merge_scheduling_metadata(
+                request_metadata,
+                selected_key_id=key_id,
+                pool_summary=getattr(exec_result, "pool_summary", None),
+                fallback_from_request=True,
+            )
             await self.telemetry.record_failure(
                 provider=provider_name or "unknown",
                 model=model,
@@ -667,7 +683,7 @@ class CliSyncMixin:
                 has_format_conversion=is_format_converted(provider_api_format, str(api_format)),
                 # 模型映射信息
                 target_model=mapped_model_result,
-                request_metadata=request_metadata or None,
+                request_metadata=request_metadata,
             )
 
             raise

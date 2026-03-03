@@ -63,7 +63,12 @@ class PoolSchedulingTrace:
     session_uuid: str | None = None
     candidate_traces: dict[str, PoolCandidateTrace] = field(default_factory=dict)
 
-    def build_summary(self, success_key_id: str | None = None) -> dict[str, Any]:
+    def build_summary(
+        self,
+        success_key_id: str | None = None,
+        *,
+        attempted_key_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
         """Build compact dict for ``Usage.request_metadata["pool_summary"]``."""
         skipped_cooldown = 0
         skipped_cost = 0
@@ -74,8 +79,17 @@ class PoolSchedulingTrace:
                     skipped_cooldown += 1
                 elif t.skip_type == "cost_exhausted":
                     skipped_cost += 1
-            else:
-                attempted += 1
+
+        if attempted_key_ids is None:
+            # Backward-compatible behavior: count all schedulable keys.
+            attempted = sum(1 for t in self.candidate_traces.values() if not t.skipped)
+        else:
+            # Preferred behavior: count only keys that were actually executed.
+            attempted = sum(
+                1
+                for kid in attempted_key_ids
+                if kid in self.candidate_traces and not self.candidate_traces[kid].skipped
+            )
 
         success_reason: str | None = None
         if success_key_id and success_key_id in self.candidate_traces:

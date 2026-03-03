@@ -378,57 +378,14 @@
                 </div>
               </Card>
 
-              <!-- 号池调度摘要 -->
-              <Card v-if="poolSummary">
-                <div class="p-3 sm:p-4">
-                  <div class="text-xs text-muted-foreground mb-2 font-medium">
-                    号池调度
-                  </div>
-                  <div class="flex items-center gap-3 flex-wrap text-sm">
-                    <span class="font-mono">
-                      {{ poolSummary.total_keys }} 候选
-                    </span>
-                    <span class="text-muted-foreground">|</span>
-                    <span class="font-mono">
-                      {{ poolSummary.attempted }} 尝试
-                    </span>
-                    <template v-if="poolSummary.skipped_cooldown > 0">
-                      <span class="text-muted-foreground">|</span>
-                      <span class="font-mono text-amber-600 dark:text-amber-400">
-                        {{ poolSummary.skipped_cooldown }} 冷却跳过
-                      </span>
-                    </template>
-                    <template v-if="poolSummary.skipped_cost > 0">
-                      <span class="text-muted-foreground">|</span>
-                      <span class="font-mono text-orange-600 dark:text-orange-400">
-                        {{ poolSummary.skipped_cost }} 成本跳过
-                      </span>
-                    </template>
-                    <template v-if="poolSummary.sticky_session">
-                      <span class="text-muted-foreground">|</span>
-                      <Badge
-                        variant="outline"
-                        class="text-[10px] px-1.5 py-0 h-4"
-                      >
-                        粘性会话
-                      </Badge>
-                    </template>
-                    <template v-if="poolSummary.success_reason">
-                      <span class="text-muted-foreground">|</span>
-                      <span class="text-xs text-muted-foreground">
-                        {{ poolSummary.success_reason }}
-                      </span>
-                    </template>
-                  </div>
-                </div>
-              </Card>
-
               <!-- 请求链路追踪卡片 -->
               <div v-if="detail.request_id || detail.id">
                 <HorizontalRequestTimeline
                   ref="timelineRef"
                   :request-id="detail.request_id || detail.id"
                   :override-status-code="detail.status_code"
+                  :request-api-format="detail.api_format || null"
+                  :request-metadata="traceRequestMetadata"
                 />
               </div>
 
@@ -781,11 +738,10 @@ const isDark = computed(() => {
   return document.documentElement.classList.contains('dark')
 })
 
-// 号池调度摘要
-const poolSummary = computed(() => {
-  const ps = detail.value?.metadata?.pool_summary as Record<string, unknown> | undefined
-  if (!ps || !ps.enabled) return null
-  return ps
+const traceRequestMetadata = computed<Record<string, unknown> | null>(() => {
+  const meta = detail.value?.metadata
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
+  return meta as Record<string, unknown>
 })
 
 // 检测是否有提供商请求头

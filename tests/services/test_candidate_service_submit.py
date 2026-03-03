@@ -310,3 +310,77 @@ async def test_submit_with_failover_filters_missing_billing_rule(
         assert submit.await_count == 1
     finally:
         config.billing_require_rule = old
+
+
+@pytest.mark.asyncio
+async def test_submit_with_failover_applies_pool_reorder_before_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = MagicMock()
+    svc = TaskService(db)
+
+    monkeypatch.setattr(
+        "src.services.system.config.SystemConfigService.get_config",
+        lambda *_args, **_kwargs: "provider",
+    )
+    monkeypatch.setattr(
+        "src.services.scheduling.aware_scheduler.get_cache_aware_scheduler",
+        AsyncMock(return_value=None),
+    )
+
+    pool_candidate_a = _make_candidate(
+        provider_id="pool-1",
+        provider_name="pool-provider",
+        endpoint_id="ep-1",
+        key_id="k-a",
+        key_name="key-a",
+    )
+    pool_candidate_b = _make_candidate(
+        provider_id="pool-1",
+        provider_name="pool-provider",
+        endpoint_id="ep-1",
+        key_id="k-b",
+        key_name="key-b",
+    )
+
+    fetch_candidates = AsyncMock(
+        return_value=(
+            [pool_candidate_a, pool_candidate_b],
+            "gm1",
+        )
+    )
+    monkeypatch.setattr(
+        "src.services.candidate.resolver.CandidateResolver.fetch_candidates",
+        fetch_candidates,
+    )
+
+    reordered = [pool_candidate_b, pool_candidate_a]
+    apply_pool_reorder = AsyncMock(return_value=(reordered, []))
+    monkeypatch.setattr(svc, "_apply_pool_reorder", apply_pool_reorder)
+
+    submit = AsyncMock(return_value=httpx.Response(200, json={"id": "task-pooled"}))
+    body = {"session_id": "sid-123"}
+    outcome = await svc.submit_with_failover(
+        api_format="openai:video",
+        model_name="sora",
+        affinity_key="a1",
+        user_api_key=MagicMock(),
+        request_id=None,
+        task_type="video",
+        submit_func=submit,
+        extract_external_task_id=lambda payload: payload.get("id"),
+        supported_auth_types={"api_key"},
+        allow_format_conversion=False,
+        max_candidates=10,
+        request_body=body,
+    )
+
+    assert outcome.external_task_id == "task-pooled"
+    assert outcome.candidate.key.id == "k-b"
+    assert submit.await_count == 1
+    fetch_candidates.assert_awaited_once()
+    assert fetch_candidates.await_args.kwargs.get("request_body") == body
+    apply_pool_reorder.assert_awaited_once_with(
+        [pool_candidate_a, pool_candidate_b],
+        request_body=body,
+    )

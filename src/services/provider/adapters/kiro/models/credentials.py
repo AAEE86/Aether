@@ -36,6 +36,28 @@ def _nonempty(s: str | None) -> str | None:
     return None
 
 
+def _normalize_auth_method(value: str | None) -> str:
+    method = (value or "").strip().lower()
+    if not method:
+        return "social"
+    # 历史/别名兼容：统一映射到 idc
+    if method in {
+        "idc",
+        "builder-id",
+        "builder_id",
+        "builderid",
+        "identity-center",
+        "identity_center",
+        "identitycenter",
+        "iam",
+        "device",
+        "device_authorization",
+        "device-auth",
+    }:
+        return "idc"
+    return method
+
+
 def _parse_iso_to_epoch_seconds(value: object) -> int | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -111,6 +133,11 @@ class KiroAuthConfig:
         - 包含 clientId + clientSecret -> IdC
         - 仅含 refreshToken -> Social
         """
+        explicit_method = _get_str(raw, "auth_method", "authMethod", "auth_type", "authType")
+        normalized_explicit = _normalize_auth_method(explicit_method)
+        if normalized_explicit != "social":
+            return normalized_explicit
+
         client_id = raw.get("client_id") or raw.get("clientId")
         client_secret = raw.get("client_secret") or raw.get("clientSecret")
 
@@ -136,7 +163,12 @@ class KiroAuthConfig:
             return False, "refreshToken 不完整（含有 ...），请导出完整的 Token"
 
         # IdC 类型需要 clientId 和 clientSecret
-        auth_method = KiroAuthConfig.infer_auth_method(raw)
+        explicit_method = _get_str(raw, "auth_method", "authMethod", "auth_type", "authType")
+        auth_method = (
+            _normalize_auth_method(explicit_method)
+            if explicit_method
+            else KiroAuthConfig.infer_auth_method(raw)
+        )
         if auth_method == "idc":
             client_id = raw.get("client_id") or raw.get("clientId")
             client_secret = raw.get("client_secret") or raw.get("clientSecret")
@@ -155,8 +187,12 @@ class KiroAuthConfig:
         provider_type = _get_str(raw, "provider_type", "providerType") or "kiro"
 
         # 自动推断 auth_method（如果未显式指定）
-        explicit_method = _get_str(raw, "auth_method", "authMethod")
-        auth_method = explicit_method.lower() if explicit_method else cls.infer_auth_method(raw)
+        explicit_method = _get_str(raw, "auth_method", "authMethod", "auth_type", "authType")
+        auth_method = (
+            _normalize_auth_method(explicit_method)
+            if explicit_method
+            else cls.infer_auth_method(raw)
+        )
 
         refresh_token = (_get_str(raw, "refresh_token", "refreshToken") or "").strip()
 
@@ -168,7 +204,7 @@ class KiroAuthConfig:
 
         cfg = cls(
             provider_type=provider_type,
-            auth_method=(auth_method or "social").lower(),
+            auth_method=_normalize_auth_method(auth_method),
             refresh_token=refresh_token,
             expires_at=int(expires_at),
             profile_arn=_get_str(raw, "profile_arn", "profileArn"),
@@ -184,10 +220,6 @@ class KiroAuthConfig:
             email=_get_str(raw, "email"),
             access_token=_get_str(raw, "access_token", "accessToken"),
         )
-
-        # Normalize auth_method aliases.
-        if cfg.auth_method in {"builder-id", "builder_id", "iam"}:
-            cfg.auth_method = "idc"
 
         return cfg
 

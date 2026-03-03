@@ -67,7 +67,7 @@
                 <div
                   class="node-dot"
                   :class="[
-                    getStatusColorClass(group.primaryStatus),
+                    getStatusColorClass(getDisplayStatus(group.primary)),
                     { 'is-first-selected': isGroupSelected(group) && selectedAttemptIndex === 0 }
                   ]"
                   @click.stop="selectFirstAttempt(group)"
@@ -83,7 +83,7 @@
                     :key="attempt.id"
                     class="sub-dot"
                     :class="[
-                      getStatusColorClass(attempt.status),
+                      getStatusColorClass(getDisplayStatus(attempt)),
                       { active: selectedAttemptIndex === idx + 1 }
                     ]"
                     :title="attempt.key_name || `Key ${idx + 2}`"
@@ -115,9 +115,9 @@
                 <div class="panel-title">
                   <span
                     class="title-dot"
-                    :class="getStatusColorClass(currentAttempt.status)"
+                    :class="getStatusColorClass(getDisplayStatus(currentAttempt))"
                   />
-                  <span class="title-text">{{ selectedGroup.providerName }}</span>
+                  <span class="title-text">{{ currentGroupTitle }}</span>
                   <a
                     v-if="currentAttempt.provider_website"
                     :href="currentAttempt.provider_website"
@@ -130,7 +130,7 @@
                   </a>
                   <span
                     class="status-tag"
-                    :class="getStatusColorClass(currentAttempt.status)"
+                    :class="getStatusColorClass(getDisplayStatus(currentAttempt))"
                   >
                     {{ currentAttempt.status_code || getStatusLabel(currentAttempt.status) }}
                   </span>
@@ -188,12 +188,12 @@
                     <span class="info-value mono">{{ formatLatency(currentAttempt.extra_data.first_byte_time_ms) }}</span>
                   </div>
                   <div
-                    v-if="currentAttempt.extra_data?.provider_api_format"
+                    v-if="currentAttemptFormatDisplay"
                     class="info-item"
                   >
                     <span class="info-label">格式</span>
                     <span class="info-value">
-                      <code class="format-code">{{ formatApiFormat(currentAttempt.extra_data.provider_api_format) }}</code>
+                      <code class="format-code">{{ currentAttemptFormatDisplay }}</code>
                     </span>
                   </div>
                   <div
@@ -433,6 +433,7 @@ interface NodeGroup {
   endIndex: number
   hasConversion: boolean  // 组内是否有格式转换候选
   providerApiFormat: string | null  // 提供商 API 格式（如 openai:cli）
+  isPoolGroup?: boolean
 }
 
 // 用量数据类型
@@ -464,8 +465,12 @@ const props = defineProps<{
   requestId: string
   /** 外部传入的状态码，用于覆盖 trace.final_status 的判断 */
   overrideStatusCode?: number
+  /** 请求侧 API 格式（客户端入口格式） */
+  requestApiFormat?: string | null
   /** 用量和费用数据 */
   usageData?: UsageData | null
+  /** 请求元数据（用于号池调度组装） */
+  requestMetadata?: Record<string, unknown> | null
 }>()
 
 // 用量数据（从 props 获取）
@@ -594,21 +599,54 @@ const proxyTimingBreakdown = (proxy: Record<string, unknown>): string => {
   return parts.join(' / ')
 }
 
+const TIMELINE_STATUS: CandidateRecord['status'][] = [
+  'success',
+  'failed',
+  'skipped',
+  'cancelled',
+  'pending',
+  'streaming',
+  'available',
+  'unused',
+  'stream_interrupted',
+]
+
+const STATUS_PRIORITY: Record<string, number> = {
+  available: 0,
+  unused: 0,
+  skipped: 1,
+  failed: 2,
+  cancelled: 2,
+  stream_interrupted: 2,
+  pending: 3,
+  streaming: 3,
+  success: 4,
+}
+
+const toInt = (value: unknown, defaultValue = 0): number => {
+  const num = Number(value)
+  return Number.isFinite(num) ? Math.trunc(num) : defaultValue
+}
+
+const makeAttemptKey = (candidateIndex: number, retryIndex: number): string => {
+  return `${candidateIndex}:${retryIndex}`
+}
+
+const normalizeTimelineStatus = (value: unknown): CandidateRecord['status'] => {
+  if (typeof value !== 'string') return 'failed'
+  const normalized = value.trim().toLowerCase()
+  if ((TIMELINE_STATUS as string[]).includes(normalized)) {
+    return normalized as CandidateRecord['status']
+  }
+  // 兜底：内部调度轨迹里非标准状态统一按失败展示
+  return 'failed'
+}
+
 // 候选时间线（按实际执行顺序排序）
-const timeline = computed<CandidateRecord[]>(() => {
+const rawTimeline = computed<CandidateRecord[]>(() => {
   if (!trace.value) return []
   return [...trace.value.candidates]
-    .filter(c => [
-      'success',
-      'failed',
-      'skipped',
-      'cancelled',
-      'pending',
-      'streaming',
-      'available',
-      'unused',
-      'stream_interrupted'
-    ].includes(c.status))
+    .filter(c => TIMELINE_STATUS.includes(c.status))
     .sort((a, b) => {
       const startedA = a.started_at ? new Date(a.started_at).getTime() : Infinity
       const startedB = b.started_at ? new Date(b.started_at).getTime() : Infinity
@@ -620,18 +658,109 @@ const timeline = computed<CandidateRecord[]>(() => {
     })
 })
 
-// 将相同 Provider 的所有请求合并为组（同提供商的 Key 放在子节点）
-const groupedTimeline = computed<NodeGroup[]>(() => {
-  if (!timeline.value || timeline.value.length === 0) return []
+const schedulingAudit = computed<Record<string, unknown> | null>(() => {
+  const metadata = props.requestMetadata
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null
+  const raw = metadata.scheduling_audit
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return raw as Record<string, unknown>
+})
 
+const poolAttemptCandidates = computed<CandidateRecord[]>(() => {
+  const audit = schedulingAudit.value
+  if (!audit) return []
+  const attempts = audit.attempts
+  if (!Array.isArray(attempts) || attempts.length === 0) return []
+
+  const traceMap = new Map<string, CandidateRecord>()
+  for (const candidate of rawTimeline.value) {
+    traceMap.set(makeAttemptKey(candidate.candidate_index, candidate.retry_index), candidate)
+  }
+
+  return attempts
+    .map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+      const raw = item as Record<string, unknown>
+      const candidateIndex = toInt(raw.candidate_index, index)
+      const retryIndex = toInt(raw.retry_index, 0)
+      const key = makeAttemptKey(candidateIndex, retryIndex)
+      const fromTrace = traceMap.get(key)
+
+      const merged: CandidateRecord = fromTrace
+        ? { ...fromTrace }
+        : {
+            id: `pool-${props.requestId}-${candidateIndex}-${retryIndex}-${index}`,
+            request_id: props.requestId,
+            candidate_index: candidateIndex,
+            retry_index: retryIndex,
+            provider_id: undefined,
+            provider_name: undefined,
+            endpoint_id: undefined,
+            key_id: undefined,
+            key_name: undefined,
+            status: 'failed',
+            is_cached: false,
+            created_at: new Date(0).toISOString(),
+          }
+
+      merged.status = normalizeTimelineStatus(raw.status ?? merged.status)
+      if (typeof raw.provider_id === 'string') merged.provider_id = raw.provider_id
+      if (typeof raw.provider_name === 'string') merged.provider_name = raw.provider_name
+      if (typeof raw.endpoint_id === 'string') merged.endpoint_id = raw.endpoint_id
+      if (typeof raw.key_id === 'string') merged.key_id = raw.key_id
+      if (typeof raw.key_name === 'string') merged.key_name = raw.key_name
+      if (typeof raw.status_code === 'number') merged.status_code = raw.status_code
+      if (typeof raw.error_type === 'string') merged.error_type = raw.error_type
+      return merged
+    })
+    .filter((item): item is CandidateRecord => item !== null)
+})
+
+const poolAttemptKeySet = computed<Set<string>>(() => {
+  return new Set(
+    poolAttemptCandidates.value.map((item) => makeAttemptKey(item.candidate_index, item.retry_index)),
+  )
+})
+
+const timeline = computed<CandidateRecord[]>(() => {
+  if (poolAttemptCandidates.value.length === 0) return rawTimeline.value
+  return rawTimeline.value.filter(
+    (candidate) => !poolAttemptKeySet.value.has(makeAttemptKey(candidate.candidate_index, candidate.retry_index)),
+  )
+})
+
+const AUTH_TYPE_PROVIDER_LABEL_MAP: Record<string, string> = {
+  codex: 'Codex',
+  kiro: 'Kiro',
+  antigravity: 'Antigravity',
+  claude_code: 'Claude Code',
+  gemini_cli: 'Gemini CLI',
+}
+
+const normalizeProviderName = (value: string): string => {
+  const text = value.trim()
+  if (!text) return '未知'
+  // 管理后台中常见“xx反代”命名，展示时保留提供商品牌名即可
+  return text.replace(/反代$/u, '').trim() || text
+}
+
+const getProviderDisplayName = (attempt: CandidateRecord | null | undefined): string => {
+  if (!attempt) return '未知'
+  const authType = String(attempt.key_auth_type || '').trim().toLowerCase()
+  if (authType && AUTH_TYPE_PROVIDER_LABEL_MAP[authType]) {
+    return AUTH_TYPE_PROVIDER_LABEL_MAP[authType]
+  }
+  const providerName = String(attempt.provider_name || '').trim()
+  return providerName ? normalizeProviderName(providerName) : '未知'
+}
+
+const buildProviderGroups = (items: CandidateRecord[]): NodeGroup[] => {
   const groups: NodeGroup[] = []
   let currentGroup: NodeGroup | null = null
 
-  timeline.value.forEach((candidate, index) => {
-    // 使用 provider_name 作为分组 key（同一个提供商的所有 Key 合并）
+  items.forEach((candidate, index) => {
     const providerKey = candidate.provider_name || '未知'
 
-    // 如果属于同一个 Provider，合并到当前组
     if (currentGroup && currentGroup.id === providerKey) {
       currentGroup.allAttempts.push(candidate)
       currentGroup.retryCount++
@@ -640,37 +769,67 @@ const groupedTimeline = computed<NodeGroup[]>(() => {
       if (candidate.extra_data?.needs_conversion) {
         currentGroup.hasConversion = true
       }
-      // 按优先级提升组状态：success > streaming/pending > failed/cancelled/stream_interrupted > skipped > available/unused
-      const statusPriority: Record<string, number> = {
-        available: 0, unused: 0, skipped: 1,
-        failed: 2, cancelled: 2, stream_interrupted: 2,
-        pending: 3, streaming: 3, success: 4,
-      }
-      const currentPriority = statusPriority[currentGroup.primaryStatus] ?? 0
-      const newPriority = statusPriority[candidate.status] ?? 0
+      const currentPriority = STATUS_PRIORITY[currentGroup.primaryStatus] ?? 0
+      const newPriority = STATUS_PRIORITY[candidate.status] ?? 0
       if (newPriority > currentPriority) {
         currentGroup.primaryStatus = candidate.status
       }
-    } else {
-      // 新建一个组
-      currentGroup = {
-        id: providerKey,
-        providerName: candidate.provider_name || '未知',
-        primary: candidate,
-        primaryStatus: candidate.status,
-        allAttempts: [candidate],
-        retryCount: 0,
-        totalLatency: candidate.latency_ms || 0,
-        startIndex: index,
-        endIndex: index,
-        hasConversion: candidate.extra_data?.needs_conversion === true,
-        providerApiFormat: candidate.extra_data?.provider_api_format || null,
-      }
-      groups.push(currentGroup)
+      return
     }
+
+    currentGroup = {
+      id: providerKey,
+      providerName: getProviderDisplayName(candidate),
+      primary: candidate,
+      primaryStatus: candidate.status,
+      allAttempts: [candidate],
+      retryCount: 0,
+      totalLatency: candidate.latency_ms || 0,
+      startIndex: index,
+      endIndex: index,
+      hasConversion: candidate.extra_data?.needs_conversion === true,
+      providerApiFormat: candidate.extra_data?.provider_api_format || null,
+      isPoolGroup: false,
+    }
+    groups.push(currentGroup)
   })
 
   return groups
+}
+
+// 将相同 Provider 的所有请求合并为组（同提供商的 Key 放在子节点）
+const groupedTimeline = computed<NodeGroup[]>(() => {
+  const providerGroups = buildProviderGroups(timeline.value)
+  const poolAttempts = poolAttemptCandidates.value
+  if (poolAttempts.length === 0) {
+    return providerGroups
+  }
+
+  const poolPrimaryStatus = poolAttempts.reduce((best, current) => {
+    const bestPriority = STATUS_PRIORITY[best] ?? 0
+    const currentPriority = STATUS_PRIORITY[current.status] ?? 0
+    return currentPriority > bestPriority ? current.status : best
+  }, poolAttempts[0].status)
+
+  const successAttempt = poolAttempts.find((item) => item.status === 'success')
+  const poolPrimary = successAttempt || poolAttempts[poolAttempts.length - 1] || poolAttempts[0]
+
+  const poolGroup: NodeGroup = {
+    id: '__pool_group__',
+    providerName: getProviderDisplayName(poolPrimary),
+    primary: poolPrimary,
+    primaryStatus: poolPrimaryStatus,
+    allAttempts: poolAttempts,
+    retryCount: Math.max(0, poolAttempts.length - 1),
+    totalLatency: poolAttempts.reduce((sum, item) => sum + (item.latency_ms || 0), 0),
+    startIndex: 0,
+    endIndex: poolAttempts.length - 1,
+    hasConversion: poolAttempts.some((item) => item.extra_data?.needs_conversion === true),
+    providerApiFormat: null,
+    isPoolGroup: true,
+  }
+
+  return [poolGroup, ...providerGroups]
 })
 
 // 格式转换分界点索引（首个 hasConversion=true 的 group index）
@@ -687,16 +846,16 @@ const conversionBoundaryIndex = computed(() => {
 // 优先使用 latency_ms，因为它与 Usage.response_time_ms 使用相同的时间基准
 // 避免 finished_at - started_at 带来的额外延迟（数据库操作时间）
 const totalTraceLatency = computed(() => {
-  if (!timeline.value || timeline.value.length === 0) return 0
+  if (!rawTimeline.value || rawTimeline.value.length === 0) return 0
 
   // 查找成功的候选，使用其 latency_ms
-  const successCandidate = timeline.value.find(c => c.status === 'success')
+  const successCandidate = rawTimeline.value.find(c => c.status === 'success')
   if (successCandidate?.latency_ms != null) {
     return successCandidate.latency_ms
   }
 
   // 如果没有成功的候选，查找失败但有 latency_ms 的候选
-  const failedWithLatency = timeline.value.find(c => c.status === 'failed' && c.latency_ms != null)
+  const failedWithLatency = rawTimeline.value.find(c => c.status === 'failed' && c.latency_ms != null)
   if (failedWithLatency?.latency_ms != null) {
     return failedWithLatency.latency_ms
   }
@@ -705,7 +864,7 @@ const totalTraceLatency = computed(() => {
   let earliestStart: number | null = null
   let latestEnd: number | null = null
 
-  for (const candidate of timeline.value) {
+  for (const candidate of rawTimeline.value) {
     if (candidate.started_at) {
       const startTime = new Date(candidate.started_at).getTime()
       if (earliestStart === null || startTime < earliestStart) {
@@ -736,6 +895,49 @@ const selectedGroup = computed(() => {
 const currentAttempt = computed(() => {
   if (!selectedGroup.value) return null
   return selectedGroup.value.allAttempts[selectedAttemptIndex.value] || selectedGroup.value.primary
+})
+
+const currentGroupTitle = computed(() => {
+  if (!selectedGroup.value || !currentAttempt.value) return ''
+  if (selectedGroup.value.isPoolGroup) {
+    return getProviderDisplayName(currentAttempt.value)
+  }
+  return selectedGroup.value.providerName
+})
+
+const normalizeFormatSignature = (value: string): string => {
+  return value.trim().toLowerCase()
+}
+
+const currentAttemptFormatDisplay = computed(() => {
+  const attempt = currentAttempt.value
+  if (!attempt) return ''
+  const extra = (
+    attempt.extra_data && typeof attempt.extra_data === 'object' && !Array.isArray(attempt.extra_data)
+      ? attempt.extra_data
+      : {}
+  ) as Record<string, unknown>
+
+  const providerRaw = typeof extra.provider_api_format === 'string' ? extra.provider_api_format : ''
+  const clientRawFromExtra = typeof extra.client_api_format === 'string' ? extra.client_api_format : ''
+  const requestRaw = clientRawFromExtra || (typeof props.requestApiFormat === 'string' ? props.requestApiFormat : '')
+
+  if (!providerRaw && !requestRaw) return ''
+
+  const providerText = providerRaw ? formatApiFormat(providerRaw) : ''
+  const requestText = requestRaw ? formatApiFormat(requestRaw) : ''
+  const convertedByFlag = extra.needs_conversion === true
+  const convertedByDiff = Boolean(
+    providerRaw &&
+      requestRaw &&
+      normalizeFormatSignature(providerRaw) !== normalizeFormatSignature(requestRaw),
+  )
+
+  if ((convertedByFlag || convertedByDiff) && requestText && providerText) {
+    return `${requestText} -> ${providerText}`
+  }
+
+  return providerText || requestText
 })
 
 // 计算当前尝试启用的能力标签（请求需要的能力）
@@ -1017,6 +1219,28 @@ const getStatusColorClass = (status: string) => {
     skipped: 'status-skipped'
   }
   return classes[status] || 'status-available'
+}
+
+// 展示状态：进行中态优先（包括 started 但未 finished 的中间态），再按 HTTP 状态码兜底
+const getDisplayStatus = (attempt: CandidateRecord | null | undefined): string => {
+  if (!attempt) return 'available'
+  const hasFinished = Boolean(attempt.finished_at)
+  const isExplicitPending = (attempt.status === 'pending' || attempt.status === 'streaming') && !hasFinished
+  const isImplicitPending = Boolean(
+    attempt.started_at &&
+      !hasFinished &&
+      !['failed', 'cancelled', 'skipped', 'stream_interrupted'].includes(attempt.status),
+  )
+
+  if (isExplicitPending || isImplicitPending) {
+    return 'pending'
+  }
+  const code = attempt.status_code
+  if (typeof code === 'number') {
+    if (code >= 200 && code < 300) return 'success'
+    if (code >= 400) return 'failed'
+  }
+  return attempt.status
 }
 </script>
 

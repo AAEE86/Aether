@@ -440,6 +440,50 @@ async def get_key_sticky_count(provider_id: str, key_id: str) -> int:
         return 0
 
 
+async def batch_get_key_sticky_counts(
+    provider_id: str,
+    key_ids: list[str],
+) -> dict[str, int]:
+    """Count sticky sessions for multiple keys in a single scan (admin only)."""
+    if not key_ids:
+        return {}
+
+    redis = await _get_redis()
+    if redis is None:
+        return {kid: 0 for kid in key_ids}
+
+    target_ids = set(key_ids)
+    counts: dict[str, int] = {kid: 0 for kid in key_ids}
+
+    try:
+        pattern = f"{PREFIX}:{provider_id}:sticky:*"
+        batch: list[bytes | str] = []
+        async for key in redis.scan_iter(match=pattern, count=200):
+            batch.append(key)
+            if len(batch) >= 200:
+                vals = await redis.mget(batch)
+                for val in vals:
+                    if not val:
+                        continue
+                    bound_id = val.decode() if isinstance(val, bytes) else str(val)
+                    if bound_id in target_ids:
+                        counts[bound_id] = counts.get(bound_id, 0) + 1
+                batch.clear()
+
+        if batch:
+            vals = await redis.mget(batch)
+            for val in vals:
+                if not val:
+                    continue
+                bound_id = val.decode() if isinstance(val, bytes) else str(val)
+                if bound_id in target_ids:
+                    counts[bound_id] = counts.get(bound_id, 0) + 1
+
+        return counts
+    except Exception:
+        return {kid: 0 for kid in key_ids}
+
+
 async def get_cooldown_ttl(provider_id: str, key_id: str) -> int | None:
     """Get remaining cooldown TTL in seconds. None = no cooldown."""
     redis = await _get_redis()
