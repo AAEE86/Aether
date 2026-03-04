@@ -142,11 +142,6 @@ export interface PoolKeyDetail {
     | string
   scheduling_label?: string
   scheduling_reasons?: PoolSchedulingReason[]
-  scheduling_score?: number
-  candidate_eligible?: boolean
-  scheduling_blocked_count?: number
-  scheduling_degraded_count?: number
-  scheduling_dimensions?: PoolSchedulingDimension[]
 }
 
 export interface PoolSchedulingReason {
@@ -154,18 +149,6 @@ export interface PoolSchedulingReason {
   label: string
   blocking: boolean
   source: 'manual' | 'pool' | 'health' | 'policy' | string
-  ttl_seconds?: number | null
-  detail?: string | null
-}
-
-export interface PoolSchedulingDimension {
-  code: string
-  label: string
-  status: 'ok' | 'degraded' | 'blocked' | string
-  blocking: boolean
-  source: 'manual' | 'pool' | 'health' | 'policy' | string
-  weight: number
-  score: number
   ttl_seconds?: number | null
   detail?: string | null
 }

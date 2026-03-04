@@ -47,7 +47,6 @@ from .schemas import (
     PoolKeysPageResponse,
     PoolOverviewItem,
     PoolOverviewResponse,
-    PoolSchedulingDimension,
     PoolSchedulingReason,
     PresetDimensionMetaResponse,
     PresetModeMetaResponse,
@@ -508,17 +507,7 @@ def _build_pool_scheduling_state(
     cost_limit: int | None,
     cost_soft_threshold_percent: int,
     health_score: float,
-) -> tuple[
-    str,
-    str,
-    str,
-    list[PoolSchedulingReason],
-    float,
-    bool,
-    int,
-    int,
-    list[PoolSchedulingDimension],
-]:
+) -> tuple[str, str, str, list[PoolSchedulingReason]]:
     """Build unified scheduling state for frontend display."""
     snapshot = PoolSchedulingSnapshot(
         is_active=is_active,
@@ -537,28 +526,12 @@ def _build_pool_scheduling_state(
     dimensions_raw = evaluate_pool_scheduling_dimensions(snapshot)
     summary = summarize_pool_scheduling_dimensions(dimensions_raw)
 
-    scheduling_dimensions: list[PoolSchedulingDimension] = []
     scheduling_reasons: list[PoolSchedulingReason] = []
-
     for item in dimensions_raw:
-        detail = item.detail
-        if item.code == "cooldown":
-            detail = _format_cooldown_detail(detail)
-
-        model = PoolSchedulingDimension(
-            code=item.code,
-            label=item.label,
-            status=item.status,
-            blocking=bool(item.blocking or item.status == "blocked"),
-            source=item.source,
-            weight=item.weight,
-            score=item.score,
-            ttl_seconds=item.ttl_seconds,
-            detail=detail,
-        )
-        scheduling_dimensions.append(model)
-
         if item.status != "ok":
+            detail = item.detail
+            if item.code == "cooldown":
+                detail = _format_cooldown_detail(detail)
             scheduling_reasons.append(
                 PoolSchedulingReason(
                     code=item.code,
@@ -575,11 +548,6 @@ def _build_pool_scheduling_state(
         summary.reason,
         summary.label,
         scheduling_reasons,
-        summary.score,
-        summary.candidate_eligible,
-        summary.blocked_count,
-        summary.degraded_count,
-        scheduling_dimensions,
     )
 
 
@@ -902,11 +870,6 @@ class AdminListPoolKeysAdapter(AdminApiAdapter):
                 scheduling_reason,
                 scheduling_label,
                 scheduling_reasons,
-                scheduling_score,
-                candidate_eligible,
-                scheduling_blocked_count,
-                scheduling_degraded_count,
-                scheduling_dimensions,
             ) = _build_pool_scheduling_state(
                 is_active=bool(k.is_active),
                 account_blocked=account_state.blocked,
@@ -1035,11 +998,6 @@ class AdminListPoolKeysAdapter(AdminApiAdapter):
                     scheduling_reason=scheduling_reason,
                     scheduling_label=scheduling_label,
                     scheduling_reasons=scheduling_reasons,
-                    scheduling_score=scheduling_score,
-                    candidate_eligible=candidate_eligible,
-                    scheduling_blocked_count=scheduling_blocked_count,
-                    scheduling_degraded_count=scheduling_degraded_count,
-                    scheduling_dimensions=scheduling_dimensions,
                 )
             )
 

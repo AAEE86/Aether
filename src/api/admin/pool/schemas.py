@@ -64,19 +64,6 @@ class PoolSchedulingReason(BaseModel):
     detail: str | None = None
 
 
-class PoolSchedulingDimension(BaseModel):
-    """Detailed scheduling dimension status."""
-
-    code: str
-    label: str
-    status: str = "ok"  # ok / degraded / blocked
-    blocking: bool = False
-    source: str = "pool"
-    weight: int = 1
-    score: float = 1.0  # normalized 0~1
-    ttl_seconds: int | None = None
-    detail: str | None = None
-
 
 class PoolKeyDetail(BaseModel):
     """Detailed status of a single pool key."""
@@ -124,11 +111,6 @@ class PoolKeyDetail(BaseModel):
     scheduling_reason: str = "available"
     scheduling_label: str = "可用"
     scheduling_reasons: list[PoolSchedulingReason] = Field(default_factory=list)
-    scheduling_score: float = 100.0
-    candidate_eligible: bool = True
-    scheduling_blocked_count: int = 0
-    scheduling_degraded_count: int = 0
-    scheduling_dimensions: list[PoolSchedulingDimension] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
