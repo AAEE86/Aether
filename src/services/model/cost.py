@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from src.core.logger import logger
 from src.models.database import GlobalModel, Model, Provider
+from src.services.billing import calculate_request_cost
 
 ProviderRef = str | Provider | None
 
@@ -902,7 +903,7 @@ class ModelCostService:
         """
         使用计费策略计算成本（异步版本）
 
-        根据 api_format 选择对应的 Adapter 计费逻辑，支持阶梯计费和 TTL 差异化。
+        根据 api_format 推断计费模板（claude/openai/gemini），支持阶梯计费和 TTL 差异化。
 
         Args:
             provider: Provider 对象或提供商名称
@@ -926,21 +927,21 @@ class ModelCostService:
         request_price = await self.get_request_price_async(provider, model)
         tiered_pricing = await self.get_tiered_pricing_async(provider, model)
 
-        # 获取对应 API 格式的 Adapter 实例来计算成本
-        # 优先检查 Chat Adapter，然后检查 CLI Adapter
-        # TODO(arch): 引入 adapter 能力注册表，消除 services->api 依赖
-        from src.api.handlers.base.chat_adapter_base import get_adapter_instance
-        from src.api.handlers.base.cli_adapter_base import get_cli_adapter_instance
-
-        adapter = None
+        billing_template: str | None = None
         if api_format:
-            adapter = get_adapter_instance(api_format)
-            if adapter is None:
-                adapter = get_cli_adapter_instance(api_format)
+            api_family = str(api_format).strip().lower().split(":", 1)[0]
+            if api_family in {"claude", "openai", "gemini"}:
+                billing_template = api_family
 
-        if adapter:
-            # 使用 Adapter 的计费方法
-            result = adapter.compute_cost(
+        if billing_template:
+            # Claude 的阶梯判定口径与默认不同：需要把 cache_creation 也算入总输入上下文。
+            total_input_context: int | None = None
+            if billing_template == "claude":
+                total_input_context = (
+                    input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+                )
+
+            result = calculate_request_cost(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
@@ -952,6 +953,8 @@ class ModelCostService:
                 price_per_request=request_price,
                 tiered_pricing=tiered_pricing,
                 cache_ttl_minutes=cache_ttl_minutes,
+                total_input_context=total_input_context,
+                billing_template=billing_template,
             )
             return (
                 result["input_cost"],

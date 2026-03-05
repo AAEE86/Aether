@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from src.api.base.models_service import invalidate_models_list_cache
 from src.core.logger import logger
 from src.models.database import ProviderAPIKey
+from src.services.cache.model_list_cache import invalidate_models_list_cache
 from src.services.cache.provider_cache import ProviderCacheService
 
 

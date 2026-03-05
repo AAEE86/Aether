@@ -68,6 +68,20 @@ class EndpointDefinition:
                 yield value
 
 
+CODEX_DEFAULT_BODY_RULES: tuple[dict[str, Any], ...] = (
+    {"action": "drop", "path": "max_output_tokens"},
+    {"action": "drop", "path": "temperature"},
+    {"action": "drop", "path": "top_p"},
+    {"action": "set", "path": "store", "value": False},
+    {
+        "action": "set",
+        "path": "instructions",
+        "value": "You are GPT-5.",
+        "condition": {"path": "instructions", "op": "not_exists"},
+    },
+)
+
+
 _ENDPOINT_DEFINITIONS: dict[tuple[ApiFamily, EndpointKind], EndpointDefinition] = {
     # Claude
     (ApiFamily.CLAUDE, EndpointKind.CHAT): EndpointDefinition(
@@ -138,6 +152,7 @@ _ENDPOINT_DEFINITIONS: dict[tuple[ApiFamily, EndpointKind], EndpointDefinition] 
         # compact endpoint is non-streaming by design.
         stream_in_body=False,
         data_format_id="openai_responses",
+        default_body_rules=CODEX_DEFAULT_BODY_RULES,
     ),
     (ApiFamily.OPENAI, EndpointKind.VIDEO): EndpointDefinition(
         api_family=ApiFamily.OPENAI,
@@ -309,9 +324,10 @@ def get_default_body_rules_for_endpoint(
     # ensure_providers_bootstrapped 是幂等的，重复调用无副作用
     if provider_type:
         try:
-            from src.services.provider.envelope import ensure_providers_bootstrapped
+            import importlib
 
-            ensure_providers_bootstrapped()
+            envelope = importlib.import_module("src.services.provider.envelope")
+            getattr(envelope, "ensure_providers_bootstrapped")()
         except Exception:
             pass
 
@@ -397,6 +413,7 @@ def make_endpoint_signature(api_family: str, endpoint_kind: str) -> str:
 
 
 __all__ = [
+    "CODEX_DEFAULT_BODY_RULES",
     "EndpointDefinition",
     "ENDPOINT_DEFINITIONS",
     "list_endpoint_definitions",

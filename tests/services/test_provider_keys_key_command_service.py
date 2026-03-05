@@ -159,11 +159,13 @@ def test_clear_oauth_invalid_response_invalidates_caches(
         sys.modules, "src.services.cache.provider_cache", fake_provider_cache_module
     )
 
-    fake_models_service_module = types.ModuleType("src.api.base.models_service")
+    fake_models_service_module = types.ModuleType("src.services.cache.model_list_cache")
     setattr(
         fake_models_service_module, "invalidate_models_list_cache", _fake_invalidate_models_cache
     )
-    monkeypatch.setitem(sys.modules, "src.api.base.models_service", fake_models_service_module)
+    monkeypatch.setitem(
+        sys.modules, "src.services.cache.model_list_cache", fake_models_service_module
+    )
 
     key = SimpleNamespace(
         oauth_invalid_at=datetime.now(timezone.utc),

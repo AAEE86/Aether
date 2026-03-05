@@ -479,7 +479,7 @@ class StreamUsageTracker:
         """
         import time
 
-        from src.api.handlers.base.utils import extract_cache_creation_tokens_detail
+        from src.core.usage_tokens import extract_cache_creation_tokens_detail
 
         self.start_time = time.time()
         self.request_data = request_data  # 保存请求数据

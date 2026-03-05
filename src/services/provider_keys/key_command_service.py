@@ -106,7 +106,7 @@ def _run_async_with_fallback(coro: Any) -> None:
 
 async def _invalidate_cache_after_clear_oauth_invalid(key_id: str) -> None:
     """清除 OAuth 失效标记后同步失效相关缓存。"""
-    from src.api.base.models_service import invalidate_models_list_cache
+    from src.services.cache.model_list_cache import invalidate_models_list_cache
     from src.services.cache.provider_cache import ProviderCacheService
 
     await ProviderCacheService.invalidate_provider_api_key_cache(key_id)

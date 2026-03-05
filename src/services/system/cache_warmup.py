@@ -10,6 +10,7 @@
 """
 
 import asyncio
+import importlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,16 @@ class WarmupContext:
     def add_audit_metadata(self, **kwargs: Any) -> None:
         """兼容 ApiRequestContext 接口"""
         self.audit_metadata.update(kwargs)
+
+
+def _lazy_create_adapter(class_name: str, **kwargs: Any) -> Any:
+    """从 src.api.dashboard.routes 动态加载 Adapter 类并实例化。
+
+    避免 services→api 的静态 import 依赖。
+    """
+    routes = importlib.import_module("src.api.dashboard.routes")
+    adapter_cls = getattr(routes, class_name)
+    return adapter_cls(**kwargs)
 
 
 class CacheWarmupService:
@@ -62,19 +73,20 @@ class CacheWarmupService:
 
         if error_count > 0:
             logger.warning(
-                f"缓存预热完成: {success_count}/3 成功, {error_count} 失败, 耗时 {elapsed:.2f}s"
+                "缓存预热完成: {}/{} 成功, {} 失败, 耗时 {:.2f}s",
+                success_count,
+                3,
+                error_count,
+                elapsed,
             )
         else:
-            logger.info(f"缓存预热完成: {success_count}/3 成功, 耗时 {elapsed:.2f}s")
+            logger.info("缓存预热完成: {}/{} 成功, 耗时 {:.2f}s", success_count, 3, elapsed)
 
     @classmethod
     async def _warmup_admin_dashboard_stats(cls) -> bool:
         """预热管理员仪表盘统计缓存"""
         db = None
         try:
-            from src.api.dashboard.routes import (  # TODO(arch): 提取 dashboard 统计计算到 services 层
-                AdminDashboardStatsAdapter,
-            )
             from src.models.database import User as DBUser
 
             db = create_session()
@@ -86,14 +98,14 @@ class CacheWarmupService:
                 return True
 
             context = WarmupContext(db=db, user=admin_user)
-            adapter = AdminDashboardStatsAdapter()
+            adapter = _lazy_create_adapter("AdminDashboardStatsAdapter")
             await adapter.handle(context)
 
             logger.debug("缓存预热: 管理员仪表盘统计已预热")
             return True
 
         except Exception as e:
-            logger.warning(f"缓存预热失败 (仪表盘统计): {e}")
+            logger.warning("缓存预热失败 (仪表盘统计): {}", e)
             return False
         finally:
             if db:
@@ -119,7 +131,7 @@ class CacheWarmupService:
             return True
 
         except Exception as e:
-            logger.warning(f"缓存预热失败 (热力图): {e}")
+            logger.warning("缓存预热失败 (热力图): {}", e)
             return False
         finally:
             if db:
@@ -130,9 +142,6 @@ class CacheWarmupService:
         """预热每日统计缓存"""
         db = None
         try:
-            from src.api.dashboard.routes import (  # TODO(arch): 提取 dashboard 统计计算到 services 层
-                DashboardDailyStatsAdapter,
-            )
             from src.models.database import User as DBUser
 
             db = create_session()
@@ -146,14 +155,14 @@ class CacheWarmupService:
             context = WarmupContext(db=db, user=admin_user)
 
             # 预热 7 天的每日统计
-            adapter = DashboardDailyStatsAdapter(days=7)
+            adapter = _lazy_create_adapter("DashboardDailyStatsAdapter", days=7)
             await adapter.handle(context)
 
             logger.debug("缓存预热: 每日统计已预热")
             return True
 
         except Exception as e:
-            logger.warning(f"缓存预热失败 (每日统计): {e}")
+            logger.warning("缓存预热失败 (每日统计): {}", e)
             return False
         finally:
             if db:

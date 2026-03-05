@@ -12,9 +12,9 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
-from src.api.handlers.base.request_builder import get_provider_auth
 from src.core.crypto import crypto_service
 from src.models.database import Provider, ProviderAPIKey, ProviderEndpoint
+from src.services.provider.auth import get_provider_auth
 from src.services.provider_keys.auth_type import normalize_auth_type
 from src.services.provider_keys.codex_usage_parser import (
     parse_codex_usage_headers,

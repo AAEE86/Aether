@@ -427,7 +427,7 @@ def _extract_tokens_from_response(
 
             # 尝试提取cache creation tokens
             try:
-                from src.api.handlers.base.utils import extract_cache_creation_tokens
+                from src.core.usage_tokens import extract_cache_creation_tokens
 
                 cache_creation_input_tokens = extract_cache_creation_tokens(usage_info)
             except Exception as e:
@@ -458,7 +458,7 @@ def _extract_tokens_from_response(
             output_tokens = usage_info.get("output_tokens", 0)
             cache_read_input_tokens = usage_info.get("cache_read_input_tokens", 0)
             try:
-                from src.api.handlers.base.utils import extract_cache_creation_tokens
+                from src.core.usage_tokens import extract_cache_creation_tokens
 
                 cache_creation_input_tokens = extract_cache_creation_tokens(usage_info)
             except Exception as e:
