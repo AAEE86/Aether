@@ -4,8 +4,8 @@
 支持固定价格、按次计费和阶梯计费三种模式。
 
 计费策略：
-- 不同 API format 可以有不同的计费逻辑
-- 通过 PricingStrategy 抽象，支持自定义总输入上下文计算、缓存 TTL 差异化等
+- 价格来源仍由 ModelCostService 解析
+- 格式相关口径（计费模板、总输入上下文）统一由 core.api_format.capabilities 提供
 """
 
 from __future__ import annotations
@@ -14,6 +14,10 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from src.core.api_format.capabilities import (
+    compute_total_input_context_for_api_format,
+    resolve_billing_template_for_api_format,
+)
 from src.core.logger import logger
 from src.models.database import GlobalModel, Model, Provider
 from src.services.billing import calculate_request_cost
@@ -903,7 +907,7 @@ class ModelCostService:
         """
         使用计费策略计算成本（异步版本）
 
-        根据 api_format 推断计费模板（claude/openai/gemini），支持阶梯计费和 TTL 差异化。
+        根据 core.api_format.capabilities 解析计费模板与总输入上下文，支持阶梯计费和 TTL 差异化。
 
         Args:
             provider: Provider 对象或提供商名称
@@ -912,7 +916,7 @@ class ModelCostService:
             output_tokens: 输出 token 数
             cache_creation_input_tokens: 缓存创建 token 数
             cache_read_input_tokens: 缓存读取 token 数
-            api_format: API 格式（用于选择计费策略）
+            api_format: API 格式（用于解析格式相关计费口径）
             cache_ttl_minutes: 缓存时长（分钟），用于 TTL 差异化定价
 
         Returns:
@@ -927,19 +931,15 @@ class ModelCostService:
         request_price = await self.get_request_price_async(provider, model)
         tiered_pricing = await self.get_tiered_pricing_async(provider, model)
 
-        billing_template: str | None = None
-        if api_format:
-            api_family = str(api_format).strip().lower().split(":", 1)[0]
-            if api_family in {"claude", "openai", "gemini"}:
-                billing_template = api_family
+        billing_template = resolve_billing_template_for_api_format(api_format) or ""
 
         if billing_template:
-            # Claude 的阶梯判定口径与默认不同：需要把 cache_creation 也算入总输入上下文。
-            total_input_context: int | None = None
-            if billing_template == "claude":
-                total_input_context = (
-                    input_tokens + cache_creation_input_tokens + cache_read_input_tokens
-                )
+            total_input_context = compute_total_input_context_for_api_format(
+                api_format,
+                input_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
+            )
 
             result = calculate_request_cost(
                 input_tokens=input_tokens,
@@ -967,7 +967,7 @@ class ModelCostService:
                 result["tier_index"],
             )
         else:
-            # 回退到默认计算逻辑（无 Adapter 时使用静态方法）
+            # 回退到默认计算逻辑（无显式格式能力时使用静态方法）
             return self.compute_cost_with_tiered_pricing(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,

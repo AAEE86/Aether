@@ -7,12 +7,12 @@ CLI Adapter 通用基类
 - Handler 创建和调用
 
 公共逻辑（异常处理、计费、头部构建等）继承自 HandlerAdapterBase。
+计费策略、模型抓取与 provider 格式能力由 `core.api_format` 注册表统一提供。
 
 子类只需提供：
 - FORMAT_ID: API 格式标识
 - HANDLER_CLASS: 对应的 MessageHandler 类
 - 可选覆盖 _extract_message_count() 自定义消息计数逻辑
-- 可选覆盖 compute_total_input_context() 自定义总输入上下文计算
 """
 
 from __future__ import annotations

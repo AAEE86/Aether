@@ -7,6 +7,7 @@ Chat Adapter 通用基类
 - Handler 创建和调用
 
 公共逻辑（异常处理、计费、头部构建等）继承自 HandlerAdapterBase。
+计费策略、模型抓取与 provider 格式能力由 `core.api_format` 注册表统一提供。
 
 子类只需提供：
 - FORMAT_ID: API 格式标识

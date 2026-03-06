@@ -1,7 +1,7 @@
 """
 上游模型获取公共模块
 
-提供从上游 API 获取模型列表的公共函数，供以下场景使用：
+提供从上游 API 获取模型列表的公共函数；通用 api_format 抓取能力统一来自 core.api_format.capabilities，供以下场景使用：
 - 定时任务自动获取（fetch_scheduler.py）
 - 管理后台手动查询（provider_query.py）
 """
@@ -240,7 +240,7 @@ async def fetch_models_from_endpoints(
 
         try:
             async with semaphore:
-                from src.services.model.format_models_fetcher import fetch_models_for_api_format
+                from src.core.api_format.capabilities import fetch_models_for_api_format
 
                 models, error = await fetch_models_for_api_format(
                     client,
