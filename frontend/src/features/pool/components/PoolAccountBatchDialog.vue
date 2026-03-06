@@ -223,7 +223,22 @@
       </div>
 
       <div
-        v-if="lastResultMessage"
+        v-if="executing && progressTotal > 0"
+        class="space-y-1"
+      >
+        <div class="flex items-center justify-between text-xs text-muted-foreground">
+          <span>{{ progressLabel }}</span>
+          <span>{{ progressDone }} / {{ progressTotal }}</span>
+        </div>
+        <div class="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+          <div
+            class="h-full rounded-full bg-primary transition-all duration-150"
+            :style="{ width: `${Math.round((progressDone / progressTotal) * 100)}%` }"
+          />
+        </div>
+      </div>
+      <div
+        v-else-if="lastResultMessage"
         class="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground"
       >
         {{ lastResultMessage }}
@@ -255,10 +270,12 @@ import { listPoolKeys, type PoolKeyDetail } from '@/api/endpoints/pool'
 import { deleteEndpointKey, refreshProviderQuota, updateProviderKey } from '@/api/endpoints/keys'
 import { refreshProviderOAuth } from '@/api/endpoints/provider_oauth'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
+import { hasNoFiveHourLimit as hasNoFiveHourLimitByQuota, hasNoWeeklyLimit as hasNoWeeklyLimitByQuota } from '@/features/pool/utils/quota-selectors'
 
 type QuickSelectorValue =
   | 'banned'
-  | 'no_quota'
+  | 'no_5h_limit'
+  | 'no_weekly_limit'
   | 'plan_free'
   | 'plan_team'
   | 'oauth_invalid'
@@ -290,7 +307,8 @@ const emit = defineEmits<{
 
 const QUICK_SELECT_OPTIONS: Array<{ value: QuickSelectorValue; label: string }> = [
   { value: 'banned', label: '已封号' },
-  { value: 'no_quota', label: '无额度' },
+  { value: 'no_5h_limit', label: '无5H限额' },
+  { value: 'no_weekly_limit', label: '无周限额' },
   { value: 'plan_free', label: '全部 Free' },
   { value: 'plan_team', label: '全部 Team' },
   { value: 'oauth_invalid', label: 'OAuth 失效' },
@@ -322,6 +340,9 @@ const searchText = ref('')
 const selectedAction = ref<BatchActionValue>('delete')
 const proxyNodeIdForAction = ref('')
 const lastResultMessage = ref('')
+const progressTotal = ref(0)
+const progressDone = ref(0)
+const progressLabel = ref('')
 const activeQuickSelectors = ref<QuickSelectorValue[]>([])
 const currentPage = ref(1)
 const PAGE_SIZE = 50
@@ -390,14 +411,12 @@ function isBannedKey(key: PoolKeyDetail): boolean {
   return false
 }
 
-function hasNoQuota(key: PoolKeyDetail): boolean {
-  const quotaText = normalizeText(key.account_quota)
-  if (!quotaText) return false
-  if (/(无额度|额度不足|已耗尽|耗尽|depleted|exhausted|insufficient)/.test(quotaText)) return true
-  if (/剩余\s*0(\.0+)?/.test(quotaText)) return true
-  if (/\b0(\.0+)?\s*\/\s*\d/.test(quotaText)) return true
-  if (/\b0(\.0+)?%/.test(quotaText)) return true
-  return false
+function hasNoFiveHourQuota(key: PoolKeyDetail): boolean {
+  return hasNoFiveHourLimitByQuota(key.account_quota)
+}
+
+function hasNoWeeklyQuota(key: PoolKeyDetail): boolean {
+  return hasNoWeeklyLimitByQuota(key.account_quota)
 }
 
 function isOAuthInvalid(key: PoolKeyDetail): boolean {
@@ -437,7 +456,8 @@ function toggleSelectFiltered(checked: boolean | 'indeterminate'): void {
 
 function matchesSelector(key: PoolKeyDetail, selector: QuickSelectorValue): boolean {
   if (selector === 'banned') return isBannedKey(key)
-  if (selector === 'no_quota') return hasNoQuota(key)
+  if (selector === 'no_5h_limit') return hasNoFiveHourQuota(key)
+  if (selector === 'no_weekly_limit') return hasNoWeeklyQuota(key)
   if (selector === 'plan_free') return isFreePlan(key)
   if (selector === 'plan_team') return isTeamPlan(key)
   if (selector === 'oauth_invalid') return isOAuthInvalid(key)
@@ -571,6 +591,12 @@ async function executeAction(): Promise<void> {
   let failedCount = 0
   let skippedCount = 0
 
+  const actionLabel = ACTION_OPTIONS.find((a) => a.value === selectedAction.value)?.label || '执行'
+  progressDone.value = 0
+  progressTotal.value = selectedKeys.length
+  progressLabel.value = `正在${actionLabel}...`
+  lastResultMessage.value = ''
+
   try {
     if (selectedAction.value === 'refresh_quota') {
       const targetIds = selectedKeys.map((key) => key.key_id)
@@ -578,6 +604,7 @@ async function executeAction(): Promise<void> {
       successCount = Number(result.success || 0)
       failedCount = Number(result.failed || 0)
       skippedCount = Math.max(0, targetIds.length - Number(result.total || 0))
+      progressDone.value = targetIds.length
     } else {
       const CONCURRENCY = props.batchConcurrency || 8
       const taskForKey = (key: PoolKeyDetail): (() => Promise<'success' | 'skip'>) | null => {
@@ -609,8 +636,12 @@ async function executeAction(): Promise<void> {
       for (const key of selectedKeys) {
         const task = taskForKey(key)
         if (task) tasks.push(task)
-        else skippedCount += 1
+        else {
+          skippedCount += 1
+          progressDone.value += 1
+        }
       }
+      progressTotal.value = selectedKeys.length
 
       // 并发执行，限制并发数
       let cursor = 0
@@ -623,6 +654,7 @@ async function executeAction(): Promise<void> {
           } catch {
             failedCount += 1
           }
+          progressDone.value += 1
         }
       }
       const workers = Array.from({ length: Math.min(CONCURRENCY, tasks.length) }, () => runNext())
@@ -647,6 +679,9 @@ async function executeAction(): Promise<void> {
     showError(parseApiError(err, '批量操作失败'))
   } finally {
     executing.value = false
+    progressTotal.value = 0
+    progressDone.value = 0
+    progressLabel.value = ''
   }
 }
 

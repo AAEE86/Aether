@@ -1,12 +1,67 @@
 <template>
   <Dialog
-    :open="!!result"
+    :open="open"
     size="2xl"
-    title="模型测试结果"
-    @update:open="(val: boolean) => { if (!val) $emit('close') }"
+    :title="dialogTitle"
+    :description="dialogDescription"
+    @update:open="(val: boolean) => { if (!val) emit('close') }"
   >
     <div
-      v-if="result"
+      v-if="showSelection"
+      class="space-y-2"
+    >
+      <button
+        v-for="endpoint in endpoints"
+        :key="endpoint.id"
+        type="button"
+        class="w-full rounded-lg border border-border/60 px-3 py-3 text-left transition-colors hover:bg-muted/40"
+        @click="emit('select-endpoint', endpoint.id)"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">
+              {{ formatApiFormat(endpoint.api_format) }}
+            </div>
+            <div class="mt-1 text-xs text-muted-foreground truncate">
+              {{ endpoint.base_url }}
+            </div>
+          </div>
+          <Badge variant="outline">
+            {{ endpoint.is_active ? '已启用' : '已禁用' }}
+          </Badge>
+        </div>
+      </button>
+      <div
+        v-if="endpoints.length === 0"
+        class="rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-sm text-muted-foreground"
+      >
+        暂无可用于测试的活跃端点
+      </div>
+    </div>
+
+    <div
+      v-else-if="testing"
+      class="flex flex-col items-center justify-center gap-3 py-10 text-center"
+    >
+      <Loader2 class="w-8 h-8 animate-spin text-primary" />
+      <div class="space-y-1">
+        <p class="text-sm font-medium">
+          正在测试模型
+        </p>
+        <p class="text-xs text-muted-foreground">
+          {{ selectingModelName || '-' }}
+        </p>
+        <p
+          v-if="selectedEndpoint"
+          class="text-xs text-muted-foreground"
+        >
+          端点：{{ formatApiFormat(selectedEndpoint.api_format) }} · {{ selectedEndpoint.base_url }}
+        </p>
+      </div>
+    </div>
+
+    <div
+      v-else-if="result"
       class="space-y-4"
     >
       <div class="flex items-center justify-between">
@@ -27,6 +82,11 @@
         <div>
           <span class="text-muted-foreground">请求模型: </span>
           <span class="font-medium">{{ result.model }}</span>
+        </div>
+        <div v-if="selectedEndpoint">
+          <span class="text-muted-foreground">测试端点: </span>
+          <span class="font-medium">{{ formatApiFormat(selectedEndpoint.api_format) }}</span>
+          <span class="text-xs text-muted-foreground ml-1">{{ selectedEndpoint.base_url }}</span>
         </div>
         <div v-if="successEffectiveModel">
           <span class="text-muted-foreground">发送模型: </span>
@@ -72,7 +132,6 @@
                 {{ attempt.latency_ms }}ms
               </span>
             </div>
-            <code class="text-[11px] bg-muted px-1 py-0.5 rounded shrink-0">{{ attempt.endpoint_api_format }}</code>
           </div>
           <div class="mt-1.5 space-y-0.5">
             <div
@@ -109,10 +168,9 @@
           <colgroup>
             <col class="w-8">
             <col class="w-[22%]">
-            <col class="w-20">
             <col
               v-if="hasEffectiveModel"
-              class="w-[16%]"
+              class="w-[18%]"
             >
             <col class="w-16">
             <col class="w-16">
@@ -125,9 +183,6 @@
               </th>
               <th class="px-3 py-2 text-left font-medium">
                 Key
-              </th>
-              <th class="px-3 py-2 text-left font-medium">
-                端点
               </th>
               <th
                 v-if="hasEffectiveModel"
@@ -171,9 +226,6 @@
                   {{ maskKey(attempt.key_id) }}
                 </div>
               </td>
-              <td class="px-3 py-2">
-                <code class="text-[11px] bg-muted px-1 py-0.5 rounded">{{ attempt.endpoint_api_format }}</code>
-              </td>
               <td
                 v-if="hasEffectiveModel"
                 class="px-3 py-2 truncate"
@@ -215,11 +267,19 @@
 
     <template #footer>
       <Button
+        v-if="showResult && canReselect"
         variant="outline"
         size="sm"
-        @click="$emit('close')"
+        @click="emit('back')"
       >
-        关闭
+        重新选择端点
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        @click="emit('close')"
+      >
+        {{ showSelection ? '取消' : '关闭' }}
       </Button>
     </template>
   </Dialog>
@@ -227,18 +287,55 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Loader2 } from 'lucide-vue-next'
 import { Dialog, Badge } from '@/components/ui'
 import Button from '@/components/ui/button.vue'
+import { formatApiFormat } from '@/api/endpoints/types/api-format'
 import type { TestModelFailoverResponse, TestAttemptDetail } from '@/api/endpoints/providers'
 
+type TestEndpointOption = {
+  id: string
+  api_format: string
+  base_url: string
+  is_active: boolean
+}
+
 const props = defineProps<{
+  open: boolean
   result: TestModelFailoverResponse | null
   mode?: 'global' | 'direct'
+  selectingModelName?: string | null
+  endpoints?: TestEndpointOption[]
+  selectedEndpoint?: TestEndpointOption | null
+  testing?: boolean
+  showEndpointSelector?: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   close: []
+  back: []
+  'select-endpoint': [endpointId: string]
 }>()
+
+const endpoints = computed(() => props.endpoints ?? [])
+const showSelection = computed(() => props.open && !!props.showEndpointSelector && !props.testing && !props.result)
+const showResult = computed(() => !!props.result)
+const canReselect = computed(() => !!props.showEndpointSelector && endpoints.value.length > 1)
+
+const dialogTitle = computed(() => {
+  if (props.result) return '模型测试结果'
+  return '模型测试'
+})
+
+const dialogDescription = computed(() => {
+  if (showSelection.value && props.selectingModelName) {
+    return `为 ${props.selectingModelName} 选择端点`
+  }
+  if (props.testing && props.selectedEndpoint) {
+    return `正在通过 ${formatApiFormat(props.selectedEndpoint.api_format)} 测试 ${props.selectingModelName || '模型'}`
+  }
+  return ''
+})
 
 const modeLabel = computed(() => {
   if (props.mode === 'global') return '模拟外部请求'

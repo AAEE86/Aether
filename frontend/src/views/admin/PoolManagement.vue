@@ -485,14 +485,6 @@
                         </span>
                       </template>
                       <Badge
-                        v-if="getAccountAlertLabel(key)"
-                        variant="destructive"
-                        class="text-[9px] px-1 py-0 h-4 shrink-0"
-                        :title="getAccountAlertTitle(key)"
-                      >
-                        {{ getAccountAlertLabel(key) }}
-                      </Badge>
-                      <Badge
                         v-if="key.oauth_plan_type"
                         variant="outline"
                         class="text-[9px] px-1 py-0 h-4 shrink-0"
@@ -794,14 +786,6 @@
                       {{ getKeyOAuthExpires(key)?.text }}
                     </span>
                   </template>
-                  <Badge
-                    v-if="getAccountAlertLabel(key)"
-                    variant="destructive"
-                    class="text-[9px] px-1 py-0 h-4 shrink-0"
-                    :title="getAccountAlertTitle(key)"
-                  >
-                    {{ getAccountAlertLabel(key) }}
-                  </Badge>
                   <Badge
                     v-if="key.oauth_plan_type"
                     variant="outline"
@@ -1979,6 +1963,7 @@ async function handleRefreshOAuth(key: PoolKeyDetail) {
     await loadKeys()
   } catch (err) {
     showError(parseApiError(err, 'Token 刷新失败'))
+    await loadKeys()
   } finally {
     refreshingOAuthKeyId.value = null
   }
@@ -2322,7 +2307,10 @@ function getOAuthStatusTitle(key: PoolKeyDetail): string {
   const status = getKeyOAuthExpires(key)
   if (!status) return ''
   if (status.isInvalid) {
-    return status.invalidReason ? `Token 已失效: ${status.invalidReason}` : 'Token 已失效'
+    const cleaned = status.invalidReason && isAccountLevelBlockReason(status.invalidReason)
+      ? cleanAccountBlockReason(status.invalidReason)
+      : status.invalidReason
+    return cleaned ? `Token 已失效: ${cleaned}` : 'Token 已失效'
   }
   if (status.isExpired) {
     return 'Token 已过期，请重新授权'

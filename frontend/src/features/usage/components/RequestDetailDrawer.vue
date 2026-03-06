@@ -193,7 +193,7 @@
                     <!-- 阶梯标题 -->
                     <div class="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
                       <span class="font-medium text-foreground">Token 计费</span>
-                      <span class="text-muted-foreground/60">(输入 {{ formatNumber(detail.tokens?.input || detail.input_tokens || 0) }} + 缓存创建 {{ formatNumber(detail.cache_creation_input_tokens || 0) }} + 缓存读取 {{ formatNumber(detail.cache_read_input_tokens || 0) }})</span>
+                      <span class="text-muted-foreground/60">(输入 {{ formatNumber(detail.tokens?.input || detail.input_tokens || 0) }} + 缓存创建 {{ cacheCreationSummaryText }} + 缓存读取 {{ formatNumber(detail.cache_read_input_tokens || 0) }})</span>
                       <Badge
                         v-if="displayTiers.length > 1"
                         variant="outline"
@@ -236,7 +236,15 @@
                         <div class="text-muted-foreground flex items-center gap-2 flex-wrap">
                           <span>输入 ${{ formatPrice(tier.input_price_per_1m) }}/M</span>
                           <span>输出 ${{ formatPrice(tier.output_price_per_1m) }}/M</span>
-                          <span v-if="tier.cache_creation_price_per_1m">
+                          <template v-if="hasTierCacheCreationSplitPricing(tier)">
+                            <span v-if="getTierCachePriceForTTL(tier, 5, 'cache_creation_price_per_1m') !== null">
+                              缓存创建(5min) ${{ formatPrice(getTierCachePriceForTTL(tier, 5, 'cache_creation_price_per_1m') || 0) }}/M
+                            </span>
+                            <span v-if="getTierCachePriceForTTL(tier, 60, 'cache_creation_price_per_1m') !== null">
+                              缓存创建(1h) ${{ formatPrice(getTierCachePriceForTTL(tier, 60, 'cache_creation_price_per_1m') || 0) }}/M
+                            </span>
+                          </template>
+                          <span v-else-if="tier.cache_creation_price_per_1m">
                             缓存创建 ${{ formatPrice(tier.cache_creation_price_per_1m) }}/M
                           </span>
                           <span v-if="tier.cache_read_price_per_1m">
@@ -267,7 +275,7 @@
                         <!-- 缓存创建 缓存读取 -->
                         <div class="flex items-center">
                           <div class="flex items-center flex-1">
-                            <span class="text-xs text-muted-foreground w-[56px]">缓存创建</span>
+                            <span class="text-xs text-muted-foreground w-[56px]">{{ cacheCreationSplitRows.length > 0 ? '创建合计' : '缓存创建' }}</span>
                             <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.cache_creation_input_tokens || 0 }}</span>
                             <span class="text-xs font-mono">${{ (detail.cache_creation_cost || 0).toFixed(6) }}</span>
                           </div>
@@ -283,11 +291,22 @@
                         </div>
                         <!-- 缓存创建 5m/1h 细分 -->
                         <div
-                          v-if="(detail.cache_creation_input_tokens_5m || 0) > 0 || (detail.cache_creation_input_tokens_1h || 0) > 0"
-                          class="flex items-center pl-[56px]"
+                          v-if="cacheCreationSplitRows.length > 0"
+                          class="space-y-1 pl-[56px]"
                         >
-                          <span class="text-xs text-muted-foreground/50">5min: {{ detail.cache_creation_input_tokens_5m || 0 }}</span>
-                          <span class="text-xs text-muted-foreground/50 ml-4">1h: {{ detail.cache_creation_input_tokens_1h || 0 }}</span>
+                          <div
+                            v-for="row in cacheCreationSplitRows"
+                            :key="row.key"
+                            class="flex items-center gap-4 text-xs text-muted-foreground/70"
+                          >
+                            <span class="w-[72px]">{{ row.label }}</span>
+                            <span class="font-mono text-foreground/90">{{ formatNumber(row.tokens) }}</span>
+                            <span v-if="row.pricePer1M !== null">${{ formatPrice(row.pricePer1M) }}/M</span>
+                            <span
+                              v-if="row.cost !== null"
+                              class="font-mono"
+                            >${{ row.cost.toFixed(6) }}</span>
+                          </div>
                         </div>
                       </template>
                     </div>
@@ -379,8 +398,9 @@
               </Card>
 
               <!-- 请求链路追踪卡片 -->
-              <div v-if="detail.request_id || detail.id">
+              <div>
                 <HorizontalRequestTimeline
+                  v-if="showTimeline && (detail.request_id || detail.id)"
                   ref="timelineRef"
                   :request-id="detail.request_id || detail.id"
                   :override-status-code="detail.status_code"
@@ -565,13 +585,17 @@
                       </TabsContent>
 
                       <TabsContent value="request-body">
-                        <!-- 对话视图 -->
+                        <div
+                          v-if="isRequestBodyLoading"
+                          class="p-4"
+                        >
+                          <Skeleton class="h-32 w-full" />
+                        </div>
                         <ConversationView
-                          v-if="contentViewMode === 'conversation'"
+                          v-else-if="contentViewMode === 'conversation'"
                           :render-result="requestRenderResult"
                           empty-message="无请求体信息"
                         />
-                        <!-- JSON 视图 -->
                         <JsonContent
                           v-else
                           :data="currentRequestBody"
@@ -610,13 +634,17 @@
                       </TabsContent>
 
                       <TabsContent value="response-body">
-                        <!-- 对话视图 -->
+                        <div
+                          v-if="isResponseBodyLoading"
+                          class="p-4"
+                        >
+                          <Skeleton class="h-32 w-full" />
+                        </div>
                         <ConversationView
-                          v-if="contentViewMode === 'conversation'"
+                          v-else-if="contentViewMode === 'conversation'"
                           :render-result="responseRenderResult"
                           empty-message="无响应体信息"
                         />
-                        <!-- JSON 视图 -->
                         <JsonContent
                           v-else
                           :data="currentResponseBody"
@@ -714,15 +742,33 @@ const historicalPricing = ref<{
   cache_read_price: string
   request_price: string
 } | null>(null)
+
+type CacheTTLPriceEntry = {
+  ttl_minutes?: number | null
+  cache_creation_price_per_1m?: number | null
+  cache_read_price_per_1m?: number | null
+}
+
+type PricingTierLike = {
+  cache_creation_price_per_1m?: number | null
+  cache_read_price_per_1m?: number | null
+  cache_ttl_pricing?: CacheTTLPriceEntry[] | null
+}
 const autoRefreshTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const autoRefreshing = ref(false)
 const isPageVisible = ref(typeof document === 'undefined' ? true : !document.hidden)
 const curlCopying = ref(false)
 const curlCopied = ref(false)
 const replayDialogOpen = ref(false)
+const bodyLoading = ref(false)
+const bodiesLoadedForRequestId = ref<string | null>(null)
+const showTimeline = ref(false)
 const AUTO_REFRESH_INTERVAL_MS = 1000
+const TIMELINE_MOUNT_DELAY_MS = 120
 let loadDetailRequestId = 0
+let bodyLoadRequestId = 0
 let loadDetailInFlight = false
+let timelineMountTimer: ReturnType<typeof setTimeout> | null = null
 
 // 监听标签页切换
 watch(activeTab, (newTab) => {
@@ -734,6 +780,10 @@ watch(activeTab, (newTab) => {
     contentViewMode.value = 'json'
   }
   dataSource.value = getDefaultDataSourceForTab(newTab)
+
+  if (['request-body', 'response-body'].includes(newTab)) {
+    void ensureBodyContentLoaded()
+  }
 })
 
 // 检测暗色模式
@@ -747,6 +797,46 @@ const traceRequestMetadata = computed<Record<string, unknown> | null>(() => {
   return meta as Record<string, unknown>
 })
 
+function hasBodyContent(flag: boolean | undefined, data: unknown): boolean {
+  return Boolean(flag) || hasContent(data)
+}
+
+const hasRequestBodyAvailable = computed(() => {
+  return hasBodyContent(detail.value?.has_request_body, detail.value?.request_body)
+    || hasBodyContent(detail.value?.has_provider_request_body, detail.value?.provider_request_body)
+})
+
+const hasResponseBodyAvailable = computed(() => {
+  return hasBodyContent(detail.value?.has_response_body, detail.value?.response_body)
+    || hasBodyContent(detail.value?.has_client_response_body, detail.value?.client_response_body)
+})
+
+const isRequestBodyLoading = computed(() => {
+  return bodyLoading.value && activeTab.value === 'request-body' && !currentRequestBody.value
+})
+
+const isResponseBodyLoading = computed(() => {
+  return bodyLoading.value && activeTab.value === 'response-body' && !currentResponseBody.value
+})
+
+function clearTimelineMountTimer() {
+  if (timelineMountTimer) {
+    clearTimeout(timelineMountTimer)
+    timelineMountTimer = null
+  }
+}
+
+function scheduleTimelineMount() {
+  clearTimelineMountTimer()
+  if (typeof window === 'undefined') {
+    showTimeline.value = true
+    return
+  }
+  timelineMountTimer = window.setTimeout(() => {
+    showTimeline.value = true
+  }, TIMELINE_MOUNT_DELAY_MS)
+}
+
 // 检测是否有提供商请求头
 const hasProviderHeaders = computed(() => {
   return !!(detail.value?.provider_request_headers &&
@@ -755,12 +845,13 @@ const hasProviderHeaders = computed(() => {
 
 // 请求体：仅当 provider_request_body 存在时才展示来源切换
 const hasProviderRequestBody = computed(() => {
-  return hasContent(detail.value?.provider_request_body)
+  return hasBodyContent(detail.value?.has_provider_request_body, detail.value?.provider_request_body)
 })
 
 // 响应体：只有客户端侧和 provider 侧都存在时才展示来源切换
 const hasProviderResponseBody = computed(() => {
-  return hasContent(detail.value?.response_body) && hasContent(detail.value?.client_response_body)
+  return hasBodyContent(detail.value?.has_response_body, detail.value?.response_body)
+    && hasBodyContent(detail.value?.has_client_response_body, detail.value?.client_response_body)
 })
 
 // 检测是否有两套响应头（客户端侧 + 提供商侧）
@@ -864,6 +955,9 @@ const requestRenderResult = computed<RenderResult>(() => {
   if (!body) {
     return { blocks: [], isStream: false }
   }
+  if (activeTab.value !== 'request-body' || contentViewMode.value !== 'conversation') {
+    return { blocks: [], isStream: false }
+  }
   return renderRequest(body, currentResponseBody.value, detail.value?.api_format)
 })
 
@@ -871,6 +965,9 @@ const requestRenderResult = computed<RenderResult>(() => {
 const responseRenderResult = computed<RenderResult>(() => {
   const body = currentResponseBody.value
   if (!body) {
+    return { blocks: [], isStream: false }
+  }
+  if (activeTab.value !== 'response-body' || contentViewMode.value !== 'conversation') {
     return { blocks: [], isStream: false }
   }
   return renderResponse(body, currentRequestBody.value, detail.value?.api_format)
@@ -882,14 +979,13 @@ const supportsConversationView = computed(() => {
 })
 
 // 当前对话数据是否有效（用于禁用按钮）
+// 不依赖带 tab/mode 守卫的 renderResult，直接检查 body 数据是否存在
 const hasValidConversation = computed(() => {
   if (activeTab.value === 'request-body') {
-    return !requestRenderResult.value.error &&
-      requestRenderResult.value.blocks.length > 0
+    return !!currentRequestBody.value
   }
   if (activeTab.value === 'response-body') {
-    return !responseRenderResult.value.error &&
-      responseRenderResult.value.blocks.length > 0
+    return !!currentResponseBody.value
   }
   return false
 })
@@ -941,6 +1037,70 @@ const currentTierIndex = computed(() => {
 
   // 单阶梯时默认是第0阶
   return 0
+})
+
+const currentTier = computed<PricingTierLike | null>(() => {
+  const tier = displayTiers.value[currentTierIndex.value]
+  if (!tier || typeof tier !== 'object') return null
+  return tier as PricingTierLike
+})
+
+const cacheCreationSummaryText = computed(() => {
+  if (!detail.value) return '0'
+
+  const total = detail.value.cache_creation_input_tokens || 0
+  const cache5m = detail.value.cache_creation_input_tokens_5m || 0
+  const cache1h = detail.value.cache_creation_input_tokens_1h || 0
+
+  if (cache5m <= 0 && cache1h <= 0) {
+    return formatNumber(total)
+  }
+
+  const parts: string[] = []
+  if (cache5m > 0) parts.push(`5min ${formatNumber(cache5m)}`)
+  if (cache1h > 0) parts.push(`1h ${formatNumber(cache1h)}`)
+  const remaining = Math.max(0, total - cache5m - cache1h)
+  if (remaining > 0) parts.push(`其他 ${formatNumber(remaining)}`)
+  return parts.join(' + ')
+})
+
+const cacheCreationSplitRows = computed(() => {
+  if (!detail.value) return []
+
+  const rows: Array<{
+    key: string
+    label: string
+    tokens: number
+    pricePer1M: number | null
+    cost: number | null
+  }> = []
+
+  const cache5m = detail.value.cache_creation_input_tokens_5m || 0
+  const cache1h = detail.value.cache_creation_input_tokens_1h || 0
+
+  if (cache5m > 0) {
+    const pricePer1M = getActiveCachePriceForTTL(5, 'cache_creation_price_per_1m')
+    rows.push({
+      key: '5m',
+      label: '5min 创建',
+      tokens: cache5m,
+      pricePer1M,
+      cost: pricePer1M !== null ? (cache5m * pricePer1M) / 1_000_000 : null,
+    })
+  }
+
+  if (cache1h > 0) {
+    const pricePer1M = getActiveCachePriceForTTL(60, 'cache_creation_price_per_1m')
+    rows.push({
+      key: '1h',
+      label: '1h 创建',
+      tokens: cache1h,
+      pricePer1M,
+      cost: pricePer1M !== null ? (cache1h * pricePer1M) / 1_000_000 : null,
+    })
+  }
+
+  return rows
 })
 
 // 总输入上下文（输入 + 缓存创建 + 缓存读取）
@@ -1013,6 +1173,52 @@ function hasContent(data: unknown): boolean {
   return true
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
+function getTierCachePriceForTTL(
+  tier: PricingTierLike | null | undefined,
+  ttlMinutes: number,
+  priceKey: 'cache_creation_price_per_1m' | 'cache_read_price_per_1m',
+): number | null {
+  const fallback = toFiniteNumber(tier?.[priceKey])
+  const ttlPricing = Array.isArray(tier?.cache_ttl_pricing)
+    ? tier.cache_ttl_pricing
+        .filter((entry): entry is CacheTTLPriceEntry => !!entry && typeof entry === 'object')
+        .sort((a, b) => Number(a.ttl_minutes || 0) - Number(b.ttl_minutes || 0))
+    : []
+
+  if (ttlPricing.length === 0) return fallback
+
+  const matched = ttlPricing.find((entry) => Number(entry.ttl_minutes || 0) >= ttlMinutes)
+    || ttlPricing[ttlPricing.length - 1]
+  const price = toFiniteNumber(matched?.[priceKey])
+  return price ?? fallback
+}
+
+function hasTierCacheCreationSplitPricing(tier: PricingTierLike | null | undefined): boolean {
+  const ttlPricing = Array.isArray(tier?.cache_ttl_pricing) ? tier.cache_ttl_pricing : []
+  return ttlPricing.some((entry) =>
+    Number(entry?.ttl_minutes || 0) >= 60
+    && toFiniteNumber(entry?.cache_creation_price_per_1m) !== null,
+  )
+}
+
+function getActiveCachePriceForTTL(
+  ttlMinutes: number,
+  priceKey: 'cache_creation_price_per_1m' | 'cache_read_price_per_1m',
+): number | null {
+  const tierPrice = getTierCachePriceForTTL(currentTier.value, ttlMinutes, priceKey)
+  if (tierPrice !== null) return tierPrice
+
+  if (priceKey === 'cache_creation_price_per_1m') {
+    return toFiniteNumber(detail.value?.cache_creation_price_per_1m)
+  }
+  return toFiniteNumber(detail.value?.cache_read_price_per_1m)
+}
+
 function getDefaultDataSourceForTab(tab: string): 'client' | 'provider' {
   if (!detail.value) {
     if (['request-headers', 'request-body'].includes(tab)) return 'provider'
@@ -1027,8 +1233,8 @@ function getDefaultDataSourceForTab(tab: string): 'client' | 'provider' {
   }
 
   if (tab === 'request-body') {
-    if (hasContent(detail.value.provider_request_body)) return 'provider'
-    if (hasContent(detail.value.request_body)) return 'client'
+    if (hasBodyContent(detail.value.has_provider_request_body, detail.value.provider_request_body)) return 'provider'
+    if (hasBodyContent(detail.value.has_request_body, detail.value.request_body)) return 'client'
     return 'provider'
   }
 
@@ -1039,8 +1245,8 @@ function getDefaultDataSourceForTab(tab: string): 'client' | 'provider' {
   }
 
   if (tab === 'response-body') {
-    if (hasContent(detail.value.client_response_body)) return 'client'
-    if (hasContent(detail.value.response_body)) return 'provider'
+    if (hasBodyContent(detail.value.has_client_response_body, detail.value.client_response_body)) return 'client'
+    if (hasBodyContent(detail.value.has_response_body, detail.value.response_body)) return 'provider'
     return 'client'
   }
 
@@ -1072,11 +1278,11 @@ const visibleTabs = computed(() => {
       case 'request-headers':
         return hasContent(detail.value?.request_headers) || hasContent(detail.value?.provider_request_headers)
       case 'request-body':
-        return hasContent(detail.value?.request_body) || hasContent(detail.value?.provider_request_body)
+        return hasRequestBodyAvailable.value
       case 'response-headers':
         return hasContent(detail.value?.response_headers) || hasContent(detail.value?.client_response_headers)
       case 'response-body':
-        return hasContent(detail.value?.response_body) || hasContent(detail.value?.client_response_body)
+        return hasResponseBodyAvailable.value
       case 'metadata':
         return hasContent(detail.value?.metadata)
       default:
@@ -1096,8 +1302,46 @@ watch(() => props.isOpen, async (isOpen) => {
     await loadDetail(props.requestId)
   } else if (!isOpen) {
     stopAutoRefresh()
+    showTimeline.value = false
+    clearTimelineMountTimer()
+    bodyLoading.value = false
+    bodiesLoadedForRequestId.value = null
   }
 })
+
+async function ensureBodyContentLoaded() {
+  if (!props.requestId || !detail.value) return
+
+  const cacheKey = detail.value.request_id || detail.value.id
+  if (bodiesLoadedForRequestId.value === cacheKey || bodyLoading.value) return
+  if (!hasRequestBodyAvailable.value && !hasResponseBodyAvailable.value) return
+
+  const requestId = ++bodyLoadRequestId
+  bodyLoading.value = true
+  try {
+    const response = await dashboardApi.getRequestDetail(props.requestId, { includeBodies: true })
+    if (requestId !== bodyLoadRequestId || !detail.value) return
+    detail.value = {
+      ...detail.value,
+      request_body: response.request_body,
+      provider_request_body: response.provider_request_body,
+      response_body: response.response_body,
+      client_response_body: response.client_response_body,
+      has_request_body: response.has_request_body,
+      has_provider_request_body: response.has_provider_request_body,
+      has_response_body: response.has_response_body,
+      has_client_response_body: response.has_client_response_body,
+    }
+    bodiesLoadedForRequestId.value = cacheKey
+  } catch (err) {
+    if (requestId !== bodyLoadRequestId) return
+    log.error('Failed to load request bodies:', err)
+  } finally {
+    if (requestId === bodyLoadRequestId) {
+      bodyLoading.value = false
+    }
+  }
+}
 
 async function loadDetail(id: string, silent = false) {
   if (silent && loadDetailInFlight) {
@@ -1108,23 +1352,40 @@ async function loadDetail(id: string, silent = false) {
   if (!silent) {
     loading.value = true
     historicalPricing.value = null
+    showTimeline.value = false
+    clearTimelineMountTimer()
+    ++bodyLoadRequestId
+    bodyLoading.value = false
   }
   error.value = null
   try {
-    const response = await dashboardApi.getRequestDetail(id)
+    const response = await dashboardApi.getRequestDetail(id, { includeBodies: false })
     if (requestId !== loadDetailRequestId) return
-    detail.value = response
+
+    const previousDetail = detail.value
+    const prevKey = previousDetail?.request_id || previousDetail?.id
+    const currKey = response.request_id || response.id
+    const sameRequest = !!prevKey && prevKey === currKey
+    detail.value = {
+      ...response,
+      request_body: sameRequest ? previousDetail?.request_body : undefined,
+      provider_request_body: sameRequest ? previousDetail?.provider_request_body : undefined,
+      response_body: sameRequest ? previousDetail?.response_body : undefined,
+      client_response_body: sameRequest ? previousDetail?.client_response_body : undefined,
+    }
+    bodiesLoadedForRequestId.value = sameRequest ? bodiesLoadedForRequestId.value : null
 
     // 首次加载时选择默认 tab
     if (!silent) {
       const visibleTabNames = visibleTabs.value.map(t => t.name)
-      if ((detail.value.request_body || detail.value.provider_request_body) && visibleTabNames.includes('request-body')) {
+      if (hasRequestBodyAvailable.value && visibleTabNames.includes('request-body')) {
         activeTab.value = 'request-body'
-      } else if ((detail.value.response_body || detail.value.client_response_body) && visibleTabNames.includes('response-body')) {
+      } else if (hasResponseBodyAvailable.value && visibleTabNames.includes('response-body')) {
         activeTab.value = 'response-body'
       } else if (visibleTabNames.length > 0) {
         activeTab.value = visibleTabNames[0]
       }
+      scheduleTimelineMount()
     }
 
     // 根据当前 Tab 的数据可用性自动选择默认数据源
@@ -1255,6 +1516,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   stopAutoRefresh()
+  clearTimelineMountTimer()
   loadDetailRequestId += 1
   loadDetailInFlight = false
 })
