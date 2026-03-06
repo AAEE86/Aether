@@ -519,6 +519,7 @@ class HTTPClientPool:
 
         return bool(clients)
 
+    @classmethod
     async def get_upstream_client(
         cls,
         delegate_cfg: dict[str, Any] | None,
