@@ -117,21 +117,52 @@ def _is_numeric_type(table_name: str, column_name: str) -> bool:
     return data_type == "numeric"
 
 
-def upgrade() -> None:
-    # -- 1. cost fields: Float -> Numeric
-    for table, col, _nullable, _default in _COST_COLUMNS:
+def _type_spec(col: str) -> str:
+    """Return the SQL type literal for a given column name."""
+    return "NUMERIC(10,6)" if col == "rate_multiplier" else "NUMERIC(20,8)"
+
+
+def _batch_alter_type(
+    columns: list[tuple[str, str, bool, str | None]],
+    cast_suffix: str,
+    type_fn=None,
+) -> None:
+    """Group columns by table and issue ONE ALTER TABLE per table.
+
+    This avoids rewriting the same table N times (once per column).
+    """
+    from collections import defaultdict
+
+    by_table: dict[str, list[tuple[str, str, bool, str | None]]] = defaultdict(list)
+    for table, col, nullable, default in columns:
         if not _column_exists(table, col):
             continue
-        if _is_numeric_type(table, col):
+        by_table[table].append((table, col, nullable, default))
+
+    bind = op.get_bind()
+    for table, cols in by_table.items():
+        # Build a single ALTER TABLE with multiple ALTER COLUMN clauses
+        parts: list[str] = []
+        for _t, col, _nullable, _default in cols:
+            target_type = type_fn(col) if type_fn else _type_spec(col)
+            parts.append(
+                f"ALTER COLUMN {col} TYPE {target_type} USING {col}::{cast_suffix}"
+            )
+        if not parts:
             continue
-        target_type = _RATE_MULTIPLIER_TYPE if col == "rate_multiplier" else _COST_TYPE
-        op.alter_column(
-            table,
-            col,
-            type_=target_type,
-            existing_type=sa.Float(),
-            postgresql_using=f"{col}::numeric",
-        )
+        sql = f"ALTER TABLE {table} " + ", ".join(parts)
+        bind.execute(sa.text(sql))
+
+
+def upgrade() -> None:
+    # -- 1. cost fields: Float -> Numeric  (batched per table)
+    # Filter out columns that are already numeric
+    cols_to_convert = [
+        (t, c, n, d)
+        for t, c, n, d in _COST_COLUMNS
+        if _column_exists(t, c) and not _is_numeric_type(t, c)
+    ]
+    _batch_alter_type(cols_to_convert, cast_suffix="numeric", type_fn=_type_spec)
 
     # -- 2. provider_api_keys composite index
     if not _index_exists("idx_provider_api_keys_provider_active"):
@@ -150,16 +181,14 @@ def downgrade() -> None:
             table_name="provider_api_keys",
         )
 
-    # -- 1. Numeric -> Float
-    for table, col, _nullable, _default in _COST_COLUMNS:
-        if not _column_exists(table, col):
-            continue
-        if not _is_numeric_type(table, col):
-            continue
-        op.alter_column(
-            table,
-            col,
-            type_=sa.Float(),
-            existing_type=_COST_TYPE if col != "rate_multiplier" else _RATE_MULTIPLIER_TYPE,
-            postgresql_using=f"{col}::double precision",
-        )
+    # -- 1. Numeric -> Float  (batched per table)
+    cols_to_revert = [
+        (t, c, n, d)
+        for t, c, n, d in _COST_COLUMNS
+        if _column_exists(t, c) and _is_numeric_type(t, c)
+    ]
+    _batch_alter_type(
+        cols_to_revert,
+        cast_suffix="double precision",
+        type_fn=lambda _col: "DOUBLE PRECISION",
+    )
