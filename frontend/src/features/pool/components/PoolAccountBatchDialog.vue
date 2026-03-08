@@ -704,18 +704,20 @@ async function executeAction(): Promise<void> {
     if (failedCount > 0) warning(lastResultMessage.value)
     else success(lastResultMessage.value)
 
-    const shouldClearSelection = selectedAction.value === 'delete'
-    const previousSelection = new Set(selectedKeyIds.value)
     actionPhaseMs = performance.now() - actionStartedAt
     const reloadStartedAt = performance.now()
-    await loadAllKeys()
-    reloadPhaseMs = performance.now() - reloadStartedAt
-    if (shouldClearSelection) {
+    if (selectedAction.value === 'delete' && successCount > 0 && failedCount === 0) {
+      // 全部删除成功：直接从本地列表移除，不做全量重载
+      const deletedIds = new Set(selectedKeys.map((key) => key.key_id))
+      allKeys.value = allKeys.value.filter((key) => !deletedIds.has(key.key_id))
       selectedKeyIds.value = []
     } else {
+      const previousSelection = new Set(selectedKeyIds.value)
+      await loadAllKeys()
       const existingIds = new Set(allKeys.value.map((key) => key.key_id))
       selectedKeyIds.value = [...previousSelection].filter((id) => existingIds.has(id))
     }
+    reloadPhaseMs = performance.now() - reloadStartedAt
     emit('changed')
   } catch (err) {
     showError(parseApiError(err, '批量操作失败'))

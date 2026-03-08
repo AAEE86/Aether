@@ -1885,7 +1885,13 @@ async function handleDeleteKey(key: PoolKeyDetail) {
   try {
     await deleteEndpointKey(key.key_id)
     success('账号已删除')
-    await loadKeys()
+    // 乐观更新：直接从本地列表移除，避免等待网络重载
+    keyPage.value.keys = keyPage.value.keys.filter(k => k.key_id !== key.key_id)
+    keyPage.value.total = Math.max(0, keyPage.value.total - 1)
+    // 当前页已空且不是第一页时，自动跳转到前一页
+    if (keyPage.value.keys.length === 0 && currentPage.value > 1) {
+      currentPage.value--
+    }
   } catch (err) {
     showError(parseApiError(err, '删除账号失败'))
   } finally {
