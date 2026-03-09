@@ -1241,6 +1241,8 @@ const selectedProviderClaudeConfig = computed(() => {
   return (selectedProviderData.value as Record<string, unknown> | null)?.claude_code_advanced as ClaudeCodeAdvancedConfig | null ?? null
 })
 
+const DEFAULT_ENABLED_PRESETS = new Set(['cache_affinity', 'recent_refresh'])
+
 const DEFAULT_PRESET_LABELS: Record<string, string> = {
   lru: 'LRU',
   free_team_first: 'Free/Team',
@@ -1285,8 +1287,8 @@ const poolSchedulingLabel = computed(() => {
 
   const cfg = selectedProviderConfig.value
 
-  // No pool_advanced config at all: show default (cache_affinity + recent_refresh)
-  if (!cfg) return '2 维度'
+  // No pool_advanced config at all: use default enabled presets count
+  if (!cfg) return `${DEFAULT_ENABLED_PRESETS.size} 维度`
 
   const presets = Array.isArray(cfg.scheduling_presets) ? cfg.scheduling_presets : []
   const presetLabels = presetLabelsByName.value
