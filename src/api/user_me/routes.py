@@ -231,6 +231,7 @@ async def get_my_usage(
     - `total_tokens`: 总 Token 数
     - `total_cost`: 总成本（USD）
     - `summary_by_model`: 按模型分组统计
+    - `summary_by_provider`: 按提供商分组统计
     - `records`: 详细使用记录列表
     - `pagination`: 分页信息
     """

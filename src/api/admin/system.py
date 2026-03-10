@@ -1014,7 +1014,7 @@ class AdminExportConfigAdapter(AdminApiAdapter):
             keys = sorted(
                 provider.api_keys,
                 key=lambda key: (
-                    key.internal_priority if key.internal_priority is not None else 0,
+                    key.internal_priority if key.internal_priority is not None else float("inf"),
                     _normalize_created_at_for_sort(key.created_at),
                 ),
             )
