@@ -213,7 +213,7 @@ RUN printf '%s\n' \
     'environment=PYTHONUNBUFFERED=1,PYTHONIOENCODING=utf-8,LANG=C.UTF-8,LC_ALL=C.UTF-8,DOCKER_CONTAINER=true' \
     '' \
     '[program:tunnel-hub]' \
-    'command=/usr/local/bin/aether-hub --bind 0.0.0.0:8085 --worker-idle-timeout 0' \
+    'command=/usr/local/bin/aether-hub --bind 0.0.0.0:8085' \
     'autostart=true' \
     'autorestart=true' \
     'stdout_logfile=/dev/stdout' \
