@@ -1,3 +1,4 @@
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,13 +25,13 @@ from src.services.usage.telemetry_writer import (
 
 class DummyRedis:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, str], int | None, bool | None]] = []
+        self.calls: list[tuple[str, dict[str, bytes], int | None, bool | None]] = []
         self.xadd_error: Exception | None = None
 
     async def xadd(
         self,
         key: str,
-        fields: dict[str, str],
+        fields: dict[str, bytes],
         maxlen: int | None = None,
         approximate: bool | None = None,
     ) -> str:
@@ -127,19 +128,54 @@ async def test_usage_event_to_stream_fields_sanitizes_non_json_value() -> None:
     assert isinstance(restored.data["meta"]["obj"], str)
 
 
-@pytest.mark.asyncio
-async def test_usage_event_bytes_payload() -> None:
-    """测试 bytes 类型 payload 的反序列化"""
+def test_usage_event_bytes_payload() -> None:
+    """测试 surrogateescape 字符串 payload 的反序列化（msgpack）"""
     event = build_usage_event(
         event_type=UsageEventType.COMPLETED,
         request_id="req-bytes",
         data={"key": "value"},
     )
     fields = event.to_stream_fields()
-    # 模拟 Redis 返回 bytes
-    fields["payload"] = fields["payload"].encode("utf-8")  # type: ignore[assignment]
+    # 模拟 decode_responses=True + surrogateescape 返回的 str
+    fields["payload"] = fields["payload"].decode("utf-8", errors="surrogateescape")  # type: ignore[assignment]
     restored = UsageEvent.from_stream_fields(fields)
     assert restored.request_id == "req-bytes"
+
+
+def test_usage_event_legacy_json_payload_string() -> None:
+    """兼容旧格式：payload 为 JSON 字符串"""
+    fields = {
+        "payload": json.dumps(
+            {
+                "v": 1,
+                "type": UsageEventType.COMPLETED.value,
+                "request_id": "req-legacy-json",
+                "timestamp_ms": 123,
+                "data": {"foo": "bar"},
+            }
+        )
+    }
+    restored = UsageEvent.from_stream_fields(fields)
+    assert restored.request_id == "req-legacy-json"
+    assert restored.data["foo"] == "bar"
+
+
+def test_usage_event_legacy_json_payload_bytes() -> None:
+    """兼容旧格式：payload 为 bytes(JSON)"""
+    fields = {
+        "payload": json.dumps(
+            {
+                "v": 1,
+                "type": UsageEventType.COMPLETED.value,
+                "request_id": "req-legacy-json-bytes",
+                "timestamp_ms": 123,
+                "data": {"foo": "bar"},
+            }
+        ).encode("utf-8")
+    }
+    restored = UsageEvent.from_stream_fields(fields)
+    assert restored.request_id == "req-legacy-json-bytes"
+    assert restored.data["foo"] == "bar"
 
 
 @pytest.mark.asyncio
