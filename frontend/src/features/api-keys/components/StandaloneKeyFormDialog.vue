@@ -207,9 +207,9 @@
                   @update:model-value="(v) => form.initial_balance_usd = parseNumberInput(v, { allowFloat: true, min: 0.01 })"
                 />
                 <span
-                  v-else-if="form.unlimited_balance"
+                  v-else
                   class="flex h-10 w-full items-center rounded-lg border bg-background px-3 text-sm text-muted-foreground opacity-60"
-                >无限制</span>
+                >{{ form.unlimited_balance ? '无限制' : '按钱包余额限制' }}</span>
               </div>
               <Switch
                 :model-value="form.unlimited_balance ?? false"

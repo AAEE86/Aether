@@ -823,13 +823,28 @@ class MaintenanceScheduler:
                     return 0
 
                 retention_days = max(
-                    SystemConfigService.get_config(db, "detail_log_retention_days", 7),
+                    SystemConfigService.get_config(
+                        db,
+                        "request_candidates_retention_days",
+                        SystemConfigService.get_config(db, "detail_log_retention_days", 7),
+                    ),
                     3,
                 )
-                batch_size = SystemConfigService.get_config(db, "cleanup_batch_size", 1000)
+                batch_size = max(
+                    SystemConfigService.get_config(
+                        db,
+                        "request_candidates_cleanup_batch_size",
+                        SystemConfigService.get_config(db, "cleanup_batch_size", 1000),
+                    ),
+                    1,
+                )
                 cutoff_time = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-                logger.info(f"开始清理 {retention_days} 天前的请求候选记录...")
+                logger.info(
+                    "开始清理 {} 天前的请求候选记录，batch_size={}",
+                    retention_days,
+                    batch_size,
+                )
             except Exception as e:
                 logger.exception(f"候选记录清理配置读取失败: {e}")
                 return 0
@@ -843,6 +858,7 @@ class MaintenanceScheduler:
                     records_to_delete = (
                         batch_db.query(RequestCandidate.id)
                         .filter(RequestCandidate.created_at < cutoff_time)
+                        .order_by(RequestCandidate.created_at.asc(), RequestCandidate.id.asc())
                         .limit(batch_size)
                         .all()
                     )

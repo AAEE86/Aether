@@ -87,6 +87,9 @@ class Config:
         # 注意: allow_credentials=True 时不能使用 allow_origins=["*"]
         self.cors_allow_credentials = os.getenv("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
 
+        # 应用时区配置（用于定时任务、账单日期等业务逻辑）
+        self.app_timezone = os.getenv("APP_TIMEZONE", "Asia/Shanghai")
+
         # 管理员账户配置（用于初始化）
         self.admin_email = os.getenv("ADMIN_EMAIL", "admin@localhost")
         self.admin_username = os.getenv("ADMIN_USERNAME", "admin")

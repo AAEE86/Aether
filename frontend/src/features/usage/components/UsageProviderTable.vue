@@ -22,6 +22,12 @@
               费用
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
+              缓存Token
+            </TableHead>
+            <TableHead class="h-8 px-2 text-right">
+              缓存命中率
+            </TableHead>
+            <TableHead class="h-8 px-2 text-right">
               成功率
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
@@ -32,7 +38,7 @@
         <TableBody>
           <TableRow v-if="data.length === 0">
             <TableCell
-              :colspan="6"
+              :colspan="8"
               class="text-center py-6 text-muted-foreground px-2"
             >
               暂无提供商统计数据
@@ -63,6 +69,12 @@
               </div>
             </TableCell>
             <TableCell class="text-right py-2 px-2">
+              {{ formatTokens(provider.cacheReadTokens || 0) }}
+            </TableCell>
+            <TableCell class="text-right py-2 px-2 text-muted-foreground">
+              {{ formatHitRate(provider.cacheHitRate) }}
+            </TableCell>
+            <TableCell class="text-right py-2 px-2">
               <span :class="getSuccessRateClass(provider.successRate)">{{ provider.successRate }}%</span>
             </TableCell>
             <TableCell class="text-right text-muted-foreground py-2 px-2">
@@ -83,7 +95,7 @@ import TableBody from '@/components/ui/table-body.vue'
 import TableRow from '@/components/ui/table-row.vue'
 import TableHead from '@/components/ui/table-head.vue'
 import TableCell from '@/components/ui/table-cell.vue'
-import { formatTokens, formatCurrency } from '@/utils/format'
+import { formatTokens, formatCurrency, formatHitRate } from '@/utils/format'
 import type { ProviderStatsItem } from '../types'
 
 defineProps<{

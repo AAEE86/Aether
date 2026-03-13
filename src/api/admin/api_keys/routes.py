@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -18,6 +17,7 @@ from sqlalchemy.orm import Session
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
 from src.api.base.pipeline import get_pipeline
+from src.config import config
 from src.core.exceptions import InvalidRequestException, NotFoundException
 from src.core.logger import logger
 from src.database import get_db, get_db_context
@@ -27,8 +27,7 @@ from src.services.user.apikey import ApiKeyService
 from src.services.user.bulk_cleanup import pre_clean_api_key
 from src.services.wallet import WalletService
 
-# 应用时区配置，默认为 Asia/Shanghai
-APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
+APP_TIMEZONE = ZoneInfo(config.app_timezone)
 
 
 def parse_expiry_date(date_str: str | None) -> datetime | None:

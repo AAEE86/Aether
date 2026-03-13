@@ -90,8 +90,8 @@
               :required="!isEditMode"
               minlength="6"
               :placeholder="isEditMode ? '留空保持原密码' : getPasswordPolicyPlaceholder(passwordPolicyLevel)"
+              class="h-10"
               :class="[
-                'h-10',
                 passwordError ? 'border-destructive' : '',
               ]"
             />

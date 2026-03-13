@@ -2481,12 +2481,7 @@ class RequestCandidate(Base):
         nullable=True,
         index=True,
     )
-    key_id = Column(
-        String(36),
-        ForeignKey("provider_api_keys.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
+    key_id = Column(String(36), nullable=True, index=True, comment="Provider Key ID 快照")
 
     # 状态信息
     status = Column(
@@ -2533,7 +2528,6 @@ class RequestCandidate(Base):
     api_key = relationship("ApiKey")
     provider = relationship("Provider")
     endpoint = relationship("ProviderEndpoint")
-    key = relationship("ProviderAPIKey")
 
 
 # ==================== 统计数据模型 ====================

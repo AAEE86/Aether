@@ -649,12 +649,12 @@ class UserDashboardStatsAdapter(DashboardAdapter):
     async def handle(self, context: ApiRequestContext) -> Any:  # type: ignore[override]
         from zoneinfo import ZoneInfo
 
-        from src.services.system.stats_aggregator import APP_TIMEZONE
+        from src.config import config
 
         db = context.db
         user = context.user
         # 使用业务时区计算日期，确保与用户感知的"今天"一致
-        app_tz = ZoneInfo(APP_TIMEZONE)
+        app_tz = ZoneInfo(config.app_timezone)
         now_local = datetime.now(app_tz)
         today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         # 转换为 UTC 用于数据库查询
@@ -1161,9 +1161,9 @@ class DashboardDailyStatsAdapter(DashboardAdapter):
         # 使用业务时区计算日期，确保每日统计与业务日期一致
         from zoneinfo import ZoneInfo
 
-        from src.services.system.stats_aggregator import APP_TIMEZONE
+        from src.config import config
 
-        app_tz = ZoneInfo(APP_TIMEZONE)
+        app_tz = ZoneInfo(config.app_timezone)
         now_local = datetime.now(app_tz)
         today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         # 转换为 UTC 用于数据库查询

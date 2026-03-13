@@ -153,3 +153,9 @@ export function formatRemainingTime(expireAt: number | undefined, currentTime: n
   const seconds = Math.floor(remaining % 60)
   return `${minutes}分${seconds}秒`
 }
+
+// Cache hit rate formatting
+export function formatHitRate(rate: number | undefined): string {
+  if (typeof rate !== 'number' || Number.isNaN(rate)) return '-'
+  return `${rate.toFixed(2)}%`
+}

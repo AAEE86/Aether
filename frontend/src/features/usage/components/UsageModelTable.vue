@@ -22,6 +22,12 @@
               费用
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
+              缓存Token
+            </TableHead>
+            <TableHead class="h-8 px-2 text-right">
+              缓存命中率
+            </TableHead>
+            <TableHead class="h-8 px-2 text-right">
               效率
             </TableHead>
           </TableRow>
@@ -29,7 +35,7 @@
         <TableBody>
           <TableRow v-if="data.length === 0">
             <TableCell
-              :colspan="5"
+              :colspan="7"
               class="text-center py-6 text-muted-foreground px-2"
             >
               暂无模型统计数据
@@ -59,6 +65,12 @@
                 </span>
               </div>
             </TableCell>
+            <TableCell class="text-right py-2 px-2">
+              {{ formatTokens(model.cache_read_tokens || 0) }}
+            </TableCell>
+            <TableCell class="text-right py-2 px-2 text-muted-foreground">
+              {{ formatHitRate(model.cache_hit_rate) }}
+            </TableCell>
             <TableCell class="text-right text-muted-foreground py-2 px-2">
               {{ model.costPerToken }}
             </TableCell>
@@ -77,7 +89,7 @@ import TableBody from '@/components/ui/table-body.vue'
 import TableRow from '@/components/ui/table-row.vue'
 import TableHead from '@/components/ui/table-head.vue'
 import TableCell from '@/components/ui/table-cell.vue'
-import { formatTokens, formatCurrency } from '@/utils/format'
+import { formatTokens, formatCurrency, formatHitRate } from '@/utils/format'
 import type { EnhancedModelStatsItem } from '../types'
 
 defineProps<{
