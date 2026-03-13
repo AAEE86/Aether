@@ -321,6 +321,25 @@ class Config:
             os.getenv("MAINTENANCE_STARTUP_TASKS_ENABLED", "true").lower() == "true"
         )
 
+        # 启动预热配置（降低懒加载导致的首请求延迟）
+        # STARTUP_WARMUP_ENABLED: 是否启用启动期预热任务（默认 true）
+        # STARTUP_WARMUP_GATE_READINESS: /readyz 是否等待预热完成（默认 true）
+        # STARTUP_WARMUP_PROVIDER_TYPES: 预热时优先 bootstrap 的 provider_type 列表（逗号分隔）
+        self.startup_warmup_enabled = os.getenv("STARTUP_WARMUP_ENABLED", "true").lower() == "true"
+        self.startup_warmup_gate_readiness = (
+            os.getenv("STARTUP_WARMUP_GATE_READINESS", "true").lower() == "true"
+        )
+        warmup_provider_types_env = os.getenv("STARTUP_WARMUP_PROVIDER_TYPES", "").strip()
+        self.startup_warmup_provider_types = (
+            [
+                provider_type.strip()
+                for provider_type in warmup_provider_types_env.split(",")
+                if provider_type.strip()
+            ]
+            if warmup_provider_types_env
+            else None
+        )
+
         # API 文档配置
         # DOCS_ENABLED: 是否启用 API 文档（/docs, /redoc, /openapi.json）
         #   - 未设置: 开发环境启用，生产环境禁用

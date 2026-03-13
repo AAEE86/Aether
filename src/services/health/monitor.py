@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -978,6 +979,21 @@ class HealthMonitor:
         return False
 
 
-# 全局健康监控器实例
-health_monitor = HealthMonitor()
+# 全局健康监控器懒加载（避免 import 阶段实例化）
+_health_monitor_instance: HealthMonitor | None = None
+_health_monitor_lock = threading.Lock()
+
+
+def get_health_monitor() -> HealthMonitor:
+    """获取全局 HealthMonitor 单例（线程安全懒加载）。"""
+    global _health_monitor_instance  # noqa: PLW0603
+
+    if _health_monitor_instance is None:
+        with _health_monitor_lock:
+            if _health_monitor_instance is None:
+                _health_monitor_instance = HealthMonitor()
+
+    return _health_monitor_instance
+
+
 health_open_circuits.set(0)

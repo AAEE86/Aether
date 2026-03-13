@@ -412,7 +412,7 @@ async def query_available_models(
     # 延迟导入避免循环依赖（与 upstream_fetcher.fetch_models_for_key 保持一致）
     from src.services.provider.envelope import ensure_providers_bootstrapped
 
-    ensure_providers_bootstrapped()
+    ensure_providers_bootstrapped(provider_types=[provider_type] if provider_type else None)
     has_custom_fetcher = UpstreamModelsFetcherRegistry.get(provider_type) is not None
 
     if not format_to_endpoint and not has_custom_fetcher:

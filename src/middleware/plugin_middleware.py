@@ -52,6 +52,7 @@ class PluginMiddleware:
         # 完全跳过限流的路径（静态资源、文档等）
         self.skip_rate_limit_paths = [
             "/health",
+            "/readyz",
             "/docs",
             "/redoc",
             "/openapi.json",

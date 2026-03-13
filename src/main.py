@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+import time
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.admin import router as admin_router
@@ -106,6 +108,7 @@ class LifecycleState:
     pool_quota_probe_scheduler: PoolQuotaProbeScheduler | None = None
     task_poller: TaskPollerService | None = None
     task_scheduler: TaskScheduler | None = None
+    warmup_task: asyncio.Task[None] | None = None
 
 
 def _configure_uvicorn_access_log() -> None:
@@ -267,6 +270,76 @@ async def _initialize_plugins_and_modules(app: FastAPI, state: LifecycleState) -
     register_default_parsers()
 
 
+def _warmup_lazy_request_dependencies(provider_types: list[str] | None = None) -> int:
+    """预热懒加载链路，减少首个真实请求的导入与实例化抖动。"""
+    from src.api.handlers.claude import ClaudeChatAdapter, ClaudeTokenCountAdapter
+    from src.api.handlers.claude_cli import ClaudeCliAdapter
+    from src.api.handlers.gemini import GeminiChatAdapter
+    from src.api.handlers.gemini_cli import GeminiCliAdapter
+    from src.api.handlers.openai import OpenAIChatAdapter
+    from src.api.handlers.openai_cli import OpenAICliAdapter, OpenAICompactAdapter
+    from src.services.health.monitor import get_health_monitor
+    from src.services.provider.envelope import ensure_providers_bootstrapped
+
+    ensure_providers_bootstrapped(provider_types=provider_types)
+    get_health_monitor()
+
+    adapters = [
+        OpenAIChatAdapter(),
+        OpenAICliAdapter(),
+        OpenAICompactAdapter(),
+        ClaudeChatAdapter(),
+        ClaudeTokenCountAdapter(),
+        ClaudeCliAdapter(),
+        GeminiChatAdapter(),
+        GeminiCliAdapter(),
+    ]
+    return len(adapters)
+
+
+async def _run_startup_warmup(app: FastAPI) -> None:
+    """异步执行启动预热，结果写入 app.state 供 /readyz 读取。"""
+    app.state.startup_warmup_started_at = time.monotonic()
+    provider_types = config.startup_warmup_provider_types
+    logger.info(
+        "启动预热任务开始（provider_types={}）",
+        provider_types if provider_types else "auto",
+    )
+
+    try:
+        warmed_count = await asyncio.to_thread(
+            _warmup_lazy_request_dependencies,
+            provider_types,
+        )
+        app.state.startup_warmup_status = "ready"
+        elapsed_ms = int((time.monotonic() - app.state.startup_warmup_started_at) * 1000)
+        logger.info("启动预热完成（adapters={}, elapsed_ms={}）", warmed_count, elapsed_ms)
+    except Exception as exc:
+        app.state.startup_warmup_status = "failed"
+        app.state.startup_warmup_error = str(exc)
+        logger.exception("启动预热失败，/readyz 将返回 503")
+    finally:
+        app.state.startup_warmup_finished_at = time.monotonic()
+        app.state.startup_warmup_done.set()
+
+
+def _schedule_startup_warmup(app: FastAPI, state: LifecycleState) -> None:
+    """初始化预热状态并按配置启动后台预热任务。"""
+    app.state.startup_warmup_done = asyncio.Event()
+    app.state.startup_warmup_status = "pending"
+    app.state.startup_warmup_error = None
+    app.state.startup_warmup_started_at = None
+    app.state.startup_warmup_finished_at = None
+
+    if not config.startup_warmup_enabled:
+        app.state.startup_warmup_status = "disabled"
+        app.state.startup_warmup_done.set()
+        logger.info("启动预热已禁用（STARTUP_WARMUP_ENABLED=false）")
+        return
+
+    state.warmup_task = asyncio.create_task(_run_startup_warmup(app), name="startup_warmup")
+
+
 async def _start_background_services(state: LifecycleState) -> None:
     """启动调度器与后台轮询服务。"""
     # 启动月卡额度重置调度器（仅一个 worker 执行）
@@ -349,6 +422,7 @@ async def _run_startup(app: FastAPI) -> LifecycleState:
     state = LifecycleState()
     await _initialize_core_infrastructure(state)
     await _initialize_plugins_and_modules(app, state)
+    _schedule_startup_warmup(app, state)
 
     logger.info(f"服务启动成功: http://{config.host}:{config.port}")
     logger.info("=" * 60)
@@ -360,6 +434,13 @@ async def _run_startup(app: FastAPI) -> LifecycleState:
 async def _run_shutdown(state: LifecycleState) -> None:
     """执行完整关闭流程。"""
     logger.info("正在关闭服务...")
+
+    # 停止启动预热任务
+    if state.warmup_task and not state.warmup_task.done():
+        logger.info("停止启动预热任务...")
+        state.warmup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await state.warmup_task
 
     # 停止 Codex 配额异步同步器（停止前会 flush 待同步事件）
     logger.info("停止 Codex 配额异步同步器...")
@@ -601,6 +682,38 @@ app.include_router(announcement_router)  # 公告系统
 app.include_router(dashboard_router)  # 仪表盘端点
 app.include_router(public_router)  # 公开API端点（用户可查看提供商和模型）
 app.include_router(monitoring_router)  # 监控端点
+
+
+@app.get("/readyz", include_in_schema=False)
+async def readiness_check(request: Request) -> Any:
+    """就绪检查：可选绑定启动预热状态，用于流量门禁。"""
+    warmup_status = getattr(request.app.state, "startup_warmup_status", "unknown")
+    warmup_error = getattr(request.app.state, "startup_warmup_error", None)
+    started_at = getattr(request.app.state, "startup_warmup_started_at", None)
+
+    payload: dict[str, Any] = {
+        "status": "ready",
+        "warmup_status": warmup_status,
+        "gate_readiness": config.startup_warmup_gate_readiness,
+    }
+    if isinstance(started_at, (int, float)):
+        payload["warmup_elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+
+    if not config.startup_warmup_gate_readiness:
+        return payload
+    if warmup_status in {"ready", "disabled"}:
+        return payload
+
+    detail = {
+        "status": "not_ready",
+        "reason": (
+            "startup_warmup_failed" if warmup_status == "failed" else "startup_warmup_pending"
+        ),
+        "warmup_status": warmup_status,
+    }
+    if warmup_error:
+        detail["warmup_error"] = warmup_error
+    raise HTTPException(status_code=503, detail=detail)
 
 
 def main() -> Any:

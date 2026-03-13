@@ -19,7 +19,6 @@ import httpx
 
 from src.config import config
 from src.core.logger import logger
-from src.services.provider.fingerprint import KNOWN_IMPERSONATE_PROFILES
 from src.services.proxy_node.resolver import (
     build_proxy_url_async,
     compute_proxy_cache_key,
@@ -268,6 +267,8 @@ class HTTPClientPool:
             # - direct chrome impersonate profile names (e.g. "chrome124")
             use_curl_cffi_tls = False
             if tls_profile_key:
+                from src.services.provider.fingerprint import KNOWN_IMPERSONATE_PROFILES
+
                 use_curl_cffi_tls = (
                     tls_profile_key == "claude_code_nodejs"
                     or tls_profile_key in KNOWN_IMPERSONATE_PROFILES
