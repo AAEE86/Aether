@@ -1016,16 +1016,10 @@ class AdminExportConfigAdapter(AdminApiAdapter):
         # 预建 global_model_id -> name 映射，避免导出 Model 时 N+1 查询
         gm_name_map: dict[str, str] = {gm.id: gm.name for gm in global_models}
 
-        # 导出 Providers 及其关联数据
-        providers = (
-            db.query(Provider)
-            .options(
-                selectinload(Provider.endpoints),
-                selectinload(Provider.api_keys),
-                selectinload(Provider.models),
-            )
-            .all()
-        )
+        # 导出 Providers 及其关联数据（分批加载，避免全量 ORM 对象常驻内存）
+        batch_size = 50
+        provider_ids = [provider_id for (provider_id,) in db.query(Provider.id).all()]
+        provider_order = {provider_id: idx for idx, provider_id in enumerate(provider_ids)}
         providers_data = []
 
         def _normalize_created_at_for_sort(value: datetime | None) -> datetime:
@@ -1033,73 +1027,96 @@ class AdminExportConfigAdapter(AdminApiAdapter):
                 return datetime.min.replace(tzinfo=timezone.utc)
             return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
-        for provider in providers:
-            # 导出 Endpoints
-            endpoints = list(provider.endpoints)
-            endpoints_data = [ep.to_export_dict() for ep in endpoints]
-            provider_endpoint_formats = self._collect_provider_endpoint_formats(endpoints)
-
-            # 导出 Provider Keys（按 provider_id 归属，包含 api_formats）
-            keys = sorted(
-                provider.api_keys,
-                key=lambda key: (
-                    key.internal_priority if key.internal_priority is not None else float("inf"),
-                    _normalize_created_at_for_sort(key.created_at),
-                ),
-            )
-            keys_data = []
-            for key in keys:
-                key_data = key.to_export_dict()
-                key_formats = self._resolve_export_key_api_formats(
-                    key_data.get("api_formats"),
-                    provider_endpoint_formats,
+        for offset in range(0, len(provider_ids), batch_size):
+            batch_ids = provider_ids[offset : offset + batch_size]
+            providers_batch = (
+                db.query(Provider)
+                .options(
+                    selectinload(Provider.endpoints),
+                    selectinload(Provider.api_keys),
+                    selectinload(Provider.models),
                 )
-                # 保持现有字段名 api_formats，并补充可读别名 supported_endpoints。
-                key_data["api_formats"] = key_formats
-                key_data["supported_endpoints"] = list(key_formats)
-                # 解密 API Key
-                try:
-                    key_data["api_key"] = crypto_service.decrypt(key.api_key)
-                except Exception:
-                    logger.warning(
-                        "API Key 解密失败: provider={}, key_id={}, api_formats={}",
-                        provider.name,
-                        key.id,
-                        key.api_formats,
+                .filter(Provider.id.in_(batch_ids))
+                .all()
+            )
+            providers_batch.sort(key=lambda item: provider_order.get(item.id, 0))
+
+            for provider in providers_batch:
+                # 导出 Endpoints
+                endpoints = list(provider.endpoints)
+                endpoints_data = [ep.to_export_dict() for ep in endpoints]
+                provider_endpoint_formats = self._collect_provider_endpoint_formats(endpoints)
+
+                # 导出 Provider Keys（按 provider_id 归属，包含 api_formats）
+                keys = sorted(
+                    provider.api_keys,
+                    key=lambda key: (
+                        (
+                            key.internal_priority
+                            if key.internal_priority is not None
+                            else float("inf")
+                        ),
+                        _normalize_created_at_for_sort(key.created_at),
+                    ),
+                )
+                keys_data = []
+                for key in keys:
+                    key_data = key.to_export_dict()
+                    key_formats = self._resolve_export_key_api_formats(
+                        key_data.get("api_formats"),
+                        provider_endpoint_formats,
                     )
-                    key_data["api_key"] = ""
-                # 解密 auth_config（OAuth 等认证配置）
-                # 导出值为解密后的 JSON 字符串（非 dict），导入时需按字符串重新加密
-                if key.auth_config:
+                    # 保持现有字段名 api_formats，并补充可读别名 supported_endpoints。
+                    key_data["api_formats"] = key_formats
+                    key_data["supported_endpoints"] = list(key_formats)
+                    # 解密 API Key
                     try:
-                        key_data["auth_config"] = crypto_service.decrypt(key.auth_config)
+                        key_data["api_key"] = crypto_service.decrypt(key.api_key)
                     except Exception:
                         logger.warning(
-                            "auth_config 解密失败: provider={}, key_id={}",
+                            "API Key 解密失败: provider={}, key_id={}, api_formats={}",
                             provider.name,
                             key.id,
+                            key.api_formats,
                         )
-                        pass  # 解密失败则不导出 auth_config
-                keys_data.append(key_data)
+                        key_data["api_key"] = ""
+                    # 解密 auth_config（OAuth 等认证配置）
+                    # 导出值为解密后的 JSON 字符串（非 dict），导入时需按字符串重新加密
+                    if key.auth_config:
+                        try:
+                            key_data["auth_config"] = crypto_service.decrypt(key.auth_config)
+                        except Exception:
+                            logger.warning(
+                                "auth_config 解密失败: provider={}, key_id={}",
+                                provider.name,
+                                key.id,
+                            )
+                            pass  # 解密失败则不导出 auth_config
+                    keys_data.append(key_data)
 
-            # 导出 Provider Models
-            # 注意：提供商模型（Model）必须关联全局模型（GlobalModel）才能参与路由
-            # 导入时未关联 GlobalModel 的模型会被跳过，这是业务规则而非 bug
-            models = list(provider.models)
-            models_data = []
-            for model in models:
-                model_data = model.to_export_dict()
-                # 追加关联的 GlobalModel 名称（导入时通过名称查找）
-                model_data["global_model_name"] = gm_name_map.get(model.global_model_id)
-                models_data.append(model_data)
+                # 导出 Provider Models
+                # 注意：提供商模型（Model）必须关联全局模型（GlobalModel）才能参与路由
+                # 导入时未关联 GlobalModel 的模型会被跳过，这是业务规则而非 bug
+                models = list(provider.models)
+                models_data = []
+                for model in models:
+                    model_data = model.to_export_dict()
+                    # 追加关联的 GlobalModel 名称（导入时通过名称查找）
+                    model_data["global_model_name"] = gm_name_map.get(model.global_model_id)
+                    models_data.append(model_data)
 
-            # 解密 Provider config 中的 credentials
-            provider_data = provider.to_export_dict()
-            provider_data["config"] = self._decrypt_provider_config(provider.config, crypto_service)
-            provider_data["endpoints"] = endpoints_data
-            provider_data["api_keys"] = keys_data
-            provider_data["models"] = models_data
-            providers_data.append(provider_data)
+                # 解密 Provider config 中的 credentials
+                provider_data = provider.to_export_dict()
+                provider_data["config"] = self._decrypt_provider_config(
+                    provider.config, crypto_service
+                )
+                provider_data["endpoints"] = endpoints_data
+                provider_data["api_keys"] = keys_data
+                provider_data["models"] = models_data
+                providers_data.append(provider_data)
+
+            # 每批完成后清空会话身份映射，降低导出峰值内存
+            db.expunge_all()
 
         # 导出 LDAP 配置
         from src.models.database import LDAPConfig
@@ -2205,19 +2222,24 @@ class AdminExportUsersAdapter(AdminApiAdapter):
 
         db = context.db
 
-        # 导出 Users（排除管理员）
-        users = db.query(User).filter(User.is_deleted.is_(False), User.role != UserRole.ADMIN).all()
+        wallet_service = _wallet_service()
+
+        # 导出 Users（排除管理员），预加载非独立余额 Key，避免 N+1
+        users = (
+            db.query(User)
+            .options(selectinload(User.api_keys))
+            .filter(User.is_deleted.is_(False), User.role != UserRole.ADMIN)
+            .all()
+        )
+        wallet_map = wallet_service.get_wallets_by_user_ids(db, [user.id for user in users])
         users_data = []
         for user in users:
-            wallet = _wallet_service().get_wallet(db, user_id=user.id)
+            wallet = wallet_map.get(user.id)
             # 导出用户的 API Keys（排除独立余额Key，独立Key单独导出）
-            api_keys = (
-                db.query(ApiKey)
-                .filter(ApiKey.user_id == user.id, ApiKey.is_standalone.is_(False))
-                .all()
-            )
             api_keys_data = [
-                self._serialize_api_key(key, include_is_standalone=True) for key in api_keys
+                self._serialize_api_key(key, include_is_standalone=True)
+                for key in user.api_keys
+                if not key.is_standalone
             ]
 
             users_data.append(
@@ -2231,10 +2253,8 @@ class AdminExportUsersAdapter(AdminApiAdapter):
                     "allowed_api_formats": user.allowed_api_formats,
                     "allowed_models": user.allowed_models,
                     "model_capability_settings": user.model_capability_settings,
-                    "unlimited": _wallet_service().is_unlimited_wallet(wallet),
-                    "wallet": (
-                        _wallet_service().serialize_wallet_summary(wallet) if wallet else None
-                    ),
+                    "unlimited": wallet_service.is_unlimited_wallet(wallet),
+                    "wallet": (wallet_service.serialize_wallet_summary(wallet) if wallet else None),
                     "is_active": user.is_active,
                     "api_keys": api_keys_data,
                 }

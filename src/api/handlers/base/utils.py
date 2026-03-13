@@ -151,6 +151,18 @@ def ensure_stream_buffer_limit(
     provider_name: str | None = None,
 ) -> None:
     """防止上游单行流式数据过大导致内存失控。"""
+    total_limit = StreamDefaults.MAX_STREAM_BUFFER_TOTAL_BYTES
+    if len(buffer) > total_limit:
+        raise ProviderNotAvailableException(
+            "上游流式响应异常：总缓冲区超过安全上限",
+            provider_name=provider_name,
+            upstream_status=502,
+            upstream_response=(
+                f"stream buffer total overflow: {len(buffer)} bytes > {total_limit}, "
+                f"request_id={request_id}"
+            ),
+        )
+
     limit = StreamDefaults.MAX_STREAM_BUFFER_BYTES
     if len(buffer) <= limit:
         return

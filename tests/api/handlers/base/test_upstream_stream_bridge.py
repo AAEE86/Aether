@@ -104,6 +104,27 @@ async def test_aggregate_stream_raises_when_buffer_exceeds_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_aggregate_stream_raises_when_total_buffer_exceeds_hard_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register_default_normalizers()
+    monkeypatch.setattr(StreamDefaults, "MAX_STREAM_BUFFER_BYTES", 64)
+    monkeypatch.setattr(StreamDefaults, "MAX_STREAM_BUFFER_TOTAL_BYTES", 80)
+
+    async def _iter_total_overflow_bytes() -> AsyncIterator[bytes]:
+        yield b":" + (b"a" * 30) + b"\n" + b":" + (b"b" * 30) + b"\n" + b":" + (b"c" * 30) + b"\n"
+
+    with pytest.raises(ProviderNotAvailableException):
+        await aggregate_upstream_stream_to_internal_response(
+            _iter_total_overflow_bytes(),
+            provider_api_format="claude:cli",
+            provider_name="claude_code",
+            model="claude-sonnet-4-5",
+            request_id="req_bridge_total_overflow",
+        )
+
+
+@pytest.mark.asyncio
 async def test_aggregate_stream_allows_large_chunk_with_multiple_complete_lines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
