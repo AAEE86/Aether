@@ -51,6 +51,7 @@ class UsageEvent:
             "type": self.event_type.value,
             "request_id": self.request_id,
             "timestamp_ms": self.timestamp_ms,
+            # 兜底清洗，避免 metadata 中混入非 JSON 类型导致队列写入失败。
             "data": sanitize_payload(self.data),
         }
         return {"payload": json.dumps(payload, ensure_ascii=False)}

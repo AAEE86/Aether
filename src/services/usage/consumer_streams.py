@@ -7,7 +7,6 @@ Usage Redis Streams consumer.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import socket
 import time
@@ -34,19 +33,7 @@ def _consumer_name() -> str:
 
 
 def _parse_body(value: Any) -> Any:
-    """将 JSON 字符串 body 反序列化为 dict，否则原样返回。
-
-    QueueTelemetryWriter 会将 body 序列化为 JSON 字符串以便传输，
-    消费者需要将其反序列化回 dict 以正确存入 JSON 列。
-    """
-    if value is None or isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            # 解析失败，保留原字符串（可能已被截断）
-            return value
+    """消费者阶段保留原始 body，反序列化延迟到写库阶段。"""
     return value
 
 
