@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from src.api.base.adapter import ApiAdapter, ApiMode
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.config.constants import CacheTTL
 from src.core.enums import UserRole
 from src.database import get_db
@@ -37,7 +37,7 @@ from src.services.wallet import WalletService
 from src.utils.cache_decorator import cache_result
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 def format_tokens(num: int) -> str:
@@ -375,7 +375,9 @@ class AdminDashboardStatsAdapter(AdminApiAdapter):
             total_requests = int(monthly_stats.total_requests or 0) + requests_today
             error_requests = int(monthly_stats.error_requests or 0) + today_stats["error_requests"]
             total_cost = float(monthly_stats.total_cost or 0) + float(cost_today)
-            total_actual_cost = float(monthly_stats.actual_total_cost or 0) + float(actual_cost_today)
+            total_actual_cost = float(monthly_stats.actual_total_cost or 0) + float(
+                actual_cost_today
+            )
             total_tokens = int(monthly_stats.total_tokens or 0) + tokens_today
             cache_creation_tokens = (
                 int(monthly_stats.cache_creation_tokens or 0) + cache_creation_today

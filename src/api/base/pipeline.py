@@ -684,3 +684,11 @@ class ApiRequestPipeline:
             except Exception:
                 return str(value)
         return str(value)
+
+
+_shared_pipeline = ApiRequestPipeline()
+
+
+def get_pipeline() -> ApiRequestPipeline:
+    """返回全局共享的无状态请求管道实例。"""
+    return _shared_pipeline

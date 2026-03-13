@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, defer
 
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.config.constants import CacheTTL
 from src.config.settings import config
 from src.core.logger import logger
@@ -33,7 +33,7 @@ from src.services.usage.service import UsageService
 from src.utils.cache_decorator import cache_result
 
 router = APIRouter(prefix="/api/admin/usage", tags=["Admin - Usage"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 def _apply_admin_default_range(

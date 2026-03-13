@@ -15,16 +15,16 @@ import hashlib
 import threading
 import time
 from collections import OrderedDict
-
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.logger import logger
 from src.utils.perf import PerfRecorder
 
 from ..config import config
 from ..core.exceptions import DecryptionException
+
+if TYPE_CHECKING:
+    from cryptography.fernet import Fernet
 
 
 class CryptoService:
@@ -51,6 +51,8 @@ class CryptoService:
 
     def _initialize(self) -> None:
         """初始化加密服务"""
+        from cryptography.fernet import Fernet
+
         logger.info("初始化加密服务")
 
         encryption_key = config.encryption_key
@@ -99,6 +101,10 @@ class CryptoService:
         Returns:
             Fernet 兼容的 base64 编码密钥
         """
+        from cryptography.fernet import Fernet
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
         # 首先尝试直接作为 Fernet 密钥使用
         try:
             key_bytes = (
@@ -235,5 +241,19 @@ class CryptoService:
                 self._decrypt_cache.popitem(last=False)
 
 
-# 创建全局加密服务实例
-crypto_service = CryptoService()
+def get_crypto_service() -> CryptoService:
+    """获取加密服务单例（首次使用时才会初始化）。"""
+    return CryptoService()
+
+
+class _LazyCryptoServiceProxy:
+    """延迟代理，避免 import 阶段触发 cryptography 重载。"""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_crypto_service(), name)
+
+
+if TYPE_CHECKING:
+    crypto_service = CryptoService()
+else:
+    crypto_service = cast(CryptoService, _LazyCryptoServiceProxy())

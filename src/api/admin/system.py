@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.config.constants import CacheTTL
 from src.core.exceptions import InvalidRequestException, NotFoundException, translate_pydantic_error
 from src.core.logger import logger
@@ -254,7 +254,7 @@ async def check_update() -> Any:
         return _make_empty_response(f"检查更新失败: {str(e)}")
 
 
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 @router.get("/settings")

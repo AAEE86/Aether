@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.api.handlers.claude import (
     ClaudeTokenCountAdapter,
     build_claude_adapter,
@@ -20,7 +20,7 @@ from src.api.handlers.claude import (
 from src.database import get_db
 
 router = APIRouter(tags=["Claude API"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 @router.post("/v1/messages")

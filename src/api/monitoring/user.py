@@ -12,14 +12,14 @@ from sqlalchemy.orm import Session
 from src.api.base.adapter import ApiAdapter, ApiMode
 from src.api.base.context import ApiRequestContext
 from src.api.base.pagination import PaginationMeta, build_pagination_payload, paginate_query
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.core.logger import logger
 from src.database import get_db
 from src.models.database import ApiKey, AuditLog
 from src.plugins.manager import get_plugin_manager
 
 router = APIRouter(prefix="/api/monitoring", tags=["Monitoring"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 @router.get("/my-audit-logs")

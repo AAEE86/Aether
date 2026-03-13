@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from src.api.base.authenticated_adapter import AuthenticatedApiAdapter
 from src.api.base.context import ApiRequestContext
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.config.constants import CacheTTL
 from src.core.crypto import crypto_service
 from src.core.enums import UserRole
@@ -56,7 +56,7 @@ from src.services.wallet import WalletService
 from src.utils.cache_decorator import cache_result
 
 router = APIRouter(prefix="/api/users/me", tags=["User Profile"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 def _update_profile_sync(

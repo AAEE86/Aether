@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from src.api.base.admin_adapter import AdminApiAdapter
 from src.api.base.context import ApiRequestContext
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.core.exceptions import NotFoundException
 from src.core.logger import logger
 from src.database import get_db
@@ -93,7 +93,7 @@ def _format_str(api_format_enum: Any) -> str:
     return api_format_enum.value if hasattr(api_format_enum, "value") else str(api_format_enum)
 
 
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 @router.get("/health/summary", response_model=HealthSummaryResponse)

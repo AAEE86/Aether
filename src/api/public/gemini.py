@@ -15,13 +15,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.api.handlers.gemini import build_gemini_adapter
 from src.api.handlers.gemini_cli import build_gemini_cli_adapter
 from src.database import get_db
 
 router = APIRouter(tags=["Gemini API"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 def _is_cli_request(request: Request) -> bool:

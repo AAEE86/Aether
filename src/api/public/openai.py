@@ -13,13 +13,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from src.api.base.pipeline import ApiRequestPipeline
+from src.api.base.pipeline import get_pipeline
 from src.api.handlers.openai import OpenAIChatAdapter
 from src.api.handlers.openai_cli import OpenAICliAdapter, OpenAICompactAdapter
 from src.database import get_db
 
 router = APIRouter(tags=["OpenAI API"])
-pipeline = ApiRequestPipeline()
+pipeline = get_pipeline()
 
 
 @router.post("/v1/chat/completions")

@@ -24,7 +24,7 @@ from src.api.payment import router as payment_router
 from src.api.public import router as public_router
 from src.api.user_me import router as me_router
 from src.api.wallet import router as wallet_router
-from src.clients.http_client import HTTPClientPool, close_http_clients
+from src.clients.http_client import close_http_clients
 
 # 核心模块
 from src.config import config
@@ -150,9 +150,8 @@ async def _initialize_core_infrastructure(state: LifecycleState) -> None:
     # 从数据库初始化提供商
     await initialize_providers()
 
-    # 初始化全局HTTP客户端池
-    logger.info("初始化全局HTTP客户端池...")
-    HTTPClientPool.get_default_client()  # 预创建默认客户端
+    # 全局HTTP客户端池按需初始化，避免启动阶段预分配连接池资源
+    logger.info("全局HTTP客户端池采用按需初始化")
 
     # 初始化全局Redis客户端（可根据配置降级为内存模式）
     logger.info("初始化全局Redis客户端...")
@@ -281,16 +280,12 @@ async def _start_background_services(state: LifecycleState) -> None:
     from src.services.usage.quota_scheduler import get_quota_scheduler
     from src.utils.task_coordinator import StartupTaskCoordinator
 
-    state.quota_scheduler = get_quota_scheduler()
-    state.maintenance_scheduler = get_maintenance_scheduler()
-    state.model_fetch_scheduler = get_model_fetch_scheduler()
-    state.pool_quota_probe_scheduler = get_pool_quota_probe_scheduler()
-    state.task_poller = get_task_poller()
     state.task_coordinator = StartupTaskCoordinator(state.redis_client)
 
     # 启动额度调度器
     quota_scheduler_active = await state.task_coordinator.acquire("quota_scheduler")
     if quota_scheduler_active:
+        state.quota_scheduler = get_quota_scheduler()
         await state.quota_scheduler.start()
     else:
         logger.info("检测到其他 worker 已运行额度调度器，本实例跳过")
@@ -299,6 +294,7 @@ async def _start_background_services(state: LifecycleState) -> None:
     # 启动维护调度器
     maintenance_scheduler_active = await state.task_coordinator.acquire("maintenance_scheduler")
     if maintenance_scheduler_active:
+        state.maintenance_scheduler = get_maintenance_scheduler()
         logger.info("启动系统维护调度器...")
         await state.maintenance_scheduler.start()
     else:
@@ -308,6 +304,7 @@ async def _start_background_services(state: LifecycleState) -> None:
     # 启动模型自动获取调度器
     model_fetch_scheduler_active = await state.task_coordinator.acquire("model_fetch_scheduler")
     if model_fetch_scheduler_active:
+        state.model_fetch_scheduler = get_model_fetch_scheduler()
         logger.info("启动模型自动获取调度器...")
         await state.model_fetch_scheduler.start()
     else:
@@ -319,6 +316,7 @@ async def _start_background_services(state: LifecycleState) -> None:
         "pool_quota_probe_scheduler"
     )
     if pool_quota_probe_scheduler_active:
+        state.pool_quota_probe_scheduler = get_pool_quota_probe_scheduler()
         logger.info("启动号池额度主动探测调度器...")
         await state.pool_quota_probe_scheduler.start()
     else:
@@ -328,6 +326,7 @@ async def _start_background_services(state: LifecycleState) -> None:
     # 启动异步任务轮询服务（当前仅视频）
     task_poller_active = await state.task_coordinator.acquire("task_poller:video")
     if task_poller_active:
+        state.task_poller = get_task_poller()
         logger.info("启动 TaskPoller（video）...")
         await state.task_poller.start()
     else:
