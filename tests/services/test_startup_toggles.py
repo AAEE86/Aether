@@ -41,3 +41,10 @@ async def test_maintenance_scheduler_start_skips_startup_task_when_disabled(
     await scheduler.start()
 
     assert created is False
+
+
+def test_http_client_idle_cleanup_interval_env_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTP_CLIENT_IDLE_CLEANUP_INTERVAL_MINUTES", "bad")
+    assert MaintenanceScheduler._get_http_client_idle_cleanup_interval_minutes() == 5

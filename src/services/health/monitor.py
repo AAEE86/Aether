@@ -129,7 +129,7 @@ class HealthMonitor:
     # Key: (key_id, api_format), Value: list of {"ts": float, "ok": bool}
     # 不再持久化到数据库，进程重启后自然重建
     _window_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    _WINDOW_CACHE_MAX_ENTRIES = int(os.getenv("HEALTH_WINDOW_CACHE_MAX_ENTRIES", "10000"))
+    _WINDOW_CACHE_MAX_ENTRIES = int(os.getenv("HEALTH_WINDOW_CACHE_MAX_ENTRIES", "5000"))
 
     # ==================== 数据访问辅助方法 ====================
 
@@ -848,7 +848,7 @@ class HealthMonitor:
         try:
             endpoint_stats = db.query(
                 func.count(ProviderEndpoint.id).label("total"),
-                func.sum(case((ProviderEndpoint.is_active == True, 1), else_=0)).label("active"),
+                func.sum(case((ProviderEndpoint.is_active.is_(True), 1), else_=0)).label("active"),
                 func.sum(case((ProviderEndpoint.health_score < 0.5, 1), else_=0)).label(
                     "unhealthy"
                 ),
