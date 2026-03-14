@@ -54,7 +54,7 @@
             <TableCell class="text-right py-2 px-2">
               <div class="flex flex-col items-end text-xs gap-0.5 whitespace-nowrap">
                 <span>{{ formatTokens(model.total_input_context || 0) }} / {{ formatTokens(model.output_tokens || 0) }}</span>
-                <span class="text-muted-foreground">{{ formatTokens((model.cache_read_tokens || 0) + (model.cache_creation_tokens || 0)) }}</span>
+                <span class="text-muted-foreground">{{ formatTokens(model.cache_read_tokens || 0) }}</span>
               </div>
             </TableCell>
             <TableCell class="text-right py-2 px-2">
