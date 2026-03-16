@@ -65,8 +65,10 @@ def test_build_request_cache_fingerprint_is_stable_for_dict_key_reordering() -> 
 
     assert fingerprint_a is not None
     assert fingerprint_b is not None
+    assert fingerprint_a["version"] == 2
     assert fingerprint_a["payload_sha256"] == fingerprint_b["payload_sha256"]
     assert fingerprint_a["cache_relevant_sha256"] == fingerprint_b["cache_relevant_sha256"]
+    assert fingerprint_a["field_fingerprints"] == fingerprint_b["field_fingerprints"]
     assert fingerprint_a["prompt_cache_key"] == "pcache-123"
     assert fingerprint_a["cache_relevant_keys"] == [
         "input",
@@ -75,6 +77,8 @@ def test_build_request_cache_fingerprint_is_stable_for_dict_key_reordering() -> 
         "prompt_cache_key",
         "tools",
     ]
+    assert fingerprint_a["field_fingerprints"]["instructions"]["bytes"] > 0
+    assert fingerprint_a["field_fingerprints"]["tools"]["bytes"] > 0
 
 
 def test_build_request_cache_fingerprint_ignores_non_prompt_fields_in_cache_hash() -> None:
@@ -89,6 +93,8 @@ def test_build_request_cache_fingerprint_ignores_non_prompt_fields_in_cache_hash
     assert fingerprint_b is not None
     assert fingerprint_a["payload_sha256"] != fingerprint_b["payload_sha256"]
     assert fingerprint_a["cache_relevant_sha256"] == fingerprint_b["cache_relevant_sha256"]
+    assert fingerprint_a["field_fingerprints"] == fingerprint_b["field_fingerprints"]
+    assert "temperature" not in fingerprint_a["field_fingerprints"]
 
 
 def test_build_request_cache_fingerprint_tracks_prompt_changes() -> None:
@@ -102,6 +108,18 @@ def test_build_request_cache_fingerprint_tracks_prompt_changes() -> None:
     assert fingerprint_a is not None
     assert fingerprint_b is not None
     assert fingerprint_a["cache_relevant_sha256"] != fingerprint_b["cache_relevant_sha256"]
+    assert (
+        fingerprint_a["field_fingerprints"]["instructions"]["sha256"]
+        != fingerprint_b["field_fingerprints"]["instructions"]["sha256"]
+    )
+    assert (
+        fingerprint_a["field_fingerprints"]["input"]["sha256"]
+        == fingerprint_b["field_fingerprints"]["input"]["sha256"]
+    )
+    assert (
+        fingerprint_a["field_fingerprints"]["tools"]["sha256"]
+        == fingerprint_b["field_fingerprints"]["tools"]["sha256"]
+    )
 
 
 def test_sanitize_request_metadata_preserves_cache_fingerprint(
@@ -163,8 +181,10 @@ async def test_message_telemetry_record_success_keeps_response_shape_and_adds_fi
     metadata = captured["metadata"]
     assert metadata["model_version"] == "gpt-5.4-2026-03-01"
     assert "response" not in metadata
+    assert metadata["cache_fingerprint"]["version"] == 2
     assert metadata["cache_fingerprint"]["provider_api_format"] == "openai:cli"
     assert metadata["cache_fingerprint"]["prompt_cache_key"] == "pcache-123"
+    assert "instructions" in metadata["cache_fingerprint"]["field_fingerprints"]
 
 
 @pytest.mark.asyncio
@@ -203,5 +223,7 @@ async def test_message_telemetry_record_failure_keeps_request_metadata_and_adds_
 
     metadata = captured["metadata"]
     assert metadata["perf"]["ttfb_ms"] == 12
+    assert metadata["cache_fingerprint"]["version"] == 2
     assert metadata["cache_fingerprint"]["provider_api_format"] == "openai:cli"
     assert metadata["cache_fingerprint"]["prompt_cache_key"] == "pcache-123"
+    assert "input" in metadata["cache_fingerprint"]["field_fingerprints"]

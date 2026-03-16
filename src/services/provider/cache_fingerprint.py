@@ -101,6 +101,22 @@ def _extract_cache_relevant_payload(
     return subset, sorted(subset.keys())
 
 
+def _build_field_fingerprints(payload: Any, field_names: list[str]) -> dict[str, dict[str, Any]]:
+    if not isinstance(payload, Mapping) or not field_names:
+        return {}
+
+    field_fingerprints: dict[str, dict[str, Any]] = {}
+    for field_name in field_names:
+        if field_name not in payload:
+            continue
+        field_sha256, field_bytes = _hash_json_payload(payload[field_name])
+        field_fingerprints[field_name] = {
+            "sha256": field_sha256,
+            "bytes": field_bytes,
+        }
+    return field_fingerprints
+
+
 def build_request_cache_fingerprint(
     provider_request_body: Any,
     *,
@@ -117,13 +133,14 @@ def build_request_cache_fingerprint(
         normalized_format,
     )
     cache_relevant_sha256, cache_relevant_bytes = _hash_json_payload(cache_relevant_payload)
+    field_fingerprints = _build_field_fingerprints(cache_relevant_payload, cache_relevant_keys)
 
     top_level_keys = []
     if isinstance(provider_request_body, Mapping):
         top_level_keys = sorted(str(key) for key in provider_request_body.keys())
 
     fingerprint: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "provider_api_format": normalized_format,
         "payload_sha256": payload_sha256,
         "payload_bytes": payload_bytes,
@@ -131,6 +148,7 @@ def build_request_cache_fingerprint(
         "cache_relevant_bytes": cache_relevant_bytes,
         "top_level_keys": top_level_keys,
         "cache_relevant_keys": cache_relevant_keys,
+        "field_fingerprints": field_fingerprints,
     }
 
     prompt_cache_key = _get_prompt_cache_key(provider_request_body)
