@@ -378,32 +378,7 @@ impl HubRouter {
         self.worker_conns.remove(&conn_id);
         info!(worker_id = conn_id, "worker disconnected");
 
-        // Clean up all stream mappings for this worker
-        let to_remove: Vec<(u64, u32)> = self
-            .worker_to_proxy
-            .iter()
-            .filter(|e| e.key().0 == conn_id)
-            .map(|e| *e.key())
-            .collect();
-
-        for key in &to_remove {
-            if let Some((_, proxy_side)) = self.worker_to_proxy.remove(key) {
-                self.proxy_to_worker
-                    .remove(&(proxy_side.proxy_conn_id, proxy_side.proxy_stream_id));
-                // Release stream count on proxy side
-                if let Some(pc) = self.proxy_conns_by_id.get(&proxy_side.proxy_conn_id) {
-                    pc.release_stream();
-                }
-            }
-        }
-
-        if !to_remove.is_empty() {
-            debug!(
-                worker_id = conn_id,
-                streams_cleaned = to_remove.len(),
-                "cleaned up worker streams"
-            );
-        }
+        self.cancel_streams_for_worker(conn_id);
     }
 
     // -----------------------------------------------------------------------
@@ -760,6 +735,42 @@ impl HubRouter {
         }
     }
 
+    /// Cancel all in-flight streams owned by a disconnected worker connection.
+    ///
+    /// This must notify the proxy side as well; otherwise the proxy's stream
+    /// handler can stay blocked waiting for request-body termination forever.
+    fn cancel_streams_for_worker(&self, worker_conn_id: u64) {
+        let to_remove: Vec<((u64, u32), ProxySide)> = self
+            .worker_to_proxy
+            .iter()
+            .filter(|e| e.key().0 == worker_conn_id)
+            .map(|e| (*e.key(), *e.value()))
+            .collect();
+
+        for ((w_conn_id, w_sid), proxy_side) in &to_remove {
+            self.worker_to_proxy.remove(&(*w_conn_id, *w_sid));
+            self.proxy_to_worker
+                .remove(&(proxy_side.proxy_conn_id, proxy_side.proxy_stream_id));
+
+            if let Some(pc) = self.proxy_conns_by_id.get(&proxy_side.proxy_conn_id) {
+                pc.release_stream();
+                let err_frame = protocol::encode_stream_error(
+                    proxy_side.proxy_stream_id,
+                    "worker disconnected",
+                );
+                let _ = pc.send(Message::Binary(err_frame.into()));
+            }
+        }
+
+        if !to_remove.is_empty() {
+            warn!(
+                worker_id = worker_conn_id,
+                streams_cancelled = to_remove.len(),
+                "cancelled in-flight streams due to worker disconnect"
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // NODE_STATUS broadcast
     // -----------------------------------------------------------------------
@@ -833,4 +844,86 @@ pub struct HubStats {
     pub worker_connections: usize,
     pub nodes: usize,
     pub active_streams: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    fn build_request_headers_frame(stream_id: u32, node_id: &str) -> Vec<u8> {
+        let payload = serde_json::json!({
+            "node_id": node_id,
+            "method": "POST",
+            "url": "https://example.com/v1/chat/completions",
+            "headers": {
+                "content-type": "application/json"
+            },
+            "timeout": 60
+        })
+        .to_string()
+        .into_bytes();
+
+        let mut buf = Vec::with_capacity(protocol::HEADER_SIZE + payload.len());
+        buf.extend_from_slice(&stream_id.to_be_bytes());
+        buf.push(protocol::REQUEST_HEADERS);
+        buf.push(0);
+        buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&payload);
+        buf
+    }
+
+    #[tokio::test]
+    async fn unregister_worker_cancels_inflight_proxy_streams() {
+        let hub = HubRouter::new();
+
+        let (proxy_tx, mut proxy_rx) = mpsc::channel(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        let proxy = Arc::new(ProxyConn::new(
+            100,
+            "node-1".to_string(),
+            "Node 1".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+        ));
+        hub.register_proxy(proxy.clone());
+
+        let worker_conn_id = 200;
+        let worker_stream_id = 2;
+        let mut frame = build_request_headers_frame(worker_stream_id, "node-1");
+        assert_eq!(hub.handle_worker_frame(worker_conn_id, &mut frame), None);
+
+        let forwarded = proxy_rx.try_recv().expect("request should be forwarded");
+        let forwarded_data = match forwarded {
+            Message::Binary(data) => data.to_vec(),
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let forwarded_header =
+            protocol::FrameHeader::parse(&forwarded_data).expect("forwarded frame header");
+        assert_eq!(forwarded_header.msg_type, protocol::REQUEST_HEADERS);
+        let proxy_stream_id = forwarded_header.stream_id;
+        assert_ne!(proxy_stream_id, 0);
+        assert_eq!(proxy.stream_count.load(Ordering::Relaxed), 1);
+
+        hub.unregister_worker(worker_conn_id);
+
+        let cancelled = proxy_rx
+            .try_recv()
+            .expect("worker disconnect should cancel proxy stream");
+        let cancelled_data = match cancelled {
+            Message::Binary(data) => data.to_vec(),
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let cancelled_header =
+            protocol::FrameHeader::parse(&cancelled_data).expect("cancel frame header");
+        assert_eq!(cancelled_header.msg_type, protocol::STREAM_ERROR);
+        assert_eq!(cancelled_header.stream_id, proxy_stream_id);
+        assert_eq!(
+            String::from_utf8(protocol::frame_payload(&cancelled_data).to_vec()).unwrap(),
+            "worker disconnected"
+        );
+        assert_eq!(proxy.stream_count.load(Ordering::Relaxed), 0);
+        assert_eq!(hub.stats().active_streams, 0);
+    }
 }
