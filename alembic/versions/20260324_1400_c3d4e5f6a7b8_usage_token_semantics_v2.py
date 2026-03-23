@@ -20,163 +20,197 @@ down_revision: str | None = "c9d8e7f6a5b4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-BACKFILL_BATCH_SIZE = 500
+BACKFILL_BATCH_SIZE = 2000
 
+# 最大批次数，防止因数据异常导致死循环（2000 * 500000 = 10亿行上限）
+_MAX_BATCHES = 500000
+
+# 使用子查询中间层展开 input_output_total_tokens 的计算，
+# 确保 total_tokens 引用的是本次 SET 后的新值而非旧值。
 _UPGRADE_BACKFILL_SQL = sa.text(
     """
     UPDATE usage
     SET
-        input_output_total_tokens = COALESCE(input_output_total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
-        input_context_tokens = COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0),
-        total_tokens = COALESCE(input_output_total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
-            + COALESCE(cache_creation_input_tokens, 0)
-            + COALESCE(cache_read_input_tokens, 0),
-        cache_creation_cost_usd_5m = CASE
-            WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
-            THEN COALESCE(cache_creation_cost_usd, 0)
-            WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens, 0) > 0
-            THEN COALESCE(cache_creation_cost_usd, 0)
-                 * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
-                    / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-            ELSE 0
-        END,
-        cache_creation_cost_usd_1h = CASE
-            WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
-            THEN COALESCE(cache_creation_cost_usd, 0)
-            WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens, 0) > 0
-            THEN COALESCE(cache_creation_cost_usd, 0)
-                 * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
-                    / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-            ELSE 0
-        END,
-        actual_cache_creation_cost_usd_5m = CASE
-            WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
-            THEN COALESCE(actual_cache_creation_cost_usd, 0)
-            WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens, 0) > 0
-            THEN COALESCE(actual_cache_creation_cost_usd, 0)
-                 * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
-                    / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-            ELSE 0
-        END,
-        actual_cache_creation_cost_usd_1h = CASE
-            WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
-            THEN COALESCE(actual_cache_creation_cost_usd, 0)
-            WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens, 0) > 0
-            THEN COALESCE(actual_cache_creation_cost_usd, 0)
-                 * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
-                    / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-            ELSE 0
-        END,
-        actual_cache_cost_usd = COALESCE(actual_cache_creation_cost_usd, 0) + COALESCE(actual_cache_read_cost_usd, 0),
-        cache_creation_price_per_1m_5m = CASE
-            WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
-            THEN cache_creation_price_per_1m
-            ELSE NULL
-        END,
-        cache_creation_price_per_1m_1h = CASE
-            WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                 AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
-            THEN cache_creation_price_per_1m
-            ELSE NULL
-        END,
-        cache_cost_usd = COALESCE(cache_creation_cost_usd, 0) + COALESCE(cache_read_cost_usd, 0)
-    WHERE id IN (
-        SELECT id
-        FROM usage
-        WHERE
-            input_output_total_tokens IS DISTINCT FROM COALESCE(input_output_total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
-            OR input_context_tokens IS DISTINCT FROM COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0)
-            OR total_tokens IS DISTINCT FROM (
-                COALESCE(input_output_total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
+        input_output_total_tokens = src.new_iot,
+        input_context_tokens      = src.new_ict,
+        total_tokens              = src.new_total,
+        cache_creation_cost_usd_5m        = src.new_cc5m,
+        cache_creation_cost_usd_1h        = src.new_cc1h,
+        actual_cache_creation_cost_usd_5m = src.new_acc5m,
+        actual_cache_creation_cost_usd_1h = src.new_acc1h,
+        actual_cache_cost_usd             = src.new_accu,
+        cache_creation_price_per_1m_5m    = src.new_cp5m,
+        cache_creation_price_per_1m_1h    = src.new_cp1h,
+        cache_cost_usd                    = src.new_ccu
+    FROM (
+        SELECT
+            id,
+            COALESCE(input_output_total_tokens,
+                     COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
+                AS new_iot,
+            COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0)
+                AS new_ict,
+            /* total_tokens 引用本行计算出的 new_iot，避免依赖 SET 顺序 */
+            COALESCE(input_output_total_tokens,
+                     COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
                 + COALESCE(cache_creation_input_tokens, 0)
                 + COALESCE(cache_read_input_tokens, 0)
-            )
-            OR cache_creation_cost_usd_5m IS DISTINCT FROM (
-                CASE
-                    WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
-                    THEN COALESCE(cache_creation_cost_usd, 0)
-                    WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens, 0) > 0
-                    THEN COALESCE(cache_creation_cost_usd, 0)
-                         * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
-                            / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-                    ELSE 0
-                END
-            )
-            OR cache_creation_cost_usd_1h IS DISTINCT FROM (
-                CASE
-                    WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
-                    THEN COALESCE(cache_creation_cost_usd, 0)
-                    WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens, 0) > 0
-                    THEN COALESCE(cache_creation_cost_usd, 0)
-                         * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
-                            / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-                    ELSE 0
-                END
-            )
-            OR actual_cache_creation_cost_usd_5m IS DISTINCT FROM (
-                CASE
-                    WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
-                    THEN COALESCE(actual_cache_creation_cost_usd, 0)
-                    WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens, 0) > 0
-                    THEN COALESCE(actual_cache_creation_cost_usd, 0)
-                         * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
-                            / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-                    ELSE 0
-                END
-            )
-            OR actual_cache_creation_cost_usd_1h IS DISTINCT FROM (
-                CASE
-                    WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
-                    THEN COALESCE(actual_cache_creation_cost_usd, 0)
-                    WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens, 0) > 0
-                    THEN COALESCE(actual_cache_creation_cost_usd, 0)
-                         * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
-                            / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
-                    ELSE 0
-                END
-            )
-            OR actual_cache_cost_usd IS DISTINCT FROM (
-                COALESCE(actual_cache_creation_cost_usd, 0) + COALESCE(actual_cache_read_cost_usd, 0)
-            )
-            OR cache_creation_price_per_1m_5m IS DISTINCT FROM (
-                CASE
-                    WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
-                    THEN cache_creation_price_per_1m
-                    ELSE NULL
-                END
-            )
-            OR cache_creation_price_per_1m_1h IS DISTINCT FROM (
-                CASE
-                    WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
-                         AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
-                    THEN cache_creation_price_per_1m
-                    ELSE NULL
-                END
-            )
-            OR cache_cost_usd IS DISTINCT FROM (
-                COALESCE(cache_creation_cost_usd, 0) + COALESCE(cache_read_cost_usd, 0)
-            )
-        ORDER BY id
-        LIMIT :batch_size
-    )
+                AS new_total,
+            CASE
+                WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
+                THEN COALESCE(cache_creation_cost_usd, 0)
+                WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens, 0) > 0
+                THEN COALESCE(cache_creation_cost_usd, 0)
+                     * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
+                        / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                ELSE 0
+            END AS new_cc5m,
+            CASE
+                WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
+                THEN COALESCE(cache_creation_cost_usd, 0)
+                WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens, 0) > 0
+                THEN COALESCE(cache_creation_cost_usd, 0)
+                     * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
+                        / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                ELSE 0
+            END AS new_cc1h,
+            CASE
+                WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
+                THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens, 0) > 0
+                THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                     * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
+                        / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                ELSE 0
+            END AS new_acc5m,
+            CASE
+                WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
+                THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens, 0) > 0
+                THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                     * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
+                        / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                ELSE 0
+            END AS new_acc1h,
+            COALESCE(actual_cache_creation_cost_usd, 0)
+                + COALESCE(actual_cache_read_cost_usd, 0) AS new_accu,
+            CASE
+                WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
+                THEN cache_creation_price_per_1m
+                ELSE NULL
+            END AS new_cp5m,
+            CASE
+                WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                     AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
+                THEN cache_creation_price_per_1m
+                ELSE NULL
+            END AS new_cp1h,
+            COALESCE(cache_creation_cost_usd, 0)
+                + COALESCE(cache_read_cost_usd, 0) AS new_ccu
+        FROM usage
+        WHERE id IN (
+            SELECT id FROM usage
+            WHERE
+                input_output_total_tokens IS DISTINCT FROM
+                    COALESCE(input_output_total_tokens,
+                             COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
+                OR input_context_tokens IS DISTINCT FROM
+                    COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0)
+                OR total_tokens IS DISTINCT FROM (
+                    COALESCE(input_output_total_tokens,
+                             COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
+                    + COALESCE(cache_creation_input_tokens, 0)
+                    + COALESCE(cache_read_input_tokens, 0)
+                )
+                OR cache_creation_cost_usd_5m IS DISTINCT FROM (
+                    CASE
+                        WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
+                        THEN COALESCE(cache_creation_cost_usd, 0)
+                        WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens, 0) > 0
+                        THEN COALESCE(cache_creation_cost_usd, 0)
+                             * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
+                                / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                        ELSE 0
+                    END
+                )
+                OR cache_creation_cost_usd_1h IS DISTINCT FROM (
+                    CASE
+                        WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
+                        THEN COALESCE(cache_creation_cost_usd, 0)
+                        WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens, 0) > 0
+                        THEN COALESCE(cache_creation_cost_usd, 0)
+                             * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
+                                / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                        ELSE 0
+                    END
+                )
+                OR actual_cache_creation_cost_usd_5m IS DISTINCT FROM (
+                    CASE
+                        WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
+                        THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                        WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens, 0) > 0
+                        THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                             * (COALESCE(cache_creation_input_tokens_5m, 0) * 1.0
+                                / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                        ELSE 0
+                    END
+                )
+                OR actual_cache_creation_cost_usd_1h IS DISTINCT FROM (
+                    CASE
+                        WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
+                        THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                        WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens, 0) > 0
+                        THEN COALESCE(actual_cache_creation_cost_usd, 0)
+                             * (COALESCE(cache_creation_input_tokens_1h, 0) * 1.0
+                                / GREATEST(COALESCE(cache_creation_input_tokens, 0), 1))
+                        ELSE 0
+                    END
+                )
+                OR actual_cache_cost_usd IS DISTINCT FROM (
+                    COALESCE(actual_cache_creation_cost_usd, 0)
+                    + COALESCE(actual_cache_read_cost_usd, 0)
+                )
+                OR cache_creation_price_per_1m_5m IS DISTINCT FROM (
+                    CASE
+                        WHEN COALESCE(cache_creation_input_tokens_5m, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens_1h, 0) = 0
+                        THEN cache_creation_price_per_1m
+                        ELSE NULL
+                    END
+                )
+                OR cache_creation_price_per_1m_1h IS DISTINCT FROM (
+                    CASE
+                        WHEN COALESCE(cache_creation_input_tokens_1h, 0) > 0
+                             AND COALESCE(cache_creation_input_tokens_5m, 0) = 0
+                        THEN cache_creation_price_per_1m
+                        ELSE NULL
+                    END
+                )
+                OR cache_cost_usd IS DISTINCT FROM (
+                    COALESCE(cache_creation_cost_usd, 0) + COALESCE(cache_read_cost_usd, 0)
+                )
+            ORDER BY id
+            LIMIT :batch_size
+        )
+    ) AS src
+    WHERE usage.id = src.id
     """
 )
 
@@ -187,7 +221,8 @@ _DOWNGRADE_BACKFILL_SQL = sa.text(
     WHERE id IN (
         SELECT id
         FROM usage
-        WHERE total_tokens != COALESCE(input_output_total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
+        WHERE total_tokens IS DISTINCT FROM
+            COALESCE(input_output_total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
         ORDER BY id
         LIMIT :batch_size
     )
@@ -204,13 +239,18 @@ def column_exists(table_name: str, column_name: str) -> bool:
 
 def run_backfill_in_batches(sql: sa.TextClause, batch_size: int = BACKFILL_BATCH_SIZE) -> None:
     context = op.get_context()
-    while True:
+    for _ in range(_MAX_BATCHES):
         # Commit the preceding schema transaction before each batch so PostgreSQL
         # does not keep ALTER TABLE locks for the entire data backfill.
         with context.autocommit_block():
             rowcount = op.get_bind().execute(sql, {"batch_size": batch_size}).rowcount
         if rowcount == 0:
             break
+    else:
+        raise RuntimeError(
+            f"Backfill did not converge after {_MAX_BATCHES} batches "
+            f"(batch_size={batch_size}). Possible infinite loop due to data anomaly."
+        )
 
 
 def upgrade() -> None:
