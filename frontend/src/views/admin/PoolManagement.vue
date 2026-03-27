@@ -1191,6 +1191,12 @@ import {
   type PoolMobileTagItem,
   type PoolMobileTagTone,
 } from '@/features/pool/utils/poolMobilePresentation'
+import {
+  buildPoolManagementQueryPatch,
+  readPoolManagementViewState,
+  type PoolManagementViewState,
+  writePoolManagementViewState,
+} from '@/features/pool/utils/poolManagementState'
 import { getOAuthOrgBadge } from '@/utils/oauthIdentity'
 import { getOAuthRefreshFeedback } from '@/utils/oauthRefreshFeedback'
 import {
@@ -1208,6 +1214,18 @@ const { tick: countdownTick, start: startCountdownTimer } = useCountdownTimer()
 const proxyNodesStore = useProxyNodesStore()
 const { getQueryValue, patchQuery } = useRouteQuery()
 
+const poolManagementViewStorage = typeof window === 'undefined' ? undefined : window.sessionStorage
+const restoredViewState = readPoolManagementViewState(
+  {
+    providerId: getQueryValue('providerId'),
+    search: getQueryValue('search'),
+    status: getQueryValue('status'),
+    page: getQueryValue('page'),
+    pageSize: getQueryValue('pageSize'),
+  },
+  poolManagementViewStorage,
+)
+
 // --- Overview ---
 const poolProviders = ref<PoolOverviewItem[]>([])
 const overviewLoading = ref(true)
@@ -1217,6 +1235,7 @@ let providerDataRequestId = 0
 let keysRequestId = 0
 let keysSearchDebounceTimer: number | null = null
 let suppressFiltersWatch = false
+let hasHydratedInitialProviderSelection = false
 
 async function loadOverview() {
   const requestId = ++overviewRequestId
@@ -1234,17 +1253,34 @@ async function loadOverview() {
       selectedId && enabledProviders.some(item => item.provider_id === selectedId),
     )
 
-    if (!selectedStillExists) {
-      if (enabledProviders.length > 0) {
-        // Do not block overview loading on key list fetch; keys area has its own loader.
-        void selectProvider(enabledProviders[0].provider_id)
-      } else {
-        selectedProviderId.value = null
-        selectedProviderData.value = null
-        showAccountBatchDialog.value = false
-        closeProviderProxyPopovers()
-        resetKeyPage()
+    if (selectedStillExists && selectedId) {
+      // 页面刷新时可能先恢复了选中的 Provider，但列表请求尚未触发；
+      // overview 回来后补一次初始化拉取，确保空态不会卡住。
+      if (!hasHydratedInitialProviderSelection) {
+        void selectProvider(selectedId, {
+          preserveSearch: true,
+          preserveStatus: true,
+          preservePagination: true,
+        })
       }
+      return
+    }
+
+    if (enabledProviders.length > 0) {
+      // Do not block overview loading on key list fetch; keys area has its own loader.
+      const fallbackProviderId = enabledProviders[0].provider_id
+      const shouldPreserveViewState = Boolean(selectedId)
+      void selectProvider(fallbackProviderId, {
+        preserveSearch: shouldPreserveViewState,
+        preserveStatus: shouldPreserveViewState,
+        preservePagination: shouldPreserveViewState,
+      })
+    } else {
+      selectedProviderId.value = null
+      selectedProviderData.value = null
+      showAccountBatchDialog.value = false
+      closeProviderProxyPopovers()
+      resetKeyPage()
     }
   } catch (err) {
     if (requestId !== overviewRequestId) return
@@ -1267,7 +1303,7 @@ async function handleSchedulingSaved(updatedProvider: ProviderWithEndpointsSumma
 }
 
 // --- Provider Selection ---
-const selectedProviderId = ref<string | null>(null)
+const selectedProviderId = ref<string | null>(restoredViewState.providerId)
 const selectedProviderData = ref<ProviderWithEndpointsSummary | null>(null)
 
 // Proxy for Select v-model (string, not string|null)
@@ -1428,8 +1464,16 @@ const desktopColumnWidths = computed(() => {
   }
 })
 
-async function selectProvider(id: string, options: { preserveSearch?: boolean } = {}) {
+async function selectProvider(
+  id: string,
+  options: {
+    preserveSearch?: boolean
+    preserveStatus?: boolean
+    preservePagination?: boolean
+  } = {},
+) {
   const requestId = ++selectProviderRequestId
+  hasHydratedInitialProviderSelection = true
   selectedProviderId.value = id
   selectedProviderData.value = null
   editingKeyDetail.value = null
@@ -1441,17 +1485,21 @@ async function selectProvider(id: string, options: { preserveSearch?: boolean } 
   proxyDesktopPopoverOpenKeyId.value = null
   proxyMobilePopoverOpenKeyId.value = null
   suppressFiltersWatch = true
-  currentPage.value = 1
+  if (!options.preservePagination) {
+    currentPage.value = 1
+  }
   if (!options.preserveSearch) {
     searchQuery.value = ''
   }
-  statusFilter.value = 'all'
+  if (!options.preserveStatus) {
+    statusFilter.value = 'all'
+  }
   suppressFiltersWatch = false
   if (keysSearchDebounceTimer !== null) {
     clearTimeout(keysSearchDebounceTimer)
     keysSearchDebounceTimer = null
   }
-  resetKeyPage(1, pageSize.value)
+  resetKeyPage(currentPage.value, pageSize.value)
   const keysTask = loadKeys()
   // Provider summary is non-blocking for key list rendering.
   void loadProviderData(id)
@@ -1483,10 +1531,10 @@ function createEmptyKeyPage(page = 1, pageSizeValue = 50): PoolKeysPageResponse 
 const keyPage = ref<PoolKeysPageResponse>(createEmptyKeyPage())
 const keysLoading = ref(false)
 const refreshingCurrentPageQuota = ref(false)
-const searchQuery = ref('')
-const statusFilter = ref('all')
-const currentPage = ref(1)
-const pageSize = ref(50)
+const searchQuery = ref(restoredViewState.search)
+const statusFilter = ref(restoredViewState.status)
+const currentPage = ref(restoredViewState.page)
+const pageSize = ref(restoredViewState.pageSize)
 const MANUAL_QUOTA_REFRESH_COOLDOWN_SECONDS = 5 * 60
 const refreshingOAuthKeyId = ref<string | null>(null)
 const recoveringHealthKeyId = ref<string | null>(null)
@@ -1513,22 +1561,63 @@ watch(
   { immediate: true },
 )
 
-watch(searchQuery, (value) => {
-  patchQuery({ search: value.trim() || undefined })
-})
+watch(
+  () => readPoolManagementViewState({ status: getQueryValue('status') }).status,
+  (value) => {
+    if (statusFilter.value === value) return
+    suppressFiltersWatch = true
+    statusFilter.value = value
+    suppressFiltersWatch = false
+  },
+  { immediate: true },
+)
+
+watch(
+  () => readPoolManagementViewState({ page: getQueryValue('page') }).page,
+  (value) => {
+    if (currentPage.value === value) return
+    currentPage.value = value
+  },
+  { immediate: true },
+)
+
+watch(
+  () => readPoolManagementViewState({ pageSize: getQueryValue('pageSize') }).pageSize,
+  (value) => {
+    if (pageSize.value === value) return
+    pageSize.value = value
+  },
+  { immediate: true },
+)
 
 watch(
   () => getQueryValue('providerId'),
   (value) => {
     if (!value || value === selectedProviderId.value) return
-    void selectProvider(value, { preserveSearch: true })
+    void selectProvider(value, {
+      preserveSearch: true,
+      preserveStatus: true,
+      preservePagination: true,
+    })
   },
   { immediate: true },
 )
 
-watch(selectedProviderId, (value) => {
-  patchQuery({ providerId: value || undefined })
-})
+watch(
+  [selectedProviderId, searchQuery, statusFilter, currentPage, pageSize],
+  ([providerId, search, status, page, pageSizeValue]) => {
+    const nextState: PoolManagementViewState = {
+      providerId,
+      search,
+      status: status as PoolManagementViewState['status'],
+      page,
+      pageSize: pageSizeValue,
+    }
+    patchQuery(buildPoolManagementQueryPatch(nextState))
+    writePoolManagementViewState(nextState, poolManagementViewStorage)
+  },
+  { immediate: true },
+)
 
 interface QuotaProgressItem {
   label: string
