@@ -19,17 +19,19 @@ export interface PoolMobileTagInput {
 }
 
 export type PoolMobileActionId =
-  | 'permissions'
-  | 'edit'
-  | 'toggle'
   | 'copy_or_download'
+  | 'refresh_token'
   | 'clear_cooldown'
   | 'recover_health'
+  | 'permissions'
   | 'proxy'
+  | 'edit'
+  | 'toggle'
   | 'delete'
 
 export interface PoolMobileActionInput {
   canDownloadOrCopy?: boolean
+  canRefreshToken?: boolean
   canClearCooldown?: boolean
   canRecoverHealth?: boolean
   hasProxy?: boolean
@@ -60,10 +62,32 @@ export function splitPoolMobileActions(input: PoolMobileActionInput): {
   primary: PoolMobileActionId[]
   overflow: PoolMobileActionId[]
 } {
-  const primary: PoolMobileActionId[] = ['permissions', 'edit', 'toggle']
-
   if (input.canDownloadOrCopy) {
-    primary.push('copy_or_download')
+    const primary: PoolMobileActionId[] = ['copy_or_download']
+    if (input.canRefreshToken) {
+      primary.push('refresh_token')
+    }
+    if (input.canClearCooldown) {
+      primary.push('clear_cooldown')
+    }
+    if (input.canRecoverHealth) {
+      primary.push('recover_health')
+    }
+    primary.push('permissions')
+    if (input.hasProxy) {
+      primary.push('proxy')
+    }
+    primary.push('edit', 'toggle', 'delete')
+
+    return {
+      primary,
+      overflow: [],
+    }
+  }
+
+  const primary: PoolMobileActionId[] = []
+  if (input.canRefreshToken) {
+    primary.push('refresh_token')
   }
   if (input.canClearCooldown) {
     primary.push('clear_cooldown')
@@ -71,10 +95,11 @@ export function splitPoolMobileActions(input: PoolMobileActionInput): {
   if (input.canRecoverHealth) {
     primary.push('recover_health')
   }
+  primary.push('permissions')
   if (input.hasProxy) {
     primary.push('proxy')
   }
-  primary.push('delete')
+  primary.push('edit', 'toggle', 'delete')
 
   return {
     primary,

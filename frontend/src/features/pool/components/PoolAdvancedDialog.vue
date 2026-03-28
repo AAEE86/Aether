@@ -3,71 +3,91 @@
     :model-value="modelValue"
     title="高级设置"
     description="冷却、健康、成本控制与其他高级参数"
-    size="lg"
+    size="3xl"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <div class="space-y-4">
-      <!-- Cooldown & Health -->
-      <div class="space-y-3">
-        <h3 class="text-sm font-medium border-b pb-2">
-          冷却与健康
-        </h3>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">健康策略</span>
-            <p class="text-xs text-muted-foreground">
-              按上游错误自动冷却并跳过账号
-            </p>
+    <div class="max-h-[calc(100dvh-13rem)] space-y-5 overflow-y-auto overscroll-contain pr-1 sm:max-h-[min(72vh,42rem)] sm:space-y-6 sm:pr-2">
+      <section class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5">
+        <div class="space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <h3 class="text-sm font-semibold">
+              冷却与健康
+            </h3>
+            <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              核心策略
+            </span>
           </div>
-          <Switch
-            :model-value="form.health_policy_enabled"
-            @update:model-value="(v: boolean) => form.health_policy_enabled = v"
-          />
+          <p class="text-xs leading-5 text-muted-foreground">
+            控制自动冷却、主动探测、异常清理和全局调度优先级。
+          </p>
         </div>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">主动探测</span>
-            <p class="text-xs text-muted-foreground">
-              按固定间隔主动刷新 Key 的账号状态与额度
-            </p>
+
+        <div class="grid gap-3 lg:grid-cols-2">
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="space-y-1">
+              <span class="text-sm font-medium">健康策略</span>
+              <p class="text-xs leading-5 text-muted-foreground">
+                按上游错误自动冷却并跳过异常账号。
+              </p>
+            </div>
+            <Switch
+              :model-value="form.health_policy_enabled"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => form.health_policy_enabled = v"
+            />
           </div>
-          <Switch
-            :model-value="form.probing_enabled"
-            @update:model-value="(v: boolean) => form.probing_enabled = v"
-          />
-        </div>
-        <div
-          v-if="form.probing_enabled"
-          class="grid grid-cols-2 gap-4"
-        >
-          <div class="space-y-1.5">
-            <Label>
-              探测间隔
-              <span class="text-xs text-muted-foreground">(分钟)</span>
-            </Label>
-            <Input
-              :model-value="form.probing_interval_minutes ?? ''"
-              type="number"
-              min="1"
-              max="1440"
-              placeholder="10"
-              @update:model-value="(v) => form.probing_interval_minutes = parseNum(v)"
+
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="space-y-1">
+              <span class="text-sm font-medium">主动探测</span>
+              <p class="text-xs leading-5 text-muted-foreground">
+                按固定间隔刷新 Key 的状态与额度，减少号池状态滞后。
+              </p>
+            </div>
+            <Switch
+              :model-value="form.probing_enabled"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => form.probing_enabled = v"
+            />
+          </div>
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between lg:col-span-2 lg:flex-row lg:items-center lg:justify-between">
+            <div class="space-y-1 lg:flex lg:min-w-0 lg:items-center lg:gap-3 lg:space-y-0">
+              <span class="text-sm font-medium whitespace-nowrap">异常自动清除</span>
+              <p class="text-xs leading-5 text-muted-foreground lg:leading-5">
+                仅在检测到不可恢复的账号异常时自动从号池移除，不处理纯 Token 失效。
+              </p>
+            </div>
+            <Switch
+              :model-value="form.auto_remove_banned_keys"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => form.auto_remove_banned_keys = v"
             />
           </div>
         </div>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">异常自动清除</span>
-            <p class="text-xs text-muted-foreground">
-              仅在检测到不可恢复的账号异常时自动从号池中移除，不处理纯 Token 失效
-            </p>
+
+        <div
+          v-if="form.probing_enabled"
+          class="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4"
+        >
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="space-y-1.5">
+              <Label>
+                探测间隔
+                <span class="text-xs text-muted-foreground">(分钟)</span>
+              </Label>
+              <Input
+                :model-value="form.probing_interval_minutes ?? ''"
+                type="number"
+                min="1"
+                max="1440"
+                placeholder="10"
+                @update:model-value="(v) => form.probing_interval_minutes = parseNum(v)"
+              />
+            </div>
           </div>
-          <Switch
-            :model-value="form.auto_remove_banned_keys"
-            @update:model-value="(v: boolean) => form.auto_remove_banned_keys = v"
-          />
         </div>
-        <div class="grid grid-cols-2 gap-4">
+
+        <div class="grid gap-3 sm:grid-cols-2">
           <div class="space-y-1.5">
             <Label>
               429 冷却
@@ -96,8 +116,6 @@
               @update:model-value="(v) => form.overload_cooldown_seconds = parseNum(v)"
             />
           </div>
-        </div>
-        <div class="grid grid-cols-2 gap-4">
           <div class="space-y-1.5">
             <Label>
               粘性会话 TTL
@@ -127,93 +145,197 @@
             />
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Batch Operations -->
-      <div class="space-y-3">
-        <h3 class="text-sm font-medium border-b pb-2">
-          批量操作
-        </h3>
-        <div class="grid grid-cols-2 gap-4">
-          <div class="space-y-1.5">
-            <Label>
-              并发数
-            </Label>
-            <Input
-              :model-value="form.batch_concurrency ?? ''"
-              type="number"
-              min="1"
-              max="32"
-              placeholder="8"
-              @update:model-value="(v) => form.batch_concurrency = parseNum(v)"
-            />
-            <p class="text-[11px] text-muted-foreground">
-              批量刷新 OAuth / 额度等操作的并行请求数
+      <div class="grid gap-4 lg:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]">
+        <section class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5">
+          <div class="space-y-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-sm font-semibold">
+                批量操作
+              </h3>
+              <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                任务效率
+              </span>
+            </div>
+            <p class="text-xs leading-5 text-muted-foreground">
+              控制刷新 OAuth、主动探测和批量额度处理时的并行请求数。
             </p>
           </div>
-        </div>
+
+          <div class="rounded-xl border border-border/60 bg-muted/30 p-4">
+            <div class="space-y-1.5">
+              <Label>
+                并发数
+              </Label>
+              <Input
+                :model-value="form.batch_concurrency ?? ''"
+                type="number"
+                min="1"
+                max="32"
+                placeholder="8"
+                @update:model-value="(v) => form.batch_concurrency = parseNum(v)"
+              />
+              <p class="text-[11px] leading-5 text-muted-foreground">
+                为空时沿用默认值；数值越大，批量操作越快，但会增加瞬时请求压力。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5">
+          <div class="space-y-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-sm font-semibold">
+                成本控制
+              </h3>
+              <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                额度保护
+              </span>
+            </div>
+            <p class="text-xs leading-5 text-muted-foreground">
+              控制窗口期、Key 限额与软阈值，防止个别账号在短时间内被过度消耗。
+            </p>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="space-y-1.5">
+              <Label>
+                成本窗口
+                <span class="text-xs text-muted-foreground">(秒)</span>
+              </Label>
+              <Input
+                :model-value="form.cost_window_seconds ?? ''"
+                type="number"
+                min="3600"
+                max="86400"
+                placeholder="18000 (5 小时)"
+                @update:model-value="(v) => form.cost_window_seconds = parseNum(v)"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label>
+                Key 窗口限额
+                <span class="text-xs text-muted-foreground">(tokens)</span>
+              </Label>
+              <Input
+                :model-value="form.cost_limit_per_key_tokens ?? ''"
+                type="number"
+                min="0"
+                placeholder="留空 = 不限"
+                @update:model-value="(v) => form.cost_limit_per_key_tokens = parseNum(v)"
+              />
+            </div>
+            <div class="space-y-1.5 sm:col-span-2">
+              <Label>
+                软阈值
+                <span class="text-xs text-muted-foreground">(%)</span>
+              </Label>
+              <Input
+                :model-value="form.cost_soft_threshold_percent ?? ''"
+                type="number"
+                min="0"
+                max="100"
+                placeholder="80"
+                @update:model-value="(v) => form.cost_soft_threshold_percent = parseNum(v)"
+              />
+            </div>
+          </div>
+        </section>
       </div>
 
-      <!-- Claude Code -->
-      <div
+      <section
         v-if="isClaudeCode"
-        class="space-y-3"
+        class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5"
       >
-        <h3 class="text-sm font-medium border-b pb-2">
-          Claude Code
-        </h3>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">Session ID 伪装</span>
-            <p class="text-xs text-muted-foreground">
-              固定 metadata.user_id 中 session 片段
-            </p>
+        <div class="space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <h3 class="text-sm font-semibold">
+              Claude Code
+            </h3>
+            <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              请求约束
+            </span>
           </div>
-          <Switch
-            :model-value="claudeForm.session_id_masking_enabled"
-            @update:model-value="(v: boolean) => claudeForm.session_id_masking_enabled = v"
-          />
+          <p class="text-xs leading-5 text-muted-foreground">
+            管理 CLI 请求限制、会话控制和 metadata / cache 相关的兼容行为。
+          </p>
         </div>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">仅限 CLI 客户端</span>
-            <p class="text-xs text-muted-foreground">
-              仅允许 Claude Code CLI 格式请求
-            </p>
+
+        <div class="grid gap-3 lg:grid-cols-2">
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="space-y-1">
+              <span class="text-sm font-medium">Session ID 伪装</span>
+              <p class="text-xs leading-5 text-muted-foreground">
+                固定 metadata.user_id 中 session 片段。
+              </p>
+            </div>
+            <Switch
+              :model-value="claudeForm.session_id_masking_enabled"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => claudeForm.session_id_masking_enabled = v"
+            />
           </div>
-          <Switch
-            :model-value="claudeForm.cli_only_enabled"
-            @update:model-value="(v: boolean) => claudeForm.cli_only_enabled = v"
-          />
-        </div>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">Cache TTL 统一</span>
-            <p class="text-xs text-muted-foreground">
-              强制所有 cache_control 使用相同 TTL 类型
-            </p>
+
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="space-y-1">
+              <span class="text-sm font-medium">仅限 CLI 客户端</span>
+              <p class="text-xs leading-5 text-muted-foreground">
+                仅允许 Claude Code CLI 格式请求。
+              </p>
+            </div>
+            <Switch
+              :model-value="claudeForm.cli_only_enabled"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => claudeForm.cli_only_enabled = v"
+            />
           </div>
-          <Switch
-            :model-value="claudeForm.cache_ttl_override_enabled"
-            @update:model-value="(v: boolean) => claudeForm.cache_ttl_override_enabled = v"
-          />
+
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="space-y-1">
+              <span class="text-sm font-medium">Cache TTL 统一</span>
+              <p class="text-xs leading-5 text-muted-foreground">
+                强制所有 cache_control 使用同一种 TTL 类型。
+              </p>
+            </div>
+            <Switch
+              :model-value="claudeForm.cache_ttl_override_enabled"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => claudeForm.cache_ttl_override_enabled = v"
+            />
+          </div>
+
+          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="space-y-1">
+              <span class="text-sm font-medium">会话数量控制</span>
+              <p class="text-xs leading-5 text-muted-foreground">
+                限制单 Key 同时活跃会话数，降低长期占用风险。
+              </p>
+            </div>
+            <Switch
+              :model-value="claudeForm.session_control_enabled"
+              class="shrink-0"
+              @update:model-value="(v: boolean) => claudeForm.session_control_enabled = v"
+            />
+          </div>
         </div>
+
         <div
           v-if="claudeForm.cache_ttl_override_enabled"
-          class="pl-3"
+          class="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4"
         >
           <div class="space-y-1.5">
             <Label>TTL 类型</Label>
-            <div class="flex gap-0.5 p-0.5 bg-muted/40 rounded-md w-fit">
+            <div class="flex w-fit gap-0.5 rounded-md bg-muted/40 p-0.5">
               <button
                 v-for="opt in ['ephemeral']"
                 :key="opt"
                 type="button"
-                class="px-2.5 py-1 text-xs font-medium rounded transition-all"
+                class="rounded px-2.5 py-1 text-xs font-medium transition-all"
                 :class="[
                   claudeForm.cache_ttl_override_target === opt
                     ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-background/50'
+                    : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'
                 ]"
                 @click="claudeForm.cache_ttl_override_target = opt"
               >
@@ -222,112 +344,55 @@
             </div>
           </div>
         </div>
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
-            <span class="text-sm font-medium">会话数量控制</span>
-            <p class="text-xs text-muted-foreground">
-              限制单 Key 同时活跃会话数
-            </p>
-          </div>
-          <Switch
-            :model-value="claudeForm.session_control_enabled"
-            @update:model-value="(v: boolean) => claudeForm.session_control_enabled = v"
-          />
-        </div>
+
         <div
           v-if="claudeForm.session_control_enabled"
-          class="grid grid-cols-2 gap-4"
+          class="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4"
         >
-          <div class="space-y-1.5">
-            <Label>
-              最大会话数
-            </Label>
-            <Input
-              :model-value="claudeForm.max_sessions ?? ''"
-              type="number"
-              min="1"
-              max="100"
-              placeholder="留空 = 不限"
-              @update:model-value="(v) => claudeForm.max_sessions = parseNum(v)"
-            />
-          </div>
-          <div class="space-y-1.5">
-            <Label>
-              空闲超时
-              <span class="text-xs text-muted-foreground">(分钟)</span>
-            </Label>
-            <Input
-              :model-value="claudeForm.session_idle_timeout_minutes ?? ''"
-              type="number"
-              min="1"
-              max="1440"
-              placeholder="5"
-              @update:model-value="(v) => claudeForm.session_idle_timeout_minutes = parseNum(v) ?? 5"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- Cost Control -->
-      <div class="space-y-3">
-        <h3 class="text-sm font-medium border-b pb-2">
-          成本控制
-        </h3>
-        <div class="grid grid-cols-2 gap-4">
-          <div class="space-y-1.5">
-            <Label>
-              成本窗口
-              <span class="text-xs text-muted-foreground">(秒)</span>
-            </Label>
-            <Input
-              :model-value="form.cost_window_seconds ?? ''"
-              type="number"
-              min="3600"
-              max="86400"
-              placeholder="18000 (5 小时)"
-              @update:model-value="(v) => form.cost_window_seconds = parseNum(v)"
-            />
-          </div>
-          <div class="space-y-1.5">
-            <Label>
-              Key 窗口限额
-              <span class="text-xs text-muted-foreground">(tokens)</span>
-            </Label>
-            <Input
-              :model-value="form.cost_limit_per_key_tokens ?? ''"
-              type="number"
-              min="0"
-              placeholder="留空 = 不限"
-              @update:model-value="(v) => form.cost_limit_per_key_tokens = parseNum(v)"
-            />
-          </div>
-          <div class="space-y-1.5">
-            <Label>
-              软阈值
-              <span class="text-xs text-muted-foreground">(%)</span>
-            </Label>
-            <Input
-              :model-value="form.cost_soft_threshold_percent ?? ''"
-              type="number"
-              min="0"
-              max="100"
-              placeholder="80"
-              @update:model-value="(v) => form.cost_soft_threshold_percent = parseNum(v)"
-            />
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="space-y-1.5">
+              <Label>
+                最大会话数
+              </Label>
+              <Input
+                :model-value="claudeForm.max_sessions ?? ''"
+                type="number"
+                min="1"
+                max="100"
+                placeholder="留空 = 不限"
+                @update:model-value="(v) => claudeForm.max_sessions = parseNum(v)"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label>
+                空闲超时
+                <span class="text-xs text-muted-foreground">(分钟)</span>
+              </Label>
+              <Input
+                :model-value="claudeForm.session_idle_timeout_minutes ?? ''"
+                type="number"
+                min="1"
+                max="1440"
+                placeholder="5"
+                @update:model-value="(v) => claudeForm.session_idle_timeout_minutes = parseNum(v) ?? 5"
+              />
+            </div>
           </div>
         </div>
-      </div>
+      </section>
     </div>
 
     <template #footer>
       <Button
         variant="outline"
+        class="min-w-[96px] flex-1 sm:flex-none"
         :disabled="loading"
         @click="emit('update:modelValue', false)"
       >
         取消
       </Button>
       <Button
+        class="min-w-[96px] flex-1 sm:flex-none"
         :disabled="loading"
         @click="handleSave"
       >

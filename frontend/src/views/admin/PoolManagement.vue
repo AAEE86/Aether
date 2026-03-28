@@ -847,9 +847,13 @@
               </div>
 
               <div class="flex items-center gap-0.5">
-                <div class="min-w-0 flex-1 flex justify-center">
+                <div
+                  v-for="actionId in getMobileActionIds(key)"
+                  :key="`${key.key_id}-${actionId}`"
+                  class="min-w-0 flex-1 flex justify-center"
+                >
                   <Button
-                    v-if="key.auth_type === 'oauth'"
+                    v-if="actionId === 'copy_or_download' && key.auth_type === 'oauth'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0"
@@ -859,7 +863,7 @@
                     <Download class="w-3.5 h-3.5" />
                   </Button>
                   <Button
-                    v-else
+                    v-else-if="actionId === 'copy_or_download'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0"
@@ -868,12 +872,22 @@
                   >
                     <Copy class="w-3.5 h-3.5" />
                   </Button>
-                </div>
-                <div
-                  v-if="key.cooldown_reason"
-                  class="min-w-0 flex-1 flex justify-center"
-                >
                   <Button
+                    v-else-if="actionId === 'refresh_token'"
+                    variant="ghost"
+                    size="icon"
+                    class="h-7 w-7 shrink-0"
+                    :disabled="refreshingOAuthKeyId === key.key_id"
+                    :title="getOAuthRefreshButtonTitle(key)"
+                    @click.stop="handleRefreshOAuth(key)"
+                  >
+                    <RefreshCw
+                      class="w-3.5 h-3.5"
+                      :class="{ 'animate-spin': refreshingOAuthKeyId === key.key_id }"
+                    />
+                  </Button>
+                  <Button
+                    v-else-if="actionId === 'clear_cooldown'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0 text-muted-foreground hover:text-green-600"
@@ -882,12 +896,8 @@
                   >
                     <RefreshCw class="w-3.5 h-3.5" />
                   </Button>
-                </div>
-                <div
-                  v-if="key.circuit_breaker_open || (key.health_score ?? 1) < 0.5"
-                  class="min-w-0 flex-1 flex justify-center"
-                >
                   <Button
+                    v-else-if="actionId === 'recover_health'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0 text-green-600"
@@ -900,9 +910,8 @@
                       :class="{ 'animate-spin': recoveringHealthKeyId === key.key_id }"
                     />
                   </Button>
-                </div>
-                <div class="min-w-0 flex-1 flex justify-center">
                   <Button
+                    v-else-if="actionId === 'permissions'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0"
@@ -911,9 +920,8 @@
                   >
                     <Shield class="w-3.5 h-3.5" />
                   </Button>
-                </div>
-                <div class="min-w-0 flex-1 flex justify-center">
                   <Popover
+                    v-else-if="actionId === 'proxy'"
                     :open="proxyMobilePopoverOpenKeyId === key.key_id"
                     @update:open="(v: boolean) => handleProxyMobilePopoverToggle(key.key_id, v)"
                   >
@@ -960,9 +968,8 @@
                       </div>
                     </PopoverContent>
                   </Popover>
-                </div>
-                <div class="min-w-0 flex-1 flex justify-center">
                   <Button
+                    v-else-if="actionId === 'edit'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0"
@@ -971,9 +978,8 @@
                   >
                     <SquarePen class="w-3.5 h-3.5" />
                   </Button>
-                </div>
-                <div class="min-w-0 flex-1 flex justify-center">
                   <Button
+                    v-else-if="actionId === 'toggle'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0 text-foreground hover:text-foreground"
@@ -983,9 +989,8 @@
                   >
                     <Power class="w-3.5 h-3.5" />
                   </Button>
-                </div>
-                <div class="min-w-0 flex-1 flex justify-center">
                   <Button
+                    v-else-if="actionId === 'delete'"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
@@ -1188,6 +1193,8 @@ import OAuthAccountDialog from '@/features/providers/components/OAuthAccountDial
 import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
 import {
   buildPoolMobileTagItems,
+  splitPoolMobileActions,
+  type PoolMobileActionId,
   type PoolMobileTagItem,
   type PoolMobileTagTone,
 } from '@/features/pool/utils/poolMobilePresentation'
@@ -2469,6 +2476,16 @@ function getMobileTagItems(key: PoolKeyDetail): PoolMobileTagItem[] {
     orgLabel: orgBadge?.label ?? null,
     proxyLabel: key.proxy?.node_id ? '独立代理' : null,
   })
+}
+
+function getMobileActionIds(key: PoolKeyDetail): PoolMobileActionId[] {
+  return splitPoolMobileActions({
+    canDownloadOrCopy: true,
+    canRefreshToken: key.auth_type === 'oauth',
+    canClearCooldown: Boolean(key.cooldown_reason),
+    canRecoverHealth: key.circuit_breaker_open || (key.health_score ?? 1) < 0.5,
+    hasProxy: true,
+  }).primary
 }
 
 function getMobileTagClass(item: PoolMobileTagItem): string {

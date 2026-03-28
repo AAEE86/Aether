@@ -33,6 +33,7 @@ describe('poolMobilePresentation', () => {
   it('keeps all available mobile actions inline without overflow grouping', () => {
     expect(
       splitPoolMobileActions({
+        canRefreshToken: true,
         canClearCooldown: true,
         canRecoverHealth: true,
         canDownloadOrCopy: true,
@@ -40,13 +41,14 @@ describe('poolMobilePresentation', () => {
       }),
     ).toEqual({
       primary: [
-        'permissions',
-        'edit',
-        'toggle',
         'copy_or_download',
+        'refresh_token',
         'clear_cooldown',
         'recover_health',
+        'permissions',
         'proxy',
+        'edit',
+        'toggle',
         'delete',
       ],
       overflow: [],
