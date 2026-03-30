@@ -22,45 +22,47 @@
           </p>
         </div>
 
-        <div class="grid gap-3 lg:grid-cols-2">
-          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
-            <div class="space-y-1">
-              <span class="text-sm font-medium">健康策略</span>
-              <p class="text-xs leading-5 text-muted-foreground">
-                按上游错误自动冷却并跳过异常账号。
+        <div class="grid gap-3 lg:grid-cols-3">
+          <div
+            v-for="item in healthToggleCards"
+            :key="item.key"
+            class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between lg:items-center"
+          >
+            <div class="min-w-0 flex-1 space-y-1">
+              <div class="flex items-center gap-1.5">
+                <span class="text-sm font-medium">{{ item.label }}</span>
+                <TooltipProvider
+                  :delay-duration="100"
+                >
+                  <Tooltip>
+                    <TooltipTrigger as-child>
+                      <button
+                        type="button"
+                        :title="item.description"
+                        :aria-label="`${item.label} 说明`"
+                        class="hidden lg:inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                      >
+                        <CircleHelp class="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="top"
+                      :side-offset="8"
+                      class="max-w-xs px-3 py-2 text-xs leading-5"
+                    >
+                      {{ item.description }}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <p class="text-xs leading-5 text-muted-foreground lg:hidden">
+                {{ item.description }}
               </p>
             </div>
             <Switch
-              :model-value="form.health_policy_enabled"
+              :model-value="getHealthToggleValue(item.key)"
               class="shrink-0"
-              @update:model-value="(v: boolean) => form.health_policy_enabled = v"
-            />
-          </div>
-
-          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between">
-            <div class="space-y-1">
-              <span class="text-sm font-medium">主动探测</span>
-              <p class="text-xs leading-5 text-muted-foreground">
-                按固定间隔刷新 Key 的状态与额度，减少号池状态滞后。
-              </p>
-            </div>
-            <Switch
-              :model-value="form.probing_enabled"
-              class="shrink-0"
-              @update:model-value="(v: boolean) => form.probing_enabled = v"
-            />
-          </div>
-          <div class="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:flex-row sm:items-start sm:justify-between lg:col-span-2 lg:flex-row lg:items-center lg:justify-between">
-            <div class="space-y-1 lg:flex lg:min-w-0 lg:items-center lg:gap-3 lg:space-y-0">
-              <span class="text-sm font-medium whitespace-nowrap">异常自动清除</span>
-              <p class="text-xs leading-5 text-muted-foreground lg:leading-5">
-                仅在检测到不可恢复的账号异常时自动从号池移除，不处理纯 Token 失效。
-              </p>
-            </div>
-            <Switch
-              :model-value="form.auto_remove_banned_keys"
-              class="shrink-0"
-              @update:model-value="(v: boolean) => form.auto_remove_banned_keys = v"
+              @update:model-value="(v: boolean) => updateHealthToggleValue(item.key, v)"
             />
           </div>
         </div>
@@ -87,7 +89,10 @@
           </div>
         </div>
 
-        <div class="grid gap-3 sm:grid-cols-2">
+        <div
+          class="grid gap-3 sm:grid-cols-2"
+          :class="cooldownFieldLayout.desktopColumnsClass"
+        >
           <div class="space-y-1.5">
             <Label>
               429 冷却
@@ -133,7 +138,6 @@
           <div class="space-y-1.5">
             <Label>
               全局优先级
-              <span class="text-xs text-muted-foreground">(global_key)</span>
             </Label>
             <Input
               :model-value="form.global_priority ?? ''"
@@ -147,7 +151,7 @@
         </div>
       </section>
 
-      <div class="grid gap-4 lg:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]">
+      <div :class="secondarySectionLayout.wrapperClass">
         <section class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5">
           <div class="space-y-1">
             <div class="flex flex-wrap items-center gap-2">
@@ -194,11 +198,14 @@
               </span>
             </div>
             <p class="text-xs leading-5 text-muted-foreground">
-              控制窗口期、Key 限额与软阈值，防止个别账号在短时间内被过度消耗。
+              控制窗口期、Key 限额与软阈值，防止个别账号短时间内过度消耗。
             </p>
           </div>
 
-          <div class="grid gap-3 sm:grid-cols-2">
+          <div
+            class="grid gap-3 sm:grid-cols-2"
+            :class="costFieldLayout.desktopColumnsClass"
+          >
             <div class="space-y-1.5">
               <Label>
                 成本窗口
@@ -226,7 +233,7 @@
                 @update:model-value="(v) => form.cost_limit_per_key_tokens = parseNum(v)"
               />
             </div>
-            <div class="space-y-1.5 sm:col-span-2">
+            <div class="space-y-1.5">
               <Label>
                 软阈值
                 <span class="text-xs text-muted-foreground">(%)</span>
@@ -404,10 +411,18 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Dialog, Button, Input, Label, Switch } from '@/components/ui'
+import { CircleHelp } from 'lucide-vue-next'
+import { Dialog, Button, Input, Label, Switch, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { parseApiError } from '@/utils/errorParser'
 import { updateProvider } from '@/api/endpoints'
+import {
+  buildPoolCooldownFieldLayout,
+  buildPoolCostFieldLayout,
+  buildPoolHealthToggleCards,
+  buildPoolSecondarySectionLayout,
+  type PoolHealthToggleKey,
+} from '@/features/pool/utils/poolAdvancedDialog'
 import type {
   PoolAdvancedConfig,
   ClaudeCodeAdvancedConfig,
@@ -433,6 +448,11 @@ const loading = ref(false)
 const isClaudeCode = computed(() => {
   return (props.providerType || '').trim().toLowerCase() === 'claude_code'
 })
+
+const healthToggleCards = buildPoolHealthToggleCards()
+const cooldownFieldLayout = buildPoolCooldownFieldLayout()
+const costFieldLayout = buildPoolCostFieldLayout()
+const secondarySectionLayout = buildPoolSecondarySectionLayout()
 
 const form = ref({
   global_priority: null as number | null | undefined,
@@ -473,6 +493,30 @@ function parseNum(v: string | number): number | undefined {
   if (v === '' || v === null || v === undefined) return undefined
   const n = Number(v)
   return Number.isNaN(n) ? undefined : n
+}
+
+function getHealthToggleValue(key: PoolHealthToggleKey): boolean {
+  switch (key) {
+    case 'health_policy_enabled':
+      return form.value.health_policy_enabled
+    case 'probing_enabled':
+      return form.value.probing_enabled
+    case 'auto_remove_banned_keys':
+      return form.value.auto_remove_banned_keys
+  }
+}
+
+function updateHealthToggleValue(key: PoolHealthToggleKey, value: boolean): void {
+  switch (key) {
+    case 'health_policy_enabled':
+      form.value.health_policy_enabled = value
+      return
+    case 'probing_enabled':
+      form.value.probing_enabled = value
+      return
+    case 'auto_remove_banned_keys':
+      form.value.auto_remove_banned_keys = value
+  }
 }
 
 watch(() => props.modelValue, (open) => {
