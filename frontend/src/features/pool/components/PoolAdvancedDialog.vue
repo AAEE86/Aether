@@ -156,41 +156,6 @@
           <div class="space-y-1">
             <div class="flex flex-wrap items-center gap-2">
               <h3 class="text-sm font-semibold">
-                批量操作
-              </h3>
-              <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                任务效率
-              </span>
-            </div>
-            <p class="text-xs leading-5 text-muted-foreground">
-              控制刷新 OAuth、主动探测和批量额度处理时的并行请求数。
-            </p>
-          </div>
-
-          <div class="rounded-xl border border-border/60 bg-muted/30 p-4">
-            <div class="space-y-1.5">
-              <Label>
-                并发数
-              </Label>
-              <Input
-                :model-value="form.batch_concurrency ?? ''"
-                type="number"
-                min="1"
-                max="32"
-                placeholder="8"
-                @update:model-value="(v) => form.batch_concurrency = parseNum(v)"
-              />
-              <p class="text-[11px] leading-5 text-muted-foreground">
-                为空时沿用默认值；数值越大，批量操作越快，但会增加瞬时请求压力。
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5">
-          <div class="space-y-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <h3 class="text-sm font-semibold">
                 成本控制
               </h3>
               <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -246,6 +211,41 @@
                 placeholder="80"
                 @update:model-value="(v) => form.cost_soft_threshold_percent = parseNum(v)"
               />
+            </div>
+          </div>
+        </section>
+
+        <section class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4 sm:p-5">
+          <div class="space-y-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-sm font-semibold">
+                批量操作
+              </h3>
+              <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                任务效率
+              </span>
+            </div>
+            <p class="text-xs leading-5 text-muted-foreground">
+              控制刷新 OAuth、主动探测和批量额度处理时的并行请求数。
+            </p>
+          </div>
+
+          <div class="rounded-xl bg-muted/30 p-4">
+            <div class="space-y-1.5">
+              <Label>
+                并发数
+              </Label>
+              <Input
+                :model-value="form.batch_concurrency ?? ''"
+                type="number"
+                min="1"
+                max="32"
+                placeholder="8"
+                @update:model-value="(v) => form.batch_concurrency = parseNum(v)"
+              />
+              <p class="text-[11px] leading-5 text-muted-foreground">
+                为空时沿用默认值；数值越大，批量操作越快，但会增加瞬时请求压力。
+              </p>
             </div>
           </div>
         </section>
