@@ -1,7 +1,13 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-const ADMIN_SECURITY_RUST_BACKEND_DETAIL: &str =
-    "Admin security routes require Rust maintenance backend";
+const ADMIN_SECURITY_DATA_UNAVAILABLE_DETAIL: &str = "Admin security data unavailable";
 
 #[derive(Debug, serde::Deserialize)]
 struct AdminSecurityBlacklistAddRequest {
@@ -16,10 +22,10 @@ struct AdminSecurityWhitelistAddRequest {
     ip_address: String,
 }
 
-fn build_admin_security_maintenance_response() -> Response<Body> {
+fn build_admin_security_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_SECURITY_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_SECURITY_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }
@@ -91,7 +97,7 @@ fn admin_security_validate_ip_or_cidr(value: &str) -> bool {
 
 async fn build_admin_security_blacklist_add_response(
     state: &AppState,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     let Some(request_body) = request_body else {
         return Ok(build_admin_security_bad_request_response(
@@ -179,7 +185,7 @@ async fn build_admin_security_blacklist_list_response(
 
 async fn build_admin_security_whitelist_add_response(
     state: &AppState,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     let Some(request_body) = request_body else {
         return Ok(build_admin_security_bad_request_response(
@@ -247,7 +253,7 @@ async fn build_admin_security_whitelist_list_response(
 pub(crate) async fn maybe_build_local_admin_security_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -279,6 +285,6 @@ pub(crate) async fn maybe_build_local_admin_security_response(
         Some("whitelist_list") => Ok(Some(
             build_admin_security_whitelist_list_response(state).await?,
         )),
-        _ => Ok(Some(build_admin_security_maintenance_response())),
+        _ => Ok(Some(build_admin_security_data_unavailable_response())),
     }
 }

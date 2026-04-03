@@ -101,7 +101,7 @@ pub(crate) async fn execute_execution_runtime_sync(
     #[cfg(test)]
     let result = {
         let remote_execution_runtime_base_url = state
-            .test_remote_execution_runtime_base_url()
+            .execution_runtime_override_base_url()
             .unwrap_or_default();
         if remote_execution_runtime_base_url.trim().is_empty() {
             match DirectSyncExecutionRuntime::new()

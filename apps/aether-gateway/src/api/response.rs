@@ -26,7 +26,6 @@ fn insert_execution_runtime_candidate_headers(
     decision: &GatewayControlDecision,
 ) -> Result<(), GatewayError> {
     let value = execution_runtime_candidate_header_value(decision);
-    insert_header_if_missing(headers, CONTROL_LEGACY_EXECUTION_RUNTIME_HEADER, value)?;
     insert_header_if_missing(headers, CONTROL_EXECUTION_RUNTIME_HEADER, value)
 }
 

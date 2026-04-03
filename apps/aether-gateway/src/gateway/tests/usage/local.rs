@@ -1,7 +1,17 @@
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, hash_api_key, json,
+    sample_local_openai_auth_snapshot, sample_local_openai_candidate_row,
+    sample_local_openai_endpoint, sample_local_openai_key, sample_local_openai_provider,
+    start_server, Arc, Body, DEVELOPMENT_ENCRYPTION_KEY, GatewayDataState, HeaderValue, Json,
+    InMemoryAuthApiKeySnapshotRepository, InMemoryMinimalCandidateSelectionReadRepository,
+    InMemoryProviderCatalogReadRepository, InMemoryRequestCandidateRepository,
+    InMemoryUsageReadRepository, Mutex, Request, RequestCandidateReadRepository,
+    RequestCandidateStatus, Response, Router, StatusCode, TRACE_ID_HEADER, UsageReadRepository,
+    UsageRuntimeConfig,
+};
 
 #[tokio::test]
-async fn gateway_handles_local_openai_chat_sync_report_without_python_gateway_when_usage_runtime_enabled(
+async fn gateway_handles_local_openai_chat_sync_report_with_local_reporting_when_usage_runtime_enabled(
 ) {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
@@ -105,7 +115,7 @@ async fn gateway_handles_local_openai_chat_sync_report_without_python_gateway_wh
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
     .with_data_state_for_tests(
         GatewayDataState::with_auth_candidate_selection_provider_catalog_request_candidates_and_usage_for_tests(
             auth_repository,
@@ -175,7 +185,7 @@ async fn gateway_handles_local_openai_chat_sync_report_without_python_gateway_wh
 }
 
 #[tokio::test]
-async fn gateway_handles_local_openai_chat_stream_report_without_python_gateway_when_usage_runtime_enabled(
+async fn gateway_handles_local_openai_chat_stream_report_with_local_reporting_when_usage_runtime_enabled(
 ) {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
@@ -272,7 +282,7 @@ async fn gateway_handles_local_openai_chat_stream_report_without_python_gateway_
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
     .with_data_state_for_tests(
         GatewayDataState::with_auth_candidate_selection_provider_catalog_request_candidates_and_usage_for_tests(
             auth_repository,

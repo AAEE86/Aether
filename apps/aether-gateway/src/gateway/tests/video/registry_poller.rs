@@ -1,4 +1,18 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::video_tasks::{
+    InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskLookupKey, VideoTaskReadRepository,
+    VideoTaskWriteRepository,
+};
+use axum::body::to_bytes;
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use serde_json::json;
+
+use super::{
+    build_state_with_execution_runtime_override, start_server, AppState,
+    VideoTaskTruthSourceMode,
+};
 
 fn sample_due_openai_task(upstream_base_url: &str) -> UpsertVideoTask {
     UpsertVideoTask {
@@ -155,13 +169,10 @@ async fn gateway_background_video_task_poller_refreshes_due_openai_task_from_rep
         .await
         .expect("task upsert should succeed");
 
-    let gateway_state = build_state_with_test_remote_execution_runtime(
-        "http://127.0.0.1:18084",
-        execution_runtime_url,
-    )
-    .with_video_task_data_repository_for_tests(Arc::clone(&repository))
-    .with_video_task_truth_source_mode(VideoTaskTruthSourceMode::RustAuthoritative)
-    .with_video_task_poller_config(std::time::Duration::from_millis(25), 8);
+    let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_video_task_data_repository_for_tests(Arc::clone(&repository))
+        .with_video_task_truth_source_mode(VideoTaskTruthSourceMode::RustAuthoritative)
+        .with_video_task_poller_config(std::time::Duration::from_millis(25), 8);
     let background_tasks = gateway_state.spawn_background_tasks();
     assert!(!background_tasks.is_empty(), "poller task should spawn");
 
@@ -230,7 +241,7 @@ async fn gateway_background_video_task_poller_refreshes_due_openai_task_from_rep
 }
 
 #[tokio::test]
-async fn gateway_background_video_task_poller_refreshes_due_openai_task_from_repository_without_remote_execution_runtime_compat(
+async fn gateway_background_video_task_poller_refreshes_due_openai_task_from_repository_without_execution_runtime_override(
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenUpstreamRequest {
@@ -268,7 +279,7 @@ async fn gateway_background_video_task_poller_refreshes_due_openai_task_from_rep
         .await
         .expect("task upsert should succeed");
 
-    let gateway_state = AppState::new("http://127.0.0.1:18084")
+    let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_video_task_data_repository_for_tests(Arc::clone(&repository))
         .with_video_task_truth_source_mode(VideoTaskTruthSourceMode::RustAuthoritative)

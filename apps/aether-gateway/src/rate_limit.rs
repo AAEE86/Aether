@@ -529,7 +529,7 @@ mod tests {
             local_rejection: None,
             allowed_models: None,
         });
-        let state = AppState::new("http://127.0.0.1:1").expect("state should build for tests");
+        let state = AppState::new().expect("state should build for tests");
 
         let first = limiter
             .check_and_consume(&state, Some(&decision))
@@ -565,7 +565,7 @@ mod tests {
             local_rejection: None,
             allowed_models: None,
         });
-        let state = AppState::new("http://127.0.0.1:1").expect("state should build for tests");
+        let state = AppState::new().expect("state should build for tests");
 
         let first = limiter
             .check_and_consume(&state, Some(&decision))

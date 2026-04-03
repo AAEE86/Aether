@@ -1,7 +1,12 @@
-use super::*;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-pub(super) const ADMIN_LDAP_RUST_BACKEND_DETAIL: &str =
-    "Admin LDAP routes require Rust maintenance backend";
+pub(super) const ADMIN_LDAP_DATA_UNAVAILABLE_DETAIL: &str = "Admin LDAP data unavailable";
 pub(super) const ADMIN_LDAP_TEST_FAILURE_MESSAGE: &str = "连接失败，请检查服务器地址、端口和凭据";
 
 pub(super) fn admin_ldap_default_search_filter() -> String {
@@ -100,7 +105,7 @@ pub(super) fn admin_ldap_bad_request_response(detail: impl Into<String>) -> Resp
 pub(super) fn admin_ldap_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_LDAP_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_LDAP_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }

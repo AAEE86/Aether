@@ -1,4 +1,4 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError};
 
 impl AppState {
     pub(crate) async fn find_user_auth_by_id(

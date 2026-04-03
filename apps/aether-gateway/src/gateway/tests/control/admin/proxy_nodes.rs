@@ -1,4 +1,18 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::proxy_nodes::{InMemoryProxyNodeRepository, StoredProxyNodeEvent};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, sample_proxy_node, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 #[tokio::test]
 async fn gateway_handles_admin_proxy_nodes_locally_with_trusted_admin_principal() {
@@ -38,7 +52,7 @@ async fn gateway_handles_admin_proxy_nodes_locally_with_trusted_admin_principal(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_proxy_node_repository_for_tests(
                 proxy_node_repository,
@@ -81,7 +95,7 @@ async fn gateway_handles_admin_proxy_nodes_locally_with_trusted_admin_principal(
 }
 
 #[tokio::test]
-async fn gateway_rejects_admin_proxy_nodes_maintenance_routes_locally() {
+async fn gateway_rejects_admin_proxy_nodes_unavailable_routes_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -96,8 +110,7 @@ async fn gateway_rejects_admin_proxy_nodes_maintenance_routes_locally() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
     let client = reqwest::Client::new();
 
@@ -122,7 +135,7 @@ async fn gateway_rejects_admin_proxy_nodes_maintenance_routes_locally() {
         .expect("json body should parse");
     assert_eq!(
         register_payload["detail"],
-        "Admin proxy nodes routes require Rust maintenance backend"
+        "Admin proxy nodes data unavailable"
     );
 
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
@@ -168,7 +181,7 @@ async fn gateway_handles_admin_proxy_node_events_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_proxy_node_repository_for_tests(
                 proxy_node_repository,

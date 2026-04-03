@@ -1,7 +1,7 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{body::Body, response::Response};
 
-const ADMIN_USERS_RUST_BACKEND_DETAIL: &str =
-    "Admin user management routes require Rust maintenance backend";
+const ADMIN_USERS_DATA_UNAVAILABLE_DETAIL: &str = "Admin user management data unavailable";
 
 #[path = "users/api_keys.rs"]
 mod users_api_keys;
@@ -35,7 +35,7 @@ use self::users_sessions::{
 };
 use self::users_shared::{
     admin_default_user_initial_gift, build_admin_users_bad_request_response,
-    build_admin_users_maintenance_response, build_admin_users_read_only_response,
+    build_admin_users_data_unavailable_response, build_admin_users_read_only_response,
     format_optional_datetime_iso8601, normalize_admin_optional_user_email,
     normalize_admin_user_role, normalize_admin_username, validate_admin_user_password,
     AdminCreateUserApiKeyRequest, AdminCreateUserRequest, AdminToggleUserApiKeyLockRequest,

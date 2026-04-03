@@ -1,4 +1,7 @@
-use super::*;
+use super::{AppState, GatewayError};
+
+use super::super::async_task;
+use super::super::async_task::video as video_tasks;
 
 impl AppState {
     pub(crate) async fn read_data_backed_video_task_response(
@@ -18,6 +21,18 @@ impl AppState {
     ) -> Result<Option<aether_data::repository::video_tasks::StoredVideoTask>, GatewayError> {
         self.data
             .find_video_task(aether_data::repository::video_tasks::VideoTaskLookupKey::Id(task_id))
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn find_video_task_by_short_id(
+        &self,
+        short_id: &str,
+    ) -> Result<Option<aether_data::repository::video_tasks::StoredVideoTask>, GatewayError> {
+        self.data
+            .find_video_task(
+                aether_data::repository::video_tasks::VideoTaskLookupKey::ShortId(short_id),
+            )
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()))
     }

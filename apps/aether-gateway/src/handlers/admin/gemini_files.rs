@@ -1,7 +1,13 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use aether_data::repository::provider_catalog::StoredProviderCatalogKey;
+use axum::body::{Body, Bytes};
+use axum::http::{self, Response};
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const ADMIN_GEMINI_FILES_RUST_BACKEND_DETAIL: &str =
-    "Admin Gemini Files routes require Rust maintenance backend";
+const ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL: &str = "Admin Gemini files data unavailable";
 const ADMIN_GEMINI_FILE_UPLOAD_DETAIL: &str = "Admin Gemini file upload requires Rust uploader";
 const ADMIN_GEMINI_FILES_DEFAULT_PAGE: usize = 1;
 const ADMIN_GEMINI_FILES_DEFAULT_PAGE_SIZE: usize = 20;
@@ -15,7 +21,7 @@ mod admin_gemini_files_upload;
 pub(crate) async fn maybe_build_local_admin_gemini_files_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -48,9 +54,7 @@ pub(crate) async fn maybe_build_local_admin_gemini_files_response(
     Ok(None)
 }
 
-fn admin_gemini_files_key_capable(
-    key: &aether_data::repository::provider_catalog::StoredProviderCatalogKey,
-) -> bool {
+fn admin_gemini_files_key_capable(key: &StoredProviderCatalogKey) -> bool {
     key.is_active
         && key
             .capabilities

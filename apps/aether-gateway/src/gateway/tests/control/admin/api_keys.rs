@@ -1,10 +1,23 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeyExportRecord, StoredAuthApiKeySnapshot,
 };
 use aether_data::repository::usage::{InMemoryUsageReadRepository, StoredRequestUsageAudit};
 use aether_data::repository::wallet::{InMemoryWalletRepository, StoredWalletSnapshot};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 fn admin_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     builder
@@ -187,18 +200,18 @@ async fn gateway_handles_admin_api_keys_list_locally_with_trusted_admin_principa
         sample_usage_row("usage-2", "req-2", "key-2", 120),
     ]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_wallet_and_usage_for_tests(
-                    auth_repository,
-                    Arc::new(InMemoryWalletRepository::seed(
-                        Vec::<StoredWalletSnapshot>::new(),
-                    )),
-                    usage_repository,
-                )
-                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_wallet_and_usage_for_tests(
+                auth_repository,
+                Arc::new(InMemoryWalletRepository::seed(
+                    Vec::<StoredWalletSnapshot>::new(),
+                )),
+                usage_repository,
+            )
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -251,16 +264,16 @@ async fn gateway_handles_admin_api_keys_detail_locally_with_trusted_admin_princi
         "usage-1", "req-1", "key-1", 150,
     )]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_wallet_and_usage_for_tests(
-                    auth_repository,
-                    wallet_repository,
-                    usage_repository,
-                )
-                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_wallet_and_usage_for_tests(
+                auth_repository,
+                wallet_repository,
+                usage_repository,
+            )
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -306,7 +319,7 @@ async fn gateway_handles_admin_api_keys_full_key_locally_with_trusted_admin_prin
         sample_standalone_wallet("key-1"),
     ]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_and_wallet_for_tests(
@@ -343,14 +356,14 @@ async fn gateway_handles_admin_api_keys_create_locally_with_trusted_admin_princi
         StoredAuthApiKeySnapshot,
     )>::new()));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
-                    Arc::clone(&repository),
-                )
-                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
+                Arc::clone(&repository),
+            )
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -415,14 +428,14 @@ async fn gateway_handles_admin_api_keys_update_locally_with_trusted_admin_princi
         )]),
     );
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
-                    Arc::clone(&repository),
-                )
-                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
+                Arc::clone(&repository),
+            )
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -471,14 +484,14 @@ async fn gateway_handles_admin_api_keys_toggle_locally_with_trusted_admin_princi
         )]),
     );
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
-                    Arc::clone(&repository),
-                )
-                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
+                Arc::clone(&repository),
+            )
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -517,14 +530,14 @@ async fn gateway_handles_admin_api_keys_delete_locally_with_trusted_admin_princi
         )]),
     );
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
-                    Arc::clone(&repository),
-                )
-                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
+                Arc::clone(&repository),
+            )
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 

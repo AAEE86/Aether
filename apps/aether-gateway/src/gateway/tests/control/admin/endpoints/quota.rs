@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository, StoredProviderCatalogKey,
+    StoredProviderCatalogProvider,
+};
+use axum::body::{to_bytes, Body};
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::super::{
+    build_router_with_state, build_state_with_execution_runtime_override, sample_endpoint,
+    sample_key, start_server,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 #[tokio::test]
 async fn gateway_refreshes_admin_provider_quota_locally_for_codex_with_trusted_admin_principal() {
@@ -109,16 +131,13 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_codex_with_trusted_a
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
-        .with_data_state_for_tests(
-            GatewayDataState::with_provider_catalog_repository_for_tests(
-                provider_catalog_repository.clone(),
-            )
-            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-        ),
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(
+                    provider_catalog_repository.clone(),
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -326,16 +345,13 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_kiro_with_trusted_ad
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
-        .with_data_state_for_tests(
-            GatewayDataState::with_provider_catalog_repository_for_tests(
-                provider_catalog_repository.clone(),
-            )
-            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-        ),
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(
+                    provider_catalog_repository.clone(),
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -543,16 +559,13 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
-        .with_data_state_for_tests(
-            GatewayDataState::with_provider_catalog_repository_for_tests(
-                provider_catalog_repository.clone(),
-            )
-            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-        ),
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(
+                    provider_catalog_repository.clone(),
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 

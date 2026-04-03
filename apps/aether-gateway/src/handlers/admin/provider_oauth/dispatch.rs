@@ -1,4 +1,14 @@
-pub(crate) use super::*;
+use super::provider_oauth_state::{
+    build_admin_provider_oauth_backend_unavailable_response,
+    build_admin_provider_oauth_supported_types_payload,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
 
 #[path = "dispatch/batch.rs"]
 mod dispatch_batch;
@@ -18,7 +28,7 @@ mod dispatch_tasks;
 pub(crate) async fn maybe_build_local_admin_provider_oauth_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);

@@ -1,5 +1,3 @@
-use super::*;
-
 mod body;
 mod path;
 mod transport;

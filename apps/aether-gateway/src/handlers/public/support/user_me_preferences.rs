@@ -1,4 +1,20 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+
+use super::{
+    build_auth_error_response, resolve_authenticated_local_user, AppState,
+    GatewayPublicRequestContext, PUBLIC_CAPABILITY_DEFINITIONS,
+};
+
+const USERS_ME_PREFERENCES_STORAGE_UNAVAILABLE_DETAIL: &str = "用户偏好设置存储暂不可用";
+const USERS_ME_MODEL_CAPABILITIES_STORAGE_UNAVAILABLE_DETAIL: &str = "用户模型能力配置存储暂不可用";
 
 pub(super) fn user_configurable_capability_names() -> BTreeSet<&'static str> {
     PUBLIC_CAPABILITY_DEFINITIONS
@@ -328,7 +344,11 @@ pub(super) async fn handle_users_me_preferences_put(
 
     match state.write_user_preferences(&preferences).await {
         Ok(Some(_)) => Json(json!({ "message": "偏好设置更新成功" })).into_response(),
-        Ok(None) => build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL),
+        Ok(None) => build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            USERS_ME_PREFERENCES_STORAGE_UNAVAILABLE_DETAIL,
+            false,
+        ),
         Err(err) => build_auth_error_response(
             http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("user preference update failed: {err:?}"),
@@ -371,7 +391,14 @@ pub(super) async fn handle_users_me_model_capabilities_put(
         .update_user_model_capability_settings(&auth.user.id, settings)
         .await
     {
-        Ok(value) => value,
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return build_auth_error_response(
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                USERS_ME_MODEL_CAPABILITIES_STORAGE_UNAVAILABLE_DETAIL,
+                false,
+            )
+        }
         Err(err) => {
             return build_auth_error_response(
                 http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -383,7 +410,7 @@ pub(super) async fn handle_users_me_model_capabilities_put(
 
     Json(json!({
         "message": "模型能力配置已更新",
-        "model_capability_settings": persisted.unwrap_or(serde_json::Value::Null),
+        "model_capability_settings": persisted,
     }))
     .into_response()
 }

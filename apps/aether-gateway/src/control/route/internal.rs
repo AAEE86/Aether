@@ -18,11 +18,11 @@ pub(super) fn classify_internal_route(
             "/api/internal/gateway/finalize-sync" => "finalize_sync",
             "/api/internal/gateway/execute-sync" => "execute_sync",
             "/api/internal/gateway/execute-stream" => "execute_stream",
-            _ => "legacy_gateway",
+            _ => "unhandled",
         };
         Some(classified(
             "internal_proxy",
-            "gateway_legacy",
+            "internal_gateway",
             route_kind,
             "",
             false,

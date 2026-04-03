@@ -1,4 +1,18 @@
-use super::*;
+pub(super) use super::{
+    build_unhandled_public_support_response, decrypt_catalog_secret_with_fallbacks,
+    escape_admin_email_template_html, ldap_module_config_is_valid, module_available_from_env,
+    read_admin_email_template_payload, render_admin_email_template_html, system_config_bool,
+    system_config_string, AppState, GatewayError, GatewayPublicRequestContext,
+};
+pub(super) use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+pub(super) use regex::Regex;
+use serde::Deserialize;
+pub(super) use serde_json::json;
 
 #[path = "auth_helpers.rs"]
 mod auth_helpers;
@@ -229,8 +243,10 @@ async fn handle_auth_login(
             }
         }
         _ => {
-            return build_public_support_maintenance_response(
-                "Non-local auth login requires Rust maintenance backend",
+            return build_auth_error_response(
+                http::StatusCode::BAD_REQUEST,
+                "不支持的认证类型",
+                false,
             )
         }
     };
@@ -238,14 +254,14 @@ async fn handle_auth_login(
     build_auth_login_success_response(state, headers, client_device_id, user).await
 }
 
-pub(super) async fn maybe_build_local_auth_legacy_response(
+pub(super) async fn maybe_build_local_auth_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
     request_body: Option<&axum::body::Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
-    if decision.route_family.as_deref() != Some("auth_legacy") {
+    if decision.route_family.as_deref() != Some("auth") {
         return None;
     }
 
@@ -278,8 +294,54 @@ pub(super) async fn maybe_build_local_auth_legacy_response(
         Some("logout") if request_context.request_path == "/api/auth/logout" => {
             Some(handle_auth_logout(state, request_context, headers).await)
         }
-        _ => Some(build_public_support_maintenance_response(
-            "Auth routes require Rust maintenance backend",
-        )),
+        _ => Some(build_unhandled_public_support_response(request_context)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{maybe_build_local_auth_response, AppState, GatewayPublicRequestContext};
+    use crate::gateway::GatewayControlDecision;
+    use axum::body::to_bytes;
+    use axum::http::{HeaderMap, Method, StatusCode, Uri};
+
+    fn request_context(method: Method, uri: &str, route_kind: &str) -> GatewayPublicRequestContext {
+        GatewayPublicRequestContext::from_request_parts(
+            "trace-auth-unhandled",
+            &method,
+            &uri.parse::<Uri>().expect("uri should parse"),
+            &HeaderMap::new(),
+            Some(GatewayControlDecision::synthetic(
+                uri,
+                Some("public_support".to_string()),
+                Some("auth".to_string()),
+                Some(route_kind.to_string()),
+                Some("user:auth".to_string()),
+            )),
+        )
+    }
+
+    #[tokio::test]
+    async fn auth_unhandled_route_returns_local_not_implemented_response() {
+        let state = AppState::new().expect("gateway should build");
+        let request_context = request_context(Method::POST, "/api/auth/login/history", "login");
+        let response =
+            maybe_build_local_auth_response(&state, &request_context, &HeaderMap::new(), None)
+                .await
+                .expect("auth handler should return response");
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+        assert_eq!(
+            payload["detail"],
+            "public support route not implemented in rust frontdoor"
+        );
+        assert_eq!(payload["route_family"], "auth");
+        assert_eq!(payload["route_kind"], "login");
+        assert_eq!(payload["request_path"], "/api/auth/login/history");
     }
 }

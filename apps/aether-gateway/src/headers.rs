@@ -21,8 +21,9 @@ pub(crate) fn header_value_u64(headers: &http::HeaderMap, key: &str) -> Option<u
 }
 
 pub(crate) fn should_skip_request_header(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        normalized.as_str(),
         "connection"
             | "keep-alive"
             | "proxy-authenticate"
@@ -33,9 +34,8 @@ pub(crate) fn should_skip_request_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "x-aether-execution-path"
-            | "x-aether-python-dependency-reason"
+            | "x-aether-dependency-reason"
             | "x-aether-control-execute-fallback"
-            | "x-aether-legacy-internal-gateway"
             | "x-aether-rate-limit-preflight"
     )
 }

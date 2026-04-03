@@ -1,5 +1,35 @@
-use super::*;
-use axum::response::IntoResponse;
+use std::sync::{Arc, Mutex};
+
+use aether_crypto::{
+    decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext,
+    DEVELOPMENT_ENCRYPTION_KEY,
+};
+use aether_data::repository::management_tokens::{
+    InMemoryManagementTokenRepository, ManagementTokenReadRepository,
+};
+use aether_data::repository::oauth_providers::{
+    InMemoryOAuthProviderRepository, OAuthProviderReadRepository,
+};
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
+};
+use axum::body::{to_bytes, Body, Bytes};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, delete, get, patch, post, put};
+use axum::{extract::Request, Json, Router};
+use http::{HeaderMap, StatusCode};
+use serde_json::json;
+
+use super::super::{
+    build_router_with_state, sample_endpoint, sample_key, sample_management_token,
+    sample_oauth_provider_config, sample_provider, start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_MANAGEMENT_TOKEN_ID_HEADER,
+    TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 fn sample_kiro_device_access_token(email: &str) -> String {
     use base64::Engine as _;
@@ -33,8 +63,7 @@ async fn gateway_handles_admin_provider_oauth_supported_types_locally_with_trust
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -123,7 +152,7 @@ async fn gateway_handles_admin_provider_oauth_device_authorize_locally_with_trus
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (oidc_url, oidc_handle) = start_server(oidc_server).await;
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
             provider_catalog_repository,
@@ -238,7 +267,7 @@ async fn gateway_handles_admin_provider_oauth_device_poll_locally_with_trusted_a
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (token_url, token_handle) = start_server(token_server).await;
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -380,7 +409,7 @@ async fn gateway_handles_admin_provider_oauth_start_key_locally_with_trusted_adm
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -436,7 +465,7 @@ async fn gateway_handles_admin_provider_oauth_start_provider_locally_with_truste
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -483,7 +512,7 @@ async fn gateway_handles_admin_provider_oauth_batch_import_task_status_locally_w
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_provider_oauth_batch_task_entry_for_tests(
                 "task-123",
@@ -636,7 +665,7 @@ async fn gateway_batch_imports_admin_provider_oauth_locally_with_trusted_admin_p
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (token_url, token_handle) = start_server(token_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -761,7 +790,7 @@ async fn gateway_starts_admin_provider_oauth_batch_import_task_locally_with_trus
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (token_url, token_handle) = start_server(token_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -919,7 +948,7 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (token_url, token_handle) = start_server(token_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1096,7 +1125,7 @@ async fn gateway_completes_admin_provider_oauth_provider_locally_with_trusted_ad
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (token_url, token_handle) = start_server(token_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1278,7 +1307,7 @@ async fn gateway_imports_admin_provider_oauth_refresh_token_locally_with_trusted
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (token_url, token_handle) = start_server(token_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1427,7 +1456,7 @@ async fn gateway_batch_imports_admin_provider_oauth_kiro_locally_with_trusted_ad
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (refresh_url, refresh_handle) = start_server(refresh_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1553,7 +1582,7 @@ async fn gateway_starts_admin_provider_oauth_kiro_batch_import_task_locally_with
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (refresh_url, refresh_handle) = start_server(refresh_server).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1711,7 +1740,7 @@ async fn gateway_refreshes_admin_provider_oauth_key_locally_with_trusted_admin_p
             )],
         );
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1806,7 +1835,7 @@ async fn gateway_refreshes_admin_provider_oauth_key_locally_with_trusted_admin_p
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_provider_oauth_maintenance_routes_locally_with_trusted_admin_principal(
+async fn gateway_handles_admin_provider_oauth_unavailable_routes_locally_with_trusted_admin_principal(
 ) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -1819,8 +1848,7 @@ async fn gateway_handles_admin_provider_oauth_maintenance_routes_locally_with_tr
     }));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let client = reqwest::Client::new();
@@ -1843,10 +1871,7 @@ async fn gateway_handles_admin_provider_oauth_maintenance_routes_locally_with_tr
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let payload: serde_json::Value = response.json().await.expect("json body should parse");
-        assert_eq!(
-            payload["detail"],
-            "Admin provider OAuth requires Rust maintenance backend"
-        );
+        assert_eq!(payload["detail"], "Admin provider OAuth data unavailable");
     }
 
     let refresh_response = client
@@ -1931,8 +1956,7 @@ async fn gateway_handles_admin_oauth_supported_types_locally_with_trusted_admin_
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -1977,7 +2001,7 @@ async fn gateway_handles_admin_oauth_provider_list_locally_with_trusted_admin_pr
     ]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_oauth_provider_repository_for_tests(
                 repository,
@@ -2025,7 +2049,7 @@ async fn gateway_upserts_admin_oauth_provider_locally_with_trusted_admin_princip
     let repository = Arc::new(InMemoryOAuthProviderRepository::default());
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_oauth_provider_repository_for_tests(
                 repository.clone(),
@@ -2095,7 +2119,7 @@ async fn gateway_deletes_admin_oauth_provider_locally_with_trusted_admin_princip
     ]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_oauth_provider_repository_for_tests(
                 repository.clone(),
@@ -2148,7 +2172,7 @@ async fn gateway_handles_admin_management_token_detail_locally_with_trusted_admi
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_management_token_repository_for_tests(repository),
@@ -2200,7 +2224,7 @@ async fn gateway_deletes_admin_management_token_locally_with_trusted_admin_princ
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_management_token_repository_for_tests(repository.clone()),
@@ -2257,7 +2281,7 @@ async fn gateway_toggles_admin_management_token_locally_with_trusted_admin_princ
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_management_token_repository_for_tests(repository.clone()),
@@ -2318,7 +2342,7 @@ async fn gateway_rejects_management_token_principal_for_admin_management_token_r
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_management_token_repository_for_tests(repository),

@@ -8,9 +8,7 @@ pub(crate) const FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 pub(crate) const FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub(crate) const GATEWAY_HEADER: &str = "x-aether-gateway";
 pub(crate) const EXECUTION_PATH_HEADER: &str = "x-aether-execution-path";
-pub(crate) const PYTHON_DEPENDENCY_REASON_HEADER: &str = "x-aether-python-dependency-reason";
-pub(crate) const LOCAL_LEGACY_EXECUTION_RUNTIME_MISS_REASON_HEADER: &str =
-    "x-aether-local-executor-miss-reason";
+pub(crate) const DEPENDENCY_REASON_HEADER: &str = "x-aether-dependency-reason";
 pub(crate) const LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER: &str =
     "x-aether-local-execution-runtime-miss-reason";
 pub(crate) const TUNNEL_AFFINITY_FORWARDED_BY_HEADER: &str =
@@ -18,28 +16,24 @@ pub(crate) const TUNNEL_AFFINITY_FORWARDED_BY_HEADER: &str =
 pub(crate) const TUNNEL_AFFINITY_OWNER_INSTANCE_HEADER: &str =
     "x-aether-tunnel-affinity-owner-instance-id";
 pub(crate) const EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH: &str = "public_proxy_passthrough";
-pub(crate) const LEGACY_EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS: &str =
-    "public_proxy_after_executor_miss";
-pub(crate) const EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS: &str =
-    "public_proxy_after_execution_runtime_miss";
+pub(crate) const EXECUTION_PATH_LOCAL_PROXY_PASSTHROUGH_REMOVED: &str =
+    "local_proxy_passthrough_removed";
 pub(crate) const EXECUTION_PATH_EXECUTION_RUNTIME_SYNC: &str = "execution_runtime_sync";
 pub(crate) const EXECUTION_PATH_EXECUTION_RUNTIME_STREAM: &str = "execution_runtime_stream";
 pub(crate) const EXECUTION_PATH_CONTROL_EXECUTE_SYNC: &str = "control_execute_sync";
 pub(crate) const EXECUTION_PATH_CONTROL_EXECUTE_STREAM: &str = "control_execute_stream";
-pub(crate) const LEGACY_EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS: &str = "local_executor_miss";
 pub(crate) const EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS: &str = "local_execution_runtime_miss";
 pub(crate) const EXECUTION_PATH_LOCAL_AUTH_DENIED: &str = "local_auth_denied";
 pub(crate) const EXECUTION_PATH_LOCAL_RATE_LIMITED: &str = "local_rate_limited";
+pub(crate) const EXECUTION_PATH_LOCAL_ROUTE_NOT_FOUND: &str = "local_route_not_found";
 pub(crate) const EXECUTION_PATH_LOCAL_OVERLOADED: &str = "local_overloaded";
 pub(crate) const EXECUTION_PATH_DISTRIBUTED_OVERLOADED: &str = "distributed_overloaded";
+pub(crate) const EXECUTION_PATH_LOCAL_AI_PUBLIC: &str = "local_ai_public";
 pub(crate) const CONTROL_ROUTE_CLASS_HEADER: &str = "x-aether-control-route-class";
 pub(crate) const CONTROL_ROUTE_FAMILY_HEADER: &str = "x-aether-control-route-family";
 pub(crate) const CONTROL_ROUTE_KIND_HEADER: &str = "x-aether-control-route-kind";
-pub(crate) const CONTROL_LEGACY_EXECUTION_RUNTIME_HEADER: &str =
-    "x-aether-control-executor-candidate";
 pub(crate) const CONTROL_EXECUTION_RUNTIME_HEADER: &str =
     "x-aether-control-execution-runtime-candidate";
-pub(crate) const CONTROL_LEGACY_EXECUTION_RUNTIME_CANDIDATE_KEY: &str = "executor_candidate";
 pub(crate) const CONTROL_EXECUTION_RUNTIME_CANDIDATE_KEY: &str = "execution_runtime_candidate";
 pub(crate) const CONTROL_REQUEST_ID_HEADER: &str = "x-aether-control-request-id";
 pub(crate) const CONTROL_CANDIDATE_ID_HEADER: &str = "x-aether-control-candidate-id";
@@ -48,14 +42,6 @@ pub(crate) const CONTROL_EXECUTED_HEADER: &str = "x-aether-control-executed";
 pub(crate) const CONTROL_ACTION_HEADER: &str = "x-aether-control-action";
 pub(crate) const CONTROL_ACTION_PROXY_PUBLIC: &str = "proxy_public";
 pub(crate) const CONTROL_EXECUTE_FALLBACK_HEADER: &str = "x-aether-control-execute-fallback";
-pub(crate) const LEGACY_INTERNAL_GATEWAY_HEADER: &str = "x-aether-legacy-internal-gateway";
-pub(crate) const LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS: &str = "scheduled_for_removal";
-pub(crate) const LEGACY_INTERNAL_GATEWAY_SUNSET_DATE: &str = "2026-06-01";
-pub(crate) const LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE: &str = "Mon, 01 Jun 2026 00:00:00 GMT";
-pub(crate) const LEGACY_INTERNAL_GATEWAY_PHASEOUT_HEADER: &str =
-    "x-aether-legacy-internal-gateway-phaseout";
-pub(crate) const LEGACY_INTERNAL_GATEWAY_SUNSET_DATE_HEADER: &str =
-    "x-aether-legacy-internal-gateway-sunset-date";
 pub(crate) const TRUSTED_AUTH_USER_ID_HEADER: &str = "x-aether-auth-user-id";
 pub(crate) const TRUSTED_AUTH_API_KEY_ID_HEADER: &str = "x-aether-auth-api-key-id";
 pub(crate) const TRUSTED_AUTH_BALANCE_HEADER: &str = "x-aether-auth-balance-remaining";
@@ -69,47 +55,8 @@ pub(crate) const TRUSTED_RATE_LIMIT_PREFLIGHT_HEADER: &str = "x-aether-rate-limi
 
 pub(crate) const FRONTDOOR_REPLACEABLE_ROUTE_GROUPS: &[&str] = &["frontdoor_compat_router"];
 pub(crate) const FRONTDOOR_REPLACEABLE_MIDDLEWARE_GROUPS: &[&str] = &["cors"];
-// These manifest/reporting inventories intentionally remain explicit instead of being generated
-// from api::ai::registry router mounts. The manifest describes operational compatibility surfaces
-// and wildcard ownership, which is related to but not identical to the concrete axum route list.
-pub(crate) const FRONTDOOR_COMPAT_ROUTE_PATTERNS: &[&str] = &[
-    "/v1/chat/completions",
-    "/v1/messages",
-    "/v1/messages/count_tokens",
-    "/v1/responses",
-    "/v1/responses/compact",
-    "/v1/videos*",
-    "/v1/models/{model}:generateContent",
-    "/v1/models/{model}:streamGenerateContent",
-    "/v1/models/{model}:predictLongRunning",
-    "/v1beta/models/{model}:generateContent",
-    "/v1beta/models/{model}:streamGenerateContent",
-    "/v1beta/models/{model}:predictLongRunning",
-    "/v1beta/models/{model}/operations/{id}",
-    "/v1beta/operations*",
-    "/upload/v1beta/files",
-    "/v1beta/files*",
-];
-pub(crate) const PYTHON_ONLY_ROUTE_GROUPS: &[&str] = &[
-    "auth_router",
-    "python_admin_router",
-    "me_router",
-    "wallet_router",
-    "payment_router",
-    "announcement_router",
-    "dashboard_router",
-    "python_public_support_router",
-    "monitoring_router",
-    "python_internal_router",
-];
-pub(crate) const PYTHON_ONLY_MIDDLEWARE_GROUPS: &[&str] = &["plugin_middleware"];
-pub(crate) const PYTHON_ONLY_RUNTIME_COMPONENTS: &[&str] = &[
-    "python_host_lifespan",
-    "plugin_and_module_bootstrap",
-    "background_workers",
-];
-pub(crate) const LEGACY_GATEWAY_BRIDGE_ROUTE_GROUPS: &[&str] = &["legacy_gateway_bridge_router"];
-pub(crate) const LEGACY_GATEWAY_BRIDGE_PATH_PREFIXES: &[&str] = &["/api/internal/gateway"];
+pub(crate) const INTERNAL_GATEWAY_ROUTE_GROUPS: &[&str] = &["internal_gateway_router"];
+pub(crate) const INTERNAL_GATEWAY_PATH_PREFIXES: &[&str] = &["/api/internal/gateway"];
 pub(crate) const RUST_FRONTDOOR_OWNED_ROUTE_PATTERNS: &[&str] = &[
     FRONTDOOR_MANIFEST_PATH,
     INTERNAL_FRONTDOOR_MANIFEST_PATH,

@@ -1,5 +1,22 @@
-use super::adaptive_shared::*;
-use super::*;
+use super::super::build_proxy_error_response;
+use super::adaptive_shared::{
+    admin_adaptive_adjustment_items, admin_adaptive_dispatcher_not_found_response,
+    admin_adaptive_effective_limit, admin_adaptive_find_key, admin_adaptive_key_id_from_path,
+    admin_adaptive_key_not_found_response, admin_adaptive_key_payload,
+    admin_adaptive_load_candidate_keys,
+};
+use crate::gateway::handlers::{query_param_value, unix_secs_to_rfc3339};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+const ADMIN_ADAPTIVE_DATA_UNAVAILABLE_DETAIL: &str = "Admin adaptive data unavailable";
 
 #[derive(Debug, Deserialize)]
 struct AdminAdaptiveToggleModeRequest {
@@ -11,7 +28,7 @@ struct AdminAdaptiveToggleModeRequest {
 pub(super) async fn maybe_build_local_admin_adaptive_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -24,10 +41,10 @@ pub(super) async fn maybe_build_local_admin_adaptive_response(
     if !state.has_provider_catalog_data_reader() {
         return Ok(Some(build_proxy_error_response(
             http::StatusCode::SERVICE_UNAVAILABLE,
-            "maintenance_mode",
-            "Admin adaptive routes require Rust maintenance backend",
+            "data_unavailable",
+            ADMIN_ADAPTIVE_DATA_UNAVAILABLE_DETAIL,
             Some(json!({
-                "error": "Admin adaptive routes require Rust maintenance backend",
+                "error": ADMIN_ADAPTIVE_DATA_UNAVAILABLE_DETAIL,
             })),
         )));
     }
@@ -169,10 +186,10 @@ pub(super) async fn maybe_build_local_admin_adaptive_response(
     if !state.has_provider_catalog_data_writer() {
         return Ok(Some(build_proxy_error_response(
             http::StatusCode::SERVICE_UNAVAILABLE,
-            "maintenance_mode",
-            "Admin adaptive routes require Rust maintenance backend",
+            "data_unavailable",
+            ADMIN_ADAPTIVE_DATA_UNAVAILABLE_DETAIL,
             Some(json!({
-                "error": "Admin adaptive routes require Rust maintenance backend",
+                "error": ADMIN_ADAPTIVE_DATA_UNAVAILABLE_DETAIL,
             })),
         )));
     }

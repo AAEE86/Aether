@@ -1,9 +1,22 @@
-use super::*;
+use crate::gateway::handlers::public::{
+    admin_module_by_name, admin_module_name_from_enabled_path, admin_module_name_from_status_path,
+    build_admin_module_runtime_state, build_admin_module_status_payload,
+    build_admin_module_validation_result, build_admin_modules_status_payload,
+    module_available_from_env, AdminSetModuleEnabledRequest,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn maybe_build_local_admin_core_modules_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);

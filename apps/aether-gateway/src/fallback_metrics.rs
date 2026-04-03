@@ -3,7 +3,6 @@ use std::sync::Mutex;
 
 use aether_runtime::{MetricKind, MetricLabel, MetricSample};
 
-use crate::gateway::constants::LEGACY_INTERNAL_GATEWAY_SUNSET_DATE;
 use crate::gateway::GatewayControlDecision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -12,10 +11,7 @@ pub(crate) enum GatewayFallbackMetricKind {
     PlanFallback,
     ControlExecuteFallback,
     LocalExecutionRuntimeMiss,
-    PublicProxyAfterExecutionRuntimeMiss,
-    PublicProxyPassthrough,
-    LegacyInternalBridge,
-    PythonExecuteEmergency,
+    RemoteExecuteEmergency,
 }
 
 impl GatewayFallbackMetricKind {
@@ -25,12 +21,7 @@ impl GatewayFallbackMetricKind {
             Self::PlanFallback => "plan_fallback_total",
             Self::ControlExecuteFallback => "control_execute_fallback_total",
             Self::LocalExecutionRuntimeMiss => "local_execution_runtime_miss_total",
-            Self::PublicProxyAfterExecutionRuntimeMiss => {
-                "public_proxy_after_execution_runtime_miss_total"
-            }
-            Self::PublicProxyPassthrough => "public_proxy_passthrough_total",
-            Self::LegacyInternalBridge => "legacy_internal_bridge_total",
-            Self::PythonExecuteEmergency => "python_execute_emergency_total",
+            Self::RemoteExecuteEmergency => "remote_execute_emergency_total",
         }
     }
 
@@ -44,25 +35,10 @@ impl GatewayFallbackMetricKind {
                 "Number of requests that fell back to Python control execution."
             }
             Self::LocalExecutionRuntimeMiss => {
-                "Number of requests that were terminated locally after execution runtime miss because Python fallback was removed."
+                "Number of requests that were terminated locally after execution runtime miss because no proxy fallback exists."
             }
-            Self::PublicProxyAfterExecutionRuntimeMiss => {
-                "Number of requests that fell through to Python public proxy after execution runtime miss."
-            }
-            Self::PublicProxyPassthrough => {
-                "Number of requests that were proxied to Python public routes without local execution."
-            }
-            Self::LegacyInternalBridge => {
-                Box::leak(
-                    format!(
-                        "Number of requests that still used the legacy internal gateway bridge scheduled to sunset on {}.",
-                        LEGACY_INTERNAL_GATEWAY_SUNSET_DATE
-                    )
-                    .into_boxed_str(),
-                )
-            }
-            Self::PythonExecuteEmergency => {
-                "Number of requests that used Python emergency execution fallback."
+            Self::RemoteExecuteEmergency => {
+                "Number of requests that used remote emergency execution fallback."
             }
         }
     }
@@ -75,8 +51,7 @@ pub(crate) enum GatewayFallbackReason {
     SchedulerDecisionUnsupported,
     ExecutionRuntimeMiss,
     ProxyPassthrough,
-    PythonFallbackRemoved,
-    LegacyInternalGateway,
+    LocalExecutionPathRequired,
     ControlExecuteEmergency,
     ExecutionRuntimeMissing,
 }
@@ -89,8 +64,7 @@ impl GatewayFallbackReason {
             Self::SchedulerDecisionUnsupported => "scheduler_decision_unsupported",
             Self::ExecutionRuntimeMiss => "execution_runtime_miss",
             Self::ProxyPassthrough => "proxy_passthrough",
-            Self::PythonFallbackRemoved => "python_fallback_removed",
-            Self::LegacyInternalGateway => "legacy_internal_gateway",
+            Self::LocalExecutionPathRequired => "local_execution_path_required",
             Self::ControlExecuteEmergency => "control_execute_emergency",
             Self::ExecutionRuntimeMissing => "execution_runtime_missing",
         }

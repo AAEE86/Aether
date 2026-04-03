@@ -1,4 +1,19 @@
-use super::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
+
+use aether_runtime::{ConcurrencyGate, DistributedConcurrencyGate};
+
+use super::async_task::{VideoTaskPollerConfig, VideoTaskService};
+use super::error::GatewayError;
+use super::fallback_metrics;
+use super::gateway_cache::{
+    AuthApiKeyLastUsedCache, AuthContextCache, DirectPlanBypassCache, SchedulerAffinityCache,
+};
+use super::gateway_data::GatewayDataState;
+use super::rate_limit::FrontdoorUserRpmLimiter;
+use super::{provider_transport, usage};
 #[path = "state/catalog.rs"]
 mod catalog;
 #[path = "state/core.rs"]
@@ -338,9 +353,8 @@ impl FrontdoorCorsConfig {
 
 #[derive(Debug, Clone)]
 pub struct AppState {
-    pub(in crate::gateway) upstream_base_url: String,
     #[cfg(test)]
-    pub(in crate::gateway) test_remote_execution_runtime_base_url: Option<String>,
+    pub(in crate::gateway) execution_runtime_override_base_url: Option<String>,
     pub(in crate::gateway) data: Arc<GatewayDataState>,
     pub(in crate::gateway) usage_runtime: Arc<usage::UsageRuntime>,
     pub(in crate::gateway) video_tasks: Arc<VideoTaskService>,
@@ -427,10 +441,6 @@ pub struct AppState {
     #[cfg(test)]
     pub(in crate::gateway) provider_oauth_token_url_overrides:
         Arc<StdMutex<HashMap<String, String>>>,
-}
-
-pub(super) fn normalize_upstream_base_url(upstream_base_url: String) -> String {
-    upstream_base_url.trim_end_matches('/').to_string()
 }
 
 pub(super) fn provider_transport_snapshot_looks_refreshed(

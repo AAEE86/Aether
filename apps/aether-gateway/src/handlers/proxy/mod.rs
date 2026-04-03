@@ -1,30 +1,64 @@
-pub(crate) use super::*;
-
 mod local;
 
 use self::local::{
     maybe_build_local_admin_proxy_response, maybe_build_local_internal_proxy_response,
 };
-use super::internal::{
-    attach_legacy_internal_gateway_deprecation_headers, resolve_local_proxy_execution_path,
-};
+use super::internal::resolve_local_proxy_execution_path;
 pub(crate) use super::public::matches_model_mapping_for_models;
 use crate::gateway::ai_pipeline::{finalize as ai_finalize, runtime as ai_runtime};
+use crate::gateway::api::response::{
+    build_local_auth_rejection_response, build_local_http_error_response,
+    build_local_overloaded_response, build_local_user_rpm_limited_response,
+};
+use crate::gateway::constants::{
+    DEPENDENCY_REASON_HEADER, EXECUTION_PATH_CONTROL_EXECUTE_STREAM,
+    EXECUTION_PATH_CONTROL_EXECUTE_SYNC, EXECUTION_PATH_DISTRIBUTED_OVERLOADED,
+    EXECUTION_PATH_EXECUTION_RUNTIME_STREAM, EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
+    EXECUTION_PATH_LOCAL_AI_PUBLIC, EXECUTION_PATH_LOCAL_AUTH_DENIED,
+    EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS, EXECUTION_PATH_LOCAL_OVERLOADED,
+    EXECUTION_PATH_LOCAL_PROXY_PASSTHROUGH_REMOVED, EXECUTION_PATH_LOCAL_RATE_LIMITED,
+    EXECUTION_PATH_LOCAL_ROUTE_NOT_FOUND, EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
+    FORWARDED_FOR_HEADER, FORWARDED_HOST_HEADER, FORWARDED_PROTO_HEADER, GATEWAY_HEADER,
+    LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER, TRACE_ID_HEADER,
+    TRUSTED_AUTH_ACCESS_ALLOWED_HEADER, TRUSTED_AUTH_API_KEY_ID_HEADER,
+    TRUSTED_AUTH_BALANCE_HEADER, TRUSTED_AUTH_USER_ID_HEADER, TUNNEL_AFFINITY_FORWARDED_BY_HEADER,
+    TUNNEL_AFFINITY_OWNER_INSTANCE_HEADER,
+};
+use crate::gateway::handlers::{
+    allows_control_execute_emergency, local_proxy_route_requires_buffered_body,
+    request_enables_control_execute, request_model_local_rejection,
+    should_buffer_request_for_local_auth, should_strip_forwarded_provider_credential_header,
+    should_strip_forwarded_trusted_admin_header, trusted_auth_local_rejection,
+};
+use crate::gateway::headers::{extract_or_generate_trace_id, should_skip_request_header};
+use crate::gateway::{
+    maybe_execute_via_control, AppState, FrontdoorUserRpmOutcome, GatewayControlDecision,
+    GatewayError, GatewayFallbackMetricKind, GatewayFallbackReason, GatewayPublicRequestContext,
+};
+use axum::body::{to_bytes, Body, Bytes};
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{self, header::HeaderName, header::HeaderValue, Response};
+use chrono::Utc;
+use std::time::Instant;
+use tracing::warn;
 
-const OPENAI_CHAT_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
-const OPENAI_RESPONSES_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "OpenAI responses execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
-const OPENAI_COMPACT_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "OpenAI compact execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
-const OPENAI_VIDEO_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "OpenAI video execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
-const CLAUDE_MESSAGES_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "Claude messages execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
-const GEMINI_PUBLIC_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "Gemini public execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
-const GEMINI_FILES_PYTHON_FALLBACK_REMOVED_DETAIL: &str =
-    "Gemini files execution runtime miss did not match a Rust execution path, and Python fallback has been removed";
+const OPENAI_CHAT_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "OpenAI chat execution runtime miss did not match a Rust execution path";
+const OPENAI_RESPONSES_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "OpenAI responses execution runtime miss did not match a Rust execution path";
+const OPENAI_COMPACT_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "OpenAI compact execution runtime miss did not match a Rust execution path";
+const OPENAI_VIDEO_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "OpenAI video execution runtime miss did not match a Rust execution path";
+const CLAUDE_MESSAGES_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "Claude messages execution runtime miss did not match a Rust execution path";
+const GEMINI_PUBLIC_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "Gemini public execution runtime miss did not match a Rust execution path";
+const GEMINI_FILES_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
+    "Gemini files execution runtime miss did not match a Rust execution path";
+const LOCAL_ROUTE_NOT_FOUND_DETAIL: &str = "Route not found";
+const LOCAL_PROXY_PASSTHROUGH_REMOVED_DETAIL: &str =
+    "Route matched a removed compatibility passthrough; implement it in Rust or retire the route";
 const EXECUTION_PATH_TUNNEL_AFFINITY_FORWARD: &str = "tunnel_affinity_forward";
 
 fn execution_runtime_candidate_header_value(decision: &GatewayControlDecision) -> &'static str {
@@ -311,13 +345,11 @@ pub(crate) async fn proxy_request(
     let request_path_and_query = request_context.request_path_and_query();
     let path_and_query = request_path_and_query.as_str();
     let control_decision = request_context.control_decision.as_ref();
-    let legacy_internal_gateway_allowed = request_enables_control_execute(&parts.headers);
     if let Some(response) = maybe_build_local_internal_proxy_response(
         &state,
         &request_context,
         &remote_addr,
         local_proxy_body.as_ref(),
-        legacy_internal_gateway_allowed,
     )
     .await?
     {
@@ -349,6 +381,56 @@ pub(crate) async fn proxy_request(
             request_permit.take(),
         ));
     }
+    if request_context
+        .control_decision
+        .as_ref()
+        .is_some_and(|decision| {
+            decision.route_class.as_deref() == Some("admin_proxy")
+                && decision.admin_principal.is_none()
+        })
+    {
+        let response = super::admin::build_admin_proxy_auth_required_response(&request_context);
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
+            &started_at,
+            request_permit.take(),
+        ));
+    }
+    if request_context
+        .control_decision
+        .as_ref()
+        .is_some_and(|decision| {
+            decision.route_class.as_deref() == Some("admin_proxy")
+                && decision.admin_principal.is_some()
+        })
+    {
+        let response = super::admin::build_unhandled_admin_proxy_response(&request_context);
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
+            &started_at,
+            request_permit.take(),
+        ));
+    }
+    if request_context.request_path.starts_with("/api/admin/") {
+        let response = super::admin::build_unhandled_admin_proxy_response(&request_context);
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
+            &started_at,
+            request_permit.take(),
+        ));
+    }
     if let Some(response) = super::public::maybe_build_local_public_support_response(
         &state,
         &request_context,
@@ -369,6 +451,23 @@ pub(crate) async fn proxy_request(
             request_permit.take(),
         ));
     }
+    if request_context
+        .control_decision
+        .as_ref()
+        .and_then(|decision| decision.route_class.as_deref())
+        == Some("public_support")
+    {
+        let response = super::public::build_unhandled_public_support_response(&request_context);
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
+            &started_at,
+            request_permit.take(),
+        ));
+    }
     if let Some(buffered_body) = local_proxy_body {
         request_body = Some(Body::from(buffered_body));
     }
@@ -378,9 +477,13 @@ pub(crate) async fn proxy_request(
                 && decision.route_class.as_deref() == Some("ai_public")
         })
         .unwrap_or(false);
+    let should_buffer_for_local_ai_public =
+        super::public::ai_public_local_requires_buffered_body(&request_context);
     let should_buffer_for_local_auth =
         should_buffer_request_for_local_auth(control_decision, &parts.headers);
-    let should_buffer_body = should_try_control_execute || should_buffer_for_local_auth;
+    let should_buffer_body = should_try_control_execute
+        || should_buffer_for_local_auth
+        || should_buffer_for_local_ai_public;
 
     let allow_control_execute_fallback = should_try_control_execute
         && control_decision.is_some_and(allows_control_execute_emergency)
@@ -474,107 +577,43 @@ pub(crate) async fn proxy_request(
         ));
     }
 
-    let upstream_path_and_query =
-        sanitize_upstream_path_and_query(control_decision, path_and_query);
-    let target_url = format!("{}{}", state.upstream_base_url, upstream_path_and_query);
-    let mut upstream_request = state.client.request(method.clone(), &target_url);
-    for (name, value) in &parts.headers {
-        if should_skip_request_header(name.as_str()) {
-            continue;
-        }
-        // Once Rust has produced trusted auth headers, Python should not need the raw
-        // provider credential anymore. Keep the bridge boundary explicit.
-        if should_strip_forwarded_provider_credential_header(control_decision, name) {
-            continue;
-        }
-        if should_strip_forwarded_trusted_admin_header(control_decision, name) {
-            continue;
-        }
-        upstream_request = upstream_request.header(name, value);
+    if let Some(response) = super::public::maybe_build_local_ai_public_response(
+        &state,
+        &request_context,
+        buffered_body.as_ref(),
+    )
+    .await
+    {
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_LOCAL_AI_PUBLIC,
+            &started_at,
+            request_permit.take(),
+        ));
     }
 
-    if let Some(host) = request_context.host_header.as_deref() {
-        if !parts.headers.contains_key(FORWARDED_HOST_HEADER) {
-            upstream_request = upstream_request.header(FORWARDED_HOST_HEADER, host);
-        }
+    if control_decision.is_none() {
+        let response = build_local_http_error_response(
+            &trace_id,
+            None,
+            http::StatusCode::NOT_FOUND,
+            LOCAL_ROUTE_NOT_FOUND_DETAIL,
+        )?;
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_LOCAL_ROUTE_NOT_FOUND,
+            &started_at,
+            request_permit.take(),
+        ));
     }
 
-    if !parts.headers.contains_key(FORWARDED_FOR_HEADER) {
-        upstream_request =
-            upstream_request.header(FORWARDED_FOR_HEADER, remote_addr.ip().to_string());
-    }
-
-    if !parts.headers.contains_key(FORWARDED_PROTO_HEADER) {
-        upstream_request = upstream_request.header(FORWARDED_PROTO_HEADER, "http");
-    }
-
-    if !parts.headers.contains_key(TRACE_ID_HEADER) {
-        upstream_request = upstream_request.header(TRACE_ID_HEADER, &trace_id);
-    }
-
-    if let Some(decision) = control_decision {
-        let execution_runtime_candidate = execution_runtime_candidate_header_value(decision);
-        upstream_request = upstream_request
-            .header(
-                CONTROL_ROUTE_CLASS_HEADER,
-                decision.route_class.as_deref().unwrap_or("passthrough"),
-            )
-            .header(
-                CONTROL_LEGACY_EXECUTION_RUNTIME_HEADER,
-                execution_runtime_candidate,
-            )
-            .header(
-                CONTROL_EXECUTION_RUNTIME_HEADER,
-                execution_runtime_candidate,
-            );
-        if let Some(route_family) = decision.route_family.as_deref() {
-            upstream_request = upstream_request.header(CONTROL_ROUTE_FAMILY_HEADER, route_family);
-        }
-        if let Some(route_kind) = decision.route_kind.as_deref() {
-            upstream_request = upstream_request.header(CONTROL_ROUTE_KIND_HEADER, route_kind);
-        }
-        if let Some(endpoint_signature) = decision.auth_endpoint_signature.as_deref() {
-            upstream_request =
-                upstream_request.header(CONTROL_ENDPOINT_SIGNATURE_HEADER, endpoint_signature);
-        }
-        if let Some(auth_context) = decision.auth_context.as_ref() {
-            upstream_request = upstream_request
-                .header(TRUSTED_AUTH_USER_ID_HEADER, &auth_context.user_id)
-                .header(TRUSTED_AUTH_API_KEY_ID_HEADER, &auth_context.api_key_id)
-                .header(
-                    TRUSTED_AUTH_ACCESS_ALLOWED_HEADER,
-                    if auth_context.access_allowed {
-                        "true"
-                    } else {
-                        "false"
-                    },
-                );
-            if let Some(balance_remaining) = auth_context.balance_remaining {
-                upstream_request = upstream_request
-                    .header(TRUSTED_AUTH_BALANCE_HEADER, balance_remaining.to_string());
-            }
-        }
-        if let Some(admin_principal) = decision.admin_principal.as_ref() {
-            upstream_request = upstream_request
-                .header(TRUSTED_ADMIN_USER_ID_HEADER, &admin_principal.user_id)
-                .header(TRUSTED_ADMIN_USER_ROLE_HEADER, &admin_principal.user_role);
-            if let Some(session_id) = admin_principal.session_id.as_deref() {
-                upstream_request =
-                    upstream_request.header(TRUSTED_ADMIN_SESSION_ID_HEADER, session_id);
-            }
-            if let Some(token_id) = admin_principal.management_token_id.as_deref() {
-                upstream_request =
-                    upstream_request.header(TRUSTED_ADMIN_MANAGEMENT_TOKEN_ID_HEADER, token_id);
-            }
-        }
-    }
-    if matches!(rate_limit_outcome, FrontdoorUserRpmOutcome::Allowed) {
-        upstream_request = upstream_request.header(TRUSTED_RATE_LIMIT_PREFLIGHT_HEADER, "true");
-    }
-
-    upstream_request = upstream_request.header(GATEWAY_HEADER, "rust-phase3b");
-
-    let upstream_response = if should_try_control_execute {
+    if should_try_control_execute {
         let buffered_body = buffered_body
             .as_ref()
             .expect("execution runtime/control auth gate should have buffered request body");
@@ -668,7 +707,7 @@ pub(crate) async fn proxy_request(
                     reason,
                 );
                 state.record_fallback_metric(
-                    GatewayFallbackMetricKind::PythonExecuteEmergency,
+                    GatewayFallbackMetricKind::RemoteExecuteEmergency,
                     control_decision,
                     None,
                     Some(control_execution_path),
@@ -677,7 +716,7 @@ pub(crate) async fn proxy_request(
                 let mut control_response = control_response;
                 state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
                 control_response.headers_mut().insert(
-                    HeaderName::from_static(PYTHON_DEPENDENCY_REASON_HEADER),
+                    HeaderName::from_static(DEPENDENCY_REASON_HEADER),
                     HeaderValue::from_static(reason.as_label_value()),
                 );
                 return Ok(finalize_gateway_response_with_context(
@@ -692,158 +731,76 @@ pub(crate) async fn proxy_request(
             }
         }
         let local_execution_runtime_miss_detail =
-            local_execution_runtime_miss_detail_after_python_fallback_removal(control_decision);
+            local_execution_runtime_miss_detail(control_decision)
+                .unwrap_or("AI public execution runtime miss did not match a Rust execution path");
         state.record_fallback_metric(
-            if local_execution_runtime_miss_detail.is_some() {
-                GatewayFallbackMetricKind::LocalExecutionRuntimeMiss
-            } else {
-                GatewayFallbackMetricKind::PublicProxyAfterExecutionRuntimeMiss
-            },
+            GatewayFallbackMetricKind::LocalExecutionRuntimeMiss,
             control_decision,
             None,
-            Some(if local_execution_runtime_miss_detail.is_some() {
-                EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS
-            } else {
-                EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS
-            }),
-            if local_execution_runtime_miss_detail.is_some() {
-                GatewayFallbackReason::PythonFallbackRemoved
-            } else {
-                GatewayFallbackReason::ExecutionRuntimeMiss
-            },
+            Some(EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS),
+            GatewayFallbackReason::LocalExecutionPathRequired,
         );
-        if let Some(local_execution_runtime_miss_detail) = local_execution_runtime_miss_detail {
-            let local_execution_runtime_miss_diagnostic =
-                state.take_local_execution_runtime_miss_diagnostic(&trace_id);
-            if let Some(diagnostic) = local_execution_runtime_miss_diagnostic.as_ref() {
-                warn!(
-                    trace_id = %trace_id,
-                    local_execution_runtime_miss_reason = %diagnostic.reason,
-                    route_family = diagnostic.route_family.as_deref().unwrap_or_default(),
-                    route_kind = diagnostic.route_kind.as_deref().unwrap_or_default(),
-                    public_path = diagnostic.public_path.as_deref().unwrap_or_default(),
-                    plan_kind = diagnostic.plan_kind.as_deref().unwrap_or_default(),
-                    requested_model = diagnostic.requested_model.as_deref().unwrap_or_default(),
-                    candidate_count = diagnostic.candidate_count.unwrap_or(0),
-                    skipped_candidate_count = diagnostic.skipped_candidate_count.unwrap_or(0),
-                    skip_reasons = diagnostic.skip_reasons_summary().unwrap_or_default(),
-                    "gateway local execution runtime miss"
+        let local_execution_runtime_miss_diagnostic =
+            state.take_local_execution_runtime_miss_diagnostic(&trace_id);
+        if let Some(diagnostic) = local_execution_runtime_miss_diagnostic.as_ref() {
+            warn!(
+                trace_id = %trace_id,
+                local_execution_runtime_miss_reason = %diagnostic.reason,
+                route_family = diagnostic.route_family.as_deref().unwrap_or_default(),
+                route_kind = diagnostic.route_kind.as_deref().unwrap_or_default(),
+                public_path = diagnostic.public_path.as_deref().unwrap_or_default(),
+                plan_kind = diagnostic.plan_kind.as_deref().unwrap_or_default(),
+                requested_model = diagnostic.requested_model.as_deref().unwrap_or_default(),
+                candidate_count = diagnostic.candidate_count.unwrap_or(0),
+                skipped_candidate_count = diagnostic.skipped_candidate_count.unwrap_or(0),
+                skip_reasons = diagnostic.skip_reasons_summary().unwrap_or_default(),
+                "gateway local execution runtime miss"
+            );
+        }
+        let mut response = build_local_http_error_response(
+            &trace_id,
+            control_decision,
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            local_execution_runtime_miss_detail,
+        )?;
+        if let Some(diagnostic) = local_execution_runtime_miss_diagnostic {
+            if !diagnostic.reason.trim().is_empty() {
+                response.headers_mut().insert(
+                    HeaderName::from_static(LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER),
+                    HeaderValue::from_str(diagnostic.reason.as_str())
+                        .map_err(|err| GatewayError::Internal(err.to_string()))?,
                 );
             }
-            let mut response = build_local_http_error_response(
-                &trace_id,
-                control_decision,
-                http::StatusCode::SERVICE_UNAVAILABLE,
-                local_execution_runtime_miss_detail,
-            )?;
-            if let Some(diagnostic) = local_execution_runtime_miss_diagnostic {
-                if !diagnostic.reason.trim().is_empty() {
-                    response.headers_mut().insert(
-                        HeaderName::from_static(LOCAL_LEGACY_EXECUTION_RUNTIME_MISS_REASON_HEADER),
-                        HeaderValue::from_str(diagnostic.reason.as_str())
-                            .map_err(|err| GatewayError::Internal(err.to_string()))?,
-                    );
-                    response.headers_mut().insert(
-                        HeaderName::from_static(LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER),
-                        HeaderValue::from_str(diagnostic.reason.as_str())
-                            .map_err(|err| GatewayError::Internal(err.to_string()))?,
-                    );
-                }
-            }
-            return Ok(finalize_gateway_response_with_context(
-                &state,
-                response,
-                &remote_addr,
-                &request_context,
-                EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS,
-                &started_at,
-                request_permit.take(),
-            ));
         }
-        state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
-        upstream_request = upstream_request.header(
-            EXECUTION_PATH_HEADER,
-            EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS,
-        );
-        upstream_request
-            .body(buffered_body.clone())
-            .send()
-            .await
-            .map_err(|err| GatewayError::UpstreamUnavailable {
-                trace_id: trace_id.clone(),
-                message: err.to_string(),
-            })?
-    } else {
-        state.record_fallback_metric(
-            GatewayFallbackMetricKind::PublicProxyPassthrough,
-            control_decision,
-            None,
-            Some(EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH),
-            GatewayFallbackReason::ProxyPassthrough,
-        );
-        upstream_request = upstream_request.header(
-            EXECUTION_PATH_HEADER,
-            EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
-        );
-        if let Some(buffered_body) = buffered_body {
-            upstream_request
-                .body(buffered_body)
-                .send()
-                .await
-                .map_err(|err| GatewayError::UpstreamUnavailable {
-                    trace_id: trace_id.clone(),
-                    message: err.to_string(),
-                })?
-        } else {
-            let request_body_stream = request_body
-                .take()
-                .expect("streaming passthrough path should retain request body")
-                .into_data_stream()
-                .map_err(|err| std::io::Error::other(err.to_string()));
-            upstream_request
-                .body(reqwest::Body::wrap_stream(request_body_stream))
-                .send()
-                .await
-                .map_err(|err| GatewayError::UpstreamUnavailable {
-                    trace_id: trace_id.clone(),
-                    message: err.to_string(),
-                })?
-        }
-    };
-
-    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
-    let mut response =
-        ai_finalize::build_client_response(upstream_response, &trace_id, control_decision)?;
-    if control_decision.and_then(|decision| decision.route_family.as_deref())
-        == Some("gateway_legacy")
-    {
-        response = attach_legacy_internal_gateway_deprecation_headers(response);
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS,
+            &started_at,
+            request_permit.take(),
+        ));
     }
-    let python_dependency_reason = if should_try_control_execute {
-        GatewayFallbackReason::ExecutionRuntimeMiss
-    } else {
-        GatewayFallbackReason::ProxyPassthrough
-    };
-    response.headers_mut().insert(
-        HeaderName::from_static(PYTHON_DEPENDENCY_REASON_HEADER),
-        HeaderValue::from_static(python_dependency_reason.as_label_value()),
-    );
+
+    let response = build_local_http_error_response(
+        &trace_id,
+        control_decision,
+        http::StatusCode::NOT_IMPLEMENTED,
+        LOCAL_PROXY_PASSTHROUGH_REMOVED_DETAIL,
+    )?;
     Ok(finalize_gateway_response_with_context(
         &state,
         response,
         &remote_addr,
         &request_context,
-        if should_try_control_execute {
-            EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS
-        } else {
-            EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH
-        },
+        EXECUTION_PATH_LOCAL_PROXY_PASSTHROUGH_REMOVED,
         &started_at,
         request_permit.take(),
     ))
 }
 
-fn local_execution_runtime_miss_detail_after_python_fallback_removal(
+fn local_execution_runtime_miss_detail(
     decision: Option<&GatewayControlDecision>,
 ) -> Option<&'static str> {
     let decision = decision?;
@@ -852,18 +809,20 @@ fn local_execution_runtime_miss_detail_after_python_fallback_removal(
     }
     let public_path = decision.public_path.as_str();
     match public_path {
-        "/v1/chat/completions" => Some(OPENAI_CHAT_PYTHON_FALLBACK_REMOVED_DETAIL),
-        "/v1/responses" => Some(OPENAI_RESPONSES_PYTHON_FALLBACK_REMOVED_DETAIL),
-        "/v1/responses/compact" => Some(OPENAI_COMPACT_PYTHON_FALLBACK_REMOVED_DETAIL),
-        "/v1/messages" => Some(CLAUDE_MESSAGES_PYTHON_FALLBACK_REMOVED_DETAIL),
-        path if path.starts_with("/v1/videos") => Some(OPENAI_VIDEO_PYTHON_FALLBACK_REMOVED_DETAIL),
+        "/v1/chat/completions" => Some(OPENAI_CHAT_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL),
+        "/v1/responses" => Some(OPENAI_RESPONSES_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL),
+        "/v1/responses/compact" => Some(OPENAI_COMPACT_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL),
+        "/v1/messages" => Some(CLAUDE_MESSAGES_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL),
+        path if path.starts_with("/v1/videos") => {
+            Some(OPENAI_VIDEO_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL)
+        }
         path if path.starts_with("/upload/v1beta/files") || path.starts_with("/v1beta/files") => {
-            Some(GEMINI_FILES_PYTHON_FALLBACK_REMOVED_DETAIL)
+            Some(GEMINI_FILES_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL)
         }
         path if decision.route_family.as_deref() == Some("gemini")
             && (path.starts_with("/v1beta/models/") || path.starts_with("/v1/models/")) =>
         {
-            Some(GEMINI_PUBLIC_PYTHON_FALLBACK_REMOVED_DETAIL)
+            Some(GEMINI_PUBLIC_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL)
         }
         _ => None,
     }
@@ -875,5 +834,3 @@ mod finalize;
 use self::finalize::{
     finalize_gateway_response, finalize_gateway_response_with_context, request_wants_stream,
 };
-
-pub(super) use self::finalize::*;

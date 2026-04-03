@@ -1,5 +1,13 @@
 use super::super::support_wallet::wallet_test_recharge_store;
-use super::*;
+use axum::{body::Body, http, response::Response};
+use chrono::Utc;
+use serde_json::json;
+
+use super::super::{build_auth_json_response, sanitize_wallet_gateway_response};
+use super::payment_shared::{
+    payment_callback_mark_failed_response, NormalizedPaymentCallbackRequest,
+};
+use super::GatewayPublicRequestContext;
 
 #[derive(Debug, Clone)]
 struct PaymentTestCallbackRecord {
@@ -77,6 +85,23 @@ pub(super) async fn handle_payment_callback_with_test_store(
             &request_context.request_path,
         );
     };
+    let order_payment_method = order.payload["payment_method"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if !order_payment_method.eq_ignore_ascii_case(payment_method) {
+        callback_store.push(PaymentTestCallbackRecord {
+            callback_key: payload.callback_key.clone(),
+            payment_order_id: order.payload["id"].as_str().map(ToOwned::to_owned),
+            status: "failed".to_string(),
+        });
+        return payment_callback_mark_failed_response(
+            duplicate,
+            "payment method mismatch",
+            payment_method,
+            &request_context.request_path,
+        );
+    }
 
     let order_amount = order.payload["amount_usd"].as_f64().unwrap_or_default();
     if (payload.amount_usd - order_amount).abs() > f64::EPSILON {

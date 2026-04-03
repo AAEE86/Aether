@@ -1,4 +1,6 @@
-pub(crate) use super::*;
+use crate::gateway::{AppState, GatewayControlDecision, GatewayError, GatewayPublicRequestContext};
+use axum::body::{Body, Bytes};
+use axum::http::Response;
 
 #[path = "provider_models/assign_global.rs"]
 mod provider_models_assign_global;
@@ -22,7 +24,7 @@ mod provider_models_update;
 pub(crate) async fn maybe_build_local_admin_provider_models_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);

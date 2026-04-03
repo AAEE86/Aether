@@ -1,4 +1,3 @@
-use super::*;
 use crate::gateway::maintenance::ProviderCheckinRunSummary;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::candidates::{
@@ -9,6 +8,7 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogProvider,
 };
 use axum::routing::{get, post};
+use super::{start_server, AppState, Arc, Json, Mutex, Router, StatusCode, json};
 
 #[tokio::test]
 async fn gateway_background_request_candidate_cleanup_deletes_expired_entries_in_batches() {
@@ -74,7 +74,7 @@ async fn gateway_background_request_candidate_cleanup_deletes_expired_entries_in
             ("request_candidates_retention_days".to_string(), json!(30)),
         ]);
 
-    let gateway_state = AppState::new("http://127.0.0.1:18084")
+    let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(data_state);
     let background_tasks = gateway_state.spawn_background_tasks();
@@ -202,18 +202,18 @@ async fn gateway_provider_checkin_runs_local_query_balance_for_configured_provid
         vec![],
         vec![],
     ));
-    let gateway_state = AppState::new("http://127.0.0.1:18084")
+    let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(
-            crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_repository_for_tests(
-                repository,
-            )
-            .with_system_config_values_for_tests([
-                ("enable_provider_checkin".to_string(), json!(true)),
-                ("provider_checkin_time".to_string(), json!("01:05")),
-            ])
-            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
-        );
+        crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_repository_for_tests(
+            repository,
+        )
+        .with_system_config_values_for_tests([
+            ("enable_provider_checkin".to_string(), json!(true)),
+            ("provider_checkin_time".to_string(), json!("01:05")),
+        ])
+        .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+    );
 
     let summary = crate::gateway::maintenance::perform_provider_checkin_once(&gateway_state)
         .await
@@ -241,17 +241,17 @@ async fn gateway_provider_checkin_skips_when_disabled_via_system_config() {
         vec![],
         vec![],
     ));
-    let gateway_state = AppState::new("http://127.0.0.1:18084")
+    let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(
-            crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_repository_for_tests(
-                repository,
-            )
-            .with_system_config_values_for_tests([(
-                "enable_provider_checkin".to_string(),
-                json!(false),
-            )]),
-        );
+        crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_repository_for_tests(
+            repository,
+        )
+        .with_system_config_values_for_tests([(
+            "enable_provider_checkin".to_string(),
+            json!(false),
+        )]),
+    );
 
     let summary = crate::gateway::maintenance::perform_provider_checkin_once(&gateway_state)
         .await

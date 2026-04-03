@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    build_auth_error_response, build_auth_json_response, build_wallet_payload,
+    build_wallet_recharge_storage_unavailable_response, http, parse_wallet_limit,
+    parse_wallet_offset, resolve_authenticated_local_user, unix_secs_to_rfc3339,
+    wallet_normalize_optional_string_field, AppState, Body, GatewayError,
+    GatewayPublicRequestContext, Response, WALLET_SAFE_GATEWAY_RESPONSE_KEYS,
+};
+#[cfg(test)]
+use super::{
+    record_wallet_test_recharge, wallet_test_recharge_order_by_id,
+    wallet_test_recharge_orders_for_user,
+};
+use chrono::Utc;
+use serde::Deserialize;
+use serde_json::json;
+use sqlx::Row;
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 struct WalletCreateRechargeRequest {
@@ -114,16 +130,17 @@ fn wallet_checkout_payload(
 }
 
 fn wallet_order_id_from_path(request_path: &str) -> Option<String> {
-    request_path
-        .strip_prefix("/api/wallet/recharge/")?
-        .trim()
-        .trim_matches('/')
-        .split('/')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|value| !value.contains('/'))
-        .map(ToOwned::to_owned)
+    let trimmed = request_path.trim_end_matches('/');
+    let order_id = trimmed.strip_prefix("/api/wallet/recharge/")?.trim();
+    if order_id.is_empty() || order_id.contains('/') {
+        None
+    } else {
+        Some(order_id.to_string())
+    }
+}
+
+pub(super) fn wallet_recharge_detail_path_matches(request_path: &str) -> bool {
+    wallet_order_id_from_path(request_path).is_some()
 }
 
 pub(crate) fn sanitize_wallet_gateway_response(
@@ -357,9 +374,7 @@ pub(super) async fn handle_wallet_create_recharge(
             );
         }
         #[cfg(not(test))]
-        return build_public_support_maintenance_response(
-            "Wallet routes require Rust maintenance backend",
-        );
+        return build_wallet_recharge_storage_unavailable_response();
     };
 
     let mut tx = match pool.begin().await {

@@ -1,11 +1,73 @@
-pub(crate) use super::*;
-
 mod admin_paths;
 mod catalog;
 mod payloads;
 mod request_utils;
 
-pub(crate) use self::admin_paths::*;
-pub(crate) use self::catalog::*;
-pub(crate) use self::payloads::*;
-pub(crate) use self::request_utils::*;
+pub(crate) use self::admin_paths::{
+    admin_clear_oauth_invalid_key_id, admin_export_key_id, admin_gemini_file_mapping_id_from_path,
+    admin_global_model_assign_to_providers_id, admin_global_model_id_from_path,
+    admin_global_model_providers_id, admin_global_model_routing_id,
+    admin_management_token_id_from_path, admin_management_token_status_id_from_path,
+    admin_oauth_provider_type_from_path, admin_oauth_test_provider_type_from_path,
+    admin_provider_assign_global_models_path, admin_provider_available_source_models_path,
+    admin_provider_clear_pool_cooldown_parts, admin_provider_delete_task_parts,
+    admin_provider_id_for_health_monitor, admin_provider_id_for_keys,
+    admin_provider_id_for_manage_path, admin_provider_id_for_mapping_preview,
+    admin_provider_id_for_models_list, admin_provider_id_for_pool_status,
+    admin_provider_id_for_provider_ops_balance, admin_provider_id_for_provider_ops_checkin,
+    admin_provider_id_for_provider_ops_config, admin_provider_id_for_provider_ops_connect,
+    admin_provider_id_for_provider_ops_disconnect, admin_provider_id_for_provider_ops_status,
+    admin_provider_id_for_provider_ops_verify, admin_provider_id_for_provider_strategy_billing,
+    admin_provider_id_for_provider_strategy_quota, admin_provider_id_for_provider_strategy_stats,
+    admin_provider_id_for_refresh_quota, admin_provider_id_for_suffix,
+    admin_provider_id_for_summary, admin_provider_import_models_path,
+    admin_provider_model_route_parts, admin_provider_models_batch_path,
+    admin_provider_oauth_batch_import_provider_id, admin_provider_oauth_batch_import_task_path,
+    admin_provider_oauth_batch_import_task_provider_id, admin_provider_oauth_complete_key_id,
+    admin_provider_oauth_complete_provider_id, admin_provider_oauth_device_authorize_provider_id,
+    admin_provider_oauth_device_poll_provider_id, admin_provider_oauth_import_provider_id,
+    admin_provider_oauth_refresh_key_id, admin_provider_oauth_start_key_id,
+    admin_provider_oauth_start_provider_id, admin_provider_ops_action_route_parts,
+    admin_provider_ops_architecture_id_from_path, admin_provider_pool_key_route_parts,
+    admin_provider_reset_pool_cost_parts, admin_reveal_key_id, admin_system_config_key_from_path,
+    admin_system_email_template_preview_type_from_path,
+    admin_system_email_template_reset_type_from_path, admin_system_email_template_type_from_path,
+    admin_update_key_id, build_admin_provider_delete_task_payload,
+    is_admin_gemini_files_capable_keys_root, is_admin_gemini_files_mappings_root,
+    is_admin_gemini_files_stats_root, is_admin_gemini_files_upload_root,
+    is_admin_global_models_root, is_admin_management_tokens_root,
+    is_admin_provider_ops_architectures_root, is_admin_provider_ops_batch_balance_root,
+    is_admin_provider_strategy_strategies_root, is_admin_providers_root,
+    is_admin_system_configs_root, is_admin_system_email_templates_root,
+    put_admin_provider_delete_task,
+};
+pub(crate) use self::catalog::{
+    build_admin_provider_key_response, decrypt_catalog_secret_with_fallbacks,
+    default_provider_key_status_snapshot, effective_catalog_encryption_key,
+    encrypt_catalog_secret_with_fallbacks, masked_catalog_api_key, parse_catalog_auth_config_json,
+    provider_key_health_summary, provider_key_status_snapshot_payload,
+};
+pub(crate) use self::payloads::{
+    default_admin_endpoint_max_retries, AdminBatchAssignGlobalModelsRequest,
+    AdminBatchAssignToProvidersRequest, AdminBatchDeleteIdsRequest, AdminGlobalModelCreateRequest,
+    AdminGlobalModelUpdateRequest, AdminImportProviderModelsRequest,
+    AdminOAuthProviderUpsertRequest, AdminProviderCreateRequest,
+    AdminProviderEndpointCreateRequest, AdminProviderEndpointUpdateRequest,
+    AdminProviderKeyBatchDeleteRequest, AdminProviderKeyCreateRequest,
+    AdminProviderKeyUpdateRequest, AdminProviderModelCreateRequest,
+    AdminProviderModelUpdateRequest, AdminProviderQuotaRefreshRequest, AdminProviderUpdateRequest,
+    InternalGatewayAuthContextRequest, InternalGatewayExecuteRequest,
+    InternalGatewayResolveRequest, InternalTunnelHeartbeatRequest, InternalTunnelNodeStatusRequest,
+    ANTIGRAVITY_FETCH_AVAILABLE_MODELS_PATH, CODEX_WHAM_USAGE_URL, KIRO_USAGE_LIMITS_PATH,
+    KIRO_USAGE_SDK_VERSION, OAUTH_ACCOUNT_BLOCK_PREFIX, OAUTH_EXPIRED_PREFIX,
+    OAUTH_REFRESH_FAILED_PREFIX, OAUTH_REQUEST_FAILED_PREFIX,
+};
+pub(crate) use self::request_utils::{
+    admin_proxy_local_requires_buffered_body, internal_proxy_local_requires_buffered_body,
+    json_string_list, local_proxy_route_requires_buffered_body,
+    mark_external_models_official_providers, public_support_local_requires_buffered_body,
+    query_param_bool, query_param_optional_bool, query_param_value,
+    request_enables_control_execute, rust_auth_terminates_provider_credentials,
+    sanitize_upstream_path_and_query, should_strip_forwarded_provider_credential_header,
+    should_strip_forwarded_trusted_admin_header, strip_query_param, unix_secs_to_rfc3339,
+};

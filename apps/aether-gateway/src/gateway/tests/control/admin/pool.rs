@@ -1,4 +1,24 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_crypto::DEVELOPMENT_ENCRYPTION_KEY;
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
+};
+use axum::body::Body;
+use axum::routing::{any, get, post};
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{
+    build_router_with_state, sample_endpoint, sample_key, sample_provider, start_server,
+    AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 #[tokio::test]
 async fn gateway_handles_admin_pool_overview_locally_with_trusted_admin_principal() {
@@ -48,7 +68,7 @@ async fn gateway_handles_admin_pool_overview_locally_with_trusted_admin_principa
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -101,8 +121,7 @@ async fn gateway_handles_admin_pool_scheduling_presets_locally_with_trusted_admi
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -156,7 +175,7 @@ async fn gateway_handles_admin_pool_batch_import_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -280,7 +299,7 @@ async fn gateway_handles_admin_pool_trailing_slash_routes_locally_with_trusted_a
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -389,7 +408,7 @@ async fn gateway_handles_admin_pool_list_keys_locally_with_trusted_admin_princip
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -548,7 +567,7 @@ async fn gateway_handles_admin_pool_resolve_selection_locally_with_trusted_admin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -628,7 +647,7 @@ async fn gateway_handles_admin_pool_batch_action_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -712,7 +731,7 @@ async fn gateway_handles_admin_pool_batch_delete_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -770,7 +789,7 @@ async fn gateway_handles_admin_pool_batch_delete_task_status_locally_with_truste
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state.put_provider_delete_task(crate::gateway::LocalProviderDeleteTaskState {
         task_id: "task-123".to_string(),
         provider_id: "provider-openai".to_string(),
@@ -868,7 +887,7 @@ async fn gateway_cleans_up_admin_pool_banned_keys_locally_with_trusted_admin_pri
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -930,7 +949,7 @@ async fn gateway_rejects_admin_pool_list_keys_with_empty_provider_id() {
     ));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -979,7 +998,7 @@ async fn gateway_rejects_admin_pool_batch_import_with_empty_provider_id() {
     ));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1032,7 +1051,7 @@ async fn gateway_rejects_admin_pool_cleanup_banned_with_empty_provider_id() {
     ));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(

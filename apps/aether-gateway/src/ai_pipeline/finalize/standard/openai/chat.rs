@@ -1,6 +1,8 @@
 use base64::Engine as _;
+use std::collections::BTreeMap;
 
-use super::*;
+use serde_json::{json, Map, Value};
+
 use super::{
     aggregate_claude_stream_sync_response, aggregate_gemini_stream_sync_response,
     aggregate_openai_cli_stream_sync_response, convert_claude_chat_response_to_openai_chat,
@@ -13,6 +15,7 @@ use crate::gateway::ai_pipeline::finalize::common::{
     local_finalize_allows_envelope, unwrap_local_finalize_response_value,
     LocalCoreSyncFinalizeOutcome,
 };
+use crate::gateway::{GatewayControlDecision, GatewayError, GatewaySyncReportRequest};
 
 #[derive(Debug, Default)]
 struct OpenAIChatChoiceState {

@@ -1,4 +1,24 @@
-use super::*;
+use super::admin_api_keys_shared::{
+    admin_api_key_total_tokens_by_ids, admin_api_keys_id_from_path, admin_api_keys_operator_id,
+    build_admin_api_key_detail_payload, build_admin_api_keys_bad_request_response,
+    build_admin_api_keys_data_unavailable_response, build_admin_api_keys_not_found_response,
+    AdminStandaloneApiKeyCreateRequest, AdminStandaloneApiKeyFieldPresence,
+    AdminStandaloneApiKeyToggleRequest, AdminStandaloneApiKeyUpdateRequest,
+};
+use super::{
+    default_admin_user_api_key_name, encrypt_catalog_secret_with_fallbacks,
+    format_optional_unix_secs_iso8601, generate_admin_user_api_key_plaintext,
+    hash_admin_user_api_key, masked_user_api_key_display, normalize_admin_optional_api_key_name,
+    normalize_admin_user_api_formats, normalize_admin_user_string_list,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn build_admin_create_api_key_response(
     state: &AppState,
@@ -6,11 +26,11 @@ pub(super) async fn build_admin_create_api_key_response(
     request_body: Option<&axum::body::Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_auth_api_key_writer() {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     }
 
     let Some(operator_id) = admin_api_keys_operator_id(request_context) else {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     };
     let Some(request_body) = request_body else {
         return Ok(build_admin_api_keys_bad_request_response(
@@ -88,7 +108,7 @@ pub(super) async fn build_admin_create_api_key_response(
         )
         .await?
     else {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     };
 
     Ok(Json(json!({
@@ -115,11 +135,11 @@ pub(super) async fn build_admin_update_api_key_response(
     request_body: Option<&axum::body::Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_auth_api_key_writer() {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     }
 
     let Some(api_key_id) = admin_api_keys_id_from_path(&request_context.request_path) else {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     };
     let Some(request_body) = request_body else {
         return Ok(build_admin_api_keys_bad_request_response(
@@ -233,11 +253,11 @@ pub(super) async fn build_admin_toggle_api_key_response(
     request_body: Option<&axum::body::Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_auth_api_key_writer() {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     }
 
     let Some(api_key_id) = admin_api_keys_id_from_path(&request_context.request_path) else {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     };
 
     let requested_active = match request_body {
@@ -288,11 +308,11 @@ pub(super) async fn build_admin_delete_api_key_response(
     request_context: &GatewayPublicRequestContext,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_auth_api_key_writer() {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     }
 
     let Some(api_key_id) = admin_api_keys_id_from_path(&request_context.request_path) else {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     };
 
     match state.delete_standalone_api_key(&api_key_id).await? {

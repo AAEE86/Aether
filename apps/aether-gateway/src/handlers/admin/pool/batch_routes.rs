@@ -1,4 +1,28 @@
-use super::*;
+use super::super::{clear_admin_provider_pool_cooldown, reset_admin_provider_pool_cost};
+use super::{
+    admin_pool_provider_id_from_path, build_admin_pool_error_response,
+    ADMIN_POOL_BANNED_KEY_CLEANUP_EMPTY_MESSAGE,
+    ADMIN_POOL_PROVIDER_CATALOG_READER_UNAVAILABLE_DETAIL,
+    ADMIN_POOL_PROVIDER_CATALOG_WRITER_UNAVAILABLE_DETAIL,
+};
+use super::{pool_payloads, pool_selection};
+use crate::gateway::handlers::encrypt_catalog_secret_with_fallbacks;
+use crate::gateway::{
+    AppState, GatewayError, GatewayPublicRequestContext, LocalProviderDeleteTaskState,
+};
+use aether_data::repository::provider_catalog::{
+    StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
+};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct AdminPoolBatchActionRequest {
@@ -166,7 +190,7 @@ async fn build_admin_pool_cleanup_banned_keys_response(
 async fn build_admin_pool_batch_import_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_provider_catalog_data_reader() {
         return Ok(build_admin_pool_error_response(
@@ -345,7 +369,7 @@ async fn build_admin_pool_batch_import_response(
 async fn build_admin_pool_batch_action_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_provider_catalog_data_reader() {
         return Ok(build_admin_pool_error_response(
@@ -529,7 +553,7 @@ async fn build_admin_pool_batch_delete_task_status_response(
 pub(super) async fn maybe_build_local_admin_pool_batch_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     match decision_route_kind(request_context) {
         Some("cleanup_banned_keys") if request_context.request_method == http::Method::POST => {

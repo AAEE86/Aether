@@ -1,4 +1,17 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::video_tasks::{
+    InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskWriteRepository,
+};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+};
 
 #[tokio::test]
 async fn gateway_reads_openai_video_task_via_data_read_side_without_hitting_public_route() {
@@ -15,7 +28,6 @@ async fn gateway_reads_openai_video_task_via_data_read_side_without_hitting_publ
                     "route_family": "openai",
                     "route_kind": "video",
                     "auth_endpoint_signature": "openai:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-video-db-123",
@@ -83,7 +95,7 @@ async fn gateway_reads_openai_video_task_via_data_read_side_without_hitting_publ
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), upstream_url.clone())
+        build_state_with_execution_runtime_override(upstream_url.clone())
             .with_video_task_data_reader_for_tests(repository),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -121,7 +133,6 @@ async fn gateway_reads_gemini_video_task_via_data_read_side_without_hitting_publ
                     "route_family": "gemini",
                     "route_kind": "video",
                     "auth_endpoint_signature": "gemini:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-video-db-123",
@@ -203,7 +214,7 @@ async fn gateway_reads_gemini_video_task_via_data_read_side_without_hitting_publ
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), upstream_url.clone())
+        build_state_with_execution_runtime_override(upstream_url.clone())
             .with_video_task_data_reader_for_tests(repository),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;

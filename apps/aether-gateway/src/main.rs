@@ -321,13 +321,6 @@ struct Args {
     #[arg(long, env = "AETHER_GATEWAY_BIND", default_value = "0.0.0.0:80")]
     bind: String,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_UPSTREAM",
-        default_value = "http://127.0.0.1:18084"
-    )]
-    upstream: String,
-
     /// Path to frontend static files directory (SPA). When set, the gateway
     /// serves the frontend directly without nginx.
     #[arg(long, env = "AETHER_GATEWAY_STATIC_DIR")]
@@ -422,9 +415,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!(
         bind = %args.bind,
-        upstream = %args.upstream,
         environment = %args.frontdoor.environment,
         frontdoor_mode = "compatibility_frontdoor",
+        static_dir = args.static_dir.as_deref().unwrap_or("-"),
         cors_origins = args.frontdoor.cors_origins.as_deref().unwrap_or("-"),
         cors_allow_credentials = args.frontdoor.cors_allow_credentials,
         frontdoor_rpm_bucket_seconds = args.rate_limit.bucket_seconds,
@@ -447,7 +440,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "aether-gateway started"
     );
 
-    let mut state = AppState::new(args.upstream)?
+    let mut state = AppState::new()?
         .with_data_config(data_config)?
         .with_usage_runtime_config(args.usage.to_config())?
         .with_video_task_truth_source_mode(args.video_task_truth_source_mode.into());
@@ -522,9 +515,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "aether-gateway data layer configured"
     );
     // Run pending database migrations before serving traffic
-    if let Some(pool) = state.postgres_pool() {
-        info!("running database migrations...");
-        aether_data::migrate::run_migrations(&pool).await?;
+    info!("running database migrations...");
+    if state.run_postgres_migrations().await? {
         info!("database migrations complete");
     }
 
@@ -542,8 +534,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!(static_dir = %static_dir, "serving frontend static files");
 
         // ServeDir with SPA fallback: if no static file matches, serve index.html
-        let serve_dir = ServeDir::new(&static_path)
-            .not_found_service(ServeFile::new(&index_html));
+        let serve_dir = ServeDir::new(&static_path).not_found_service(ServeFile::new(&index_html));
 
         api_router
             .fallback_service(serve_dir)

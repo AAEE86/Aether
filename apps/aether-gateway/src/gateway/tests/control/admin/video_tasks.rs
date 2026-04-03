@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use aether_crypto::DEVELOPMENT_ENCRYPTION_KEY;
 use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
@@ -5,8 +7,22 @@ use aether_data::repository::provider_catalog::{
 use aether_data::repository::video_tasks::{
     InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskStatus, VideoTaskWriteRepository,
 };
+use axum::body::{to_bytes, Body, Bytes};
+use axum::response::Response;
+use axum::routing::{any, get, post};
+use axum::{extract::Request, Json, Router};
+use http::{HeaderValue, StatusCode};
+use serde_json::json;
 
-use super::*;
+use super::super::{
+    build_router_with_state, build_state_with_execution_runtime_override, sample_endpoint,
+    sample_key, sample_provider, start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 fn sample_admin_video_task(
     id: &str,
@@ -127,7 +143,7 @@ async fn gateway_handles_admin_video_tasks_list_locally_with_trusted_admin_princ
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -223,7 +239,7 @@ async fn gateway_handles_admin_video_tasks_stats_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_video_task_data_repository_for_tests(repository),
     );
@@ -305,7 +321,7 @@ async fn gateway_handles_admin_video_task_detail_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -470,7 +486,7 @@ async fn gateway_cancels_admin_video_task_locally_with_trusted_admin_principal()
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_video_task_data_repository_for_tests(Arc::clone(&repository)),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -572,7 +588,7 @@ async fn gateway_redirects_admin_video_task_video_locally_with_trusted_admin_pri
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(repository),
     );
@@ -693,7 +709,7 @@ async fn gateway_proxies_admin_video_task_video_locally_with_trusted_admin_princ
     );
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_data_state_for_tests(data_state),
     );

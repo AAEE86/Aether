@@ -97,17 +97,8 @@ client -> rust frontdoor (aether-gateway) -> execution_runtime/provider transpor
 其中：
 
 - `aether-gateway` 负责公开入口、健康检查、格式转换、本地执行 runtime，以及当前已迁到 Rust 的 frontdoor/control/background 路径。
-- `./dev.sh` 不再启动 Python 宿主；未下沉到 Rust 的 legacy 路由会直接失败，除非你手动提供 `AETHER_GATEWAY_UPSTREAM`。
+- `./dev.sh` 不再启动 Python 宿主；未下沉到 Rust 的 legacy 路由会直接失败。
 - `./dev.sh` 默认把 `AETHER_GATEWAY_VIDEO_TASK_TRUTH_SOURCE_MODE` 设为 `rust-authoritative`，避免本地还依赖 Python sync report 语义。
-
-如果你需要把 gateway 指到一个外部 legacy 宿主，可显式设置：
-
-```bash
-AETHER_GATEWAY_UPSTREAM=http://127.0.0.1:18084 \
-./dev.sh
-```
-
-如果不提供上述变量，`./dev.sh` 会把 legacy upstream 指到一个不可用的本地地址，让未迁移路径快速失败，而不是悄悄回退到 Python。
 
 ## Aether Proxy (可选)
 

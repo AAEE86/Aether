@@ -415,7 +415,10 @@ fn truncate_body(body: &str) -> String {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::*;
+    use super::{IDC_AMZ_USER_AGENT, KiroOAuthRefreshAdapter};
+    use crate::gateway::provider_transport::oauth_refresh::{
+        LocalOAuthRefreshAdapter, LocalResolvedOAuthRequestAuth,
+    };
     use crate::gateway::provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider, GatewayProviderTransportSnapshot,
@@ -426,6 +429,7 @@ mod tests {
     use axum::routing::any;
     use axum::{Json, Router};
     use http::StatusCode;
+    use serde_json::{json, Value};
     use tokio::task::JoinHandle;
 
     #[derive(Debug, Clone)]

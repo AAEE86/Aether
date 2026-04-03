@@ -1,8 +1,15 @@
-use super::*;
+use crate::gateway::handlers::json_string_list;
+use crate::gateway::{AppState, GatewayError};
+use aether_data::repository::provider_catalog::StoredProviderCatalogKey;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-pub(super) fn admin_adaptive_effective_limit(
-    key: &aether_data::repository::provider_catalog::StoredProviderCatalogKey,
-) -> Option<u32> {
+pub(super) fn admin_adaptive_effective_limit(key: &StoredProviderCatalogKey) -> Option<u32> {
     if key.rpm_limit.is_none() {
         key.learned_rpm_limit
     } else {
@@ -22,9 +29,7 @@ pub(super) fn admin_adaptive_adjustment_items(
         .collect()
 }
 
-pub(super) fn admin_adaptive_key_payload(
-    key: &aether_data::repository::provider_catalog::StoredProviderCatalogKey,
-) -> serde_json::Value {
+pub(super) fn admin_adaptive_key_payload(key: &StoredProviderCatalogKey) -> serde_json::Value {
     json!({
         "id": key.id,
         "name": key.name,
@@ -77,8 +82,7 @@ pub(super) fn admin_adaptive_key_id_from_path(path: &str) -> Option<String> {
 pub(super) async fn admin_adaptive_find_key(
     state: &AppState,
     key_id: &str,
-) -> Result<Option<aether_data::repository::provider_catalog::StoredProviderCatalogKey>, GatewayError>
-{
+) -> Result<Option<StoredProviderCatalogKey>, GatewayError> {
     Ok(state
         .read_provider_catalog_keys_by_ids(std::slice::from_ref(&key_id.to_string()))
         .await?
@@ -89,8 +93,7 @@ pub(super) async fn admin_adaptive_find_key(
 pub(super) async fn admin_adaptive_load_candidate_keys(
     state: &AppState,
     provider_id: Option<&str>,
-) -> Result<Vec<aether_data::repository::provider_catalog::StoredProviderCatalogKey>, GatewayError>
-{
+) -> Result<Vec<StoredProviderCatalogKey>, GatewayError> {
     if let Some(provider_id) = provider_id.filter(|value| !value.trim().is_empty()) {
         return state
             .list_provider_catalog_keys_by_provider_ids(std::slice::from_ref(

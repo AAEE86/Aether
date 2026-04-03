@@ -1,4 +1,3 @@
-use super::*;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -14,11 +13,25 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
+use aether_data::repository::video_tasks::{
+    InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskWriteRepository,
+};
+use axum::body::{to_bytes, Body};
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::StatusCode;
+use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
+
+use crate::gateway::constants::TRACE_ID_HEADER;
+
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+};
 
 #[tokio::test]
-async fn gateway_executes_openai_video_create_via_local_decision_gate_without_python_plan_or_decision(
-) {
+async fn gateway_executes_openai_video_create_via_local_decision_gate_with_local_planning_only() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         method: String,
@@ -207,7 +220,6 @@ async fn gateway_executes_openai_video_create_via_local_decision_gate_without_py
                     "route_family": "openai",
                     "route_kind": "video",
                     "auth_endpoint_signature": "openai:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-openai-video-local-123",
@@ -394,7 +406,7 @@ async fn gateway_executes_openai_video_create_via_local_decision_gate_without_py
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,
@@ -488,7 +500,7 @@ async fn gateway_executes_openai_video_create_via_local_decision_gate_without_py
 }
 
 #[tokio::test]
-async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_without_python_plan_or_decision(
+async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_with_local_planning_only(
 ) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
@@ -519,7 +531,6 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
                     "route_family": "openai",
                     "route_kind": "video",
                     "auth_endpoint_signature": "openai:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-openai-video-remix-local-123",
@@ -724,7 +735,7 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_video_task_and_request_candidate_repository_for_tests(
             repository,

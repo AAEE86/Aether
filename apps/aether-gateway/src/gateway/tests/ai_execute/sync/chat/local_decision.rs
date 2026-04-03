@@ -1,7 +1,17 @@
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    to_bytes, AppState, Arc, Body, DEVELOPMENT_ENCRYPTION_KEY, Digest,
+    EXECUTION_PATH_EXECUTION_RUNTIME_SYNC, EXECUTION_PATH_HEADER,
+    InMemoryAuthApiKeySnapshotRepository, InMemoryMinimalCandidateSelectionReadRepository,
+    InMemoryProviderCatalogReadRepository, InMemoryRequestCandidateRepository, Json, Mutex,
+    Request, RequestCandidateReadRepository, RequestCandidateStatus, Router, Sha256, StatusCode,
+    StoredAuthApiKeySnapshot, StoredMinimalCandidateSelectionRow, StoredProviderCatalogEndpoint,
+    StoredProviderCatalogKey, StoredProviderCatalogProvider, StoredProviderModelMapping,
+    TRACE_ID_HEADER, encrypt_python_fernet_plaintext, json,
+};
 
 #[tokio::test]
-async fn gateway_executes_openai_chat_sync_via_local_decision_gate_without_remote_execution_runtime_compat(
+async fn gateway_executes_openai_chat_sync_via_local_decision_gate_without_execution_runtime_override(
 ) {
     #[derive(Debug, Clone)]
     struct SeenUpstreamSyncRequest {
@@ -298,7 +308,7 @@ async fn gateway_executes_openai_chat_sync_via_local_decision_gate_without_remot
         },
         vec![sample_provider_catalog_key(), backup_key],
     ));
-    let gateway_state = AppState::new(upstream_url.clone())
+    let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -730,7 +740,7 @@ async fn gateway_executes_openai_chat_sync_via_local_cross_format_gemini_candida
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url.clone())
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,
@@ -1173,7 +1183,7 @@ async fn gateway_executes_openai_chat_sync_via_local_openai_compact_cross_format
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url.clone())
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,
@@ -1288,7 +1298,7 @@ async fn gateway_executes_openai_chat_sync_via_local_openai_compact_cross_format
 }
 
 #[tokio::test]
-async fn gateway_executes_openai_chat_sync_with_custom_path_via_local_decision_gate_without_python_decision_sync(
+async fn gateway_executes_openai_chat_sync_with_custom_path_via_local_decision_gate_with_local_sync_decision(
 ) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
@@ -1638,7 +1648,7 @@ async fn gateway_executes_openai_chat_sync_with_custom_path_via_local_decision_g
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url.clone())
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,

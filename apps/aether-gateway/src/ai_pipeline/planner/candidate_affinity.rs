@@ -103,7 +103,9 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::*;
+    use super::{
+        prefer_local_tunnel_owner_candidates, GatewayMinimalCandidateSelectionCandidate, AppState,
+    };
     use crate::gateway::tunnel::TunnelAttachmentRecord;
     use crate::gateway::GatewayDataState;
 
@@ -245,7 +247,7 @@ mod tests {
                 .expect("local attachment should serialize"),
             ),
         ]);
-        let state = AppState::new("http://127.0.0.1:1")
+        let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(data_state)
             .with_tunnel_identity_for_tests("gateway-a", Some("http://gateway-a:8080"));
@@ -274,7 +276,7 @@ mod tests {
             std::sync::Arc::new(provider_catalog),
             "development-key",
         );
-        let state = AppState::new("http://127.0.0.1:1")
+        let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(data_state)
             .with_tunnel_identity_for_tests("gateway-a", Some("http://gateway-a:8080"));

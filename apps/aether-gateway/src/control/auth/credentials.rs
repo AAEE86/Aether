@@ -400,7 +400,11 @@ pub(super) fn current_unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        build_auth_context_cache_key, extract_request_credentials, GatewayCredentialCarrier,
+        GatewayPrimaryCredential, GatewayTrustedAdminHeaders, GatewayTrustedAuthHeaders,
+    };
+    use axum::http::{self, Uri};
 
     fn uri(path: &str) -> Uri {
         path.parse().expect("uri should parse")

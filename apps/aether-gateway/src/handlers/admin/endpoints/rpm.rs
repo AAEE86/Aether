@@ -1,4 +1,13 @@
-pub(crate) use super::*;
+use super::super::{admin_rpm_key_id, build_admin_key_rpm_payload};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) async fn maybe_build_local_admin_endpoints_rpm_response(
     state: &AppState,

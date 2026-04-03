@@ -1,9 +1,39 @@
-use super::*;
+use super::super::{
+    build_admin_create_provider_record, build_admin_fixed_provider_endpoint_record,
+    build_admin_provider_health_monitor_payload, build_admin_provider_mapping_preview_payload,
+    build_admin_provider_pool_status_payload, build_admin_provider_summary_payload,
+    build_admin_providers_payload, build_admin_providers_summary_payload,
+    build_admin_update_provider_record, clear_admin_provider_pool_cooldown,
+    reset_admin_provider_pool_cost, run_admin_provider_delete_task,
+};
+use super::providers_shared::build_admin_providers_data_unavailable_response;
+use crate::gateway::handlers::{
+    admin_provider_clear_pool_cooldown_parts, admin_provider_delete_task_parts,
+    admin_provider_id_for_health_monitor, admin_provider_id_for_manage_path,
+    admin_provider_id_for_mapping_preview, admin_provider_id_for_pool_status,
+    admin_provider_id_for_summary, admin_provider_reset_pool_cost_parts,
+    build_admin_provider_delete_task_payload, is_admin_providers_root,
+    put_admin_provider_delete_task, query_param_optional_bool, query_param_value,
+    AdminProviderCreateRequest, AdminProviderUpdateRequest,
+};
+use crate::gateway::provider_transport::fixed_provider_template;
+use crate::gateway::{
+    AppState, GatewayError, GatewayPublicRequestContext, LocalProviderDeleteTaskState,
+};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use tracing::warn;
+use uuid::Uuid;
 
 pub(crate) async fn maybe_build_local_admin_providers_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -27,7 +57,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
             ));
         };
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         }
         let payload = match serde_json::from_slice::<AdminProviderCreateRequest>(request_body) {
             Ok(payload) => payload,
@@ -58,7 +88,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
             .create_provider_catalog_provider(&record, shift_existing_priorities_from)
             .await?
         else {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         };
 
         if let Some((base_url, endpoint_signatures)) =
@@ -82,7 +112,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
                     }
                 };
                 let Some(_) = state.create_provider_catalog_endpoint(&endpoint).await? else {
-                    return Ok(Some(build_admin_providers_maintenance_response()));
+                    return Ok(Some(build_admin_providers_data_unavailable_response()));
                 };
             }
         }
@@ -102,7 +132,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
         && is_admin_providers_root(&request_context.request_path)
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         }
         let skip = query_param_value(request_context.request_query_string.as_deref(), "skip")
             .and_then(|value| value.parse::<usize>().ok())
@@ -115,7 +145,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
             query_param_optional_bool(request_context.request_query_string.as_deref(), "is_active");
         let Some(payload) = build_admin_providers_payload(state, skip, limit, is_active).await
         else {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }
@@ -147,7 +177,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
             ));
         };
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         }
         let raw_value = match serde_json::from_slice::<serde_json::Value>(request_body) {
             Ok(value) => value,
@@ -219,7 +249,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
             .update_provider_catalog_provider(&updated_record)
             .await?
         else {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         };
         return Ok(Some(
             match build_admin_provider_summary_payload(state, &provider_id).await {
@@ -309,7 +339,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
         && request_context.request_path == "/api/admin/providers/summary"
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         }
         let page = query_param_value(request_context.request_query_string.as_deref(), "page")
             .and_then(|value| value.parse::<usize>().ok())
@@ -343,7 +373,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
         )
         .await
         else {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }
@@ -356,7 +386,7 @@ pub(crate) async fn maybe_build_local_admin_providers_response(
         && request_context.request_path.ends_with("/summary")
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_providers_maintenance_response()));
+            return Ok(Some(build_admin_providers_data_unavailable_response()));
         }
         let Some(provider_id) = admin_provider_id_for_summary(&request_context.request_path) else {
             return Ok(Some(

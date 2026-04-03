@@ -1,4 +1,3 @@
-use super::*;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::candidates::{
     InMemoryRequestCandidateRepository, RequestCandidateReadRepository, RequestCandidateStatus,
@@ -7,10 +6,29 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
-use aether_data::repository::video_tasks::{InMemoryVideoTaskRepository, UpsertVideoTask};
+use aether_data::repository::video_tasks::{
+    InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskWriteRepository,
+};
+use axum::body::{to_bytes, Body};
+use axum::response::Response;
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::header::{HeaderName, HeaderValue};
+use http::StatusCode;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+
+use crate::gateway::constants::{
+    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, TRACE_ID_HEADER,
+};
+
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    VideoTaskTruthSourceMode,
+};
 
 #[tokio::test]
-async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_without_python_plan_or_decision(
+async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_with_local_planning_only(
 ) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
@@ -40,7 +58,6 @@ async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_wi
                     "route_family": "gemini",
                     "route_kind": "video",
                     "auth_endpoint_signature": "gemini:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-gemini-video-cancel-local-123",
@@ -228,7 +245,7 @@ async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_wi
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_video_task_and_request_candidate_repository_for_tests(
             repository,
@@ -293,7 +310,7 @@ async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_wi
 }
 
 #[tokio::test]
-async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_local_follow_up_without_python_decision(
+async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_local_follow_up_with_local_follow_up_routing(
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenExecutionRuntimeSyncRequest {
@@ -304,7 +321,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
 
     fn sample_provider() -> StoredProviderCatalogProvider {
         StoredProviderCatalogProvider::new(
-            "provider-gemini-video-legacy-1".to_string(),
+            "provider-gemini-video-followup-1".to_string(),
             "gemini".to_string(),
             Some("https://example.com".to_string()),
             "custom".to_string(),
@@ -325,8 +342,8 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
 
     fn sample_endpoint() -> StoredProviderCatalogEndpoint {
         StoredProviderCatalogEndpoint::new(
-            "endpoint-gemini-video-legacy-1".to_string(),
-            "provider-gemini-video-legacy-1".to_string(),
+            "endpoint-gemini-video-followup-1".to_string(),
+            "provider-gemini-video-followup-1".to_string(),
             "gemini:video".to_string(),
             Some("gemini".to_string()),
             Some("video".to_string()),
@@ -348,8 +365,8 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
 
     fn sample_key() -> StoredProviderCatalogKey {
         StoredProviderCatalogKey::new(
-            "key-gemini-video-legacy-1".to_string(),
-            "provider-gemini-video-legacy-1".to_string(),
+            "key-gemini-video-followup-1".to_string(),
+            "provider-gemini-video-followup-1".to_string(),
             "prod".to_string(),
             "api_key".to_string(),
             None,
@@ -392,14 +409,13 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
                     "route_family": "gemini",
                     "route_kind": "video",
                     "auth_endpoint_signature": "gemini:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
-                        "user_id": "user-gemini-video-cancel-legacy-123",
-                        "api_key_id": "key-gemini-video-cancel-legacy-123",
+                        "user_id": "user-gemini-video-cancel-op-123",
+                        "api_key_id": "key-gemini-video-cancel-op-123",
                         "access_allowed": true
                     },
-                    "public_path": "/v1beta/models/veo-3/operations/legacyshort123:cancel"
+                    "public_path": "/v1beta/models/veo-3/operations/opshort123:cancel"
                 }))
             }),
         )
@@ -446,7 +462,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
             }),
         )
         .route(
-            "/v1beta/models/veo-3/operations/legacyshort123:cancel",
+            "/v1beta/models/veo-3/operations/opshort123:cancel",
             any(move |_request: Request| {
                 let public_hits_inner = Arc::clone(&public_hits_clone);
                 async move {
@@ -486,7 +502,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
                         .to_string(),
                 });
                 Json(json!({
-                    "request_id": "trace-gemini-video-cancel-legacy-123",
+                    "request_id": "trace-gemini-video-cancel-op-123",
                     "status_code": 200,
                     "headers": {
                         "content-type": "application/json"
@@ -505,24 +521,24 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
     let repository = Arc::new(InMemoryVideoTaskRepository::default());
     repository
         .upsert(UpsertVideoTask {
-            id: "task-gemini-cancel-legacy-123".to_string(),
-            short_id: Some("legacyshort123".to_string()),
-            request_id: "request-gemini-video-cancel-legacy-123".to_string(),
-            user_id: Some("user-gemini-video-cancel-legacy-123".to_string()),
-            api_key_id: Some("key-gemini-video-cancel-legacy-123".to_string()),
+            id: "task-gemini-cancel-op-123".to_string(),
+            short_id: Some("opshort123".to_string()),
+            request_id: "request-gemini-video-cancel-op-123".to_string(),
+            user_id: Some("user-gemini-video-cancel-op-123".to_string()),
+            api_key_id: Some("key-gemini-video-cancel-op-123".to_string()),
             username: Some("video-user".to_string()),
             api_key_name: Some("video-key".to_string()),
-            external_task_id: Some("operations/ext-legacy-123".to_string()),
-            provider_id: Some("provider-gemini-video-legacy-1".to_string()),
-            endpoint_id: Some("endpoint-gemini-video-legacy-1".to_string()),
-            key_id: Some("key-gemini-video-legacy-1".to_string()),
+            external_task_id: Some("operations/ext-op-123".to_string()),
+            provider_id: Some("provider-gemini-video-op-1".to_string()),
+            endpoint_id: Some("endpoint-gemini-video-op-1".to_string()),
+            key_id: Some("key-gemini-video-op-1".to_string()),
             client_api_format: Some("gemini:video".to_string()),
             provider_api_format: Some("gemini:video".to_string()),
             format_converted: false,
             model: Some("veo-3".to_string()),
-            prompt: Some("legacy cancel".to_string()),
+            prompt: Some("operation cancel".to_string()),
             original_request_body: Some(json!({
-                "prompt": "legacy cancel"
+                "prompt": "operation cancel"
             })),
             duration_seconds: Some(4),
             resolution: Some("720p".to_string()),
@@ -555,7 +571,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
         .with_video_task_truth_source_mode(VideoTaskTruthSourceMode::RustAuthoritative)
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_video_task_provider_transport_and_request_candidate_repository_for_tests(
@@ -570,10 +586,10 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
 
     let response = reqwest::Client::new()
         .post(format!(
-            "{gateway_url}/v1beta/models/veo-3/operations/legacyshort123:cancel"
+            "{gateway_url}/v1beta/models/veo-3/operations/opshort123:cancel"
         ))
         .header(CONTROL_EXECUTE_FALLBACK_HEADER, "true")
-        .header(TRACE_ID_HEADER, "trace-gemini-video-cancel-legacy-123")
+        .header(TRACE_ID_HEADER, "trace-gemini-video-cancel-op-123")
         .send()
         .await
         .expect("request should succeed");
@@ -595,7 +611,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
     assert_eq!(seen_execution_runtime_request.method, "POST");
     assert_eq!(
         seen_execution_runtime_request.url,
-        "https://generativelanguage.googleapis.com/v1beta/models/veo-3/operations/ext-legacy-123:cancel"
+        "https://generativelanguage.googleapis.com/v1beta/models/veo-3/operations/ext-op-123:cancel"
     );
     assert_eq!(
         seen_execution_runtime_request.api_key,
@@ -603,7 +619,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("request-gemini-video-cancel-legacy-123")
+        .list_by_request_id("request-gemini-video-cancel-op-123")
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

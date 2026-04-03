@@ -1,4 +1,30 @@
-use super::*;
+use super::super::provider_oauth_refresh::{
+    build_internal_control_error_response, build_provider_oauth_auth_config_from_token_payload,
+    create_provider_oauth_catalog_key, find_duplicate_provider_oauth_key,
+    provider_oauth_active_api_formats, provider_oauth_key_proxy_value,
+    refresh_provider_oauth_account_state_after_update, update_existing_provider_oauth_catalog_key,
+};
+use super::super::provider_oauth_state::{
+    build_admin_provider_oauth_backend_unavailable_response, build_kiro_device_key_name,
+    current_unix_secs, decode_jwt_claims, default_kiro_device_region,
+    default_kiro_device_start_url, generate_provider_oauth_nonce, json_non_empty_string,
+    json_u64_value, normalize_kiro_device_region, poll_admin_kiro_device_token,
+    read_provider_oauth_device_session, register_admin_kiro_device_oidc_client,
+    save_provider_oauth_device_session, start_admin_kiro_device_authorization,
+    StoredAdminProviderOAuthDeviceSession, KIRO_DEVICE_AUTH_SESSION_TTL_BUFFER_SECS,
+};
+use crate::gateway::handlers::{
+    admin_provider_oauth_device_authorize_provider_id, admin_provider_oauth_device_poll_provider_id,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
 
 #[derive(Debug, Deserialize)]
 struct AdminProviderOAuthDeviceAuthorizePayload {
@@ -17,7 +43,7 @@ struct AdminProviderOAuthDevicePollPayload {
 pub(super) async fn handle_admin_provider_oauth_device_authorize(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_provider_catalog_data_reader() {
         return Ok(build_admin_provider_oauth_backend_unavailable_response());
@@ -194,7 +220,7 @@ pub(super) async fn handle_admin_provider_oauth_device_authorize(
 pub(super) async fn handle_admin_provider_oauth_device_poll(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_provider_catalog_data_reader() {
         return Ok(build_admin_provider_oauth_backend_unavailable_response());

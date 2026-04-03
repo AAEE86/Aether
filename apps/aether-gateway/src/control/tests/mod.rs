@@ -1,4 +1,6 @@
-use super::*;
+use http::Uri;
+
+use super::{classify_control_route, GatewayPublicRequestContext};
 
 fn headers(items: &[(&str, &str)]) -> http::HeaderMap {
     let mut headers = http::HeaderMap::new();

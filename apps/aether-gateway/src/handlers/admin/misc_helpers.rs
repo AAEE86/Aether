@@ -1,4 +1,46 @@
-use super::*;
+use crate::gateway::handlers::{json_string_list, unix_secs_to_rfc3339};
+use crate::gateway::GatewayPublicRequestContext;
+use aether_data::repository::provider_catalog::StoredProviderCatalogKey;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use std::collections::BTreeMap;
+
+pub(crate) fn build_unhandled_admin_proxy_response(
+    request_context: &GatewayPublicRequestContext,
+) -> Response<Body> {
+    let decision = request_context.control_decision.as_ref();
+    (
+        http::StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "detail": "admin proxy route not implemented in rust frontdoor",
+            "route_family": decision.and_then(|value| value.route_family.as_deref()),
+            "route_kind": decision.and_then(|value| value.route_kind.as_deref()),
+            "request_path": request_context.request_path,
+        })),
+    )
+        .into_response()
+}
+
+pub(crate) fn build_admin_proxy_auth_required_response(
+    request_context: &GatewayPublicRequestContext,
+) -> Response<Body> {
+    let decision = request_context.control_decision.as_ref();
+    (
+        http::StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "detail": "admin authentication required",
+            "route_family": decision.and_then(|value| value.route_family.as_deref()),
+            "route_kind": decision.and_then(|value| value.route_kind.as_deref()),
+            "request_path": request_context.request_path,
+        })),
+    )
+        .into_response()
+}
 
 pub(crate) fn provider_catalog_key_supports_format(
     key: &StoredProviderCatalogKey,

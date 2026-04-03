@@ -1,4 +1,20 @@
-use super::*;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+
+use super::{
+    AnnouncementReadRepository, AnnouncementWriteRepository, AuthApiKeyReadRepository,
+    AuthApiKeyWriteRepository, AuthModuleReadRepository, AuthModuleWriteRepository,
+    BillingReadRepository, GatewayDataConfig, GatewayDataState, GeminiFileMappingReadRepository,
+    GeminiFileMappingWriteRepository, GlobalModelReadRepository, GlobalModelWriteRepository,
+    ManagementTokenReadRepository, ManagementTokenWriteRepository,
+    MinimalCandidateSelectionReadRepository, OAuthProviderReadRepository,
+    OAuthProviderWriteRepository, ProviderCatalogReadRepository, ProviderCatalogWriteRepository,
+    ProviderQuotaReadRepository, ProviderQuotaWriteRepository, ProxyNodeReadRepository,
+    ProxyNodeWriteRepository, RequestCandidateReadRepository, RequestCandidateWriteRepository,
+    ShadowResultReadRepository, ShadowResultWriteRepository, StoredSystemConfigEntry,
+    StoredUserPreferenceRecord, UsageReadRepository, UsageWriteRepository, UserReadRepository,
+    VideoTaskReadRepository, VideoTaskWriteRepository, WalletReadRepository, WalletWriteRepository,
+};
 
 #[path = "testing/announcements.rs"]
 mod announcements;
@@ -1188,6 +1204,52 @@ impl GatewayDataState {
             announcement_writer: None,
             management_token_reader: Some(management_token_reader),
             management_token_writer: Some(management_token_writer),
+            oauth_provider_reader: None,
+            oauth_provider_writer: None,
+            proxy_node_reader: None,
+            proxy_node_writer: None,
+            billing_reader: None,
+            gemini_file_mapping_reader: None,
+            gemini_file_mapping_writer: None,
+            global_model_reader: None,
+            global_model_writer: None,
+            minimal_candidate_selection_reader: None,
+            request_candidate_reader: None,
+            request_candidate_writer: None,
+            provider_catalog_reader: None,
+            provider_catalog_writer: None,
+            provider_quota_reader: None,
+            provider_quota_writer: None,
+            usage_reader: None,
+            usage_writer: None,
+            user_reader: None,
+            user_preferences: None,
+            usage_worker_runner: None,
+            video_task_reader: None,
+            video_task_writer: None,
+            wallet_reader: None,
+            wallet_writer: None,
+            shadow_result_reader: None,
+            shadow_result_writer: None,
+            system_config_values: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_management_token_reader_for_tests(
+        repository: Arc<dyn ManagementTokenReadRepository>,
+    ) -> Self {
+        Self {
+            config: GatewayDataConfig::disabled(),
+            backends: None,
+            auth_api_key_reader: None,
+            auth_api_key_writer: None,
+            auth_module_reader: None,
+            auth_module_writer: None,
+            announcement_reader: None,
+            announcement_writer: None,
+            management_token_reader: Some(repository),
+            management_token_writer: None,
             oauth_provider_reader: None,
             oauth_provider_writer: None,
             proxy_node_reader: None,

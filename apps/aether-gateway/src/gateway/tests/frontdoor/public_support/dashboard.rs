@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    build_test_auth_token, sample_auth_session, sample_auth_user, sample_auth_wallet,
+    sample_provider, sample_user_usage_audit, start_auth_dashboard_gateway_with_state,
+    start_auth_gateway_with_builder, start_auth_gateway_with_usage_state, AppState, Arc,
+    GatewayDataState, InMemoryAuthApiKeySnapshotRepository,
+    InMemoryProviderCatalogReadRepository, InMemoryUsageReadRepository,
+    InMemoryUserReadRepository, InMemoryWalletRepository, StatusCode,
+    StoredAuthApiKeyExportRecord, StoredAuthApiKeySnapshot, StoredUserAuthRecord,
+    StoredUserExportRow, Utc, json,
+};
 
 fn stable_dashboard_now() -> chrono::DateTime<Utc> {
     Utc::now()
@@ -121,14 +130,14 @@ async fn gateway_handles_dashboard_stats_locally_without_proxying_upstream() {
     );
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state = GatewayDataState::with_user_wallet_and_usage_for_tests(
                 user_repository,
                 wallet_repository,
                 usage_repository,
             )
             .with_auth_api_key_reader(auth_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([session])
@@ -334,14 +343,14 @@ async fn gateway_handles_admin_dashboard_stats_locally_without_proxying_upstream
     );
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state = GatewayDataState::with_user_wallet_and_usage_for_tests(
                 user_repository,
                 wallet_repository,
                 usage_repository,
             )
             .with_auth_api_key_reader(auth_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([session])
@@ -443,7 +452,7 @@ async fn gateway_handles_dashboard_daily_stats_locally_without_proxying_upstream
     ]));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![
                 admin.clone(),
             ]));
@@ -457,7 +466,7 @@ async fn gateway_handles_dashboard_daily_stats_locally_without_proxying_upstream
                 wallet_repository,
                 usage_repository,
             );
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([session])

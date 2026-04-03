@@ -1,6 +1,7 @@
 use super::util::crc32;
-use super::*;
 use serde_json::{json, Value};
+
+use super::KiroToClaudeCliStreamState;
 
 fn encode_string_header(name: &str, value: &str) -> Vec<u8> {
     let mut out = Vec::new();

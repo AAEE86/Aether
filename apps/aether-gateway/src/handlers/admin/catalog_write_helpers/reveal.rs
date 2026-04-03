@@ -6,7 +6,13 @@ fn normalize_reveal_auth_type(value: &str) -> &str {
     }
 }
 
-use super::*;
+use crate::gateway::handlers::{
+    decrypt_catalog_secret_with_fallbacks, parse_catalog_auth_config_json,
+};
+use crate::gateway::AppState;
+use aether_data::repository::provider_catalog::StoredProviderCatalogKey;
+use chrono::{SecondsFormat, Utc};
+use serde_json::json;
 
 pub(crate) fn build_admin_reveal_key_payload(
     state: &AppState,

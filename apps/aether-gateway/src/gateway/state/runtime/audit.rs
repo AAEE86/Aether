@@ -1,4 +1,6 @@
-use super::*;
+use crate::gateway::{scheduler, usage, AppState, GatewayError};
+
+use super::super::{AUTH_API_KEY_LAST_USED_MAX_ENTRIES, AUTH_API_KEY_LAST_USED_TTL};
 
 impl AppState {
     pub(crate) async fn read_request_candidate_trace(

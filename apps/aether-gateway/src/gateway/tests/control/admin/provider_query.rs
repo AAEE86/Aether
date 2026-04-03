@@ -1,4 +1,24 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint,
+};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{
+    build_router_with_state, sample_admin_global_model, sample_admin_provider_model, sample_key,
+    sample_provider, start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 async fn assert_admin_provider_query_route(
     path: &str,
@@ -20,8 +40,7 @@ async fn assert_admin_provider_query_route(
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -134,7 +153,7 @@ async fn gateway_handles_admin_provider_query_models_locally_with_trusted_admin_
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -245,8 +264,7 @@ async fn gateway_rejects_admin_provider_query_invalid_json_body() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()

@@ -1,6 +1,13 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-const ADMIN_USAGE_RUST_BACKEND_DETAIL: &str = "Admin usage routes require Rust maintenance backend";
+const ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL: &str = "Admin usage data unavailable";
 
 #[path = "usage/analytics.rs"]
 mod analytics;
@@ -56,7 +63,7 @@ pub(crate) async fn maybe_build_local_admin_usage_response(
     Ok(None)
 }
 
-fn admin_usage_maintenance_response(detail: &'static str) -> Response<Body> {
+fn admin_usage_data_unavailable_response(detail: &'static str) -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
         Json(json!({ "detail": detail })),

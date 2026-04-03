@@ -1,4 +1,6 @@
-use super::*;
+use serde_json::{Map, Value};
+
+use super::super::super::{LocalVideoTaskStatus, OpenAiVideoTaskSeed};
 
 impl OpenAiVideoTaskSeed {
     pub(crate) fn apply_provider_body(&mut self, provider_body: &Map<String, Value>) {

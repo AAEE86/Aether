@@ -1,4 +1,19 @@
-use super::*;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+use super::{
+    auth_password_policy_level, build_auth_error_response, resolve_authenticated_local_user,
+    validate_auth_register_password, AppState, GatewayPublicRequestContext,
+};
+
+const USERS_ME_PROFILE_STORAGE_UNAVAILABLE_DETAIL: &str = "用户资料存储暂不可用";
+const USERS_ME_CREDENTIAL_STORAGE_UNAVAILABLE_DETAIL: &str = "用户凭证存储暂不可用";
 
 #[derive(Debug, Deserialize)]
 struct UsersMeUpdateProfileRequest {
@@ -97,7 +112,11 @@ pub(super) async fn handle_users_me_detail_put(
         .await
     {
         Ok(Some(_)) => Json(json!({ "message": "个人信息更新成功" })).into_response(),
-        Ok(None) => build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL),
+        Ok(None) => build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            USERS_ME_PROFILE_STORAGE_UNAVAILABLE_DETAIL,
+            false,
+        ),
         Err(err) => build_auth_error_response(
             http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("user profile update failed: {err:?}"),
@@ -197,7 +216,13 @@ pub(super) async fn handle_users_me_password_patch(
         .await
     {
         Ok(Some(_)) => {}
-        Ok(None) => return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL),
+        Ok(None) => {
+            return build_auth_error_response(
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                USERS_ME_CREDENTIAL_STORAGE_UNAVAILABLE_DETAIL,
+                false,
+            )
+        }
         Err(err) => {
             return build_auth_error_response(
                 http::StatusCode::INTERNAL_SERVER_ERROR,

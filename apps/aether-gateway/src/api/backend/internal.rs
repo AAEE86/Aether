@@ -9,7 +9,7 @@ use crate::gateway::{
 pub(crate) fn mount_internal_routes(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
-            "/api/internal/gateway/{*legacy_gateway_path}",
+            "/api/internal/gateway/{*internal_gateway_path}",
             any(proxy_request),
         )
         .route(PROXY_TUNNEL_PATH, get(proxy_tunnel))

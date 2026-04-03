@@ -1,5 +1,10 @@
-use super::*;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
+
 use serde_json::json;
+
+use super::{AppState, GatewayDataState};
+use crate::gateway::{provider_transport, usage};
 
 #[cfg(test)]
 impl AppState {
@@ -269,6 +274,16 @@ impl AppState {
         self
     }
 
+    pub(crate) fn without_auth_user_store_for_tests(mut self) -> Self {
+        self.auth_user_store = None;
+        self
+    }
+
+    pub(crate) fn without_auth_user_model_capability_store_for_tests(mut self) -> Self {
+        self.auth_user_model_capability_store = None;
+        self
+    }
+
     pub(crate) fn with_auth_wallets_for_tests<I>(mut self, wallets: I) -> Self
     where
         I: IntoIterator<Item = aether_data::repository::wallet::StoredWalletSnapshot>,
@@ -303,7 +318,7 @@ impl AppState {
 
     pub(crate) fn with_admin_payment_callbacks_for_tests<I>(mut self, callbacks: I) -> Self
     where
-        I: IntoIterator<Item = AdminPaymentCallbackRecord>,
+        I: IntoIterator<Item = crate::gateway::state::AdminPaymentCallbackRecord>,
     {
         let store = self
             .admin_payment_callback_store

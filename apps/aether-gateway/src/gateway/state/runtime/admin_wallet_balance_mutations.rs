@@ -1,4 +1,10 @@
-use super::*;
+use sqlx::Row;
+
+use crate::gateway::{
+    AdminWalletPaymentOrderRecord, AdminWalletTransactionRecord, AppState, GatewayError,
+};
+
+use super::{admin_wallet_build_order_no, admin_wallet_snapshot_from_row};
 
 impl AppState {
     pub(crate) async fn admin_adjust_wallet_balance(

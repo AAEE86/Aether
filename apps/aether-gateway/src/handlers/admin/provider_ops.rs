@@ -1,4 +1,6 @@
-pub(crate) use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::body::{Body, Bytes};
+use axum::http::Response;
 
 #[path = "provider_ops/architectures.rs"]
 mod provider_ops_architectures;
@@ -11,7 +13,7 @@ pub(crate) use self::provider_ops_providers::admin_provider_ops_local_action_res
 pub(crate) async fn maybe_build_local_admin_provider_ops_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     if let Some(response) =
         provider_ops_architectures::maybe_build_local_admin_provider_ops_architectures_response(

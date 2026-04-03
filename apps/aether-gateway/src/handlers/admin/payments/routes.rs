@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    build_admin_payments_data_unavailable_response,
+    payments_callbacks::maybe_build_local_admin_payment_callbacks_response,
+    payments_orders::maybe_build_local_admin_payment_orders_response,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{body::Body, http, response::Response};
 
 pub(super) async fn maybe_build_local_admin_payments_response(
     state: &AppState,
@@ -44,7 +50,7 @@ pub(super) async fn maybe_build_local_admin_payments_response(
     }
 
     let route_kind = decision.route_kind.as_deref();
-    if let Some(response) = payments_orders::maybe_build_local_admin_payment_orders_response(
+    if let Some(response) = maybe_build_local_admin_payment_orders_response(
         state,
         request_context,
         request_body,
@@ -54,15 +60,12 @@ pub(super) async fn maybe_build_local_admin_payments_response(
     {
         return Ok(Some(response));
     }
-    if let Some(response) = payments_callbacks::maybe_build_local_admin_payment_callbacks_response(
-        state,
-        request_context,
-        route_kind,
-    )
-    .await?
+    if let Some(response) =
+        maybe_build_local_admin_payment_callbacks_response(state, request_context, route_kind)
+            .await?
     {
         return Ok(Some(response));
     }
 
-    Ok(Some(build_admin_payments_maintenance_response()))
+    Ok(Some(build_admin_payments_data_unavailable_response()))
 }

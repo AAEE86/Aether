@@ -1,4 +1,10 @@
-use super::*;
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) const ADMIN_PROVIDER_QUERY_INVALID_JSON_DETAIL: &str = "Invalid JSON request body";
 pub(super) const ADMIN_PROVIDER_QUERY_PROVIDER_ID_REQUIRED_DETAIL: &str = "provider_id is required";
@@ -33,7 +39,7 @@ pub(super) fn build_admin_provider_query_not_found_response(
 }
 
 pub(super) fn parse_admin_provider_query_body(
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<serde_json::Value, Response<Body>> {
     let Some(raw_body) = request_body else {
         return Ok(json!({}));

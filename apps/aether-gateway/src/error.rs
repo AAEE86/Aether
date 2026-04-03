@@ -19,10 +19,10 @@ impl IntoResponse for GatewayError {
     fn into_response(self) -> Response<Body> {
         match self {
             Self::UpstreamUnavailable { trace_id, message } => {
-                warn!(trace_id = %trace_id, error = %message, "gateway upstream unavailable");
+                warn!(trace_id = %trace_id, error = %message, "gateway proxy unavailable");
                 let body = Json(json!({
                     "error": {
-                        "message": "gateway upstream unavailable",
+                        "message": "gateway proxy unavailable",
                         "trace_id": trace_id,
                     }
                 }));

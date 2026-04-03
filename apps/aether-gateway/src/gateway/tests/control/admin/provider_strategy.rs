@@ -1,8 +1,25 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
+};
+use aether_data::repository::usage::{InMemoryUsageReadRepository, StoredProviderUsageWindow};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::{Method, StatusCode};
+use serde_json::json;
+
+use super::super::{build_router_with_state, sample_provider, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 async fn assert_provider_strategy_route_returns_local_503(
-    data_state: crate::gateway::gateway_data::GatewayDataState,
-    method: http::Method,
+    data_state: GatewayDataState,
+    method: Method,
     path: &str,
     body: Option<serde_json::Value>,
     expected_message: &str,
@@ -22,7 +39,7 @@ async fn assert_provider_strategy_route_returns_local_503(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -48,10 +65,9 @@ async fn assert_provider_strategy_route_returns_local_503(
     upstream_handle.abort();
 }
 
-const PROVIDER_STRATEGY_MAINTENANCE_MESSAGE: &str =
-    "Admin provider strategy routes require Rust maintenance backend";
-const PROVIDER_STRATEGY_STATS_MAINTENANCE_MESSAGE: &str =
-    "Admin provider strategy stats require Rust maintenance backend";
+const PROVIDER_STRATEGY_DATA_UNAVAILABLE_MESSAGE: &str = "Admin provider strategy data unavailable";
+const PROVIDER_STRATEGY_STATS_DATA_UNAVAILABLE_MESSAGE: &str =
+    "Admin provider strategy stats data unavailable";
 
 #[tokio::test]
 async fn gateway_handles_admin_provider_strategy_list_locally_with_trusted_admin_principal() {
@@ -69,8 +85,7 @@ async fn gateway_handles_admin_provider_strategy_list_locally_with_trusted_admin
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -97,11 +112,11 @@ async fn gateway_handles_admin_provider_strategy_list_locally_with_trusted_admin
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_provider_strategy_billing_locally_returns_maintenance_when_disabled()
-{
+async fn gateway_handles_admin_provider_strategy_billing_locally_returns_service_unavailable_when_disabled(
+) {
     assert_provider_strategy_route_returns_local_503(
         crate::gateway::gateway_data::GatewayDataState::disabled(),
-        http::Method::PUT,
+        Method::PUT,
         "/api/admin/provider-strategy/providers/provider-openai/billing",
         Some(json!({
             "billing_type": "monthly_quota",
@@ -112,53 +127,51 @@ async fn gateway_handles_admin_provider_strategy_billing_locally_returns_mainten
             "rpm_limit": 20,
             "provider_priority": 5
         })),
-        PROVIDER_STRATEGY_MAINTENANCE_MESSAGE,
+        PROVIDER_STRATEGY_DATA_UNAVAILABLE_MESSAGE,
     )
     .await;
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_provider_strategy_stats_locally_returns_maintenance_without_usage_reader(
+async fn gateway_handles_admin_provider_strategy_stats_locally_returns_service_unavailable_without_usage_reader(
 ) {
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider("provider-openai", "openai", 10)],
         vec![],
         vec![],
     ));
-    let catalog_reader: Arc<
-        dyn aether_data::repository::provider_catalog::ProviderCatalogReadRepository,
-    > = provider_catalog_repository.clone();
+    let catalog_reader: Arc<dyn ProviderCatalogReadRepository> =
+        provider_catalog_repository.clone();
     assert_provider_strategy_route_returns_local_503(
         crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
             catalog_reader,
         ),
-        http::Method::GET,
+        Method::GET,
         "/api/admin/provider-strategy/providers/provider-openai/stats?hours=1",
         None,
-        PROVIDER_STRATEGY_STATS_MAINTENANCE_MESSAGE,
+        PROVIDER_STRATEGY_STATS_DATA_UNAVAILABLE_MESSAGE,
     )
     .await;
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_provider_strategy_quota_locally_returns_maintenance_without_writer()
-{
+async fn gateway_handles_admin_provider_strategy_quota_locally_returns_service_unavailable_without_writer(
+) {
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider("provider-openai", "openai", 10)],
         vec![],
         vec![],
     ));
-    let catalog_reader: Arc<
-        dyn aether_data::repository::provider_catalog::ProviderCatalogReadRepository,
-    > = provider_catalog_repository.clone();
+    let catalog_reader: Arc<dyn ProviderCatalogReadRepository> =
+        provider_catalog_repository.clone();
     assert_provider_strategy_route_returns_local_503(
         crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
             catalog_reader,
         ),
-        http::Method::DELETE,
+        Method::DELETE,
         "/api/admin/provider-strategy/providers/provider-openai/quota",
         None,
-        PROVIDER_STRATEGY_MAINTENANCE_MESSAGE,
+        PROVIDER_STRATEGY_DATA_UNAVAILABLE_MESSAGE,
     )
     .await;
 }
@@ -193,7 +206,7 @@ async fn gateway_resets_admin_provider_strategy_quota_locally_with_trusted_admin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -264,7 +277,7 @@ async fn gateway_updates_admin_provider_strategy_billing_locally_with_trusted_ad
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -348,44 +361,43 @@ async fn gateway_syncs_admin_provider_strategy_monthly_usage_from_reset_window_l
         vec![],
     ));
     let usage_repository = Arc::new(
-        aether_data::repository::usage::InMemoryUsageReadRepository::default()
-            .with_provider_usage_windows(vec![
-                aether_data::repository::usage::StoredProviderUsageWindow::new(
-                    "provider-openai".to_string(),
-                    1_772_236_799,
-                    8,
-                    7,
-                    1,
-                    100.0,
-                    9.99,
-                )
-                .expect("window should build"),
-                aether_data::repository::usage::StoredProviderUsageWindow::new(
-                    "provider-openai".to_string(),
-                    1_772_323_200,
-                    5,
-                    5,
-                    0,
-                    110.0,
-                    1.25,
-                )
-                .expect("window should build"),
-                aether_data::repository::usage::StoredProviderUsageWindow::new(
-                    "provider-openai".to_string(),
-                    1_772_409_600,
-                    6,
-                    5,
-                    1,
-                    150.0,
-                    0.75,
-                )
-                .expect("window should build"),
-            ]),
+        InMemoryUsageReadRepository::default().with_provider_usage_windows(vec![
+            StoredProviderUsageWindow::new(
+                "provider-openai".to_string(),
+                1_772_236_799,
+                8,
+                7,
+                1,
+                100.0,
+                9.99,
+            )
+            .expect("window should build"),
+            StoredProviderUsageWindow::new(
+                "provider-openai".to_string(),
+                1_772_323_200,
+                5,
+                5,
+                0,
+                110.0,
+                1.25,
+            )
+            .expect("window should build"),
+            StoredProviderUsageWindow::new(
+                "provider-openai".to_string(),
+                1_772_409_600,
+                6,
+                5,
+                1,
+                150.0,
+                0.75,
+            )
+            .expect("window should build"),
+        ]),
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_and_usage_reader_for_tests(
@@ -457,34 +469,33 @@ async fn gateway_reads_admin_provider_strategy_stats_locally_with_trusted_admin_
         vec![],
     ));
     let usage_repository = Arc::new(
-        aether_data::repository::usage::InMemoryUsageReadRepository::default()
-            .with_provider_usage_windows(vec![
-                aether_data::repository::usage::StoredProviderUsageWindow::new(
-                    "provider-openai".to_string(),
-                    1_700_000_000,
-                    10,
-                    9,
-                    1,
-                    120.0,
-                    1.25,
-                )
-                .expect("window should build"),
-                aether_data::repository::usage::StoredProviderUsageWindow::new(
-                    "provider-openai".to_string(),
-                    1_700_003_600,
-                    6,
-                    5,
-                    1,
-                    180.0,
-                    0.75,
-                )
-                .expect("window should build"),
-            ]),
+        InMemoryUsageReadRepository::default().with_provider_usage_windows(vec![
+            StoredProviderUsageWindow::new(
+                "provider-openai".to_string(),
+                1_700_000_000,
+                10,
+                9,
+                1,
+                120.0,
+                1.25,
+            )
+            .expect("window should build"),
+            StoredProviderUsageWindow::new(
+                "provider-openai".to_string(),
+                1_700_003_600,
+                6,
+                5,
+                1,
+                180.0,
+                0.75,
+            )
+            .expect("window should build"),
+        ]),
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_and_usage_reader_for_tests(
@@ -557,24 +568,23 @@ async fn gateway_rounds_admin_provider_strategy_stats_total_cost_locally() {
         vec![],
     ));
     let usage_repository = Arc::new(
-        aether_data::repository::usage::InMemoryUsageReadRepository::default()
-            .with_provider_usage_windows(vec![
-                aether_data::repository::usage::StoredProviderUsageWindow::new(
-                    "provider-openai".to_string(),
-                    1_700_000_000,
-                    2,
-                    2,
-                    0,
-                    120.0,
-                    1.23456,
-                )
-                .expect("window should build"),
-            ]),
+        InMemoryUsageReadRepository::default().with_provider_usage_windows(vec![
+            StoredProviderUsageWindow::new(
+                "provider-openai".to_string(),
+                1_700_000_000,
+                2,
+                2,
+                0,
+                120.0,
+                1.23456,
+            )
+            .expect("window should build"),
+        ]),
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_and_usage_reader_for_tests(

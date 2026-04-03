@@ -1,4 +1,11 @@
-use super::*;
+use super::ADMIN_MONITORING_DATA_UNAVAILABLE_DETAIL;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) struct AdminMonitoringCacheSnapshot {
     pub(super) scheduler_name: String,
@@ -28,10 +35,10 @@ pub(super) struct AdminMonitoringCacheAffinityRecord {
     pub(super) request_count: u64,
 }
 
-pub(super) fn admin_monitoring_maintenance_response() -> Response<Body> {
+pub(super) fn admin_monitoring_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_MONITORING_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_MONITORING_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }

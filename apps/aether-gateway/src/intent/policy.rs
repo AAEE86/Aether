@@ -6,14 +6,9 @@ use axum::body::Bytes;
 
 use crate::gateway::headers::header_value_str;
 use crate::gateway::provider_transport::is_codex_cli_backend_url;
-use crate::gateway::{AppState, GatewayControlDecision, GatewayControlSyncDecisionResponse};
 use crate::gateway::{
-    DIRECT_PLAN_BYPASS_MAX_ENTRIES, DIRECT_PLAN_BYPASS_TTL, GEMINI_FILES_DELETE_PLAN_KIND,
-    GEMINI_FILES_DOWNLOAD_PLAN_KIND, GEMINI_FILES_GET_PLAN_KIND, GEMINI_FILES_LIST_PLAN_KIND,
-    GEMINI_FILES_UPLOAD_PLAN_KIND, GEMINI_VIDEO_CANCEL_SYNC_PLAN_KIND,
-    GEMINI_VIDEO_CREATE_SYNC_PLAN_KIND, OPENAI_VIDEO_CANCEL_SYNC_PLAN_KIND,
-    OPENAI_VIDEO_CONTENT_PLAN_KIND, OPENAI_VIDEO_CREATE_SYNC_PLAN_KIND,
-    OPENAI_VIDEO_DELETE_SYNC_PLAN_KIND, OPENAI_VIDEO_REMIX_SYNC_PLAN_KIND,
+    AppState, GatewayControlDecision, GatewayControlSyncDecisionResponse,
+    DIRECT_PLAN_BYPASS_MAX_ENTRIES, DIRECT_PLAN_BYPASS_TTL,
 };
 
 pub(crate) fn should_bypass_execution_runtime_decision(
@@ -51,24 +46,6 @@ pub(crate) fn should_bypass_execution_runtime_plan(plan: &ExecutionPlan) -> bool
     }
 
     is_codex_cli_backend_url(&plan.url)
-}
-
-pub(crate) fn allows_remote_python_control_fallback(plan_kind: &str) -> bool {
-    matches!(
-        plan_kind,
-        GEMINI_FILES_GET_PLAN_KIND
-            | GEMINI_FILES_UPLOAD_PLAN_KIND
-            | GEMINI_FILES_LIST_PLAN_KIND
-            | GEMINI_FILES_DELETE_PLAN_KIND
-            | GEMINI_FILES_DOWNLOAD_PLAN_KIND
-            | OPENAI_VIDEO_CONTENT_PLAN_KIND
-            | OPENAI_VIDEO_CREATE_SYNC_PLAN_KIND
-            | OPENAI_VIDEO_CANCEL_SYNC_PLAN_KIND
-            | OPENAI_VIDEO_REMIX_SYNC_PLAN_KIND
-            | OPENAI_VIDEO_DELETE_SYNC_PLAN_KIND
-            | GEMINI_VIDEO_CREATE_SYNC_PLAN_KIND
-            | GEMINI_VIDEO_CANCEL_SYNC_PLAN_KIND
-    )
 }
 
 pub(crate) fn build_direct_plan_bypass_cache_key(

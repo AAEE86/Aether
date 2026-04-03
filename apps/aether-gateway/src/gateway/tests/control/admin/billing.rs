@@ -1,5 +1,18 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
 use aether_data::repository::users::InMemoryUserReadRepository;
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 async fn assert_admin_billing_get_returns_local(
     path: &str,
@@ -18,8 +31,7 @@ async fn assert_admin_billing_get_returns_local(
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -76,8 +88,7 @@ async fn gateway_handles_admin_billing_presets_locally_with_trusted_admin_princi
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -118,7 +129,7 @@ async fn gateway_handles_admin_billing_apply_preset_locally_with_trusted_admin_p
     );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_billing_collectors_for_tests(Vec::<
                 crate::gateway::AdminBillingCollectorRecord,
@@ -202,7 +213,7 @@ async fn gateway_returns_conflict_for_admin_billing_apply_preset_when_backend_un
         }),
     );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let mut state = AppState::new(upstream_url.clone())
+    let mut state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(Arc::new(
@@ -258,7 +269,7 @@ async fn gateway_handles_admin_billing_rule_routes_locally_with_trusted_admin_pr
         );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_billing_rules_for_tests([
                 crate::gateway::AdminBillingRuleRecord {
@@ -350,8 +361,7 @@ async fn gateway_handles_admin_billing_rule_routes_locally_with_trusted_admin_pr
             }),
         );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let create_response = send_admin_billing_request(
@@ -431,7 +441,7 @@ async fn gateway_returns_conflict_for_admin_billing_rule_create_when_backend_una
         }),
     );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let mut state = AppState::new(upstream_url.clone())
+    let mut state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(Arc::new(
@@ -495,7 +505,7 @@ async fn gateway_handles_admin_billing_collector_routes_locally_with_trusted_adm
         );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_billing_collectors_for_tests([
                 crate::gateway::AdminBillingCollectorRecord {
@@ -584,8 +594,7 @@ async fn gateway_handles_admin_billing_collector_routes_locally_with_trusted_adm
             }),
         );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let create_response = send_admin_billing_request(

@@ -1,7 +1,9 @@
-use super::*;
+use crate::gateway::tests::{
+    any, build_router, start_server, Arc, Body, Mutex, Request, Router, StatusCode,
+};
 
 #[tokio::test]
-async fn gateway_handles_legacy_oauth_public_providers_without_proxying_upstream() {
+async fn gateway_rejects_oauth_public_providers_as_local_not_found_without_hitting_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -16,7 +18,7 @@ async fn gateway_handles_legacy_oauth_public_providers_without_proxying_upstream
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -25,12 +27,10 @@ async fn gateway_handles_legacy_oauth_public_providers_without_proxying_upstream
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(
-        payload["detail"],
-        "OAuth public routes are retired; use Rust maintenance backend"
-    );
+    assert_eq!(payload["error"]["type"], "http_error");
+    assert_eq!(payload["error"]["message"], "Route not found");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -38,7 +38,8 @@ async fn gateway_handles_legacy_oauth_public_providers_without_proxying_upstream
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_oauth_user_bindable_providers_without_proxying_upstream() {
+async fn gateway_rejects_oauth_user_bindable_providers_as_local_not_found_without_hitting_upstream()
+{
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -53,7 +54,7 @@ async fn gateway_handles_legacy_oauth_user_bindable_providers_without_proxying_u
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -62,12 +63,10 @@ async fn gateway_handles_legacy_oauth_user_bindable_providers_without_proxying_u
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(
-        payload["detail"],
-        "OAuth user routes are retired; use Rust maintenance backend"
-    );
+    assert_eq!(payload["error"]["type"], "http_error");
+    assert_eq!(payload["error"]["message"], "Route not found");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -75,7 +74,7 @@ async fn gateway_handles_legacy_oauth_user_bindable_providers_without_proxying_u
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_oauth_user_bind_token_without_proxying_upstream() {
+async fn gateway_rejects_oauth_user_bind_token_as_local_not_found_without_hitting_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -90,7 +89,7 @@ async fn gateway_handles_legacy_oauth_user_bind_token_without_proxying_upstream(
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -99,12 +98,10 @@ async fn gateway_handles_legacy_oauth_user_bind_token_without_proxying_upstream(
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(
-        payload["detail"],
-        "OAuth user routes are retired; use Rust maintenance backend"
-    );
+    assert_eq!(payload["error"]["type"], "http_error");
+    assert_eq!(payload["error"]["message"], "Route not found");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

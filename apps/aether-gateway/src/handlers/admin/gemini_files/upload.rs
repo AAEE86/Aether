@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    admin_gemini_files_error_response, admin_gemini_files_key_capable,
+    ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
+};
+use crate::gateway::handlers::{is_admin_gemini_files_upload_root, query_param_value};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use aether_contracts::{ExecutionPlan, ExecutionResult, RequestBody};
+use aether_data::repository::provider_catalog::{
+    StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
+};
+use axum::body::{Body, Bytes};
+use axum::http::{self, Response};
+use axum::response::IntoResponse;
+use axum::Json;
+use base64::Engine as _;
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 struct AdminGeminiFilesUploadRequest {
@@ -18,7 +34,7 @@ struct AdminGeminiFilesUploadExecutionSuccess {
 pub(super) async fn maybe_build_local_admin_gemini_files_upload_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     match request_context
         .control_decision
@@ -32,7 +48,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_upload_response(
             if !state.has_gemini_file_mapping_data_writer() {
                 return Ok(Some(admin_gemini_files_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
-                    ADMIN_GEMINI_FILES_RUST_BACKEND_DETAIL,
+                    ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
             let upload =

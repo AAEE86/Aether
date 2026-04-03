@@ -4,17 +4,30 @@ use super::provider_strategy_builders::{
     AdminProviderStrategyBillingRequest,
 };
 use super::provider_strategy_shared::{
+    admin_provider_strategy_data_unavailable_response,
     admin_provider_strategy_dispatcher_not_found_response,
-    admin_provider_strategy_maintenance_response,
     admin_provider_strategy_provider_not_found_response,
-    ADMIN_PROVIDER_STRATEGY_RUST_BACKEND_DETAIL, ADMIN_PROVIDER_STRATEGY_STATS_RUST_BACKEND_DETAIL,
+    ADMIN_PROVIDER_STRATEGY_DATA_UNAVAILABLE_DETAIL,
+    ADMIN_PROVIDER_STRATEGY_STATS_DATA_UNAVAILABLE_DETAIL,
 };
-use super::*;
+use crate::gateway::handlers::{
+    admin_provider_id_for_provider_strategy_billing, admin_provider_id_for_provider_strategy_quota,
+    admin_provider_id_for_provider_strategy_stats, is_admin_provider_strategy_strategies_root,
+    query_param_value,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn maybe_build_local_admin_provider_strategy_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -34,8 +47,8 @@ pub(super) async fn maybe_build_local_admin_provider_strategy_response(
         && request_context.request_method == http::Method::PUT
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(admin_provider_strategy_maintenance_response(
-                ADMIN_PROVIDER_STRATEGY_RUST_BACKEND_DETAIL,
+            return Ok(Some(admin_provider_strategy_data_unavailable_response(
+                ADMIN_PROVIDER_STRATEGY_DATA_UNAVAILABLE_DETAIL,
             )));
         }
 
@@ -77,8 +90,8 @@ pub(super) async fn maybe_build_local_admin_provider_strategy_response(
         && request_context.request_method == http::Method::GET
     {
         if !state.has_provider_catalog_data_reader() || !state.has_usage_data_reader() {
-            return Ok(Some(admin_provider_strategy_maintenance_response(
-                ADMIN_PROVIDER_STRATEGY_STATS_RUST_BACKEND_DETAIL,
+            return Ok(Some(admin_provider_strategy_data_unavailable_response(
+                ADMIN_PROVIDER_STRATEGY_STATS_DATA_UNAVAILABLE_DETAIL,
             )));
         }
 
@@ -102,8 +115,8 @@ pub(super) async fn maybe_build_local_admin_provider_strategy_response(
         && request_context.request_method == http::Method::DELETE
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(admin_provider_strategy_maintenance_response(
-                ADMIN_PROVIDER_STRATEGY_RUST_BACKEND_DETAIL,
+            return Ok(Some(admin_provider_strategy_data_unavailable_response(
+                ADMIN_PROVIDER_STRATEGY_DATA_UNAVAILABLE_DETAIL,
             )));
         }
 

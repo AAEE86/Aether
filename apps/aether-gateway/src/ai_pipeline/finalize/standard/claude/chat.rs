@@ -1,11 +1,14 @@
 use base64::Engine as _;
+use std::collections::BTreeMap;
 
-use super::*;
+use serde_json::{json, Map, Value};
+
 use crate::gateway::ai_pipeline::finalize::common::{
     build_generated_tool_call_id, build_local_success_outcome, canonicalize_tool_arguments,
     local_finalize_allows_envelope, parse_stream_json_events, unwrap_local_finalize_response_value,
     LocalCoreSyncFinalizeOutcome,
 };
+use crate::gateway::{GatewayControlDecision, GatewayError, GatewaySyncReportRequest};
 
 #[derive(Debug, Default)]
 struct ClaudeContentBlockState {

@@ -1,12 +1,25 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
 };
 use aether_data::repository::users::{InMemoryUserReadRepository, StoredUserAuthRecord};
+use aether_data::repository::wallet::InMemoryWalletRepository;
 use aether_data::repository::wallet::StoredWalletSnapshot;
+use axum::body::Body;
+use axum::routing::{any, get, post};
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
 
-const ADMIN_WALLETS_RUST_BACKEND_DETAIL: &str =
-    "Admin wallets routes require Rust maintenance backend";
+use super::super::{build_router_with_state, issue_test_admin_access_token, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
+
+const ADMIN_WALLETS_DATA_UNAVAILABLE_DETAIL: &str = "Admin wallets data unavailable";
 const ADMIN_WALLETS_API_KEY_REFUND_DETAIL: &str = "独立密钥钱包不支持退款审批";
 
 async fn assert_admin_wallets_route_returns_local_503(path: &str) {
@@ -24,8 +37,7 @@ async fn assert_admin_wallets_route_returns_local_503(path: &str) {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -40,7 +52,7 @@ async fn assert_admin_wallets_route_returns_local_503(path: &str) {
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["detail"], ADMIN_WALLETS_RUST_BACKEND_DETAIL);
+    assert_eq!(payload["detail"], ADMIN_WALLETS_DATA_UNAVAILABLE_DETAIL);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -62,8 +74,7 @@ async fn assert_admin_wallets_post_route_returns_local_503(path: &str) {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -79,7 +90,7 @@ async fn assert_admin_wallets_post_route_returns_local_503(path: &str) {
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["detail"], ADMIN_WALLETS_RUST_BACKEND_DETAIL);
+    assert_eq!(payload["detail"], ADMIN_WALLETS_DATA_UNAVAILABLE_DETAIL);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -220,8 +231,7 @@ async fn gateway_handles_admin_wallets_list_locally_with_trusted_admin_principal
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -264,7 +274,7 @@ async fn gateway_handles_admin_wallets_list_locally_with_bearer_admin_session() 
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let state = AppState::new().expect("gateway should build");
     let access_token = issue_test_admin_access_token(&state, "device-admin-wallets").await;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -307,8 +317,7 @@ async fn gateway_handles_admin_wallets_ledger_locally_with_trusted_admin_princip
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -395,7 +404,7 @@ async fn gateway_handles_admin_wallets_refund_requests_locally_with_trusted_admi
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -500,8 +509,7 @@ async fn gateway_rejects_admin_wallets_refund_requests_for_api_key_owner_type_lo
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -586,7 +594,7 @@ async fn gateway_handles_admin_wallets_detail_locally_with_trusted_admin_princip
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -687,7 +695,7 @@ async fn gateway_handles_admin_api_key_wallet_detail_locally_with_trusted_admin_
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_and_wallet_for_tests(
@@ -777,7 +785,7 @@ async fn gateway_handles_admin_wallets_transactions_locally_with_trusted_admin_p
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -866,8 +874,7 @@ async fn gateway_returns_bad_request_for_admin_wallet_transactions_with_empty_wa
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -928,7 +935,7 @@ async fn gateway_handles_admin_wallets_refunds_locally_with_trusted_admin_princi
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -1062,7 +1069,7 @@ async fn gateway_rejects_admin_api_key_wallet_refunds_locally_with_trusted_admin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_and_wallet_for_tests(
@@ -1114,7 +1121,7 @@ async fn gateway_handles_admin_wallets_adjust_locally_with_trusted_admin_princip
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-adjust-123",
@@ -1176,7 +1183,7 @@ async fn gateway_handles_admin_wallets_recharge_locally_with_trusted_admin_princ
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-recharge-123",
@@ -1236,7 +1243,7 @@ async fn gateway_handles_admin_wallets_process_refund_locally_with_trusted_admin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-123",
@@ -1313,8 +1320,7 @@ async fn gateway_returns_bad_request_for_admin_wallet_process_refund_with_empty_
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -1355,7 +1361,7 @@ async fn gateway_handles_admin_wallets_complete_refund_locally_with_trusted_admi
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-123",
@@ -1437,7 +1443,7 @@ async fn gateway_handles_admin_wallets_fail_refund_locally_with_trusted_admin_pr
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([wallet])
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order_record(
@@ -1543,7 +1549,7 @@ async fn gateway_rejects_admin_api_key_wallet_process_refund_locally_with_truste
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_and_wallet_for_tests(

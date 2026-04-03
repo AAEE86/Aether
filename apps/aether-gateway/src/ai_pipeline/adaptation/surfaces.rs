@@ -139,7 +139,14 @@ pub(crate) fn provider_adaptation_should_unwrap_stream_envelope(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        provider_adaptation_allows_sync_finalize_envelope,
+        provider_adaptation_anchor_api_format,
+        provider_adaptation_requires_eventstream_accept,
+        provider_adaptation_should_unwrap_stream_envelope,
+        ANTIGRAVITY_V1INTERNAL_ENVELOPE_NAME, GEMINI_CLI_V1INTERNAL_ENVELOPE_NAME,
+        KIRO_ENVELOPE_NAME,
+    };
 
     #[test]
     fn resolves_private_surface_anchor_contracts() {

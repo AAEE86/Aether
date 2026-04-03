@@ -1,4 +1,17 @@
-use super::*;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+use super::{
+    build_auth_error_response, format_users_me_optional_datetime_iso8601,
+    format_users_me_required_session_datetime_iso8601, resolve_authenticated_local_user, AppState,
+    GatewayPublicRequestContext,
+};
 
 #[derive(Debug, Deserialize)]
 struct UsersMeUpdateSessionLabelRequest {
@@ -6,16 +19,18 @@ struct UsersMeUpdateSessionLabelRequest {
 }
 
 fn users_me_session_id_from_path(request_path: &str) -> Option<String> {
-    request_path
+    let raw = request_path
         .strip_prefix("/api/users/me/sessions/")?
         .trim()
-        .trim_matches('/')
-        .split('/')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|value| !value.contains('/'))
-        .map(ToOwned::to_owned)
+        .trim_matches('/');
+    if raw.is_empty() || raw.contains('/') {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+pub(super) fn users_me_session_detail_path_matches(request_path: &str) -> bool {
+    users_me_session_id_from_path(request_path).is_some()
 }
 
 fn build_users_me_session_payload(
@@ -131,7 +146,7 @@ pub(super) async fn handle_users_me_delete_session(
         Err(response) => return response,
     };
     let Some(session_id) = users_me_session_id_from_path(&request_context.request_path) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "会话不存在", false);
     };
 
     let session = match state.find_user_session(&auth.user.id, &session_id).await {
@@ -181,7 +196,7 @@ pub(super) async fn handle_users_me_update_session(
         Err(response) => return response,
     };
     let Some(session_id) = users_me_session_id_from_path(&request_context.request_path) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "会话不存在", false);
     };
     let Some(request_body) = request_body else {
         return build_auth_error_response(http::StatusCode::BAD_REQUEST, "请求数据验证失败", false);

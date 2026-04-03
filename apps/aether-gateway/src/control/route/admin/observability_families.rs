@@ -1,4 +1,6 @@
-use super::*;
+use axum::http;
+
+use super::{classified, ClassifiedRoute};
 
 pub(super) fn classify_admin_observability_family_route(
     method: &http::Method,

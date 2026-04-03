@@ -28,8 +28,6 @@ pub(super) use super::{
     GatewayFallbackMetricKind, GatewayFallbackReason, UsageRuntimeConfig, VideoTaskTruthSourceMode,
 };
 
-pub(super) const LEGACY_INTERNAL_GATEWAY_HEADER: &str = "x-aether-legacy-internal-gateway";
-
 pub(super) async fn start_server(app: Router) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -46,26 +44,19 @@ pub(super) async fn start_server(app: Router) -> (String, tokio::task::JoinHandl
     (format!("http://{addr}"), handle)
 }
 
-pub(super) fn build_router_with_test_remote_execution_runtime(
-    upstream_base_url: impl Into<String>,
-    test_remote_execution_runtime_base_url: impl Into<String>,
+pub(super) fn build_router_with_execution_runtime_override(
+    execution_runtime_override_base_url: impl Into<String>,
 ) -> Router {
-    let state = build_state_with_test_remote_execution_runtime(
-        upstream_base_url.into(),
-        test_remote_execution_runtime_base_url.into(),
-    );
+    let state = build_state_with_execution_runtime_override(execution_runtime_override_base_url);
     build_router_with_state(state)
 }
 
-pub(super) fn build_state_with_test_remote_execution_runtime(
-    upstream_base_url: impl Into<String>,
-    test_remote_execution_runtime_base_url: impl Into<String>,
+pub(super) fn build_state_with_execution_runtime_override(
+    execution_runtime_override_base_url: impl Into<String>,
 ) -> AppState {
-    AppState::new_with_test_remote_execution_runtime(
-        upstream_base_url.into(),
-        Some(test_remote_execution_runtime_base_url.into()),
-    )
-    .expect("gateway should build")
+    AppState::new()
+        .expect("gateway should build")
+        .with_execution_runtime_override_base_url(execution_runtime_override_base_url)
 }
 
 pub(super) async fn wait_until(timeout_ms: u64, mut predicate: impl FnMut() -> bool) {

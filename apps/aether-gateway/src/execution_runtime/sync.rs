@@ -38,7 +38,7 @@ pub(crate) async fn maybe_execute_via_execution_runtime_sync(
     #[cfg(test)]
     {
         if state
-            .test_remote_execution_runtime_base_url()
+            .execution_runtime_override_base_url()
             .unwrap_or_default()
             .is_empty()
             && parts.method != http::Method::POST

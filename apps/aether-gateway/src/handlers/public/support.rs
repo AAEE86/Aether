@@ -1,4 +1,23 @@
-pub(crate) use super::*;
+use super::{
+    build_api_format_health_monitor_payload, build_public_auth_modules_status_payload,
+    build_public_catalog_models_payload, build_public_catalog_search_models_payload,
+    build_public_providers_payload, capability_detail_by_name, escape_admin_email_template_html,
+    ldap_module_config_is_valid, module_available_from_env, read_admin_email_template_payload,
+    render_admin_email_template_html, serialize_public_capability, supported_capability_names,
+    system_config_bool, system_config_string, ApiFormatHealthMonitorOptions,
+    PUBLIC_CAPABILITY_DEFINITIONS,
+};
+use crate::gateway::handlers::{
+    decrypt_catalog_secret_with_fallbacks, encrypt_catalog_secret_with_fallbacks, query_param_bool,
+    query_param_optional_bool, query_param_value, unix_secs_to_rfc3339,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::body::{Body, Bytes};
+use axum::http::{self, Response};
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "support/announcements.rs"]
 mod support_announcements;
@@ -34,25 +53,36 @@ use self::support_auth::auth_session::{
 };
 use self::support_auth::{
     build_auth_error_response, build_auth_json_response, build_auth_registration_settings_payload,
-    build_auth_settings_payload, maybe_build_local_auth_legacy_response,
+    build_auth_settings_payload, maybe_build_local_auth_response,
 };
-use self::support_dashboard::maybe_build_local_dashboard_legacy_response;
+use self::support_dashboard::maybe_build_local_dashboard_response;
 use self::support_models::{
     build_models_auth_error_response, maybe_build_local_models_response, models_api_format,
 };
 use self::support_monitoring::maybe_build_local_user_monitoring_response;
 use self::support_payment::maybe_build_local_payment_callback_response;
 use self::support_test_connection::maybe_build_local_test_connection_response;
-use self::support_user_me::maybe_build_local_users_me_legacy_response;
+use self::support_user_me::maybe_build_local_users_me_response;
 use self::support_wallet::{
-    maybe_build_local_wallet_legacy_response, sanitize_wallet_gateway_response,
+    maybe_build_local_wallet_response, sanitize_wallet_gateway_response,
     wallet_normalize_optional_string_field, wallet_payment_order_payload_from_row,
 };
 
-fn build_public_support_maintenance_response(detail: &str) -> Response<Body> {
+pub(crate) fn build_unhandled_public_support_response(
+    request_context: &GatewayPublicRequestContext,
+) -> Response<Body> {
+    let decision = request_context
+        .control_decision
+        .as_ref()
+        .expect("public support response requires control decision");
     (
-        http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": detail })),
+        http::StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "detail": "public support route not implemented in rust frontdoor",
+            "route_family": decision.route_family,
+            "route_kind": decision.route_kind,
+            "request_path": request_context.request_path,
+        })),
     )
         .into_response()
 }
@@ -61,58 +91,27 @@ pub(crate) async fn maybe_build_local_public_support_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
     if decision.route_class.as_deref() != Some("public_support") {
         return None;
     }
 
-    if decision.route_family.as_deref() == Some("oauth_public_legacy") {
-        return Some(
-            (
-                http::StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "detail": "OAuth public routes are retired; use Rust maintenance backend",
-                })),
-            )
-                .into_response(),
-        );
+    if decision.route_family.as_deref() == Some("auth") {
+        return maybe_build_local_auth_response(state, request_context, headers, request_body)
+            .await;
     }
 
-    if decision.route_family.as_deref() == Some("oauth_user_legacy") {
-        return Some(
-            (
-                http::StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "detail": "OAuth user routes are retired; use Rust maintenance backend",
-                })),
-            )
-                .into_response(),
-        );
+    if decision.route_family.as_deref() == Some("dashboard") {
+        return Some(maybe_build_local_dashboard_response(state, request_context, headers).await);
     }
 
-    if decision.route_family.as_deref() == Some("auth_legacy") {
-        return maybe_build_local_auth_legacy_response(
-            state,
-            request_context,
-            headers,
-            request_body,
-        )
-        .await;
-    }
-
-    if decision.route_family.as_deref() == Some("dashboard_legacy") {
-        return Some(
-            maybe_build_local_dashboard_legacy_response(state, request_context, headers).await,
-        );
-    }
-
-    if decision.route_family.as_deref() == Some("monitoring_user_legacy") {
+    if decision.route_family.as_deref() == Some("monitoring_user") {
         return maybe_build_local_user_monitoring_response(state, request_context, headers).await;
     }
 
-    if decision.route_family.as_deref() == Some("announcement_user_legacy") {
+    if decision.route_family.as_deref() == Some("announcement_user") {
         return maybe_build_local_announcement_user_response(
             state,
             request_context,
@@ -122,29 +121,21 @@ pub(crate) async fn maybe_build_local_public_support_response(
         .await;
     }
 
-    if decision.route_family.as_deref() == Some("wallet_legacy") {
+    if decision.route_family.as_deref() == Some("wallet") {
         if let Some(response) =
-            maybe_build_local_wallet_legacy_response(state, request_context, headers, request_body)
-                .await
+            maybe_build_local_wallet_response(state, request_context, headers, request_body).await
         {
             return Some(response);
         }
-        return Some(build_public_support_maintenance_response(
-            "Wallet routes require Rust maintenance backend",
-        ));
+        return Some(build_unhandled_public_support_response(request_context));
     }
 
-    if decision.route_family.as_deref() == Some("users_me_legacy") {
-        return maybe_build_local_users_me_legacy_response(
-            state,
-            request_context,
-            headers,
-            request_body,
-        )
-        .await;
+    if decision.route_family.as_deref() == Some("users_me") {
+        return maybe_build_local_users_me_response(state, request_context, headers, request_body)
+            .await;
     }
 
-    if decision.route_family.as_deref() == Some("payment_callback_legacy") {
+    if decision.route_family.as_deref() == Some("payment_callback") {
         return maybe_build_local_payment_callback_response(
             state,
             request_context,

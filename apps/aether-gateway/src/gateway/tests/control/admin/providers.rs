@@ -1,7 +1,36 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const ADMIN_PROVIDERS_RUST_BACKEND_DETAIL: &str =
-    "Admin provider catalog routes require Rust maintenance backend";
+use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+use aether_data::repository::global_models::{
+    GlobalModelReadRepository, InMemoryGlobalModelReadRepository,
+};
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
+};
+use aether_data::repository::quota::InMemoryProviderQuotaRepository;
+use aether_data::repository::candidates::{
+    InMemoryRequestCandidateRepository, RequestCandidateStatus,
+};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{
+    build_router_with_state, issue_test_admin_access_token, sample_admin_provider_model,
+    sample_endpoint, sample_key, sample_provider, sample_provider_active_global_model,
+    sample_provider_model_stats, sample_provider_quota, sample_public_global_model_with_mappings,
+    sample_request_candidate, start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
+
+const ADMIN_PROVIDERS_DATA_UNAVAILABLE_DETAIL: &str = "Admin provider catalog data unavailable";
 
 #[tokio::test]
 async fn gateway_handles_admin_providers_locally_with_trusted_admin_principal() {
@@ -41,7 +70,7 @@ async fn gateway_handles_admin_providers_locally_with_trusted_admin_principal() 
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -101,8 +130,7 @@ async fn gateway_handles_admin_providers_locally_with_local_503_when_catalog_rea
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -119,7 +147,7 @@ async fn gateway_handles_admin_providers_locally_with_local_503_when_catalog_rea
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["detail"], ADMIN_PROVIDERS_RUST_BACKEND_DETAIL);
+    assert_eq!(payload["detail"], ADMIN_PROVIDERS_DATA_UNAVAILABLE_DETAIL);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -218,7 +246,7 @@ async fn gateway_handles_admin_provider_summary_locally_with_trusted_admin_princ
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_global_model_and_quota_readers_for_tests(
@@ -316,7 +344,7 @@ async fn gateway_handles_admin_providers_summary_list_locally_with_bearer_admin_
     ));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
             provider_catalog_repository,
@@ -385,7 +413,7 @@ async fn gateway_handles_admin_provider_summary_locally_with_bearer_admin_sessio
     ));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
             provider_catalog_repository,
@@ -435,7 +463,7 @@ async fn gateway_handles_admin_providers_summary_list_locally_with_local_503_whe
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let state = AppState::new().expect("gateway should build");
     let access_token = issue_test_admin_access_token(&state, "device-admin-providers-503").await;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -452,7 +480,7 @@ async fn gateway_handles_admin_providers_summary_list_locally_with_local_503_whe
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["detail"], ADMIN_PROVIDERS_RUST_BACKEND_DETAIL);
+    assert_eq!(payload["detail"], ADMIN_PROVIDERS_DATA_UNAVAILABLE_DETAIL);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -524,7 +552,7 @@ async fn gateway_handles_admin_providers_summary_list_locally_with_trusted_admin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_global_model_and_quota_readers_for_tests(
@@ -569,7 +597,8 @@ async fn gateway_handles_admin_providers_summary_list_locally_with_trusted_admin
 }
 
 #[tokio::test]
-async fn gateway_returns_maintenance_for_admin_providers_summary_without_provider_catalog_reader() {
+async fn gateway_returns_service_unavailable_for_admin_providers_summary_without_provider_catalog_reader(
+) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -584,8 +613,7 @@ async fn gateway_returns_maintenance_for_admin_providers_summary_without_provide
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -602,10 +630,7 @@ async fn gateway_returns_maintenance_for_admin_providers_summary_without_provide
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(
-        payload["detail"],
-        "Admin provider catalog routes require Rust maintenance backend"
-    );
+    assert_eq!(payload["detail"], "Admin provider catalog data unavailable");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -613,7 +638,8 @@ async fn gateway_returns_maintenance_for_admin_providers_summary_without_provide
 }
 
 #[tokio::test]
-async fn gateway_returns_maintenance_for_admin_provider_create_without_provider_catalog_writer() {
+async fn gateway_returns_service_unavailable_for_admin_provider_create_without_provider_catalog_writer(
+) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -635,7 +661,7 @@ async fn gateway_returns_maintenance_for_admin_provider_create_without_provider_
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -660,10 +686,7 @@ async fn gateway_returns_maintenance_for_admin_provider_create_without_provider_
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(
-        payload["detail"],
-        "Admin provider catalog routes require Rust maintenance backend"
-    );
+    assert_eq!(payload["detail"], "Admin provider catalog data unavailable");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -702,7 +725,7 @@ async fn gateway_updates_admin_provider_locally_with_trusted_admin_principal() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -792,7 +815,7 @@ async fn gateway_creates_admin_provider_locally_with_trusted_admin_principal() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -963,7 +986,7 @@ async fn gateway_handles_admin_provider_health_monitor_locally_with_trusted_admi
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_and_request_candidate_reader_for_tests(
@@ -1062,7 +1085,7 @@ async fn gateway_handles_admin_provider_mapping_preview_locally_with_trusted_adm
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -1174,7 +1197,7 @@ async fn gateway_submits_admin_provider_delete_task_locally_with_trusted_admin_p
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1309,7 +1332,7 @@ async fn gateway_handles_admin_provider_pool_status_locally_with_trusted_admin_p
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -1380,7 +1403,7 @@ async fn gateway_clears_admin_provider_pool_cooldown_locally_with_trusted_admin_
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -1437,7 +1460,7 @@ async fn gateway_resets_admin_provider_pool_cost_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,

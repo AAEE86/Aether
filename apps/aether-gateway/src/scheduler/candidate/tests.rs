@@ -293,7 +293,7 @@ async fn selects_next_candidate_when_first_provider_quota_is_exhausted() {
         )
         .expect("quota should build"),
     ]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             GatewayDataState::with_candidate_selection_and_quota_for_tests(candidates, quotas),
@@ -398,7 +398,7 @@ async fn cooled_down_when_recent_failures_are_recorded_for_same_key() {
         )
         .expect("candidate should build"),
     ]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             GatewayDataState::with_candidate_selection_quota_and_request_candidates_for_tests(
@@ -608,7 +608,7 @@ async fn reuses_cached_scheduler_affinity_candidate_before_sorted_fallback() {
         first, second,
     ]));
     let quotas = Arc::new(InMemoryProviderQuotaRepository::seed(vec![]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             GatewayDataState::with_candidate_selection_and_quota_for_tests(candidates, quotas),
@@ -728,7 +728,7 @@ async fn selects_next_candidate_when_first_provider_concurrent_limit_is_reached(
         )
         .expect("candidate should build"),
     ]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(
@@ -788,7 +788,7 @@ async fn returns_none_when_auth_api_key_concurrent_limit_is_reached() {
         )
         .expect("candidate should build"),
     ]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(
@@ -901,7 +901,7 @@ async fn selects_next_candidate_when_first_provider_key_rpm_slots_are_reserved_f
         )
         .expect("candidate should build"),
     ]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(
@@ -1016,7 +1016,7 @@ async fn cached_affinity_candidate_can_use_reserved_provider_key_rpm_capacity() 
         )
         .expect("candidate should build"),
     ]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(
@@ -1119,7 +1119,7 @@ async fn selects_next_candidate_when_first_provider_key_circuit_is_open() {
     ));
     let quotas = Arc::new(InMemoryProviderQuotaRepository::seed(vec![]));
     let request_candidates = Arc::new(InMemoryRequestCandidateRepository::seed(vec![]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(
@@ -1179,7 +1179,7 @@ async fn same_priority_candidates_prefer_healthier_provider_key_before_id_order(
     ));
     let quotas = Arc::new(InMemoryProviderQuotaRepository::seed(vec![]));
     let request_candidates = Arc::new(InMemoryRequestCandidateRepository::seed(vec![]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(
@@ -1246,7 +1246,7 @@ async fn same_priority_candidates_use_aggregate_health_score_when_api_format_spe
     ));
     let quotas = Arc::new(InMemoryProviderQuotaRepository::seed(vec![]));
     let request_candidates = Arc::new(InMemoryRequestCandidateRepository::seed(vec![]));
-    let state = AppState::new("http://127.0.0.1:1")
+    let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_candidate_selection_provider_catalog_quota_and_request_candidates_for_tests(

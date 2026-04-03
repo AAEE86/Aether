@@ -5,7 +5,13 @@ use super::provider_query_shared::{
     ADMIN_PROVIDER_QUERY_NO_LOCAL_MODELS_DETAIL, ADMIN_PROVIDER_QUERY_PROVIDER_ID_REQUIRED_DETAIL,
     ADMIN_PROVIDER_QUERY_PROVIDER_NOT_FOUND_DETAIL,
 };
-use super::*;
+use crate::gateway::{AppState, GatewayError};
+use aether_data::repository::provider_catalog::{
+    StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
+};
+use axum::{body::Body, http::Response, response::IntoResponse, Json};
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const ADMIN_PROVIDER_QUERY_LOCAL_TEST_MODEL_MESSAGE: &str =
     "Rust local provider-query model test is not configured";

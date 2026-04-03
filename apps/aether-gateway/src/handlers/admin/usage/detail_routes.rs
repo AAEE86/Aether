@@ -1,10 +1,24 @@
+use super::super::round_to;
 use super::replay::{
     admin_usage_build_curl_command, admin_usage_curl_headers, admin_usage_curl_url,
     admin_usage_headers_from_value, admin_usage_id_from_action_path,
     admin_usage_id_from_detail_path, admin_usage_resolve_request_preview_body,
     build_admin_usage_replay_response,
 };
-use super::*;
+use super::{
+    admin_usage_bad_request_response, admin_usage_data_unavailable_response,
+    admin_usage_record_json, ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
+};
+use crate::gateway::handlers::query_param_bool;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 pub(super) async fn maybe_build_local_admin_usage_detail_response(
     state: &AppState,
@@ -25,8 +39,8 @@ pub(super) async fn maybe_build_local_admin_usage_detail_response(
                 && request_context.request_path.ends_with("/curl") =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 
@@ -98,8 +112,8 @@ pub(super) async fn maybe_build_local_admin_usage_detail_response(
                     .starts_with("/api/admin/usage/") =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 

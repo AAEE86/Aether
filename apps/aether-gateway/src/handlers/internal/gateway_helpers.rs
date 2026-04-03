@@ -1,25 +1,30 @@
-use super::*;
-
-pub(crate) fn build_retired_internal_gateway_response() -> Response<Body> {
-    attach_legacy_internal_gateway_deprecation_headers(
-        (
-            http::StatusCode::GONE,
-            Json(json!({
-                "detail": "legacy internal gateway route removed; use public proxy",
-            })),
-        )
-            .into_response(),
-    )
-}
+use crate::gateway::constants::{
+    CONTROL_ACTION_HEADER, CONTROL_ACTION_PROXY_PUBLIC, CONTROL_EXECUTED_HEADER,
+    CONTROL_EXECUTION_RUNTIME_CANDIDATE_KEY, EXECUTION_PATH_CONTROL_EXECUTE_STREAM,
+    EXECUTION_PATH_CONTROL_EXECUTE_SYNC, EXECUTION_PATH_DISTRIBUTED_OVERLOADED,
+    EXECUTION_PATH_EXECUTION_RUNTIME_STREAM, EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
+    EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_AUTH_DENIED, EXECUTION_PATH_LOCAL_OVERLOADED,
+    EXECUTION_PATH_LOCAL_RATE_LIMITED, EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
+};
+use crate::gateway::handlers::admin::build_internal_control_error_response;
+use crate::gateway::handlers::{
+    unix_secs_to_rfc3339, InternalTunnelHeartbeatRequest, InternalTunnelNodeStatusRequest,
+};
+use crate::gateway::{AppState, GatewayControlDecision, GatewayError, StoredProxyNode};
+use aether_data::repository::management_tokens::{
+    StoredManagementToken, StoredManagementTokenUserSummary,
+};
+use axum::body::Body;
+use axum::http::{self, header::HeaderName, header::HeaderValue, Response};
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 fn insert_execution_runtime_candidate_fields(
     payload: &mut serde_json::Map<String, serde_json::Value>,
     value: bool,
 ) {
-    payload.insert(
-        CONTROL_LEGACY_EXECUTION_RUNTIME_CANDIDATE_KEY.to_string(),
-        json!(value),
-    );
     payload.insert(
         CONTROL_EXECUTION_RUNTIME_CANDIDATE_KEY.to_string(),
         json!(value),
@@ -85,32 +90,12 @@ pub(crate) fn build_internal_gateway_fallback_plan_payload(
 }
 
 pub(crate) fn build_internal_gateway_proxy_public_response() -> Response<Body> {
-    attach_legacy_internal_gateway_deprecation_headers(
-        (
-            http::StatusCode::CONFLICT,
-            [(CONTROL_ACTION_HEADER, CONTROL_ACTION_PROXY_PUBLIC)],
-            Json(json!({ "action": CONTROL_ACTION_PROXY_PUBLIC })),
-        )
-            .into_response(),
+    (
+        http::StatusCode::CONFLICT,
+        [(CONTROL_ACTION_HEADER, CONTROL_ACTION_PROXY_PUBLIC)],
+        Json(json!({ "action": CONTROL_ACTION_PROXY_PUBLIC })),
     )
-}
-
-pub(crate) fn attach_legacy_internal_gateway_deprecation_headers(
-    mut response: Response<Body>,
-) -> Response<Body> {
-    response.headers_mut().insert(
-        HeaderName::from_static(LEGACY_INTERNAL_GATEWAY_PHASEOUT_HEADER),
-        HeaderValue::from_static(LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS),
-    );
-    response.headers_mut().insert(
-        HeaderName::from_static(LEGACY_INTERNAL_GATEWAY_SUNSET_DATE_HEADER),
-        HeaderValue::from_static(LEGACY_INTERNAL_GATEWAY_SUNSET_DATE),
-    );
-    response.headers_mut().insert(
-        HeaderName::from_static("sunset"),
-        HeaderValue::from_static(LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE),
-    );
-    response
+        .into_response()
 }
 
 pub(crate) fn attach_execution_path_header(
@@ -141,49 +126,9 @@ pub(crate) fn resolve_local_proxy_execution_path(
         Some(EXECUTION_PATH_LOCAL_RATE_LIMITED) => EXECUTION_PATH_LOCAL_RATE_LIMITED,
         Some(EXECUTION_PATH_LOCAL_OVERLOADED) => EXECUTION_PATH_LOCAL_OVERLOADED,
         Some(EXECUTION_PATH_DISTRIBUTED_OVERLOADED) => EXECUTION_PATH_DISTRIBUTED_OVERLOADED,
-        Some(EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS)
-        | Some(LEGACY_EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS) => {
-            EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS
-        }
         Some(EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH) => EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH,
         _ => default_execution_path,
     }
-}
-
-pub(crate) fn decode_legacy_gateway_request_body_bytes(
-    payload: &LegacyGatewayExecuteRequest,
-) -> Result<Bytes, Response<Body>> {
-    if let Some(body_base64) = payload.body_base64.as_deref() {
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(body_base64)
-            .map_err(|_| {
-                build_internal_control_error_response(
-                    http::StatusCode::BAD_REQUEST,
-                    "invalid internal gateway body payload",
-                )
-            })?;
-        return Ok(Bytes::from(decoded));
-    }
-
-    let body_json = payload.body_json.clone();
-    if body_json.is_null() {
-        return Ok(Bytes::new());
-    }
-    if body_json
-        .as_object()
-        .map(|value| value.is_empty())
-        .unwrap_or(false)
-    {
-        return Ok(Bytes::new());
-    }
-
-    let encoded = serde_json::to_vec(&body_json).map_err(|_| {
-        build_internal_control_error_response(
-            http::StatusCode::BAD_REQUEST,
-            "invalid internal gateway body payload",
-        )
-    })?;
-    Ok(Bytes::from(encoded))
 }
 
 pub(crate) fn build_internal_gateway_header_map(
@@ -267,7 +212,7 @@ pub(crate) fn build_internal_gateway_uri(
     })
 }
 
-fn infer_legacy_finalize_signature(
+fn infer_internal_finalize_signature(
     payload: &crate::gateway::GatewaySyncReportRequest,
 ) -> Option<String> {
     let report_context = payload.report_context.as_ref()?;
@@ -317,10 +262,10 @@ fn infer_legacy_finalize_signature(
     None
 }
 
-pub(crate) fn build_legacy_finalize_decision(
+pub(crate) fn build_internal_finalize_decision(
     payload: &crate::gateway::GatewaySyncReportRequest,
 ) -> Option<GatewayControlDecision> {
-    let signature = infer_legacy_finalize_signature(payload)?;
+    let signature = infer_internal_finalize_signature(payload)?;
     let (public_path, route_family, route_kind) = match signature.as_str() {
         "openai:chat" => ("/v1/chat/completions", "openai", "chat"),
         "openai:cli" => ("/v1/responses", "openai", "cli"),
@@ -345,10 +290,10 @@ pub(crate) fn build_legacy_finalize_decision(
     )
 }
 
-fn build_legacy_finalize_video_plan(
+fn build_internal_finalize_video_plan(
     payload: &crate::gateway::GatewaySyncReportRequest,
 ) -> Option<aether_contracts::ExecutionPlan> {
-    let signature = infer_legacy_finalize_signature(payload)?;
+    let signature = infer_internal_finalize_signature(payload)?;
     if !matches!(signature.as_str(), "openai:video" | "gemini:video") {
         return None;
     }
@@ -380,9 +325,9 @@ fn build_legacy_finalize_video_plan(
         .cloned()
         .unwrap_or_else(|| json!({}));
     let url = match signature.as_str() {
-        "openai:video" => "https://legacy.internal.invalid/v1/videos".to_string(),
+        "openai:video" => "https://internal.gateway.invalid/v1/videos".to_string(),
         "gemini:video" => format!(
-            "https://legacy.internal.invalid/v1beta/models/{}:predictLongRunning",
+            "https://internal.gateway.invalid/v1beta/models/{}:predictLongRunning",
             model_name.clone().unwrap_or_else(|| "veo-3".to_string())
         ),
         _ => return None,
@@ -393,17 +338,17 @@ fn build_legacy_finalize_video_plan(
         candidate_id: None,
         provider_name: Some(provider_name.clone()),
         provider_id: context_text("provider_id")
-            .unwrap_or_else(|| format!("legacy-{provider_name}-video-provider")),
+            .unwrap_or_else(|| format!("internal-{provider_name}-video-provider")),
         endpoint_id: context_text("endpoint_id")
-            .unwrap_or_else(|| format!("legacy-{provider_name}-video-endpoint")),
+            .unwrap_or_else(|| format!("internal-{provider_name}-video-endpoint")),
         key_id: context_text("key_id")
             .or_else(|| context_text("api_key_id"))
-            .unwrap_or_else(|| format!("legacy-{provider_name}-video-key")),
+            .unwrap_or_else(|| format!("internal-{provider_name}-video-key")),
         method: "POST".to_string(),
         url,
         headers: std::collections::BTreeMap::from([(
             "authorization".to_string(),
-            "Bearer legacy-internal-gateway".to_string(),
+            "Bearer internal-gateway".to_string(),
         )]),
         content_type: Some("application/json".to_string()),
         content_encoding: None,
@@ -425,10 +370,10 @@ fn build_legacy_finalize_video_plan(
     })
 }
 
-fn build_legacy_finalize_video_request_path(
+fn build_internal_finalize_video_request_path(
     payload: &crate::gateway::GatewaySyncReportRequest,
 ) -> Option<String> {
-    let signature = infer_legacy_finalize_signature(payload)?;
+    let signature = infer_internal_finalize_signature(payload)?;
     let report_context = payload.report_context.as_ref().and_then(Value::as_object);
     let context_text = |key: &str| {
         report_context
@@ -475,13 +420,13 @@ fn build_legacy_finalize_video_request_path(
     }
 }
 
-pub(crate) async fn maybe_build_legacy_finalize_video_response(
+pub(crate) async fn maybe_build_internal_finalize_video_response(
     state: &AppState,
     trace_id: &str,
     decision: &GatewayControlDecision,
     payload: &crate::gateway::GatewaySyncReportRequest,
 ) -> Result<Option<Response<Body>>, GatewayError> {
-    let Some(plan) = build_legacy_finalize_video_plan(payload) else {
+    let Some(plan) = build_internal_finalize_video_plan(payload) else {
         return Ok(None);
     };
 
@@ -520,7 +465,7 @@ pub(crate) async fn maybe_build_legacy_finalize_video_response(
     if let Some(mut response) =
         crate::gateway::maybe_build_local_sync_finalize_response(trace_id, decision, payload)?
     {
-        if let Some(request_path) = build_legacy_finalize_video_request_path(payload) {
+        if let Some(request_path) = build_internal_finalize_video_request_path(payload) {
             state
                 .video_tasks
                 .apply_finalize_mutation(request_path.as_str(), payload.report_kind.as_str());

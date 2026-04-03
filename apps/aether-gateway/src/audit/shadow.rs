@@ -154,7 +154,7 @@ mod tests {
     #[tokio::test]
     async fn records_shadow_result_for_ai_public_response() {
         let repository = Arc::new(InMemoryShadowResultRepository::default());
-        let state = AppState::new("http://127.0.0.1:18084")
+        let state = AppState::new()
             .expect("app state should build")
             .with_shadow_result_data_writer_for_tests(repository.clone());
         let response = Response::builder()
@@ -205,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn merges_rust_and_python_shadow_samples_into_match() {
         let repository = Arc::new(InMemoryShadowResultRepository::default());
-        let state = AppState::new("http://127.0.0.1:18084")
+        let state = AppState::new()
             .expect("app state should build")
             .with_shadow_result_data_repository_for_tests(repository.clone());
         let response = Response::builder()

@@ -1,8 +1,16 @@
-use super::*;
+use crate::gateway::handlers::{query_param_value, unix_secs_to_rfc3339};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use regex::Regex;
+use serde_json::json;
 use sqlx::Row;
 
-const ADMIN_BILLING_RUST_BACKEND_DETAIL: &str =
-    "Admin billing routes require Rust maintenance backend";
+const ADMIN_BILLING_DATA_UNAVAILABLE_DETAIL: &str = "Admin billing data unavailable";
 
 #[path = "billing/collectors.rs"]
 mod billing_collectors;
@@ -19,10 +27,10 @@ fn default_admin_billing_json_object() -> serde_json::Value {
     json!({})
 }
 
-fn build_admin_billing_maintenance_response() -> Response<Body> {
+fn build_admin_billing_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_BILLING_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_BILLING_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }
@@ -189,7 +197,7 @@ fn admin_billing_optional_epoch_value(
 pub(crate) async fn maybe_build_local_admin_billing_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -276,6 +284,6 @@ pub(crate) async fn maybe_build_local_admin_billing_response(
     }
 
     match decision.route_kind.as_deref() {
-        _ => Ok(Some(build_admin_billing_maintenance_response())),
+        _ => Ok(Some(build_admin_billing_data_unavailable_response())),
     }
 }

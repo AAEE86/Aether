@@ -1,4 +1,12 @@
-use super::*;
+use super::ADMIN_USERS_DATA_UNAVAILABLE_DETAIL;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use regex::Regex;
+use serde_json::json;
 
 #[derive(Debug, serde::Deserialize)]
 pub(super) struct AdminCreateUserApiKeyRequest {
@@ -93,10 +101,10 @@ pub(super) struct AdminUpdateUserFieldPresence {
     pub(super) allowed_models: bool,
 }
 
-pub(super) fn build_admin_users_maintenance_response() -> Response<Body> {
+pub(super) fn build_admin_users_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_USERS_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_USERS_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }

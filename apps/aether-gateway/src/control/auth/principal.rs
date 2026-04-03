@@ -34,7 +34,7 @@ pub(super) fn derive_principal_candidate(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{derive_principal_candidate, GatewayPrincipalCandidate};
     use crate::gateway::control::auth::types::{
         GatewayCredentialBundle, GatewayCredentialCarrier, GatewayExtractedCredentials,
         GatewayPrimaryCredential, GatewayTrustedAuthHeaders,

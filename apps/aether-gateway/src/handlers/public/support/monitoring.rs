@@ -1,8 +1,9 @@
-use super::*;
-use super::{build_auth_error_response, resolve_authenticated_local_user};
+use axum::{body::Body, http, response::Response};
 
-const USER_MONITORING_MAINTENANCE_DETAIL: &str =
-    "User monitoring routes require Rust maintenance backend";
+pub(super) use super::{
+    build_auth_error_response, build_unhandled_public_support_response,
+    resolve_authenticated_local_user, AppState, GatewayPublicRequestContext,
+};
 
 #[path = "monitoring/audit_logs.rs"]
 mod user_monitoring_audit_logs;
@@ -18,7 +19,7 @@ pub(super) async fn maybe_build_local_user_monitoring_response(
     headers: &http::HeaderMap,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
-    if decision.route_family.as_deref() != Some("monitoring_user_legacy") {
+    if decision.route_family.as_deref() != Some("monitoring_user") {
         return None;
     }
 
@@ -35,8 +36,63 @@ pub(super) async fn maybe_build_local_user_monitoring_response(
         {
             Some(handle_user_rate_limit_status(state, request_context, headers).await)
         }
-        _ => Some(build_public_support_maintenance_response(
-            USER_MONITORING_MAINTENANCE_DETAIL,
-        )),
+        _ => Some(build_unhandled_public_support_response(request_context)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        maybe_build_local_user_monitoring_response, AppState, GatewayPublicRequestContext,
+    };
+    use crate::gateway::GatewayControlDecision;
+    use axum::body::to_bytes;
+    use axum::http::{HeaderMap, Method, StatusCode, Uri};
+
+    fn request_context(method: Method, uri: &str, route_kind: &str) -> GatewayPublicRequestContext {
+        GatewayPublicRequestContext::from_request_parts(
+            "trace-monitoring-unhandled",
+            &method,
+            &uri.parse::<Uri>().expect("uri should parse"),
+            &HeaderMap::new(),
+            Some(GatewayControlDecision::synthetic(
+                uri,
+                Some("public_support".to_string()),
+                Some("monitoring_user".to_string()),
+                Some(route_kind.to_string()),
+                Some("user:monitoring".to_string()),
+            )),
+        )
+    }
+
+    #[tokio::test]
+    async fn monitoring_unhandled_route_returns_local_not_implemented_response() {
+        let state = AppState::new().expect("gateway should build");
+        let request_context = request_context(
+            Method::GET,
+            "/api/monitoring/my-audit-logs/history",
+            "audit_logs",
+        );
+        let response =
+            maybe_build_local_user_monitoring_response(&state, &request_context, &HeaderMap::new())
+                .await
+                .expect("monitoring handler should return response");
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+        assert_eq!(
+            payload["detail"],
+            "public support route not implemented in rust frontdoor"
+        );
+        assert_eq!(payload["route_family"], "monitoring_user");
+        assert_eq!(payload["route_kind"], "audit_logs");
+        assert_eq!(
+            payload["request_path"],
+            "/api/monitoring/my-audit-logs/history"
+        );
     }
 }

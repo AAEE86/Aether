@@ -1,4 +1,6 @@
-use super::*;
+use http::Uri;
+
+use super::{classify_control_route, headers};
 
 #[test]
 fn classifies_admin_provider_oauth_start_key_as_admin_proxy_route() {

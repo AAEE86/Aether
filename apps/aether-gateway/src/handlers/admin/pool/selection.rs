@@ -1,4 +1,6 @@
-use super::*;
+use crate::gateway::handlers::decrypt_catalog_secret_with_fallbacks;
+use crate::gateway::AppState;
+use aether_data::repository::provider_catalog::StoredProviderCatalogKey;
 
 fn admin_pool_reason_indicates_ban(reason: &str) -> bool {
     let normalized = reason.trim().to_ascii_lowercase();

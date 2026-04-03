@@ -156,7 +156,8 @@ fn build_openai_chat_request_body(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::build_standard_request_body;
+    use serde_json::json;
 
     #[test]
     fn builds_openai_chat_request_from_claude_chat_source() {

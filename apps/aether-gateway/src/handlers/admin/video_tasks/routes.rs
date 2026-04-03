@@ -1,7 +1,20 @@
 use crate::gateway;
+use crate::gateway::handlers::query_param_value;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-use super::video_tasks_builders::*;
-use super::*;
+use super::super::build_proxy_error_response;
+use super::video_tasks_builders::{
+    admin_video_task_detail_id_from_path, admin_video_task_nested_id_from_path,
+    admin_video_task_status_name, admin_video_task_timestamp, build_admin_video_task_list_item,
+    build_admin_video_task_provider_names, current_admin_video_task_unix_secs,
+};
 
 pub(super) async fn maybe_build_local_admin_video_tasks_response(
     state: &AppState,

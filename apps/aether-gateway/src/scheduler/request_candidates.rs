@@ -559,7 +559,7 @@ mod tests {
     use crate::gateway::AppState;
 
     fn build_test_state(repository: Arc<InMemoryRequestCandidateRepository>) -> AppState {
-        AppState::new("http://upstream.example")
+        AppState::new()
             .expect("gateway state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_request_candidate_and_usage_repository_for_tests(

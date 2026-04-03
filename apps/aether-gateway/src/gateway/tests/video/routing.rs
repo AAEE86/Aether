@@ -1,7 +1,20 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::response::Response;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::header::{HeaderName, HeaderValue};
+use http::StatusCode;
+
+use crate::gateway::constants::{
+    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, EXECUTION_PATH_HEADER,
+};
+
+use super::{build_router, start_server};
 
 #[tokio::test]
-async fn gateway_locally_denies_video_control_sync_even_with_legacy_headers_when_execution_runtime_missing(
+async fn gateway_locally_denies_video_control_sync_even_with_opt_in_headers_when_execution_runtime_missing(
 ) {
     let execute_hits = Arc::new(Mutex::new(0usize));
     let execute_hits_clone = Arc::clone(&execute_hits);
@@ -43,13 +56,12 @@ async fn gateway_locally_denies_video_control_sync_even_with_legacy_headers_when
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .get(format!("{gateway_url}/v1/videos/task-123"))
         .header(CONTROL_EXECUTE_FALLBACK_HEADER, "true")
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .send()
         .await
         .expect("request should succeed");
@@ -59,7 +71,7 @@ async fn gateway_locally_denies_video_control_sync_even_with_legacy_headers_when
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI video execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI video execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -69,7 +81,7 @@ async fn gateway_locally_denies_video_control_sync_even_with_legacy_headers_when
 }
 
 #[tokio::test]
-async fn gateway_locally_denies_video_control_sync_without_legacy_header_when_execution_runtime_missing(
+async fn gateway_locally_denies_video_control_sync_without_opt_in_header_when_execution_runtime_missing(
 ) {
     let execute_hits = Arc::new(Mutex::new(0usize));
     let execute_hits_clone = Arc::clone(&execute_hits);
@@ -120,7 +132,7 @@ async fn gateway_locally_denies_video_control_sync_without_legacy_header_when_ex
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -135,7 +147,7 @@ async fn gateway_locally_denies_video_control_sync_without_legacy_header_when_ex
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI video execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI video execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -153,7 +165,7 @@ async fn gateway_locally_denies_video_control_sync_without_legacy_header_when_ex
 }
 
 #[tokio::test]
-async fn gateway_skips_video_get_control_sync_without_legacy_header() {
+async fn gateway_skips_video_get_control_sync_without_opt_in_header() {
     let execute_hits = Arc::new(Mutex::new(0usize));
     let execute_hits_clone = Arc::clone(&execute_hits);
     let public_hits = Arc::new(Mutex::new(0usize));
@@ -190,7 +202,7 @@ async fn gateway_skips_video_get_control_sync_without_legacy_header() {
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -204,7 +216,7 @@ async fn gateway_skips_video_get_control_sync_without_legacy_header() {
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI video execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI video execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);

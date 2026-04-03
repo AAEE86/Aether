@@ -1,9 +1,33 @@
-use super::*;
+use super::super::build_proxy_error_response;
+use super::ADMIN_AWS_REGIONS;
+use crate::gateway::handlers::public::{
+    apply_admin_email_template_update, apply_admin_system_config_update,
+    apply_admin_system_settings_update, build_admin_api_formats_payload,
+    build_admin_email_template_payload, build_admin_email_templates_payload,
+    build_admin_system_check_update_payload, build_admin_system_config_detail_payload,
+    build_admin_system_config_export_payload, build_admin_system_configs_payload,
+    build_admin_system_settings_payload, build_admin_system_stats_payload,
+    build_admin_system_users_export_payload, current_aether_version, delete_admin_system_config,
+    preview_admin_email_template, reset_admin_email_template,
+};
+use crate::gateway::handlers::{
+    admin_system_config_key_from_path, admin_system_email_template_preview_type_from_path,
+    admin_system_email_template_reset_type_from_path, admin_system_email_template_type_from_path,
+    is_admin_system_configs_root, is_admin_system_email_templates_root,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn maybe_build_local_admin_core_system_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -94,7 +118,7 @@ pub(super) async fn maybe_build_local_admin_core_system_response(
         return Ok(Some(
             (
                 http::StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "detail": "Admin system maintenance requires Rust backend" })),
+                Json(json!({ "detail": "Admin system data unavailable" })),
             )
                 .into_response(),
         ));

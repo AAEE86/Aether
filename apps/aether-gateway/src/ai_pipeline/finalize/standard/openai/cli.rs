@@ -1,6 +1,7 @@
 use base64::Engine as _;
 
-use super::*;
+use serde_json::{json, Value};
+
 use super::{
     aggregate_claude_stream_sync_response, aggregate_gemini_stream_sync_response,
     convert_claude_cli_response_to_openai_cli, convert_gemini_cli_response_to_openai_cli,
@@ -11,6 +12,7 @@ use crate::gateway::ai_pipeline::finalize::common::{
     canonicalize_tool_arguments, local_finalize_allows_envelope,
     unwrap_local_finalize_response_value, LocalCoreSyncFinalizeOutcome,
 };
+use crate::gateway::{GatewayControlDecision, GatewayError, GatewaySyncReportRequest};
 
 pub(crate) fn maybe_build_local_openai_cli_stream_sync_response(
     trace_id: &str,

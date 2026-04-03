@@ -1,8 +1,15 @@
-use super::*;
+use crate::gateway::handlers::{query_param_value, unix_secs_to_rfc3339};
+use crate::gateway::{GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 use sqlx::Row;
 
-const ADMIN_PAYMENTS_RUST_BACKEND_DETAIL: &str =
-    "Admin payments routes require Rust maintenance backend";
+const ADMIN_PAYMENTS_DATA_UNAVAILABLE_DETAIL: &str = "Admin payments data unavailable";
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub(super) struct AdminPaymentOrderCreditRequest {
@@ -18,10 +25,10 @@ pub(super) struct AdminPaymentOrderCreditRequest {
     pub(super) gateway_response: Option<serde_json::Value>,
 }
 
-pub(super) fn build_admin_payments_maintenance_response() -> Response<Body> {
+pub(super) fn build_admin_payments_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_PAYMENTS_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_PAYMENTS_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }

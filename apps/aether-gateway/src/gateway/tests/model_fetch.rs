@@ -1,5 +1,9 @@
-use super::*;
 use std::time::Duration;
+
+use super::{
+    any, build_state_with_execution_runtime_override, start_server, AppState, Arc, Json, Mutex,
+    Request, Router, json,
+};
 
 use aether_contracts::ExecutionPlan;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
@@ -213,11 +217,8 @@ async fn gateway_model_fetch_updates_key_and_syncs_provider_model_whitelist_asso
         .attach_provider_catalog_repository_for_tests(Arc::clone(&provider_catalog_repository))
         .with_global_model_repository_for_tests(Arc::clone(&global_model_repository))
         .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY);
-    let state = build_state_with_test_remote_execution_runtime(
-        "http://127.0.0.1:18084",
-        execution_runtime_url,
-    )
-    .with_data_state_for_tests(data_state);
+    let state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_data_state_for_tests(data_state);
 
     let summary = crate::gateway::perform_model_fetch_once(&state)
         .await
@@ -280,7 +281,7 @@ async fn gateway_model_fetch_updates_key_and_syncs_provider_model_whitelist_asso
 }
 
 #[tokio::test]
-async fn gateway_model_fetch_updates_key_and_syncs_provider_model_whitelist_associations_without_remote_execution_runtime_compat(
+async fn gateway_model_fetch_updates_key_and_syncs_provider_model_whitelist_associations_without_execution_runtime_override(
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenUpstreamRequest {
@@ -346,7 +347,7 @@ async fn gateway_model_fetch_updates_key_and_syncs_provider_model_whitelist_asso
         .attach_provider_catalog_repository_for_tests(Arc::clone(&provider_catalog_repository))
         .with_global_model_repository_for_tests(Arc::clone(&global_model_repository))
         .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY);
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(data_state);
 
@@ -453,11 +454,8 @@ async fn gateway_background_model_fetch_updates_key_and_syncs_provider_model_whi
         .attach_provider_catalog_repository_for_tests(Arc::clone(&provider_catalog_repository))
         .with_global_model_repository_for_tests(Arc::clone(&global_model_repository))
         .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY);
-    let gateway_state = build_state_with_test_remote_execution_runtime(
-        "http://127.0.0.1:18084",
-        execution_runtime_url,
-    )
-    .with_data_state_for_tests(data_state);
+    let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_data_state_for_tests(data_state);
 
     let background_tasks = gateway_state.spawn_background_tasks();
     assert!(

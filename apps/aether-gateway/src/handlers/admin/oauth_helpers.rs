@@ -1,4 +1,18 @@
-use super::*;
+use crate::gateway::handlers::{
+    encrypt_catalog_secret_with_fallbacks, AdminOAuthProviderUpsertRequest,
+};
+use crate::gateway::AppState;
+use aether_data::repository::oauth_providers::{
+    EncryptedSecretUpdate, UpsertOAuthProviderConfigRecord,
+};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use url::Url;
 
 pub(crate) fn build_admin_oauth_supported_types_payload() -> Vec<serde_json::Value> {
     vec![json!({

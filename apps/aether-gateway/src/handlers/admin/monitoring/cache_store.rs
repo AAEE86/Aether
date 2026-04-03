@@ -1,5 +1,7 @@
+use super::super::round_to;
 use super::cache_affinity::admin_monitoring_cache_affinity_record;
-use super::*;
+use super::{AdminMonitoringCacheAffinityRecord, AdminMonitoringCacheSnapshot};
+use crate::gateway::{AppState, GatewayError};
 
 async fn count_admin_monitoring_cache_affinity_entries(state: &AppState) -> usize {
     let Some(runner) = state.redis_kv_runner() else {

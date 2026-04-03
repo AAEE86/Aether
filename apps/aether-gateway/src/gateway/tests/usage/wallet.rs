@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, hash_api_key, json,
+    sample_local_openai_auth_snapshot, sample_local_openai_candidate_row,
+    sample_local_openai_endpoint, sample_local_openai_key, sample_local_openai_provider,
+    start_server, Arc, DEVELOPMENT_ENCRYPTION_KEY, GatewayDataState,
+    InMemoryAuthApiKeySnapshotRepository, InMemoryBillingReadRepository,
+    InMemoryMinimalCandidateSelectionReadRepository, InMemoryProviderCatalogReadRepository,
+    InMemoryRequestCandidateRepository, InMemoryUsageReadRepository, InMemoryWalletRepository,
+    Json, Request, Router, StatusCode, StoredBillingModelContext, StoredWalletSnapshot,
+    TRACE_ID_HEADER, UsageReadRepository, UsageRuntimeConfig, WalletLookupKey,
+    WalletReadRepository,
+};
 
 #[tokio::test]
 async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
@@ -101,13 +112,12 @@ async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
         wallet_repository.clone(),
         DEVELOPMENT_ENCRYPTION_KEY,
     );
-    let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
-            .with_data_state_for_tests(data_state)
-            .with_usage_runtime_for_tests(UsageRuntimeConfig {
-                enabled: true,
-                ..UsageRuntimeConfig::default()
-            });
+    let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_data_state_for_tests(data_state)
+        .with_usage_runtime_for_tests(UsageRuntimeConfig {
+            enabled: true,
+            ..UsageRuntimeConfig::default()
+        });
     let gateway = build_router_with_state(gateway_state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 

@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    build_admin_users_bad_request_response, build_admin_users_data_unavailable_response,
+    build_admin_users_read_only_response, AdminCreateUserApiKeyRequest,
+    AdminToggleUserApiKeyLockRequest, AdminUpdateUserApiKeyRequest,
+};
+use crate::gateway::handlers::{
+    decrypt_catalog_secret_with_fallbacks, encrypt_catalog_secret_with_fallbacks,
+    query_param_optional_bool,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 fn admin_user_api_key_full_key_parts(request_path: &str) -> Option<(String, String)> {
     let raw = request_path.strip_prefix("/api/admin/users/")?;
@@ -324,7 +340,7 @@ pub(super) async fn build_admin_create_user_api_key_response(
         })
         .await?
     else {
-        return Ok(build_admin_users_maintenance_response());
+        return Ok(build_admin_users_data_unavailable_response());
     };
 
     let created = if allowed_providers.is_some() {

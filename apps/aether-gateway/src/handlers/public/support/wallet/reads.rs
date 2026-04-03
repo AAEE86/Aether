@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    build_auth_error_response, build_auth_json_response, build_auth_wallet_summary_payload, http,
+    query_param_value, resolve_authenticated_local_user, unix_secs_to_rfc3339, AppState, Body,
+    GatewayError, GatewayPublicRequestContext, Response, WALLET_LEGACY_TIMEZONE,
+};
+use crate::gateway::handlers::admin::round_to;
+use chrono::Utc;
+use serde_json::json;
+use sqlx::Row;
+
+const WALLET_TODAY_COST_UNAVAILABLE_DETAIL: &str = "钱包今日费用数据暂不可用";
 
 pub(super) fn build_wallet_payload(
     wallet: Option<&aether_data::repository::wallet::StoredWalletSnapshot>,
@@ -179,8 +189,10 @@ pub(super) async fn handle_wallet_today_cost(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_usage_data_reader() {
-        return build_public_support_maintenance_response(
-            "Wallet routes require Rust maintenance backend",
+        return build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            WALLET_TODAY_COST_UNAVAILABLE_DETAIL,
+            false,
         );
     }
 

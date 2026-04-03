@@ -1,7 +1,16 @@
-use super::admin_wallets_shared::*;
-use super::mutations::*;
-use super::reads::*;
-use super::*;
+use super::admin_wallets_shared::build_admin_wallets_data_unavailable_response;
+use super::mutations::{
+    build_admin_wallet_adjust_response, build_admin_wallet_complete_refund_response,
+    build_admin_wallet_fail_refund_response, build_admin_wallet_process_refund_response,
+    build_admin_wallet_recharge_response,
+};
+use super::reads::{
+    build_admin_wallet_detail_response, build_admin_wallet_ledger_response,
+    build_admin_wallet_list_response, build_admin_wallet_refund_requests_response,
+    build_admin_wallet_refunds_response, build_admin_wallet_transactions_response,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{body::Body, http, response::Response};
 
 pub(super) async fn maybe_build_local_admin_wallets_routes_response(
     state: &AppState,
@@ -135,5 +144,5 @@ pub(super) async fn maybe_build_local_admin_wallets_routes_response(
         ));
     }
 
-    Ok(Some(build_admin_wallets_maintenance_response()))
+    Ok(Some(build_admin_wallets_data_unavailable_response()))
 }

@@ -1,4 +1,16 @@
-use super::*;
+use super::{
+    admin_usage_bad_request_response, admin_usage_data_unavailable_response,
+    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 fn admin_usage_id_from_path_suffix(request_path: &str, suffix: Option<&str>) -> Option<String> {
     let mut value = request_path
@@ -99,8 +111,8 @@ pub(super) async fn build_admin_usage_replay_response(
     request_body: Option<&axum::body::Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_usage_data_reader() || !state.has_provider_catalog_data_reader() {
-        return Ok(admin_usage_maintenance_response(
-            ADMIN_USAGE_RUST_BACKEND_DETAIL,
+        return Ok(admin_usage_data_unavailable_response(
+            ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
         ));
     }
 

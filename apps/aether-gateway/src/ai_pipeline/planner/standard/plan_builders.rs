@@ -1,9 +1,10 @@
-use aether_contracts::RequestBody;
+use aether_contracts::{ExecutionPlan, RequestBody};
 
-use super::augment_sync_report_context;
-use super::*;
+use super::{augment_sync_report_context, LocalStreamPlanAndReport, LocalSyncPlanAndReport};
 use crate::gateway::ai_pipeline::adaptation::surfaces::provider_adaptation_requires_eventstream_accept;
+use crate::gateway::ai_pipeline::planner::generic_decision_missing_exact_provider_request;
 use crate::gateway::provider_transport::ensure_upstream_auth_header;
+use crate::gateway::{GatewayControlSyncDecisionResponse, GatewayError};
 
 pub(crate) fn build_standard_sync_plan_from_decision(
     _parts: &http::request::Parts,

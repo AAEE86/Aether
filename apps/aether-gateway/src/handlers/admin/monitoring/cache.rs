@@ -1,4 +1,42 @@
-use super::*;
+use super::{
+    admin_monitoring_bad_request_response, admin_monitoring_cache_affinity_delete_params_from_path,
+    admin_monitoring_cache_affinity_not_found_response, admin_monitoring_cache_affinity_sort_value,
+    admin_monitoring_cache_affinity_unavailable_response,
+    admin_monitoring_cache_affinity_user_identifier_from_path,
+    admin_monitoring_cache_model_mapping_provider_params_from_path,
+    admin_monitoring_cache_model_name_from_path, admin_monitoring_cache_provider_id_from_path,
+    admin_monitoring_cache_redis_category_from_path,
+    admin_monitoring_cache_users_not_found_response,
+    admin_monitoring_cache_users_user_identifier_from_path,
+    admin_monitoring_find_user_summary_by_id, admin_monitoring_has_test_redis_keys,
+    admin_monitoring_list_export_api_key_records_by_ids,
+    admin_monitoring_load_affinity_identity_maps, admin_monitoring_masked_provider_key_prefix,
+    admin_monitoring_masked_user_api_key_prefix, admin_monitoring_not_found_response,
+    admin_monitoring_redis_unavailable_response, build_admin_monitoring_cache_snapshot,
+    clear_admin_monitoring_scheduler_affinity_entries,
+    delete_admin_monitoring_cache_affinity_raw_keys, delete_admin_monitoring_namespaced_keys,
+    list_admin_monitoring_cache_affinity_records,
+    list_admin_monitoring_cache_affinity_records_by_affinity_keys,
+    list_admin_monitoring_namespaced_keys, load_admin_monitoring_cache_affinity_entries_for_tests,
+    parse_admin_monitoring_keyword_filter, parse_admin_monitoring_limit,
+    parse_admin_monitoring_offset, ADMIN_MONITORING_CACHE_AFFINITY_DEFAULT_TTL_SECS,
+    ADMIN_MONITORING_CACHE_RESERVATION_RATIO,
+    ADMIN_MONITORING_DYNAMIC_RESERVATION_HIGH_LOAD_THRESHOLD,
+    ADMIN_MONITORING_DYNAMIC_RESERVATION_LOW_LOAD_THRESHOLD,
+    ADMIN_MONITORING_DYNAMIC_RESERVATION_PROBE_PHASE_REQUESTS,
+    ADMIN_MONITORING_DYNAMIC_RESERVATION_PROBE_RESERVATION,
+    ADMIN_MONITORING_DYNAMIC_RESERVATION_STABLE_MAX_RESERVATION,
+    ADMIN_MONITORING_DYNAMIC_RESERVATION_STABLE_MIN_RESERVATION,
+    ADMIN_MONITORING_REDIS_CACHE_CATEGORIES,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn build_admin_monitoring_cache_stats_response(
     state: &AppState,

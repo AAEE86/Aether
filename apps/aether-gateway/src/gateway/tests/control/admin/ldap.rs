@@ -1,4 +1,20 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::auth_modules::{
+    InMemoryAuthModuleReadRepository, StoredOAuthProviderModuleConfig,
+};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, sample_ldap_module_config, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 #[tokio::test]
 async fn gateway_handles_admin_ldap_config_locally_with_trusted_admin_principal() {
@@ -22,7 +38,7 @@ async fn gateway_handles_admin_ldap_config_locally_with_trusted_admin_principal(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_auth_module_repository_for_tests(
                 auth_module_repository,
@@ -83,7 +99,7 @@ async fn gateway_updates_admin_ldap_config_locally_with_trusted_admin_principal(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_auth_module_repository_for_tests(
                 auth_module_repository,
@@ -171,7 +187,7 @@ async fn gateway_tests_admin_ldap_connection_locally_with_trusted_admin_principa
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_auth_module_repository_for_tests(
                 auth_module_repository,

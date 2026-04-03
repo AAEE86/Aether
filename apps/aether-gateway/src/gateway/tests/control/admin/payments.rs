@@ -1,5 +1,17 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
 use aether_data::repository::wallet::StoredWalletSnapshot;
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
 
 fn admin_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     builder
@@ -112,7 +124,7 @@ async fn gateway_handles_admin_payments_list_orders_locally_with_trusted_admin_p
         start_payments_upstream("/api/admin/payments/orders").await;
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_wallet_payment_orders_for_tests([
                 sample_payment_order(
@@ -169,7 +181,7 @@ async fn gateway_handles_admin_payments_get_order_locally_with_trusted_admin_pri
         start_payments_upstream("/api/admin/payments/orders/order-1").await;
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
                 "order-1",
@@ -208,7 +220,7 @@ async fn gateway_handles_admin_payments_expire_order_locally_with_trusted_admin_
         start_payments_upstream("/api/admin/payments/orders/order-1/expire").await;
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
                 "order-1",
@@ -251,7 +263,7 @@ async fn gateway_handles_admin_payments_credit_order_locally_with_trusted_admin_
         start_payments_upstream("/api/admin/payments/orders/order-1/credit").await;
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([sample_wallet("wallet-1", "user-1")])
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
@@ -314,7 +326,7 @@ async fn gateway_handles_admin_payments_fail_order_locally_with_trusted_admin_pr
         start_payments_upstream("/api/admin/payments/orders/order-1/fail").await;
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
                 "order-1",
@@ -356,7 +368,7 @@ async fn gateway_handles_admin_payments_callbacks_locally_with_trusted_admin_pri
         start_payments_upstream("/api/admin/payments/callbacks").await;
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_payment_callbacks_for_tests([
                 sample_payment_callback(
@@ -468,7 +480,7 @@ async fn gateway_handles_admin_payments_trailing_slash_routes_locally_with_trust
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_wallets_for_tests([sample_wallet("wallet-1", "user-1")])
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
@@ -505,7 +517,7 @@ async fn gateway_handles_admin_payments_trailing_slash_routes_locally_with_trust
     let expire_payload: serde_json::Value = expire.json().await.expect("json body should parse");
     assert_eq!(expire_payload["order"]["status"], "expired");
 
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state = state
         .with_auth_wallets_for_tests([sample_wallet("wallet-1", "user-1")])
         .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
@@ -538,7 +550,7 @@ async fn gateway_handles_admin_payments_trailing_slash_routes_locally_with_trust
     assert_eq!(credit_payload["order"]["status"], "credited");
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_admin_wallet_payment_orders_for_tests([sample_payment_order(
                 "order-1",
@@ -577,7 +589,7 @@ async fn gateway_handles_admin_payments_list_orders_locally_without_payment_back
     let (upstream_url, upstream_hits, upstream_handle) =
         start_payments_upstream("/api/admin/payments/orders").await;
 
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state.admin_wallet_payment_order_store = None;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -606,7 +618,7 @@ async fn gateway_handles_admin_payments_get_order_locally_without_payment_backen
     let (upstream_url, upstream_hits, upstream_handle) =
         start_payments_upstream("/api/admin/payments/orders/order-missing").await;
 
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state.admin_wallet_payment_order_store = None;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -632,7 +644,7 @@ async fn gateway_handles_admin_payments_expire_order_with_backend_unavailable_de
     let (upstream_url, upstream_hits, upstream_handle) =
         start_payments_upstream("/api/admin/payments/orders/order-missing/expire").await;
 
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state.admin_wallet_payment_order_store = None;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -659,7 +671,7 @@ async fn gateway_handles_admin_payments_callbacks_locally_without_payment_backen
     let (upstream_url, upstream_hits, upstream_handle) =
         start_payments_upstream("/api/admin/payments/callbacks").await;
 
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state.admin_payment_callback_store = None;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -697,8 +709,7 @@ async fn gateway_rejects_admin_payments_empty_order_identifier_locally_with_trus
     }));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let expire = admin_request(

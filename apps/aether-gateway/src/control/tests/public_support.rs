@@ -1,4 +1,6 @@
-use super::*;
+use http::Uri;
+
+use super::{classify_control_route, headers};
 
 #[test]
 fn classifies_models_list_as_public_support_route() {
@@ -174,14 +176,14 @@ fn classifies_public_announcement_detail_as_public_support_route() {
 }
 
 #[test]
-fn classifies_dashboard_stats_as_public_support_legacy_route() {
+fn classifies_dashboard_stats_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/dashboard/stats".parse().expect("uri should parse");
     let decision =
         classify_control_route(&http::Method::GET, &uri, &headers).expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(decision.route_family.as_deref(), Some("dashboard_legacy"));
+    assert_eq!(decision.route_family.as_deref(), Some("dashboard"));
     assert_eq!(decision.route_kind.as_deref(), Some("stats"));
     assert_eq!(
         decision.auth_endpoint_signature.as_deref(),
@@ -191,7 +193,7 @@ fn classifies_dashboard_stats_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_user_monitoring_audit_logs_as_public_support_legacy_route() {
+fn classifies_user_monitoring_audit_logs_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/monitoring/my-audit-logs"
         .parse()
@@ -200,10 +202,7 @@ fn classifies_user_monitoring_audit_logs_as_public_support_legacy_route() {
         classify_control_route(&http::Method::GET, &uri, &headers).expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("monitoring_user_legacy")
-    );
+    assert_eq!(decision.route_family.as_deref(), Some("monitoring_user"));
     assert_eq!(decision.route_kind.as_deref(), Some("audit_logs"));
     assert_eq!(
         decision.auth_endpoint_signature.as_deref(),
@@ -213,7 +212,7 @@ fn classifies_user_monitoring_audit_logs_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_announcement_unread_count_as_public_support_legacy_route() {
+fn classifies_announcement_unread_count_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/announcements/users/me/unread-count"
         .parse()
@@ -222,10 +221,7 @@ fn classifies_announcement_unread_count_as_public_support_legacy_route() {
         classify_control_route(&http::Method::GET, &uri, &headers).expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("announcement_user_legacy")
-    );
+    assert_eq!(decision.route_family.as_deref(), Some("announcement_user"));
     assert_eq!(decision.route_kind.as_deref(), Some("unread_count"));
     assert_eq!(
         decision.auth_endpoint_signature.as_deref(),
@@ -235,7 +231,7 @@ fn classifies_announcement_unread_count_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_announcement_read_status_as_public_support_legacy_route() {
+fn classifies_announcement_read_status_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/announcements/announcement-1/read-status"
         .parse()
@@ -244,10 +240,7 @@ fn classifies_announcement_read_status_as_public_support_legacy_route() {
         .expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("announcement_user_legacy")
-    );
+    assert_eq!(decision.route_family.as_deref(), Some("announcement_user"));
     assert_eq!(decision.route_kind.as_deref(), Some("read_status"));
     assert_eq!(
         decision.auth_endpoint_signature.as_deref(),
@@ -257,7 +250,7 @@ fn classifies_announcement_read_status_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_announcement_read_all_as_public_support_legacy_route() {
+fn classifies_announcement_read_all_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/announcements/read-all"
         .parse()
@@ -266,10 +259,7 @@ fn classifies_announcement_read_all_as_public_support_legacy_route() {
         classify_control_route(&http::Method::POST, &uri, &headers).expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("announcement_user_legacy")
-    );
+    assert_eq!(decision.route_family.as_deref(), Some("announcement_user"));
     assert_eq!(decision.route_kind.as_deref(), Some("read_all"));
     assert_eq!(
         decision.auth_endpoint_signature.as_deref(),
@@ -279,7 +269,7 @@ fn classifies_announcement_read_all_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_wallet_legacy_routes_as_public_support_legacy_route() {
+fn classifies_wallet_routes_as_public_support_route() {
     let headers = headers(&[]);
     for (method, uri, route_kind) in [
         (http::Method::GET, "/api/wallet/balance", "balance"),
@@ -322,7 +312,7 @@ fn classifies_wallet_legacy_routes_as_public_support_legacy_route() {
             classify_control_route(&method, &uri, &headers).expect("route should classify");
 
         assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-        assert_eq!(decision.route_family.as_deref(), Some("wallet_legacy"));
+        assert_eq!(decision.route_family.as_deref(), Some("wallet"));
         assert_eq!(decision.route_kind.as_deref(), Some(route_kind));
         assert_eq!(
             decision.auth_endpoint_signature.as_deref(),
@@ -333,7 +323,7 @@ fn classifies_wallet_legacy_routes_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_users_me_legacy_routes_as_public_support_legacy_route() {
+fn classifies_users_me_routes_as_public_support_route() {
     let headers = headers(&[]);
     for (method, uri, route_kind) in [
         (http::Method::GET, "/api/users/me", "detail"),
@@ -436,7 +426,7 @@ fn classifies_users_me_legacy_routes_as_public_support_legacy_route() {
             classify_control_route(&method, &uri, &headers).expect("route should classify");
 
         assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-        assert_eq!(decision.route_family.as_deref(), Some("users_me_legacy"));
+        assert_eq!(decision.route_family.as_deref(), Some("users_me"));
         assert_eq!(decision.route_kind.as_deref(), Some(route_kind));
         assert_eq!(
             decision.auth_endpoint_signature.as_deref(),
@@ -447,7 +437,7 @@ fn classifies_users_me_legacy_routes_as_public_support_legacy_route() {
 }
 
 #[test]
-fn classifies_payment_callback_as_public_support_legacy_route() {
+fn classifies_payment_callback_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/payment/callback/alipay"
         .parse()
@@ -456,10 +446,7 @@ fn classifies_payment_callback_as_public_support_legacy_route() {
         classify_control_route(&http::Method::POST, &uri, &headers).expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("payment_callback_legacy")
-    );
+    assert_eq!(decision.route_family.as_deref(), Some("payment_callback"));
     assert_eq!(decision.route_kind.as_deref(), Some("callback"));
     assert_eq!(
         decision.auth_endpoint_signature.as_deref(),
@@ -620,7 +607,7 @@ fn classifies_auth_settings_as_public_support_route() {
 }
 
 #[test]
-fn classifies_auth_legacy_routes_as_public_support_route() {
+fn classifies_auth_routes_as_public_support_route() {
     for (method, path, route_kind) in [
         (http::Method::POST, "/api/auth/login", "login"),
         (http::Method::POST, "/api/auth/refresh", "refresh"),
@@ -645,7 +632,7 @@ fn classifies_auth_legacy_routes_as_public_support_route() {
             classify_control_route(&method, &uri, &headers).expect("route should classify");
 
         assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-        assert_eq!(decision.route_family.as_deref(), Some("auth_legacy"));
+        assert_eq!(decision.route_family.as_deref(), Some("auth"));
         assert_eq!(decision.route_kind.as_deref(), Some(route_kind));
         assert_eq!(
             decision.auth_endpoint_signature.as_deref(),
@@ -656,71 +643,45 @@ fn classifies_auth_legacy_routes_as_public_support_route() {
 }
 
 #[test]
-fn classifies_oauth_public_providers_as_public_support_route() {
+fn does_not_classify_oauth_public_providers_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/oauth/providers".parse().expect("uri should parse");
-    let decision =
-        classify_control_route(&http::Method::GET, &uri, &headers).expect("route should classify");
+    let decision = classify_control_route(&http::Method::GET, &uri, &headers);
 
-    assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("oauth_public_legacy")
-    );
-    assert_eq!(decision.route_kind.as_deref(), Some("providers"));
-    assert_eq!(decision.auth_endpoint_signature.as_deref(), Some(""));
-    assert!(!decision.is_execution_runtime_candidate());
+    assert!(decision.is_none());
 }
 
 #[test]
-fn classifies_oauth_public_authorize_as_public_support_route() {
+fn does_not_classify_oauth_public_authorize_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/oauth/linuxdo/authorize?client_device_id=device-1"
         .parse()
         .expect("uri should parse");
-    let decision =
-        classify_control_route(&http::Method::GET, &uri, &headers).expect("route should classify");
+    let decision = classify_control_route(&http::Method::GET, &uri, &headers);
 
-    assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(
-        decision.route_family.as_deref(),
-        Some("oauth_public_legacy")
-    );
-    assert_eq!(decision.route_kind.as_deref(), Some("authorize"));
-    assert_eq!(decision.auth_endpoint_signature.as_deref(), Some(""));
-    assert!(!decision.is_execution_runtime_candidate());
+    assert!(decision.is_none());
 }
 
 #[test]
-fn classifies_oauth_user_bindable_providers_as_public_support_route() {
+fn does_not_classify_oauth_user_bindable_providers_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/user/oauth/bindable-providers"
         .parse()
         .expect("uri should parse");
-    let decision =
-        classify_control_route(&http::Method::GET, &uri, &headers).expect("route should classify");
+    let decision = classify_control_route(&http::Method::GET, &uri, &headers);
 
-    assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(decision.route_family.as_deref(), Some("oauth_user_legacy"));
-    assert_eq!(decision.route_kind.as_deref(), Some("bindable_providers"));
-    assert_eq!(decision.auth_endpoint_signature.as_deref(), Some(""));
-    assert!(!decision.is_execution_runtime_candidate());
+    assert!(decision.is_none());
 }
 
 #[test]
-fn classifies_oauth_user_bind_token_as_public_support_route() {
+fn does_not_classify_oauth_user_bind_token_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/user/oauth/linuxdo/bind-token"
         .parse()
         .expect("uri should parse");
-    let decision =
-        classify_control_route(&http::Method::POST, &uri, &headers).expect("route should classify");
+    let decision = classify_control_route(&http::Method::POST, &uri, &headers);
 
-    assert_eq!(decision.route_class.as_deref(), Some("public_support"));
-    assert_eq!(decision.route_family.as_deref(), Some("oauth_user_legacy"));
-    assert_eq!(decision.route_kind.as_deref(), Some("bind_token"));
-    assert_eq!(decision.auth_endpoint_signature.as_deref(), Some(""));
-    assert!(!decision.is_execution_runtime_candidate());
+    assert!(decision.is_none());
 }
 
 #[test]

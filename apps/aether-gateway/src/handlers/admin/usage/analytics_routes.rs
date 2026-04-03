@@ -1,4 +1,28 @@
-use super::*;
+use super::super::{
+    list_usage_for_optional_range, round_to, AdminStatsTimeRange, AdminStatsUsageFilter,
+};
+use super::{
+    admin_usage_aggregation_by_api_format_json, admin_usage_aggregation_by_model_json,
+    admin_usage_aggregation_by_provider_json, admin_usage_aggregation_by_user_json,
+    admin_usage_bad_request_response, admin_usage_calculate_recommended_ttl,
+    admin_usage_collect_request_intervals_minutes, admin_usage_data_unavailable_response,
+    admin_usage_group_completed_by_api_key, admin_usage_group_completed_by_user,
+    admin_usage_heatmap_json, admin_usage_matches_optional_id, admin_usage_parse_aggregation_limit,
+    admin_usage_parse_recent_hours, admin_usage_parse_timeline_limit, admin_usage_percentile_cont,
+    admin_usage_point_sort_key, admin_usage_proportional_limits,
+    admin_usage_ttl_recommendation_reason, list_recent_completed_usage_for_cache_affinity,
+    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
+};
+use crate::gateway::handlers::{query_param_bool, query_param_value, unix_secs_to_rfc3339};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) async fn maybe_build_local_admin_usage_analytics_response(
     state: &AppState,
@@ -18,8 +42,8 @@ pub(super) async fn maybe_build_local_admin_usage_analytics_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 
@@ -70,8 +94,8 @@ pub(super) async fn maybe_build_local_admin_usage_analytics_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
             let now_unix_secs = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
@@ -94,8 +118,8 @@ pub(super) async fn maybe_build_local_admin_usage_analytics_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 
@@ -183,8 +207,8 @@ pub(super) async fn maybe_build_local_admin_usage_analytics_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 
@@ -307,8 +331,8 @@ pub(super) async fn maybe_build_local_admin_usage_analytics_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 

@@ -1,4 +1,6 @@
-use super::*;
+use axum::http;
+
+use super::{classified, ClassifiedRoute};
 
 pub(super) fn classify_admin_provider_ops_routes(
     method: &http::Method,

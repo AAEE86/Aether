@@ -1,4 +1,24 @@
-use super::*;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use chrono::Utc;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use aether_data::repository::management_tokens::{
+    CreateManagementTokenRecord, ManagementTokenListQuery, RegenerateManagementTokenSecret,
+    StoredManagementTokenUserSummary, UpdateManagementTokenRecord,
+};
+
+use super::{
+    build_auth_error_response, build_management_token_payload, query_param_optional_bool,
+    query_param_value, resolve_authenticated_local_user, AppState, AuthenticatedLocalUserContext,
+    GatewayPublicRequestContext,
+};
 use crate::gateway::LocalMutationOutcome;
 
 const USERS_ME_MANAGEMENT_TOKEN_PREFIX: &str = "ae_";
@@ -7,6 +27,10 @@ const USERS_ME_MANAGEMENT_TOKEN_DISPLAY_PREFIX_LEN: usize = 7;
 const USERS_ME_MANAGEMENT_TOKEN_FETCH_LIMIT: usize = 10_000;
 const USERS_ME_MANAGEMENT_TOKEN_DEFAULT_MAX_PER_USER: usize = 20;
 const USERS_ME_MANAGEMENT_TOKEN_MAX_PER_USER_ENV: &str = "MANAGEMENT_TOKEN_MAX_PER_USER";
+const USERS_ME_MANAGEMENT_TOKEN_READ_UNAVAILABLE_DETAIL: &str =
+    "用户 Management Token 数据暂不可用";
+const USERS_ME_MANAGEMENT_TOKEN_WRITE_UNAVAILABLE_DETAIL: &str =
+    "用户 Management Token 写入暂不可用";
 
 #[derive(Debug, Clone)]
 struct UsersMeManagementTokenCreateInput {
@@ -46,39 +70,47 @@ pub(super) fn users_me_management_tokens_root(request_path: &str) -> bool {
     )
 }
 
-fn users_me_management_token_id_from_path(request_path: &str) -> Option<String> {
+fn users_me_management_token_path_segments(request_path: &str) -> Option<Vec<&str>> {
     let raw = request_path
         .strip_prefix("/api/me/management-tokens/")?
         .trim()
         .trim_matches('/');
-    if raw.is_empty() || raw.contains('/') {
+    if raw.is_empty() {
         return None;
     }
-    Some(raw.to_string())
+    let segments = raw
+        .split('/')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    (!segments.is_empty()).then_some(segments)
+}
+
+fn users_me_management_token_id_from_path(request_path: &str) -> Option<String> {
+    let segments = users_me_management_token_path_segments(request_path)?;
+    (segments.len() == 1).then(|| segments[0].to_string())
 }
 
 fn users_me_management_token_status_id_from_path(request_path: &str) -> Option<String> {
-    let raw = request_path
-        .strip_prefix("/api/me/management-tokens/")?
-        .trim()
-        .trim_matches('/');
-    let token_id = raw.strip_suffix("/status")?.trim_matches('/');
-    if token_id.is_empty() || token_id.contains('/') {
-        return None;
-    }
-    Some(token_id.to_string())
+    let segments = users_me_management_token_path_segments(request_path)?;
+    (segments.len() == 2 && segments[1] == "status").then(|| segments[0].to_string())
 }
 
 fn users_me_management_token_regenerate_id_from_path(request_path: &str) -> Option<String> {
-    let raw = request_path
-        .strip_prefix("/api/me/management-tokens/")?
-        .trim()
-        .trim_matches('/');
-    let token_id = raw.strip_suffix("/regenerate")?.trim_matches('/');
-    if token_id.is_empty() || token_id.contains('/') {
-        return None;
-    }
-    Some(token_id.to_string())
+    let segments = users_me_management_token_path_segments(request_path)?;
+    (segments.len() == 2 && segments[1] == "regenerate").then(|| segments[0].to_string())
+}
+
+pub(super) fn users_me_management_token_detail_path_matches(request_path: &str) -> bool {
+    users_me_management_token_id_from_path(request_path).is_some()
+}
+
+pub(super) fn users_me_management_token_toggle_path_matches(request_path: &str) -> bool {
+    users_me_management_token_status_id_from_path(request_path).is_some()
+}
+
+pub(super) fn users_me_management_token_regenerate_path_matches(request_path: &str) -> bool {
+    users_me_management_token_regenerate_id_from_path(request_path).is_some()
 }
 
 fn users_me_management_token_max_per_user() -> usize {
@@ -112,6 +144,22 @@ fn users_me_management_token_prefix(value: &str) -> Option<String> {
             .min(USERS_ME_MANAGEMENT_TOKEN_DISPLAY_PREFIX_LEN)]
             .to_string()
     })
+}
+
+fn build_users_me_management_token_reader_unavailable_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        USERS_ME_MANAGEMENT_TOKEN_READ_UNAVAILABLE_DETAIL,
+        false,
+    )
+}
+
+fn build_users_me_management_token_writer_unavailable_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        USERS_ME_MANAGEMENT_TOKEN_WRITE_UNAVAILABLE_DETAIL,
+        false,
+    )
 }
 
 fn users_me_management_token_limit(query: Option<&str>) -> usize {
@@ -326,9 +374,7 @@ async fn list_users_me_management_tokens_for_user(
 ) -> Result<aether_data::repository::management_tokens::StoredManagementTokenListPage, Response<Body>>
 {
     if !state.has_management_token_reader() {
-        return Err(build_public_support_maintenance_response(
-            USERS_ME_MAINTENANCE_DETAIL,
-        ));
+        return Err(build_users_me_management_token_reader_unavailable_response());
     }
     state
         .list_management_tokens(&ManagementTokenListQuery {
@@ -354,9 +400,7 @@ async fn resolve_users_me_management_token(
 ) -> Result<aether_data::repository::management_tokens::StoredManagementTokenWithUser, Response<Body>>
 {
     if !state.has_management_token_reader() {
-        return Err(build_public_support_maintenance_response(
-            USERS_ME_MAINTENANCE_DETAIL,
-        ));
+        return Err(build_users_me_management_token_reader_unavailable_response());
     }
     match state.get_management_token_with_user(token_id).await {
         Ok(Some(token)) if token.token.user_id == user_id => Ok(token),
@@ -379,7 +423,7 @@ pub(super) async fn handle_users_me_management_tokens_list(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_management_token_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_management_token_reader_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -433,7 +477,7 @@ pub(super) async fn handle_users_me_management_token_create(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_management_token_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_management_token_writer_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -512,7 +556,7 @@ pub(super) async fn handle_users_me_management_token_create(
             build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
         }
         Ok(LocalMutationOutcome::Unavailable) => {
-            build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL)
+            build_users_me_management_token_writer_unavailable_response()
         }
         Ok(LocalMutationOutcome::NotFound) => build_auth_error_response(
             http::StatusCode::NOT_FOUND,
@@ -557,7 +601,7 @@ pub(super) async fn handle_users_me_management_token_update(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_management_token_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_management_token_writer_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -646,7 +690,7 @@ pub(super) async fn handle_users_me_management_token_update(
             build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
         }
         Ok(LocalMutationOutcome::Unavailable) => {
-            build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL)
+            build_users_me_management_token_writer_unavailable_response()
         }
         Err(err) => build_auth_error_response(
             http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -662,7 +706,7 @@ pub(super) async fn handle_users_me_management_token_delete(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_management_token_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_management_token_writer_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -702,7 +746,7 @@ pub(super) async fn handle_users_me_management_token_toggle(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_management_token_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_management_token_writer_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -750,7 +794,7 @@ pub(super) async fn handle_users_me_management_token_regenerate(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_management_token_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_management_token_writer_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -793,7 +837,7 @@ pub(super) async fn handle_users_me_management_token_regenerate(
             build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
         }
         Ok(LocalMutationOutcome::Unavailable) => {
-            build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL)
+            build_users_me_management_token_writer_unavailable_response()
         }
         Err(err) => build_auth_error_response(
             http::StatusCode::INTERNAL_SERVER_ERROR,

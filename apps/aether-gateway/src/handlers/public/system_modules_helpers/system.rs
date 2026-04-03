@@ -1,4 +1,16 @@
-use super::*;
+use crate::gateway::api::ai::admin_endpoint_signature_parts;
+use crate::gateway::handlers::{decrypt_catalog_secret_with_fallbacks, unix_secs_to_rfc3339};
+use crate::gateway::{AppState, GatewayError};
+use aether_crypto::encrypt_python_fernet_plaintext;
+use aether_data::repository::global_models::{
+    AdminGlobalModelListQuery, AdminProviderModelListQuery,
+};
+use axum::body::Bytes;
+use axum::http;
+use chrono::Utc;
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 
 #[derive(Debug, Clone, Copy)]
 struct AdminApiFormatDefinition {
@@ -219,7 +231,7 @@ pub(crate) async fn build_admin_system_settings_payload(
 
 pub(crate) async fn apply_admin_system_settings_update(
     state: &AppState,
-    request_body: &axum::body::Bytes,
+    request_body: &Bytes,
 ) -> Result<Result<serde_json::Value, (http::StatusCode, serde_json::Value)>, GatewayError> {
     let payload = match serde_json::from_slice::<serde_json::Value>(request_body) {
         Ok(serde_json::Value::Object(payload)) => payload,
@@ -603,7 +615,7 @@ pub(crate) fn render_admin_email_template_html(
 pub(crate) async fn apply_admin_email_template_update(
     state: &AppState,
     template_type: &str,
-    request_body: &axum::body::Bytes,
+    request_body: &Bytes,
 ) -> Result<Result<serde_json::Value, (http::StatusCode, serde_json::Value)>, GatewayError> {
     let Some(definition) = admin_email_template_definition(template_type) else {
         return Ok(Err((
@@ -677,7 +689,7 @@ pub(crate) async fn apply_admin_email_template_update(
 pub(crate) async fn preview_admin_email_template(
     state: &AppState,
     template_type: &str,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Result<serde_json::Value, (http::StatusCode, serde_json::Value)>, GatewayError> {
     let Some(definition) = admin_email_template_definition(template_type) else {
         return Ok(Err((
@@ -1550,7 +1562,7 @@ pub(crate) async fn build_admin_system_config_detail_payload(
 pub(crate) async fn apply_admin_system_config_update(
     state: &AppState,
     requested_key: &str,
-    request_body: &axum::body::Bytes,
+    request_body: &Bytes,
 ) -> Result<Result<serde_json::Value, (http::StatusCode, serde_json::Value)>, GatewayError> {
     let payload = match serde_json::from_slice::<serde_json::Value>(request_body) {
         Ok(serde_json::Value::Object(payload)) => payload,

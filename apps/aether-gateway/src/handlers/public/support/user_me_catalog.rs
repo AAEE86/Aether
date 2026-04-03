@@ -1,4 +1,22 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+
+use super::{
+    build_admin_endpoint_health_status_payload, build_auth_error_response, query_param_value,
+    resolve_authenticated_local_user, AppState, GatewayPublicRequestContext,
+    USERS_ME_AVAILABLE_MODELS_FETCH_LIMIT,
+};
+
+const USERS_ME_MODEL_CATALOG_UNAVAILABLE_DETAIL: &str = "用户模型目录暂不可用";
+const USERS_ME_PROVIDER_CATALOG_UNAVAILABLE_DETAIL: &str = "用户提供商目录暂不可用";
+const USERS_ME_ENDPOINT_STATUS_UNAVAILABLE_DETAIL: &str = "用户端点健康数据暂不可用";
 
 fn build_users_me_available_model_payload(
     model: aether_data::repository::global_models::StoredPublicGlobalModel,
@@ -60,8 +78,10 @@ async fn resolve_users_me_allowed_global_model_ids(
     };
 
     if !state.has_provider_catalog_data_reader() {
-        return Err(build_public_support_maintenance_response(
-            USERS_ME_MAINTENANCE_DETAIL,
+        return Err(build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            USERS_ME_PROVIDER_CATALOG_UNAVAILABLE_DETAIL,
+            false,
         ));
     }
 
@@ -118,7 +138,11 @@ pub(super) async fn handle_users_me_available_models(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_global_model_data_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            USERS_ME_MODEL_CATALOG_UNAVAILABLE_DETAIL,
+            false,
+        );
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -237,7 +261,11 @@ pub(super) async fn handle_users_me_providers_get(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_provider_catalog_data_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            USERS_ME_PROVIDER_CATALOG_UNAVAILABLE_DETAIL,
+            false,
+        );
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -379,7 +407,11 @@ pub(super) async fn handle_users_me_endpoint_status_get(
     };
 
     let Some(payload) = build_admin_endpoint_health_status_payload(state, 6).await else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            USERS_ME_ENDPOINT_STATUS_UNAVAILABLE_DETAIL,
+            false,
+        );
     };
     let Some(items) = payload.as_array() else {
         return build_auth_error_response(

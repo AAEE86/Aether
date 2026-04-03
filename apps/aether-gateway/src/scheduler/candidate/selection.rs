@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use aether_data::repository::candidates::StoredRequestCandidate;
+use aether_data::repository::provider_catalog::{
+    StoredProviderCatalogKey, StoredProviderCatalogProvider,
+};
+use aether_data::repository::quota::StoredProviderQuotaSnapshot;
+use aether_wallet::{ProviderBillingType, ProviderQuotaSnapshot};
+
+use crate::gateway::gateway_cache::SchedulerAffinityTarget;
+use crate::gateway::gateway_data::StoredGatewayAuthApiKeySnapshot;
+use crate::gateway::{AppState, GatewayError};
+
+use super::super::health::{
+    count_recent_active_requests_for_provider, effective_provider_key_health_score,
+    is_candidate_in_recent_failure_cooldown, is_provider_key_circuit_open,
+    provider_key_health_bucket, provider_key_health_score, provider_key_rpm_allows_request_since,
+    ProviderKeyHealthBucket,
+};
+
+use super::{
+    compare_affinity_order, matches_affinity_target, GatewayMinimalCandidateSelectionCandidate,
+};
 
 pub(super) fn reorder_candidates_by_scheduler_health(
     candidates: &mut [GatewayMinimalCandidateSelectionCandidate],
@@ -45,7 +67,7 @@ fn compare_provider_key_health_order(
 fn candidate_provider_key_health_bucket(
     candidate: &GatewayMinimalCandidateSelectionCandidate,
     provider_key_rpm_states: &BTreeMap<String, StoredProviderCatalogKey>,
-) -> Option<super::super::health::ProviderKeyHealthBucket> {
+) -> Option<ProviderKeyHealthBucket> {
     provider_key_rpm_states
         .get(&candidate.key_id)
         .and_then(|key| provider_key_health_bucket(key, candidate.endpoint_api_format.as_str()))

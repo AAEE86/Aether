@@ -1,14 +1,21 @@
-use super::*;
+use super::super::build_proxy_error_response;
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-pub(super) const ADMIN_PROVIDER_STRATEGY_RUST_BACKEND_DETAIL: &str =
-    "Admin provider strategy routes require Rust maintenance backend";
-pub(super) const ADMIN_PROVIDER_STRATEGY_STATS_RUST_BACKEND_DETAIL: &str =
-    "Admin provider strategy stats require Rust maintenance backend";
+pub(super) const ADMIN_PROVIDER_STRATEGY_DATA_UNAVAILABLE_DETAIL: &str =
+    "Admin provider strategy data unavailable";
+pub(super) const ADMIN_PROVIDER_STRATEGY_STATS_DATA_UNAVAILABLE_DETAIL: &str =
+    "Admin provider strategy stats data unavailable";
 
-pub(super) fn admin_provider_strategy_maintenance_response(detail: &str) -> Response<Body> {
+pub(super) fn admin_provider_strategy_data_unavailable_response(detail: &str) -> Response<Body> {
     build_proxy_error_response(
         http::StatusCode::SERVICE_UNAVAILABLE,
-        "maintenance_mode",
+        "data_unavailable",
         detail,
         Some(json!({ "error": detail })),
     )

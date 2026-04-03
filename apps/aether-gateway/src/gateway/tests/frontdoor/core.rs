@@ -1,4 +1,6 @@
-use super::*;
+use crate::gateway::tests::{
+    any, build_router, start_server, Arc, Body, Mutex, Request, Router, StatusCode, READYZ_PATH,
+};
 
 #[tokio::test]
 async fn gateway_exposes_readyz_without_proxying_upstream() {
@@ -16,7 +18,7 @@ async fn gateway_exposes_readyz_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -53,7 +55,7 @@ async fn gateway_handles_public_health_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -88,7 +90,7 @@ async fn gateway_handles_public_service_health_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -125,7 +127,7 @@ async fn gateway_handles_public_root_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -164,7 +166,7 @@ async fn gateway_handles_public_site_info_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()

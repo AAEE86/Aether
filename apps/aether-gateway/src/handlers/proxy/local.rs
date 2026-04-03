@@ -1,38 +1,27 @@
 use super::super::{admin, internal, public};
-use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::body::{Body, Bytes};
+use axum::http::Response;
 
 pub(super) async fn maybe_build_local_internal_proxy_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     remote_addr: &std::net::SocketAddr,
-    request_body: Option<&axum::body::Bytes>,
-    legacy_internal_gateway_allowed: bool,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
-    let response = internal::maybe_build_local_internal_proxy_response_impl(
+    internal::maybe_build_local_internal_proxy_response_impl(
         state,
         request_context,
         remote_addr,
         request_body,
-        legacy_internal_gateway_allowed,
     )
-    .await?;
-
-    if request_context
-        .control_decision
-        .as_ref()
-        .and_then(|decision| decision.route_family.as_deref())
-        == Some("gateway_legacy")
-    {
-        return Ok(response.map(internal::attach_legacy_internal_gateway_deprecation_headers));
-    }
-
-    Ok(response)
+    .await
 }
 
 pub(super) async fn maybe_build_local_admin_proxy_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);

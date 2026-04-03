@@ -1,4 +1,16 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
 
 async fn send_admin_security_request(
     gateway: Router,
@@ -46,8 +58,7 @@ async fn send_admin_security_request(
 
 #[tokio::test]
 async fn gateway_handles_admin_security_blacklist_add_locally_with_trusted_admin_principal() {
-    let gateway =
-        build_router_with_state(AppState::new("http://127.0.0.1:9").expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
 
     let (status, payload, upstream_count) = send_admin_security_request(
         gateway,
@@ -68,7 +79,7 @@ async fn gateway_handles_admin_security_blacklist_add_locally_with_trusted_admin
 #[tokio::test]
 async fn gateway_handles_admin_security_blacklist_remove_locally_with_trusted_admin_principal() {
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9")
+        AppState::new()
             .expect("gateway should build")
             .with_admin_security_blacklist_for_tests([(
                 "1.2.3.4".to_string(),
@@ -92,8 +103,7 @@ async fn gateway_handles_admin_security_blacklist_remove_locally_with_trusted_ad
 
 #[tokio::test]
 async fn gateway_rejects_admin_security_blacklist_remove_without_ip_address() {
-    let gateway =
-        build_router_with_state(AppState::new("http://127.0.0.1:9").expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
 
     let (status, payload, upstream_count) = send_admin_security_request(
         gateway,
@@ -111,7 +121,7 @@ async fn gateway_rejects_admin_security_blacklist_remove_without_ip_address() {
 #[tokio::test]
 async fn gateway_handles_admin_security_blacklist_stats_locally_with_trusted_admin_principal() {
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9")
+        AppState::new()
             .expect("gateway should build")
             .with_admin_security_blacklist_for_tests([
                 ("1.2.3.4".to_string(), "manual".to_string()),
@@ -135,8 +145,7 @@ async fn gateway_handles_admin_security_blacklist_stats_locally_with_trusted_adm
 
 #[tokio::test]
 async fn gateway_handles_admin_security_whitelist_add_locally_with_trusted_admin_principal() {
-    let gateway =
-        build_router_with_state(AppState::new("http://127.0.0.1:9").expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
 
     let (status, payload, upstream_count) = send_admin_security_request(
         gateway,
@@ -155,7 +164,7 @@ async fn gateway_handles_admin_security_whitelist_add_locally_with_trusted_admin
 #[tokio::test]
 async fn gateway_handles_admin_security_whitelist_remove_locally_with_trusted_admin_principal() {
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9")
+        AppState::new()
             .expect("gateway should build")
             .with_admin_security_whitelist_for_tests(["1.2.3.4".to_string()]),
     );
@@ -176,8 +185,7 @@ async fn gateway_handles_admin_security_whitelist_remove_locally_with_trusted_ad
 
 #[tokio::test]
 async fn gateway_rejects_admin_security_whitelist_remove_without_ip_address() {
-    let gateway =
-        build_router_with_state(AppState::new("http://127.0.0.1:9").expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
 
     let (status, payload, upstream_count) = send_admin_security_request(
         gateway,
@@ -195,7 +203,7 @@ async fn gateway_rejects_admin_security_whitelist_remove_without_ip_address() {
 #[tokio::test]
 async fn gateway_handles_admin_security_whitelist_list_locally_with_trusted_admin_principal() {
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9")
+        AppState::new()
             .expect("gateway should build")
             .with_admin_security_whitelist_for_tests([
                 "10.0.0.0/24".to_string(),
@@ -220,7 +228,7 @@ async fn gateway_handles_admin_security_whitelist_list_locally_with_trusted_admi
 #[tokio::test]
 async fn gateway_handles_admin_security_blacklist_list_locally_with_trusted_admin_principal() {
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9")
+        AppState::new()
             .expect("gateway should build")
             .with_admin_security_blacklist_for_tests([
                 ("5.6.7.8".to_string(), "abuse".to_string()),

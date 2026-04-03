@@ -1,4 +1,13 @@
-use super::*;
+use sha2::{Digest, Sha256};
+
+use crate::gateway::gateway_cache::SchedulerAffinityTarget;
+use crate::gateway::gateway_data::StoredGatewayAuthApiKeySnapshot;
+use crate::gateway::AppState;
+
+use super::{
+    normalize_api_format, GatewayMinimalCandidateSelectionCandidate,
+    SCHEDULER_AFFINITY_MAX_ENTRIES, SCHEDULER_AFFINITY_TTL,
+};
 
 pub(super) fn build_scheduler_affinity_cache_key(
     auth_snapshot: Option<&StoredGatewayAuthApiKeySnapshot>,

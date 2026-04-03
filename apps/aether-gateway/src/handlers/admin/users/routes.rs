@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    build_admin_create_user_api_key_response, build_admin_create_user_response,
+    build_admin_delete_user_api_key_response, build_admin_delete_user_response,
+    build_admin_delete_user_session_response, build_admin_delete_user_sessions_response,
+    build_admin_get_user_response, build_admin_list_user_api_keys_response,
+    build_admin_list_user_sessions_response, build_admin_list_users_response,
+    build_admin_reveal_user_api_key_response, build_admin_toggle_user_api_key_lock_response,
+    build_admin_update_user_api_key_response, build_admin_update_user_response,
+    build_admin_users_data_unavailable_response,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{body::Body, http, response::Response};
 
 fn is_admin_users_route(request_context: &GatewayPublicRequestContext) -> bool {
     let path = request_context.request_path.as_str();
@@ -110,7 +121,7 @@ pub(super) async fn maybe_build_local_admin_users_routes_response(
             if !is_admin_users_route(request_context) {
                 return Ok(None);
             }
-            Ok(Some(build_admin_users_maintenance_response()))
+            Ok(Some(build_admin_users_data_unavailable_response()))
         }
     }
 }

@@ -30,7 +30,7 @@ pub use gateway::exports::{
     build_execution_runtime_router, build_execution_runtime_router_with_request_concurrency_limit,
     build_execution_runtime_router_with_request_gates, build_router, build_router_with_state,
     build_tunnel_runtime_router_with_state, serve_execution_runtime_tcp,
-    serve_execution_runtime_unix, serve_tcp, strip_cf_headers_middleware, tunnel_protocol, AppState,
-    FrontdoorCorsConfig, FrontdoorUserRpmConfig, GatewayDataConfig, TunnelConnConfig,
+    serve_execution_runtime_unix, serve_tcp, strip_cf_headers_middleware, tunnel_protocol,
+    AppState, FrontdoorCorsConfig, FrontdoorUserRpmConfig, GatewayDataConfig, TunnelConnConfig,
     TunnelControlPlaneClient, TunnelRuntimeState, UsageRuntimeConfig, VideoTaskTruthSourceMode,
 };

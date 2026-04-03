@@ -1,7 +1,15 @@
-use super::*;
+use crate::gateway::handlers::{query_param_value, unix_secs_to_rfc3339};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use sqlx::Row;
 
-pub(super) const ADMIN_WALLETS_RUST_BACKEND_DETAIL: &str =
-    "Admin wallets routes require Rust maintenance backend";
+pub(super) const ADMIN_WALLETS_DATA_UNAVAILABLE_DETAIL: &str = "Admin wallets data unavailable";
 pub(super) const ADMIN_WALLETS_API_KEY_REFUND_DETAIL: &str = "独立密钥钱包不支持退款审批";
 pub(super) const ADMIN_WALLETS_API_KEY_RECHARGE_DETAIL: &str = "独立密钥钱包不支持充值，请使用调账";
 pub(super) const ADMIN_WALLETS_API_KEY_GIFT_ADJUST_DETAIL: &str = "独立密钥钱包不支持赠款调账";
@@ -47,10 +55,10 @@ fn default_admin_wallet_balance_type() -> String {
     "recharge".to_string()
 }
 
-pub(super) fn build_admin_wallets_maintenance_response() -> Response<Body> {
+pub(super) fn build_admin_wallets_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_WALLETS_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_WALLETS_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }

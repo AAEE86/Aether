@@ -1,12 +1,38 @@
-use super::*;
-use crate::gateway::ai_pipeline::{planner as ai_planner, runtime as ai_runtime};
+use super::{
+    attach_execution_path_header, build_internal_control_error_response,
+    build_internal_finalize_decision, build_internal_gateway_fallback_plan_payload,
+    build_internal_gateway_header_map, build_internal_gateway_passthrough_payload,
+    build_internal_gateway_proxy_public_response, build_internal_gateway_request_parts,
+    build_internal_gateway_resolve_payload, build_internal_gateway_uri,
+    build_internal_tunnel_heartbeat_ack, build_management_token_payload, gateway_error_message,
+    maybe_build_internal_finalize_video_response, parse_internal_tunnel_heartbeat_request,
+    parse_internal_tunnel_node_status_request,
+};
+use crate::gateway::ai_pipeline::planner as ai_planner;
+use crate::gateway::constants::{
+    CONTROL_EXECUTED_HEADER, EXECUTION_PATH_EXECUTION_RUNTIME_STREAM,
+    EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
+};
+use crate::gateway::handlers::{
+    InternalGatewayAuthContextRequest, InternalGatewayExecuteRequest, InternalGatewayResolveRequest,
+};
+use crate::gateway::{
+    execute_execution_runtime_stream, execute_execution_runtime_sync,
+    maybe_build_stream_plan_payload, maybe_build_sync_finalize_outcome,
+    maybe_build_sync_plan_payload, AppState, GatewayControlDecision, GatewayError,
+    GatewayPublicRequestContext, ProxyNodeHeartbeatMutation, ProxyNodeTunnelStatusMutation,
+};
+use axum::body::{Body, Bytes};
+use axum::http::{self, HeaderName, HeaderValue, Response};
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
 
 pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     remote_addr: &std::net::SocketAddr,
-    request_body: Option<&axum::body::Bytes>,
-    legacy_internal_gateway_allowed: bool,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -14,17 +40,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
     if decision.route_class.as_deref() != Some("internal_proxy") {
         return Ok(None);
     }
-    if decision.route_family.as_deref() == Some("gateway_legacy") {
-        if !legacy_internal_gateway_allowed {
-            return Ok(Some(build_retired_internal_gateway_response()));
-        }
-        state.record_fallback_metric(
-            GatewayFallbackMetricKind::LegacyInternalBridge,
-            Some(decision),
-            None,
-            Some("legacy_internal_bridge"),
-            GatewayFallbackReason::LegacyInternalGateway,
-        );
+    if decision.route_family.as_deref() == Some("internal_gateway") {
         if !remote_addr.ip().is_loopback() {
             return Ok(Some(build_internal_control_error_response(
                 http::StatusCode::FORBIDDEN,
@@ -40,7 +56,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayResolveRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayResolveRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -95,7 +111,8 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayAuthContextRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayAuthContextRequest>(request_body)
+                    {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -115,7 +132,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                 let mut synthetic_decision = GatewayControlDecision::synthetic(
                     "/",
                     Some("internal_proxy".to_string()),
-                    Some("gateway_legacy".to_string()),
+                    Some("internal_gateway".to_string()),
                     Some("auth_context".to_string()),
                     Some(payload.auth_endpoint_signature),
                 );
@@ -145,7 +162,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayExecuteRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayExecuteRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -247,7 +264,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayExecuteRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayExecuteRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -270,6 +287,12 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     .as_deref()
                     .unwrap_or(request_context.trace_id.as_str())
                     .to_string();
+                let body_is_empty = payload.body_base64.is_none()
+                    && payload
+                        .body_json
+                        .as_object()
+                        .map(|value| value.is_empty())
+                        .unwrap_or(false);
                 let Some(mut resolved) = crate::gateway::resolve_control_route(
                     state,
                     &parts.method,
@@ -341,7 +364,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayExecuteRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayExecuteRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -370,10 +393,6 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                         .as_object()
                         .map(|value| value.is_empty())
                         .unwrap_or(false);
-                let body_bytes = match decode_legacy_gateway_request_body_bytes(&payload) {
-                    Ok(bytes) => bytes,
-                    Err(response) => return Ok(Some(response)),
-                };
                 let Some(mut resolved) = crate::gateway::resolve_control_route(
                     state,
                     &parts.method,
@@ -405,20 +424,6 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     }
                     return Ok(Some(Json(planned).into_response()));
                 }
-                if let Some(executed_response) = ai_runtime::maybe_execute_sync_request(
-                    state,
-                    &parts,
-                    &body_bytes,
-                    trace_id.as_str(),
-                    Some(&resolved),
-                )
-                .await?
-                {
-                    return Ok(Some(attach_execution_path_header(
-                        executed_response,
-                        EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
-                    )));
-                }
                 return Ok(Some(build_internal_gateway_proxy_public_response()));
             }
             Some("plan_stream")
@@ -431,7 +436,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayExecuteRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayExecuteRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -454,10 +459,6 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     .as_deref()
                     .unwrap_or(request_context.trace_id.as_str())
                     .to_string();
-                let body_bytes = match decode_legacy_gateway_request_body_bytes(&payload) {
-                    Ok(bytes) => bytes,
-                    Err(response) => return Ok(Some(response)),
-                };
                 let Some(mut resolved) = crate::gateway::resolve_control_route(
                     state,
                     &parts.method,
@@ -487,20 +488,6 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     }
                     return Ok(Some(Json(planned).into_response()));
                 }
-                if let Some(executed_response) = ai_runtime::maybe_execute_stream_request(
-                    state,
-                    &parts,
-                    &body_bytes,
-                    trace_id.as_str(),
-                    Some(&resolved),
-                )
-                .await?
-                {
-                    return Ok(Some(attach_execution_path_header(
-                        executed_response,
-                        EXECUTION_PATH_EXECUTION_RUNTIME_STREAM,
-                    )));
-                }
                 return Ok(Some(build_internal_gateway_proxy_public_response()));
             }
             Some("execute_sync")
@@ -513,7 +500,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayExecuteRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayExecuteRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -536,10 +523,12 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     .as_deref()
                     .unwrap_or(request_context.trace_id.as_str())
                     .to_string();
-                let body_bytes = match decode_legacy_gateway_request_body_bytes(&payload) {
-                    Ok(bytes) => bytes,
-                    Err(response) => return Ok(Some(response)),
-                };
+                let body_is_empty = payload.body_base64.is_none()
+                    && payload
+                        .body_json
+                        .as_object()
+                        .map(|value| value.is_empty())
+                        .unwrap_or(false);
                 let Some(mut resolved) = crate::gateway::resolve_control_route(
                     state,
                     &parts.method,
@@ -562,7 +551,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     &resolved,
                     &payload.body_json,
                     payload.body_base64.as_deref(),
-                    body_bytes.is_empty(),
+                    body_is_empty,
                 )
                 .await?
                 {
@@ -589,21 +578,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                         }
                     }
                 }
-                if let Some(executed_response) = ai_runtime::maybe_execute_sync_request(
-                    state,
-                    &parts,
-                    &body_bytes,
-                    trace_id.as_str(),
-                    Some(&resolved),
-                )
-                .await?
-                {
-                    return Ok(Some(attach_execution_path_header(
-                        executed_response,
-                        EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
-                    )));
-                }
-                return Ok(None);
+                return Ok(Some(build_internal_gateway_proxy_public_response()));
             }
             Some("execute_stream")
                 if request_context.request_path == "/api/internal/gateway/execute-stream" =>
@@ -615,7 +590,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     )));
                 };
                 let payload =
-                    match serde_json::from_slice::<LegacyGatewayExecuteRequest>(request_body) {
+                    match serde_json::from_slice::<InternalGatewayExecuteRequest>(request_body) {
                         Ok(payload) => payload,
                         Err(_) => {
                             return Ok(Some(build_internal_control_error_response(
@@ -638,10 +613,6 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     .as_deref()
                     .unwrap_or(request_context.trace_id.as_str())
                     .to_string();
-                let body_bytes = match decode_legacy_gateway_request_body_bytes(&payload) {
-                    Ok(bytes) => bytes,
-                    Err(response) => return Ok(Some(response)),
-                };
                 let Some(mut resolved) = crate::gateway::resolve_control_route(
                     state,
                     &parts.method,
@@ -688,21 +659,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                         }
                     }
                 }
-                if let Some(executed_response) = ai_runtime::maybe_execute_stream_request(
-                    state,
-                    &parts,
-                    &body_bytes,
-                    trace_id.as_str(),
-                    Some(&resolved),
-                )
-                .await?
-                {
-                    return Ok(Some(attach_execution_path_header(
-                        executed_response,
-                        EXECUTION_PATH_EXECUTION_RUNTIME_STREAM,
-                    )));
-                }
-                return Ok(None);
+                return Ok(Some(build_internal_gateway_proxy_public_response()));
             }
             Some("report_sync")
                 if request_context.request_path == "/api/internal/gateway/report-sync" =>
@@ -773,7 +730,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                         )));
                     }
                 };
-                let Some(synthetic_decision) = build_legacy_finalize_decision(&payload) else {
+                let Some(synthetic_decision) = build_internal_finalize_decision(&payload) else {
                     return Ok(Some(build_internal_control_error_response(
                         http::StatusCode::BAD_REQUEST,
                         "Unsupported gateway sync finalize kind",
@@ -797,7 +754,7 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     );
                     return Ok(Some(response));
                 }
-                if let Some(response) = maybe_build_legacy_finalize_video_response(
+                if let Some(response) = maybe_build_internal_finalize_video_response(
                     state,
                     trace_id.as_str(),
                     &synthetic_decision,
@@ -812,7 +769,12 @@ pub(crate) async fn maybe_build_local_internal_proxy_response_impl(
                     "Unsupported gateway sync finalize kind",
                 )));
             }
-            _ => return Ok(None),
+            _ => {
+                return Ok(Some(build_internal_control_error_response(
+                    http::StatusCode::NOT_FOUND,
+                    "unsupported internal gateway route",
+                )));
+            }
         }
     }
     if !remote_addr.ip().is_loopback() {

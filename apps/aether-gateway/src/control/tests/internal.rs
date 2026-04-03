@@ -1,4 +1,6 @@
-use super::*;
+use http::Uri;
+
+use super::{classify_control_route, headers};
 
 #[test]
 fn classifies_internal_tunnel_heartbeat_as_internal_proxy_route() {
@@ -29,7 +31,7 @@ fn classifies_internal_gateway_resolve_as_internal_proxy_route() {
         classify_control_route(&http::Method::POST, &uri, &headers).expect("route should classify");
 
     assert_eq!(decision.route_class.as_deref(), Some("internal_proxy"));
-    assert_eq!(decision.route_family.as_deref(), Some("gateway_legacy"));
+    assert_eq!(decision.route_family.as_deref(), Some("internal_gateway"));
     assert_eq!(decision.route_kind.as_deref(), Some("resolve"));
     assert_eq!(decision.auth_endpoint_signature.as_deref(), Some(""));
     assert!(!decision.is_execution_runtime_candidate());

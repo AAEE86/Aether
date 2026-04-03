@@ -1,12 +1,28 @@
-pub(crate) use super::*;
+use super::super::{
+    admin_health_key_id, admin_recover_key_id, build_admin_endpoint_health_status_payload,
+    build_admin_health_summary_payload, build_admin_key_health_payload, recover_admin_key_health,
+    recover_all_admin_key_health,
+};
+use crate::gateway::handlers::public::{
+    build_api_format_health_monitor_payload, ApiFormatHealthMonitorOptions,
+};
+use crate::gateway::handlers::query_param_value;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
-const ADMIN_ENDPOINT_HEALTH_RUST_BACKEND_DETAIL: &str =
-    "Admin endpoint health routes require Rust maintenance backend";
+const ADMIN_ENDPOINT_HEALTH_DATA_UNAVAILABLE_DETAIL: &str =
+    "Admin endpoint health data unavailable";
 
-fn build_admin_endpoint_health_maintenance_response() -> Response<Body> {
+fn build_admin_endpoint_health_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_ENDPOINT_HEALTH_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_ENDPOINT_HEALTH_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }
@@ -24,10 +40,10 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
         && request_context.request_path == "/api/admin/endpoints/health/summary"
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         }
         let Some(payload) = build_admin_health_summary_payload(state).await else {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }
@@ -39,7 +55,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
             .starts_with("/api/admin/endpoints/health/key/")
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         }
         let Some(key_id) = admin_health_key_id(&request_context.request_path) else {
             return Ok(Some(
@@ -73,7 +89,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
             .starts_with("/api/admin/endpoints/health/keys/")
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         }
         let Some(key_id) = admin_recover_key_id(&request_context.request_path) else {
             return Ok(Some(
@@ -105,10 +121,10 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
         && request_context.request_path == "/api/admin/endpoints/health/keys"
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         }
         let Some(payload) = recover_all_admin_key_health(state).await else {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }
@@ -118,7 +134,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
         && request_context.request_path == "/api/admin/endpoints/health/api-formats"
     {
         if !state.has_provider_catalog_data_reader() || !state.has_request_candidate_data_reader() {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         }
         let lookback_hours = query_param_value(
             request_context.request_query_string.as_deref(),
@@ -146,7 +162,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
         )
         .await
         else {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }
@@ -156,7 +172,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
         && request_context.request_path == "/api/admin/endpoints/health/status"
     {
         if !state.has_provider_catalog_data_reader() || !state.has_request_candidate_data_reader() {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         }
         let lookback_hours = query_param_value(
             request_context.request_query_string.as_deref(),
@@ -167,7 +183,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_health_response(
         .unwrap_or(6);
         let Some(payload) = build_admin_endpoint_health_status_payload(state, lookback_hours).await
         else {
-            return Ok(Some(build_admin_endpoint_health_maintenance_response()));
+            return Ok(Some(build_admin_endpoint_health_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }

@@ -1,4 +1,13 @@
-use super::*;
+use crate::gateway::constants::{
+    CONTROL_EXECUTE_FALLBACK_HEADER, TRUSTED_ADMIN_MANAGEMENT_TOKEN_ID_HEADER,
+    TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER, TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::handlers::OFFICIAL_EXTERNAL_MODEL_PROVIDERS;
+use crate::gateway::headers::header_value_str;
+use crate::gateway::{GatewayControlDecision, GatewayPublicRequestContext};
+use axum::http::{self, HeaderName};
+use chrono::{SecondsFormat, Utc};
+use url::form_urlencoded;
 
 pub(crate) fn rust_auth_terminates_provider_credentials(
     decision: Option<&GatewayControlDecision>,
@@ -154,18 +163,11 @@ pub(crate) fn query_param_value(query: Option<&str>, key: &str) -> Option<String
 }
 
 pub(crate) fn request_enables_control_execute(headers: &http::HeaderMap) -> bool {
-    [
-        CONTROL_EXECUTE_FALLBACK_HEADER,
-        LEGACY_INTERNAL_GATEWAY_HEADER,
-    ]
-    .into_iter()
-    .any(|header| {
-        header_value_str(headers, header).is_some_and(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+    header_value_str(headers, CONTROL_EXECUTE_FALLBACK_HEADER).is_some_and(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
     })
 }
 
@@ -349,7 +351,7 @@ pub(crate) fn internal_proxy_local_requires_buffered_body(
                     Some(crate::gateway::TUNNEL_ROUTE_FAMILY),
                     Some("heartbeat" | "node_status")
                 ) | (
-                    Some("gateway_legacy"),
+                    Some("internal_gateway"),
                     Some(
                         "resolve"
                             | "auth_context"
@@ -386,7 +388,7 @@ pub(crate) fn public_support_local_requires_buffered_body(
                     decision.route_kind.as_deref(),
                 ),
                 (
-                    Some("auth_legacy"),
+                    Some("auth"),
                     http::Method::POST,
                     Some(
                         "login"
@@ -396,7 +398,7 @@ pub(crate) fn public_support_local_requires_buffered_body(
                             | "verification_status"
                     ),
                 ) | (
-                    Some("users_me_legacy"),
+                    Some("users_me"),
                     http::Method::PUT,
                     Some(
                         "update_detail"
@@ -408,19 +410,19 @@ pub(crate) fn public_support_local_requires_buffered_body(
                             | "api_key_capabilities_update",
                     ),
                 ) | (
-                    Some("users_me_legacy"),
+                    Some("users_me"),
                     http::Method::PATCH,
                     Some("password" | "session_update" | "api_key_patch"),
                 ) | (
-                    Some("users_me_legacy"),
+                    Some("users_me"),
                     http::Method::POST,
                     Some("api_keys_create" | "management_tokens_create"),
                 ) | (
-                    Some("wallet_legacy"),
+                    Some("wallet"),
                     http::Method::POST,
                     Some("create_refund" | "create_recharge_order"),
                 ) | (
-                    Some("payment_callback_legacy"),
+                    Some("payment_callback"),
                     http::Method::POST,
                     Some("callback"),
                 )

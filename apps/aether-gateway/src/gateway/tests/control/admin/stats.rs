@@ -1,4 +1,4 @@
-use super::*;
+use std::sync::{Arc, Mutex};
 
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -8,7 +8,21 @@ use aether_data::repository::usage::{InMemoryUsageReadRepository, StoredRequestU
 use aether_data::repository::users::{
     InMemoryUserReadRepository, StoredUserAuthRecord, StoredUserSummary,
 };
+use axum::body::Body;
+use axum::routing::{any, get};
+use axum::{extract::Request, Router};
+use http::StatusCode;
 use chrono::Utc;
+
+use super::super::{
+    build_router_with_state, sample_currently_usable_auth_snapshot, sample_provider, start_server,
+    AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 const DAY_0_UNIX_SECS: i64 = 1_710_913_600;
 const DAY_1_UNIX_SECS: i64 = 1_711_000_000;
@@ -167,7 +181,7 @@ async fn gateway_handles_admin_stats_provider_quota_usage_locally_with_trusted_a
     ));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -206,8 +220,7 @@ async fn gateway_handles_admin_stats_provider_quota_usage_locally_without_provid
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/providers/quota-usage").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(reqwest::Client::new().get(format!(
@@ -264,7 +277,7 @@ async fn gateway_handles_admin_stats_comparison_locally_with_trusted_admin_princ
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -301,8 +314,7 @@ async fn gateway_handles_admin_stats_comparison_locally_without_usage_reader() {
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/comparison").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -367,7 +379,7 @@ async fn gateway_handles_admin_stats_cost_forecast_locally_with_trusted_admin_pr
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -409,8 +421,7 @@ async fn gateway_handles_admin_stats_cost_forecast_locally_without_usage_reader(
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/cost/forecast").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -499,7 +510,7 @@ async fn gateway_handles_admin_stats_error_distribution_locally_with_trusted_adm
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -539,8 +550,7 @@ async fn gateway_handles_admin_stats_error_distribution_locally_without_usage_re
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/errors/distribution").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -592,7 +602,7 @@ async fn gateway_handles_admin_stats_performance_percentiles_locally_with_truste
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(usage));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -630,8 +640,7 @@ async fn gateway_handles_admin_stats_performance_percentiles_locally_without_usa
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/performance/percentiles").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -696,7 +705,7 @@ async fn gateway_handles_admin_stats_time_series_locally_with_trusted_admin_prin
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -734,8 +743,7 @@ async fn gateway_handles_admin_stats_time_series_locally_without_usage_reader() 
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/time-series").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -784,7 +792,7 @@ async fn gateway_handles_admin_stats_cost_savings_locally_with_trusted_admin_pri
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![usage_row]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -819,8 +827,7 @@ async fn gateway_handles_admin_stats_cost_savings_locally_without_usage_reader()
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/cost/savings").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -887,7 +894,7 @@ async fn gateway_handles_admin_stats_leaderboard_models_locally_with_trusted_adm
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -924,8 +931,7 @@ async fn gateway_handles_admin_stats_leaderboard_models_locally_without_usage_re
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/leaderboard/models").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -998,7 +1004,7 @@ async fn gateway_handles_admin_stats_leaderboard_api_keys_locally_with_trusted_a
         .with_auth_api_key_reader(auth_repository);
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -1063,7 +1069,7 @@ async fn gateway_handles_admin_stats_leaderboard_api_keys_locally_without_auth_s
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -1100,8 +1106,7 @@ async fn gateway_handles_admin_stats_leaderboard_api_keys_locally_without_usage_
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/leaderboard/api-keys").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(
@@ -1167,7 +1172,7 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_with_trusted_admi
         .with_user_reader(user_repository);
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -1232,7 +1237,7 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_without_user_read
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -1271,8 +1276,7 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_without_usage_rea
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/leaderboard/users").await;
 
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = admin_request(

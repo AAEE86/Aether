@@ -338,9 +338,11 @@ fn tunnel_error_response(status: StatusCode, kind: &str, message: &str) -> Respo
 #[cfg(test)]
 mod tests {
     use super::super::{AppState, ConnConfig, ControlPlaneClient};
-    use super::*;
+    use super::{relay_request, Body, Request, SocketAddr, StatusCode, TUNNEL_ERROR_HEADER};
+    use aether_contracts::tunnel::TUNNEL_RELAY_FORWARDED_BY_HEADER;
     use axum::extract::{ConnectInfo, Path, State};
     use axum::response::IntoResponse;
+    use std::time::Duration;
 
     fn test_app_state() -> AppState {
         AppState::new(

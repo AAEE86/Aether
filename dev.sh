@@ -13,6 +13,69 @@ dotenv_has_key() {
     rg -q "^[[:space:]]*${key}=" .env
 }
 
+print_dev_infra_hint() {
+    echo "=> 本地开发依赖未就绪。"
+    echo "=> 请先启动 Postgres / Redis:"
+    echo "=>   docker compose -f docker-compose.build.yml up -d postgres redis"
+}
+
+check_postgres_ready() {
+    local host="$1"
+    local port="$2"
+
+    if command -v pg_isready >/dev/null 2>&1; then
+        pg_isready -h "${host}" -p "${port}" >/dev/null 2>&1
+        return $?
+    fi
+
+    if command -v nc >/dev/null 2>&1; then
+        nc -z "${host}" "${port}" >/dev/null 2>&1
+        return $?
+    fi
+
+    return 0
+}
+
+check_redis_ready() {
+    local host="$1"
+    local port="$2"
+    local password="$3"
+
+    if command -v redis-cli >/dev/null 2>&1; then
+        REDISCLI_AUTH="${password}" redis-cli -h "${host}" -p "${port}" ping >/dev/null 2>&1
+        return $?
+    fi
+
+    if command -v nc >/dev/null 2>&1; then
+        nc -z "${host}" "${port}" >/dev/null 2>&1
+        return $?
+    fi
+
+    return 0
+}
+
+preflight_dev_infra() {
+    local postgres_host="${DB_HOST:-localhost}"
+    local postgres_port="${DB_PORT:-5432}"
+    local redis_host="${REDIS_HOST:-localhost}"
+    local redis_port="${REDIS_PORT:-6379}"
+    local redis_password="${REDIS_PASSWORD:-}"
+
+    if ! check_postgres_ready "${postgres_host}" "${postgres_port}"; then
+        echo "=> PostgreSQL 不可用: ${postgres_host}:${postgres_port}"
+        print_dev_infra_hint
+        return 1
+    fi
+
+    if ! check_redis_ready "${redis_host}" "${redis_port}" "${redis_password}"; then
+        echo "=> Redis 不可用: ${redis_host}:${redis_port}"
+        print_dev_infra_hint
+        return 1
+    fi
+
+    return 0
+}
+
 # 构建 DATABASE_URL
 export DATABASE_URL="postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-localhost}:${DB_PORT:-5432}/${DB_NAME:-aether}"
 export REDIS_URL=redis://:${REDIS_PASSWORD}@${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}/0
@@ -102,11 +165,14 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 export AETHER_GATEWAY_BIND=${AETHER_GATEWAY_BIND:-0.0.0.0:${APP_PORT}}
-export AETHER_GATEWAY_UPSTREAM=${AETHER_GATEWAY_UPSTREAM:-http://127.0.0.1:9}
 export AETHER_GATEWAY_VIDEO_TASK_TRUTH_SOURCE_MODE=${AETHER_GATEWAY_VIDEO_TASK_TRUTH_SOURCE_MODE:-rust-authoritative}
 
-GATEWAY_ARGS=(--bind "${AETHER_GATEWAY_BIND}" --upstream "${AETHER_GATEWAY_UPSTREAM}")
-echo "=> 启动 aether-gateway (Rust frontdoor: ${AETHER_GATEWAY_BIND}, upstream=${AETHER_GATEWAY_UPSTREAM})..."
+if ! preflight_dev_infra; then
+    exit 1
+fi
+
+GATEWAY_ARGS=(--bind "${AETHER_GATEWAY_BIND}")
+echo "=> 启动 aether-gateway (Rust frontdoor: ${AETHER_GATEWAY_BIND})..."
 cargo run -q -p aether-gateway -- "${GATEWAY_ARGS[@]}" &
 GATEWAY_PID=$!
 
@@ -120,9 +186,8 @@ fi
 echo "=> 启动本地开发服务..."
 echo "=> Rust公开入口:     http://localhost:${APP_PORT}"
 echo "=> Frontdoor健康检查: http://localhost:${APP_PORT}/_gateway/health"
-echo "=> Legacy upstream:  ${AETHER_GATEWAY_UPSTREAM}"
 echo "=> 数据库: ${DATABASE_URL}"
-echo "=> 提示: 未下沉到 Rust 的 legacy 路由会直接失败，除非你手动设置了可用的 upstream。"
+echo "=> 提示: 未下沉到 Rust 的 legacy 路由会直接失败。"
 echo ""
 
 wait "${GATEWAY_PID}"

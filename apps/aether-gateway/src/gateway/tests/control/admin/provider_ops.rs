@@ -1,6 +1,28 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_crypto::{
+    decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext,
+    DEVELOPMENT_ENCRYPTION_KEY,
+};
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
+};
 use axum::body::to_bytes;
-use axum::routing::get;
+use axum::body::Body;
+use axum::routing::{any, get, post};
+use axum::{extract::Request, Json, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{
+    build_router_with_state, issue_test_admin_access_token, sample_endpoint, sample_provider,
+    start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 #[tokio::test]
 async fn gateway_handles_admin_provider_ops_architectures_locally_with_trusted_admin_principal() {
@@ -18,8 +40,7 @@ async fn gateway_handles_admin_provider_ops_architectures_locally_with_trusted_a
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -67,7 +88,7 @@ async fn gateway_handles_admin_provider_ops_architectures_locally_with_bearer_ad
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let state = AppState::new().expect("gateway should build");
     let access_token = issue_test_admin_access_token(&state, "device-admin-provider-ops").await;
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -116,8 +137,7 @@ async fn gateway_handles_admin_provider_ops_architecture_detail_locally_with_tru
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -192,7 +212,7 @@ async fn gateway_handles_admin_provider_ops_status_locally_with_trusted_admin_pr
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -289,7 +309,7 @@ async fn gateway_handles_admin_provider_ops_config_locally_with_trusted_admin_pr
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -381,7 +401,7 @@ async fn gateway_saves_admin_provider_ops_config_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -547,7 +567,7 @@ async fn gateway_deletes_admin_provider_ops_config_locally_with_trusted_admin_pr
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -610,8 +630,7 @@ async fn gateway_disconnects_admin_provider_ops_locally_with_trusted_admin_princ
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -687,7 +706,7 @@ async fn gateway_verifies_admin_provider_ops_locally_for_generic_api_with_truste
     let (verify_url, verify_handle) = start_server(verify_target).await;
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -751,7 +770,7 @@ async fn gateway_verifies_admin_provider_ops_locally_for_anyrouter_with_trusted_
                     StatusCode::OK,
                     Json(json!({
                         "success": false,
-                        "message": "python fallback",
+                        "message": "fallback probe",
                     })),
                 )
             }
@@ -808,7 +827,7 @@ async fn gateway_verifies_admin_provider_ops_locally_for_anyrouter_with_trusted_
     let (verify_url, verify_handle) = start_server(verify_target).await;
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -870,7 +889,7 @@ async fn gateway_verifies_admin_provider_ops_locally_for_anyrouter_proxy_mode() 
                     StatusCode::OK,
                     Json(json!({
                         "success": false,
-                        "message": "python fallback",
+                        "message": "fallback probe",
                     })),
                 )
             }
@@ -885,7 +904,7 @@ async fn gateway_verifies_admin_provider_ops_locally_for_anyrouter_proxy_mode() 
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1014,7 +1033,7 @@ async fn gateway_verifies_admin_provider_ops_locally_for_sub2api_with_trusted_ad
     let (verify_url, verify_handle) = start_server(verify_target).await;
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1118,7 +1137,7 @@ async fn gateway_rejects_admin_provider_ops_connect_locally_with_trusted_admin_p
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1247,7 +1266,7 @@ async fn gateway_handles_admin_provider_ops_balance_locally_with_trusted_admin_p
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1360,7 +1379,7 @@ async fn gateway_handles_admin_provider_ops_checkin_locally_with_trusted_admin_p
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -1504,7 +1523,7 @@ async fn gateway_handles_admin_provider_ops_batch_balance_locally_with_trusted_a
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(

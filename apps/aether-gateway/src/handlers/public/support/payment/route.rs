@@ -1,9 +1,14 @@
+use axum::{body::Body, http, response::Response};
+
 use super::payment_shared::{
     normalize_payment_callback_request, payment_callback_payment_method_from_path,
     payment_callback_secret, payment_callback_signature_matches, PaymentCallbackRequest,
     PAYMENT_CALLBACK_SIGNATURE_HEADER, PAYMENT_CALLBACK_TOKEN_HEADER,
 };
-use super::*;
+use super::{
+    build_auth_error_response, build_payment_callback_storage_unavailable_response,
+    handle_payment_callback_with_postgres, AppState, GatewayPublicRequestContext,
+};
 
 pub(super) async fn maybe_build_local_payment_callback_route_response(
     state: &AppState,
@@ -12,7 +17,7 @@ pub(super) async fn maybe_build_local_payment_callback_route_response(
     request_body: Option<&axum::body::Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
-    if decision.route_family.as_deref() != Some("payment_callback_legacy")
+    if decision.route_family.as_deref() != Some("payment_callback")
         || decision.route_kind.as_deref() != Some("callback")
     {
         return None;
@@ -114,7 +119,7 @@ pub(super) async fn maybe_build_local_payment_callback_route_response(
     #[cfg(test)]
     {
         return Some(
-            payment_test_support::handle_payment_callback_with_test_store(
+            super::payment_test_support::handle_payment_callback_with_test_store(
                 &payment_method,
                 request_context,
                 &payload,
@@ -126,8 +131,6 @@ pub(super) async fn maybe_build_local_payment_callback_route_response(
 
     #[cfg(not(test))]
     {
-        Some(build_public_support_maintenance_response(
-            "Payment callback routes require Rust maintenance backend",
-        ))
+        Some(build_payment_callback_storage_unavailable_response())
     }
 }

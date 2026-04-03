@@ -1,4 +1,21 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{
+    build_router_with_state, hash_api_key, sample_currently_usable_auth_snapshot,
+    sample_expired_auth_snapshot, sample_locked_auth_snapshot, start_server, AppState,
+    GatewayDataState, InMemoryAuthApiKeySnapshotRepository, InMemoryWalletRepository,
+};
+use crate::gateway::constants::{
+    CONTROL_ROUTE_CLASS_HEADER, EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_AUTH_DENIED,
+    GATEWAY_HEADER, TRACE_ID_HEADER, TRUSTED_AUTH_ACCESS_ALLOWED_HEADER,
+    TRUSTED_AUTH_API_KEY_ID_HEADER, TRUSTED_AUTH_BALANCE_HEADER, TRUSTED_AUTH_USER_ID_HEADER,
+};
 
 #[tokio::test]
 async fn gateway_locally_denies_explicit_trusted_balance_failure_without_hitting_control_or_upstream(
@@ -43,7 +60,7 @@ async fn gateway_locally_denies_explicit_trusted_balance_failure_without_hitting
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -132,7 +149,7 @@ async fn gateway_locally_denies_invalid_trusted_snapshot_without_hitting_control
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -207,7 +224,7 @@ async fn gateway_locally_denies_missing_wallet_without_hitting_control_or_upstre
     let data_state =
         GatewayDataState::with_auth_and_wallet_for_tests(auth_repository, wallet_repository);
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_data_state_for_tests(data_state),
     );
@@ -279,7 +296,7 @@ async fn gateway_locally_denies_invalid_bearer_api_key_without_hitting_control_o
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -308,6 +325,116 @@ async fn gateway_locally_denies_invalid_bearer_api_key_without_hitting_control_o
     assert_eq!(payload["error"]["message"], "无效的API密钥");
     assert_eq!(*auth_context_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_locally_denies_admin_proxy_without_admin_principal_and_without_hitting_upstream() {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+
+    let upstream = Router::new().route(
+        "/api/admin/endpoints/health/summary",
+        any(move |_request: Request| {
+            let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+            async move {
+                *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+                (StatusCode::OK, Body::from("unexpected upstream hit"))
+            }
+        }),
+    );
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/admin/endpoints/health/summary"))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let payload: serde_json::Value = response.json().await.expect("response json should parse");
+    assert_eq!(payload["detail"], "admin authentication required");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_unclassified_oauth_public_route_as_local_not_found_without_hitting_upstream(
+) {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+
+    let upstream = Router::new().route(
+        "/api/oauth/linuxdo/unsupported",
+        any(move |_request: Request| {
+            let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+            async move {
+                *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+                (StatusCode::OK, Body::from("unexpected upstream hit"))
+            }
+        }),
+    );
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/oauth/linuxdo/unsupported"))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let payload: serde_json::Value = response.json().await.expect("response json should parse");
+    assert_eq!(payload["error"]["type"], "http_error");
+    assert_eq!(payload["error"]["message"], "Route not found");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_locally_rejects_unclassified_admin_route_without_hitting_upstream() {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+
+    let upstream = Router::new().route(
+        "/api/admin/unsupported",
+        any(move |_request: Request| {
+            let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+            async move {
+                *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+                (StatusCode::OK, Body::from("unexpected upstream hit"))
+            }
+        }),
+    );
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/admin/unsupported"))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let payload: serde_json::Value = response.json().await.expect("response json should parse");
+    assert_eq!(
+        payload["detail"],
+        "admin proxy route not implemented in rust frontdoor"
+    );
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
     upstream_handle.abort();
@@ -352,7 +479,7 @@ async fn gateway_locally_denies_disallowed_claude_api_format_without_hitting_con
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -422,7 +549,7 @@ async fn gateway_locally_denies_disallowed_provider_without_hitting_control_or_u
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -492,7 +619,7 @@ async fn gateway_locally_denies_disallowed_gemini_model_without_hitting_control_
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -559,7 +686,7 @@ async fn gateway_locally_denies_locked_trusted_snapshot_without_hitting_control_
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -636,7 +763,7 @@ async fn gateway_locally_denies_disallowed_openai_model_without_hitting_control_
     )]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );

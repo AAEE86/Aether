@@ -1,4 +1,5 @@
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
 use aether_data::repository::gemini_file_mappings::{
     GeminiFileMappingReadRepository, InMemoryGeminiFileMappingRepository,
 };
@@ -6,9 +7,23 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
+use axum::body::{to_bytes, Body};
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use http::StatusCode;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
 
-use super::*;
+use super::super::{
+    build_router_with_state, build_state_with_execution_runtime_override, sample_provider,
+    start_server,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRACE_ID_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 #[derive(Debug, Clone)]
 struct SeenAdminGeminiUploadExecution {
@@ -221,7 +236,7 @@ async fn gateway_uploads_admin_gemini_file_locally_with_trusted_admin_principal(
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(data_state),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;

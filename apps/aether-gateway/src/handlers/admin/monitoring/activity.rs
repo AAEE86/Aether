@@ -1,4 +1,18 @@
-use super::*;
+use super::INTERNAL_GATEWAY_PATH_PREFIXES;
+use super::{
+    admin_monitoring_bad_request_response, admin_monitoring_escape_like_pattern,
+    admin_monitoring_usage_is_error, admin_monitoring_user_behavior_user_id_from_path,
+    parse_admin_monitoring_days, parse_admin_monitoring_event_type_filter,
+    parse_admin_monitoring_hours, parse_admin_monitoring_limit, parse_admin_monitoring_offset,
+    parse_admin_monitoring_username_filter,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 use sqlx::Row;
 
 fn build_admin_monitoring_audit_logs_payload(
@@ -434,11 +448,9 @@ pub(super) async fn build_admin_monitoring_system_status_response(
             "nodes": tunnel.nodes,
             "active_streams": tunnel.active_streams,
         },
-        "legacy_bridge": {
-            "status": LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS,
-            "sunset_date": LEGACY_INTERNAL_GATEWAY_SUNSET_DATE,
-            "sunset_http_date": LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE,
-            "metric_name": "legacy_internal_bridge_total",
+        "internal_gateway": {
+            "status": "rust_native_control_plane",
+            "path_prefixes": INTERNAL_GATEWAY_PATH_PREFIXES,
         },
         "recent_errors": recent_errors,
     }))

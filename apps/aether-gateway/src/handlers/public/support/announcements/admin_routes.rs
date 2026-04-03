@@ -1,10 +1,27 @@
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+
 use super::announcements_shared::{
     announcements_bad_request_response, announcements_not_found_response,
     build_public_announcement_payload, parse_optional_rfc3339_unix_secs,
     public_announcement_id_from_path,
 };
-use super::*;
 use aether_data::repository::announcements::{CreateAnnouncementRecord, UpdateAnnouncementRecord};
+
+fn build_admin_announcement_writer_unavailable_response() -> Response<Body> {
+    (
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "detail": "公告写入暂不可用" })),
+    )
+        .into_response()
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct AdminAnnouncementCreateRequest {
@@ -51,6 +68,9 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                     "/api/announcements" | "/api/announcements/"
                 ) =>
         {
+            if !state.has_announcement_data_writer() {
+                return Ok(Some(build_admin_announcement_writer_unavailable_response()));
+            }
             let Some(request_body) = request_body else {
                 return Ok(Some(announcements_bad_request_response("请求体不能为空")));
             };
@@ -75,9 +95,7 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                 })?;
             let record = build_create_record(payload, operator_id)?;
             let Some(created) = state.create_announcement(record).await? else {
-                return Ok(Some(build_public_support_maintenance_response(
-                    super::ANNOUNCEMENTS_MAINTENANCE_DETAIL,
-                )));
+                return Ok(Some(build_admin_announcement_writer_unavailable_response()));
             };
             let mut response = build_public_announcement_payload(&created);
             response["message"] = json!("公告创建成功");
@@ -89,6 +107,9 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
             else {
                 return Ok(Some(announcements_not_found_response()));
             };
+            if !state.has_announcement_data_writer() {
+                return Ok(Some(build_admin_announcement_writer_unavailable_response()));
+            }
             let Some(request_body) = request_body else {
                 return Ok(Some(announcements_bad_request_response("请求体不能为空")));
             };
@@ -104,7 +125,7 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
             let record = build_update_record(announcement_id, payload)?;
             return Ok(Some(match state.update_announcement(record).await? {
                 Some(_) => Json(json!({ "message": "公告更新成功" })).into_response(),
-                None => announcements_not_found_response(),
+                None => build_admin_announcement_writer_unavailable_response(),
             }));
         }
         Some("delete_announcement") if request_context.request_method == http::Method::DELETE => {
@@ -113,6 +134,9 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
             else {
                 return Ok(Some(announcements_not_found_response()));
             };
+            if !state.has_announcement_data_writer() {
+                return Ok(Some(build_admin_announcement_writer_unavailable_response()));
+            }
             if state
                 .find_announcement_by_id(announcement_id)
                 .await?
@@ -124,7 +148,7 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
             return Ok(Some(if deleted {
                 Json(json!({ "message": "公告已删除" })).into_response()
             } else {
-                build_public_support_maintenance_response(super::ANNOUNCEMENTS_MAINTENANCE_DETAIL)
+                build_admin_announcement_writer_unavailable_response()
             }));
         }
         _ => {}

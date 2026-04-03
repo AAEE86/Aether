@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    build_auth_error_response, build_auth_json_response, build_wallet_payload,
+    build_wallet_refund_storage_unavailable_response, http, parse_wallet_limit,
+    parse_wallet_offset, resolve_authenticated_local_user, unix_secs_to_rfc3339,
+    wallet_normalize_optional_string_field, AppState, Body, GatewayError,
+    GatewayPublicRequestContext, Response,
+};
+#[cfg(test)]
+use super::{
+    record_wallet_test_refund, wallet_test_refund_by_id, wallet_test_refund_by_idempotency,
+    wallet_test_refunds_for_wallet, wallet_test_reserved_refund_amount,
+};
+use chrono::Utc;
+use serde::Deserialize;
+use serde_json::json;
+use sqlx::Row;
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 struct WalletCreateRefundRequest {
@@ -65,16 +81,17 @@ fn wallet_build_refund_no(now: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 fn wallet_refund_id_from_path(request_path: &str) -> Option<String> {
-    request_path
-        .strip_prefix("/api/wallet/refunds/")?
-        .trim()
-        .trim_matches('/')
-        .split('/')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|value| !value.contains('/'))
-        .map(ToOwned::to_owned)
+    let trimmed = request_path.trim_end_matches('/');
+    let refund_id = trimmed.strip_prefix("/api/wallet/refunds/")?.trim();
+    if refund_id.is_empty() || refund_id.contains('/') {
+        None
+    } else {
+        Some(refund_id.to_string())
+    }
+}
+
+pub(super) fn wallet_refund_detail_path_matches(request_path: &str) -> bool {
+    wallet_refund_id_from_path(request_path).is_some()
 }
 
 fn wallet_refund_payload_from_row(
@@ -491,9 +508,7 @@ pub(super) async fn handle_wallet_create_refund(
             return build_auth_json_response(http::StatusCode::OK, created, None);
         }
         #[cfg(not(test))]
-        return build_public_support_maintenance_response(
-            "Wallet refund routes require Rust maintenance backend",
-        );
+        return build_wallet_refund_storage_unavailable_response();
     };
 
     let mut tx = match pool.begin().await {

@@ -1,9 +1,25 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use serde_json::json;
 
-use super::*;
+use super::{
+    cleanup_audit_logs_with, next_daily_run_after, next_db_maintenance_run_after,
+    next_stats_aggregation_run_after, next_stats_hourly_aggregation_run_after,
+    pending_cleanup_batch_size, pending_cleanup_timeout_minutes, plan_pending_cleanup_batch,
+    provider_checkin_schedule, run_db_maintenance_with, spawn_audit_cleanup_worker,
+    spawn_db_maintenance_worker, spawn_pending_cleanup_worker, spawn_pool_monitor_worker,
+    spawn_provider_checkin_worker, spawn_stats_aggregation_worker,
+    spawn_stats_hourly_aggregation_worker, spawn_usage_cleanup_worker,
+    spawn_wallet_daily_usage_aggregation_worker, stats_aggregation_target_day,
+    stats_hourly_aggregation_target_hour, summarize_postgres_pool, usage_cleanup_settings,
+    usage_cleanup_window, wallet_daily_usage_aggregation_target, AppState, DbMaintenanceRunSummary,
+    FailedPendingUsageRow, GatewayDataState, StalePendingUsageRow, UsageCleanupSettings,
+    USAGE_CLEANUP_HOUR, USAGE_CLEANUP_MINUTE, WALLET_DAILY_USAGE_AGGREGATION_HOUR,
+    WALLET_DAILY_USAGE_AGGREGATION_MINUTE,
+};
 
 #[tokio::test]
 async fn spawn_audit_cleanup_worker_skips_when_postgres_unavailable() {
@@ -52,7 +68,7 @@ async fn spawn_wallet_daily_usage_aggregation_worker_skips_when_postgres_unavail
 
 #[tokio::test]
 async fn spawn_provider_checkin_worker_skips_when_provider_catalog_unavailable() {
-    let state = AppState::new("http://127.0.0.1:18084")
+    let state = AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(GatewayDataState::disabled());
 

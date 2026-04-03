@@ -151,7 +151,11 @@ fn is_standard_api_format(api_format: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        request_conversion_kind, sync_chat_response_conversion_kind,
+        sync_cli_response_conversion_kind, RequestConversionKind, SyncChatResponseConversionKind,
+        SyncCliResponseConversionKind,
+    };
 
     #[test]
     fn request_conversion_registry_supports_bidirectional_standard_matrix() {

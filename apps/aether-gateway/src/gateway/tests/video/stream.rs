@@ -4,13 +4,30 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
-use aether_data::repository::video_tasks::{InMemoryVideoTaskRepository, UpsertVideoTask};
+use aether_data::repository::video_tasks::{
+    InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskWriteRepository,
+};
+use axum::body::{to_bytes, Body, Bytes};
+use axum::response::Response;
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use http::header::{HeaderName, HeaderValue};
+use http::StatusCode;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
 
-use super::*;
+use crate::gateway::constants::{
+    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, TRACE_ID_HEADER,
+};
+
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    VideoTaskTruthSourceMode,
+};
 
 #[tokio::test]
-async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_task_without_decision_stream(
+async fn gateway_executes_openai_video_content_from_reconstructed_data_task_without_decision_stream(
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenExecutionRuntimeStreamRequest {
@@ -20,7 +37,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
 
     fn sample_provider() -> StoredProviderCatalogProvider {
         StoredProviderCatalogProvider::new(
-            "provider-openai-video-content-legacy-1".to_string(),
+            "provider-openai-video-content-followup-1".to_string(),
             "openai".to_string(),
             Some("https://example.com".to_string()),
             "custom".to_string(),
@@ -41,8 +58,8 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
 
     fn sample_endpoint() -> StoredProviderCatalogEndpoint {
         StoredProviderCatalogEndpoint::new(
-            "endpoint-openai-video-content-legacy-1".to_string(),
-            "provider-openai-video-content-legacy-1".to_string(),
+            "endpoint-openai-video-content-followup-1".to_string(),
+            "provider-openai-video-content-followup-1".to_string(),
             "openai:video".to_string(),
             Some("openai".to_string()),
             Some("video".to_string()),
@@ -64,8 +81,8 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
 
     fn sample_key() -> StoredProviderCatalogKey {
         StoredProviderCatalogKey::new(
-            "key-openai-video-content-legacy-1".to_string(),
-            "provider-openai-video-content-legacy-1".to_string(),
+            "key-openai-video-content-followup-1".to_string(),
+            "provider-openai-video-content-followup-1".to_string(),
             "prod".to_string(),
             "api_key".to_string(),
             None,
@@ -107,11 +124,10 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
                     "route_family": "openai",
                     "route_kind": "video",
                     "auth_endpoint_signature": "openai:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
-                        "user_id": "user-video-content-legacy-123",
-                        "api_key_id": "key-video-content-legacy-123",
+                        "user_id": "user-video-content-local-123",
+                        "api_key_id": "key-video-content-local-123",
                         "access_allowed": true
                     },
                     "public_path": request.uri().path()
@@ -153,7 +169,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
             }),
         )
         .route(
-            "/v1/videos/task-legacy-content-123/content",
+            "/v1/videos/task-content-local-123/content",
             any(move |_request: Request| {
                 let public_hits_inner = Arc::clone(&public_hits_clone);
                 async move {
@@ -202,7 +218,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
                     StreamFrame {
                         frame_type: StreamFrameType::Data,
                         payload: StreamFramePayload::Data {
-                            chunk_b64: Some(BASE64_STANDARD.encode(b"legacy-")),
+                            chunk_b64: Some(BASE64_STANDARD.encode(b"video-")),
                             text: None,
                         },
                     },
@@ -240,25 +256,25 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
     let repository = Arc::new(InMemoryVideoTaskRepository::default());
     repository
         .upsert(UpsertVideoTask {
-            id: "task-legacy-content-123".to_string(),
+            id: "task-content-local-123".to_string(),
             short_id: None,
-            request_id: "request-openai-video-content-legacy-123".to_string(),
-            user_id: Some("user-video-content-legacy-123".to_string()),
-            api_key_id: Some("key-video-content-legacy-123".to_string()),
+            request_id: "request-openai-video-content-local-123".to_string(),
+            user_id: Some("user-video-content-local-123".to_string()),
+            api_key_id: Some("key-video-content-local-123".to_string()),
             username: Some("video-user".to_string()),
             api_key_name: Some("video-key".to_string()),
-            external_task_id: Some("ext-video-content-legacy-123".to_string()),
-            provider_id: Some("provider-openai-video-content-legacy-1".to_string()),
-            endpoint_id: Some("endpoint-openai-video-content-legacy-1".to_string()),
-            key_id: Some("key-openai-video-content-legacy-1".to_string()),
+            external_task_id: Some("ext-video-content-followup-123".to_string()),
+            provider_id: Some("provider-openai-video-content-followup-1".to_string()),
+            endpoint_id: Some("endpoint-openai-video-content-followup-1".to_string()),
+            key_id: Some("key-openai-video-content-followup-1".to_string()),
             client_api_format: Some("openai:video".to_string()),
             provider_api_format: Some("openai:video".to_string()),
             format_converted: false,
             model: Some("sora-2".to_string()),
-            prompt: Some("legacy content".to_string()),
+            prompt: Some("video content".to_string()),
             original_request_body: Some(json!({
                 "model": "sora-2",
-                "prompt": "legacy content"
+                "prompt": "video content"
             })),
             duration_seconds: Some(4),
             resolution: Some("720p".to_string()),
@@ -278,7 +294,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
             updated_at_unix_secs: 456,
             error_code: None,
             error_message: None,
-            video_url: Some("https://cdn.example.com/legacy-video.mp4".to_string()),
+            video_url: Some("https://cdn.example.com/video-content.mp4".to_string()),
             request_metadata: None,
         })
         .await
@@ -290,7 +306,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
     ));
 
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_video_task_truth_source_mode(VideoTaskTruthSourceMode::RustAuthoritative)
             .with_video_task_repository_and_provider_transport_for_tests(
                 repository,
@@ -302,10 +318,10 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
 
     let response = reqwest::Client::new()
         .get(format!(
-            "{gateway_url}/v1/videos/task-legacy-content-123/content?variant=video"
+            "{gateway_url}/v1/videos/task-content-local-123/content?variant=video"
         ))
         .header(CONTROL_EXECUTE_FALLBACK_HEADER, "true")
-        .header(TRACE_ID_HEADER, "trace-openai-video-content-legacy-123")
+        .header(TRACE_ID_HEADER, "trace-openai-video-content-local-123")
         .send()
         .await
         .expect("content request should succeed");
@@ -320,7 +336,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
     );
     assert_eq!(
         response.bytes().await.expect("body should read"),
-        Bytes::from_static(b"legacy-content")
+        Bytes::from_static(b"video-content")
     );
 
     let seen_stream_request = seen_execution_runtime_stream
@@ -331,7 +347,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_legacy_data_ta
     assert_eq!(seen_stream_request.method, "GET");
     assert_eq!(
         seen_stream_request.url,
-        "https://cdn.example.com/legacy-video.mp4"
+        "https://cdn.example.com/video-content.mp4"
     );
     assert_eq!(*decision_stream_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*execute_stream_hits.lock().expect("mutex should lock"), 0);

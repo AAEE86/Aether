@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    admin_default_user_initial_gift, build_admin_users_bad_request_response,
+    build_admin_users_data_unavailable_response, build_admin_users_read_only_response,
+    format_optional_datetime_iso8601, normalize_admin_optional_user_email,
+    normalize_admin_user_api_formats, normalize_admin_user_role, normalize_admin_user_string_list,
+    normalize_admin_username, validate_admin_user_password, AdminCreateUserRequest,
+    AdminUpdateUserFieldPresence, AdminUpdateUserRequest,
+};
+use crate::gateway::handlers::{query_param_optional_bool, query_param_value};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 async fn admin_user_password_policy(state: &AppState) -> Result<String, GatewayError> {
     let config = state
@@ -643,7 +659,7 @@ pub(super) async fn build_admin_update_user_response(
                         .await?
                         .is_none()
                     {
-                        return Ok(build_admin_users_maintenance_response());
+                        return Ok(build_admin_users_data_unavailable_response());
                     }
                 }
             }
@@ -653,7 +669,7 @@ pub(super) async fn build_admin_update_user_response(
                     .await?
                     .is_none()
                 {
-                    return Ok(build_admin_users_maintenance_response());
+                    return Ok(build_admin_users_data_unavailable_response());
                 }
             }
         }

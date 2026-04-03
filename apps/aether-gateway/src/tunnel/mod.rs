@@ -799,10 +799,16 @@ fn parse_embedded_tunnel_heartbeat_request(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use aether_data::repository::proxy_nodes::{
-        InMemoryProxyNodeRepository, ProxyNodeReadRepository,
+    use super::{
+        apply_embedded_tunnel_heartbeat, apply_embedded_tunnel_node_status, current_unix_secs,
+        tunnel_attachment_key, TunnelAttachmentDirectory, TunnelAttachmentRecord,
+        GatewayDataState,
     };
+    use aether_data::repository::proxy_nodes::{
+        InMemoryProxyNodeRepository, ProxyNodeReadRepository, StoredProxyNode,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
 
     fn sample_proxy_node(node_id: &str) -> StoredProxyNode {
         StoredProxyNode::new(

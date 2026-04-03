@@ -1,6 +1,44 @@
-use super::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
+
+use aether_data::repository::proxy_nodes::{
+    ProxyNodeHeartbeatMutation, ProxyNodeTunnelStatusMutation, StoredProxyNode,
+    StoredProxyNodeEvent,
+};
+use aether_http::{build_http_client, HttpClientConfig};
+use aether_runtime::{
+    service_up_sample, AdmissionPermit, ConcurrencyGate, ConcurrencySnapshot,
+    DistributedConcurrencyError, DistributedConcurrencyGate, DistributedConcurrencySnapshot,
+    MetricKind, MetricLabel, MetricSample,
+};
+use tokio::task::JoinHandle;
+
+use super::{AppState, FrontdoorCorsConfig, LocalExecutionRuntimeMissDiagnostic};
+
+use super::super::async_task::{
+    spawn_video_task_poller, VideoTaskPollerConfig, VideoTaskService, VideoTaskTruthSourceMode,
+};
+use super::super::fallback_metrics;
+use super::super::fallback_metrics::{GatewayFallbackMetricKind, GatewayFallbackReason};
+use super::super::gateway_cache::{
+    AuthApiKeyLastUsedCache, AuthContextCache, DirectPlanBypassCache, SchedulerAffinityCache,
+};
+use super::super::gateway_data::{GatewayDataConfig, GatewayDataState};
+use super::super::model_fetch::spawn_model_fetch_worker;
+use super::super::rate_limit::{FrontdoorUserRpmConfig, FrontdoorUserRpmLimiter};
+use super::super::router::RequestAdmissionError;
+use super::super::{control::GatewayControlDecision, error::GatewayError};
+use super::super::{provider_transport, scheduler, usage};
+
+use crate::gateway::maintenance::spawn_audit_cleanup_worker;
+use crate::gateway::maintenance::spawn_db_maintenance_worker;
+use crate::gateway::maintenance::spawn_gemini_file_mapping_cleanup_worker;
 use crate::gateway::maintenance::spawn_pending_cleanup_worker;
 use crate::gateway::maintenance::spawn_pool_monitor_worker;
+use crate::gateway::maintenance::spawn_provider_checkin_worker;
+use crate::gateway::maintenance::spawn_request_candidate_cleanup_worker;
 use crate::gateway::maintenance::spawn_stats_aggregation_worker;
 use crate::gateway::maintenance::spawn_stats_hourly_aggregation_worker;
 use crate::gateway::maintenance::spawn_usage_cleanup_worker;
@@ -17,22 +55,26 @@ impl AppState {
         self.tunnel.request_close_all_proxies()
     }
 
-    pub fn new(upstream_base_url: impl Into<String>) -> Result<Self, reqwest::Error> {
-        Self::build(upstream_base_url, None)
+    pub fn new() -> Result<Self, reqwest::Error> {
+        Self::build(None)
     }
 
     #[cfg(test)]
-    pub(crate) fn new_with_test_remote_execution_runtime(
-        upstream_base_url: impl Into<String>,
-        test_remote_execution_runtime_base_url: Option<String>,
-    ) -> Result<Self, reqwest::Error> {
-        Self::build(upstream_base_url, test_remote_execution_runtime_base_url)
+    pub(crate) fn with_execution_runtime_override_base_url(
+        mut self,
+        execution_runtime_override_base_url: impl Into<String>,
+    ) -> Self {
+        self.execution_runtime_override_base_url = Some(
+            execution_runtime_override_base_url
+                .into()
+                .trim_end_matches('/')
+                .to_string(),
+        )
+        .filter(|value| !value.is_empty());
+        self
     }
 
-    fn build(
-        upstream_base_url: impl Into<String>,
-        test_remote_execution_runtime_base_url: Option<String>,
-    ) -> Result<Self, reqwest::Error> {
+    fn build(execution_runtime_override_base_url: Option<String>) -> Result<Self, reqwest::Error> {
         let data = Arc::new(GatewayDataState::disabled());
         let client = build_http_client(&HttpClientConfig {
             connect_timeout_ms: Some(10_000),
@@ -41,10 +83,9 @@ impl AppState {
             ..HttpClientConfig::default()
         })?;
         Ok(Self {
-            upstream_base_url: normalize_upstream_base_url(upstream_base_url.into()),
             #[cfg(test)]
-            test_remote_execution_runtime_base_url: test_remote_execution_runtime_base_url
-                .map(normalize_upstream_base_url)
+            execution_runtime_override_base_url: execution_runtime_override_base_url
+                .map(|value| value.trim_end_matches('/').to_string())
                 .filter(|value| !value.is_empty()),
             data: Arc::clone(&data),
             usage_runtime: Arc::new(usage::UsageRuntime::disabled()),
@@ -121,8 +162,8 @@ impl AppState {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_remote_execution_runtime_base_url(&self) -> Option<&str> {
-        self.test_remote_execution_runtime_base_url.as_deref()
+    pub(crate) fn execution_runtime_override_base_url(&self) -> Option<&str> {
+        self.execution_runtime_override_base_url.as_deref()
     }
 
     pub fn with_data_config(
@@ -158,6 +199,14 @@ impl AppState {
     ) -> Result<Self, aether_data::DataLayerError> {
         self.usage_runtime = Arc::new(usage::UsageRuntime::new(config)?);
         Ok(self)
+    }
+
+    pub async fn run_postgres_migrations(&self) -> Result<bool, sqlx::migrate::MigrateError> {
+        let Some(pool) = self.postgres_pool() else {
+            return Ok(false);
+        };
+        aether_data::migrate::run_migrations(&pool).await?;
+        Ok(true)
     }
 
     pub fn with_video_task_poller_config(mut self, interval: Duration, batch_size: usize) -> Self {

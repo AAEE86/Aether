@@ -1,7 +1,13 @@
-use super::*;
+use axum::routing::any;
+use axum::Router;
 
-pub fn build_router(upstream_base_url: impl Into<String>) -> Result<Router, reqwest::Error> {
-    Ok(build_router_with_state(AppState::new(upstream_base_url)?))
+use super::{
+    api, middleware, prometheus_response, proxy_request, AppState, ConcurrencyError,
+    DistributedConcurrencyError,
+};
+
+pub fn build_router() -> Result<Router, reqwest::Error> {
+    Ok(build_router_with_state(AppState::new()?))
 }
 
 pub fn build_router_with_state(state: AppState) -> Router {
@@ -38,12 +44,9 @@ pub(crate) enum RequestAdmissionError {
     Distributed(DistributedConcurrencyError),
 }
 
-pub async fn serve_tcp(
-    bind: &str,
-    upstream_base_url: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve_tcp(bind: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    let router = build_router(upstream_base_url.to_string())?;
+    let router = build_router()?;
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),

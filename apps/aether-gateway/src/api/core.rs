@@ -6,13 +6,9 @@ use axum::Router;
 use serde_json::json;
 
 use crate::gateway::constants::{
-    FRONTDOOR_COMPAT_ROUTE_PATTERNS, FRONTDOOR_MANIFEST_PATH, FRONTDOOR_MANIFEST_VERSION,
-    FRONTDOOR_REPLACEABLE_MIDDLEWARE_GROUPS, FRONTDOOR_REPLACEABLE_ROUTE_GROUPS,
-    INTERNAL_FRONTDOOR_MANIFEST_PATH, LEGACY_GATEWAY_BRIDGE_PATH_PREFIXES,
-    LEGACY_GATEWAY_BRIDGE_ROUTE_GROUPS, LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS,
-    LEGACY_INTERNAL_GATEWAY_SUNSET_DATE, LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE,
-    PYTHON_ONLY_MIDDLEWARE_GROUPS, PYTHON_ONLY_ROUTE_GROUPS, PYTHON_ONLY_RUNTIME_COMPONENTS,
-    READYZ_PATH, RUST_FRONTDOOR_OWNED_ROUTE_PATTERNS,
+    FRONTDOOR_MANIFEST_PATH, FRONTDOOR_MANIFEST_VERSION, INTERNAL_FRONTDOOR_MANIFEST_PATH,
+    INTERNAL_GATEWAY_PATH_PREFIXES, INTERNAL_GATEWAY_ROUTE_GROUPS, READYZ_PATH,
+    RUST_FRONTDOOR_OWNED_ROUTE_PATTERNS,
 };
 use crate::gateway::AppState;
 
@@ -100,27 +96,10 @@ pub(crate) async fn frontdoor_manifest(State(state): State<AppState>) -> impl In
                 "trace_id_injection": true,
                 "compatibility_proxy": true,
             },
-        },
-        "python_host_boundary": {
-            "replaceable_shell": {
-                "route_groups": FRONTDOOR_REPLACEABLE_ROUTE_GROUPS,
-                "middleware_groups": FRONTDOOR_REPLACEABLE_MIDDLEWARE_GROUPS,
-                "route_patterns": FRONTDOOR_COMPAT_ROUTE_PATTERNS,
-                "status": "should_move_to_rust_frontdoor",
-            },
-            "python_only": {
-                "route_groups": PYTHON_ONLY_ROUTE_GROUPS,
-                "middleware_groups": PYTHON_ONLY_MIDDLEWARE_GROUPS,
-                "runtime_components": PYTHON_ONLY_RUNTIME_COMPONENTS,
-                "status": "remain_on_python_host",
-            },
-            "legacy_bridge": {
-                "route_groups": LEGACY_GATEWAY_BRIDGE_ROUTE_GROUPS,
-                "path_prefixes": LEGACY_GATEWAY_BRIDGE_PATH_PREFIXES,
-                "status": LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS,
-                "sunset_date": LEGACY_INTERNAL_GATEWAY_SUNSET_DATE,
-                "sunset_http_date": LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE,
-                "replacement": "public_proxy_or_local_rust_control_plane",
+            "internal_gateway": {
+                "route_groups": INTERNAL_GATEWAY_ROUTE_GROUPS,
+                "path_prefixes": INTERNAL_GATEWAY_PATH_PREFIXES,
+                "status": "rust_native_control_plane",
             },
         },
         "features": {

@@ -1,4 +1,5 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeyExportRecord, StoredAuthApiKeySnapshot,
@@ -6,8 +7,21 @@ use aether_data::repository::auth::{
 use aether_data::repository::users::{
     InMemoryUserReadRepository, StoredUserAuthRecord, StoredUserExportRow,
 };
+use aether_data::repository::wallet::InMemoryWalletRepository;
 use aether_data::repository::wallet::StoredWalletSnapshot;
+use axum::body::Body;
+use axum::routing::{any, delete, get, patch, post, put};
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
 use chrono::Utc;
+
+use super::super::{build_router_with_state, issue_test_admin_access_token, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 fn sample_admin_user(user_id: &str) -> StoredUserAuthRecord {
     sample_admin_user_with_role(user_id, "user", "alice@example.com", "alice")
@@ -173,7 +187,7 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_user_and_wallet_for_tests(
                 user_repository,
@@ -214,7 +228,7 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
     upstream_handle.abort();
 
     let create_gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_users_for_tests(Vec::<StoredUserAuthRecord>::new())
             .with_auth_wallets_for_tests(Vec::<StoredWalletSnapshot>::new()),
@@ -281,7 +295,7 @@ async fn gateway_handles_admin_users_root_locally_with_bearer_admin_session() {
     )]));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(GatewayDataState::with_user_and_wallet_for_tests(
             user_repository,
@@ -333,7 +347,7 @@ async fn gateway_handles_admin_user_detail_routes_locally_with_trusted_admin_pri
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_auth_users_for_tests([
                 sample_admin_user("user-1"),
@@ -425,7 +439,7 @@ async fn gateway_handles_admin_user_detail_locally_with_trusted_admin_principal(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_user_and_wallet_for_tests(
                 user_repository,
@@ -496,7 +510,7 @@ async fn gateway_handles_admin_user_session_routes_locally_with_trusted_admin_pr
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -582,14 +596,14 @@ async fn gateway_handles_admin_user_api_key_routes_locally_with_trusted_admin_pr
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
-                    auth_repository,
-                )
-                .with_user_reader(user_repository),
-            ),
+            crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
+                auth_repository,
+            )
+            .with_user_reader(user_repository),
+        ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -740,7 +754,7 @@ async fn gateway_returns_conflict_for_admin_create_user_api_key_when_writer_unav
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_reader_for_tests(
@@ -788,7 +802,7 @@ async fn gateway_returns_conflict_for_admin_create_user_when_writer_unavailable(
     }));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let mut state = AppState::new(upstream_url.clone()).expect("gateway should build");
+    let mut state = AppState::new().expect("gateway should build");
     state = state.with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(Arc::new(
             InMemoryUserReadRepository::seed_auth_users(Vec::new()),
@@ -868,7 +882,7 @@ async fn gateway_returns_conflict_for_admin_lock_user_api_key_when_writer_unavai
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_reader_for_tests(
@@ -921,7 +935,7 @@ async fn gateway_returns_conflict_for_admin_update_user_when_writer_unavailable(
     ]));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let mut state = AppState::new(upstream_url.clone())
+    let mut state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -997,7 +1011,7 @@ async fn gateway_returns_conflict_for_admin_update_user_api_key_when_writer_unav
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_reader_for_tests(
@@ -1073,7 +1087,7 @@ async fn gateway_returns_conflict_for_admin_delete_user_api_key_when_writer_unav
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_reader_for_tests(
@@ -1154,7 +1168,7 @@ async fn gateway_lists_admin_user_api_keys_locally_with_trusted_admin_principal(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -1214,7 +1228,7 @@ async fn gateway_revokes_admin_user_session_locally_with_trusted_admin_principal
     ]));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -1270,7 +1284,7 @@ async fn gateway_revokes_all_admin_user_sessions_locally_with_trusted_admin_prin
     ];
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -1347,7 +1361,7 @@ async fn gateway_reveals_admin_user_full_key_locally_with_trusted_admin_principa
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_reader_for_tests(

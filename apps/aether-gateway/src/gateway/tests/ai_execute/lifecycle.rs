@@ -1,5 +1,8 @@
-use super::*;
-use std::sync::Arc;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, json,
+    start_server, Arc, Body, Bytes, HeaderValue, Infallible, Json, Mutex, Request, Response,
+    Router, StatusCode, TRACE_ID_HEADER,
+};
 
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
@@ -222,7 +225,7 @@ async fn gateway_completes_sync_response_on_local_execution_runtime_path() {
     ));
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(
                 GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                     auth_repository,
@@ -338,7 +341,7 @@ async fn gateway_stops_execution_runtime_stream_when_client_disconnects() {
     ));
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(
                 GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                     auth_repository,

@@ -1,4 +1,30 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use chrono::Utc;
+use serde_json::json;
+
+use super::{
+    admin_stats_bad_request_response, build_auth_error_response, build_auth_wallet_summary_payload,
+    list_usage_for_optional_range, parse_bounded_u32, query_param_value,
+    resolve_authenticated_local_user, round_to, unix_secs_to_rfc3339, AdminStatsTimeRange,
+    AdminStatsUsageFilter, AppState, GatewayPublicRequestContext,
+};
+
+const USERS_ME_USAGE_DATA_UNAVAILABLE_DETAIL: &str = "用户用量数据暂不可用";
+
+fn build_users_me_usage_reader_unavailable_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        USERS_ME_USAGE_DATA_UNAVAILABLE_DETAIL,
+        false,
+    )
+}
 
 fn parse_users_me_usage_limit(query: Option<&str>) -> Result<usize, String> {
     match query_param_value(query, "limit") {
@@ -522,7 +548,7 @@ pub(super) async fn handle_users_me_usage_get(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_usage_data_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_usage_reader_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -680,7 +706,7 @@ pub(super) async fn handle_users_me_usage_active_get(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_usage_data_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_usage_reader_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -740,7 +766,7 @@ pub(super) async fn handle_users_me_usage_interval_timeline_get(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_usage_data_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_usage_reader_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
@@ -819,7 +845,7 @@ pub(super) async fn handle_users_me_usage_heatmap_get(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_usage_data_reader() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_usage_reader_unavailable_response();
     }
 
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {

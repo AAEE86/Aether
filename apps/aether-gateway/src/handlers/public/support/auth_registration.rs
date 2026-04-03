@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    auth_email_is_verified, auth_now, auth_registration_email_configured,
+    auth_verification_code_expire_minutes, auth_verification_send_cooldown_seconds,
+    build_auth_error_response, build_auth_json_response, build_auth_verification_email,
+    clear_auth_email_pending_code, clear_auth_email_verification, generate_auth_verification_code,
+    http, json, mark_auth_email_verified, read_auth_email_verification_code, read_auth_smtp_config,
+    send_auth_email, store_auth_email_verification_code, system_config_bool, system_config_f64,
+    system_config_string, system_config_string_list, AppState, Body, GatewayError, Regex, Response,
+};
+use serde::Deserialize;
+
+const AUTH_REGISTRATION_STORAGE_UNAVAILABLE_DETAIL: &str = "注册数据存储暂不可用";
 
 #[derive(Debug, Deserialize)]
 struct AuthRegisterRequest {
@@ -496,8 +507,10 @@ pub(super) async fn handle_auth_register(
             );
         }
     }) else {
-        return build_public_support_maintenance_response(
-            "Auth registration requires Rust data backend",
+        return build_auth_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            AUTH_REGISTRATION_STORAGE_UNAVAILABLE_DETAIL,
+            false,
         );
     };
 

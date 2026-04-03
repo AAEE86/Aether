@@ -289,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn enriches_transport_proxy_snapshot_with_tunnel_owner_hint() {
-        let state = AppState::new("http://upstream.invalid")
+        let state = AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::disabled().with_system_config_values_for_tests(vec![(
@@ -336,7 +336,7 @@ mod tests {
             "kind": "manual",
             "tunnel_base_url": "http://configured-gateway.internal",
         }));
-        let state = AppState::new("http://upstream.invalid")
+        let state = AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::disabled().with_system_config_values_for_tests(vec![(

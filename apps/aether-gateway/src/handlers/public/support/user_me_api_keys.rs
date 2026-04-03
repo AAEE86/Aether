@@ -1,4 +1,23 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+use super::{
+    build_auth_error_response, decrypt_catalog_secret_with_fallbacks,
+    encrypt_catalog_secret_with_fallbacks, format_users_me_optional_unix_secs_iso8601,
+    known_capability_names, normalize_user_model_capability_settings_input,
+    query_param_optional_bool, resolve_authenticated_local_user,
+    user_configurable_capability_names, AppState, GatewayPublicRequestContext,
+};
+
+const USERS_ME_API_KEY_WRITE_UNAVAILABLE_DETAIL: &str = "用户 API 密钥写入暂不可用";
 
 #[derive(Debug, Deserialize)]
 struct UsersMeCreateApiKeyRequest {
@@ -52,17 +71,42 @@ struct UsersMeUpdateApiKeyCapabilitiesRequest {
     capabilities: Option<Vec<String>>,
 }
 
-fn users_me_api_key_id_from_path(request_path: &str) -> Option<String> {
-    request_path
+fn users_me_api_key_path_segments(request_path: &str) -> Option<Vec<&str>> {
+    let raw = request_path
         .strip_prefix("/api/users/me/api-keys/")?
         .trim()
-        .trim_matches('/')
+        .trim_matches('/');
+    if raw.is_empty() {
+        return None;
+    }
+    let segments = raw
         .split('/')
-        .next()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .filter(|value| !value.contains('/'))
-        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!segments.is_empty()).then_some(segments)
+}
+
+fn users_me_api_key_detail_id_from_path(request_path: &str) -> Option<String> {
+    let segments = users_me_api_key_path_segments(request_path)?;
+    (segments.len() == 1).then(|| segments[0].to_string())
+}
+
+fn users_me_api_key_nested_id_from_path(request_path: &str, suffix: &str) -> Option<String> {
+    let segments = users_me_api_key_path_segments(request_path)?;
+    (segments.len() == 2 && segments[1] == suffix).then(|| segments[0].to_string())
+}
+
+pub(super) fn users_me_api_key_detail_path_matches(request_path: &str) -> bool {
+    users_me_api_key_detail_id_from_path(request_path).is_some()
+}
+
+pub(super) fn users_me_api_key_providers_path_matches(request_path: &str) -> bool {
+    users_me_api_key_nested_id_from_path(request_path, "providers").is_some()
+}
+
+pub(super) fn users_me_api_key_capabilities_path_matches(request_path: &str) -> bool {
+    users_me_api_key_nested_id_from_path(request_path, "capabilities").is_some()
 }
 
 fn users_me_masked_api_key_display(state: &AppState, ciphertext: Option<&str>) -> String {
@@ -81,6 +125,14 @@ fn users_me_masked_api_key_display(state: &AppState, ciphertext: Option<&str>) -
         ""
     };
     format!("{prefix}...{suffix}")
+}
+
+fn build_users_me_api_key_writer_unavailable_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        USERS_ME_API_KEY_WRITE_UNAVAILABLE_DETAIL,
+        false,
+    )
 }
 
 fn build_users_me_api_key_list_payload(
@@ -291,8 +343,9 @@ pub(super) async fn handle_users_me_api_key_detail_get(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let Some(api_key_id) = users_me_api_key_id_from_path(&request_context.request_path) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+    let Some(api_key_id) = users_me_api_key_detail_id_from_path(&request_context.request_path)
+    else {
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "API密钥不存在", false);
     };
     let include_key = query_param_optional_bool(
         request_context.request_query_string.as_deref(),
@@ -372,20 +425,15 @@ pub(super) async fn handle_users_me_api_key_detail_get(
     .into_response()
 }
 
-async fn resolve_users_me_api_key_snapshot(
+async fn resolve_users_me_api_key_snapshot_by_id(
     state: &AppState,
     user_id: &str,
-    request_path: &str,
+    api_key_id: &str,
 ) -> Result<crate::gateway::gateway_data::StoredGatewayAuthApiKeySnapshot, Response<Body>> {
-    let Some(api_key_id) = users_me_api_key_id_from_path(request_path) else {
-        return Err(build_public_support_maintenance_response(
-            USERS_ME_MAINTENANCE_DETAIL,
-        ));
-    };
     let snapshot = match state
         .read_auth_api_key_snapshot(
             user_id,
-            &api_key_id,
+            api_key_id,
             chrono::Utc::now().timestamp().max(0) as u64,
         )
         .await
@@ -436,7 +484,7 @@ pub(super) async fn handle_users_me_api_key_create(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_auth_api_key_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     }
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
@@ -497,7 +545,7 @@ pub(super) async fn handle_users_me_api_key_create(
             )
         }
     }) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     };
 
     Json(json!({
@@ -518,22 +566,21 @@ pub(super) async fn handle_users_me_api_key_update(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_auth_api_key_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     }
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let snapshot = match resolve_users_me_api_key_snapshot(
-        state,
-        &auth.user.id,
-        &request_context.request_path,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
+    let Some(api_key_id) = users_me_api_key_detail_id_from_path(&request_context.request_path)
+    else {
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "API密钥不存在", false);
     };
+    let snapshot =
+        match resolve_users_me_api_key_snapshot_by_id(state, &auth.user.id, &api_key_id).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     if let Err(response) = ensure_users_me_api_key_mutable(&snapshot) {
         return response;
     }
@@ -586,7 +633,7 @@ pub(super) async fn handle_users_me_api_key_update(
             )
         }
     }) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     };
 
     let mut payload =
@@ -602,22 +649,21 @@ pub(super) async fn handle_users_me_api_key_patch(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_auth_api_key_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     }
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let snapshot = match resolve_users_me_api_key_snapshot(
-        state,
-        &auth.user.id,
-        &request_context.request_path,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
+    let Some(api_key_id) = users_me_api_key_detail_id_from_path(&request_context.request_path)
+    else {
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "API密钥不存在", false);
     };
+    let snapshot =
+        match resolve_users_me_api_key_snapshot_by_id(state, &auth.user.id, &api_key_id).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     if let Err(response) = ensure_users_me_api_key_mutable(&snapshot) {
         return response;
     }
@@ -649,7 +695,7 @@ pub(super) async fn handle_users_me_api_key_patch(
             )
         }
     }) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     };
 
     Json(json!({
@@ -666,22 +712,21 @@ pub(super) async fn handle_users_me_api_key_delete(
     headers: &http::HeaderMap,
 ) -> Response<Body> {
     if !state.has_auth_api_key_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     }
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let snapshot = match resolve_users_me_api_key_snapshot(
-        state,
-        &auth.user.id,
-        &request_context.request_path,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
+    let Some(api_key_id) = users_me_api_key_detail_id_from_path(&request_context.request_path)
+    else {
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "API密钥不存在", false);
     };
+    let snapshot =
+        match resolve_users_me_api_key_snapshot_by_id(state, &auth.user.id, &api_key_id).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     if let Err(response) = ensure_users_me_api_key_mutable(&snapshot) {
         return response;
     }
@@ -707,22 +752,22 @@ pub(super) async fn handle_users_me_api_key_providers_put(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_auth_api_key_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     }
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let snapshot = match resolve_users_me_api_key_snapshot(
-        state,
-        &auth.user.id,
-        &request_context.request_path,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
+    let Some(api_key_id) =
+        users_me_api_key_nested_id_from_path(&request_context.request_path, "providers")
+    else {
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "API密钥不存在", false);
     };
+    let snapshot =
+        match resolve_users_me_api_key_snapshot_by_id(state, &auth.user.id, &api_key_id).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     if let Err(response) = ensure_users_me_api_key_mutable(&snapshot) {
         return response;
     }
@@ -825,7 +870,7 @@ pub(super) async fn handle_users_me_api_key_providers_put(
             )
         }
     }) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     };
 
     Json(json!({
@@ -842,22 +887,22 @@ pub(super) async fn handle_users_me_api_key_capabilities_put(
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     if !state.has_auth_api_key_writer() {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     }
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let snapshot = match resolve_users_me_api_key_snapshot(
-        state,
-        &auth.user.id,
-        &request_context.request_path,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
+    let Some(api_key_id) =
+        users_me_api_key_nested_id_from_path(&request_context.request_path, "capabilities")
+    else {
+        return build_auth_error_response(http::StatusCode::NOT_FOUND, "API密钥不存在", false);
     };
+    let snapshot =
+        match resolve_users_me_api_key_snapshot_by_id(state, &auth.user.id, &api_key_id).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     if let Err(response) = ensure_users_me_api_key_mutable(&snapshot) {
         return response;
     }
@@ -899,7 +944,7 @@ pub(super) async fn handle_users_me_api_key_capabilities_put(
             )
         }
     }) else {
-        return build_public_support_maintenance_response(USERS_ME_MAINTENANCE_DETAIL);
+        return build_users_me_api_key_writer_unavailable_response();
     };
 
     Json(json!({

@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    format_optional_unix_secs_iso8601, http, json, masked_user_api_key_display, query_param_value,
+    serialize_admin_system_users_export_wallet, AppState, Body, GatewayError,
+    GatewayPublicRequestContext, IntoResponse, Json, Response,
+};
+use crate::gateway::handlers::admin::api_keys::ADMIN_API_KEYS_DATA_UNAVAILABLE_DETAIL;
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub(super) struct AdminStandaloneApiKeyCreateRequest {
@@ -40,10 +45,10 @@ pub(super) struct AdminStandaloneApiKeyFieldPresence {
     pub(super) allowed_models: bool,
 }
 
-pub(super) fn build_admin_api_keys_maintenance_response() -> Response<Body> {
+pub(super) fn build_admin_api_keys_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_API_KEYS_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_API_KEYS_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }

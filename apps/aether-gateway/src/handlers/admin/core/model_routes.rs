@@ -1,4 +1,16 @@
-use super::*;
+use super::super::{
+    build_admin_model_catalog_payload, clear_admin_external_models_cache,
+    read_admin_external_models_cache,
+};
+use super::build_admin_model_catalog_data_unavailable_response;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn maybe_build_local_admin_core_model_response(
     state: &AppState,
@@ -14,10 +26,10 @@ pub(super) async fn maybe_build_local_admin_core_model_response(
         && request_context.request_path == "/api/admin/models/catalog"
     {
         if !state.has_global_model_data_reader() || !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_model_catalog_maintenance_response()));
+            return Ok(Some(build_admin_model_catalog_data_unavailable_response()));
         }
         let Some(payload) = build_admin_model_catalog_payload(state).await else {
-            return Ok(Some(build_admin_model_catalog_maintenance_response()));
+            return Ok(Some(build_admin_model_catalog_data_unavailable_response()));
         };
         return Ok(Some(Json(payload).into_response()));
     }

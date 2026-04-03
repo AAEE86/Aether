@@ -1,4 +1,3 @@
-use super::*;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -14,11 +13,22 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
+use axum::body::{to_bytes, Body};
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::StatusCode;
+use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
+
+use crate::gateway::constants::TRACE_ID_HEADER;
+
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+};
 
 #[tokio::test]
-async fn gateway_executes_gemini_video_create_via_local_decision_gate_without_python_plan_or_decision(
-) {
+async fn gateway_executes_gemini_video_create_via_local_decision_gate_with_local_planning_only() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         method: String,
@@ -206,7 +216,6 @@ async fn gateway_executes_gemini_video_create_via_local_decision_gate_without_py
                     "route_family": "gemini",
                     "route_kind": "video",
                     "auth_endpoint_signature": "gemini:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-gemini-video-local-123",
@@ -385,7 +394,7 @@ async fn gateway_executes_gemini_video_create_via_local_decision_gate_without_py
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,

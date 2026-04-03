@@ -7,7 +7,11 @@ use aether_data::repository::video_tasks::{
     InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskStatus, VideoTaskWriteRepository,
 };
 
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    to_bytes, AppState, Arc, Body, Bytes, HeaderValue, Json, Mutex, Request, Response, Router,
+    StatusCode, json,
+};
 
 fn sample_video_task(
     id: &str,
@@ -108,7 +112,7 @@ async fn gateway_lists_video_tasks_via_internal_async_task_endpoint() {
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:18084")
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(repository),
     );
@@ -165,7 +169,7 @@ async fn gateway_exposes_video_task_stats_via_internal_async_task_endpoint() {
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:18084")
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(repository),
     );
@@ -208,7 +212,7 @@ async fn gateway_reads_video_task_detail_via_internal_async_task_endpoint() {
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:18084")
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(repository),
     );
@@ -250,7 +254,7 @@ async fn gateway_redirects_direct_video_task_video_from_internal_async_task_endp
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:18084")
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(repository),
     );
@@ -393,9 +397,7 @@ async fn gateway_proxies_gemini_video_task_video_from_internal_async_task_endpoi
     ));
 
     let gateway = build_router_with_state(
-        AppState::new(
-            "http://127.0.0.1:18084",
-        )
+        AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_video_task_repository_and_provider_transport_for_tests(
@@ -562,11 +564,8 @@ async fn gateway_cancels_openai_video_task_via_internal_async_task_endpoint() {
 
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(
-            "http://127.0.0.1:18084",
-            execution_runtime_url,
-        )
-        .with_video_task_data_repository_for_tests(Arc::clone(&repository)),
+        build_state_with_execution_runtime_override(execution_runtime_url)
+            .with_video_task_data_repository_for_tests(Arc::clone(&repository)),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -627,7 +626,7 @@ async fn gateway_cancels_openai_video_task_via_internal_async_task_endpoint() {
 }
 
 #[tokio::test]
-async fn gateway_cancels_openai_video_task_via_internal_async_task_endpoint_without_remote_execution_runtime_compat(
+async fn gateway_cancels_openai_video_task_via_internal_async_task_endpoint_without_execution_runtime_override(
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenUpstreamDeleteRequest {
@@ -726,7 +725,7 @@ async fn gateway_cancels_openai_video_task_via_internal_async_task_endpoint_with
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:18084")
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(Arc::clone(&repository)),
     );
@@ -798,7 +797,7 @@ async fn gateway_rejects_terminal_video_task_cancel_via_internal_async_task_endp
         .expect("upsert should succeed");
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:18084")
+        AppState::new()
             .expect("gateway state should build")
             .with_video_task_data_repository_for_tests(repository),
     );

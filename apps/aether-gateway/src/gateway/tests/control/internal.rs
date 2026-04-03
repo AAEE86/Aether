@@ -1,4 +1,16 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::routing::{any, post};
+use axum::{extract::Request, Json, Router};
+use http::header::HeaderValue;
+use http::StatusCode;
+use serde_json::json;
+
+use super::{
+    build_router_with_state, sample_proxy_node, start_server, AppState, GatewayDataState,
+    InMemoryProxyNodeRepository, TRACE_ID_HEADER,
+};
 
 #[tokio::test]
 async fn gateway_handles_internal_tunnel_heartbeat_locally_with_loopback() {
@@ -21,7 +33,7 @@ async fn gateway_handles_internal_tunnel_heartbeat_locally_with_loopback() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_proxy_node_repository_for_tests(
                 Arc::clone(&repository),
@@ -79,7 +91,7 @@ async fn gateway_handles_internal_tunnel_node_status_locally_with_loopback() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_proxy_node_repository_for_tests(
                 Arc::clone(&repository),
@@ -123,8 +135,7 @@ async fn gateway_owns_proxy_tunnel_path_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -157,8 +168,7 @@ async fn gateway_handles_internal_tunnel_relay_locally_without_proxying_upstream
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -218,7 +228,7 @@ async fn gateway_forwards_tunnel_relay_to_attachment_owner() {
         }),
     )]);
     let gateway = build_router_with_state(
-        AppState::new("http://upstream.invalid")
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state)
             .with_tunnel_identity_for_tests("gateway-a", Some("http://gateway-a.internal")),
@@ -277,7 +287,7 @@ async fn gateway_does_not_forward_tunnel_relay_twice() {
         }),
     )]);
     let gateway = build_router_with_state(
-        AppState::new("http://upstream.invalid")
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state)
             .with_tunnel_identity_for_tests("gateway-a", Some("http://gateway-a.internal")),

@@ -1,4 +1,20 @@
-use super::*;
+use std::sync::{Arc, Mutex};
+
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository, StoredProviderCatalogKey,
+};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::{build_router_with_state, sample_key, sample_provider, start_server, AppState};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
 
 fn adaptive_repository_with_keys(
     keys: Vec<StoredProviderCatalogKey>,
@@ -32,7 +48,7 @@ async fn assert_adaptive_route_returns_local_503(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -58,7 +74,7 @@ async fn assert_adaptive_route_returns_local_503(
     upstream_handle.abort();
 }
 
-const ADAPTIVE_MAINTENANCE_MESSAGE: &str = "Admin adaptive routes require Rust maintenance backend";
+const ADAPTIVE_DATA_UNAVAILABLE_MESSAGE: &str = "Admin adaptive data unavailable";
 
 #[tokio::test]
 async fn gateway_handles_admin_adaptive_keys_locally_with_trusted_admin_principal() {
@@ -89,7 +105,7 @@ async fn gateway_handles_admin_adaptive_keys_locally_with_trusted_admin_principa
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(repository),
@@ -156,7 +172,7 @@ async fn gateway_handles_admin_adaptive_summary_locally_with_trusted_admin_princ
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(repository),
@@ -188,19 +204,19 @@ async fn gateway_handles_admin_adaptive_summary_locally_with_trusted_admin_princ
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_adaptive_keys_returns_maintenance_when_disabled() {
+async fn gateway_handles_admin_adaptive_keys_returns_service_unavailable_when_disabled() {
     assert_adaptive_route_returns_local_503(
         crate::gateway::gateway_data::GatewayDataState::disabled(),
         http::Method::GET,
         "/api/admin/adaptive/keys",
         None,
-        ADAPTIVE_MAINTENANCE_MESSAGE,
+        ADAPTIVE_DATA_UNAVAILABLE_MESSAGE,
     )
     .await;
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_adaptive_mode_returns_maintenance_without_writer() {
+async fn gateway_handles_admin_adaptive_mode_returns_service_unavailable_without_writer() {
     let mut adaptive_key = sample_key("key-adaptive", "provider-openai", "openai:chat", "sk-test");
     adaptive_key.rpm_limit = None;
     let repository = adaptive_repository_with_keys(vec![adaptive_key]);
@@ -212,7 +228,7 @@ async fn gateway_handles_admin_adaptive_mode_returns_maintenance_without_writer(
         http::Method::PATCH,
         "/api/admin/adaptive/keys/key-adaptive/mode",
         Some(json!({ "enabled": false, "fixed_limit": 20 })),
-        ADAPTIVE_MAINTENANCE_MESSAGE,
+        ADAPTIVE_DATA_UNAVAILABLE_MESSAGE,
     )
     .await;
 }
@@ -253,7 +269,7 @@ async fn gateway_handles_admin_adaptive_stats_locally_with_trusted_admin_princip
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(repository),
@@ -295,7 +311,7 @@ async fn gateway_toggles_admin_adaptive_mode_locally_with_trusted_admin_principa
     });
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9".to_string())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -341,7 +357,7 @@ async fn gateway_sets_admin_adaptive_limit_locally_with_trusted_admin_principal(
     });
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9".to_string())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
@@ -394,7 +410,7 @@ async fn gateway_resets_admin_adaptive_learning_locally_with_trusted_admin_princ
     });
 
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:9".to_string())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(

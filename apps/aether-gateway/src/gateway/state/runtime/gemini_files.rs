@@ -1,4 +1,4 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError};
 
 impl AppState {
     pub(crate) async fn upsert_gemini_file_mapping(

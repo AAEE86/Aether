@@ -2,8 +2,17 @@ use super::payment_shared::{
     payment_callback_mark_failed_response, payment_callback_payload_hash,
     NormalizedPaymentCallbackRequest,
 };
-use super::*;
+use axum::{body::Body, http, response::Response};
+use chrono::Utc;
+use serde_json::json;
 use sqlx::Row;
+use uuid::Uuid;
+
+use super::super::{build_auth_json_response, wallet_payment_order_payload_from_row};
+use super::{
+    build_auth_error_response, build_payment_callback_storage_unavailable_response, AppState,
+    GatewayPublicRequestContext,
+};
 
 async fn update_payment_callback_failure(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -46,9 +55,7 @@ pub(super) async fn handle_payment_callback_with_postgres(
     signature_valid: bool,
 ) -> Response<Body> {
     let Some(pool) = state.postgres_pool() else {
-        return build_public_support_maintenance_response(
-            "Payment callback routes require Rust maintenance backend",
-        );
+        return build_payment_callback_storage_unavailable_response();
     };
     let mut tx = match pool.begin().await {
         Ok(value) => value,
@@ -323,6 +330,10 @@ FOR UPDATE
         .try_get::<String, _>("wallet_id")
         .ok()
         .unwrap_or_default();
+    let order_payment_method = order_row
+        .try_get::<String, _>("payment_method")
+        .ok()
+        .unwrap_or_default();
     let order_amount_usd = order_row
         .try_get::<f64, _>("amount_usd")
         .ok()
@@ -349,6 +360,24 @@ FOR UPDATE
         return payment_callback_mark_failed_response(
             duplicate,
             "callback amount mismatch",
+            payment_method,
+            &request_context.request_path,
+        );
+    }
+    if !order_payment_method.eq_ignore_ascii_case(payment_method) {
+        update_payment_callback_failure(
+            &mut tx,
+            &callback_id,
+            payload,
+            &callback_payload_hash,
+            signature_valid,
+            "payment method mismatch",
+        )
+        .await;
+        let _ = tx.commit().await;
+        return payment_callback_mark_failed_response(
+            duplicate,
+            "payment method mismatch",
             payment_method,
             &request_context.request_path,
         );
@@ -725,4 +754,58 @@ WHERE id = $1
         }),
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{handle_payment_callback_with_postgres, AppState, NormalizedPaymentCallbackRequest};
+    use crate::gateway::handlers::public::support::support_payment::PAYMENT_CALLBACK_STORAGE_UNAVAILABLE_DETAIL;
+    use crate::gateway::GatewayPublicRequestContext;
+    use axum::body::to_bytes;
+    use axum::http::{HeaderMap, Method, Uri};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn payment_callback_postgres_handler_returns_explicit_503_without_pool() {
+        let state = AppState::new().expect("state should build");
+        let request_context = GatewayPublicRequestContext::from_request_parts(
+            "trace-payment-callback-postgres-missing",
+            &Method::POST,
+            &"/api/payment/callback/alipay"
+                .parse::<Uri>()
+                .expect("uri should parse"),
+            &HeaderMap::new(),
+            None,
+        );
+        let payload = NormalizedPaymentCallbackRequest {
+            callback_key: "callback-key-1".to_string(),
+            order_no: Some("order-no-1".to_string()),
+            gateway_order_id: Some("gateway-order-1".to_string()),
+            amount_usd: 10.0,
+            pay_amount: Some(10.0),
+            pay_currency: Some("USD".to_string()),
+            exchange_rate: Some(1.0),
+            payload: json!({ "status": "paid" }),
+        };
+
+        let response = handle_payment_callback_with_postgres(
+            &state,
+            "alipay",
+            &request_context,
+            &payload,
+            true,
+        )
+        .await;
+
+        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+        assert_eq!(
+            payload,
+            json!({ "detail": PAYMENT_CALLBACK_STORAGE_UNAVAILABLE_DETAIL })
+        );
+    }
 }

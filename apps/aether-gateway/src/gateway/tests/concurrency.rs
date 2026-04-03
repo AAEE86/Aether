@@ -1,6 +1,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::*;
+use super::{
+    any, build_router_with_state, start_server, wait_until, AppState, Arc, Body, Bytes,
+    GatewayFallbackMetricKind, GatewayFallbackReason, Infallible, Request, Response, Router,
+    StatusCode, EXECUTION_PATH_DISTRIBUTED_OVERLOADED, EXECUTION_PATH_HEADER,
+    EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS, EXECUTION_PATH_LOCAL_OVERLOADED,
+};
 
 fn sample_decision() -> crate::gateway::GatewayControlDecision {
     crate::gateway::GatewayControlDecision {
@@ -45,12 +50,12 @@ async fn gateway_rejects_second_in_flight_stream_request_with_distributed_overlo
         1,
     );
     let gateway_a = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway state should build")
             .with_distributed_request_concurrency_gate(distributed_gate.clone()),
     );
     let gateway_b = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway state should build")
             .with_distributed_request_concurrency_gate(distributed_gate),
     );
@@ -119,7 +124,7 @@ async fn gateway_rejects_second_in_flight_stream_request_with_local_overload() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway state should build")
             .with_request_concurrency_limit(1),
     );
@@ -165,7 +170,7 @@ async fn gateway_rejects_second_in_flight_stream_request_with_local_overload() {
 #[tokio::test]
 async fn gateway_exposes_request_concurrency_metrics() {
     let gateway = build_router_with_state(
-        AppState::new("http://127.0.0.1:1")
+        AppState::new()
             .expect("gateway state should build")
             .with_request_concurrency_limit(3)
             .with_distributed_request_concurrency_gate(
@@ -206,7 +211,7 @@ async fn gateway_exposes_request_concurrency_metrics() {
 
 #[tokio::test]
 async fn gateway_exposes_fallback_metrics() {
-    let state = AppState::new("http://127.0.0.1:1").expect("gateway state should build");
+    let state = AppState::new().expect("gateway state should build");
     let decision = sample_decision();
     state.record_fallback_metric(
         GatewayFallbackMetricKind::DecisionRemote,
@@ -227,39 +232,7 @@ async fn gateway_exposes_fallback_metrics() {
         Some(&decision),
         None,
         Some(EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS),
-        GatewayFallbackReason::PythonFallbackRemoved,
-    );
-    state.record_fallback_metric(
-        GatewayFallbackMetricKind::PublicProxyAfterExecutionRuntimeMiss,
-        Some(&decision),
-        None,
-        Some(EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS),
-        GatewayFallbackReason::ExecutionRuntimeMiss,
-    );
-    state.record_fallback_metric(
-        GatewayFallbackMetricKind::PublicProxyPassthrough,
-        Some(&decision),
-        None,
-        Some(EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH),
-        GatewayFallbackReason::ProxyPassthrough,
-    );
-    state.record_fallback_metric(
-        GatewayFallbackMetricKind::LegacyInternalBridge,
-        Some(&crate::gateway::GatewayControlDecision {
-            public_path: "/api/internal/gateway/resolve".to_string(),
-            public_query_string: None,
-            route_class: Some("internal_proxy".to_string()),
-            route_family: Some("gateway_legacy".to_string()),
-            route_kind: Some("resolve".to_string()),
-            auth_endpoint_signature: None,
-            execution_runtime_candidate: false,
-            auth_context: None,
-            admin_principal: None,
-            local_auth_rejection: None,
-        }),
-        None,
-        Some("legacy_internal_bridge"),
-        GatewayFallbackReason::LegacyInternalGateway,
+        GatewayFallbackReason::LocalExecutionPathRequired,
     );
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -296,21 +269,6 @@ async fn gateway_exposes_fallback_metrics() {
     assert!(plan_fallback.contains("reason=\"remote_decision_miss\""));
     assert!(plan_fallback.ends_with(" 1"));
 
-    let public_proxy_after_execution_runtime_miss = body
-        .lines()
-        .find(|line| line.starts_with("public_proxy_after_execution_runtime_miss_total{"))
-        .expect("public_proxy_after_execution_runtime_miss_total sample should be rendered");
-    assert!(public_proxy_after_execution_runtime_miss.contains("route_class=\"ai_public\""));
-    assert!(public_proxy_after_execution_runtime_miss.contains("route_family=\"openai\""));
-    assert!(public_proxy_after_execution_runtime_miss.contains("route_kind=\"chat\""));
-    assert!(public_proxy_after_execution_runtime_miss.contains("plan_kind=\"none\""));
-    assert!(public_proxy_after_execution_runtime_miss.contains(&format!(
-        "execution_path=\"{}\"",
-        EXECUTION_PATH_PUBLIC_PROXY_AFTER_EXECUTION_RUNTIME_MISS
-    )));
-    assert!(public_proxy_after_execution_runtime_miss.contains("reason=\"execution_runtime_miss\""));
-    assert!(public_proxy_after_execution_runtime_miss.ends_with(" 1"));
-
     let local_execution_runtime_miss = body
         .lines()
         .find(|line| line.starts_with("local_execution_runtime_miss_total{"))
@@ -323,35 +281,8 @@ async fn gateway_exposes_fallback_metrics() {
         "execution_path=\"{}\"",
         EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS
     )));
-    assert!(local_execution_runtime_miss.contains("reason=\"python_fallback_removed\""));
+    assert!(local_execution_runtime_miss.contains("reason=\"local_execution_path_required\""));
     assert!(local_execution_runtime_miss.ends_with(" 1"));
-
-    let public_proxy_passthrough = body
-        .lines()
-        .find(|line| line.starts_with("public_proxy_passthrough_total{"))
-        .expect("public_proxy_passthrough_total sample should be rendered");
-    assert!(public_proxy_passthrough.contains("route_class=\"ai_public\""));
-    assert!(public_proxy_passthrough.contains("route_family=\"openai\""));
-    assert!(public_proxy_passthrough.contains("route_kind=\"chat\""));
-    assert!(public_proxy_passthrough.contains("plan_kind=\"none\""));
-    assert!(public_proxy_passthrough.contains(&format!(
-        "execution_path=\"{}\"",
-        EXECUTION_PATH_PUBLIC_PROXY_PASSTHROUGH
-    )));
-    assert!(public_proxy_passthrough.contains("reason=\"proxy_passthrough\""));
-    assert!(public_proxy_passthrough.ends_with(" 1"));
-
-    let legacy_internal_bridge = body
-        .lines()
-        .find(|line| line.starts_with("legacy_internal_bridge_total{"))
-        .expect("legacy_internal_bridge_total sample should be rendered");
-    assert!(legacy_internal_bridge.contains("route_class=\"internal_proxy\""));
-    assert!(legacy_internal_bridge.contains("route_family=\"gateway_legacy\""));
-    assert!(legacy_internal_bridge.contains("route_kind=\"resolve\""));
-    assert!(legacy_internal_bridge.contains("plan_kind=\"none\""));
-    assert!(legacy_internal_bridge.contains("execution_path=\"legacy_internal_bridge\""));
-    assert!(legacy_internal_bridge.contains("reason=\"legacy_internal_gateway\""));
-    assert!(legacy_internal_bridge.ends_with(" 1"));
 
     gateway_handle.abort();
 }

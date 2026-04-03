@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, json,
+    start_server, to_bytes, Arc, Body, Bytes, HeaderName, HeaderValue, Json, Mutex, Request,
+    Response, Router, StatusCode, AppState, TRACE_ID_HEADER,
+    EXECUTION_PATH_EXECUTION_RUNTIME_STREAM, EXECUTION_PATH_HEADER,
+};
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -17,7 +22,7 @@ use aether_data::repository::provider_catalog::{
 use sha2::{Digest, Sha256};
 
 #[tokio::test]
-async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_remote_execution_runtime_compat(
+async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_execution_runtime_override(
 ) {
     #[derive(Debug, Clone)]
     struct SeenUpstreamStreamRequest {
@@ -189,7 +194,6 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_rem
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-openai-local-stream-1",
@@ -347,7 +351,7 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_rem
         vec![primary_endpoint, backup_endpoint],
         vec![sample_provider_catalog_key(), backup_key],
     ));
-    let gateway_state = AppState::new(upstream_url.clone())
+    let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -614,7 +618,6 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_cli_cross_format_c
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-openai-chat-cli-local-1",
@@ -775,7 +778,7 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_cli_cross_format_c
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url.clone())
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,
@@ -874,7 +877,7 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_cli_cross_format_c
 }
 
 #[tokio::test]
-async fn gateway_executes_openai_chat_stream_with_custom_path_via_local_decision_gate_without_python_decision_stream(
+async fn gateway_executes_openai_chat_stream_with_custom_path_via_local_decision_gate_with_local_stream_decision(
 ) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeStreamRequest {
@@ -1063,7 +1066,6 @@ async fn gateway_executes_openai_chat_stream_with_custom_path_via_local_decision
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-openai-custom-stream-1",
@@ -1254,7 +1256,7 @@ async fn gateway_executes_openai_chat_stream_with_custom_path_via_local_decision
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url.clone())
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,
@@ -1557,7 +1559,6 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_with_local_fail
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-openai-local-stream-failover-1",
@@ -1757,7 +1758,7 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_with_local_fail
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url.clone())
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,

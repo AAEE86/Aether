@@ -1,4 +1,4 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError};
 
 impl AppState {
     pub(crate) async fn list_minimal_candidate_selection_rows_for_api_format(

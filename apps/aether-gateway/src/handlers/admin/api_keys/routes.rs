@@ -1,4 +1,13 @@
-use super::*;
+use super::admin_api_keys_mutation_routes::{
+    build_admin_create_api_key_response, build_admin_delete_api_key_response,
+    build_admin_toggle_api_key_response, build_admin_update_api_key_response,
+};
+use super::admin_api_keys_read_routes::{
+    build_admin_api_key_detail_response, build_admin_list_api_keys_response,
+};
+use super::admin_api_keys_shared::build_admin_api_keys_data_unavailable_response;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{body::Body, http, response::Response};
 
 pub(super) async fn maybe_build_local_admin_api_keys_routes_response(
     state: &AppState,
@@ -70,6 +79,6 @@ pub(super) async fn maybe_build_local_admin_api_keys_routes_response(
                 build_admin_delete_api_key_response(state, request_context).await?,
             ))
         }
-        _ => Ok(Some(build_admin_api_keys_maintenance_response())),
+        _ => Ok(Some(build_admin_api_keys_data_unavailable_response())),
     }
 }

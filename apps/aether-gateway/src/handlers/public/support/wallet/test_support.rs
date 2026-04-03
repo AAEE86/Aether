@@ -1,5 +1,3 @@
-use super::*;
-
 #[derive(Debug, Clone)]
 pub(super) struct WalletTestRefundRecord {
     pub(crate) wallet_id: String,

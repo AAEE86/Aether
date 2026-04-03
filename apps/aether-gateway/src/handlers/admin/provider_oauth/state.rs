@@ -1,9 +1,21 @@
-use super::*;
+use super::{
+    build_internal_control_error_response, normalize_provider_oauth_refresh_error_message,
+};
+use crate::gateway::handlers::ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL;
 use crate::gateway::provider_transport::{
     provider_type_admin_oauth_template, provider_type_is_fixed_for_admin_oauth,
     ProviderOAuthTemplate, ADMIN_PROVIDER_OAUTH_TEMPLATE_TYPES,
 };
-use base64::Engine as _;
+use crate::gateway::{AppState, GatewayError};
+use axum::{body::Body, http, response::Response};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde::Deserialize;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+use url::{form_urlencoded, Url};
+use uuid::Uuid;
 
 pub(crate) fn is_fixed_provider_type_for_provider_oauth(provider_type: &str) -> bool {
     provider_type_is_fixed_for_admin_oauth(provider_type)
@@ -34,7 +46,7 @@ pub(crate) fn build_admin_provider_oauth_supported_types_payload() -> Vec<serde_
 pub(crate) fn build_admin_provider_oauth_backend_unavailable_response() -> Response<Body> {
     build_internal_control_error_response(
         http::StatusCode::SERVICE_UNAVAILABLE,
-        ADMIN_PROVIDER_OAUTH_RUST_BACKEND_DETAIL,
+        ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL,
     )
 }
 

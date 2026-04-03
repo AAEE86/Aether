@@ -1,4 +1,4 @@
-use super::*;
+use aether_data::repository::provider_catalog::StoredProviderCatalogProvider;
 
 pub(super) fn select_test_connection_provider(
     providers: Vec<StoredProviderCatalogProvider>,

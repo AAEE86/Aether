@@ -251,7 +251,9 @@ pub(crate) fn append_execution_contract_fields_to_value(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        append_execution_contract_fields_to_value, ConversionMode, ExecutionStrategy,
+    };
     use serde_json::json;
 
     #[test]

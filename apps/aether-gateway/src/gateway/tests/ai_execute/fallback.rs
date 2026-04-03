@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    any, build_router, build_router_with_execution_runtime_override, json, start_server, Arc,
+    Body, HeaderValue, Json, Mutex, Request, Response, Router, StatusCode,
+    DEPENDENCY_REASON_HEADER, EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS,
+    LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER, TRACE_ID_HEADER,
+};
 
 #[tokio::test]
 async fn gateway_locally_denies_openai_chat_after_repeated_execution_runtime_misses_without_control_execute_opt_in(
@@ -20,7 +25,6 @@ async fn gateway_locally_denies_openai_chat_after_repeated_execution_runtime_mis
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "public_path": "/v1/chat/completions"
                 }))
@@ -79,10 +83,7 @@ async fn gateway_locally_denies_openai_chat_after_repeated_execution_runtime_mis
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        execution_runtime_url,
-    );
+    let gateway = build_router_with_execution_runtime_override(execution_runtime_url);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let client = reqwest::Client::new();
@@ -106,7 +107,7 @@ async fn gateway_locally_denies_openai_chat_after_repeated_execution_runtime_mis
         assert_eq!(
             response
                 .headers()
-                .get(PYTHON_DEPENDENCY_REASON_HEADER)
+                .get(DEPENDENCY_REASON_HEADER)
                 .and_then(|value| value.to_str().ok()),
             None
         );
@@ -121,7 +122,7 @@ async fn gateway_locally_denies_openai_chat_after_repeated_execution_runtime_mis
         assert_eq!(payload["error"]["type"], "http_error");
         assert_eq!(
             payload["error"]["message"],
-            "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+            "OpenAI chat execution runtime miss did not match a Rust execution path"
         );
     }
 
@@ -156,7 +157,6 @@ async fn gateway_locally_denies_openai_chat_when_control_api_is_configured_witho
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "public_path": "/v1/chat/completions"
                 }))
@@ -211,7 +211,7 @@ async fn gateway_locally_denies_openai_chat_when_control_api_is_configured_witho
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -233,7 +233,7 @@ async fn gateway_locally_denies_openai_chat_when_control_api_is_configured_witho
     assert_eq!(
         response
             .headers()
-            .get(PYTHON_DEPENDENCY_REASON_HEADER)
+            .get(DEPENDENCY_REASON_HEADER)
             .and_then(|value| value.to_str().ok()),
         None
     );
@@ -248,7 +248,7 @@ async fn gateway_locally_denies_openai_chat_when_control_api_is_configured_witho
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI chat execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -283,7 +283,6 @@ async fn gateway_locally_denies_openai_chat_stream_after_execution_runtime_miss_
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "public_path": "/v1/chat/completions"
                 }))
@@ -323,10 +322,7 @@ async fn gateway_locally_denies_openai_chat_stream_after_execution_runtime_miss_
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        execution_runtime_url,
-    );
+    let gateway = build_router_with_execution_runtime_override(execution_runtime_url);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -348,7 +344,7 @@ async fn gateway_locally_denies_openai_chat_stream_after_execution_runtime_miss_
     assert_eq!(
         response
             .headers()
-            .get(PYTHON_DEPENDENCY_REASON_HEADER)
+            .get(DEPENDENCY_REASON_HEADER)
             .and_then(|value| value.to_str().ok()),
         None
     );
@@ -363,7 +359,7 @@ async fn gateway_locally_denies_openai_chat_stream_after_execution_runtime_miss_
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI chat execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -428,7 +424,6 @@ async fn assert_ai_route_locally_denied_after_execution_runtime_miss_with_reques
                     "route_family": route_family,
                     "route_kind": route_kind,
                     "auth_endpoint_signature": endpoint_signature,
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "public_path": route_path
                 }))
@@ -488,10 +483,7 @@ async fn assert_ai_route_locally_denied_after_execution_runtime_miss_with_reques
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        execution_runtime_url,
-    );
+    let gateway = build_router_with_execution_runtime_override(execution_runtime_url);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let mut request =
@@ -514,7 +506,7 @@ async fn assert_ai_route_locally_denied_after_execution_runtime_miss_with_reques
     assert_eq!(
         response
             .headers()
-            .get(PYTHON_DEPENDENCY_REASON_HEADER)
+            .get(DEPENDENCY_REASON_HEADER)
             .and_then(|value| value.to_str().ok()),
         None
     );
@@ -545,7 +537,7 @@ async fn gateway_locally_denies_openai_responses_after_execution_runtime_miss_wi
         "cli",
         "openai:cli",
         "{\"model\":\"gpt-5\",\"input\":\"hello\"}",
-        "OpenAI responses execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "OpenAI responses execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -559,7 +551,7 @@ async fn gateway_locally_denies_claude_messages_after_execution_runtime_miss_wit
         "chat",
         "claude:chat",
         "{\"model\":\"claude-sonnet-4-5\",\"messages\":[]}",
-        "Claude messages execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Claude messages execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -573,7 +565,7 @@ async fn gateway_locally_denies_openai_responses_stream_after_execution_runtime_
         "cli",
         "openai:cli",
         "{\"model\":\"gpt-5\",\"input\":\"hello\",\"stream\":true}",
-        "OpenAI responses execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "OpenAI responses execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -587,7 +579,7 @@ async fn gateway_locally_denies_claude_messages_stream_after_execution_runtime_m
         "chat",
         "claude:chat",
         "{\"model\":\"claude-sonnet-4-5\",\"messages\":[],\"stream\":true}",
-        "Claude messages execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Claude messages execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -601,7 +593,7 @@ async fn gateway_locally_denies_openai_compact_after_execution_runtime_miss_with
         "compact",
         "openai:compact",
         "{\"model\":\"gpt-5\",\"input\":\"hello\"}",
-        "OpenAI compact execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "OpenAI compact execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -615,7 +607,7 @@ async fn gateway_locally_denies_openai_compact_stream_after_execution_runtime_mi
         "compact",
         "openai:compact",
         "{\"model\":\"gpt-5\",\"input\":\"hello\",\"stream\":true}",
-        "OpenAI compact execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "OpenAI compact execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -629,7 +621,21 @@ async fn gateway_locally_denies_gemini_generate_after_execution_runtime_miss_wit
         "chat",
         "gemini:chat",
         "{\"contents\":[]}",
-        "Gemini public execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Gemini public execution runtime miss did not match a Rust execution path",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn gateway_locally_denies_gemini_v1_generate_after_execution_runtime_miss_without_control_execute_opt_in(
+) {
+    assert_ai_route_locally_denied_after_execution_runtime_miss(
+        "/v1/models/gemini-2.5-pro:generateContent",
+        "gemini",
+        "chat",
+        "gemini:chat",
+        "{\"contents\":[]}",
+        "Gemini public execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -643,7 +649,7 @@ async fn gateway_locally_denies_gemini_stream_after_execution_runtime_miss_witho
         "chat",
         "gemini:chat",
         "{\"contents\":[]}",
-        "Gemini public execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Gemini public execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -657,7 +663,7 @@ async fn gateway_locally_denies_openai_video_after_execution_runtime_miss_withou
         "video",
         "openai:video",
         "{\"model\":\"sora-2\"}",
-        "OpenAI video execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "OpenAI video execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -671,7 +677,23 @@ async fn gateway_locally_denies_gemini_video_after_execution_runtime_miss_withou
         "video",
         "gemini:video",
         "{\"instances\":[]}",
-        "Gemini public execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Gemini public execution runtime miss did not match a Rust execution path",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn gateway_locally_denies_gemini_files_root_after_execution_runtime_miss_without_control_execute_opt_in(
+) {
+    assert_ai_route_locally_denied_after_execution_runtime_miss_with_request(
+        reqwest::Method::GET,
+        "/v1beta/files",
+        "/v1beta/files?view=BASIC",
+        "gemini",
+        "files",
+        "gemini:chat",
+        None,
+        "Gemini files execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -687,7 +709,7 @@ async fn gateway_locally_denies_gemini_files_download_after_execution_runtime_mi
         "files",
         "gemini:chat",
         None,
-        "Gemini files execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Gemini files execution runtime miss did not match a Rust execution path",
     )
     .await;
 }
@@ -703,7 +725,7 @@ async fn gateway_locally_denies_gemini_files_upload_after_execution_runtime_miss
         "files",
         "gemini:chat",
         Some("{\"file\":{}}"),
-        "Gemini files execution runtime miss did not match a Rust execution path, and Python fallback has been removed",
+        "Gemini files execution runtime miss did not match a Rust execution path",
     )
     .await;
 }

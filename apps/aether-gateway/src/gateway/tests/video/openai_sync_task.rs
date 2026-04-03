@@ -1,4 +1,3 @@
-use super::*;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::candidates::{
     InMemoryRequestCandidateRepository, RequestCandidateReadRepository, RequestCandidateStatus,
@@ -7,10 +6,29 @@ use aether_data::repository::provider_catalog::{
     InMemoryProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
-use aether_data::repository::video_tasks::{InMemoryVideoTaskRepository, UpsertVideoTask};
+use aether_data::repository::video_tasks::{
+    InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskWriteRepository,
+};
+use axum::body::{to_bytes, Body};
+use axum::response::Response;
+use axum::routing::any;
+use axum::{extract::Request, Json, Router};
+use http::header::{HeaderName, HeaderValue};
+use http::StatusCode;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+
+use crate::gateway::constants::{
+    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, TRACE_ID_HEADER,
+};
+
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    VideoTaskTruthSourceMode,
+};
 
 #[tokio::test]
-async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_local_follow_up_without_python_decision(
+async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_local_follow_up_with_local_follow_up_routing(
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenExecutionRuntimeSyncRequest {
@@ -21,7 +39,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
 
     fn sample_provider() -> StoredProviderCatalogProvider {
         StoredProviderCatalogProvider::new(
-            "provider-openai-video-legacy-1".to_string(),
+            "provider-openai-video-followup-1".to_string(),
             "openai".to_string(),
             Some("https://example.com".to_string()),
             "custom".to_string(),
@@ -42,8 +60,8 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
 
     fn sample_endpoint() -> StoredProviderCatalogEndpoint {
         StoredProviderCatalogEndpoint::new(
-            "endpoint-openai-video-legacy-1".to_string(),
-            "provider-openai-video-legacy-1".to_string(),
+            "endpoint-openai-video-followup-1".to_string(),
+            "provider-openai-video-followup-1".to_string(),
             "openai:video".to_string(),
             Some("openai".to_string()),
             Some("video".to_string()),
@@ -65,8 +83,8 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
 
     fn sample_key() -> StoredProviderCatalogKey {
         StoredProviderCatalogKey::new(
-            "key-openai-video-legacy-1".to_string(),
-            "provider-openai-video-legacy-1".to_string(),
+            "key-openai-video-followup-1".to_string(),
+            "provider-openai-video-followup-1".to_string(),
             "prod".to_string(),
             "api_key".to_string(),
             None,
@@ -109,14 +127,13 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
                     "route_family": "openai",
                     "route_kind": "video",
                     "auth_endpoint_signature": "openai:video",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
-                        "user_id": "user-openai-video-delete-legacy-123",
-                        "api_key_id": "key-openai-video-delete-legacy-123",
+                        "user_id": "user-openai-video-delete-local-123",
+                        "api_key_id": "key-openai-video-delete-local-123",
                         "access_allowed": true
                     },
-                    "public_path": "/v1/videos/task-local-legacy-123"
+                    "public_path": "/v1/videos/task-local-followup-123"
                 }))
             }),
         )
@@ -163,7 +180,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
             }),
         )
         .route(
-            "/v1/videos/task-local-legacy-123",
+            "/v1/videos/task-local-followup-123",
             any(move |_request: Request| {
                 let public_hits_inner = Arc::clone(&public_hits_clone);
                 async move {
@@ -203,7 +220,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
                         .to_string(),
                 });
                 Json(json!({
-                    "request_id": "trace-openai-video-delete-legacy-123",
+                    "request_id": "trace-openai-video-delete-local-123",
                     "status_code": 404,
                     "headers": {
                         "content-type": "application/json"
@@ -219,25 +236,25 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     let repository = Arc::new(InMemoryVideoTaskRepository::default());
     repository
         .upsert(UpsertVideoTask {
-            id: "task-local-legacy-123".to_string(),
+            id: "task-local-followup-123".to_string(),
             short_id: None,
-            request_id: "request-openai-video-delete-legacy-123".to_string(),
-            user_id: Some("user-openai-video-delete-legacy-123".to_string()),
-            api_key_id: Some("key-openai-video-delete-legacy-123".to_string()),
+            request_id: "request-openai-video-delete-local-123".to_string(),
+            user_id: Some("user-openai-video-delete-local-123".to_string()),
+            api_key_id: Some("key-openai-video-delete-local-123".to_string()),
             username: Some("video-user".to_string()),
             api_key_name: Some("video-key".to_string()),
-            external_task_id: Some("ext-video-task-legacy-123".to_string()),
-            provider_id: Some("provider-openai-video-legacy-1".to_string()),
-            endpoint_id: Some("endpoint-openai-video-legacy-1".to_string()),
-            key_id: Some("key-openai-video-legacy-1".to_string()),
+            external_task_id: Some("ext-video-task-followup-123".to_string()),
+            provider_id: Some("provider-openai-video-followup-1".to_string()),
+            endpoint_id: Some("endpoint-openai-video-followup-1".to_string()),
+            key_id: Some("key-openai-video-followup-1".to_string()),
             client_api_format: Some("openai:video".to_string()),
             provider_api_format: Some("openai:video".to_string()),
             format_converted: false,
             model: Some("sora-2".to_string()),
-            prompt: Some("legacy delete".to_string()),
+            prompt: Some("video delete".to_string()),
             original_request_body: Some(json!({
                 "model": "sora-2",
-                "prompt": "legacy delete"
+                "prompt": "video delete"
             })),
             duration_seconds: Some(4),
             resolution: Some("720p".to_string()),
@@ -257,7 +274,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
             updated_at_unix_secs: 456,
             error_code: None,
             error_message: None,
-            video_url: Some("https://cdn.example.com/legacy.mp4".to_string()),
+            video_url: Some("https://cdn.example.com/video-delete.mp4".to_string()),
             request_metadata: None,
         })
         .await
@@ -270,7 +287,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(upstream_url.clone(), execution_runtime_url)
+        build_state_with_execution_runtime_override(execution_runtime_url)
         .with_video_task_truth_source_mode(VideoTaskTruthSourceMode::RustAuthoritative)
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_video_task_provider_transport_and_request_candidate_repository_for_tests(
@@ -284,9 +301,9 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
-        .delete(format!("{gateway_url}/v1/videos/task-local-legacy-123"))
+        .delete(format!("{gateway_url}/v1/videos/task-local-followup-123"))
         .header(CONTROL_EXECUTE_FALLBACK_HEADER, "true")
-        .header(TRACE_ID_HEADER, "trace-openai-video-delete-legacy-123")
+        .header(TRACE_ID_HEADER, "trace-openai-video-delete-local-123")
         .send()
         .await
         .expect("request should succeed");
@@ -296,7 +313,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     assert_eq!(
         response_json,
         json!({
-            "id": "task-local-legacy-123",
+            "id": "task-local-followup-123",
             "object": "video",
             "deleted": true
         })
@@ -310,7 +327,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     assert_eq!(seen_execution_runtime_request.method, "DELETE");
     assert_eq!(
         seen_execution_runtime_request.url,
-        "https://api.openai.example/v1/videos/ext-video-task-legacy-123"
+        "https://api.openai.example/v1/videos/ext-video-task-followup-123"
     );
     assert_eq!(
         seen_execution_runtime_request.authorization,
@@ -318,7 +335,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("request-openai-video-delete-legacy-123")
+        .list_by_request_id("request-openai-video-delete-local-123")
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

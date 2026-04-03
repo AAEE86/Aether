@@ -1,10 +1,18 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, hash_api_key, json,
+    sample_auth_snapshot, sample_files_candidate_row, sample_files_provider_catalog_endpoint,
+    sample_files_provider_catalog_key, sample_files_provider_catalog_provider, start_server,
+    to_bytes, Arc, Body, DEVELOPMENT_ENCRYPTION_KEY,
+    InMemoryAuthApiKeySnapshotRepository, InMemoryMinimalCandidateSelectionReadRepository,
+    InMemoryProviderCatalogReadRepository, InMemoryRequestCandidateRepository, Json, Mutex,
+    Request, RequestCandidateReadRepository, RequestCandidateStatus, Router, StatusCode,
+    TRACE_ID_HEADER,
+};
 
 #[tokio::test]
-async fn gateway_executes_gemini_files_upload_via_local_decision_gate_without_python_plan_or_decision(
-) {
+async fn gateway_executes_gemini_files_upload_via_local_decision_gate_with_local_planning_only() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         method: String,
@@ -38,7 +46,6 @@ async fn gateway_executes_gemini_files_upload_via_local_decision_gate_without_py
                     "route_family": "gemini",
                     "route_kind": "files",
                     "auth_endpoint_signature": "gemini:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-files-upload-local-123",
@@ -205,10 +212,7 @@ async fn gateway_executes_gemini_files_upload_via_local_decision_gate_without_py
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                 auth_repository,
@@ -294,8 +298,7 @@ async fn gateway_executes_gemini_files_upload_via_local_decision_gate_without_py
 }
 
 #[tokio::test]
-async fn gateway_executes_gemini_files_list_via_local_decision_gate_without_python_plan_or_decision(
-) {
+async fn gateway_executes_gemini_files_list_via_local_decision_gate_with_local_planning_only() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         method: String,
@@ -324,7 +327,6 @@ async fn gateway_executes_gemini_files_list_via_local_decision_gate_without_pyth
                     "route_family": "gemini",
                     "route_kind": "files",
                     "auth_endpoint_signature": "gemini:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-files-list-local-123",
@@ -442,10 +444,7 @@ async fn gateway_executes_gemini_files_list_via_local_decision_gate_without_pyth
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                 auth_repository,
@@ -507,8 +506,7 @@ async fn gateway_executes_gemini_files_list_via_local_decision_gate_without_pyth
 }
 
 #[tokio::test]
-async fn gateway_executes_gemini_files_delete_via_local_decision_gate_without_python_plan_or_decision(
-) {
+async fn gateway_executes_gemini_files_delete_via_local_decision_gate_with_local_planning_only() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         method: String,
@@ -537,7 +535,6 @@ async fn gateway_executes_gemini_files_delete_via_local_decision_gate_without_py
                     "route_family": "gemini",
                     "route_kind": "files",
                     "auth_endpoint_signature": "gemini:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-files-delete-local-123",
@@ -653,10 +650,7 @@ async fn gateway_executes_gemini_files_delete_via_local_decision_gate_without_py
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                 auth_repository,

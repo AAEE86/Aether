@@ -15,7 +15,7 @@ static CF_HEADERS: &[&str] = &[
     "cf-warp-tag-id",
 ];
 
-pub(crate) async fn strip_cf_headers_middleware(mut request: Request, next: Next) -> Response {
+pub async fn strip_cf_headers_middleware(mut request: Request, next: Next) -> Response {
     // Strip CF headers from the incoming request
     for name in CF_HEADERS {
         if let Ok(header) = HeaderName::from_bytes(name.as_bytes()) {

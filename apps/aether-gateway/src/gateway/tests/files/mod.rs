@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    any, build_router, build_router_with_state, build_state_with_execution_runtime_override,
+    start_server, to_bytes, AppState, Arc, Body, Bytes, HeaderName, HeaderValue, Infallible,
+    Json, Mutex, Request, Response, Router, StatusCode, CONTROL_EXECUTED_HEADER,
+    CONTROL_EXECUTE_FALLBACK_HEADER, EXECUTION_PATH_HEADER, TRACE_ID_HEADER, json,
+};
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -161,7 +166,7 @@ fn sample_files_provider_catalog_key() -> StoredProviderCatalogKey {
 }
 
 #[tokio::test]
-async fn gateway_locally_denies_gemini_files_download_control_sync_even_with_legacy_headers_when_execution_runtime_missing(
+async fn gateway_locally_denies_gemini_files_download_control_sync_even_with_opt_in_headers_when_execution_runtime_missing(
 ) {
     let execute_hits = Arc::new(Mutex::new(0usize));
     let execute_hits_clone = Arc::clone(&execute_hits);
@@ -203,7 +208,7 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_even_with_leg
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -211,7 +216,6 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_even_with_leg
             "{gateway_url}/v1beta/files/file-123:download?alt=media"
         ))
         .header(CONTROL_EXECUTE_FALLBACK_HEADER, "true")
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .header(TRACE_ID_HEADER, "trace-files-download-123")
         .send()
         .await
@@ -222,7 +226,7 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_even_with_leg
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "Gemini files execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "Gemini files execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -232,7 +236,7 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_even_with_leg
 }
 
 #[tokio::test]
-async fn gateway_locally_denies_gemini_files_download_control_sync_without_legacy_header_when_execution_runtime_missing(
+async fn gateway_locally_denies_gemini_files_download_control_sync_without_opt_in_header_when_execution_runtime_missing(
 ) {
     let execute_hits = Arc::new(Mutex::new(0usize));
     let execute_hits_clone = Arc::clone(&execute_hits);
@@ -283,7 +287,7 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_without_legac
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -301,7 +305,7 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_without_legac
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "Gemini files execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "Gemini files execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -319,7 +323,7 @@ async fn gateway_locally_denies_gemini_files_download_control_sync_without_legac
 }
 
 #[tokio::test]
-async fn gateway_skips_gemini_files_download_control_sync_without_legacy_header() {
+async fn gateway_skips_gemini_files_download_control_sync_without_opt_in_header() {
     let execute_hits = Arc::new(Mutex::new(0usize));
     let execute_hits_clone = Arc::clone(&execute_hits);
     let public_hits = Arc::new(Mutex::new(0usize));
@@ -356,14 +360,14 @@ async fn gateway_skips_gemini_files_download_control_sync_without_legacy_header(
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .get(format!(
             "{gateway_url}/v1beta/files/file-123:download?alt=media"
         ))
-        .header(TRACE_ID_HEADER, "trace-files-download-no-legacy-123")
+        .header(TRACE_ID_HEADER, "trace-files-download-local-only-123")
         .send()
         .await
         .expect("request should succeed");
@@ -373,7 +377,7 @@ async fn gateway_skips_gemini_files_download_control_sync_without_legacy_header(
     assert_eq!(payload["error"]["type"], "http_error");
     assert_eq!(
         payload["error"]["message"],
-        "Gemini files execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "Gemini files execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -383,8 +387,7 @@ async fn gateway_skips_gemini_files_download_control_sync_without_legacy_header(
 }
 
 #[tokio::test]
-async fn gateway_executes_gemini_files_get_via_local_decision_gate_without_python_plan_or_decision()
-{
+async fn gateway_executes_gemini_files_get_via_local_decision_gate_with_local_planning_only() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         method: String,
@@ -413,7 +416,6 @@ async fn gateway_executes_gemini_files_get_via_local_decision_gate_without_pytho
                     "route_family": "gemini",
                     "route_kind": "files",
                     "auth_endpoint_signature": "gemini:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-files-local-123",
@@ -531,10 +533,7 @@ async fn gateway_executes_gemini_files_get_via_local_decision_gate_without_pytho
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway_state =
-        build_state_with_test_remote_execution_runtime(
-            upstream_url.clone(),
-            execution_runtime_url.clone(),
-        )
+        build_state_with_execution_runtime_override(execution_runtime_url.clone())
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                 auth_repository,
@@ -592,5 +591,40 @@ async fn gateway_executes_gemini_files_get_via_local_decision_gate_without_pytho
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_non_post_gemini_upload_without_hitting_fallback_probe() {
+    let public_hits = Arc::new(Mutex::new(0usize));
+    let public_hits_clone = Arc::clone(&public_hits);
+
+    let upstream = Router::new().route(
+        "/upload/v1beta/files",
+        any(move |_request: Request| {
+            let public_hits_inner = Arc::clone(&public_hits_clone);
+            async move {
+                *public_hits_inner.lock().expect("mutex should lock") += 1;
+                (StatusCode::IM_A_TEAPOT, Body::from("public-route-hit"))
+            }
+        }),
+    );
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router().expect("gateway should build");
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/upload/v1beta/files"))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let payload: serde_json::Value = response.json().await.expect("body should parse");
+    assert_eq!(payload["detail"], "Method not allowed");
+    assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
     upstream_handle.abort();
 }

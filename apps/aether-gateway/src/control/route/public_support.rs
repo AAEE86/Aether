@@ -1,5 +1,24 @@
 use super::{classified, is_gemini_models_route, is_gemini_operation_route, ClassifiedRoute};
 
+fn has_single_segment_after_prefix(path: &str, prefix: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+    let Some(segment) = trimmed.strip_prefix(prefix) else {
+        return false;
+    };
+    !segment.is_empty() && !segment.contains('/')
+}
+
+fn has_single_nested_suffix_after_prefix(path: &str, prefix: &str, suffix: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+    let Some(rest) = trimmed.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((segment, actual_suffix)) = rest.split_once('/') else {
+        return false;
+    };
+    !segment.is_empty() && !segment.contains('/') && actual_suffix == suffix
+}
+
 pub(super) fn classify_public_support_route(
     method: &http::Method,
     normalized_path: &str,
@@ -118,6 +137,7 @@ pub(super) fn classify_public_support_route(
         && normalized_path != "/api/announcements/users/me/unread-count"
         && normalized_path != "/api/announcements/users/me/unread-count/"
         && !normalized_path.ends_with("/read-status")
+        && has_single_segment_after_prefix(normalized_path, "/api/announcements/")
     {
         Some(classified(
             "public_support",
@@ -199,7 +219,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "auth_legacy",
+            "auth",
             route_kind,
             "user:auth",
             false,
@@ -222,7 +242,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "dashboard_legacy",
+            "dashboard",
             route_kind,
             "user:dashboard",
             false,
@@ -240,7 +260,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "monitoring_user_legacy",
+            "monitoring_user",
             route_kind,
             "user:monitoring",
             false,
@@ -254,7 +274,7 @@ pub(super) fn classify_public_support_route(
     {
         Some(classified(
             "public_support",
-            "announcement_user_legacy",
+            "announcement_user",
             "unread_count",
             "user:announcements",
             false,
@@ -267,7 +287,7 @@ pub(super) fn classify_public_support_route(
     {
         Some(classified(
             "public_support",
-            "announcement_user_legacy",
+            "announcement_user",
             "read_all",
             "user:announcements",
             false,
@@ -275,10 +295,15 @@ pub(super) fn classify_public_support_route(
     } else if method == http::Method::PATCH
         && normalized_path.starts_with("/api/announcements/")
         && (normalized_path.ends_with("/read-status") || normalized_path.ends_with("/read-status/"))
+        && has_single_nested_suffix_after_prefix(
+            normalized_path,
+            "/api/announcements/",
+            "read-status",
+        )
     {
         Some(classified(
             "public_support",
-            "announcement_user_legacy",
+            "announcement_user",
             "read_status",
             "user:announcements",
             false,
@@ -305,23 +330,27 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "wallet_legacy",
+            "wallet",
             route_kind,
             "user:wallet",
             false,
         ))
-    } else if method == http::Method::GET && normalized_path.starts_with("/api/wallet/recharge/") {
+    } else if method == http::Method::GET
+        && has_single_segment_after_prefix(normalized_path, "/api/wallet/recharge/")
+    {
         Some(classified(
             "public_support",
-            "wallet_legacy",
+            "wallet",
             "recharge_detail",
             "user:wallet",
             false,
         ))
-    } else if method == http::Method::GET && normalized_path.starts_with("/api/wallet/refunds/") {
+    } else if method == http::Method::GET
+        && has_single_segment_after_prefix(normalized_path, "/api/wallet/refunds/")
+    {
         Some(classified(
             "public_support",
-            "wallet_legacy",
+            "wallet",
             "refund_detail",
             "user:wallet",
             false,
@@ -339,16 +368,17 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "wallet_legacy",
+            "wallet",
             route_kind,
             "user:wallet",
             false,
         ))
-    } else if method == http::Method::POST && normalized_path.starts_with("/api/payment/callback/")
+    } else if method == http::Method::POST
+        && has_single_segment_after_prefix(normalized_path, "/api/payment/callback/")
     {
         Some(classified(
             "public_support",
-            "payment_callback_legacy",
+            "payment_callback",
             "callback",
             "public:payment",
             false,
@@ -387,7 +417,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,
@@ -400,7 +430,7 @@ pub(super) fn classify_public_support_route(
     {
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             "management_tokens_list",
             "user:self",
             false,
@@ -419,7 +449,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,
@@ -432,7 +462,7 @@ pub(super) fn classify_public_support_route(
     {
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             "management_tokens_create",
             "user:self",
             false,
@@ -443,7 +473,7 @@ pub(super) fn classify_public_support_route(
     {
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             "management_token_regenerate",
             "user:self",
             false,
@@ -451,7 +481,7 @@ pub(super) fn classify_public_support_route(
     } else if method == http::Method::PATCH && normalized_path == "/api/users/me/password" {
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             "password",
             "user:self",
             false,
@@ -462,7 +492,7 @@ pub(super) fn classify_public_support_route(
     {
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             "management_token_toggle",
             "user:self",
             false,
@@ -470,13 +500,13 @@ pub(super) fn classify_public_support_route(
     } else if method == http::Method::DELETE && normalized_path == "/api/users/me/sessions/others" {
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             "sessions_others_delete",
             "user:self",
             false,
         ))
     } else if matches!(method, &http::Method::PATCH | &http::Method::DELETE)
-        && normalized_path.starts_with("/api/users/me/sessions/")
+        && has_single_segment_after_prefix(normalized_path, "/api/users/me/sessions/")
     {
         let route_kind = if method == http::Method::PATCH {
             "session_update"
@@ -485,7 +515,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,
@@ -500,14 +530,21 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,
         ))
     } else if method == http::Method::PUT
-        && (normalized_path.ends_with("/providers") || normalized_path.ends_with("/capabilities"))
-        && normalized_path.starts_with("/api/users/me/api-keys/")
+        && (has_single_nested_suffix_after_prefix(
+            normalized_path,
+            "/api/users/me/api-keys/",
+            "providers",
+        ) || has_single_nested_suffix_after_prefix(
+            normalized_path,
+            "/api/users/me/api-keys/",
+            "capabilities",
+        ))
     {
         let route_kind = if normalized_path.ends_with("/providers") {
             "api_key_providers_update"
@@ -516,7 +553,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,
@@ -524,7 +561,7 @@ pub(super) fn classify_public_support_route(
     } else if matches!(
         method,
         &http::Method::GET | &http::Method::PUT | &http::Method::PATCH | &http::Method::DELETE
-    ) && normalized_path.starts_with("/api/users/me/api-keys/")
+    ) && has_single_segment_after_prefix(normalized_path, "/api/users/me/api-keys/")
     {
         let route_kind = match *method {
             http::Method::GET => "api_key_detail",
@@ -535,7 +572,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,
@@ -543,7 +580,7 @@ pub(super) fn classify_public_support_route(
     } else if matches!(
         method,
         &http::Method::GET | &http::Method::PUT | &http::Method::DELETE
-    ) && normalized_path.starts_with("/api/me/management-tokens/")
+    ) && has_single_segment_after_prefix(normalized_path, "/api/me/management-tokens/")
     {
         let route_kind = match *method {
             http::Method::GET => "management_token_detail",
@@ -553,7 +590,7 @@ pub(super) fn classify_public_support_route(
         };
         Some(classified(
             "public_support",
-            "users_me_legacy",
+            "users_me",
             route_kind,
             "user:self",
             false,

@@ -1,4 +1,10 @@
-use super::*;
+use std::sync::Arc;
+
+use super::{
+    AuthApiKeyReadRepository, GatewayDataConfig, GatewayDataState, ProviderCatalogReadRepository,
+    RequestCandidateReadRepository, RequestCandidateWriteRepository, VideoTaskReadRepository,
+    VideoTaskWriteRepository,
+};
 
 impl GatewayDataState {
     pub(crate) fn with_video_task_reader_for_tests(
@@ -38,6 +44,59 @@ impl GatewayDataState {
             usage_worker_runner: None,
             video_task_reader: Some(repository),
             video_task_writer: None,
+            wallet_reader: None,
+            wallet_writer: None,
+            shadow_result_reader: None,
+            shadow_result_writer: None,
+            system_config_values: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_auth_and_video_task_repository_for_tests<T>(
+        auth_repository: Arc<dyn AuthApiKeyReadRepository>,
+        repository: Arc<T>,
+    ) -> Self
+    where
+        T: aether_data::repository::video_tasks::VideoTaskRepository + 'static,
+    {
+        let video_task_reader: Arc<dyn VideoTaskReadRepository> = repository.clone();
+        let video_task_writer: Arc<dyn VideoTaskWriteRepository> = repository;
+
+        Self {
+            config: GatewayDataConfig::disabled(),
+            backends: None,
+            auth_api_key_reader: Some(auth_repository),
+            auth_api_key_writer: None,
+            auth_module_reader: None,
+            auth_module_writer: None,
+            announcement_reader: None,
+            announcement_writer: None,
+            management_token_reader: None,
+            management_token_writer: None,
+            oauth_provider_reader: None,
+            oauth_provider_writer: None,
+            proxy_node_reader: None,
+            proxy_node_writer: None,
+            billing_reader: None,
+            gemini_file_mapping_reader: None,
+            gemini_file_mapping_writer: None,
+            global_model_reader: None,
+            global_model_writer: None,
+            minimal_candidate_selection_reader: None,
+            request_candidate_reader: None,
+            request_candidate_writer: None,
+            provider_catalog_reader: None,
+            provider_catalog_writer: None,
+            provider_quota_reader: None,
+            provider_quota_writer: None,
+            usage_reader: None,
+            usage_writer: None,
+            user_reader: None,
+            user_preferences: None,
+            usage_worker_runner: None,
+            video_task_reader: Some(video_task_reader),
+            video_task_writer: Some(video_task_writer),
             wallet_reader: None,
             wallet_writer: None,
             shadow_result_reader: None,

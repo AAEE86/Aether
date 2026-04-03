@@ -1,4 +1,18 @@
-use super::*;
+use super::admin_api_keys_shared::{
+    admin_api_key_total_tokens_by_ids, admin_api_keys_id_from_path, admin_api_keys_parse_limit,
+    admin_api_keys_parse_skip, build_admin_api_key_detail_payload,
+    build_admin_api_key_list_item_payload, build_admin_api_keys_bad_request_response,
+    build_admin_api_keys_data_unavailable_response, build_admin_api_keys_not_found_response,
+};
+use super::{decrypt_catalog_secret_with_fallbacks, query_param_bool, query_param_optional_bool};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn build_admin_list_api_keys_response(
     state: &AppState,
@@ -61,7 +75,7 @@ pub(super) async fn build_admin_api_key_detail_response(
     request_context: &GatewayPublicRequestContext,
 ) -> Result<Response<Body>, GatewayError> {
     let Some(api_key_id) = admin_api_keys_id_from_path(&request_context.request_path) else {
-        return Ok(build_admin_api_keys_maintenance_response());
+        return Ok(build_admin_api_keys_data_unavailable_response());
     };
 
     if state

@@ -1,9 +1,25 @@
-use super::*;
+use std::sync::{Arc, Mutex};
 
+use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
 use aether_data::repository::usage::{InMemoryUsageReadRepository, StoredRequestUsageAudit};
 use aether_data::repository::users::{InMemoryUserReadRepository, StoredUserSummary};
+use axum::body::Body;
+use axum::routing::{any, get, post};
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
 
-const ADMIN_USAGE_RUST_BACKEND_DETAIL: &str = "Admin usage routes require Rust maintenance backend";
+use super::super::{
+    build_router_with_state, issue_test_admin_access_token, sample_endpoint, sample_key,
+    sample_provider, start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
+
+const ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL: &str = "Admin usage data unavailable";
 const DAY_1_UNIX_SECS: i64 = 1_711_000_000;
 const DAY_2_UNIX_SECS: i64 = 1_711_086_400;
 
@@ -32,6 +48,37 @@ async fn start_usage_upstream(
     );
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     (upstream_url, upstream_hits, upstream_handle)
+}
+
+async fn assert_admin_usage_route_returns_local_503(
+    data_state: GatewayDataState,
+    method: http::Method,
+    path: &'static str,
+    body: Option<serde_json::Value>,
+    expected_detail: &str,
+) {
+    let (_upstream_url, upstream_hits, upstream_handle) = start_usage_upstream(path).await;
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(data_state),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let mut request =
+        admin_request(reqwest::Client::new().request(method, format!("{gateway_url}{path}")));
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], expected_detail);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
 }
 
 fn sample_usage_row(
@@ -147,7 +194,7 @@ async fn gateway_handles_admin_usage_stats_locally_with_trusted_admin_principal(
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -175,6 +222,18 @@ async fn gateway_handles_admin_usage_stats_locally_with_trusted_admin_principal(
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_admin_usage_stats_without_usage_reader() {
+    assert_admin_usage_route_returns_local_503(
+        GatewayDataState::disabled(),
+        http::Method::GET,
+        "/api/admin/usage/stats",
+        None,
+        ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -231,7 +290,7 @@ async fn gateway_handles_admin_usage_aggregation_stats_locally_with_trusted_admi
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -257,6 +316,20 @@ async fn gateway_handles_admin_usage_aggregation_stats_locally_with_trusted_admi
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_admin_usage_replay_without_provider_catalog_reader(
+) {
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![]));
+    assert_admin_usage_route_returns_local_503(
+        GatewayDataState::with_usage_reader_for_tests(usage_repository),
+        http::Method::POST,
+        "/api/admin/usage/usage-1/replay",
+        Some(json!({})),
+        ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -312,7 +385,7 @@ async fn gateway_handles_admin_usage_aggregation_stats_locally_with_bearer_admin
         ),
     ]));
 
-    let state = AppState::new(upstream_url.clone())
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
             usage_repository,
@@ -385,7 +458,7 @@ async fn gateway_handles_admin_usage_heatmap_locally_with_trusted_admin_principa
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -450,7 +523,7 @@ async fn gateway_handles_admin_usage_active_locally_with_trusted_admin_principal
     ]));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -519,7 +592,7 @@ async fn gateway_handles_admin_usage_records_locally_with_trusted_admin_principa
     let data_state = GatewayDataState::with_usage_reader_for_tests(usage_repository)
         .with_user_reader(user_repository);
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -617,7 +690,7 @@ async fn gateway_handles_admin_usage_detail_locally_with_trusted_admin_principal
     let data_state = GatewayDataState::with_usage_reader_for_tests(usage_repository)
         .with_user_reader(user_repository);
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -710,7 +783,7 @@ async fn gateway_returns_bad_request_for_admin_usage_detail_with_empty_usage_id(
         start_usage_upstream("/api/admin/usage/").await;
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -776,7 +849,7 @@ async fn gateway_handles_admin_usage_replay_locally_with_trusted_admin_principal
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_usage_reader_for_tests(usage_repository)
@@ -877,7 +950,7 @@ async fn gateway_handles_admin_usage_curl_locally_with_trusted_admin_principal()
     ));
 
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_and_usage_reader_for_tests(
@@ -928,7 +1001,7 @@ async fn gateway_returns_bad_request_for_admin_usage_curl_with_empty_usage_id() 
         start_usage_upstream("/api/admin/usage//curl").await;
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -997,7 +1070,7 @@ async fn gateway_handles_admin_usage_cache_affinity_hit_analysis_locally_with_tr
         cache_hit, cache_miss,
     ]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
@@ -1103,7 +1176,7 @@ async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_locally_wi
         sample_user_summary("user-2", "bob"),
     ]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_usage_reader_for_tests(usage_repository)
@@ -1241,7 +1314,7 @@ async fn gateway_handles_admin_usage_cache_affinity_ttl_analysis_locally_with_tr
         sample_user_summary("user-2", "bob"),
     ]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_usage_reader_for_tests(usage_repository)

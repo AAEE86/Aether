@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    any, build_router_with_state, build_state_with_execution_runtime_override, json,
+    start_server, to_bytes, Arc, Body, Bytes, HeaderName, HeaderValue, Infallible, Json, Mutex,
+    Request, Response, Router, StatusCode, TRACE_ID_HEADER,
+};
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -209,7 +213,6 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
                     "route_family": "openai",
                     "route_kind": "cli",
                     "auth_endpoint_signature": "openai:cli",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-codex-cli-stream-local-123",
@@ -416,10 +419,7 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
                     .with_token_url_for_tests("codex", format!("{refresh_url}/oauth/token")),
             )],
         );
-    let gateway_state = build_state_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        execution_runtime_url.clone(),
-    )
+    let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url.clone())
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
             auth_repository,

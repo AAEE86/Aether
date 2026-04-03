@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    any, build_router, build_router_with_execution_runtime_override, json, start_server, Arc,
+    Body, Bytes, HeaderName, HeaderValue, Infallible, Json, Mutex, Request, Response, Router,
+    StatusCode,
+    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, DEPENDENCY_REASON_HEADER,
+    EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS, TRACE_ID_HEADER,
+};
 
 #[tokio::test]
 async fn gateway_locally_denies_sync_ai_control_execute_when_opted_in_and_execution_runtime_missing(
@@ -20,7 +26,6 @@ async fn gateway_locally_denies_sync_ai_control_execute_when_opted_in_and_execut
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-sync-123",
@@ -84,7 +89,7 @@ async fn gateway_locally_denies_sync_ai_control_execute_when_opted_in_and_execut
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -103,12 +108,12 @@ async fn gateway_locally_denies_sync_ai_control_execute_when_opted_in_and_execut
         .get(EXECUTION_PATH_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
-    let python_dependency_reason = response
+    let dependency_reason = response
         .headers()
-        .get(PYTHON_DEPENDENCY_REASON_HEADER)
+        .get(DEPENDENCY_REASON_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
-    assert_eq!(python_dependency_reason.as_deref(), None);
+    assert_eq!(dependency_reason.as_deref(), None);
     let payload: serde_json::Value = response.json().await.expect("body should parse");
     assert_eq!(
         execution_path.as_deref(),
@@ -116,7 +121,7 @@ async fn gateway_locally_denies_sync_ai_control_execute_when_opted_in_and_execut
     );
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI chat execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -152,7 +157,6 @@ async fn gateway_locally_denies_stream_ai_control_execute_when_opted_in_and_exec
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "auth_context": {
                         "user_id": "user-stream-123",
@@ -220,7 +224,7 @@ async fn gateway_locally_denies_stream_ai_control_execute_when_opted_in_and_exec
         );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url.clone()).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -239,12 +243,12 @@ async fn gateway_locally_denies_stream_ai_control_execute_when_opted_in_and_exec
         .get(EXECUTION_PATH_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
-    let python_dependency_reason = response
+    let dependency_reason = response
         .headers()
-        .get(PYTHON_DEPENDENCY_REASON_HEADER)
+        .get(DEPENDENCY_REASON_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
-    assert_eq!(python_dependency_reason.as_deref(), None);
+    assert_eq!(dependency_reason.as_deref(), None);
     let payload: serde_json::Value = response.json().await.expect("body should parse");
     assert_eq!(
         execution_path.as_deref(),
@@ -252,7 +256,7 @@ async fn gateway_locally_denies_stream_ai_control_execute_when_opted_in_and_exec
     );
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI chat execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
@@ -288,7 +292,6 @@ async fn gateway_does_not_proxy_control_execute_over_http_when_opted_in_and_exec
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "public_path": "/v1/chat/completions"
                 }))
@@ -361,10 +364,7 @@ async fn gateway_does_not_proxy_control_execute_over_http_when_opted_in_and_exec
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        execution_runtime_url,
-    );
+    let gateway = build_router_with_execution_runtime_override(execution_runtime_url);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -387,14 +387,14 @@ async fn gateway_does_not_proxy_control_execute_over_http_when_opted_in_and_exec
     assert_eq!(
         response
             .headers()
-            .get(PYTHON_DEPENDENCY_REASON_HEADER)
+            .get(DEPENDENCY_REASON_HEADER)
             .and_then(|value| value.to_str().ok()),
         None
     );
     let payload: serde_json::Value = response.json().await.expect("body should parse");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI chat execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*plan_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);
@@ -425,7 +425,6 @@ async fn gateway_does_not_proxy_control_execute_over_http_when_opted_in_and_exec
                     "route_family": "openai",
                     "route_kind": "chat",
                     "auth_endpoint_signature": "openai:chat",
-                    "executor_candidate": true,
                     "execution_runtime_candidate": true,
                     "public_path": "/v1/chat/completions"
                 }))
@@ -498,10 +497,7 @@ async fn gateway_does_not_proxy_control_execute_over_http_when_opted_in_and_exec
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        execution_runtime_url,
-    );
+    let gateway = build_router_with_execution_runtime_override(execution_runtime_url);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -524,14 +520,14 @@ async fn gateway_does_not_proxy_control_execute_over_http_when_opted_in_and_exec
     assert_eq!(
         response
             .headers()
-            .get(PYTHON_DEPENDENCY_REASON_HEADER)
+            .get(DEPENDENCY_REASON_HEADER)
             .and_then(|value| value.to_str().ok()),
         None
     );
     let payload: serde_json::Value = response.json().await.expect("body should parse");
     assert_eq!(
         payload["error"]["message"],
-        "OpenAI chat execution runtime miss did not match a Rust execution path, and Python fallback has been removed"
+        "OpenAI chat execution runtime miss did not match a Rust execution path"
     );
     assert_eq!(*plan_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*execute_hits.lock().expect("mutex should lock"), 0);

@@ -1,7 +1,20 @@
-use super::*;
+use crate::gateway::tests::{
+    any, build_router, build_router_with_state, build_state_with_execution_runtime_override, json,
+    start_server, AppState, Arc, Body, HeaderValue, Json, Mutex, Request, Response, Router,
+    StatusCode, CONTROL_ACTION_PROXY_PUBLIC, CONTROL_EXECUTED_HEADER,
+    EXECUTION_PATH_EXECUTION_RUNTIME_STREAM, EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
+    EXECUTION_PATH_HEADER,
+};
+use super::{
+    hash_api_key, sample_endpoint, sample_key, sample_models_candidate_row, sample_provider,
+    unrestricted_models_snapshot, DEVELOPMENT_ENCRYPTION_KEY,
+    InMemoryAuthApiKeySnapshotRepository, InMemoryMinimalCandidateSelectionReadRepository,
+    InMemoryProviderCatalogReadRepository, InMemoryRequestCandidateRepository,
+};
+use base64::Engine as _;
 
 #[tokio::test]
-async fn gateway_retires_internal_gateway_routes_without_proxying_upstream() {
+async fn gateway_handles_internal_gateway_resolve_without_proxying_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -16,7 +29,7 @@ async fn gateway_retires_internal_gateway_routes_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -30,33 +43,11 @@ async fn gateway_retires_internal_gateway_routes_without_proxying_upstream() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::GONE);
-    assert_eq!(
-        response
-            .headers()
-            .get(LEGACY_INTERNAL_GATEWAY_PHASEOUT_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS)
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get(LEGACY_INTERNAL_GATEWAY_SUNSET_DATE_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(LEGACY_INTERNAL_GATEWAY_SUNSET_DATE)
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get("sunset")
-            .and_then(|value| value.to_str().ok()),
-        Some(LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE)
-    );
+    assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(
-        payload["detail"],
-        "legacy internal gateway route removed; use public proxy"
-    );
+    assert_eq!(payload["route_class"], "ai_public");
+    assert_eq!(payload["route_family"], "openai");
+    assert_eq!(payload["route_kind"], "chat");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -64,7 +55,7 @@ async fn gateway_retires_internal_gateway_routes_without_proxying_upstream() {
 }
 
 #[tokio::test]
-async fn gateway_preserves_legacy_internal_gateway_fallback_with_legacy_header() {
+async fn gateway_returns_internal_gateway_proxy_public_action_without_proxying_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -79,12 +70,11 @@ async fn gateway_preserves_legacy_internal_gateway_fallback_with_legacy_header()
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/execute-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "method": "POST",
             "path": "/v1/chat/completions",
@@ -95,34 +85,61 @@ async fn gateway_preserves_legacy_internal_gateway_fallback_with_legacy_header()
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get(LEGACY_INTERNAL_GATEWAY_PHASEOUT_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS)
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get(LEGACY_INTERNAL_GATEWAY_SUNSET_DATE_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(LEGACY_INTERNAL_GATEWAY_SUNSET_DATE)
-    );
+    assert_eq!(response.status(), StatusCode::CONFLICT);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["proxied"], true);
-    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 1);
+    assert_eq!(payload["action"], CONTROL_ACTION_PROXY_PUBLIC);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_execute_sync_locally_with_legacy_header() {
+async fn gateway_returns_internal_gateway_plan_sync_proxy_public_action_without_proxying_upstream()
+{
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
-    let python_upstream = Router::new().route(
+    let upstream = Router::new().route(
+        "/api/internal/gateway/plan-sync",
+        any(move |_request: Request| {
+            let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+            async move {
+                *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+                Json(json!({ "proxied": true }))
+            }
+        }),
+    );
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router().expect("gateway should build");
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/internal/gateway/plan-sync"))
+        .json(&json!({
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": {},
+            "body_json": {},
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["action"], CONTROL_ACTION_PROXY_PUBLIC);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_handles_internal_gateway_execute_sync_locally() {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+    let fallback_probe = Router::new().route(
         "/{*path}",
         any(move |_request: Request| {
             let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
@@ -144,7 +161,7 @@ async fn gateway_handles_legacy_internal_gateway_execute_sync_locally_with_legac
                     .lock()
                     .expect("mutex should lock") += 1;
                 Json(json!({
-                    "request_id": "req-legacy-execute-sync-123",
+                    "request_id": "req-internal-execute-sync-123",
                     "status_code": 200,
                     "headers": {
                         "content-type": "application/json"
@@ -192,13 +209,10 @@ async fn gateway_handles_legacy_internal_gateway_execute_sync_locally_with_legac
     ));
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
-    let (python_upstream_url, python_upstream_handle) = start_server(python_upstream).await;
+    let (fallback_probe_url, fallback_probe_handle) = start_server(fallback_probe).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(
-            python_upstream_url,
-            execution_runtime_url,
-        )
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                     auth_repository,
@@ -213,9 +227,8 @@ async fn gateway_handles_legacy_internal_gateway_execute_sync_locally_with_legac
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/execute-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
-            "trace_id": "trace-legacy-execute-sync",
+            "trace_id": "trace-internal-execute-sync",
             "method": "POST",
             "path": "/v1/chat/completions",
             "headers": {
@@ -239,13 +252,6 @@ async fn gateway_handles_legacy_internal_gateway_execute_sync_locally_with_legac
     assert_eq!(
         response
             .headers()
-            .get(LEGACY_INTERNAL_GATEWAY_PHASEOUT_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS)
-    );
-    assert_eq!(
-        response
-            .headers()
             .get(EXECUTION_PATH_HEADER)
             .and_then(|value| value.to_str().ok()),
         Some(EXECUTION_PATH_EXECUTION_RUNTIME_SYNC)
@@ -261,14 +267,55 @@ async fn gateway_handles_legacy_internal_gateway_execute_sync_locally_with_legac
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
-    python_upstream_handle.abort();
+    fallback_probe_handle.abort();
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_execute_stream_locally_with_legacy_header() {
+async fn gateway_returns_internal_gateway_execute_stream_proxy_public_action_without_proxying_upstream(
+) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
-    let python_upstream = Router::new().route(
+    let upstream = Router::new().route(
+        "/api/internal/gateway/execute-stream",
+        any(move |_request: Request| {
+            let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+            async move {
+                *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+                Json(json!({ "proxied": true }))
+            }
+        }),
+    );
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router().expect("gateway should build");
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/internal/gateway/execute-stream"))
+        .json(&json!({
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": {},
+            "body_json": {},
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["action"], CONTROL_ACTION_PROXY_PUBLIC);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_handles_internal_gateway_execute_stream_locally() {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+    let fallback_probe = Router::new().route(
         "/{*path}",
         any(move |_request: Request| {
             let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
@@ -340,13 +387,10 @@ async fn gateway_handles_legacy_internal_gateway_execute_stream_locally_with_leg
     ));
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
-    let (python_upstream_url, python_upstream_handle) = start_server(python_upstream).await;
+    let (fallback_probe_url, fallback_probe_handle) = start_server(fallback_probe).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
     let gateway = build_router_with_state(
-        build_state_with_test_remote_execution_runtime(
-            python_upstream_url,
-            execution_runtime_url,
-        )
+        build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                     auth_repository,
@@ -361,9 +405,8 @@ async fn gateway_handles_legacy_internal_gateway_execute_stream_locally_with_leg
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/execute-stream"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
-            "trace_id": "trace-legacy-execute-stream",
+            "trace_id": "trace-internal-execute-stream",
             "method": "POST",
             "path": "/v1/chat/completions",
             "headers": {
@@ -404,11 +447,11 @@ async fn gateway_handles_legacy_internal_gateway_execute_stream_locally_with_leg
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
-    python_upstream_handle.abort();
+    fallback_probe_handle.abort();
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_resolve_locally_with_legacy_header() {
+async fn gateway_handles_internal_gateway_resolve_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -429,7 +472,7 @@ async fn gateway_handles_legacy_internal_gateway_resolve_locally_with_legacy_hea
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -437,7 +480,6 @@ async fn gateway_handles_legacy_internal_gateway_resolve_locally_with_legacy_hea
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/resolve"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "method": "POST",
             "path": "/v1/chat/completions",
@@ -467,7 +509,7 @@ async fn gateway_handles_legacy_internal_gateway_resolve_locally_with_legacy_hea
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_auth_context_locally_with_legacy_header() {
+async fn gateway_handles_internal_gateway_auth_context_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -488,7 +530,7 @@ async fn gateway_handles_legacy_internal_gateway_auth_context_locally_with_legac
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("state should build")
             .with_auth_api_key_data_reader_for_tests(repository),
     );
@@ -496,7 +538,6 @@ async fn gateway_handles_legacy_internal_gateway_auth_context_locally_with_legac
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/auth-context"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "headers": {
                 "x-api-key": "sk-internal-auth-context",
@@ -524,7 +565,7 @@ async fn gateway_handles_legacy_internal_gateway_auth_context_locally_with_legac
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_report_sync_locally_with_legacy_header() {
+async fn gateway_handles_internal_gateway_report_sync_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -539,12 +580,11 @@ async fn gateway_handles_legacy_internal_gateway_report_sync_locally_with_legacy
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/report-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-report-sync",
             "report_kind": "openai_chat_sync_success",
@@ -579,7 +619,7 @@ async fn gateway_handles_legacy_internal_gateway_report_sync_locally_with_legacy
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_report_stream_locally_with_legacy_header() {
+async fn gateway_handles_internal_gateway_report_stream_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -594,12 +634,11 @@ async fn gateway_handles_legacy_internal_gateway_report_stream_locally_with_lega
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/report-stream"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-report-stream",
             "report_kind": "openai_chat_stream_success",
@@ -627,7 +666,7 @@ async fn gateway_handles_legacy_internal_gateway_report_stream_locally_with_lega
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_finalize_sync_locally_with_legacy_header() {
+async fn gateway_handles_internal_gateway_finalize_sync_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -642,12 +681,11 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_locally_with_lega
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/finalize-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-finalize-sync",
             "report_kind": "openai_chat_sync_finalize",
@@ -695,8 +733,7 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_locally_with_lega
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_finalize_sync_openai_video_locally_with_legacy_header(
-) {
+async fn gateway_handles_internal_gateway_finalize_sync_openai_video_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -711,12 +748,11 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_openai_video_loca
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/finalize-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-finalize-video",
             "report_kind": "openai_video_create_sync_finalize",
@@ -771,8 +807,7 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_openai_video_loca
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_finalize_sync_gemini_video_locally_with_legacy_header(
-) {
+async fn gateway_handles_internal_gateway_finalize_sync_gemini_video_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -787,12 +822,11 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_gemini_video_loca
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/finalize-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-finalize-gemini-video",
             "report_kind": "gemini_video_create_sync_finalize",
@@ -840,8 +874,7 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_gemini_video_loca
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_finalize_sync_openai_video_delete_locally_with_legacy_header(
-) {
+async fn gateway_handles_internal_gateway_finalize_sync_openai_video_delete_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -856,12 +889,11 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_openai_video_dele
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/finalize-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-finalize-video-delete",
             "report_kind": "openai_video_delete_sync_finalize",
@@ -902,8 +934,7 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_openai_video_dele
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_finalize_sync_gemini_video_cancel_locally_with_legacy_header(
-) {
+async fn gateway_handles_internal_gateway_finalize_sync_gemini_video_cancel_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -918,12 +949,11 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_gemini_video_canc
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/finalize-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-finalize-gemini-video-cancel",
             "report_kind": "gemini_video_cancel_sync_finalize",
@@ -958,8 +988,7 @@ async fn gateway_handles_legacy_internal_gateway_finalize_sync_gemini_video_canc
 }
 
 #[tokio::test]
-async fn gateway_rejects_legacy_internal_gateway_finalize_sync_unknown_kind_locally_with_legacy_header(
-) {
+async fn gateway_rejects_internal_gateway_finalize_sync_unknown_kind_locally() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -974,12 +1003,11 @@ async fn gateway_rejects_legacy_internal_gateway_finalize_sync_unknown_kind_loca
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/finalize-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-finalize-unknown-kind",
             "report_kind": "openai_video_unknown_sync_finalize",
@@ -1009,8 +1037,7 @@ async fn gateway_rejects_legacy_internal_gateway_finalize_sync_unknown_kind_loca
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_decision_sync_locally_with_supplied_auth_context()
-{
+async fn gateway_handles_internal_gateway_decision_sync_locally_with_supplied_auth_context() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1051,7 +1078,7 @@ async fn gateway_handles_legacy_internal_gateway_decision_sync_locally_with_supp
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -1067,7 +1094,6 @@ async fn gateway_handles_legacy_internal_gateway_decision_sync_locally_with_supp
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/decision-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-decision-sync",
             "method": "POST",
@@ -1107,8 +1133,7 @@ async fn gateway_handles_legacy_internal_gateway_decision_sync_locally_with_supp
 }
 
 #[tokio::test]
-async fn gateway_returns_legacy_internal_gateway_decision_sync_fallback_with_resolved_auth_context()
-{
+async fn gateway_returns_internal_gateway_decision_sync_fallback_with_resolved_auth_context() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1129,7 +1154,7 @@ async fn gateway_returns_legacy_internal_gateway_decision_sync_fallback_with_res
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_auth_api_key_data_reader_for_tests(auth_repository),
     );
@@ -1137,7 +1162,6 @@ async fn gateway_returns_legacy_internal_gateway_decision_sync_fallback_with_res
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/decision-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-decision-fallback",
             "method": "POST",
@@ -1168,8 +1192,7 @@ async fn gateway_returns_legacy_internal_gateway_decision_sync_fallback_with_res
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_decision_stream_locally_with_supplied_auth_context(
-) {
+async fn gateway_handles_internal_gateway_decision_stream_locally_with_supplied_auth_context() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1210,7 +1233,7 @@ async fn gateway_handles_legacy_internal_gateway_decision_stream_locally_with_su
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -1228,7 +1251,6 @@ async fn gateway_handles_legacy_internal_gateway_decision_stream_locally_with_su
         .post(format!(
             "{gateway_url}/api/internal/gateway/decision-stream"
         ))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-decision-stream",
             "method": "POST",
@@ -1266,7 +1288,7 @@ async fn gateway_handles_legacy_internal_gateway_decision_stream_locally_with_su
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_plan_sync_locally_with_supplied_auth_context() {
+async fn gateway_handles_internal_gateway_plan_sync_locally_with_supplied_auth_context() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1313,7 +1335,7 @@ async fn gateway_handles_legacy_internal_gateway_plan_sync_locally_with_supplied
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -1329,7 +1351,6 @@ async fn gateway_handles_legacy_internal_gateway_plan_sync_locally_with_supplied
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/plan-sync"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-plan-sync",
             "method": "POST",
@@ -1369,7 +1390,7 @@ async fn gateway_handles_legacy_internal_gateway_plan_sync_locally_with_supplied
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_internal_gateway_plan_stream_locally_with_supplied_auth_context() {
+async fn gateway_handles_internal_gateway_plan_stream_locally_with_supplied_auth_context() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1416,7 +1437,7 @@ async fn gateway_handles_legacy_internal_gateway_plan_stream_locally_with_suppli
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -1432,7 +1453,6 @@ async fn gateway_handles_legacy_internal_gateway_plan_stream_locally_with_suppli
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/gateway/plan-stream"))
-        .header(LEGACY_INTERNAL_GATEWAY_HEADER, "true")
         .json(&json!({
             "trace_id": "trace-internal-plan-stream",
             "method": "POST",

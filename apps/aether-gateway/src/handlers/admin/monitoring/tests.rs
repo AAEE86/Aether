@@ -1,6 +1,7 @@
 use super::test_support::*;
-use super::*;
+use super::{maybe_build_local_admin_monitoring_response, AppState};
 use axum::body::to_bytes;
+use serde_json::json;
 use std::sync::Arc;
 
 use aether_data::repository::auth::{
@@ -23,7 +24,7 @@ mod basics;
 
 #[tokio::test]
 async fn admin_monitoring_cache_affinities_returns_empty_payload_without_runtime_or_test_entries() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(http::Method::GET, "/api/admin/monitoring/cache/affinities");
 
     let response = maybe_build_local_admin_monitoring_response(&state, &context)
@@ -54,7 +55,7 @@ async fn admin_monitoring_cache_affinity_returns_not_found_without_runtime_or_te
             sample_monitoring_export_api_key("user-1", "user-key-1"),
         ]),
     );
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -102,7 +103,7 @@ async fn admin_monitoring_cache_affinities_and_affinity_return_local_payload_fro
         vec![sample_monitoring_catalog_endpoint()],
         vec![sample_monitoring_catalog_key()],
     ));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -208,7 +209,7 @@ async fn admin_monitoring_cache_users_delete_returns_local_payload_from_test_sto
             sample_monitoring_export_api_key("user-1", "user-key-1"),
         ]),
     );
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -270,7 +271,7 @@ async fn admin_monitoring_cache_users_delete_returns_local_payload_from_test_sto
 
 #[tokio::test]
 async fn admin_monitoring_cache_users_delete_returns_not_found_for_unknown_identifier() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_cache_affinity_entry_for_tests(
             "cache_affinity:user-key-1:openai:model-alpha",
@@ -308,7 +309,7 @@ async fn admin_monitoring_cache_users_delete_returns_not_found_for_unknown_ident
 
 #[tokio::test]
 async fn admin_monitoring_cache_flush_returns_local_payload_from_test_store() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_cache_affinity_entry_for_tests(
             "cache_affinity:user-key-1:openai:model-alpha",
@@ -356,7 +357,7 @@ async fn admin_monitoring_cache_flush_returns_local_payload_from_test_store() {
 
 #[tokio::test]
 async fn admin_monitoring_cache_provider_delete_returns_local_payload_from_test_store() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_cache_affinity_entry_for_tests(
             "cache_affinity:user-key-1:openai:model-alpha",
@@ -414,7 +415,7 @@ async fn admin_monitoring_cache_provider_delete_returns_local_payload_from_test_
 
 #[tokio::test]
 async fn admin_monitoring_model_mapping_delete_returns_local_payload_from_test_store() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_redis_key_for_tests("model:id:model-1", json!({"id": "model-1"}))
         .with_admin_monitoring_redis_key_for_tests(
@@ -456,7 +457,7 @@ async fn admin_monitoring_model_mapping_delete_returns_local_payload_from_test_s
 
 #[tokio::test]
 async fn admin_monitoring_model_mapping_delete_model_returns_local_payload_from_test_store() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_redis_key_for_tests(
             "global_model:name:model-alpha",
@@ -504,7 +505,7 @@ async fn admin_monitoring_model_mapping_delete_model_returns_local_payload_from_
 
 #[tokio::test]
 async fn admin_monitoring_model_mapping_delete_provider_returns_local_payload_from_test_store() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_redis_key_for_tests(
             "model:provider_global:provider-1:model-alpha",
@@ -553,7 +554,7 @@ async fn admin_monitoring_model_mapping_delete_provider_returns_local_payload_fr
 
 #[tokio::test]
 async fn admin_monitoring_redis_keys_delete_returns_local_payload_from_test_store() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_redis_key_for_tests("dashboard:summary:user-1", json!({"ok": true}))
         .with_admin_monitoring_redis_key_for_tests("dashboard:stats:user-1", json!({"ok": true}))
@@ -596,7 +597,7 @@ async fn admin_monitoring_cache_affinity_delete_returns_local_payload_from_test_
             sample_monitoring_export_api_key("user-1", "user-key-1"),
         ]),
     );
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
@@ -657,7 +658,7 @@ async fn admin_monitoring_cache_affinity_delete_returns_local_payload_from_test_
 
 #[tokio::test]
 async fn admin_monitoring_cache_affinity_delete_returns_not_found_for_mismatched_endpoint() {
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_admin_monitoring_cache_affinity_entry_for_tests(
             "cache_affinity:user-key-1:openai:model-alpha",
@@ -716,7 +717,7 @@ async fn admin_monitoring_cache_metrics_returns_local_payload() {
             now - 120,
         ),
     ]));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_usage_reader_for_tests(
@@ -757,7 +758,7 @@ async fn admin_monitoring_cache_metrics_returns_local_payload() {
 
 #[tokio::test]
 async fn admin_monitoring_cache_config_returns_local_payload() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(http::Method::GET, "/api/admin/monitoring/cache/config");
 
     let response = maybe_build_local_admin_monitoring_response(&state, &context)
@@ -793,7 +794,7 @@ async fn admin_monitoring_cache_config_returns_local_payload() {
 
 #[tokio::test]
 async fn admin_monitoring_model_mapping_stats_returns_local_payload_without_redis() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(
         http::Method::GET,
         "/api/admin/monitoring/cache/model-mapping/stats",
@@ -848,7 +849,7 @@ async fn admin_monitoring_reset_error_stats_returns_local_payload_and_clears_fut
         Some(502),
         now - 120,
     )]));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_and_usage_reader_for_tests(
@@ -903,7 +904,7 @@ async fn admin_monitoring_reset_error_stats_returns_local_payload_and_clears_fut
 
 #[tokio::test]
 async fn admin_monitoring_redis_keys_returns_local_payload_without_redis() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(http::Method::GET, "/api/admin/monitoring/cache/redis-keys");
 
     let response = maybe_build_local_admin_monitoring_response(&state, &context)
@@ -923,7 +924,7 @@ async fn admin_monitoring_redis_keys_returns_local_payload_without_redis() {
 
 #[tokio::test]
 async fn admin_monitoring_redis_keys_delete_returns_unavailable_without_redis() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(
         http::Method::DELETE,
         "/api/admin/monitoring/cache/redis-keys/upstream_models",
@@ -965,7 +966,7 @@ async fn admin_monitoring_circuit_history_returns_local_payload() {
             })),
         )],
     ));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(

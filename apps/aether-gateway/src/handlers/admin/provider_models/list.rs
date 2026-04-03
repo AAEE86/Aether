@@ -1,9 +1,20 @@
-use super::*;
+use super::super::build_admin_provider_models_payload;
+use crate::gateway::handlers::{
+    admin_provider_id_for_models_list, query_param_optional_bool, query_param_value,
+};
+use crate::gateway::{AppState, GatewayControlDecision, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn maybe_handle(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    _request_body: Option<&axum::body::Bytes>,
+    _request_body: Option<&Bytes>,
     decision: &GatewayControlDecision,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     if decision.route_family.as_deref() == Some("provider_models_manage")

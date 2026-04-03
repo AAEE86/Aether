@@ -1,4 +1,5 @@
-use super::*;
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AdminProviderKeyCreateRequest {
@@ -152,7 +153,7 @@ pub(crate) struct InternalTunnelNodeStatusRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct LegacyGatewayResolveRequest {
+pub(crate) struct InternalGatewayResolveRequest {
     #[serde(default)]
     pub(crate) trace_id: Option<String>,
     pub(crate) method: String,
@@ -164,7 +165,7 @@ pub(crate) struct LegacyGatewayResolveRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct LegacyGatewayAuthContextRequest {
+pub(crate) struct InternalGatewayAuthContextRequest {
     #[serde(default)]
     pub(crate) trace_id: Option<String>,
     #[serde(default)]
@@ -175,7 +176,7 @@ pub(crate) struct LegacyGatewayAuthContextRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct LegacyGatewayExecuteRequest {
+pub(crate) struct InternalGatewayExecuteRequest {
     #[serde(default)]
     pub(crate) trace_id: Option<String>,
     pub(crate) method: String,

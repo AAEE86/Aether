@@ -1,4 +1,6 @@
-use super::*;
+use http::Uri;
+
+use super::{classify_control_route, headers};
 
 #[test]
 fn classifies_admin_api_keys_list_as_admin_proxy_route() {

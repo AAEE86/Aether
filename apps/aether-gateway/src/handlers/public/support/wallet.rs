@@ -1,5 +1,9 @@
-use super::*;
-use sqlx::Row;
+pub(super) use super::{
+    build_auth_error_response, build_auth_json_response, build_auth_wallet_summary_payload,
+    query_param_value, resolve_authenticated_local_user, unix_secs_to_rfc3339, AppState,
+    GatewayError, GatewayPublicRequestContext,
+};
+pub(super) use axum::{body::Body, http, response::Response};
 
 #[cfg(test)]
 #[path = "wallet/test_support.rs"]
@@ -7,7 +11,12 @@ mod test_support;
 #[cfg(test)]
 pub(crate) use self::test_support::wallet_test_recharge_store;
 #[cfg(test)]
-use self::test_support::*;
+use self::test_support::{
+    record_wallet_test_recharge, record_wallet_test_refund, wallet_test_recharge_order_by_id,
+    wallet_test_recharge_orders_for_user, wallet_test_refund_by_id,
+    wallet_test_refund_by_idempotency, wallet_test_refunds_for_wallet,
+    wallet_test_reserved_refund_amount,
+};
 #[path = "wallet/flow.rs"]
 mod flow;
 #[path = "wallet/reads.rs"]
@@ -25,15 +34,19 @@ use self::reads::{
 };
 use self::recharge::{
     handle_wallet_create_recharge, handle_wallet_recharge_detail, handle_wallet_recharge_list,
+    wallet_recharge_detail_path_matches,
 };
 pub(crate) use self::recharge::{
     sanitize_wallet_gateway_response, wallet_payment_order_payload_from_row,
 };
 use self::refunds::{
     handle_wallet_create_refund, handle_wallet_refund_detail, handle_wallet_refunds_list,
+    wallet_refund_detail_path_matches,
 };
 
 const WALLET_LEGACY_TIMEZONE: &str = "Asia/Shanghai";
+const WALLET_RECHARGE_STORAGE_UNAVAILABLE_DETAIL: &str = "钱包充值后端暂不可用";
+const WALLET_REFUND_STORAGE_UNAVAILABLE_DETAIL: &str = "钱包退款后端暂不可用";
 const WALLET_SAFE_GATEWAY_RESPONSE_KEYS: &[&str] = &[
     "gateway",
     "display_name",
@@ -61,14 +74,30 @@ pub(super) fn wallet_normalize_optional_string_field(
     Ok(Some(trimmed.to_string()))
 }
 
-pub(super) async fn maybe_build_local_wallet_legacy_response(
+pub(super) fn build_wallet_recharge_storage_unavailable_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        WALLET_RECHARGE_STORAGE_UNAVAILABLE_DETAIL,
+        false,
+    )
+}
+
+pub(super) fn build_wallet_refund_storage_unavailable_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        WALLET_REFUND_STORAGE_UNAVAILABLE_DETAIL,
+        false,
+    )
+}
+
+pub(super) async fn maybe_build_local_wallet_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
     request_body: Option<&axum::body::Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
-    if decision.route_family.as_deref() != Some("wallet_legacy") {
+    if decision.route_family.as_deref() != Some("wallet") {
         return None;
     }
 
@@ -103,9 +132,7 @@ pub(super) async fn maybe_build_local_wallet_legacy_response(
     }
 
     if decision.route_kind.as_deref() == Some("refund_detail")
-        && request_context
-            .request_path
-            .starts_with("/api/wallet/refunds/")
+        && wallet_refund_detail_path_matches(&request_context.request_path)
     {
         return Some(handle_wallet_refund_detail(state, request_context, headers).await);
     }
@@ -133,12 +160,54 @@ pub(super) async fn maybe_build_local_wallet_legacy_response(
     }
 
     if decision.route_kind.as_deref() == Some("recharge_detail")
-        && request_context
-            .request_path
-            .starts_with("/api/wallet/recharge/")
+        && wallet_recharge_detail_path_matches(&request_context.request_path)
     {
         return Some(handle_wallet_recharge_detail(state, request_context, headers).await);
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_wallet_recharge_storage_unavailable_response,
+        build_wallet_refund_storage_unavailable_response,
+        WALLET_RECHARGE_STORAGE_UNAVAILABLE_DETAIL, WALLET_REFUND_STORAGE_UNAVAILABLE_DETAIL,
+    };
+    use axum::body::to_bytes;
+    use axum::http;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn wallet_recharge_storage_unavailable_response_is_explicit_local_503() {
+        let response = build_wallet_recharge_storage_unavailable_response();
+
+        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+        assert_eq!(
+            payload,
+            json!({ "detail": WALLET_RECHARGE_STORAGE_UNAVAILABLE_DETAIL })
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_refund_storage_unavailable_response_is_explicit_local_503() {
+        let response = build_wallet_refund_storage_unavailable_response();
+
+        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+        assert_eq!(
+            payload,
+            json!({ "detail": WALLET_REFUND_STORAGE_UNAVAILABLE_DETAIL })
+        );
+    }
 }

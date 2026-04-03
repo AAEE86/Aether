@@ -129,7 +129,7 @@ async fn data_state_find_uses_configured_read_repository() {
 
 #[tokio::test]
 async fn app_state_wires_gateway_data_state_from_config() {
-    let state = AppState::new("http://127.0.0.1:18084")
+    let state = AppState::new()
         .expect("app state should build")
         .with_data_config(GatewayDataConfig::from_postgres_url(
             "postgres://localhost/aether",
@@ -925,14 +925,14 @@ async fn data_state_ignores_missing_shadow_results_relation_when_recording_sampl
 
     let recorded = state
         .record_shadow_result_sample(RecordShadowResultSample {
-            trace_id: "trace-legacy".to_string(),
-            request_fingerprint: "fp-legacy".to_string(),
-            request_id: Some("req-legacy".to_string()),
+            trace_id: "trace-missing-shadow".to_string(),
+            request_fingerprint: "fp-missing-shadow".to_string(),
+            request_id: Some("req-missing-shadow".to_string()),
             route_family: Some("openai".to_string()),
             route_kind: Some("chat".to_string()),
             candidate_id: None,
             origin: ShadowResultSampleOrigin::Rust,
-            result_digest: "digest-legacy".to_string(),
+            result_digest: "digest-missing-shadow".to_string(),
             status_code: Some(200),
             error_message: None,
             recorded_at_unix_secs: 100,

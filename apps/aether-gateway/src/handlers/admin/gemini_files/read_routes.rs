@@ -1,4 +1,21 @@
-use super::*;
+use super::{
+    admin_gemini_files_error_response, admin_gemini_files_key_capable,
+    admin_gemini_files_now_unix_secs, ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
+    ADMIN_GEMINI_FILES_DEFAULT_PAGE, ADMIN_GEMINI_FILES_DEFAULT_PAGE_SIZE,
+    ADMIN_GEMINI_FILES_MAX_PAGE_SIZE,
+};
+use crate::gateway::handlers::{
+    admin_gemini_file_mapping_id_from_path, is_admin_gemini_files_capable_keys_root,
+    is_admin_gemini_files_mappings_root, is_admin_gemini_files_stats_root,
+    query_param_optional_bool, query_param_value, unix_secs_to_rfc3339,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::body::Body;
+use axum::http::{self, Response};
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 struct AdminGeminiFilesPageQuery {
@@ -61,7 +78,7 @@ where
 {
     let user_ids = mappings
         .filter_map(|mapping| mapping.user_id.clone())
-        .collect::<std::collections::BTreeSet<_>>()
+        .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
     let users = state.list_users_by_ids(&user_ids).await?;
@@ -146,7 +163,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
             if !state.has_gemini_file_mapping_data_reader() {
                 return Ok(Some(admin_gemini_files_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
-                    ADMIN_GEMINI_FILES_RUST_BACKEND_DETAIL,
+                    ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
             let page = match admin_gemini_files_page_query(request_context)? {
@@ -200,7 +217,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
             if !state.has_gemini_file_mapping_data_reader() {
                 return Ok(Some(admin_gemini_files_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
-                    ADMIN_GEMINI_FILES_RUST_BACKEND_DETAIL,
+                    ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
             let stats = state.summarize_gemini_file_mappings(now_unix_secs).await?;
@@ -230,7 +247,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
             if !state.has_gemini_file_mapping_data_writer() {
                 return Ok(Some(admin_gemini_files_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
-                    ADMIN_GEMINI_FILES_RUST_BACKEND_DETAIL,
+                    ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
             let Some(mapping_id) =
@@ -262,7 +279,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
             if !state.has_gemini_file_mapping_data_writer() {
                 return Ok(Some(admin_gemini_files_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
-                    ADMIN_GEMINI_FILES_RUST_BACKEND_DETAIL,
+                    ADMIN_GEMINI_FILES_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
             let deleted_count = state

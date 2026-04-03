@@ -611,7 +611,7 @@ mod tests {
     }
 
     fn build_test_state(repository: Arc<InMemoryRequestCandidateRepository>) -> AppState {
-        AppState::new("http://upstream.example")
+        AppState::new()
             .expect("gateway state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
@@ -625,7 +625,7 @@ mod tests {
         video_repository: Arc<InMemoryVideoTaskRepository>,
         request_candidate_repository: Arc<InMemoryRequestCandidateRepository>,
     ) -> AppState {
-        AppState::new("http://upstream.example")
+        AppState::new()
             .expect("gateway state should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_video_task_and_request_candidate_repository_for_tests(
@@ -639,8 +639,9 @@ mod tests {
         request_candidate_repository: Arc<InMemoryRequestCandidateRepository>,
         gemini_file_mapping_repository: Arc<InMemoryGeminiFileMappingRepository>,
     ) -> AppState {
-        AppState::new("http://upstream.example").expect("gateway state should build")
-        .with_data_state_for_tests(
+        AppState::new()
+            .expect("gateway state should build")
+            .with_data_state_for_tests(
             GatewayDataState::with_request_candidate_and_gemini_file_mapping_repository_for_tests(
                 request_candidate_repository,
                 gemini_file_mapping_repository,

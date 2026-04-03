@@ -1,12 +1,30 @@
-pub(crate) use super::*;
+use super::super::{
+    admin_default_body_rules_api_format, admin_endpoint_id, admin_provider_id_for_endpoints,
+    build_admin_create_provider_endpoint_record, build_admin_endpoint_payload,
+    build_admin_provider_endpoint_response, build_admin_provider_endpoints_payload,
+    build_admin_update_provider_endpoint_record, endpoint_key_counts_by_format,
+    key_api_formats_without_entry,
+};
+use crate::gateway::api::ai::admin_default_body_rules_for_signature;
+use crate::gateway::handlers::{
+    query_param_value, AdminProviderEndpointCreateRequest, AdminProviderEndpointUpdateRequest,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const ADMIN_ENDPOINTS_RUST_BACKEND_DETAIL: &str =
-    "Admin endpoint routes require Rust maintenance backend";
+const ADMIN_ENDPOINTS_DATA_UNAVAILABLE_DETAIL: &str = "Admin endpoint data unavailable";
 
-fn build_admin_endpoints_maintenance_response() -> Response<Body> {
+fn build_admin_endpoints_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_ENDPOINTS_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_ENDPOINTS_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }
@@ -14,7 +32,7 @@ fn build_admin_endpoints_maintenance_response() -> Response<Body> {
 pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let Some(decision) = request_context.control_decision.as_ref() else {
         return Ok(None);
@@ -28,7 +46,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
         && request_context.request_path.ends_with("/endpoints")
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         }
         let Some(provider_id) = admin_provider_id_for_endpoints(&request_context.request_path)
         else {
@@ -68,7 +86,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
         && request_context.request_path.ends_with("/endpoints")
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         }
         let Some(provider_id) = admin_provider_id_for_endpoints(&request_context.request_path)
         else {
@@ -130,7 +148,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
                 }
             };
         let Some(created) = state.create_provider_catalog_endpoint(&record).await? else {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         };
         let now_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -157,7 +175,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
             .starts_with("/api/admin/endpoints/")
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         }
         let Some(endpoint_id) = admin_endpoint_id(&request_context.request_path) else {
             return Ok(Some(
@@ -265,7 +283,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
             .update_provider_catalog_endpoint(&updated_record)
             .await?
         else {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         };
         let now_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -303,7 +321,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
             .starts_with("/api/admin/endpoints/")
     {
         if !state.has_provider_catalog_data_reader() || !state.has_provider_catalog_data_writer() {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         }
         let Some(endpoint_id) = admin_endpoint_id(&request_context.request_path) else {
             return Ok(Some(
@@ -359,7 +377,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
                 .await?
                 .is_none()
             {
-                return Ok(Some(build_admin_endpoints_maintenance_response()));
+                return Ok(Some(build_admin_endpoints_data_unavailable_response()));
             }
             affected_keys_count += 1;
         }
@@ -388,7 +406,7 @@ pub(super) async fn maybe_build_local_admin_endpoints_routes_response(
             .starts_with("/api/admin/endpoints/")
     {
         if !state.has_provider_catalog_data_reader() {
-            return Ok(Some(build_admin_endpoints_maintenance_response()));
+            return Ok(Some(build_admin_endpoints_data_unavailable_response()));
         }
         let Some(endpoint_id) = admin_endpoint_id(&request_context.request_path) else {
             return Ok(Some(

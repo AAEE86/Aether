@@ -1,4 +1,32 @@
-use super::*;
+use super::super::provider_oauth_refresh::{
+    build_internal_control_error_response, build_provider_oauth_auth_config_from_token_payload,
+    create_provider_oauth_catalog_key, find_duplicate_provider_oauth_key,
+    provider_oauth_active_api_formats, provider_oauth_key_proxy_value,
+    refresh_provider_oauth_account_state_after_update, update_existing_provider_oauth_catalog_key,
+};
+use super::super::provider_oauth_state::{
+    admin_provider_oauth_template, build_admin_provider_oauth_backend_unavailable_response,
+    current_unix_secs, decode_jwt_claims, exchange_admin_provider_oauth_refresh_token,
+    is_fixed_provider_type_for_provider_oauth, save_provider_oauth_batch_task_payload,
+};
+use crate::gateway::handlers::{
+    admin_provider_oauth_batch_import_provider_id,
+    admin_provider_oauth_batch_import_task_provider_id,
+    ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL,
+};
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{to_bytes, Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
+use uuid::Uuid;
 
 const PROVIDER_OAUTH_BATCH_TASK_MAX_ERROR_SAMPLES: usize = 20;
 
@@ -53,7 +81,7 @@ fn build_kiro_batch_import_key_name(
 }
 
 fn parse_admin_provider_oauth_batch_import_request(
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<AdminProviderOAuthBatchImportRequest, Response<Body>> {
     let Some(request_body) = request_body else {
         return Err(build_internal_control_error_response(
@@ -673,7 +701,7 @@ async fn execute_admin_provider_oauth_batch_import(
                     json!({
                         "index": index,
                         "status": "error",
-                        "error": ADMIN_PROVIDER_OAUTH_RUST_BACKEND_DETAIL,
+                        "error": ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL,
                         "replaced": false,
                     })
                 })
@@ -903,7 +931,7 @@ fn build_admin_provider_oauth_batch_task_state(
 pub(super) async fn handle_admin_provider_oauth_batch_import(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Response<Body>, GatewayError> {
     if !state.has_provider_catalog_data_reader() {
         return Ok(build_admin_provider_oauth_backend_unavailable_response());

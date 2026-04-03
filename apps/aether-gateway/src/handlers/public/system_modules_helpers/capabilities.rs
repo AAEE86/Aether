@@ -1,4 +1,4 @@
-use super::*;
+use serde_json::json;
 
 #[derive(Clone, Copy)]
 pub(crate) struct PublicCapabilityDefinition {

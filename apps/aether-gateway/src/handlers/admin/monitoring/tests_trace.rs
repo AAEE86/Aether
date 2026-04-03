@@ -1,6 +1,10 @@
-use super::test_support::*;
-use super::*;
+use super::super::maybe_build_local_admin_monitoring_response;
+use super::super::test_support::{
+    request_context, sample_candidate, sample_endpoint, sample_key, sample_provider,
+};
+use crate::gateway::AppState;
 use axum::body::to_bytes;
+use serde_json::json;
 use std::sync::Arc;
 
 use aether_data::repository::candidates::{
@@ -35,7 +39,7 @@ async fn admin_monitoring_trace_request_returns_local_payload() {
         vec![sample_endpoint()],
         vec![sample_key()],
     ));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_decision_trace_data_readers_for_tests(request_candidates, provider_catalog);
     let context = request_context(
@@ -121,7 +125,7 @@ async fn admin_monitoring_trace_provider_stats_returns_local_payload() {
             None,
         ),
     ]));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_request_candidate_data_reader_for_tests(request_candidates);
     let context = request_context(

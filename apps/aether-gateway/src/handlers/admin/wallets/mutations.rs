@@ -1,5 +1,26 @@
-use super::admin_wallets_shared::*;
-use super::*;
+use super::admin_wallets_shared::{
+    admin_wallet_id_from_suffix_path, admin_wallet_operator_id,
+    admin_wallet_refund_ids_from_suffix_path, build_admin_wallet_not_found_response,
+    build_admin_wallet_payment_order_payload, build_admin_wallet_refund_not_found_response,
+    build_admin_wallet_refund_payload, build_admin_wallet_summary_payload,
+    build_admin_wallet_transaction_payload, build_admin_wallets_bad_request_response,
+    build_admin_wallets_data_unavailable_response, normalize_admin_wallet_balance_type,
+    normalize_admin_wallet_description, normalize_admin_wallet_non_zero_amount,
+    normalize_admin_wallet_optional_text, normalize_admin_wallet_payment_method,
+    normalize_admin_wallet_positive_amount, normalize_admin_wallet_required_text,
+    resolve_admin_wallet_owner_summary, AdminWalletAdjustRequest, AdminWalletRechargeRequest,
+    AdminWalletRefundCompleteRequest, AdminWalletRefundFailRequest,
+    ADMIN_WALLETS_API_KEY_GIFT_ADJUST_DETAIL, ADMIN_WALLETS_API_KEY_RECHARGE_DETAIL,
+    ADMIN_WALLETS_API_KEY_REFUND_DETAIL,
+};
+use crate::gateway::handlers::unix_secs_to_rfc3339;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 pub(super) async fn build_admin_wallet_adjust_response(
     state: &AppState,
@@ -60,7 +81,7 @@ pub(super) async fn build_admin_wallet_adjust_response(
         return if has_postgres {
             Ok(build_admin_wallet_not_found_response())
         } else {
-            Ok(build_admin_wallets_maintenance_response())
+            Ok(build_admin_wallets_data_unavailable_response())
         };
     };
     let owner = resolve_admin_wallet_owner_summary(state, &wallet).await?;
@@ -150,7 +171,7 @@ pub(super) async fn build_admin_wallet_recharge_response(
         return if has_postgres {
             Ok(build_admin_wallet_not_found_response())
         } else {
-            Ok(build_admin_wallets_maintenance_response())
+            Ok(build_admin_wallets_data_unavailable_response())
         };
     };
     let owner = resolve_admin_wallet_owner_summary(state, &wallet).await?;
@@ -236,7 +257,7 @@ pub(super) async fn build_admin_wallet_process_refund_response(
             Ok(build_admin_wallets_bad_request_response(detail))
         }
         crate::gateway::AdminWalletMutationOutcome::Unavailable => {
-            Ok(build_admin_wallets_maintenance_response())
+            Ok(build_admin_wallets_data_unavailable_response())
         }
     }
 }
@@ -327,7 +348,7 @@ pub(super) async fn build_admin_wallet_complete_refund_response(
             Ok(build_admin_wallets_bad_request_response(detail))
         }
         crate::gateway::AdminWalletMutationOutcome::Unavailable => {
-            Ok(build_admin_wallets_maintenance_response())
+            Ok(build_admin_wallets_data_unavailable_response())
         }
     }
 }
@@ -409,7 +430,7 @@ pub(super) async fn build_admin_wallet_fail_refund_response(
             Ok(build_admin_wallets_bad_request_response(detail))
         }
         crate::gateway::AdminWalletMutationOutcome::Unavailable => {
-            Ok(build_admin_wallets_maintenance_response())
+            Ok(build_admin_wallets_data_unavailable_response())
         }
     }
 }

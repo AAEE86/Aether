@@ -106,14 +106,14 @@ pub(in super::super) async fn resolve_control_decision_auth(
         return Ok(ControlDecisionAuthResolution::Resolved(decision));
     }
 
-    if skips_legacy_python_auth_context(&decision) {
+    if allows_missing_data_backed_auth_context(&decision) {
         return Ok(ControlDecisionAuthResolution::Resolved(decision));
     }
 
     Ok(ControlDecisionAuthResolution::Resolved(decision))
 }
 
-fn skips_legacy_python_auth_context(decision: &GatewayControlDecision) -> bool {
+fn allows_missing_data_backed_auth_context(decision: &GatewayControlDecision) -> bool {
     matches!(
         decision.route_kind.as_deref(),
         Some("chat" | "cli" | "compact")
@@ -593,7 +593,7 @@ mod tests {
             sample_snapshot("key-1", "user-1"),
         )]));
         let data = GatewayDataState::with_auth_api_key_repository_for_tests(repository.clone());
-        let state = AppState::new("http://127.0.0.1:9")
+        let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(data);
 

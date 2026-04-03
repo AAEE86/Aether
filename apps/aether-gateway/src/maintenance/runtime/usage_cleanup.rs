@@ -1,4 +1,23 @@
-use super::*;
+use std::io::Write;
+
+use chrono::{DateTime, Utc};
+use flate2::{write::GzEncoder, Compression};
+use serde_json::Value;
+use sqlx::Row;
+use tracing::warn;
+
+use crate::gateway::gateway_data::GatewayDataState;
+
+use super::{
+    system_config_bool, usage_cleanup_settings, usage_cleanup_window, ExpiredApiKeyRow,
+    UsageBodyCompressionRow, UsageCleanupSummary, CLEAR_USAGE_BODY_FIELDS_SQL,
+    CLEAR_USAGE_HEADER_FIELDS_SQL, DELETE_EXPIRED_API_KEY_SQL, DELETE_OLD_USAGE_RECORDS_SQL,
+    DISABLE_EXPIRED_API_KEY_SQL, EXPIRED_API_KEY_PRE_CLEAN_BATCH_SIZE,
+    NULLIFY_REQUEST_CANDIDATE_API_KEY_BATCH_SQL, NULLIFY_USAGE_API_KEY_BATCH_SQL,
+    SELECT_EXPIRED_ACTIVE_API_KEYS_SQL, SELECT_USAGE_BODY_COMPRESSION_BATCH_SQL,
+    SELECT_USAGE_HEADER_BATCH_SQL, SELECT_USAGE_STALE_BODY_BATCH_SQL,
+    UPDATE_USAGE_BODY_COMPRESSION_SQL,
+};
 
 pub(super) async fn perform_usage_cleanup_once(
     data: &GatewayDataState,

@@ -1,4 +1,14 @@
-use super::*;
+use super::super::test_support::{request_context, sample_key, sample_provider, sample_usage};
+use super::super::{
+    match_admin_monitoring_route, maybe_build_local_admin_monitoring_response,
+    AdminMonitoringRoute, ADMIN_MONITORING_REDIS_REQUIRED_DETAIL,
+};
+use crate::gateway::AppState;
+use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
+use aether_data::repository::usage::InMemoryUsageReadRepository;
+use axum::body::to_bytes;
+use serde_json::json;
+use std::sync::Arc;
 
 #[test]
 fn admin_monitoring_matches_typical_routes() {
@@ -61,7 +71,7 @@ fn admin_monitoring_matches_cache_delete_shapes_and_trailing_slashes() {
 
 #[tokio::test]
 async fn admin_monitoring_model_mapping_delete_requires_redis_without_runtime_or_test_entries() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(
         http::Method::DELETE,
         "/api/admin/monitoring/cache/model-mapping",
@@ -84,7 +94,7 @@ async fn admin_monitoring_model_mapping_delete_requires_redis_without_runtime_or
 
 #[tokio::test]
 async fn admin_monitoring_user_behavior_returns_empty_local_payload_without_postgres() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(
         http::Method::GET,
         "/api/admin/monitoring/user-behavior/user-123?days=30",
@@ -112,7 +122,7 @@ async fn admin_monitoring_user_behavior_returns_empty_local_payload_without_post
 
 #[tokio::test]
 async fn admin_monitoring_audit_logs_returns_empty_local_payload_without_postgres() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(
         http::Method::GET,
         "/api/admin/monitoring/audit-logs?username=alice&event_type=login_failed&days=14&limit=20&offset=5",
@@ -140,7 +150,7 @@ async fn admin_monitoring_audit_logs_returns_empty_local_payload_without_postgre
 
 #[tokio::test]
 async fn admin_monitoring_suspicious_activities_returns_empty_local_payload_without_postgres() {
-    let state = AppState::new("http://127.0.0.1:9").expect("state should build");
+    let state = AppState::new().expect("state should build");
     let context = request_context(
         http::Method::GET,
         "/api/admin/monitoring/suspicious-activities?hours=48",
@@ -204,7 +214,7 @@ async fn admin_monitoring_resilience_status_returns_local_payload() {
             now - 172_800,
         ),
     ]));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_and_usage_reader_for_tests(
@@ -275,7 +285,7 @@ async fn admin_monitoring_cache_stats_returns_local_payload() {
             now - 120,
         ),
     ]));
-    let state = AppState::new("http://127.0.0.1:9")
+    let state = AppState::new()
         .expect("state should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_usage_reader_for_tests(

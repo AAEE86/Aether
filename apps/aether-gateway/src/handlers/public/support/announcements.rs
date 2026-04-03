@@ -1,8 +1,3 @@
-use super::*;
-
-const ANNOUNCEMENTS_MAINTENANCE_DETAIL: &str =
-    "Announcement routes require Rust maintenance backend";
-
 #[path = "announcements/admin_routes.rs"]
 mod announcements_admin_routes;
 #[path = "announcements/public_routes.rs"]

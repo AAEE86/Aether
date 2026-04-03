@@ -1,4 +1,4 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError};
 
 impl AppState {
     pub(crate) async fn read_request_candidates_by_request_id(

@@ -1,5 +1,4 @@
-use super::*;
-use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
+use super::{AppState, Arc, InMemoryRequestCandidateRepository};
 use aether_data::repository::gemini_file_mappings::{
     GeminiFileMappingReadRepository, InMemoryGeminiFileMappingRepository, StoredGeminiFileMapping,
 };
@@ -27,9 +26,7 @@ async fn gateway_background_gemini_file_mapping_cleanup_deletes_expired_entries(
         sample_mapping("mapping-active", "files/active", 4_102_444_800),
     ]));
 
-    let gateway_state = AppState::new(
-        "http://127.0.0.1:18084",
-    )
+    let gateway_state = AppState::new()
     .expect("gateway state should build")
     .with_data_state_for_tests(
         crate::gateway::gateway_data::GatewayDataState::with_request_candidate_and_gemini_file_mapping_repository_for_tests(

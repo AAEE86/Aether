@@ -1,4 +1,8 @@
-use super::*;
+use crate::gateway::tests::{
+    any, build_router_with_execution_runtime_override, build_router_with_state, start_server,
+    AppState, Arc, Body, FrontdoorCorsConfig, Mutex, Request, Router, StatusCode,
+    FRONTDOOR_MANIFEST_PATH, READYZ_PATH,
+};
 
 #[tokio::test]
 async fn gateway_exposes_frontdoor_manifest_without_proxying_upstream() {
@@ -16,10 +20,7 @@ async fn gateway_exposes_frontdoor_manifest_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        "http://127.0.0.1:19091",
-    );
+    let gateway = build_router_with_execution_runtime_override("http://127.0.0.1:19091");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -41,10 +42,6 @@ async fn gateway_exposes_frontdoor_manifest_without_proxying_upstream() {
     assert_eq!(
         payload["rust_frontdoor"]["capabilities"]["public_proxy_catch_all"],
         true
-    );
-    assert_eq!(
-        payload["python_host_boundary"]["replaceable_shell"]["status"],
-        "should_move_to_rust_frontdoor"
     );
     let owned_routes = payload["rust_frontdoor"]["owned_route_patterns"]
         .as_array()
@@ -159,20 +156,12 @@ async fn gateway_exposes_frontdoor_manifest_without_proxying_upstream() {
         .iter()
         .any(|value| value == "/v1beta/files/{path...}"));
     assert_eq!(
-        payload["python_host_boundary"]["legacy_bridge"]["status"],
-        LEGACY_INTERNAL_GATEWAY_PHASEOUT_STATUS
+        payload["rust_frontdoor"]["internal_gateway"]["status"],
+        "rust_native_control_plane"
     );
     assert_eq!(
-        payload["python_host_boundary"]["legacy_bridge"]["sunset_date"],
-        LEGACY_INTERNAL_GATEWAY_SUNSET_DATE
-    );
-    assert_eq!(
-        payload["python_host_boundary"]["legacy_bridge"]["sunset_http_date"],
-        LEGACY_INTERNAL_GATEWAY_SUNSET_HTTP_DATE
-    );
-    assert_eq!(
-        payload["python_host_boundary"]["legacy_bridge"]["replacement"],
-        "public_proxy_or_local_rust_control_plane"
+        payload["rust_frontdoor"]["internal_gateway"]["path_prefixes"][0],
+        "/api/internal/gateway"
     );
     assert_eq!(payload["features"]["control_api_configured"], true);
     assert_eq!(payload["features"]["execution_runtime_configured"], true);
@@ -201,10 +190,7 @@ async fn gateway_reports_local_control_plane_as_configured_without_external_cont
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router_with_test_remote_execution_runtime(
-        upstream_url.clone(),
-        "http://127.0.0.1:19091",
-    );
+    let gateway = build_router_with_execution_runtime_override("http://127.0.0.1:19091");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let manifest = reqwest::Client::new()
@@ -239,8 +225,7 @@ async fn gateway_reports_local_control_plane_as_configured_without_external_cont
 }
 
 #[tokio::test]
-async fn gateway_reports_execution_runtime_as_configured_without_remote_execution_runtime_compat_config(
-) {
+async fn gateway_reports_execution_runtime_as_configured_without_execution_runtime_override() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -255,8 +240,7 @@ async fn gateway_reports_execution_runtime_as_configured_without_remote_executio
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let manifest = reqwest::Client::new()
@@ -297,7 +281,7 @@ async fn gateway_handles_cors_preflight_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("state should build")
         .with_frontdoor_cors_config(
             FrontdoorCorsConfig::new(vec!["http://localhost:3000".to_string()], true)
@@ -350,7 +334,7 @@ async fn gateway_adds_cors_headers_to_proxied_responses() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("state should build")
         .with_frontdoor_cors_config(
             FrontdoorCorsConfig::new(vec!["http://localhost:3000".to_string()], true)

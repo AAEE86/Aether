@@ -1,4 +1,11 @@
-pub(crate) use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::{Body, Bytes},
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 
 const ADMIN_AWS_REGIONS: &[&str] = &[
     "af-south-1",
@@ -31,8 +38,7 @@ const ADMIN_AWS_REGIONS: &[&str] = &[
     "us-west-1",
     "us-west-2",
 ];
-const ADMIN_MODEL_CATALOG_RUST_BACKEND_DETAIL: &str =
-    "Admin model catalog routes require Rust maintenance backend";
+const ADMIN_MODEL_CATALOG_DATA_UNAVAILABLE_DETAIL: &str = "Admin model catalog data unavailable";
 
 #[path = "core/management_tokens_routes.rs"]
 mod admin_core_management_tokens_routes;
@@ -45,10 +51,10 @@ mod admin_core_oauth_routes;
 #[path = "core/system_routes.rs"]
 mod admin_core_system_routes;
 
-fn build_admin_model_catalog_maintenance_response() -> Response<Body> {
+fn build_admin_model_catalog_data_unavailable_response() -> Response<Body> {
     (
         http::StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "detail": ADMIN_MODEL_CATALOG_RUST_BACKEND_DETAIL })),
+        Json(json!({ "detail": ADMIN_MODEL_CATALOG_DATA_UNAVAILABLE_DETAIL })),
     )
         .into_response()
 }
@@ -56,7 +62,7 @@ fn build_admin_model_catalog_maintenance_response() -> Response<Body> {
 pub(crate) async fn maybe_build_local_admin_core_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     if let Some(response) = admin_core_management_tokens_routes::maybe_build_local_admin_core_management_tokens_response(
         state,

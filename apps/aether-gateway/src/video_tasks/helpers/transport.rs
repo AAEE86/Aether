@@ -1,4 +1,23 @@
-use super::*;
+use std::collections::BTreeMap;
+
+use aether_contracts::ExecutionPlan;
+use aether_data::repository::video_tasks::{
+    StoredVideoTask, VideoTaskStatus as StoredVideoTaskStatus,
+};
+use serde_json::{Map, Value};
+
+use super::super::{
+    LocalVideoTaskFollowUpPlan, LocalVideoTaskPersistence, LocalVideoTaskStatus,
+    LocalVideoTaskTransport,
+};
+use crate::gateway::provider_transport::{
+    resolve_local_gemini_auth, resolve_local_standard_auth, resolve_transport_execution_timeouts,
+    supports_local_gemini_transport, supports_local_standard_transport,
+    GatewayProviderTransportSnapshot,
+};
+use crate::gateway::GatewayControlAuthContext;
+
+use super::{context_text, non_empty_owned};
 
 impl LocalVideoTaskTransport {
     pub(crate) fn from_plan(plan: &ExecutionPlan) -> Option<Self> {

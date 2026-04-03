@@ -298,11 +298,16 @@ pub(crate) fn supports_local_oauth_request_auth_resolution(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::*;
+    use super::{
+        CachedOAuthEntry, LocalOAuthRefreshAdapter, LocalOAuthRefreshCoordinator,
+        LocalOAuthRefreshError, LocalOAuthResolution, LocalResolvedOAuthRequestAuth,
+    };
     use crate::gateway::provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider, GatewayProviderTransportSnapshot,
     };
+    use async_trait::async_trait;
+    use std::sync::Arc;
 
     #[derive(Debug)]
     struct TestAdapter {

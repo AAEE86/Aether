@@ -1,13 +1,37 @@
-use super::*;
+use crate::gateway::handlers::public::support::build_unhandled_public_support_response;
+use axum::{body::Body, http, response::Response};
 
-pub(crate) async fn maybe_build_local_users_me_legacy_response(
+use super::{
+    handle_auth_me, handle_users_me_api_key_capabilities_put, handle_users_me_api_key_create,
+    handle_users_me_api_key_delete, handle_users_me_api_key_detail_get,
+    handle_users_me_api_key_patch, handle_users_me_api_key_providers_put,
+    handle_users_me_api_key_update, handle_users_me_api_keys_get, handle_users_me_available_models,
+    handle_users_me_delete_other_sessions, handle_users_me_delete_session,
+    handle_users_me_detail_put, handle_users_me_endpoint_status_get,
+    handle_users_me_management_token_create, handle_users_me_management_token_delete,
+    handle_users_me_management_token_detail_get, handle_users_me_management_token_regenerate,
+    handle_users_me_management_token_toggle, handle_users_me_management_token_update,
+    handle_users_me_management_tokens_list, handle_users_me_model_capabilities_get,
+    handle_users_me_model_capabilities_put, handle_users_me_password_patch,
+    handle_users_me_preferences_get, handle_users_me_preferences_put,
+    handle_users_me_providers_get, handle_users_me_sessions_get, handle_users_me_update_session,
+    handle_users_me_usage_active_get, handle_users_me_usage_get, handle_users_me_usage_heatmap_get,
+    handle_users_me_usage_interval_timeline_get, users_me_api_key_capabilities_path_matches,
+    users_me_api_key_detail_path_matches, users_me_api_key_providers_path_matches,
+    users_me_management_token_detail_path_matches,
+    users_me_management_token_regenerate_path_matches,
+    users_me_management_token_toggle_path_matches, users_me_management_tokens_root,
+    users_me_session_detail_path_matches, AppState, GatewayPublicRequestContext,
+};
+
+pub(crate) async fn maybe_build_local_users_me_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
     request_body: Option<&axum::body::Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
-    if decision.route_family.as_deref() != Some("users_me_legacy") {
+    if decision.route_family.as_deref() != Some("users_me") {
         return None;
     }
 
@@ -30,16 +54,12 @@ pub(crate) async fn maybe_build_local_users_me_legacy_response(
             Some(handle_users_me_delete_other_sessions(state, request_context, headers).await)
         }
         Some("session_delete")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/sessions/") =>
+            if users_me_session_detail_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_delete_session(state, request_context, headers).await)
         }
         Some("session_update")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/sessions/") =>
+            if users_me_session_detail_path_matches(&request_context.request_path) =>
         {
             Some(
                 handle_users_me_update_session(state, request_context, headers, request_body).await,
@@ -72,32 +92,24 @@ pub(crate) async fn maybe_build_local_users_me_legacy_response(
             )
         }
         Some("api_key_detail")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/api-keys/") =>
+            if users_me_api_key_detail_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_api_key_detail_get(state, request_context, headers).await)
         }
         Some("management_token_detail")
-            if request_context
-                .request_path
-                .starts_with("/api/me/management-tokens/") =>
+            if users_me_management_token_detail_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_management_token_detail_get(state, request_context, headers).await)
         }
         Some("api_key_update")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/api-keys/") =>
+            if users_me_api_key_detail_path_matches(&request_context.request_path) =>
         {
             Some(
                 handle_users_me_api_key_update(state, request_context, headers, request_body).await,
             )
         }
         Some("management_token_update")
-            if request_context
-                .request_path
-                .starts_with("/api/me/management-tokens/") =>
+            if users_me_management_token_detail_path_matches(&request_context.request_path) =>
         {
             Some(
                 handle_users_me_management_token_update(
@@ -110,37 +122,27 @@ pub(crate) async fn maybe_build_local_users_me_legacy_response(
             )
         }
         Some("api_key_patch")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/api-keys/") =>
+            if users_me_api_key_detail_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_api_key_patch(state, request_context, headers, request_body).await)
         }
         Some("management_token_toggle")
-            if request_context
-                .request_path
-                .starts_with("/api/me/management-tokens/") =>
+            if users_me_management_token_toggle_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_management_token_toggle(state, request_context, headers).await)
         }
         Some("api_key_delete")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/api-keys/") =>
+            if users_me_api_key_detail_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_api_key_delete(state, request_context, headers).await)
         }
         Some("management_token_delete")
-            if request_context
-                .request_path
-                .starts_with("/api/me/management-tokens/") =>
+            if users_me_management_token_detail_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_management_token_delete(state, request_context, headers).await)
         }
         Some("api_key_providers_update")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/api-keys/") =>
+            if users_me_api_key_providers_path_matches(&request_context.request_path) =>
         {
             Some(
                 handle_users_me_api_key_providers_put(
@@ -153,9 +155,7 @@ pub(crate) async fn maybe_build_local_users_me_legacy_response(
             )
         }
         Some("api_key_capabilities_update")
-            if request_context
-                .request_path
-                .starts_with("/api/users/me/api-keys/") =>
+            if users_me_api_key_capabilities_path_matches(&request_context.request_path) =>
         {
             Some(
                 handle_users_me_api_key_capabilities_put(
@@ -168,9 +168,7 @@ pub(crate) async fn maybe_build_local_users_me_legacy_response(
             )
         }
         Some("management_token_regenerate")
-            if request_context
-                .request_path
-                .starts_with("/api/me/management-tokens/") =>
+            if users_me_management_token_regenerate_path_matches(&request_context.request_path) =>
         {
             Some(handle_users_me_management_token_regenerate(state, request_context, headers).await)
         }
@@ -230,8 +228,6 @@ pub(crate) async fn maybe_build_local_users_me_legacy_response(
                     .await,
             )
         }
-        _ => Some(build_public_support_maintenance_response(
-            USERS_ME_MAINTENANCE_DETAIL,
-        )),
+        _ => Some(build_unhandled_public_support_response(request_context)),
     }
 }

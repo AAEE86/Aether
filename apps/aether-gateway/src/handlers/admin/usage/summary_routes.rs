@@ -1,4 +1,24 @@
-use super::*;
+use super::super::{
+    aggregate_usage_stats, list_usage_for_optional_range, round_to, AdminStatsTimeRange,
+    AdminStatsUsageFilter,
+};
+use super::{
+    admin_usage_bad_request_response, admin_usage_data_unavailable_response,
+    admin_usage_matches_api_format, admin_usage_matches_eq, admin_usage_matches_search,
+    admin_usage_matches_status, admin_usage_matches_username, admin_usage_parse_ids,
+    admin_usage_parse_limit, admin_usage_parse_offset, admin_usage_record_json,
+    admin_usage_total_tokens, ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
+};
+use crate::gateway::handlers::query_param_value;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::{
+    body::Body,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) async fn maybe_build_local_admin_usage_summary_response(
     state: &AppState,
@@ -18,8 +38,8 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 
@@ -82,8 +102,8 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 
@@ -150,8 +170,8 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
                 ) =>
         {
             if !state.has_usage_data_reader() {
-                return Ok(Some(admin_usage_maintenance_response(
-                    ADMIN_USAGE_RUST_BACKEND_DETAIL,
+                return Ok(Some(admin_usage_data_unavailable_response(
+                    ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
                 )));
             }
 

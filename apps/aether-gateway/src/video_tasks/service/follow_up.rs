@@ -1,4 +1,13 @@
-use super::*;
+use serde_json::Value;
+
+use super::super::{
+    extract_gemini_short_id_from_cancel_path, extract_openai_task_id_from_cancel_path,
+    extract_openai_task_id_from_path, extract_openai_task_id_from_remix_path,
+    LocalVideoTaskFollowUpPlan,
+};
+use crate::gateway::GatewayControlAuthContext;
+
+use super::VideoTaskService;
 
 impl VideoTaskService {
     pub(crate) fn prepare_follow_up_sync_plan(

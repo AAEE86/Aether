@@ -1,7 +1,17 @@
-use super::*;
+use super::{
+    auth_password_policy_level, build_auth_error_response, build_auth_wallet_summary_payload,
+    decrypt_catalog_secret_with_fallbacks, encrypt_catalog_secret_with_fallbacks, handle_auth_me,
+    query_param_optional_bool, query_param_value, resolve_authenticated_local_user,
+    unix_secs_to_rfc3339, validate_auth_register_password, AppState, AuthenticatedLocalUserContext,
+    GatewayPublicRequestContext, PUBLIC_CAPABILITY_DEFINITIONS,
+};
+use crate::gateway::handlers::admin::{
+    admin_stats_bad_request_response, build_admin_endpoint_health_status_payload,
+    list_usage_for_optional_range, parse_bounded_u32, round_to, AdminStatsTimeRange,
+    AdminStatsUsageFilter,
+};
+use crate::gateway::handlers::internal::build_management_token_payload;
 
-const USERS_ME_MAINTENANCE_DETAIL: &str =
-    "User self-service routes require Rust maintenance backend";
 const USERS_ME_AVAILABLE_MODELS_FETCH_LIMIT: usize = 1000;
 
 #[path = "user_me_management_tokens.rs"]
@@ -33,4 +43,4 @@ use user_me_shared::*;
 mod user_me_routes;
 use user_me_routes::*;
 
-pub(super) use self::user_me_routes::maybe_build_local_users_me_legacy_response;
+pub(super) use self::user_me_routes::maybe_build_local_users_me_response;

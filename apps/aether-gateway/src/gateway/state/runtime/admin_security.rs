@@ -1,4 +1,5 @@
-use super::*;
+use crate::gateway::state::AdminSecurityBlacklistEntry;
+use crate::gateway::{AppState, GatewayError};
 
 impl AppState {
     pub(crate) async fn add_admin_security_blacklist(

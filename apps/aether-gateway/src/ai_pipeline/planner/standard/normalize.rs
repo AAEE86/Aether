@@ -306,7 +306,8 @@ pub(crate) fn build_cross_format_openai_cli_upstream_url(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::build_cross_format_openai_cli_request_body;
+    use serde_json::json;
 
     #[test]
     fn builds_openai_family_cross_format_request_body_from_compact_source() {

@@ -1,4 +1,6 @@
-use super::*;
+use crate::gateway::{AppState, GatewayError, GatewayPublicRequestContext};
+use axum::body::{Body, Bytes};
+use axum::http::Response;
 
 #[path = "provider_query/models.rs"]
 mod provider_query_models;
@@ -10,7 +12,7 @@ mod provider_query_shared;
 pub(crate) async fn maybe_build_local_admin_provider_query_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
-    request_body: Option<&axum::body::Bytes>,
+    request_body: Option<&Bytes>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     provider_query_routes::maybe_build_local_admin_provider_query_response(
         state,

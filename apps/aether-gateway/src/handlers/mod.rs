@@ -90,8 +90,7 @@ const ADMIN_PROVIDER_MAPPING_PREVIEW_FETCH_LIMIT: usize = 10_000;
 const ADMIN_PROVIDER_POOL_SCAN_BATCH: u64 = 200;
 const ADMIN_EXTERNAL_MODELS_CACHE_KEY: &str = "aether:external:models_dev";
 const ADMIN_EXTERNAL_MODELS_CACHE_TTL_SECS: u64 = 15 * 60;
-const ADMIN_PROVIDER_OAUTH_RUST_BACKEND_DETAIL: &str =
-    "Admin provider OAuth requires Rust maintenance backend";
+const ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL: &str = "Admin provider OAuth data unavailable";
 
 pub(crate) mod admin;
 pub(crate) mod internal;
@@ -99,13 +98,10 @@ pub(crate) mod proxy;
 pub(crate) mod public;
 pub(crate) mod shared;
 
-pub(crate) use admin::*;
-pub(crate) use internal::*;
-pub(crate) use public::*;
 pub(crate) use proxy::proxy_request;
 pub(crate) use shared::*;
 
-const OFFICIAL_EXTERNAL_MODEL_PROVIDERS: &[&str] = &[
+pub(crate) const OFFICIAL_EXTERNAL_MODEL_PROVIDERS: &[&str] = &[
     "anthropic",
     "openai",
     "google",
@@ -141,5 +137,3 @@ pub(crate) struct AdminProviderPoolRuntimeState {
     pub(crate) cost_window_usage_by_key: BTreeMap<String, u64>,
     pub(crate) lru_score_by_key: BTreeMap<String, f64>,
 }
-
-pub(crate) use self::shared::*;

@@ -1,9 +1,28 @@
-use super::*;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::gateway::tests::{
+    any, build_router, build_router_with_state, json, start_server, to_bytes, AppState, Arc,
+    Body, Json, Mutex, Request, Router, StatusCode, CONTROL_ROUTE_FAMILY_HEADER,
+    CONTROL_ROUTE_KIND_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use super::{
+    sample_endpoint, sample_key, sample_models_candidate_row, sample_provider,
+    sample_public_catalog_model, sample_public_global_model,
+    sample_public_global_model_with_capabilities, sample_request_candidate,
+    InMemoryAnnouncementReadRepository, InMemoryGlobalModelReadRepository,
+    InMemoryMinimalCandidateSelectionReadRepository, InMemoryProviderCatalogReadRepository,
+    InMemoryRequestCandidateRepository, RequestCandidateStatus, StoredAnnouncement,
+    StoredPublicGlobalModel,
+};
 use crate::gateway::GatewayDataState;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::announcements::{AnnouncementListQuery, AnnouncementReadRepository};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeyExportRecord, StoredAuthApiKeySnapshot,
+};
+use aether_data::repository::auth_modules::{
+    InMemoryAuthModuleReadRepository, StoredLdapModuleConfig, StoredOAuthProviderModuleConfig,
 };
 use aether_data::repository::management_tokens::{
     InMemoryManagementTokenRepository, StoredManagementToken, StoredManagementTokenUserSummary,
@@ -14,6 +33,7 @@ use aether_data::repository::users::{
     InMemoryUserReadRepository, StoredUserAuthRecord, StoredUserExportRow,
 };
 use aether_data::repository::wallet::{InMemoryWalletRepository, StoredWalletSnapshot};
+use axum::response::IntoResponse;
 use chrono::Utc;
 
 #[path = "public_support/dashboard.rs"]
@@ -87,7 +107,7 @@ async fn gateway_handles_public_announcements_list_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_announcement_reader_for_tests(
@@ -172,7 +192,7 @@ async fn gateway_handles_public_active_announcements_without_proxying_upstream()
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_announcement_reader_for_tests(
@@ -237,7 +257,7 @@ async fn gateway_handles_public_announcement_detail_without_proxying_upstream() 
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_announcement_reader_for_tests(
@@ -286,7 +306,7 @@ async fn gateway_creates_announcement_locally_with_trusted_admin_principal() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_announcement_repository_for_tests(
@@ -376,7 +396,7 @@ async fn gateway_updates_announcement_locally_with_trusted_admin_principal() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_announcement_repository_for_tests(
@@ -465,7 +485,7 @@ async fn gateway_deletes_announcement_locally_with_trusted_admin_principal() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_announcement_repository_for_tests(
@@ -512,6 +532,114 @@ async fn gateway_deletes_announcement_locally_with_trusted_admin_principal() {
 }
 
 #[tokio::test]
+async fn gateway_returns_service_unavailable_for_admin_announcement_writes_without_writer() {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+    let upstream = Router::new().route(
+        "/api/announcements/{*path}",
+        any(move |_request: Request| {
+            let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+            async move {
+                *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+                (StatusCode::OK, Body::from("unexpected upstream hit"))
+            }
+        }),
+    );
+
+    let announcement_repository = Arc::new(InMemoryAnnouncementReadRepository::seed(vec![
+        StoredAnnouncement::new(
+            "announcement-1".to_string(),
+            "系统维护".to_string(),
+            "今天维护".to_string(),
+            "maintenance".to_string(),
+            10,
+            true,
+            true,
+            Some("admin-1".to_string()),
+            Some("admin".to_string()),
+            None,
+            None,
+            1_711_000_000,
+            1_711_000_100,
+        )
+        .expect("announcement should build"),
+    ]));
+
+    let (_fallback_probe_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                crate::gateway::gateway_data::GatewayDataState::with_announcement_reader_for_tests(
+                    announcement_repository,
+                ),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!("{gateway_url}/api/announcements"))
+        .header(crate::gateway::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "title": "系统维护",
+            "content": "今晚维护",
+            "type": "maintenance"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(create_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let create_payload: serde_json::Value = create_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(create_payload["detail"], "公告写入暂不可用");
+
+    let update_response = client
+        .put(format!("{gateway_url}/api/announcements/announcement-1"))
+        .header(crate::gateway::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "title": "系统升级"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(update_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let update_payload: serde_json::Value = update_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(update_payload["detail"], "公告写入暂不可用");
+
+    let delete_response = client
+        .delete(format!("{gateway_url}/api/announcements/announcement-1"))
+        .header(crate::gateway::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let delete_payload: serde_json::Value = delete_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(delete_payload["detail"], "公告写入暂不可用");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_public_catalog_site_info_without_proxying_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -528,7 +656,7 @@ async fn gateway_handles_public_catalog_site_info_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::disabled()
@@ -601,7 +729,7 @@ async fn gateway_handles_public_catalog_providers_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -676,7 +804,7 @@ async fn gateway_handles_public_catalog_models_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
@@ -748,7 +876,7 @@ async fn gateway_handles_public_catalog_search_models_without_proxying_upstream(
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
@@ -830,7 +958,7 @@ async fn gateway_handles_public_catalog_stats_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
@@ -880,13 +1008,13 @@ async fn gateway_handles_public_global_models_without_proxying_upstream() {
 
     let global_model_repository = Arc::new(InMemoryGlobalModelReadRepository::seed(vec![
         sample_public_global_model("gm-1", "claude-sonnet-4-5", "Claude Sonnet 4.5", true),
-        sample_public_global_model("gm-2", "legacy-model", "Legacy Model", false),
+        sample_public_global_model("gm-2", "disabled-model", "Disabled Model", false),
         sample_public_global_model("gm-3", "gpt-5", "GPT 5", true),
     ]));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
@@ -999,7 +1127,7 @@ async fn gateway_handles_public_health_api_formats_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_and_request_candidate_reader_for_tests(
@@ -1087,7 +1215,7 @@ async fn gateway_handles_public_auth_modules_status_without_proxying_upstream() 
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_auth_module_reader_for_tests(
@@ -1142,7 +1270,7 @@ async fn gateway_handles_public_capabilities_without_proxying_upstream() {
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -1191,7 +1319,7 @@ async fn gateway_handles_auth_registration_settings_without_proxying_upstream() 
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -1263,7 +1391,7 @@ async fn gateway_handles_auth_settings_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(data_state),
     );
@@ -1307,7 +1435,7 @@ async fn gateway_handles_public_user_configurable_capabilities_without_proxying_
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -1351,7 +1479,7 @@ async fn gateway_handles_public_model_capabilities_without_proxying_upstream() {
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
@@ -1403,7 +1531,7 @@ async fn gateway_handles_missing_public_model_capabilities_without_proxying_upst
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -1451,7 +1579,7 @@ async fn gateway_handles_public_providers_without_proxying_upstream() {
     ));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -1500,7 +1628,7 @@ async fn gateway_handles_public_provider_detail_without_proxying_upstream() {
     ));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -1566,7 +1694,7 @@ async fn gateway_handles_public_providers_with_endpoints_without_proxying_upstre
     ));
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_provider_catalog_reader_for_tests(
@@ -1596,7 +1724,7 @@ async fn gateway_handles_public_providers_with_endpoints_without_proxying_upstre
 }
 
 #[tokio::test]
-async fn gateway_handles_legacy_test_connection_alias_without_proxying_upstream() {
+async fn gateway_handles_test_connection_alias_without_proxying_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1611,7 +1739,7 @@ async fn gateway_handles_legacy_test_connection_alias_without_proxying_upstream(
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -1633,17 +1761,15 @@ async fn gateway_handles_legacy_test_connection_alias_without_proxying_upstream(
 }
 
 #[tokio::test]
-async fn gateway_handles_public_test_connection_without_proxying_python_upstream() {
-    let python_upstream_hits = Arc::new(Mutex::new(0usize));
-    let python_upstream_hits_clone = Arc::clone(&python_upstream_hits);
-    let python_upstream = Router::new().route(
+async fn gateway_handles_public_test_connection_without_hitting_fallback_probe() {
+    let fallback_probe_hits = Arc::new(Mutex::new(0usize));
+    let fallback_probe_hits_clone = Arc::clone(&fallback_probe_hits);
+    let fallback_probe = Router::new().route(
         "/{*path}",
         any(move |_request: Request| {
-            let python_upstream_hits_inner = Arc::clone(&python_upstream_hits_clone);
+            let fallback_probe_hits_inner = Arc::clone(&fallback_probe_hits_clone);
             async move {
-                *python_upstream_hits_inner
-                    .lock()
-                    .expect("mutex should lock") += 1;
+                *fallback_probe_hits_inner.lock().expect("mutex should lock") += 1;
                 (StatusCode::OK, Body::from("proxied"))
             }
         }),
@@ -1693,9 +1819,9 @@ async fn gateway_handles_public_test_connection_without_proxying_python_upstream
         )],
     ));
 
-    let (python_upstream_url, python_upstream_handle) = start_server(python_upstream).await;
+    let (_unused_fallback_probe_url, fallback_probe_handle) = start_server(fallback_probe).await;
     let gateway = build_router_with_state(
-        AppState::new(python_upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_provider_transport_reader_for_tests(
@@ -1721,10 +1847,10 @@ async fn gateway_handles_public_test_connection_without_proxying_python_upstream
     assert_eq!(payload["api_format"], "openai:chat");
     assert_eq!(payload["response_id"], "resp_local_test");
     assert_eq!(*provider_hits.lock().expect("mutex should lock"), 1);
-    assert_eq!(*python_upstream_hits.lock().expect("mutex should lock"), 0);
+    assert_eq!(*fallback_probe_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
-    python_upstream_handle.abort();
+    fallback_probe_handle.abort();
     provider_handle.abort();
 }
 
@@ -1748,7 +1874,7 @@ async fn assert_public_support_route_returns_local_503(
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router(upstream_url).expect("gateway should build");
+    let gateway = build_router().expect("gateway should build");
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let client = reqwest::Client::new();
@@ -1823,6 +1949,13 @@ async fn assert_public_support_route_returns_local_503_with_auth(
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+async fn assert_local_route_not_found_response(response: reqwest::Response) {
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["error"]["type"], "http_error");
+    assert_eq!(payload["error"]["message"], "Route not found");
 }
 
 fn test_auth_secret() -> String {
@@ -2048,7 +2181,7 @@ async fn start_auth_gateway_with_state(
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![wallet]));
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -2092,7 +2225,7 @@ where
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![wallet]));
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_wallet_and_usage_for_tests(
@@ -2146,7 +2279,7 @@ where
             usage_repository,
         )
         .with_provider_catalog_reader(provider_catalog_repository);
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(data_state)
         .with_auth_sessions_for_tests(sessions);
@@ -2182,7 +2315,7 @@ async fn start_auth_gateway_with_preferences_state(
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![wallet]));
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -2292,7 +2425,7 @@ where
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![wallet]));
-    let state = AppState::new(upstream_url)
+    let state = AppState::new()
         .expect("gateway should build")
         .with_data_state_for_tests(
             crate::gateway::gateway_data::GatewayDataState::with_announcement_user_and_wallet_for_tests(
@@ -2316,7 +2449,7 @@ async fn start_auth_gateway_with_builder<F>(
     tokio::task::JoinHandle<()>,
 )
 where
-    F: FnOnce(String) -> AppState,
+    F: FnOnce() -> AppState,
 {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -2330,8 +2463,8 @@ where
             }
         }),
     );
-    let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway = build_router_with_state(build_state(upstream_url));
+    let (_unused_fallback_probe_url, upstream_handle) = start_server(upstream).await;
+    let gateway = build_router_with_state(build_state());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
     (gateway_url, upstream_hits, gateway_handle, upstream_handle)
 }
@@ -2447,7 +2580,7 @@ async fn gateway_handles_user_monitoring_rate_limit_status_locally_without_proxy
     )]));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
                     auth_repository,
@@ -2455,7 +2588,7 @@ async fn gateway_handles_user_monitoring_rate_limit_status_locally_without_proxy
                 .with_user_reader(Arc::new(
                     InMemoryUserReadRepository::seed_auth_users(vec![sample_auth_user(now)]),
                 ));
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -2978,6 +3111,93 @@ async fn gateway_returns_not_found_for_missing_announcement_read_status_locally(
     assert_eq!(payload["detail"], "Announcement not found");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_invalid_nested_announcement_paths_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-announcement-user-invalid-nested"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let announcement_repository = Arc::new(InMemoryAnnouncementReadRepository::seed(vec![
+        StoredAnnouncement::new(
+            "announcement-nested".to_string(),
+            "嵌套路由公告".to_string(),
+            "用于校验无效 announcement 子路径".to_string(),
+            "info".to_string(),
+            10,
+            true,
+            false,
+            Some("admin-1".to_string()),
+            Some("admin".to_string()),
+            None,
+            None,
+            now.timestamp(),
+            now.timestamp(),
+        )
+        .expect("announcement should build"),
+    ]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_announcement_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-announcement-user-invalid-nested",
+                "device-announcement-user-invalid-nested",
+                "refresh-token-placeholder",
+                now,
+            )],
+            announcement_repository,
+        )
+        .await;
+    let client = reqwest::Client::new();
+
+    let detail_response = client
+        .get(format!(
+            "{gateway_url}/api/announcements/announcement-nested/history"
+        ))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(detail_response).await;
+
+    let read_status_response = client
+        .patch(format!(
+            "{gateway_url}/api/announcements/announcement-nested/history/read-status"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-announcement-user-invalid-nested",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({ "is_read": true }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(read_status_response).await;
+
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
     gateway_handle.abort();
     upstream_handle.abort();
 }
@@ -3531,6 +3751,68 @@ async fn gateway_handles_wallet_recharge_read_routes_locally_without_proxying_up
 }
 
 #[tokio::test]
+async fn gateway_rejects_invalid_wallet_nested_detail_paths_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-wallet-invalid-detail-1"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-wallet-invalid-detail-1",
+                "device-wallet-invalid-detail-1",
+                "refresh-token-placeholder",
+                now,
+            )],
+        )
+        .await;
+
+    let client = reqwest::Client::new();
+
+    let recharge_response = client
+        .get(format!("{gateway_url}/api/wallet/recharge/order-1/confirm"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-wallet-invalid-detail-1")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_local_route_not_found_response(recharge_response).await;
+
+    let refund_response = client
+        .get(format!("{gateway_url}/api/wallet/refunds/refund-1/status"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-wallet-invalid-detail-1")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_local_route_not_found_response(refund_response).await;
+
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_wallet_balance_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -3663,6 +3945,58 @@ async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_returns_service_unavailable_for_wallet_today_cost_without_usage_reader() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-wallet-today-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-wallet-today-unavailable",
+                "device-wallet-today-unavailable",
+                "refresh-token-placeholder",
+                now,
+            )],
+        )
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/wallet/today-cost"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-wallet-today-unavailable")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "钱包今日费用数据暂不可用");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_updates_users_me_detail_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -3730,6 +4064,69 @@ async fn gateway_updates_users_me_detail_locally_without_proxying_upstream() {
     let get_payload: serde_json::Value = get_response.json().await.expect("json body should parse");
     assert_eq!(get_payload["email"], "alice+updated@example.com");
     assert_eq!(get_payload["username"], "alice-updated");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_detail_update_without_profile_storage() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-update-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
+                    user_repository,
+                );
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .without_auth_user_store_for_tests()
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-update-unavailable",
+                    "device-users-me-update-unavailable",
+                    "refresh-token-placeholder",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .put(format!("{gateway_url}/api/users/me"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-update-unavailable")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "email": "alice+updated@example.com",
+            "username": "alice-updated",
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "用户资料存储暂不可用");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -3818,6 +4215,70 @@ async fn gateway_changes_users_me_password_locally_without_proxying_upstream() {
         .expect("sessions should be array");
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["id"], "session-users-me-password-current");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_password_change_without_credential_storage(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-password-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
+                    user_repository,
+                );
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .without_auth_user_store_for_tests()
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-password-unavailable",
+                    "device-users-me-password-unavailable",
+                    "refresh-token-placeholder",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .patch(format!("{gateway_url}/api/users/me/password"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-password-unavailable")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "current_password": "secret123",
+            "new_password": "Secret456!",
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "用户凭证存储暂不可用");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -3925,7 +4386,7 @@ async fn gateway_handles_users_me_endpoint_status_locally_without_proxying_upstr
         now,
     )]));
     let gateway = build_router_with_state(
-        AppState::new(upstream_url)
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 crate::gateway::gateway_data::GatewayDataState::with_user_and_wallet_for_tests(
@@ -3968,6 +4429,67 @@ async fn gateway_handles_users_me_endpoint_status_locally_without_proxying_upstr
     assert_eq!(items[1]["health_score"], 0.5);
     assert_eq!(items[1]["timeline"].as_array().map(Vec::len), Some(100));
     assert!(items[1].get("total_keys").is_none());
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_endpoint_status_without_health_data() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-user-endpoint-status-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
+                    user_repository,
+                );
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-user-endpoint-status-unavailable",
+                    "device-user-endpoint-status-unavailable",
+                    "refresh-token-placeholder",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/users/me/endpoint-status"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-user-endpoint-status-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "用户端点健康数据暂不可用");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -4064,6 +4586,68 @@ async fn gateway_handles_users_me_preferences_locally_without_proxying_upstream(
     assert_eq!(verify_payload["notifications"]["email"], false);
     assert_eq!(verify_payload["notifications"]["usage_alerts"], false);
     assert_eq!(verify_payload["notifications"]["announcements"], true);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_preferences_update_without_storage() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-user-pref-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
+                    user_repository,
+                );
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-user-pref-unavailable",
+                    "device-user-pref-unavailable",
+                    "refresh-token-placeholder",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .put(format!("{gateway_url}/api/users/me/preferences"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-user-pref-unavailable")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "theme": "dark",
+            "language": "en-US",
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json should parse");
+    assert_eq!(payload["detail"], "用户偏好设置存储暂不可用");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -4351,6 +4935,65 @@ async fn gateway_handles_users_me_usage_interval_timeline_and_heatmap_locally_wi
             >= 2
     );
     assert!(heatmap_payload["max_requests"].as_u64().unwrap_or(0) >= 1);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_usage_routes_without_reader() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-usage-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-users-me-usage-unavailable",
+                "device-users-me-usage-unavailable",
+                "refresh-token-placeholder",
+                now,
+            )],
+        )
+        .await;
+
+    let client = reqwest::Client::new();
+    for path in [
+        "/api/users/me/usage",
+        "/api/users/me/usage/active",
+        "/api/users/me/usage/interval-timeline?hours=24&limit=100",
+        "/api/users/me/usage/heatmap",
+    ] {
+        let response = client
+            .get(format!("{gateway_url}{path}"))
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("x-client-device-id", "device-users-me-usage-unavailable")
+            .header("user-agent", "AetherTest/1.0")
+            .send()
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        let payload: serde_json::Value = response.json().await.expect("json body should parse");
+        assert_eq!(payload["detail"], "用户用量数据暂不可用", "{path}");
+    }
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -4667,6 +5310,99 @@ async fn gateway_updates_users_me_session_label_locally_without_proxying_upstrea
 }
 
 #[tokio::test]
+async fn gateway_rejects_invalid_users_me_session_delete_path_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            ("session_id".to_string(), json!("session-users-me-current")),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let current = sample_auth_session(
+        "user-auth-1",
+        "session-users-me-current",
+        "device-users-me-current",
+        "refresh-token-current",
+        now,
+    );
+
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(user, sample_auth_wallet("user-auth-1", now), [current])
+            .await;
+
+    let response = reqwest::Client::new()
+        .delete(format!("{gateway_url}/api/users/me/sessions/"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-current")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(response).await;
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_invalid_users_me_session_update_path_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            ("session_id".to_string(), json!("session-users-me-current")),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let current = sample_auth_session(
+        "user-auth-1",
+        "session-users-me-current",
+        "device-users-me-current",
+        "refresh-token-current",
+        now,
+    );
+
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(user, sample_auth_wallet("user-auth-1", now), [current])
+            .await;
+
+    let response = reqwest::Client::new()
+        .patch(format!("{gateway_url}/api/users/me/sessions/"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-current")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({ "device_label": "我的 MacBook" }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(response).await;
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_users_me_api_keys_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -4737,13 +5473,13 @@ async fn gateway_handles_users_me_api_keys_locally_without_proxying_upstream() {
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
                     user_repository,
                 )
                 .with_auth_api_key_reader(auth_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -4794,6 +5530,178 @@ async fn gateway_handles_users_me_api_keys_locally_without_proxying_upstream() {
         .await
         .expect("json body should parse");
     assert_eq!(detail_payload["key"], "sk-user-live-1");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_invalid_users_me_api_key_detail_path_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            ("session_id".to_string(), json!("session-users-me-api-keys")),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-users-me-api-keys",
+                "device-users-me-api-keys",
+                "refresh-token-users-me-api-keys",
+                now,
+            )],
+        )
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/users/me/api-keys/"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-keys")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(response).await;
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_invalid_users_me_api_key_patch_path_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-api-key-writes"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state = crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
+                Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![])),
+            )
+            .with_user_reader(Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user])));
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-api-key-writes",
+                    "device-users-me-api-key-writes",
+                    "refresh-token-users-me-api-key-writes",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .patch(format!("{gateway_url}/api/users/me/api-keys/"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-writes")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({ "is_active": false }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(response).await;
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_users_me_api_key_nested_get_path_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            ("session_id".to_string(), json!("session-users-me-api-keys")),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-users-me-api-keys",
+                "device-users-me-api-keys",
+                "refresh-token-users-me-api-keys",
+                now,
+            )],
+        )
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{gateway_url}/api/users/me/api-keys/key-123/providers"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-keys")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTROL_ROUTE_FAMILY_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        None
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTROL_ROUTE_KIND_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        None
+    );
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["error"]["type"], "http_error");
+    assert_eq!(payload["error"]["message"], "Route not found");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -4885,7 +5793,7 @@ async fn gateway_handles_users_me_api_key_writes_locally_without_proxying_upstre
     ));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_repository_for_tests(
                     auth_repository,
@@ -4893,7 +5801,7 @@ async fn gateway_handles_users_me_api_key_writes_locally_without_proxying_upstre
                 .with_user_reader(user_repository)
                 .with_provider_catalog_reader(provider_catalog_repository)
                 .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -5066,6 +5974,231 @@ async fn gateway_handles_users_me_api_key_writes_locally_without_proxying_upstre
 }
 
 #[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_api_key_writes_without_writer() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-api-key-readonly"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let encrypted =
+        encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "sk-user-existing-1")
+            .expect("ciphertext should build");
+    let auth_repository = Arc::new(
+        InMemoryAuthApiKeySnapshotRepository::seed(vec![(
+            Some("hash-user-existing-1".to_string()),
+            StoredAuthApiKeySnapshot::new(
+                "user-auth-1".to_string(),
+                "alice".to_string(),
+                Some("alice@example.com".to_string()),
+                "user".to_string(),
+                "local".to_string(),
+                true,
+                false,
+                Some(json!(["openai"])),
+                Some(json!(["openai:chat"])),
+                Some(json!(["gpt-5"])),
+                "user-existing-1".to_string(),
+                Some("existing".to_string()),
+                true,
+                false,
+                false,
+                Some(60),
+                Some(5),
+                Some(300),
+                Some(json!(["openai"])),
+                Some(json!(["openai:chat"])),
+                Some(json!(["gpt-5"])),
+            )
+            .expect("auth api key snapshot should build"),
+        )])
+        .with_export_records(vec![StoredAuthApiKeyExportRecord::new(
+            "user-auth-1".to_string(),
+            "user-existing-1".to_string(),
+            "hash-user-existing-1".to_string(),
+            Some(encrypted),
+            Some("existing".to_string()),
+            Some(json!(["openai"])),
+            Some(json!(["openai:chat"])),
+            Some(json!(["gpt-5"])),
+            Some(60),
+            Some(5),
+            None,
+            true,
+            Some(300),
+            false,
+            3,
+            0.5,
+            false,
+        )
+        .expect("export record should build")]),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![sample_provider("provider-openai", "openai", 10)],
+        vec![sample_endpoint(
+            "endpoint-openai-1",
+            "provider-openai",
+            "openai:chat",
+            "https://api.openai.example",
+        )],
+        vec![],
+    ));
+
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_auth_api_key_reader_for_tests(
+                    auth_repository,
+                )
+                .with_user_reader(user_repository)
+                .with_provider_catalog_reader(provider_catalog_repository);
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-api-key-readonly",
+                    "device-users-me-api-key-readonly",
+                    "refresh-token-users-me-api-key-readonly",
+                    now,
+                )])
+        })
+        .await;
+
+    let client = reqwest::Client::new();
+    let create_response = client
+        .post(format!("{gateway_url}/api/users/me/api-keys"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-readonly")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "name": "readonly-key",
+            "rate_limit": 120
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(create_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let create_payload: serde_json::Value = create_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(create_payload["detail"], "用户 API 密钥写入暂不可用");
+
+    let update_response = client
+        .put(format!(
+            "{gateway_url}/api/users/me/api-keys/user-existing-1"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-readonly")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "name": "writer-key-renamed",
+            "rate_limit": 30
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(update_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let update_payload: serde_json::Value = update_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(update_payload["detail"], "用户 API 密钥写入暂不可用");
+
+    let toggle_response = client
+        .patch(format!(
+            "{gateway_url}/api/users/me/api-keys/user-existing-1"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-readonly")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({ "is_active": false }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(toggle_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let toggle_payload: serde_json::Value = toggle_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(toggle_payload["detail"], "用户 API 密钥写入暂不可用");
+
+    let providers_response = client
+        .put(format!(
+            "{gateway_url}/api/users/me/api-keys/user-existing-1/providers"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-readonly")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({ "providers": ["openai"] }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(providers_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let providers_payload: serde_json::Value = providers_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(providers_payload["detail"], "用户 API 密钥写入暂不可用");
+
+    let capabilities_response = client
+        .put(format!(
+            "{gateway_url}/api/users/me/api-keys/user-existing-1/capabilities"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-readonly")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({ "force_capabilities": {} }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(
+        capabilities_response.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let capabilities_payload: serde_json::Value = capabilities_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(capabilities_payload["detail"], "用户 API 密钥写入暂不可用");
+
+    let delete_response = client
+        .delete(format!(
+            "{gateway_url}/api/users/me/api-keys/user-existing-1"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-users-me-api-key-readonly")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let delete_payload: serde_json::Value = delete_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(delete_payload["detail"], "用户 API 密钥写入暂不可用");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_users_me_management_token_reads_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -5092,13 +6225,13 @@ async fn gateway_handles_users_me_management_token_reads_locally_without_proxyin
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_management_token_repository_for_tests(
                     repository,
                 )
                 .with_user_reader(user_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -5177,6 +6310,72 @@ async fn gateway_handles_users_me_management_token_reads_locally_without_proxyin
 }
 
 #[tokio::test]
+async fn gateway_rejects_users_me_management_token_nested_get_path_as_local_not_found_without_hitting_upstream(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-management-token-reads"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let repository = Arc::new(InMemoryManagementTokenRepository::seed(vec![
+        sample_users_me_management_token("mt-user-1", "user-auth-1", "alice", true),
+    ]));
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state = crate::gateway::gateway_data::GatewayDataState::with_management_token_repository_for_tests(
+                repository,
+            )
+            .with_user_reader(user_repository);
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-management-token-reads",
+                    "device-users-me-management-token-reads",
+                    "refresh-token-users-me-management-token-reads",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{gateway_url}/api/me/management-tokens/mt-user-1/status"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-reads",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_local_route_not_found_response(response).await;
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_users_me_management_token_writes_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -5202,13 +6401,13 @@ async fn gateway_handles_users_me_management_token_writes_locally_without_proxyi
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_management_token_repository_for_tests(
                     repository,
                 )
                 .with_user_reader(user_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -5373,6 +6572,266 @@ async fn gateway_handles_users_me_management_token_writes_locally_without_proxyi
 }
 
 #[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_management_token_reads_without_reader() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-management-token-read-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
+                    user_repository,
+                );
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-management-token-read-unavailable",
+                    "device-users-me-management-token-read-unavailable",
+                    "refresh-token-users-me-management-token-read-unavailable",
+                    now,
+                )])
+        })
+        .await;
+
+    let client = reqwest::Client::new();
+    let list_response = client
+        .get(format!("{gateway_url}/api/me/management-tokens"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-read-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(list_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let list_payload: serde_json::Value =
+        list_response.json().await.expect("json body should parse");
+    assert_eq!(list_payload["detail"], "用户 Management Token 数据暂不可用");
+
+    let detail_response = client
+        .get(format!("{gateway_url}/api/me/management-tokens/mt-missing"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-read-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(detail_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let detail_payload: serde_json::Value = detail_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        detail_payload["detail"],
+        "用户 Management Token 数据暂不可用"
+    );
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_management_token_writes_without_writer() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-management-token-write-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let repository = Arc::new(InMemoryManagementTokenRepository::seed(vec![
+        sample_users_me_management_token("mt-existing-1", "user-auth-1", "alice", true),
+    ]));
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_management_token_reader_for_tests(
+                    repository,
+                )
+                .with_user_reader(user_repository);
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-management-token-write-unavailable",
+                    "device-users-me-management-token-write-unavailable",
+                    "refresh-token-users-me-management-token-write-unavailable",
+                    now,
+                )])
+        })
+        .await;
+
+    let client = reqwest::Client::new();
+    let create_response = client
+        .post(format!("{gateway_url}/api/me/management-tokens"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-write-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "name": "readonly-token",
+            "description": "readonly token",
+            "allowed_ips": ["127.0.0.1"],
+            "expires_at": (now + chrono::Duration::days(1)).to_rfc3339(),
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(create_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let create_payload: serde_json::Value = create_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        create_payload["detail"],
+        "用户 Management Token 写入暂不可用"
+    );
+
+    let update_response = client
+        .put(format!(
+            "{gateway_url}/api/me/management-tokens/mt-existing-1"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-write-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "name": "readonly-token-renamed",
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(update_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let update_payload: serde_json::Value = update_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        update_payload["detail"],
+        "用户 Management Token 写入暂不可用"
+    );
+
+    let toggle_response = client
+        .patch(format!(
+            "{gateway_url}/api/me/management-tokens/mt-existing-1/status"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-write-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(toggle_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let toggle_payload: serde_json::Value = toggle_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        toggle_payload["detail"],
+        "用户 Management Token 写入暂不可用"
+    );
+
+    let regenerate_response = client
+        .post(format!(
+            "{gateway_url}/api/me/management-tokens/mt-existing-1/regenerate"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-write-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(
+        regenerate_response.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let regenerate_payload: serde_json::Value = regenerate_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        regenerate_payload["detail"],
+        "用户 Management Token 写入暂不可用"
+    );
+
+    let delete_response = client
+        .delete(format!(
+            "{gateway_url}/api/me/management-tokens/mt-existing-1"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-management-token-write-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let delete_payload: serde_json::Value = delete_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        delete_payload["detail"],
+        "用户 Management Token 写入暂不可用"
+    );
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_users_me_providers_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -5437,14 +6896,14 @@ async fn gateway_handles_users_me_providers_locally_without_proxying_upstream() 
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
 
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
                     global_model_repository,
                 )
                 .with_provider_catalog_reader(provider_catalog_repository)
                 .with_user_reader(user_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -5589,12 +7048,41 @@ async fn gateway_handles_auth_login_locally_without_proxying_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_rejects_unsupported_auth_login_type_locally_without_proxying_upstream() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(user, sample_auth_wallet("user-auth-1", now), []).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/auth/login"))
+        .header("x-client-device-id", "device-auth-login-unsupported")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "email": "alice@example.com",
+            "password": "secret123",
+            "auth_type": "oauth",
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "不支持的认证类型");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_auth_ldap_login_locally_without_proxying_upstream() {
     let encrypted_bind_password =
         encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "bind-secret")
             .expect("bind password should encrypt");
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let auth_module_repository = Arc::new(InMemoryAuthModuleReadRepository::seed(
                 Vec::<StoredOAuthProviderModuleConfig>::new(),
                 Some(StoredLdapModuleConfig {
@@ -5619,7 +7107,7 @@ async fn gateway_handles_auth_ldap_login_locally_without_proxying_upstream() {
                     ("module.ldap.enabled".to_string(), json!(true)),
                     ("default_user_initial_gift_usd".to_string(), json!(9.5)),
                 ]);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
         })
@@ -5684,7 +7172,7 @@ async fn gateway_handles_auth_ldap_login_locally_without_proxying_upstream() {
 #[tokio::test]
 async fn gateway_handles_auth_register_locally_without_proxying_upstream() {
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state = crate::gateway::gateway_data::GatewayDataState::disabled()
                 .with_system_config_values_for_tests(vec![
                     ("enable_registration".to_string(), json!(true)),
@@ -5693,7 +7181,7 @@ async fn gateway_handles_auth_register_locally_without_proxying_upstream() {
                     ("smtp_from_email".to_string(), json!("ops@example.com")),
                     ("default_user_initial_gift_usd".to_string(), json!(12.5)),
                 ]);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_email_verified_for_tests("alice@example.com")
@@ -5764,10 +7252,50 @@ async fn gateway_handles_auth_register_locally_without_proxying_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_returns_service_unavailable_for_auth_register_without_storage() {
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state = crate::gateway::gateway_data::GatewayDataState::disabled()
+                .with_system_config_values_for_tests(vec![
+                    ("enable_registration".to_string(), json!(true)),
+                    ("require_email_verification".to_string(), json!(true)),
+                    ("smtp_host".to_string(), json!("smtp.example.com")),
+                    ("smtp_from_email".to_string(), json!("ops@example.com")),
+                    ("default_user_initial_gift_usd".to_string(), json!(12.5)),
+                ]);
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_email_verified_for_tests("alice@example.com")
+                .without_auth_user_store_for_tests()
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/auth/register"))
+        .json(&json!({
+            "email": "alice@example.com",
+            "username": "alice",
+            "password": "secret123",
+        }))
+        .send()
+        .await
+        .expect("register request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "注册数据存储暂不可用");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_auth_send_verification_code_locally_without_proxying_upstream() {
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
-            AppState::new(upstream_url)
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(
                     crate::gateway::gateway_data::GatewayDataState::disabled()
@@ -5841,8 +7369,8 @@ async fn gateway_handles_auth_send_verification_code_locally_without_proxying_up
 async fn gateway_handles_auth_verification_status_locally_without_proxying_upstream() {
     let now = Utc::now() - chrono::Duration::seconds(10);
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
-            AppState::new(upstream_url)
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
                 .expect("gateway should build")
                 .with_auth_email_verification_pending_for_tests("alice@example.com", "123456", now)
         })
@@ -5872,8 +7400,8 @@ async fn gateway_handles_auth_verification_status_locally_without_proxying_upstr
 async fn gateway_handles_auth_verify_email_locally_without_proxying_upstream() {
     let now = Utc::now();
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
-            AppState::new(upstream_url)
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
                 .expect("gateway should build")
                 .with_auth_email_verification_pending_for_tests("alice@example.com", "123456", now)
         })
@@ -5991,7 +7519,7 @@ async fn gateway_handles_users_me_available_models_locally_without_proxying_upst
         InMemoryGlobalModelReadRepository::seed(vec![
             sample_public_global_model("gm-1", "gpt-5", "GPT 5", true),
             sample_public_global_model("gm-2", "claude-sonnet-4-5", "Claude Sonnet 4.5", true),
-            sample_public_global_model("gm-3", "legacy-model", "Legacy Model", false),
+            sample_public_global_model("gm-3", "disabled-model", "Disabled Model", false),
         ])
         .with_active_global_model_refs(vec![
             aether_data::repository::global_models::StoredProviderActiveGlobalModel::new(
@@ -6016,14 +7544,14 @@ async fn gateway_handles_users_me_available_models_locally_without_proxying_upst
     ));
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
                     global_model_repository,
                 )
                 .with_provider_catalog_reader(provider_catalog_repository)
                 .with_user_reader(user_repository);
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -6064,6 +7592,82 @@ async fn gateway_handles_users_me_available_models_locally_without_proxying_upst
 }
 
 #[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_available_models_without_provider_catalog(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-available-models-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let global_model_repository = Arc::new(
+        InMemoryGlobalModelReadRepository::seed(vec![
+            sample_public_global_model("gm-1", "gpt-5", "GPT 5", true),
+            sample_public_global_model("gm-2", "claude-sonnet-4-5", "Claude Sonnet 4.5", true),
+        ])
+        .with_active_global_model_refs(vec![
+            aether_data::repository::global_models::StoredProviderActiveGlobalModel::new(
+                "provider-openai".to_string(),
+                "gm-1".to_string(),
+            )
+            .expect("active global model ref should build"),
+        ]),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_global_model_reader_for_tests(
+                    global_model_repository,
+                )
+                .with_user_reader(user_repository);
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-available-models-unavailable",
+                    "device-users-me-available-models-unavailable",
+                    "refresh-token-placeholder",
+                    now,
+                )])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/users/me/available-models"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-available-models-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "用户提供商目录暂不可用");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_users_me_model_capabilities_get_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -6085,12 +7689,12 @@ async fn gateway_handles_users_me_model_capabilities_get_locally_without_proxyin
     );
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
                     user_repository,
                 );
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -6150,12 +7754,12 @@ async fn gateway_updates_users_me_model_capabilities_locally_without_proxying_up
     );
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
-        start_auth_gateway_with_builder(|upstream_url| {
+        start_auth_gateway_with_builder(|| {
             let data_state =
                 crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
                     user_repository,
                 );
-            AppState::new(upstream_url)
+            AppState::new()
                 .expect("gateway should build")
                 .with_data_state_for_tests(data_state)
                 .with_auth_sessions_for_tests([sample_auth_session(
@@ -6167,7 +7771,7 @@ async fn gateway_updates_users_me_model_capabilities_locally_without_proxying_up
                 )])
                 .with_auth_user_model_capability_settings_for_tests(
                     "user-auth-1",
-                    json!({"legacy-model": {"legacy_flag": true}}),
+                    json!({"disabled-model": {"disabled_flag": true}}),
                 )
         })
         .await;
@@ -6202,6 +7806,72 @@ async fn gateway_updates_users_me_model_capabilities_locally_without_proxying_up
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_payload: serde_json::Value = get_response.json().await.expect("json body should parse");
     assert_eq!(get_payload["model_capability_settings"], json!({}));
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_service_unavailable_for_users_me_model_capabilities_update_without_storage(
+) {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-model-cap-unavailable"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state =
+                crate::gateway::gateway_data::GatewayDataState::with_user_reader_for_tests(
+                    user_repository,
+                );
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_sessions_for_tests([sample_auth_session(
+                    "user-auth-1",
+                    "session-users-me-model-cap-unavailable",
+                    "device-users-me-model-cap-unavailable",
+                    "refresh-token-placeholder",
+                    now,
+                )])
+                .without_auth_user_model_capability_store_for_tests()
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .put(format!("{gateway_url}/api/users/me/model-capabilities"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-model-cap-unavailable",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "model_capability_settings": {}
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "用户模型能力配置存储暂不可用");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -6481,6 +8151,153 @@ async fn gateway_handles_payment_callback_route_locally_without_proxying_upstrea
         .expect("json body should parse");
     assert_eq!(detail_payload["order"]["status"], "credited");
     assert_eq!(detail_payload["order"]["refundable_amount_usd"], 10.0);
+
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_payment_callback_with_mismatched_payment_method_locally() {
+    let _secret_guard = set_test_env_var("PAYMENT_CALLBACK_SECRET", "callback-secret-test");
+    let now = Utc::now();
+    let user = StoredUserAuthRecord::new(
+        "user-wallet-callback-mismatch".to_string(),
+        Some("wallet-callback-mismatch@example.com".to_string()),
+        true,
+        "wallet_callback_mismatch_user".to_string(),
+        Some("$2y$10$.OBQfixAECpsb8V/VS3csOMf00x2E/jD/gnud20t6RG0yiQosyOZ2".to_string()),
+        "user".to_string(),
+        "local".to_string(),
+        Some(json!(["openai"])),
+        Some(json!(["openai:chat"])),
+        Some(json!(["gpt-5"])),
+        true,
+        false,
+        Some(now),
+        Some(now),
+    )
+    .expect("auth user should build");
+    let wallet = StoredWalletSnapshot::new(
+        "wallet-callback-mismatch".to_string(),
+        Some(user.id.clone()),
+        None,
+        0.0,
+        0.0,
+        "finite".to_string(),
+        "USD".to_string(),
+        "active".to_string(),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        now.timestamp(),
+    )
+    .expect("wallet should build");
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id.clone())),
+            ("role".to_string(), json!(user.role.clone())),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-wallet-callback-mismatch-1"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            wallet,
+            [sample_auth_session(
+                "user-wallet-callback-mismatch",
+                "session-wallet-callback-mismatch-1",
+                "device-wallet-callback-mismatch-1",
+                "refresh-token-placeholder",
+                now,
+            )],
+        )
+        .await;
+
+    let client = reqwest::Client::new();
+    let create_response = client
+        .post(format!("{gateway_url}/api/wallet/recharge"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-wallet-callback-mismatch-1")
+        .header("user-agent", "AetherTest/1.0")
+        .json(&json!({
+            "amount_usd": 10.0,
+            "payment_method": "alipay",
+            "pay_amount": 72.5,
+            "pay_currency": "CNY",
+            "exchange_rate": 7.25,
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let create_payload: serde_json::Value = create_response
+        .json()
+        .await
+        .expect("json body should parse");
+    let order_id = create_payload["order"]["id"]
+        .as_str()
+        .expect("order id should exist")
+        .to_string();
+    let order_no = create_payload["order"]["order_no"]
+        .as_str()
+        .expect("order no should exist")
+        .to_string();
+
+    let callback_body = json!({
+        "callback_key": "callback-key-mismatch-1",
+        "order_no": order_no,
+        "gateway_order_id": create_payload["order"]["gateway_order_id"],
+        "amount_usd": 10.0,
+        "pay_amount": 72.5,
+        "pay_currency": "CNY",
+        "exchange_rate": 7.25,
+        "payload": serde_json::Value::Null,
+    });
+    let callback_signature =
+        build_test_payment_callback_signature(&callback_body, "callback-secret-test");
+    let callback_response = client
+        .post(format!("{gateway_url}/api/payment/callback/wechat"))
+        .header("x-payment-callback-token", "callback-secret-test")
+        .header("x-payment-callback-signature", callback_signature)
+        .json(&callback_body)
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(callback_response.status(), StatusCode::OK);
+    let callback_payload: serde_json::Value = callback_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(callback_payload["ok"], false);
+    assert_eq!(callback_payload["error"], "payment method mismatch");
+    assert_eq!(callback_payload["payment_method"], "wechat");
+
+    let detail_response = client
+        .get(format!("{gateway_url}/api/wallet/recharge/{order_id}"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-wallet-callback-mismatch-1")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(detail_response.status(), StatusCode::OK);
+    let detail_payload: serde_json::Value = detail_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(detail_payload["order"]["status"], "pending");
+    assert_eq!(detail_payload["order"]["refundable_amount_usd"], 0.0);
 
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
     gateway_handle.abort();

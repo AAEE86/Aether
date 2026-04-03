@@ -1,10 +1,27 @@
-use super::*;
+use std::sync::{Arc, Mutex};
 
-const ADMIN_ENDPOINTS_RUST_BACKEND_DETAIL: &str =
-    "Admin endpoint routes require Rust maintenance backend";
+use aether_data::repository::provider_catalog::{
+    InMemoryProviderCatalogReadRepository, ProviderCatalogReadRepository,
+};
+use axum::body::Body;
+use axum::routing::any;
+use axum::{extract::Request, Router};
+use http::StatusCode;
+use serde_json::json;
+
+use super::super::super::{
+    build_router_with_state, sample_endpoint, sample_key, sample_provider, start_server, AppState,
+};
+use crate::gateway::constants::{
+    GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
+    TRUSTED_ADMIN_USER_ROLE_HEADER,
+};
+use crate::gateway::gateway_data::GatewayDataState;
+
+const ADMIN_ENDPOINTS_DATA_UNAVAILABLE_DETAIL: &str = "Admin endpoint data unavailable";
 
 #[tokio::test]
-async fn gateway_handles_admin_provider_endpoints_locally_with_local_503_when_catalog_reader_unavailable(
+async fn gateway_returns_service_unavailable_for_admin_provider_endpoints_when_catalog_reader_unavailable(
 ) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -20,8 +37,7 @@ async fn gateway_handles_admin_provider_endpoints_locally_with_local_503_when_ca
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -38,7 +54,7 @@ async fn gateway_handles_admin_provider_endpoints_locally_with_local_503_when_ca
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["detail"], ADMIN_ENDPOINTS_RUST_BACKEND_DETAIL);
+    assert_eq!(payload["detail"], ADMIN_ENDPOINTS_DATA_UNAVAILABLE_DETAIL);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -96,7 +112,7 @@ async fn gateway_handles_admin_provider_endpoints_locally_with_trusted_admin_pri
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -134,7 +150,7 @@ async fn gateway_handles_admin_provider_endpoints_locally_with_trusted_admin_pri
 }
 
 #[tokio::test]
-async fn gateway_creates_admin_provider_endpoint_locally_with_local_503_when_catalog_writer_unavailable(
+async fn gateway_returns_service_unavailable_for_admin_provider_endpoint_create_when_catalog_writer_unavailable(
 ) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -157,7 +173,7 @@ async fn gateway_creates_admin_provider_endpoint_locally_with_local_503_when_cat
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -184,7 +200,7 @@ async fn gateway_creates_admin_provider_endpoint_locally_with_local_503_when_cat
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["detail"], ADMIN_ENDPOINTS_RUST_BACKEND_DETAIL);
+    assert_eq!(payload["detail"], ADMIN_ENDPOINTS_DATA_UNAVAILABLE_DETAIL);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -214,7 +230,7 @@ async fn gateway_creates_admin_provider_endpoint_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -317,7 +333,7 @@ async fn gateway_updates_admin_provider_endpoint_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -425,7 +441,7 @@ async fn gateway_deletes_admin_provider_endpoint_locally_with_trusted_admin_prin
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(
@@ -512,7 +528,7 @@ async fn gateway_handles_admin_get_endpoint_locally_with_trusted_admin_principal
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
-        AppState::new(upstream_url.clone())
+        AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
                 provider_catalog_repository,
@@ -562,8 +578,7 @@ async fn gateway_handles_admin_default_body_rules_locally_with_trusted_admin_pri
     );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let gateway =
-        build_router_with_state(AppState::new(upstream_url.clone()).expect("gateway should build"));
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
