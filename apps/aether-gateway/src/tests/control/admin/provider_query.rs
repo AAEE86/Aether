@@ -186,6 +186,243 @@ async fn gateway_handles_admin_provider_query_models_fetches_upstream_for_select
 }
 
 #[tokio::test]
+async fn gateway_handles_admin_provider_query_models_with_openai_responses_endpoint() {
+    let execution_runtime_hits = Arc::new(Mutex::new(0usize));
+    let execution_runtime_hits_clone = Arc::clone(&execution_runtime_hits);
+    let execution_runtime = Router::new().route(
+        "/v1/execute/sync",
+        any(move |Json(plan): Json<ExecutionPlan>| {
+            let execution_runtime_hits_inner = Arc::clone(&execution_runtime_hits_clone);
+            async move {
+                *execution_runtime_hits_inner
+                    .lock()
+                    .expect("mutex should lock") += 1;
+                assert_eq!(plan.endpoint_id, "endpoint-openai-responses");
+                assert_eq!(plan.provider_api_format, "openai:responses");
+                Json(json!({
+                    "request_id": "req-provider-query-responses",
+                    "status_code": 200,
+                    "headers": {
+                        "content-type": "application/json"
+                    },
+                    "body": {
+                        "json_body": {
+                            "data": [{
+                                "id": "gpt-4.1",
+                                "object": "model",
+                                "owned_by": "system",
+                                "created": 1732517497u64
+                            }]
+                        }
+                    }
+                }))
+            }
+        }),
+    );
+
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+    let mut provider = sample_provider("provider-openai", "OpenAI", 10);
+    provider.provider_type = "openai".to_string();
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![StoredProviderCatalogEndpoint::new(
+            "endpoint-openai-responses".to_string(),
+            "provider-openai".to_string(),
+            "openai:responses".to_string(),
+            Some("responses".to_string()),
+            Some("primary".to_string()),
+            true,
+        )
+        .expect("endpoint should build")
+        .with_transport_fields(
+            "https://api.openai.example".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("endpoint transport should build")],
+        vec![sample_key(
+            "key-openai-responses",
+            "provider-openai",
+            "openai:responses",
+            "sk-test-responses",
+        )],
+    ));
+
+    let gateway = build_router_with_state(
+        build_state_with_execution_runtime_override(execution_runtime_url)
+            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
+                provider_catalog_repository,
+                DEVELOPMENT_ENCRYPTION_KEY.to_string(),
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/admin/provider-query/models"))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "provider_id": "provider-openai",
+            "api_key_id": "key-openai-responses"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["success"], json!(true));
+    assert_eq!(payload["data"]["error"], serde_json::Value::Null);
+    assert_eq!(payload["data"]["from_cache"], json!(false));
+    assert_eq!(
+        payload["data"]["models"][0]["api_formats"],
+        json!(["openai:responses"])
+    );
+    assert_eq!(
+        *execution_runtime_hits.lock().expect("mutex should lock"),
+        1
+    );
+
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_handles_admin_provider_query_models_respecting_key_api_formats() {
+    let execution_runtime_hits = Arc::new(Mutex::new(0usize));
+    let execution_runtime_hits_clone = Arc::clone(&execution_runtime_hits);
+    let execution_runtime = Router::new().route(
+        "/v1/execute/sync",
+        any(move |Json(plan): Json<ExecutionPlan>| {
+            let execution_runtime_hits_inner = Arc::clone(&execution_runtime_hits_clone);
+            async move {
+                *execution_runtime_hits_inner
+                    .lock()
+                    .expect("mutex should lock") += 1;
+                assert_eq!(plan.endpoint_id, "endpoint-openai-cli");
+                assert_eq!(plan.provider_api_format, "openai:cli");
+                Json(json!({
+                    "request_id": "req-provider-query-cli",
+                    "status_code": 200,
+                    "headers": {
+                        "content-type": "application/json"
+                    },
+                    "body": {
+                        "json_body": {
+                            "data": [{
+                                "id": "gpt-5-cli",
+                                "object": "model",
+                                "owned_by": "system",
+                                "created": 1732517497u64
+                            }]
+                        }
+                    }
+                }))
+            }
+        }),
+    );
+
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+    let mut provider = sample_provider("provider-openai", "OpenAI", 10);
+    provider.provider_type = "openai".to_string();
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![
+            StoredProviderCatalogEndpoint::new(
+                "endpoint-openai-chat".to_string(),
+                "provider-openai".to_string(),
+                "openai:chat".to_string(),
+                Some("chat".to_string()),
+                Some("primary".to_string()),
+                true,
+            )
+            .expect("endpoint should build")
+            .with_transport_fields(
+                "https://api.openai.example".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("endpoint transport should build"),
+            StoredProviderCatalogEndpoint::new(
+                "endpoint-openai-cli".to_string(),
+                "provider-openai".to_string(),
+                "openai:cli".to_string(),
+                Some("cli".to_string()),
+                Some("secondary".to_string()),
+                true,
+            )
+            .expect("endpoint should build")
+            .with_transport_fields(
+                "https://api.openai.example".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("endpoint transport should build"),
+        ],
+        vec![sample_key(
+            "key-openai-cli",
+            "provider-openai",
+            "openai:cli",
+            "sk-test-cli",
+        )],
+    ));
+
+    let gateway = build_router_with_state(
+        build_state_with_execution_runtime_override(execution_runtime_url)
+            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
+                provider_catalog_repository,
+                DEVELOPMENT_ENCRYPTION_KEY.to_string(),
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/admin/provider-query/models"))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "provider_id": "provider-openai",
+            "api_key_id": "key-openai-cli"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["success"], json!(true));
+    assert_eq!(payload["data"]["error"], serde_json::Value::Null);
+    assert_eq!(payload["data"]["from_cache"], json!(false));
+    assert_eq!(payload["data"]["models"][0]["api_formats"], json!(["openai:cli"]));
+    assert_eq!(
+        *execution_runtime_hits.lock().expect("mutex should lock"),
+        1
+    );
+
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_admin_provider_query_models_aggregating_active_keys() {
     let execution_runtime_hits = Arc::new(Mutex::new(0usize));
     let execution_runtime_hits_clone = Arc::clone(&execution_runtime_hits);

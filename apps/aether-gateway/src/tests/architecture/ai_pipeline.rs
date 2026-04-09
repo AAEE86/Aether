@@ -1142,7 +1142,8 @@ fn ai_pipeline_matrix_conversion_is_owned_by_pipeline_crate() {
         !matrix.contains("mod matrix;"),
         "planner/standard/mod.rs should not keep a local matrix wrapper module"
     );
-    for forbidden in ["serde_json::Map::from_iter"] {
+    {
+        let forbidden = "serde_json::Map::from_iter";
         assert!(
             !matrix.contains(forbidden),
             "planner/standard/mod.rs should not keep matrix conversion helper {forbidden}"

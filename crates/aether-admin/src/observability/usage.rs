@@ -371,6 +371,7 @@ pub fn admin_usage_aggregation_by_provider_json(
     usage: &[StoredRequestUsageAudit],
     limit: usize,
 ) -> Value {
+    #[allow(clippy::type_complexity)]
     let mut grouped: BTreeMap<String, (u64, u64, u64, u64, f64, f64, u64, u64)> = BTreeMap::new();
     for item in usage {
         let key = item
@@ -458,6 +459,7 @@ pub fn admin_usage_aggregation_by_api_format_json(
     usage: &[StoredRequestUsageAudit],
     limit: usize,
 ) -> Value {
+    #[allow(clippy::type_complexity)]
     let mut grouped: BTreeMap<String, (u64, u64, u64, u64, f64, f64, u64)> = BTreeMap::new();
     for item in usage {
         let key = item
@@ -1069,6 +1071,7 @@ pub fn build_admin_usage_detail_payload(
     payload
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_admin_usage_replay_plan_response(
     item: &StoredRequestUsageAudit,
     target_provider: &StoredProviderCatalogProvider,

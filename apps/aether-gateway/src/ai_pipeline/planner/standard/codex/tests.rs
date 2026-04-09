@@ -174,7 +174,7 @@ fn respects_existing_codex_request_and_session_headers() {
         Some(&"kept-by-rule-request".to_string())
     );
     assert_eq!(headers.get("session_id"), Some(&"kept-by-rule".to_string()));
-    assert!(headers.get("conversation_id").is_none());
+    assert!(!headers.contains_key("conversation_id"));
 }
 
 #[test]
@@ -207,5 +207,5 @@ fn skips_conversation_id_for_compact_codex_requests() {
         headers.get("session_id"),
         Some(&"ab5ecce4f0d110fe".to_string())
     );
-    assert!(headers.get("conversation_id").is_none());
+    assert!(!headers.contains_key("conversation_id"));
 }

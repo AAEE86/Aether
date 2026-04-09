@@ -118,6 +118,7 @@ pub struct LocalStreamPlanAndReport {
     pub report_context: Option<serde_json::Value>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_gateway_control_plan_request(
     trace_id: &str,
     method: &str,

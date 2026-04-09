@@ -1201,6 +1201,7 @@ import {
 import {
   buildPoolManagementQueryPatch,
   readPoolManagementViewState,
+  resolvePoolManagementPageAfterLoad,
   type PoolManagementViewState,
   writePoolManagementViewState,
 } from '@/features/pool/utils/poolManagementState'
@@ -1790,6 +1791,15 @@ async function loadKeys() {
       status,
     })
     if (requestId !== keysRequestId || selectedProviderId.value !== providerId) return
+    const resolvedPage = resolvePoolManagementPageAfterLoad({
+      requestedPage: page,
+      pageSize: pageSizeValue,
+      total: nextPage.total,
+    })
+    if (resolvedPage !== page) {
+      currentPage.value = resolvedPage
+      return
+    }
     keyPage.value = nextPage
   } catch (err) {
     if (requestId !== keysRequestId || selectedProviderId.value !== providerId) return

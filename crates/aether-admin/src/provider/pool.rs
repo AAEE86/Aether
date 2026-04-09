@@ -785,6 +785,7 @@ pub fn build_admin_pool_overview_payload(
     json!({ "items": items })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_admin_pool_batch_import_key_record(
     id: String,
     provider_id: String,

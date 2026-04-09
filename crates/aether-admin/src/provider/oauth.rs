@@ -86,8 +86,7 @@ fn normalize_admin_provider_oauth_kiro_import_item(item: &Value) -> Option<Value
                 ] {
                     if let Some(value) = object.get(key) {
                         if !value.is_null()
-                            && !(value.is_string()
-                                && value.as_str().is_some_and(|inner| inner.trim().is_empty()))
+                            && !value.as_str().is_some_and(|inner| inner.trim().is_empty())
                         {
                             merged.insert(key.to_string(), value.clone());
                         }

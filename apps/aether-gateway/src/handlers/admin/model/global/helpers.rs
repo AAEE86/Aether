@@ -86,6 +86,7 @@ pub(super) fn build_admin_global_model_price_range(
     })
 }
 
+#[allow(clippy::redundant_iter_cloned, clippy::redundant_locals)]
 pub(super) async fn admin_global_model_provider_models_by_global_model_id(
     state: &AdminAppState<'_>,
     global_model_ids: &[String],

@@ -9,19 +9,19 @@ use super::response::{
     ADMIN_PROVIDER_QUERY_PROVIDER_NOT_FOUND_DETAIL,
 };
 use crate::execution_runtime;
-use crate::model_fetch::ModelFetchRuntimeState;
 use crate::handlers::admin::request::AdminAppState;
+use crate::model_fetch::ModelFetchRuntimeState;
 use crate::{AppState, GatewayError};
 use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
 use aether_model_fetch::{
-    aggregate_models_for_cache, build_models_fetch_execution_plan, extract_error_message,
-    parse_models_response,
+    aggregate_models_for_cache, build_models_fetch_execution_plan,
+    endpoint_supports_rust_models_fetch, extract_error_message, parse_models_response,
 };
 use axum::{body::Body, http::Response, response::IntoResponse, Json};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const ADMIN_PROVIDER_QUERY_LOCAL_TEST_MODEL_MESSAGE: &str =
     "Rust local provider-query model test is not configured";
@@ -32,7 +32,12 @@ const ADMIN_PROVIDER_QUERY_NO_ACTIVE_ENDPOINT_DETAIL: &str =
 const ADMIN_PROVIDER_QUERY_NO_MODELS_FROM_ENDPOINT_DETAIL: &str =
     "No models returned from any endpoint";
 const PROVIDER_QUERY_FETCH_FORMAT_PRIORITY: &[&[&str]] = &[
-    &["openai:chat", "openai:cli", "openai:compact"],
+    &[
+        "openai:chat",
+        "openai:responses",
+        "openai:cli",
+        "openai:compact",
+    ],
     &["claude:chat", "claude:cli"],
     &["gemini:chat", "gemini:cli"],
 ];
@@ -67,26 +72,56 @@ fn provider_query_normalize_api_format(value: &str) -> String {
 
 fn provider_query_selected_fetch_endpoints(
     endpoints: &[StoredProviderCatalogEndpoint],
+    key: &StoredProviderCatalogKey,
 ) -> Vec<StoredProviderCatalogEndpoint> {
+    let allowed_api_formats = key
+        .api_formats
+        .as_ref()
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(provider_query_normalize_api_format)
+                .filter(|value| !value.is_empty())
+                .collect::<BTreeSet<_>>()
+        })
+        .filter(|items| !items.is_empty());
     let mut by_format = BTreeMap::<String, StoredProviderCatalogEndpoint>::new();
     for endpoint in endpoints.iter().filter(|endpoint| endpoint.is_active) {
         let api_format = provider_query_normalize_api_format(&endpoint.api_format);
-        if api_format.is_empty() {
+        if api_format.is_empty() || !endpoint_supports_rust_models_fetch(&api_format) {
+            continue;
+        }
+        if allowed_api_formats
+            .as_ref()
+            .is_some_and(|formats| !formats.contains(&api_format))
+        {
             continue;
         }
         by_format.insert(api_format, endpoint.clone());
     }
 
-    // 与 Python 版本保持一致：同族优先使用 chat 端点，其次才回退到 cli/compact。
-    PROVIDER_QUERY_FETCH_FORMAT_PRIORITY
+    // 与 Python 版本保持一致：同族优先使用 chat 端点，其次才回退到其他抓取格式。
+    let covered_formats = PROVIDER_QUERY_FETCH_FORMAT_PRIORITY
+        .iter()
+        .flat_map(|items| items.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut selected = PROVIDER_QUERY_FETCH_FORMAT_PRIORITY
         .iter()
         .filter_map(|candidates| {
             candidates
                 .iter()
-                .find_map(|api_format| by_format.get(*api_format))
-                .cloned()
+                .find_map(|api_format| by_format.remove(*api_format))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    selected.extend(
+        by_format
+            .into_iter()
+            .filter(|(api_format, _)| !covered_formats.contains(api_format.as_str()))
+            .map(|(_, endpoint)| endpoint),
+    );
+    selected
 }
 
 async fn provider_query_read_cached_models(
@@ -165,7 +200,7 @@ async fn provider_query_fetch_models_for_key(
         }
     }
 
-    let selected_endpoints = provider_query_selected_fetch_endpoints(endpoints);
+    let selected_endpoints = provider_query_selected_fetch_endpoints(endpoints, key);
     if selected_endpoints.is_empty() {
         return Ok(ProviderQueryKeyFetchResult {
             models: Vec::new(),
@@ -294,9 +329,14 @@ pub(crate) async fn build_admin_provider_query_models_response(
     let mut cache_hit_count = 0usize;
     let mut fetch_count = 0usize;
     for key in active_keys {
-        let result =
-            provider_query_fetch_models_for_key(state.app(), &provider, &endpoints, key, force_refresh)
-                .await?;
+        let result = provider_query_fetch_models_for_key(
+            state.app(),
+            &provider,
+            &endpoints,
+            key,
+            force_refresh,
+        )
+        .await?;
         all_models.extend(result.models);
         if let Some(error) = result.error {
             all_errors.push(format!(

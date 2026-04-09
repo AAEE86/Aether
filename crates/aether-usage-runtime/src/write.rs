@@ -727,9 +727,7 @@ const DEFAULT_SENSITIVE_HEADERS: &[&str] = &[
 /// 判断 header 名是否属于敏感字段（大小写不敏感）。
 fn is_sensitive_header(name: &str) -> bool {
     let lower = name.trim().to_ascii_lowercase();
-    DEFAULT_SENSITIVE_HEADERS
-        .iter()
-        .any(|candidate| *candidate == lower.as_str())
+    DEFAULT_SENSITIVE_HEADERS.contains(&lower.as_str())
 }
 
 /// 对单个 header value 进行脱敏：保留前 4 + 后 4 字符，中间替换为 `****`。

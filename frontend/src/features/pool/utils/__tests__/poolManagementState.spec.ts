@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   buildPoolManagementQueryPatch,
   readPoolManagementViewState,
+  resolvePoolManagementPageAfterLoad,
   writePoolManagementViewState,
 } from '@/features/pool/utils/poolManagementState'
 
@@ -99,5 +100,25 @@ describe('poolManagementState', () => {
       page: undefined,
       pageSize: undefined,
     })
+  })
+
+  it('clamps a restored page to the last available page after load', () => {
+    expect(
+      resolvePoolManagementPageAfterLoad({
+        requestedPage: 5,
+        pageSize: 50,
+        total: 120,
+      }),
+    ).toBe(3)
+  })
+
+  it('resets an out-of-range empty result page back to page 1', () => {
+    expect(
+      resolvePoolManagementPageAfterLoad({
+        requestedPage: 4,
+        pageSize: 50,
+        total: 0,
+      }),
+    ).toBe(1)
   })
 })

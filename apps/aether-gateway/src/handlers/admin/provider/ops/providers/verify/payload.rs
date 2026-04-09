@@ -6,7 +6,6 @@ use super::helpers::{
 };
 use crate::handlers::admin::request::AdminAppState;
 use aether_admin::provider::verify as admin_provider_verify_pure;
-use http;
 use serde_json::{json, Map, Value};
 
 pub(super) fn admin_provider_ops_generic_verify_payload(

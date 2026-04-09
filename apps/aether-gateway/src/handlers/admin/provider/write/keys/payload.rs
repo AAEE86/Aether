@@ -40,7 +40,11 @@ pub(crate) async fn build_admin_provider_keys_payload(
             .skip(skip)
             .take(limit)
             .map(|key| {
-                state.build_admin_provider_key_response(&key, &provider.provider_type, now_unix_secs)
+                state.build_admin_provider_key_response(
+                    &key,
+                    &provider.provider_type,
+                    now_unix_secs,
+                )
             })
             .collect(),
     ))

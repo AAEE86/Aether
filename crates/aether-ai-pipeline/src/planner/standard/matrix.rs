@@ -15,6 +15,7 @@ use crate::conversion::request::{
 
 use super::codex::apply_codex_openai_cli_special_body_edits;
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_standard_request_body(
     body_json: &Value,
     client_api_format: &str,

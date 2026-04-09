@@ -389,8 +389,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         execution_strategy,
         conversion_mode,
         is_antigravity: is_antigravity
-            || matches!(antigravity_auth, Some(_))
-                && ANTIGRAVITY_ENVELOPE_NAME == "antigravity:v1internal",
+            || antigravity_auth.is_some() && ANTIGRAVITY_ENVELOPE_NAME == "antigravity:v1internal",
         upstream_is_stream,
         transport,
     })

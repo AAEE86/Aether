@@ -229,6 +229,7 @@ pub fn build_admin_monitoring_cache_provider_delete_success_response(
     .into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_admin_monitoring_trace_provider_stats_payload_response(
     provider_id: String,
     total_attempts: usize,
@@ -313,6 +314,7 @@ pub fn build_admin_monitoring_trace_request_candidate_payload(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_admin_monitoring_system_status_payload_response(
     timestamp: chrono::DateTime<chrono::Utc>,
     total_users: u64,

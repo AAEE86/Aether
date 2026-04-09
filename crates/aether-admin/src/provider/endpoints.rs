@@ -133,6 +133,7 @@ fn trimmed_non_empty_string(value: Option<String>) -> Option<String> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_admin_provider_endpoint_record(
     id: String,
     provider_id: String,

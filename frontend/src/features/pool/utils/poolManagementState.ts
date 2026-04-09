@@ -127,3 +127,23 @@ export function buildPoolManagementQueryPatch(
         : String(normalized.pageSize),
   }
 }
+
+export function resolvePoolManagementPageAfterLoad(input: {
+  requestedPage: number
+  pageSize: number
+  total: number
+}): number {
+  const requestedPage = normalizePositiveInteger(
+    input.requestedPage,
+    DEFAULT_POOL_MANAGEMENT_VIEW_STATE.page,
+  )
+  const pageSize = normalizePositiveInteger(
+    input.pageSize,
+    DEFAULT_POOL_MANAGEMENT_VIEW_STATE.pageSize,
+  )
+  const total = Math.max(0, Number.parseInt(String(input.total ?? 0), 10) || 0)
+  const lastPage =
+    total > 0 ? Math.ceil(total / pageSize) : DEFAULT_POOL_MANAGEMENT_VIEW_STATE.page
+
+  return Math.min(requestedPage, lastPage)
+}

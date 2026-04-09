@@ -661,7 +661,8 @@ fn admin_provider_crud_mod_stays_thin() {
 
     let crud_routes =
         read_workspace_file("apps/aether-gateway/src/handlers/admin/provider/crud/routes.rs");
-    for pattern in ["maybe_build_admin_provider_crud_route_response("] {
+    {
+        let pattern = "maybe_build_admin_provider_crud_route_response(";
         assert!(
             crud_routes.contains(pattern),
             "handlers/admin/provider/crud/routes.rs should delegate through request/provider owner {pattern}"
@@ -2191,7 +2192,8 @@ fn admin_provider_endpoint_keys_mod_stays_thin() {
 fn admin_provider_models_own_provider_model_builders() {
     let provider_models_mod =
         read_workspace_file("apps/aether-gateway/src/handlers/admin/provider/models/mod.rs");
-    for pattern in ["mod payloads;"] {
+    {
+        let pattern = "mod payloads;";
         assert!(
             provider_models_mod.contains(pattern),
             "handlers/admin/provider/models/mod.rs should register local provider-model owner module {pattern}"

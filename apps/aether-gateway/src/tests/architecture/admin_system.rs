@@ -146,7 +146,8 @@ fn admin_system_and_endpoint_roots_stay_thin() {
         ),
         "handlers/admin/endpoint/routes.rs should dispatch provider endpoint CRUD directly to provider::endpoints_admin"
     );
-    for path in ["apps/aether-gateway/src/handlers/admin/endpoint/keys.rs"] {
+    {
+        let path = "apps/aether-gateway/src/handlers/admin/endpoint/keys.rs";
         assert!(
             !workspace_file_exists(path),
             "{path} should be deleted once endpoint root dispatches directly to provider-owned handlers"
