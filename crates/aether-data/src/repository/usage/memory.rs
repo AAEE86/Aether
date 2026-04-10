@@ -79,6 +79,8 @@ impl UsageReadRepository for InMemoryUsageReadRepository {
             .expect("usage repository lock")
             .values()
             .filter(|item| {
+                // The field is historically named `created_at_unix_ms`, but usage audit rows
+                // across gateway handlers, SQL repositories and tests are stored as epoch seconds.
                 if let Some(created_from_unix_secs) = query.created_from_unix_secs {
                     if item.created_at_unix_ms < created_from_unix_secs {
                         return false;
@@ -513,6 +515,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_defaults_created_at_to_second_timestamp() {
+        let repository = InMemoryUsageReadRepository::default();
+        let stored = repository
+            .upsert(UpsertUsageRecord {
+                request_id: "req-upsert-ms-default".to_string(),
+                user_id: None,
+                api_key_id: None,
+                username: None,
+                api_key_name: None,
+                provider_name: "OpenAI".to_string(),
+                model: "gpt-5".to_string(),
+                target_model: None,
+                provider_id: None,
+                provider_endpoint_id: None,
+                provider_api_key_id: None,
+                request_type: None,
+                api_format: None,
+                api_family: None,
+                endpoint_kind: None,
+                endpoint_api_format: None,
+                provider_api_family: None,
+                provider_endpoint_kind: None,
+                has_format_conversion: None,
+                is_stream: None,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_cost_usd: None,
+                cache_read_cost_usd: None,
+                output_price_per_1m: None,
+                total_cost_usd: None,
+                actual_total_cost_usd: None,
+                status_code: None,
+                error_message: None,
+                error_category: None,
+                response_time_ms: None,
+                first_byte_time_ms: None,
+                status: "completed".to_string(),
+                billing_status: "pending".to_string(),
+                request_headers: None,
+                request_body: None,
+                provider_request_headers: None,
+                provider_request_body: None,
+                response_headers: None,
+                response_body: None,
+                client_response_headers: None,
+                client_response_body: None,
+                request_metadata: None,
+                finalized_at_unix_secs: None,
+                created_at_unix_ms: None,
+                updated_at_unix_secs: 101,
+            })
+            .await
+            .expect("upsert should succeed");
+
+        assert_eq!(stored.created_at_unix_ms, 101);
+    }
+
+    #[tokio::test]
     async fn summarizes_provider_usage_windows_since_timestamp() {
         let repository = InMemoryUsageReadRepository::default().with_provider_usage_windows(vec![
             StoredProviderUsageWindow::new(
@@ -560,11 +623,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_usage_audits_applies_second_based_time_filters_to_millisecond_timestamps() {
+    async fn list_usage_audits_applies_second_based_time_filters() {
         let repository = InMemoryUsageReadRepository::seed(vec![
-            sample_usage("req-1", 1_000),
-            sample_usage("req-2", 2_000),
-            sample_usage("req-3", 3_000),
+            sample_usage("req-1", 1),
+            sample_usage("req-2", 2),
+            sample_usage("req-3", 3),
         ]);
 
         let items = repository
@@ -596,6 +659,6 @@ mod tests {
             .get("provider-key-1")
             .expect("provider key summary should exist");
         assert_eq!(usage.request_count, 2);
-        assert_eq!(usage.last_used_at_unix_secs, Some(2));
+        assert_eq!(usage.last_used_at_unix_secs, Some(2_500));
     }
 }

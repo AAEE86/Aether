@@ -118,9 +118,7 @@ pub fn sync_cli_response_conversion_kind(
         request_conversion_kind(client_api_format.as_str(), provider_api_format.as_str())?;
     }
     match client_api_format.as_str() {
-        "openai:cli" | "openai:compact" => {
-            Some(SyncCliResponseConversionKind::ToOpenAIFamilyCli)
-        }
+        "openai:cli" | "openai:compact" => Some(SyncCliResponseConversionKind::ToOpenAIFamilyCli),
         "claude:cli" => Some(SyncCliResponseConversionKind::ToClaudeCli),
         "gemini:cli" => Some(SyncCliResponseConversionKind::ToGeminiCli),
         _ => None,
