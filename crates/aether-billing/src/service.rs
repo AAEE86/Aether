@@ -264,4 +264,142 @@ mod tests {
         assert!(result.actual_total_cost > 0.0);
         assert_eq!(result.rate_multiplier, 0.5);
     }
+
+    #[test]
+    fn five_minute_cache_ttl_uses_base_cache_prices() {
+        let pricing = BillingModelPricingSnapshot {
+            provider_id: "provider-1".to_string(),
+            provider_billing_type: Some("pay_as_you_go".to_string()),
+            provider_api_key_id: Some("key-1".to_string()),
+            provider_api_key_rate_multipliers: None,
+            provider_api_key_cache_ttl_minutes: Some(5),
+            global_model_id: "global-model-1".to_string(),
+            global_model_name: "gpt-5.4".to_string(),
+            global_model_config: None,
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 2.5,
+                    "output_price_per_1m": 15.0,
+                    "cache_creation_price_per_1m": 3.125,
+                    "cache_read_price_per_1m": 0.25,
+                    "cache_ttl_pricing": [{
+                        "ttl_minutes": 60,
+                        "cache_creation_price_per_1m": 5.0,
+                        "cache_read_price_per_1m": null
+                    }]
+                }]
+            })),
+            model_id: None,
+            model_provider_model_name: None,
+            model_config: None,
+            model_price_per_request: None,
+            model_tiered_pricing: None,
+        };
+
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    task_type: "chat".to_string(),
+                    api_format: None,
+                    request_count: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 10,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 100,
+                    cache_ttl_minutes: Some(5),
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_variables
+                .get("cache_creation_price_per_1m"),
+            Some(&json!(3.125))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_variables
+                .get("cache_read_price_per_1m"),
+            Some(&json!(0.25))
+        );
+    }
+
+    #[test]
+    fn one_hour_cache_ttl_keeps_base_cache_read_when_ttl_entry_omits_it() {
+        let pricing = BillingModelPricingSnapshot {
+            provider_id: "provider-1".to_string(),
+            provider_billing_type: Some("pay_as_you_go".to_string()),
+            provider_api_key_id: Some("key-1".to_string()),
+            provider_api_key_rate_multipliers: None,
+            provider_api_key_cache_ttl_minutes: Some(60),
+            global_model_id: "global-model-1".to_string(),
+            global_model_name: "gpt-5.4".to_string(),
+            global_model_config: None,
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 2.5,
+                    "output_price_per_1m": 15.0,
+                    "cache_creation_price_per_1m": 3.125,
+                    "cache_read_price_per_1m": 0.25,
+                    "cache_ttl_pricing": [{
+                        "ttl_minutes": 60,
+                        "cache_creation_price_per_1m": 5.0,
+                        "cache_read_price_per_1m": null
+                    }]
+                }]
+            })),
+            model_id: None,
+            model_provider_model_name: None,
+            model_config: None,
+            model_price_per_request: None,
+            model_tiered_pricing: None,
+        };
+
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    task_type: "chat".to_string(),
+                    api_format: None,
+                    request_count: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 10,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 100,
+                    cache_ttl_minutes: Some(60),
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_variables
+                .get("cache_creation_price_per_1m"),
+            Some(&json!(5.0))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_variables
+                .get("cache_read_price_per_1m"),
+            Some(&json!(0.25))
+        );
+    }
 }

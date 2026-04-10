@@ -11,7 +11,7 @@ use crate::ai_pipeline::{
     resolve_local_decision_execution_runtime_auth_context, GatewayControlDecision,
 };
 use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
-use crate::clock::current_unix_secs;
+use crate::clock::{current_unix_ms, current_unix_secs};
 use crate::{AppState, GatewayError};
 
 pub(super) const GEMINI_FILES_CANDIDATE_API_FORMAT: &str = "gemini:chat";
@@ -102,7 +102,7 @@ pub(super) async fn materialize_local_gemini_files_candidate_attempts(
     )
     .await;
 
-    let created_at_unix_ms = current_unix_secs();
+    let created_at_unix_ms = current_unix_ms();
     let mut attempts = Vec::with_capacity(candidates.len());
     let mut affinity_remembered = false;
     for (candidate_index, candidate) in candidates.into_iter().enumerate() {
@@ -174,7 +174,7 @@ pub(super) async fn mark_skipped_local_gemini_files_candidate(
             candidate_id,
             input.required_capabilities.as_ref(),
             skip_reason,
-            current_unix_secs(),
+            current_unix_ms(),
             "gateway local gemini files failed to persist skipped candidate",
         )
         .await;

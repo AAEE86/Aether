@@ -12,7 +12,7 @@ use crate::ai_pipeline::planner::candidate_affinity::{
 };
 use crate::ai_pipeline::GatewayAuthApiKeySnapshot;
 use crate::ai_pipeline::{ConversionMode, ExecutionStrategy, PlannerAppState};
-use crate::clock::current_unix_secs;
+use crate::clock::{current_unix_ms, current_unix_secs};
 use crate::{append_execution_contract_fields_to_value, AppState};
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ pub(crate) async fn mark_skipped_local_openai_chat_candidate(
             candidate_id,
             input.required_capabilities.as_ref(),
             skip_reason,
-            current_unix_secs(),
+            current_unix_ms(),
             "gateway local openai chat decision failed to persist skipped candidate",
         )
         .await;
@@ -77,7 +77,7 @@ pub(crate) async fn materialize_local_openai_chat_candidate_attempts(
         input.required_capabilities.as_ref(),
     )
     .await;
-    let created_at_unix_ms = current_unix_secs();
+    let created_at_unix_ms = current_unix_ms();
     let mut attempts = Vec::with_capacity(candidates.len());
     let mut affinity_remembered = false;
 

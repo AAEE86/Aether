@@ -237,19 +237,12 @@
                         <div class="text-muted-foreground flex items-center gap-2 flex-wrap">
                           <span>输入 ${{ formatPrice(tier.input_price_per_1m) }}/M</span>
                           <span>输出 ${{ formatPrice(tier.output_price_per_1m) }}/M</span>
-                          <template v-if="hasTierCacheCreationSplitPricing(tier)">
-                            <span v-if="getTierCachePriceForTTL(tier, 5, 'cache_creation_price_per_1m') !== null">
-                              缓存创建(5min) ${{ formatPrice(getTierCachePriceForTTL(tier, 5, 'cache_creation_price_per_1m') || 0) }}/M
-                            </span>
-                            <span v-if="getTierCachePriceForTTL(tier, 60, 'cache_creation_price_per_1m') !== null">
-                              缓存创建(1h) ${{ formatPrice(getTierCachePriceForTTL(tier, 60, 'cache_creation_price_per_1m') || 0) }}/M
-                            </span>
-                          </template>
-                          <span v-else-if="tier.cache_creation_price_per_1m">
-                            缓存创建 ${{ formatPrice(tier.cache_creation_price_per_1m) }}/M
+                          <span v-if="getTierActiveCacheCreationDisplay(tier)">
+                            {{ getTierActiveCacheCreationDisplay(tier)?.label }}
+                            ${{ formatPrice(getTierActiveCacheCreationDisplay(tier)?.price || 0) }}/M
                           </span>
-                          <span v-if="tier.cache_read_price_per_1m">
-                            缓存读取 ${{ formatPrice(tier.cache_read_price_per_1m) }}/M
+                          <span v-if="shouldShowCacheReadPrice(tier)">
+                            缓存读取 ${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M
                           </span>
                         </div>
                       </div>
@@ -261,7 +254,7 @@
                           <div class="flex items-center flex-1">
                             <span class="text-xs text-muted-foreground w-[56px]">输入</span>
                             <span class="text-sm font-semibold font-mono flex-1 text-center">{{ displayInputTokens }}</span>
-                            <span class="text-xs font-mono">${{ (detail.cost?.input || detail.input_cost || 0).toFixed(6) }}</span>
+                            <span class="text-xs font-mono">${{ effectiveInputCost.toFixed(6) }}</span>
                           </div>
                           <Separator
                             orientation="vertical"
@@ -270,15 +263,15 @@
                           <div class="flex items-center flex-1">
                             <span class="text-xs text-muted-foreground w-[56px]">输出</span>
                             <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
-                            <span class="text-xs font-mono">${{ (detail.cost?.output || detail.output_cost || 0).toFixed(6) }}</span>
+                            <span class="text-xs font-mono">${{ effectiveOutputCost.toFixed(6) }}</span>
                           </div>
                         </div>
                         <!-- 缓存创建 缓存读取 -->
                         <div class="flex items-center">
                           <div class="flex items-center flex-1">
                             <span class="text-xs text-muted-foreground w-[56px]">{{ cacheCreationSplitRows.length > 0 ? '创建合计' : '缓存创建' }}</span>
-                            <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.cache_creation_input_tokens || 0 }}</span>
-                            <span class="text-xs font-mono">${{ (detail.cache_creation_cost || 0).toFixed(6) }}</span>
+                            <span class="text-sm font-semibold font-mono flex-1 text-center">{{ totalCacheCreationTokens }}</span>
+                            <span class="text-xs font-mono">${{ effectiveCacheCreationCost.toFixed(6) }}</span>
                           </div>
                           <Separator
                             orientation="vertical"
@@ -287,7 +280,7 @@
                           <div class="flex items-center flex-1">
                             <span class="text-xs text-muted-foreground w-[56px]">缓存读取</span>
                             <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.cache_read_input_tokens || 0 }}</span>
-                            <span class="text-xs font-mono">${{ (detail.cache_read_cost || 0).toFixed(6) }}</span>
+                            <span class="text-xs font-mono">${{ effectiveCacheReadCost.toFixed(6) }}</span>
                           </div>
                         </div>
                         <!-- 缓存创建 5m/1h 细分 -->
@@ -323,10 +316,10 @@
                     </div>
                     <div class="rounded-lg p-3 bg-primary/5 border border-primary/30 space-y-2">
                       <div
-                        v-if="detail.price_per_request"
+                        v-if="effectivePricePerRequest > 0"
                         class="flex items-center justify-end text-xs"
                       >
-                        <span class="text-muted-foreground">${{ detail.price_per_request.toFixed(6) }}/次</span>
+                        <span class="text-muted-foreground">${{ effectivePricePerRequest.toFixed(6) }}/次</span>
                       </div>
                       <div class="flex items-center">
                         <div class="flex items-center flex-1">
@@ -753,9 +746,54 @@ type CacheTTLPriceEntry = {
 }
 
 type PricingTierLike = {
+  up_to?: number | null
+  input_price_per_1m?: number | null
+  output_price_per_1m?: number | null
   cache_creation_price_per_1m?: number | null
   cache_read_price_per_1m?: number | null
   cache_ttl_pricing?: CacheTTLPriceEntry[] | null
+}
+
+type JsonRecord = Record<string, unknown>
+
+function asRecord(value: unknown): JsonRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as JsonRecord
+}
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function getNestedValue(record: JsonRecord | null, ...path: string[]): unknown {
+  let current: unknown = record
+  for (const key of path) {
+    const object = asRecord(current)
+    if (!object) return null
+    current = object[key]
+  }
+  return current
+}
+
+function getNestedNumber(record: JsonRecord | null, ...path: string[]): number | null {
+  return toNumber(getNestedValue(record, ...path))
+}
+
+function normalizeCacheTtlPricing(value: unknown): CacheTTLPriceEntry[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is JsonRecord => entry !== null)
+    .map((entry) => ({
+      ttl_minutes: toNumber(entry.ttl_minutes),
+      cache_creation_price_per_1m: toNumber(entry.cache_creation_price_per_1m),
+      cache_read_price_per_1m: toNumber(entry.cache_read_price_per_1m),
+    }))
 }
 const autoRefreshTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const autoRefreshing = ref(false)
@@ -812,6 +850,22 @@ const traceRequestMetadata = computed<Record<string, unknown> | null>(() => {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
   return meta as Record<string, unknown>
 })
+
+const billingSnapshot = computed<JsonRecord | null>(() =>
+  asRecord(traceRequestMetadata.value?.billing_snapshot),
+)
+
+const billingResolvedVariables = computed<JsonRecord | null>(() =>
+  asRecord(billingSnapshot.value?.resolved_variables),
+)
+
+const billingCostBreakdown = computed<JsonRecord | null>(() =>
+  asRecord(billingSnapshot.value?.cost_breakdown),
+)
+
+const billingTierInfo = computed<JsonRecord | null>(() =>
+  asRecord(billingSnapshot.value?.tier_info),
+)
 
 function hasBodyContent(flag: boolean | undefined, data: unknown): boolean {
   return Boolean(flag) || hasContent(data)
@@ -1022,6 +1076,136 @@ const priceSourceLabel = computed(() => {
   return '历史定价'
 })
 
+const cacheCreationInputTokens5m = computed(() => {
+  if (!detail.value) return 0
+  return toNumber(detail.value.cache_creation_input_tokens_5m)
+    ?? getNestedNumber(detail.value as unknown as JsonRecord, 'cache_creation_ephemeral_5m_input_tokens')
+    ?? 0
+})
+
+const cacheCreationInputTokens1h = computed(() => {
+  if (!detail.value) return 0
+  return toNumber(detail.value.cache_creation_input_tokens_1h)
+    ?? getNestedNumber(detail.value as unknown as JsonRecord, 'cache_creation_ephemeral_1h_input_tokens')
+    ?? 0
+})
+
+const totalCacheCreationTokens = computed(() => {
+  if (!detail.value) return 0
+  const classified = cacheCreationInputTokens5m.value + cacheCreationInputTokens1h.value
+  const total = detail.value.cache_creation_input_tokens || 0
+  if (total === 0 && classified > 0) return classified
+  return total
+})
+
+const effectiveInputPricePer1M = computed(() =>
+  getNestedNumber(billingResolvedVariables.value, 'input_price_per_1m')
+  ?? toNumber(detail.value?.input_price_per_1m)
+)
+
+const effectiveOutputPricePer1M = computed(() =>
+  getNestedNumber(billingResolvedVariables.value, 'output_price_per_1m')
+  ?? toNumber(detail.value?.output_price_per_1m)
+)
+
+const effectiveCacheCreationPricePer1M = computed(() =>
+  getNestedNumber(billingResolvedVariables.value, 'cache_creation_price_per_1m')
+  ?? toNumber(detail.value?.cache_creation_price_per_1m)
+)
+
+const effectiveCacheReadPricePer1M = computed(() =>
+  getNestedNumber(billingResolvedVariables.value, 'cache_read_price_per_1m')
+  ?? toNumber(detail.value?.cache_read_price_per_1m)
+)
+
+const effectivePricePerRequest = computed(() =>
+  getNestedNumber(billingResolvedVariables.value, 'price_per_request')
+  ?? toNumber(detail.value?.price_per_request)
+  ?? 0,
+)
+
+const effectiveInputCost = computed(() =>
+  getNestedNumber(billingCostBreakdown.value, 'input_cost')
+  ?? toNumber(detail.value?.input_cost)
+  ?? 0,
+)
+
+const effectiveOutputCost = computed(() =>
+  getNestedNumber(billingCostBreakdown.value, 'output_cost')
+  ?? toNumber(detail.value?.output_cost)
+  ?? 0,
+)
+
+const effectiveCacheCreationCost = computed(() => {
+  const snapshotCost = [
+    getNestedNumber(billingCostBreakdown.value, 'cache_creation_uncategorized_cost'),
+    getNestedNumber(billingCostBreakdown.value, 'cache_creation_ephemeral_5m_cost'),
+    getNestedNumber(billingCostBreakdown.value, 'cache_creation_ephemeral_1h_cost'),
+  ].reduce((sum, value) => sum + (value ?? 0), 0)
+  if (snapshotCost > 0) return snapshotCost
+  return toNumber(detail.value?.cache_creation_cost) ?? 0
+})
+
+const effectiveCacheReadCost = computed(() =>
+  getNestedNumber(billingCostBreakdown.value, 'cache_read_cost')
+  ?? toNumber(detail.value?.cache_read_cost)
+  ?? 0,
+)
+
+const effectiveRequestCost = computed(() => {
+  const snapshotCost = getNestedNumber(billingCostBreakdown.value, 'request_cost')
+  if (snapshotCost !== null) return snapshotCost
+  if (effectivePricePerRequest.value > 0) {
+    return toNumber(detail.value?.request_cost) ?? 0
+  }
+  return 0
+})
+
+const fallbackCacheTtlPricing = computed<CacheTTLPriceEntry[]>(() => {
+  const tierPricing = normalizeCacheTtlPricing(billingTierInfo.value?.cache_ttl_pricing)
+  if (tierPricing.length > 0) return tierPricing
+
+  const rows: CacheTTLPriceEntry[] = []
+  const cache5mCreationPrice = getNestedNumber(
+    billingResolvedVariables.value,
+    'cache_creation_ephemeral_5m_price_per_1m',
+  )
+  const cache1hCreationPrice = getNestedNumber(
+    billingResolvedVariables.value,
+    'cache_creation_ephemeral_1h_price_per_1m',
+  )
+
+  if (cache5mCreationPrice !== null) {
+    rows.push({
+      ttl_minutes: 5,
+      cache_creation_price_per_1m: cache5mCreationPrice,
+      cache_read_price_per_1m: effectiveCacheReadPricePer1M.value,
+    })
+  }
+  if (cache1hCreationPrice !== null) {
+    rows.push({
+      ttl_minutes: 60,
+      cache_creation_price_per_1m: cache1hCreationPrice,
+      cache_read_price_per_1m: effectiveCacheReadPricePer1M.value,
+    })
+  }
+  return rows
+})
+
+const activeCacheTtlMinutes = computed(() => {
+  const snapshotTtl = getNestedNumber(billingSnapshot.value, 'resolved_dimensions', 'cache_ttl_minutes')
+  if (snapshotTtl !== null && snapshotTtl > 0) {
+    return Math.trunc(snapshotTtl)
+  }
+  if (cacheCreationInputTokens1h.value > 0 && cacheCreationInputTokens5m.value === 0) {
+    return 60
+  }
+  if (cacheCreationInputTokens5m.value > 0 && cacheCreationInputTokens1h.value === 0) {
+    return 5
+  }
+  return null
+})
+
 // 统一的阶梯显示数据
 // 如果有 tiered_pricing，使用它；否则用历史价格构建单阶梯
 const displayTiers = computed(() => {
@@ -1035,10 +1219,11 @@ const displayTiers = computed(() => {
   // 否则用历史价格构建单阶梯（无上限）
   return [{
     up_to: null,
-    input_price_per_1m: detail.value.input_price_per_1m || 0,
-    output_price_per_1m: detail.value.output_price_per_1m || 0,
-    cache_creation_price_per_1m: detail.value.cache_creation_price_per_1m,
-    cache_read_price_per_1m: detail.value.cache_read_price_per_1m
+    input_price_per_1m: effectiveInputPricePer1M.value ?? 0,
+    output_price_per_1m: effectiveOutputPricePer1M.value ?? 0,
+    cache_creation_price_per_1m: effectiveCacheCreationPricePer1M.value,
+    cache_read_price_per_1m: effectiveCacheReadPricePer1M.value,
+    cache_ttl_pricing: fallbackCacheTtlPricing.value,
   }]
 })
 
@@ -1049,6 +1234,11 @@ const currentTierIndex = computed(() => {
   // 如果有阶梯定价，使用它的 tier_index
   if (detail.value.tiered_pricing?.tier_index !== undefined) {
     return detail.value.tiered_pricing.tier_index
+  }
+
+  const snapshotTierIndex = getNestedNumber(billingSnapshot.value, 'tier_index')
+  if (snapshotTierIndex !== null) {
+    return Math.max(0, Math.trunc(snapshotTierIndex))
   }
 
   // 单阶梯时默认是第0阶
@@ -1064,9 +1254,9 @@ const currentTier = computed<PricingTierLike | null>(() => {
 const cacheCreationSummaryText = computed(() => {
   if (!detail.value) return '0'
 
-  const total = detail.value.cache_creation_input_tokens || 0
-  const cache5m = detail.value.cache_creation_input_tokens_5m || 0
-  const cache1h = detail.value.cache_creation_input_tokens_1h || 0
+  const total = totalCacheCreationTokens.value
+  const cache5m = cacheCreationInputTokens5m.value
+  const cache1h = cacheCreationInputTokens1h.value
 
   if (cache5m <= 0 && cache1h <= 0) {
     return formatNumber(total)
@@ -1091,8 +1281,8 @@ const cacheCreationSplitRows = computed(() => {
     cost: number | null
   }> = []
 
-  const cache5m = detail.value.cache_creation_input_tokens_5m || 0
-  const cache1h = detail.value.cache_creation_input_tokens_1h || 0
+  const cache5m = cacheCreationInputTokens5m.value
+  const cache1h = cacheCreationInputTokens1h.value
 
   if (cache5m > 0) {
     const pricePer1M = getActiveCachePriceForTTL(5, 'cache_creation_price_per_1m')
@@ -1130,7 +1320,7 @@ const _totalInputContext = computed(() => {
 
   // 否则手动计算
   const input = detail.value.tokens?.input || detail.value.input_tokens || 0
-  const cacheCreation = detail.value.cache_creation_input_tokens || 0
+  const cacheCreation = totalCacheCreationTokens.value
   const cacheRead = detail.value.cache_read_input_tokens || 0
   return input + cacheCreation + cacheRead
 })
@@ -1138,11 +1328,10 @@ const _totalInputContext = computed(() => {
 // Token 费用总计
 const tokenCostTotal = computed(() => {
   if (!detail.value) return 0
-  const inputCost = detail.value.cost?.input || detail.value.input_cost || 0
-  const outputCost = detail.value.cost?.output || detail.value.output_cost || 0
-  const cacheCreationCost = detail.value.cache_creation_cost || 0
-  const cacheReadCost = detail.value.cache_read_cost || 0
-  return inputCost + outputCost + cacheCreationCost + cacheReadCost
+  return effectiveInputCost.value
+    + effectiveOutputCost.value
+    + effectiveCacheCreationCost.value
+    + effectiveCacheReadCost.value
 })
 
 // 按次计费费用（非视频任务时）
@@ -1150,7 +1339,7 @@ const perRequestCost = computed(() => {
   if (!detail.value) return 0
   // 视频任务的 request_cost 实际上是视频费用，不算按次
   if (detail.value.video_billing) return 0
-  return detail.value.request_cost || 0
+  return effectiveRequestCost.value
 })
 
 // 视频/图像/音频费用
@@ -1167,7 +1356,7 @@ const hasTokenCost = computed(() => {
   if (!detail.value) return false
   const inputTokens = detail.value.tokens?.input || detail.value.input_tokens || 0
   const outputTokens = detail.value.tokens?.output || detail.value.output_tokens || 0
-  const cacheCreation = detail.value.cache_creation_input_tokens || 0
+  const cacheCreation = totalCacheCreationTokens.value
   const cacheRead = detail.value.cache_read_input_tokens || 0
   return (inputTokens + outputTokens + cacheCreation + cacheRead) > 0 || tokenCostTotal.value > 0
 })
@@ -1208,10 +1397,23 @@ function getTierCachePriceForTTL(
 
   if (ttlPricing.length === 0) return fallback
 
-  const matched = ttlPricing.find((entry) => Number(entry.ttl_minutes || 0) >= ttlMinutes)
-    || ttlPricing[ttlPricing.length - 1]
+  const matched = ttlPricing.find((entry) => Number(entry.ttl_minutes || 0) === ttlMinutes)
   const price = toFiniteNumber(matched?.[priceKey])
   return price ?? fallback
+}
+
+function getTierMatchedCachePricingEntry(
+  tier: PricingTierLike | null | undefined,
+  ttlMinutes: number,
+): CacheTTLPriceEntry | null {
+  const ttlPricing = Array.isArray(tier?.cache_ttl_pricing)
+    ? tier.cache_ttl_pricing
+        .filter((entry): entry is CacheTTLPriceEntry => !!entry && typeof entry === 'object')
+        .sort((a, b) => Number(a.ttl_minutes || 0) - Number(b.ttl_minutes || 0))
+    : []
+
+  if (ttlPricing.length === 0) return null
+  return ttlPricing.find((entry) => Number(entry.ttl_minutes || 0) === ttlMinutes) ?? null
 }
 
 function hasTierCacheCreationSplitPricing(tier: PricingTierLike | null | undefined): boolean {
@@ -1220,6 +1422,45 @@ function hasTierCacheCreationSplitPricing(tier: PricingTierLike | null | undefin
     Number(entry?.ttl_minutes || 0) >= 60
     && toFiniteNumber(entry?.cache_creation_price_per_1m) !== null,
   )
+}
+
+function formatCacheTtlLabel(ttlMinutes: number | null | undefined): string {
+  if (!ttlMinutes || ttlMinutes <= 0) return '缓存创建'
+  if (ttlMinutes >= 60) return '缓存创建(1h)'
+  if (ttlMinutes <= 5) return '缓存创建(5min)'
+  return `缓存创建(${ttlMinutes}min)`
+}
+
+function getTierActiveCacheCreationDisplay(
+  tier: PricingTierLike | null | undefined,
+): { label: string, price: number } | null {
+  if (hasTierCacheCreationSplitPricing(tier)) {
+    const activeTtl = activeCacheTtlMinutes.value
+    if (activeTtl !== null) {
+      const matchedEntry = getTierMatchedCachePricingEntry(tier, activeTtl)
+      const matchedPrice = getTierCachePriceForTTL(tier, activeTtl, 'cache_creation_price_per_1m')
+      if (matchedEntry && matchedPrice !== null) {
+        return {
+          label: formatCacheTtlLabel(matchedEntry.ttl_minutes),
+          price: matchedPrice,
+        }
+      }
+      const fallbackPrice = toFiniteNumber(tier?.cache_creation_price_per_1m)
+      if (fallbackPrice !== null) {
+        return {
+          label: formatCacheTtlLabel(activeTtl),
+          price: fallbackPrice,
+        }
+      }
+    }
+  }
+
+  const fallbackPrice = toFiniteNumber(tier?.cache_creation_price_per_1m)
+  if (fallbackPrice === null) return null
+  return {
+    label: '缓存创建',
+    price: fallbackPrice,
+  }
 }
 
 function getActiveCachePriceForTTL(
@@ -1233,6 +1474,22 @@ function getActiveCachePriceForTTL(
     return toFiniteNumber(detail.value?.cache_creation_price_per_1m)
   }
   return toFiniteNumber(detail.value?.cache_read_price_per_1m)
+}
+
+function getTierActiveCacheReadPrice(tier: PricingTierLike | null | undefined): number | null {
+  const activeTtl = activeCacheTtlMinutes.value
+  if (activeTtl !== null) {
+    const matchedPrice = getTierCachePriceForTTL(tier, activeTtl, 'cache_read_price_per_1m')
+    if (matchedPrice !== null) return matchedPrice
+  }
+
+  return toFiniteNumber(tier?.cache_read_price_per_1m)
+    ?? effectiveCacheReadPricePer1M.value
+    ?? null
+}
+
+function shouldShowCacheReadPrice(tier: PricingTierLike | null | undefined): boolean {
+  return getTierActiveCacheReadPrice(tier) !== null
 }
 
 function getDefaultDataSourceForTab(tab: string): 'client' | 'provider' {

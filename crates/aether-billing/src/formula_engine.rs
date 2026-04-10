@@ -380,27 +380,20 @@ fn resolve_tiered(
 
     if let (Some(cache_ttl_minutes), Some(ttl_value_key)) = (cache_ttl_minutes, ttl_value_key) {
         if let Some(ttl_pricing) = tier.get("cache_ttl_pricing").and_then(|v| v.as_array()) {
-            for ttl_entry in ttl_pricing {
-                let ttl_limit = ttl_entry
+            if let Some(ttl_entry) = ttl_pricing.iter().find(|entry| {
+                entry
                     .get("ttl_minutes")
                     .and_then(as_f64)
-                    .unwrap_or_default();
-                if cache_ttl_minutes <= ttl_limit {
-                    if let Some(value) = ttl_entry.get(ttl_value_key) {
-                        return Ok((
-                            value.clone(),
-                            false,
-                            Some((matched_index.unwrap_or(0), tier)),
-                        ));
-                    }
+                    .map(|value| value == cache_ttl_minutes)
+                    .unwrap_or(false)
+            }) {
+                if let Some(value) = ttl_entry.get(ttl_value_key).filter(|value| !value.is_null()) {
+                    return Ok((
+                        value.clone(),
+                        false,
+                        Some((matched_index.unwrap_or(0), tier)),
+                    ));
                 }
-            }
-            if let Some(value) = ttl_pricing.last().and_then(|v| v.get(ttl_value_key)) {
-                return Ok((
-                    value.clone(),
-                    false,
-                    Some((matched_index.unwrap_or(0), tier)),
-                ));
             }
         }
     }
@@ -856,5 +849,83 @@ mod tests {
 
         assert_eq!(result.status, FormulaEvaluationStatus::Incomplete);
         assert_eq!(result.missing_required, vec!["input_tokens".to_string()]);
+    }
+
+    #[test]
+    fn ttl_pricing_requires_exact_match() {
+        let engine = FormulaEngine::new();
+        let dimensions = BTreeMap::from([
+            ("total_input_context".to_string(), serde_json::json!(22_562)),
+            ("cache_ttl_minutes".to_string(), serde_json::json!(5)),
+        ]);
+        let mappings = BTreeMap::from([(
+            "cache_creation_price_per_1m".to_string(),
+            serde_json::json!({
+                "source": "tiered",
+                "tier_key": "total_input_context",
+                "ttl_key": "cache_ttl_minutes",
+                "ttl_value_key": "cache_creation_price_per_1m",
+                "tiers": [{
+                    "up_to": null,
+                    "value": 3.125,
+                    "cache_ttl_pricing": [{
+                        "ttl_minutes": 60,
+                        "cache_creation_price_per_1m": 5.0
+                    }]
+                }],
+                "default": 0.0
+            }),
+        )]);
+
+        let result = engine
+            .evaluate(
+                "cache_creation_price_per_1m",
+                None,
+                Some(&dimensions),
+                Some(&mappings),
+                false,
+            )
+            .expect("tiered mapping should evaluate");
+
+        assert_eq!(result.cost, 3.125);
+    }
+
+    #[test]
+    fn ttl_pricing_null_value_falls_back_to_base_tier_value() {
+        let engine = FormulaEngine::new();
+        let dimensions = BTreeMap::from([
+            ("total_input_context".to_string(), serde_json::json!(22_562)),
+            ("cache_ttl_minutes".to_string(), serde_json::json!(60)),
+        ]);
+        let mappings = BTreeMap::from([(
+            "cache_read_price_per_1m".to_string(),
+            serde_json::json!({
+                "source": "tiered",
+                "tier_key": "total_input_context",
+                "ttl_key": "cache_ttl_minutes",
+                "ttl_value_key": "cache_read_price_per_1m",
+                "tiers": [{
+                    "up_to": null,
+                    "value": 0.25,
+                    "cache_ttl_pricing": [{
+                        "ttl_minutes": 60,
+                        "cache_read_price_per_1m": null
+                    }]
+                }],
+                "default": 0.0
+            }),
+        )]);
+
+        let result = engine
+            .evaluate(
+                "cache_read_price_per_1m",
+                None,
+                Some(&dimensions),
+                Some(&mappings),
+                false,
+            )
+            .expect("tiered mapping should evaluate");
+
+        assert_eq!(result.cost, 0.25);
     }
 }

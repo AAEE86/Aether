@@ -21,7 +21,7 @@ use crate::ai_pipeline::transport::{
 use crate::ai_pipeline::{
     collect_control_headers, ConversionMode, ExecutionStrategy, PlannerAppState,
 };
-use crate::clock::current_unix_secs;
+use crate::clock::current_unix_ms;
 use crate::{
     append_execution_contract_fields_to_value, AppState, GatewayControlSyncDecisionResponse,
     EXECUTION_RUNTIME_STREAM_DECISION_ACTION, EXECUTION_RUNTIME_SYNC_DECISION_ACTION,
@@ -365,7 +365,7 @@ pub(super) async fn mark_skipped_local_same_format_provider_candidate(
             candidate_id,
             input.required_capabilities.as_ref(),
             skip_reason,
-            current_unix_secs(),
+            current_unix_ms(),
             "gateway local same-format decision failed to persist skipped candidate",
         )
         .await;

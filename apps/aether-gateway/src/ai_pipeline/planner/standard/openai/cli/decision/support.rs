@@ -18,7 +18,7 @@ use crate::ai_pipeline::{
     GatewayControlDecision,
 };
 use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
-use crate::clock::current_unix_secs;
+use crate::clock::{current_unix_ms, current_unix_secs};
 use crate::{append_execution_contract_fields_to_value, AppState, GatewayError};
 
 use super::LocalOpenAiCliSpec;
@@ -152,7 +152,7 @@ pub(crate) async fn materialize_local_openai_cli_candidate_attempts(
     )
     .await;
 
-    let created_at_unix_ms = current_unix_secs();
+    let created_at_unix_ms = current_unix_ms();
     let mut attempts = Vec::with_capacity(candidates.len());
     let mut affinity_remembered = false;
     for (candidate_index, candidate) in candidates.into_iter().enumerate() {
@@ -314,7 +314,7 @@ pub(crate) async fn mark_skipped_local_openai_cli_candidate(
             candidate_id,
             input.required_capabilities.as_ref(),
             skip_reason,
-            current_unix_secs(),
+            current_unix_ms(),
             "gateway local openai cli decision failed to persist skipped candidate",
         )
         .await;

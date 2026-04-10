@@ -17,7 +17,7 @@ use crate::ai_pipeline::{
     GatewayControlDecision,
 };
 use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
-use crate::clock::current_unix_secs;
+use crate::clock::{current_unix_ms, current_unix_secs};
 use crate::{append_execution_contract_fields_to_value, AppState, GatewayError};
 
 use super::{
@@ -145,7 +145,7 @@ pub(super) async fn materialize_local_standard_candidate_attempts(
     )
     .await;
 
-    let created_at_unix_ms = current_unix_secs();
+    let created_at_unix_ms = current_unix_ms();
     let mut attempts = Vec::with_capacity(candidates.len());
     let mut affinity_remembered = false;
     for (candidate_index, candidate) in candidates.into_iter().enumerate() {

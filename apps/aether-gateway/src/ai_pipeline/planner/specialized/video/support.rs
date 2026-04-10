@@ -12,7 +12,7 @@ use crate::ai_pipeline::{
     resolve_local_decision_execution_runtime_auth_context, GatewayControlDecision,
 };
 use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
-use crate::clock::current_unix_secs;
+use crate::clock::{current_unix_ms, current_unix_secs};
 use crate::AppState;
 
 #[derive(Debug, Clone)]
@@ -148,7 +148,7 @@ async fn materialize_local_video_create_candidate_attempts(
         input.required_capabilities.as_ref(),
     )
     .await;
-    let created_at_unix_ms = current_unix_secs();
+    let created_at_unix_ms = current_unix_ms();
     let mut attempts = Vec::with_capacity(candidates.len());
     let mut affinity_remembered = false;
 
@@ -220,7 +220,7 @@ pub(super) async fn mark_skipped_local_video_candidate(
             candidate_id,
             input.required_capabilities.as_ref(),
             skip_reason,
-            current_unix_secs(),
+            current_unix_ms(),
             "gateway local video decision failed to persist skipped candidate",
         )
         .await;
