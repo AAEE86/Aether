@@ -82,6 +82,28 @@ fn local_openai_cli_wrapper_preserves_body_order_after_edits() {
 }
 
 #[test]
+fn local_openai_compact_wrapper_strips_store_for_same_format_requests() {
+    let body_json = json!({
+        "model": "gpt-5.4",
+        "input": [],
+        "store": true
+    });
+
+    let provider_request_body = build_local_openai_cli_request_body(
+        &body_json,
+        "gpt-5.4",
+        false,
+        "openai",
+        "openai:compact",
+        None,
+        None,
+    )
+    .expect("local openai compact body should build");
+
+    assert!(provider_request_body.get("store").is_none());
+}
+
+#[test]
 fn strips_metadata_for_codex_openai_cli_requests() {
     let body_json = json!({
         "model": "claude-sonnet-4-5",
