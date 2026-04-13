@@ -10,6 +10,25 @@ pub(crate) use aether_data_contracts::repository::usage::{
 pub use memory::InMemoryUsageReadRepository;
 pub use sql::SqlxUsageReadRepository;
 
+pub(crate) fn incoming_usage_can_recover_terminal_failure(
+    incoming_status: &str,
+    incoming_billing_status: &str,
+) -> bool {
+    incoming_billing_status == "pending"
+        && matches!(incoming_status, "pending" | "streaming" | "completed")
+}
+
+pub(crate) fn usage_can_recover_terminal_failure(
+    existing_status: &str,
+    existing_billing_status: &str,
+    incoming_status: &str,
+    incoming_billing_status: &str,
+) -> bool {
+    existing_billing_status == "void"
+        && matches!(existing_status, "failed" | "cancelled")
+        && incoming_usage_can_recover_terminal_failure(incoming_status, incoming_billing_status)
+}
+
 pub(crate) fn strip_deprecated_usage_display_fields(
     mut usage: UpsertUsageRecord,
 ) -> UpsertUsageRecord {
@@ -20,7 +39,10 @@ pub(crate) fn strip_deprecated_usage_display_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::{strip_deprecated_usage_display_fields, UpsertUsageRecord};
+    use super::{
+        incoming_usage_can_recover_terminal_failure, strip_deprecated_usage_display_fields,
+        usage_can_recover_terminal_failure, UpsertUsageRecord,
+    };
 
     #[test]
     fn strip_deprecated_usage_display_fields_clears_legacy_display_columns() {
@@ -96,5 +118,49 @@ mod tests {
         assert_eq!(usage.api_key_name, None);
         assert_eq!(usage.provider_name, "OpenAI");
         assert_eq!(usage.model, "gpt-5");
+    }
+
+    #[test]
+    fn incoming_usage_recovery_only_applies_to_pending_lifecycle_states() {
+        assert!(incoming_usage_can_recover_terminal_failure(
+            "completed",
+            "pending"
+        ));
+        assert!(incoming_usage_can_recover_terminal_failure(
+            "streaming",
+            "pending"
+        ));
+        assert!(!incoming_usage_can_recover_terminal_failure(
+            "failed", "void"
+        ));
+        assert!(!incoming_usage_can_recover_terminal_failure(
+            "completed",
+            "settled"
+        ));
+    }
+
+    #[test]
+    fn usage_recovery_requires_void_failure_to_be_followed_by_pending_lifecycle_state() {
+        assert!(usage_can_recover_terminal_failure(
+            "failed",
+            "void",
+            "completed",
+            "pending"
+        ));
+        assert!(usage_can_recover_terminal_failure(
+            "cancelled",
+            "void",
+            "streaming",
+            "pending"
+        ));
+        assert!(!usage_can_recover_terminal_failure(
+            "completed",
+            "pending",
+            "completed",
+            "pending"
+        ));
+        assert!(!usage_can_recover_terminal_failure(
+            "failed", "void", "failed", "void"
+        ));
     }
 }

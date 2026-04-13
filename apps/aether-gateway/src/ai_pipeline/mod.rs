@@ -67,6 +67,20 @@ pub(crate) fn is_json_request(headers: &http::HeaderMap) -> bool {
     crate::headers::is_json_request(headers)
 }
 
+pub(crate) fn extract_gemini_model_from_path(path: &str) -> Option<String> {
+    let (_, suffix) = path.split_once("/models/")?;
+    let model = suffix
+        .split_once(':')
+        .map(|(value, _)| value)
+        .unwrap_or(suffix);
+    let model = model.trim();
+    if model.is_empty() {
+        None
+    } else {
+        Some(model.to_string())
+    }
+}
+
 pub(crate) fn build_execution_runtime_auth_context(
     auth_context: &crate::control::GatewayControlAuthContext,
 ) -> ExecutionRuntimeAuthContext {
@@ -107,7 +121,7 @@ pub(crate) fn maybe_build_local_sync_finalize_response(
 
 #[cfg(test)]
 mod tests {
-    use super::build_report_context_original_request_echo;
+    use super::{build_report_context_original_request_echo, extract_gemini_model_from_path};
     use serde_json::json;
 
     #[test]
@@ -125,5 +139,13 @@ mod tests {
             build_report_context_original_request_echo(&body).expect("echo should be produced");
 
         assert_eq!(echo, body);
+    }
+
+    #[test]
+    fn extract_gemini_model_from_path_trims_method_suffix() {
+        let model =
+            extract_gemini_model_from_path("/v1beta/models/gemini-2.5-pro:streamGenerateContent");
+
+        assert_eq!(model.as_deref(), Some("gemini-2.5-pro"));
     }
 }

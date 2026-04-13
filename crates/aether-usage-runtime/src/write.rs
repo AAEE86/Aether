@@ -659,7 +659,7 @@ fn infer_sync_terminal_state(
     } else if status_code >= 400
         || provider_response
             .and_then(|value| value.get("error"))
-            .is_some()
+            .is_some_and(|value| !value.is_null())
     {
         UsageTerminalState::Failed
     } else {
@@ -2512,6 +2512,70 @@ mod tests {
                 "input": [{"role": "user", "content": "provider-side compiled body"}],
             }))
         );
+    }
+
+    #[test]
+    fn sync_terminal_usage_treats_null_error_field_as_success() {
+        let plan = ExecutionPlan {
+            request_id: "req-sync-null-error-1".to_string(),
+            candidate_id: Some("cand-sync-null-error-1".to_string()),
+            provider_name: Some("OpenAI".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/messages".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"model": "gpt-5.4"})),
+            stream: false,
+            client_api_format: "claude:cli".to_string(),
+            provider_api_format: "openai:cli".to_string(),
+            model_name: Some("gpt-5.4".to_string()),
+            proxy: None,
+            tls_profile: None,
+            timeouts: None,
+        };
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-sync-null-error-1".to_string(),
+            report_kind: "claude_cli_sync_success".to_string(),
+            report_context: Some(json!({
+                "client_api_format": "claude:cli",
+                "provider_api_format": "openai:cli",
+                "needs_conversion": true,
+            })),
+            status_code: 200,
+            headers: BTreeMap::new(),
+            body_json: Some(json!({
+                "id": "resp_1",
+                "status": "completed",
+                "error": null,
+                "usage": {
+                    "input_tokens": 24,
+                    "output_tokens": 11,
+                    "total_tokens": 35
+                }
+            })),
+            client_body_json: Some(json!({
+                "type": "message",
+                "usage": {
+                    "input_tokens": 24,
+                    "output_tokens": 11
+                }
+            })),
+            body_base64: None,
+            telemetry: None,
+        };
+
+        let event =
+            build_sync_terminal_usage_event(&plan, payload.report_context.as_ref(), &payload)
+                .expect("usage event should build");
+
+        assert_eq!(event.event_type, UsageEventType::Completed);
+        assert_eq!(event.data.status_code, Some(200));
+        assert_eq!(event.data.input_tokens, Some(24));
+        assert_eq!(event.data.output_tokens, Some(11));
     }
 
     #[test]

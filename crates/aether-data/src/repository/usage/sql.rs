@@ -12,9 +12,9 @@ use std::io::{Read, Write};
 use uuid::Uuid;
 
 use super::{
-    strip_deprecated_usage_display_fields, StoredProviderApiKeyUsageSummary,
-    StoredProviderUsageSummary, StoredRequestUsageAudit, UpsertUsageRecord, UsageAuditListQuery,
-    UsageReadRepository, UsageWriteRepository,
+    incoming_usage_can_recover_terminal_failure, strip_deprecated_usage_display_fields,
+    StoredProviderApiKeyUsageSummary, StoredProviderUsageSummary, StoredRequestUsageAudit,
+    UpsertUsageRecord, UsageAuditListQuery, UsageReadRepository, UsageWriteRepository,
 };
 use crate::postgres::PostgresTransactionRunner;
 use crate::{error::SqlxResultExt, DataLayerError};
@@ -44,6 +44,24 @@ DO UPDATE SET
 const DELETE_USAGE_BODY_BLOB_SQL: &str = r#"
 DELETE FROM usage_body_blobs
 WHERE body_ref = $1
+"#;
+const RESET_STALE_VOID_USAGE_SQL: &str = r#"
+UPDATE "usage"
+SET
+  billing_status = 'pending',
+  finalized_at = NULL
+WHERE request_id = $1
+  AND billing_status = 'void'
+  AND status IN ('failed', 'cancelled')
+"#;
+const RESET_STALE_VOID_USAGE_SETTLEMENT_SNAPSHOT_SQL: &str = r#"
+UPDATE usage_settlement_snapshots
+SET
+  billing_status = 'pending',
+  finalized_at = NULL,
+  updated_at = NOW()
+WHERE request_id = $1
+  AND billing_status = 'void'
 "#;
 const UPSERT_USAGE_HTTP_AUDIT_SQL: &str = r#"
 INSERT INTO usage_http_audits (
@@ -1317,6 +1335,22 @@ impl SqlxUsageReadRepository {
         self.tx_runner
             .run_read_write(|tx| {
                 Box::pin(async move {
+                    if incoming_usage_can_recover_terminal_failure(
+                        usage.status.as_str(),
+                        usage.billing_status.as_str(),
+                    ) {
+                        sqlx::query(RESET_STALE_VOID_USAGE_SQL)
+                            .bind(&usage.request_id)
+                            .execute(&mut **tx)
+                            .await
+                            .map_postgres_err()?;
+                        sqlx::query(RESET_STALE_VOID_USAGE_SETTLEMENT_SNAPSHOT_SQL)
+                            .bind(&usage.request_id)
+                            .execute(&mut **tx)
+                            .await
+                            .map_postgres_err()?;
+                    }
+
                     let request_headers_json = json_bind_text(usage.request_headers.as_ref())?;
                     let request_body_storage =
                         prepare_usage_body_storage(usage.request_body.as_ref())?;
@@ -3093,6 +3127,21 @@ mod tests {
         assert!(super::UPSERT_SQL.contains(
             "WHEN EXCLUDED.status IN ('pending', 'streaming', 'completed', 'cancelled') THEN EXCLUDED.error_category"
         ));
+    }
+
+    #[test]
+    fn usage_sql_recovers_void_failures_before_upsert_and_settlement() {
+        assert!(super::RESET_STALE_VOID_USAGE_SQL.contains("UPDATE \"usage\""));
+        assert!(super::RESET_STALE_VOID_USAGE_SQL.contains("billing_status = 'pending'"));
+        assert!(super::RESET_STALE_VOID_USAGE_SQL.contains("finalized_at = NULL"));
+        assert!(super::RESET_STALE_VOID_USAGE_SQL.contains("status IN ('failed', 'cancelled')"));
+        assert!(super::RESET_STALE_VOID_USAGE_SETTLEMENT_SNAPSHOT_SQL
+            .contains("UPDATE usage_settlement_snapshots"));
+        assert!(super::RESET_STALE_VOID_USAGE_SETTLEMENT_SNAPSHOT_SQL
+            .contains("billing_status = 'pending'"));
+        assert!(
+            super::RESET_STALE_VOID_USAGE_SETTLEMENT_SNAPSHOT_SQL.contains("finalized_at = NULL")
+        );
     }
 
     #[test]

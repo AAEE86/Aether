@@ -2,8 +2,11 @@ use tracing::warn;
 
 use super::super::{GatewayControlDecision, LocalOpenAiChatDecisionInput};
 use super::diagnostic::set_local_openai_chat_miss_diagnostic;
-use crate::ai_pipeline::{resolve_local_decision_execution_runtime_auth_context, PlannerAppState};
-use crate::clock::current_unix_secs;
+use crate::ai_pipeline::planner::common::extract_standard_requested_model;
+use crate::ai_pipeline::planner::decision_input::{
+    build_local_requested_model_decision_input, resolve_local_authenticated_decision_input,
+};
+use crate::ai_pipeline::resolve_local_decision_execution_runtime_auth_context;
 use crate::AppState;
 
 pub(crate) async fn resolve_local_openai_chat_decision_input(
@@ -14,7 +17,6 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
     plan_kind: &str,
     record_miss_diagnostic: bool,
 ) -> Option<LocalOpenAiChatDecisionInput> {
-    let planner_state = PlannerAppState::new(state);
     let Some(auth_context) = resolve_local_decision_execution_runtime_auth_context(decision) else {
         warn!(
             trace_id = %trace_id,
@@ -29,20 +31,14 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
                 trace_id,
                 decision,
                 plan_kind,
-                body_json.get("model").and_then(|value| value.as_str()),
+                extract_standard_requested_model(body_json).as_deref(),
                 "missing_auth_context",
             );
         }
         return None;
     };
 
-    let Some(requested_model) = body_json
-        .get("model")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-    else {
+    let Some(requested_model) = extract_standard_requested_model(body_json) else {
         warn!(
             trace_id = %trace_id,
             "gateway local openai chat decision skipped: missing_requested_model"
@@ -60,15 +56,15 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
         return None;
     };
 
-    let auth_snapshot = match planner_state
-        .read_auth_api_key_snapshot(
-            &auth_context.user_id,
-            &auth_context.api_key_id,
-            current_unix_secs(),
-        )
-        .await
+    let resolved_input = match resolve_local_authenticated_decision_input(
+        state,
+        auth_context.clone(),
+        Some(requested_model.as_str()),
+        None,
+    )
+    .await
     {
-        Ok(Some(snapshot)) => snapshot,
+        Ok(Some(resolved_input)) => resolved_input,
         Ok(None) => {
             warn!(
                 trace_id = %trace_id,
@@ -108,19 +104,8 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
         }
     };
 
-    let required_capabilities = planner_state
-        .resolve_request_candidate_required_capabilities(
-            &auth_context.user_id,
-            &auth_context.api_key_id,
-            Some(requested_model.as_str()),
-            None,
-        )
-        .await;
-
-    Some(LocalOpenAiChatDecisionInput {
-        auth_context,
+    Some(build_local_requested_model_decision_input(
+        resolved_input,
         requested_model,
-        auth_snapshot,
-        required_capabilities,
-    })
+    ))
 }

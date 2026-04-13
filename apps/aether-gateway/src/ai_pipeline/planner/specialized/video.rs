@@ -1,4 +1,5 @@
 mod decision;
+mod request;
 mod support;
 
 use tracing::warn;
@@ -6,6 +7,7 @@ use tracing::warn;
 use crate::ai_pipeline::planner::plan_builders::{
     build_passthrough_sync_plan_from_decision, LocalSyncPlanAndReport,
 };
+use crate::ai_pipeline::planner::spec_metadata::local_video_create_spec_metadata;
 use crate::ai_pipeline::GatewayControlDecision;
 use crate::ai_pipeline::{
     resolve_local_video_sync_spec as resolve_sync_spec, LocalVideoCreateFamily,
@@ -44,6 +46,7 @@ pub(crate) async fn maybe_build_sync_local_video_decision_payload(
     let Some(spec) = resolve_sync_spec(plan_kind) else {
         return Ok(None);
     };
+    let spec_metadata = local_video_create_spec_metadata(spec);
 
     let Some(input) = resolve_local_video_create_decision_input(
         state, parts, trace_id, decision, body_json, spec,
@@ -57,8 +60,8 @@ pub(crate) async fn maybe_build_sync_local_video_decision_payload(
         state,
         trace_id,
         &input,
-        spec.api_format,
-        spec.decision_kind,
+        spec_metadata.api_format,
+        spec_metadata.decision_kind,
     )
     .await
     else {
@@ -86,6 +89,7 @@ async fn build_local_sync_plan_and_reports(
     decision: &GatewayControlDecision,
     spec: LocalVideoCreateSpec,
 ) -> Result<Vec<LocalSyncPlanAndReport>, GatewayError> {
+    let spec_metadata = local_video_create_spec_metadata(spec);
     let Some(input) = resolve_local_video_create_decision_input(
         state, parts, trace_id, decision, body_json, spec,
     )
@@ -98,8 +102,8 @@ async fn build_local_sync_plan_and_reports(
         state,
         trace_id,
         &input,
-        spec.api_format,
-        spec.decision_kind,
+        spec_metadata.api_format,
+        spec_metadata.decision_kind,
     )
     .await
     else {
@@ -122,7 +126,7 @@ async fn build_local_sync_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    decision_kind = spec.decision_kind,
+                    decision_kind = spec_metadata.decision_kind,
                     error = ?err,
                     "gateway local video sync decision plan build failed"
                 );

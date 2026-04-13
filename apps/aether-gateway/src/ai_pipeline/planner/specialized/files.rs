@@ -1,4 +1,5 @@
 mod decision;
+mod request;
 mod support;
 
 use tracing::warn;
@@ -7,6 +8,7 @@ use crate::ai_pipeline::planner::plan_builders::{
     build_passthrough_stream_plan_from_decision, build_passthrough_sync_plan_from_decision,
     LocalStreamPlanAndReport, LocalSyncPlanAndReport,
 };
+use crate::ai_pipeline::planner::spec_metadata::local_gemini_files_spec_metadata;
 use crate::ai_pipeline::GatewayControlDecision;
 use crate::ai_pipeline::{
     resolve_gemini_files_stream_spec as resolve_stream_spec,
@@ -154,6 +156,7 @@ async fn build_local_sync_plan_and_reports(
     decision: &GatewayControlDecision,
     spec: LocalGeminiFilesSpec,
 ) -> Result<Vec<LocalSyncPlanAndReport>, GatewayError> {
+    let spec_metadata = local_gemini_files_spec_metadata(spec);
     let Some(input) = resolve_local_gemini_files_decision_input(state, trace_id, decision).await
     else {
         return Ok(Vec::new());
@@ -186,7 +189,7 @@ async fn build_local_sync_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    decision_kind = spec.decision_kind,
+                    decision_kind = spec_metadata.decision_kind,
                     error = ?err,
                     "gateway local gemini files sync decision plan build failed"
                 );
@@ -204,6 +207,7 @@ async fn build_local_stream_plan_and_reports(
     decision: &GatewayControlDecision,
     spec: LocalGeminiFilesSpec,
 ) -> Result<Vec<LocalStreamPlanAndReport>, GatewayError> {
+    let spec_metadata = local_gemini_files_spec_metadata(spec);
     let Some(input) = resolve_local_gemini_files_decision_input(state, trace_id, decision).await
     else {
         return Ok(Vec::new());
@@ -237,7 +241,7 @@ async fn build_local_stream_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    decision_kind = spec.decision_kind,
+                    decision_kind = spec_metadata.decision_kind,
                     error = ?err,
                     "gateway local gemini files stream decision plan build failed"
                 );

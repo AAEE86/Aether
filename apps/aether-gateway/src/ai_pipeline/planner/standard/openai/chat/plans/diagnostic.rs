@@ -1,26 +1,8 @@
-use std::collections::BTreeMap;
-
-use super::super::{GatewayControlDecision, LocalExecutionRuntimeMissDiagnostic};
+use super::super::GatewayControlDecision;
+use crate::ai_pipeline::planner::runtime_miss::{
+    set_local_runtime_candidate_evaluation_diagnostic, set_local_runtime_miss_diagnostic_reason,
+};
 use crate::AppState;
-
-pub(crate) fn build_local_openai_chat_miss_diagnostic(
-    decision: &GatewayControlDecision,
-    plan_kind: &str,
-    requested_model: Option<&str>,
-    reason: &str,
-) -> LocalExecutionRuntimeMissDiagnostic {
-    LocalExecutionRuntimeMissDiagnostic {
-        reason: reason.to_string(),
-        route_family: decision.route_family.clone(),
-        route_kind: decision.route_kind.clone(),
-        public_path: Some(decision.public_path.clone()),
-        plan_kind: Some(plan_kind.to_string()),
-        requested_model: requested_model.map(ToOwned::to_owned),
-        candidate_count: None,
-        skipped_candidate_count: None,
-        skip_reasons: BTreeMap::new(),
-    }
-}
 
 pub(crate) fn set_local_openai_chat_miss_diagnostic(
     state: &AppState,
@@ -30,8 +12,30 @@ pub(crate) fn set_local_openai_chat_miss_diagnostic(
     requested_model: Option<&str>,
     reason: &str,
 ) {
-    state.set_local_execution_runtime_miss_diagnostic(
+    set_local_runtime_miss_diagnostic_reason(
+        state,
         trace_id,
-        build_local_openai_chat_miss_diagnostic(decision, plan_kind, requested_model, reason),
+        decision,
+        plan_kind,
+        requested_model,
+        reason,
+    );
+}
+
+pub(crate) fn set_local_openai_chat_candidate_evaluation_diagnostic(
+    state: &AppState,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    plan_kind: &str,
+    requested_model: Option<&str>,
+    candidate_count: usize,
+) {
+    set_local_runtime_candidate_evaluation_diagnostic(
+        state,
+        trace_id,
+        decision,
+        plan_kind,
+        requested_model,
+        candidate_count,
     );
 }

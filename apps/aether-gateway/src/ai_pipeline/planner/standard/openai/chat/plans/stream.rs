@@ -3,17 +3,18 @@ use tracing::warn;
 use super::super::{
     materialize_local_openai_chat_candidate_attempts,
     maybe_build_local_openai_chat_decision_payload_for_candidate, AppState, GatewayControlDecision,
-    GatewayError, LocalExecutionRuntimeMissDiagnostic,
+    GatewayError,
 };
 use super::candidates::list_local_openai_chat_candidates;
 use super::diagnostic::{
-    build_local_openai_chat_miss_diagnostic, set_local_openai_chat_miss_diagnostic,
+    set_local_openai_chat_candidate_evaluation_diagnostic, set_local_openai_chat_miss_diagnostic,
 };
 use super::resolve::resolve_local_openai_chat_decision_input;
 use crate::ai_pipeline::planner::common::OPENAI_CHAT_STREAM_PLAN_KIND;
 use crate::ai_pipeline::planner::plan_builders::{
     build_openai_chat_stream_plan_from_decision, LocalStreamPlanAndReport,
 };
+use crate::ai_pipeline::planner::runtime_miss::apply_local_runtime_candidate_terminal_reason;
 
 pub(crate) async fn build_local_openai_chat_stream_plan_and_reports(
     state: &AppState,
@@ -55,31 +56,23 @@ pub(crate) async fn build_local_openai_chat_stream_plan_and_reports(
         }
     };
     if candidates.is_empty() {
-        state.set_local_execution_runtime_miss_diagnostic(
+        set_local_openai_chat_candidate_evaluation_diagnostic(
+            state,
             trace_id,
-            LocalExecutionRuntimeMissDiagnostic {
-                candidate_count: Some(0),
-                ..build_local_openai_chat_miss_diagnostic(
-                    decision,
-                    plan_kind,
-                    Some(input.requested_model.as_str()),
-                    "candidate_list_empty",
-                )
-            },
+            decision,
+            plan_kind,
+            Some(input.requested_model.as_str()),
+            0,
         );
         return Ok(Vec::new());
     }
-    state.set_local_execution_runtime_miss_diagnostic(
+    set_local_openai_chat_candidate_evaluation_diagnostic(
+        state,
         trace_id,
-        LocalExecutionRuntimeMissDiagnostic {
-            candidate_count: Some(candidates.len()),
-            ..build_local_openai_chat_miss_diagnostic(
-                decision,
-                plan_kind,
-                Some(input.requested_model.as_str()),
-                "candidate_evaluation_incomplete",
-            )
-        },
+        decision,
+        plan_kind,
+        Some(input.requested_model.as_str()),
+        candidates.len(),
     );
 
     let attempts =
@@ -116,15 +109,7 @@ pub(crate) async fn build_local_openai_chat_stream_plan_and_reports(
         }
     }
 
-    state.mutate_local_execution_runtime_miss_diagnostic(trace_id, |diagnostic| {
-        let candidate_count = diagnostic.candidate_count.unwrap_or(0);
-        let skipped_candidate_count = diagnostic.skipped_candidate_count.unwrap_or(0);
-        diagnostic.reason = if candidate_count > 0 && skipped_candidate_count >= candidate_count {
-            "all_candidates_skipped".to_string()
-        } else {
-            "no_local_stream_plans".to_string()
-        };
-    });
+    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_stream_plans");
 
     Ok(plans)
 }

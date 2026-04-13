@@ -1,9 +1,7 @@
-use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
-use crate::ai_pipeline::GatewayAuthApiKeySnapshot;
-
 mod build;
 mod candidates;
 mod payload;
+mod request;
 
 pub(crate) use self::build::{
     maybe_build_stream_local_same_format_provider_decision_payload,
@@ -14,19 +12,6 @@ pub(crate) use self::candidates::{
     resolve_local_same_format_provider_decision_input,
 };
 pub(crate) use self::payload::maybe_build_local_same_format_provider_decision_payload_for_candidate;
+pub(crate) use crate::ai_pipeline::planner::candidate_materialization::LocalExecutionCandidateAttempt as LocalSameFormatProviderCandidateAttempt;
+pub(crate) use crate::ai_pipeline::planner::decision_input::LocalRequestedModelDecisionInput as LocalSameFormatProviderDecisionInput;
 pub(crate) use crate::ai_pipeline::{LocalSameFormatProviderFamily, LocalSameFormatProviderSpec};
-
-#[derive(Debug, Clone)]
-pub(crate) struct LocalSameFormatProviderDecisionInput {
-    pub(crate) auth_context: ExecutionRuntimeAuthContext,
-    pub(crate) requested_model: String,
-    pub(crate) auth_snapshot: GatewayAuthApiKeySnapshot,
-    pub(crate) required_capabilities: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LocalSameFormatProviderCandidateAttempt {
-    pub(crate) candidate: aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate,
-    pub(crate) candidate_index: u32,
-    pub(crate) candidate_id: String,
-}

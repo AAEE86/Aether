@@ -242,4 +242,4 @@ src/_version.py
 # Analysis folder (third-party code for reference)
 analysis/
 new-api/
-/aether-proxy/target/
+apps/aether-proxy/aether-proxy.toml

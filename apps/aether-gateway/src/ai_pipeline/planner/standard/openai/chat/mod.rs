@@ -4,10 +4,9 @@ use tracing::warn;
 use crate::ai_pipeline::planner::common::{
     OPENAI_CHAT_STREAM_PLAN_KIND, OPENAI_CHAT_SYNC_PLAN_KIND,
 };
+use crate::ai_pipeline::planner::runtime_miss::set_local_runtime_execution_exhausted_diagnostic;
 use crate::ai_pipeline::GatewayControlDecision;
-use crate::{
-    AppState, GatewayControlSyncDecisionResponse, GatewayError, LocalExecutionRuntimeMissDiagnostic,
-};
+use crate::{AppState, GatewayControlSyncDecisionResponse, GatewayError};
 
 mod decision;
 mod plans;
@@ -17,9 +16,9 @@ use self::decision::{
     maybe_build_local_openai_chat_decision_payload_for_candidate, LocalOpenAiChatDecisionInput,
 };
 use self::plans::{
-    build_local_openai_chat_miss_diagnostic, build_local_openai_chat_stream_plan_and_reports,
-    build_local_openai_chat_sync_plan_and_reports, list_local_openai_chat_candidates,
-    resolve_local_openai_chat_decision_input, set_local_openai_chat_miss_diagnostic,
+    build_local_openai_chat_stream_plan_and_reports, build_local_openai_chat_sync_plan_and_reports,
+    list_local_openai_chat_candidates, resolve_local_openai_chat_decision_input,
+    set_local_openai_chat_miss_diagnostic,
 };
 
 pub(crate) async fn build_local_openai_chat_sync_plan_and_reports_for_kind(
@@ -70,17 +69,13 @@ pub(crate) fn set_local_openai_chat_execution_exhausted_diagnostic(
         model = body_json.get("model").and_then(|value| value.as_str()).unwrap_or(""),
         "gateway local openai chat execution exhausted all candidates"
     );
-    state.set_local_execution_runtime_miss_diagnostic(
+    set_local_runtime_execution_exhausted_diagnostic(
+        state,
         trace_id,
-        LocalExecutionRuntimeMissDiagnostic {
-            candidate_count: Some(plan_count),
-            ..build_local_openai_chat_miss_diagnostic(
-                decision,
-                plan_kind,
-                body_json.get("model").and_then(|value| value.as_str()),
-                "execution_runtime_candidates_exhausted",
-            )
-        },
+        decision,
+        plan_kind,
+        body_json.get("model").and_then(|value| value.as_str()),
+        plan_count,
     );
 }
 

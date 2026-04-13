@@ -70,7 +70,7 @@
                 <div
                   class="node-dot"
                   :class="[
-                    getStatusColorClass(getDisplayStatus(group.primary)),
+                    getStatusColorClass(group.primaryStatus),
                     { 'is-first-selected': isGroupSelected(group) && selectedAttemptIndex === 0 }
                   ]"
                   @click.stop="selectFirstAttempt(group)"
@@ -118,7 +118,7 @@
                 <div class="panel-title">
                   <span
                     class="title-dot"
-                    :class="getStatusColorClass(getDisplayStatus(currentAttempt))"
+                    :class="getStatusColorClass(currentAttemptDisplayStatus)"
                   />
                   <span class="title-text">{{ currentGroupTitle }}</span>
                   <a
@@ -133,15 +133,31 @@
                   </a>
                   <span
                     class="status-tag"
-                    :class="getStatusColorClass(getDisplayStatus(currentAttempt))"
+                    :class="getStatusColorClass(currentAttemptDisplayStatus)"
                   >
-                    {{ currentAttempt.status_code || getStatusLabel(currentAttempt.status) }}
+                    {{ currentAttempt.status_code || getStatusLabel(currentAttemptDisplayStatus) }}
                   </span>
                   <!-- 多 Key 标识 -->
                   <template v-if="selectedGroup.retryCount > 0">
-                    <span class="cache-hint">
-                      {{ selectedAttemptIndex + 1 }}/{{ selectedGroup.allAttempts.length }}
-                    </span>
+                    <div class="attempt-switcher">
+                      <button
+                        class="attempt-nav-btn"
+                        :disabled="selectedAttemptIndex === 0"
+                        @click.stop="navigateAttempt(-1)"
+                      >
+                        <ChevronLeft class="w-3 h-3" />
+                      </button>
+                      <span class="cache-hint">
+                        {{ selectedAttemptIndex + 1 }}/{{ selectedGroup.allAttempts.length }}
+                      </span>
+                      <button
+                        class="attempt-nav-btn"
+                        :disabled="selectedAttemptIndex === selectedGroup.allAttempts.length - 1"
+                        @click.stop="navigateAttempt(1)"
+                      >
+                        <ChevronRight class="w-3 h-3" />
+                      </button>
+                    </div>
                   </template>
                 </div>
                 <div class="panel-nav">
@@ -457,6 +473,7 @@ import { requestTraceApi, type RequestTrace, type CandidateRecord } from '@/api/
 import { log } from '@/utils/logger'
 import { parseApiError } from '@/utils/errorParser'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
+import { resolveTimelineFinalStatus } from '../utils/status'
 
 // 节点组类型
 interface NodeGroup {
@@ -527,20 +544,14 @@ const formatNumber = (num: number): string => {
 
 // 计算最终状态：优先检查进行中状态，再使用外部状态码
 const computedFinalStatus = computed(() => {
-  // 优先检查是否有进行中或流式传输的候选（请求尚未完成）
   const hasPending = trace.value?.candidates?.some(
     c => c.status === 'pending' || c.status === 'streaming'
   )
-  if (hasPending) {
-    return 'pending'
-  }
-
-  // 使用外部状态码判断最终状态
-  if (props.overrideStatusCode !== undefined) {
-    return props.overrideStatusCode === 200 ? 'success' : 'failed'
-  }
-
-  return trace.value?.final_status || 'pending'
+  return resolveTimelineFinalStatus({
+    hasPendingCandidates: hasPending,
+    statusCode: props.overrideStatusCode,
+    traceFinalStatus: trace.value?.final_status,
+  })
 })
 
 // 获取最终状态标签
@@ -548,6 +559,7 @@ const getFinalStatusLabel = (status: string) => {
   const labels: Record<string, string> = {
     success: '最终成功',
     failed: '最终失败',
+    cancelled: '已取消',
     streaming: '流式传输中',
     pending: '进行中'
   }
@@ -561,6 +573,7 @@ const getFinalStatusBadgeVariant = (status: string): BadgeVariant => {
   const variants: Record<string, BadgeVariant> = {
     success: 'success',
     failed: 'destructive',
+    cancelled: 'warning',
     streaming: 'secondary',
     pending: 'secondary'
   }
@@ -926,9 +939,9 @@ const buildProviderGroups = (items: CandidateRecord[]): NodeGroup[] => {
         currentGroup.hasConversion = true
       }
       const currentPriority = STATUS_PRIORITY[currentGroup.primaryStatus] ?? 0
-      const newPriority = STATUS_PRIORITY[candidate.status] ?? 0
+      const newPriority = STATUS_PRIORITY[getDisplayStatus(candidate)] ?? 0
       if (newPriority > currentPriority) {
-        currentGroup.primaryStatus = candidate.status
+        currentGroup.primaryStatus = getDisplayStatus(candidate)
       }
       return
     }
@@ -937,7 +950,7 @@ const buildProviderGroups = (items: CandidateRecord[]): NodeGroup[] => {
       id: providerKey,
       providerName: getProviderDisplayName(candidate),
       primary: candidate,
-      primaryStatus: candidate.status,
+      primaryStatus: getDisplayStatus(candidate),
       allAttempts: [candidate],
       retryCount: 0,
       totalLatency: candidate.latency_ms || 0,
@@ -975,9 +988,10 @@ const groupedTimeline = computed<NodeGroup[]>(() => {
 
     const poolPrimaryStatus = attempts.reduce((best, current) => {
       const bestPriority = STATUS_PRIORITY[best] ?? 0
-      const currentPriority = STATUS_PRIORITY[current.status] ?? 0
-      return currentPriority > bestPriority ? current.status : best
-    }, attempts[0].status)
+      const currentStatus = getDisplayStatus(current)
+      const currentPriority = STATUS_PRIORITY[currentStatus] ?? 0
+      return currentPriority > bestPriority ? currentStatus : best
+    }, getDisplayStatus(attempts[0]))
 
     const successAttempt = attempts.find((item) => item.status === 'success')
     const poolPrimary = successAttempt || attempts[attempts.length - 1] || attempts[0]
@@ -1089,6 +1103,8 @@ const currentAttempt = computed(() => {
   if (!selectedGroup.value) return null
   return selectedGroup.value.allAttempts[selectedAttemptIndex.value] || selectedGroup.value.primary
 })
+
+const currentAttemptDisplayStatus = computed(() => getDisplayStatus(currentAttempt.value))
 
 watch(currentAttempt, (attempt) => {
   emit('selectAttempt', attempt ?? null)
@@ -1345,6 +1361,15 @@ const navigateGroup = (direction: number) => {
   }
 }
 
+const navigateAttempt = (direction: number) => {
+  const group = selectedGroup.value
+  if (!group) return
+  const newIndex = selectedAttemptIndex.value + direction
+  if (newIndex >= 0 && newIndex < group.allAttempts.length) {
+    selectedAttemptIndex.value = newIndex
+  }
+}
+
 // 加载请求追踪数据
 const isSilentRefresh = ref(false)
 const loadTrace = async (silent = false) => {
@@ -1403,7 +1428,10 @@ watch(groupedTimeline, (newGroups) => {
     selectedGroupIndex.value = activeIdx
     // 选中正在进行的尝试，而非最后一个
     const group = newGroups[activeIdx]
-    const attemptIdx = group.allAttempts.findIndex(a => a.status === 'pending' || a.status === 'streaming')
+    const attemptIdx = group.allAttempts.findIndex(a => {
+      const status = getDisplayStatus(a)
+      return status === 'pending' || status === 'streaming'
+    })
     selectedAttemptIndex.value = attemptIdx >= 0 ? attemptIdx : group.allAttempts.length - 1
     return
   }
@@ -1418,7 +1446,7 @@ watch(groupedTimeline, (newGroups) => {
       // 选中最后一个有效状态的尝试（从后往前遍历）
       let targetIdx = -1
       for (let j = group.allAttempts.length - 1; j >= 0; j--) {
-        if (activeStatuses.includes(group.allAttempts[j].status)) {
+        if (activeStatuses.includes(getDisplayStatus(group.allAttempts[j]))) {
           targetIdx = j
           break
         }
@@ -1490,7 +1518,7 @@ const getStatusLabel = (status: string) => {
   const labels: Record<string, string> = {
     available: '未执行',
     unused: '未执行',
-    pending: '等待中',
+    pending: '进行中',
     streaming: '传输中',
     stream_interrupted: '流中断',
     success: '成功',
@@ -1551,7 +1579,7 @@ const getDisplayStatus = (attempt: CandidateRecord | null | undefined): string =
   align-items: center;
   justify-content: safe center;
   gap: 64px;
-  padding: 2rem;
+  padding: 2rem 2rem 2.75rem;
   overflow-x: auto;
   overflow-y: hidden;
 
@@ -1650,6 +1678,7 @@ const getDisplayStatus = (attempt: CandidateRecord | null | undefined): string =
   gap: 6px;
   padding: 0;
   background: transparent;
+  z-index: 3;
 }
 
 /* 子节点 - 增大点击区域 */
@@ -1942,7 +1971,37 @@ const getDisplayStatus = (attempt: CandidateRecord | null | undefined): string =
   color: hsl(var(--muted-foreground));
   background: hsl(var(--muted) / 0.5);
   border-radius: 4px;
+}
+
+.attempt-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
   margin-left: 0.5rem;
+}
+
+.attempt-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  border-radius: 9999px;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.attempt-nav-btn:hover:not(:disabled) {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.attempt-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .info-grid {

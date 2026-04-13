@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 
-use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::ai_pipeline::conversion::{
-    request_conversion_direct_auth, request_conversion_kind,
-    request_conversion_requires_enable_flag, request_conversion_transport_supported,
-    request_pair_allowed_for_transport,
+    request_conversion_direct_auth, request_conversion_kind, request_conversion_transport_supported,
+};
+use crate::ai_pipeline::planner::candidate_eligibility::EligibleLocalExecutionCandidate;
+use crate::ai_pipeline::planner::candidate_preparation::{
+    prepare_header_authenticated_candidate, OauthPreparationContext,
 };
 use crate::ai_pipeline::planner::common::force_upstream_streaming_for_provider;
+use crate::ai_pipeline::planner::spec_metadata::local_openai_cli_spec_metadata;
 use crate::ai_pipeline::planner::standard::{
     apply_codex_openai_cli_special_headers, build_cross_format_openai_cli_request_body,
     build_cross_format_openai_cli_upstream_url, build_local_openai_cli_request_body,
@@ -28,9 +30,7 @@ use crate::ai_pipeline::transport::auth::{
 };
 use crate::ai_pipeline::transport::policy::supports_local_standard_transport_with_network;
 use crate::ai_pipeline::{ConversionMode, ExecutionStrategy};
-use crate::ai_pipeline::{
-    GatewayProviderTransportSnapshot, LocalResolvedOAuthRequestAuth, PlannerAppState,
-};
+use crate::ai_pipeline::{GatewayProviderTransportSnapshot, PlannerAppState};
 use crate::AppState;
 
 use super::support::{mark_skipped_local_openai_cli_candidate, LocalOpenAiCliDecisionInput};
@@ -60,100 +60,31 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
     trace_id: &str,
     body_json: &serde_json::Value,
     input: &LocalOpenAiCliDecisionInput,
-    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    eligible: &EligibleLocalExecutionCandidate,
     candidate_index: u32,
     candidate_id: &str,
     spec: LocalOpenAiCliSpec,
 ) -> Option<LocalOpenAiCliCandidatePayloadParts> {
+    let spec_metadata = local_openai_cli_spec_metadata(spec);
+    let client_api_format = spec_metadata.api_format.trim().to_ascii_lowercase();
     let planner_state = PlannerAppState::new(state);
-    let provider_api_format = candidate.endpoint_api_format.trim().to_ascii_lowercase();
-
-    let transport = match planner_state
-        .read_provider_transport_snapshot(
-            &candidate.provider_id,
-            &candidate.endpoint_id,
-            &candidate.key_id,
-        )
-        .await
-    {
-        Ok(Some(snapshot)) => snapshot,
-        Ok(None) => {
-            mark_skipped_local_openai_cli_candidate(
-                state,
-                input,
-                trace_id,
-                candidate,
-                candidate_index,
-                candidate_id,
-                "transport_snapshot_missing",
-            )
-            .await;
-            return None;
-        }
-        Err(err) => {
-            warn!(
-                trace_id = %trace_id,
-                api_format = spec.api_format,
-                error = ?err,
-                "gateway local openai cli decision provider transport read failed"
-            );
-            mark_skipped_local_openai_cli_candidate(
-                state,
-                input,
-                trace_id,
-                candidate,
-                candidate_index,
-                candidate_id,
-                "transport_snapshot_read_failed",
-            )
-            .await;
-            return None;
-        }
-    };
+    let candidate = &eligible.candidate;
+    let provider_api_format = eligible.provider_api_format.as_str();
+    let transport = &eligible.transport;
     let is_antigravity = transport
         .provider
         .provider_type
         .trim()
         .eq_ignore_ascii_case("antigravity");
 
-    let same_format = provider_api_format == spec.api_format.trim().to_ascii_lowercase();
-    let conversion_kind = request_conversion_kind(spec.api_format, provider_api_format.as_str());
-    if !same_format
-        && !request_pair_allowed_for_transport(
-            &transport,
-            spec.api_format,
-            provider_api_format.as_str(),
-        )
-    {
-        let skip_reason = if conversion_kind.is_some()
-            && request_conversion_requires_enable_flag(
-                spec.api_format,
-                provider_api_format.as_str(),
-            )
-            && !transport.provider.enable_format_conversion
-        {
-            "format_conversion_disabled"
-        } else {
-            "transport_unsupported"
-        };
-        mark_skipped_local_openai_cli_candidate(
-            state,
-            input,
-            trace_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            skip_reason,
-        )
-        .await;
-        return None;
-    }
+    let same_format = provider_api_format == client_api_format;
+    let conversion_kind = request_conversion_kind(spec_metadata.api_format, provider_api_format);
     let transport_supported = if same_format {
-        supports_local_standard_transport_with_network(&transport, provider_api_format.as_str())
+        supports_local_standard_transport_with_network(transport, provider_api_format)
     } else {
         match conversion_kind {
             Some(_) if is_antigravity && provider_api_format == "gemini:cli" => true,
-            Some(kind) => request_conversion_transport_supported(&transport, kind),
+            Some(kind) => request_conversion_transport_supported(transport, kind),
             None => false,
         }
     };
@@ -171,82 +102,62 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         return None;
     }
 
-    let resolved_auth = if same_format {
-        match provider_api_format.as_str() {
-            "gemini:cli" => resolve_local_gemini_auth(&transport),
+    let direct_auth = if same_format {
+        match provider_api_format {
+            "gemini:cli" => resolve_local_gemini_auth(transport),
             "claude:cli" | "openai:cli" | "openai:compact" => {
-                resolve_local_standard_auth(&transport)
+                resolve_local_standard_auth(transport)
             }
             _ => None,
         }
     } else {
-        conversion_kind.and_then(|kind| request_conversion_direct_auth(&transport, kind))
+        conversion_kind.and_then(|kind| request_conversion_direct_auth(transport, kind))
     };
-    let oauth_auth = if resolved_auth.is_none() {
-        match planner_state
-            .resolve_local_oauth_request_auth(&transport)
-            .await
-        {
-            Ok(Some(LocalResolvedOAuthRequestAuth::Header { name, value })) => Some((name, value)),
-            Ok(Some(LocalResolvedOAuthRequestAuth::Kiro(_))) => None,
-            Ok(None) => None,
-            Err(err) => {
-                warn!(
-                    trace_id = %trace_id,
-                    api_format = spec.api_format,
-                    provider_type = %transport.provider.provider_type,
-                    error = ?err,
-                    "gateway local openai cli oauth auth resolution failed"
-                );
-                None
-            }
+    let prepared_candidate = match prepare_header_authenticated_candidate(
+        planner_state,
+        transport,
+        candidate,
+        direct_auth,
+        OauthPreparationContext {
+            trace_id,
+            api_format: provider_api_format,
+            operation: "openai_cli_candidate_request",
+        },
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(skip_reason) => {
+            mark_skipped_local_openai_cli_candidate(
+                state,
+                input,
+                trace_id,
+                candidate,
+                candidate_index,
+                candidate_id,
+                skip_reason,
+            )
+            .await;
+            return None;
         }
-    } else {
-        None
     };
-
-    let Some((auth_header, auth_value)) = resolved_auth.or(oauth_auth) else {
-        mark_skipped_local_openai_cli_candidate(
-            state,
-            input,
-            trace_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            "transport_auth_unavailable",
-        )
-        .await;
-        return None;
-    };
-
-    let mapped_model = candidate.selected_provider_model_name.trim().to_string();
-    if mapped_model.is_empty() {
-        mark_skipped_local_openai_cli_candidate(
-            state,
-            input,
-            trace_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            "mapped_model_missing",
-        )
-        .await;
-        return None;
-    }
+    let auth_header = prepared_candidate.auth_header;
+    let auth_value = prepared_candidate.auth_value;
+    let mapped_model = prepared_candidate.mapped_model;
 
     let needs_bidirectional_conversion = !same_format && conversion_kind.is_some();
-    let upstream_is_stream = spec.require_streaming
+    let upstream_is_stream = spec_metadata.require_streaming
         || is_antigravity
         || force_upstream_streaming_for_provider(
             transport.provider.provider_type.as_str(),
-            provider_api_format.as_str(),
+            provider_api_format,
         );
     let Some(base_provider_request_body) = (if needs_bidirectional_conversion {
         build_cross_format_openai_cli_request_body(
             body_json,
             &mapped_model,
-            spec.api_format,
-            provider_api_format.as_str(),
+            spec_metadata.api_format,
+            provider_api_format,
             upstream_is_stream,
             transport.provider.provider_type.as_str(),
             transport.endpoint.body_rules.as_ref(),
@@ -258,7 +169,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
             &mapped_model,
             upstream_is_stream,
             transport.provider.provider_type.as_str(),
-            provider_api_format.as_str(),
+            provider_api_format,
             transport.endpoint.body_rules.as_ref(),
             Some(input.auth_context.api_key_id.as_str()),
         )
@@ -277,7 +188,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
     };
     let antigravity_auth = if is_antigravity {
         match classify_local_antigravity_request_support(
-            &transport,
+            transport,
             &base_provider_request_body,
             AntigravityEnvelopeRequestType::Agent,
         ) {
@@ -329,17 +240,17 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
     let Some(upstream_url) = (if needs_bidirectional_conversion {
         build_cross_format_openai_cli_upstream_url(
             parts,
-            &transport,
+            transport,
             &mapped_model,
-            spec.api_format,
-            provider_api_format.as_str(),
+            spec_metadata.api_format,
+            provider_api_format,
             upstream_is_stream,
         )
     } else {
         build_local_openai_cli_upstream_url(
             parts,
-            &transport,
-            provider_api_format.as_str() == "openai:compact",
+            transport,
+            provider_api_format == "openai:compact",
         )
     }) else {
         mark_skipped_local_openai_cli_candidate(
@@ -408,7 +319,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         &provider_request_body,
         &parts.headers,
         transport.provider.provider_type.as_str(),
-        provider_api_format.as_str(),
+        provider_api_format,
         Some(trace_id),
         transport.key.decrypted_auth_config.as_deref(),
     );
@@ -440,7 +351,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         endpoint_id = %candidate.endpoint_id,
         key_id = %candidate.key_id,
         provider_type = %transport.provider.provider_type,
-        client_api_format = spec.api_format,
+        client_api_format = spec_metadata.api_format,
         provider_api_format = %provider_api_format,
         execution_strategy = execution_strategy.as_str(),
         conversion_mode = conversion_mode.as_str(),
@@ -458,7 +369,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         auth_header,
         auth_value,
         mapped_model,
-        provider_api_format,
+        provider_api_format: provider_api_format.to_string(),
         provider_request_body,
         provider_request_headers,
         upstream_url,
@@ -467,6 +378,6 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         is_antigravity: is_antigravity
             || antigravity_auth.is_some() && ANTIGRAVITY_ENVELOPE_NAME == "antigravity:v1internal",
         upstream_is_stream,
-        transport,
+        transport: transport.clone(),
     })
 }

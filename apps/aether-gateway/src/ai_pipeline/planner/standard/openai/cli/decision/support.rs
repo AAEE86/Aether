@@ -1,42 +1,41 @@
 use std::collections::BTreeSet;
 
 use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
-use serde_json::json;
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
-use crate::ai_pipeline::conversion::{
-    request_candidate_api_formats, request_conversion_kind,
-    request_conversion_requires_enable_flag, request_pair_allowed_for_transport,
+use crate::ai_pipeline::conversion::{request_candidate_api_formats, request_conversion_kind};
+use crate::ai_pipeline::planner::candidate_eligibility::filter_and_rank_local_execution_candidates;
+use crate::ai_pipeline::planner::candidate_materialization::{
+    mark_skipped_local_execution_candidate,
+    persist_available_local_execution_candidates_with_context,
+    persist_skipped_local_execution_candidates_with_context,
+    remember_first_local_candidate_affinity,
 };
-use crate::ai_pipeline::planner::candidate_affinity::{
-    rank_local_execution_candidates, remember_scheduler_affinity_for_candidate,
+use crate::ai_pipeline::planner::candidate_metadata::{
+    build_local_execution_candidate_contract_metadata, LocalExecutionCandidateMetadataParts,
 };
+use crate::ai_pipeline::planner::candidate_source::auth_snapshot_allows_cross_format_candidate;
+use crate::ai_pipeline::planner::common::extract_standard_requested_model;
+use crate::ai_pipeline::planner::decision_input::{
+    build_local_requested_model_decision_input, resolve_local_authenticated_decision_input,
+};
+use crate::ai_pipeline::planner::materialization_policy::{
+    build_local_candidate_persistence_policy, LocalCandidatePersistencePolicyKind,
+};
+use crate::ai_pipeline::planner::spec_metadata::local_openai_cli_spec_metadata;
+use crate::ai_pipeline::PlannerAppState;
 use crate::ai_pipeline::{
     resolve_local_decision_execution_runtime_auth_context, ConversionMode, ExecutionStrategy,
     GatewayControlDecision,
 };
-use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
-use crate::clock::{current_unix_ms, current_unix_secs};
-use crate::{append_execution_contract_fields_to_value, AppState, GatewayError};
+use crate::clock::current_unix_secs;
+use crate::{AppState, GatewayError};
 
 use super::LocalOpenAiCliSpec;
 
-#[derive(Debug, Clone)]
-pub(crate) struct LocalOpenAiCliDecisionInput {
-    pub(crate) auth_context: ExecutionRuntimeAuthContext,
-    pub(crate) requested_model: String,
-    pub(crate) auth_snapshot: GatewayAuthApiKeySnapshot,
-    pub(crate) required_capabilities: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LocalOpenAiCliCandidateAttempt {
-    pub(crate) candidate: SchedulerMinimalCandidateSelectionCandidate,
-    pub(crate) candidate_index: u32,
-    pub(crate) candidate_id: String,
-}
+pub(crate) use crate::ai_pipeline::planner::candidate_materialization::LocalExecutionCandidateAttempt as LocalOpenAiCliCandidateAttempt;
+pub(crate) use crate::ai_pipeline::planner::decision_input::LocalRequestedModelDecisionInput as LocalOpenAiCliDecisionInput;
 
 pub(crate) async fn resolve_local_openai_cli_decision_input(
     state: &AppState,
@@ -44,27 +43,20 @@ pub(crate) async fn resolve_local_openai_cli_decision_input(
     decision: &GatewayControlDecision,
     body_json: &serde_json::Value,
 ) -> Option<LocalOpenAiCliDecisionInput> {
-    let planner_state = PlannerAppState::new(state);
-    let Some(auth_context) = resolve_local_decision_execution_runtime_auth_context(decision) else {
-        return None;
-    };
+    let auth_context: ExecutionRuntimeAuthContext =
+        resolve_local_decision_execution_runtime_auth_context(decision)?;
 
-    let requested_model = body_json
-        .get("model")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)?;
+    let requested_model = extract_standard_requested_model(body_json)?;
 
-    let auth_snapshot = match planner_state
-        .read_auth_api_key_snapshot(
-            &auth_context.user_id,
-            &auth_context.api_key_id,
-            current_unix_secs(),
-        )
-        .await
+    let resolved_input = match resolve_local_authenticated_decision_input(
+        state,
+        auth_context,
+        Some(requested_model.as_str()),
+        None,
+    )
+    .await
     {
-        Ok(Some(snapshot)) => snapshot,
+        Ok(Some(resolved_input)) => resolved_input,
         Ok(None) => return None,
         Err(err) => {
             warn!(
@@ -76,21 +68,10 @@ pub(crate) async fn resolve_local_openai_cli_decision_input(
         }
     };
 
-    let required_capabilities = planner_state
-        .resolve_request_candidate_required_capabilities(
-            &auth_context.user_id,
-            &auth_context.api_key_id,
-            Some(requested_model.as_str()),
-            None,
-        )
-        .await;
-
-    Some(LocalOpenAiCliDecisionInput {
-        auth_context,
+    Some(build_local_requested_model_decision_input(
+        resolved_input,
         requested_model,
-        auth_snapshot,
-        required_capabilities,
-    })
+    ))
 }
 
 pub(crate) async fn materialize_local_openai_cli_candidate_attempts(
@@ -99,13 +80,21 @@ pub(crate) async fn materialize_local_openai_cli_candidate_attempts(
     input: &LocalOpenAiCliDecisionInput,
     spec: LocalOpenAiCliSpec,
 ) -> Result<Vec<LocalOpenAiCliCandidateAttempt>, GatewayError> {
+    let spec_metadata = local_openai_cli_spec_metadata(spec);
+    let client_api_format = spec_metadata.api_format.trim().to_ascii_lowercase();
     let planner_state = PlannerAppState::new(state);
+    let auth_context: &ExecutionRuntimeAuthContext = &input.auth_context;
+    let persistence_policy = build_local_candidate_persistence_policy(
+        auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::OpenAiCliDecision,
+    );
     let mut seen_candidates = BTreeSet::new();
     let mut candidates = Vec::new();
     for candidate_api_format in
-        request_candidate_api_formats(spec.api_format, spec.require_streaming)
+        request_candidate_api_formats(spec_metadata.api_format, spec_metadata.require_streaming)
     {
-        let auth_snapshot = if candidate_api_format == spec.api_format {
+        let auth_snapshot = if candidate_api_format == spec_metadata.api_format {
             Some(&input.auth_snapshot)
         } else {
             None
@@ -114,7 +103,7 @@ pub(crate) async fn materialize_local_openai_cli_candidate_attempts(
             .list_selectable_candidates(
                 candidate_api_format,
                 &input.requested_model,
-                spec.require_streaming,
+                spec_metadata.require_streaming,
                 input.required_capabilities.as_ref(),
                 auth_snapshot,
                 current_unix_secs(),
@@ -122,7 +111,7 @@ pub(crate) async fn materialize_local_openai_cli_candidate_attempts(
             .await?;
         if auth_snapshot.is_none() {
             selected_candidates.retain(|candidate| {
-                auth_snapshot_allows_cross_format_openai_cli_candidate(
+                auth_snapshot_allows_cross_format_candidate(
                     &input.auth_snapshot,
                     &input.requested_model,
                     candidate,
@@ -144,157 +133,68 @@ pub(crate) async fn materialize_local_openai_cli_candidate_attempts(
             }
         }
     }
-    let candidates = rank_local_execution_candidates(
+    let (candidates, skipped_candidates) = filter_and_rank_local_execution_candidates(
         planner_state,
         candidates,
-        spec.api_format,
+        spec_metadata.api_format,
+        &input.requested_model,
         input.required_capabilities.as_ref(),
     )
     .await;
 
-    let created_at_unix_ms = current_unix_ms();
-    let mut attempts = Vec::with_capacity(candidates.len());
-    let mut affinity_remembered = false;
-    for (candidate_index, candidate) in candidates.into_iter().enumerate() {
-        let generated_candidate_id = Uuid::new_v4().to_string();
-        let provider_api_format = candidate.endpoint_api_format.trim().to_ascii_lowercase();
-        if provider_api_format != spec.api_format.trim().to_ascii_lowercase() {
-            if let Ok(Some(transport)) = planner_state
-                .read_provider_transport_snapshot(
-                    &candidate.provider_id,
-                    &candidate.endpoint_id,
-                    &candidate.key_id,
-                )
-                .await
-            {
-                if !request_pair_allowed_for_transport(
-                    &transport,
-                    spec.api_format,
-                    provider_api_format.as_str(),
-                ) {
-                    let skip_reason =
-                        if request_conversion_kind(spec.api_format, provider_api_format.as_str())
-                            .is_some()
-                            && request_conversion_requires_enable_flag(
-                                spec.api_format,
-                                provider_api_format.as_str(),
-                            )
-                            && !transport.provider.enable_format_conversion
-                        {
-                            "format_conversion_disabled"
-                        } else {
-                            "transport_unsupported"
-                        };
-                    mark_skipped_local_openai_cli_candidate(
-                        state,
-                        input,
-                        trace_id,
-                        &candidate,
-                        candidate_index as u32,
-                        &generated_candidate_id,
-                        skip_reason,
-                    )
-                    .await;
-                    continue;
-                }
-            }
-        }
-        if !affinity_remembered {
-            remember_scheduler_affinity_for_candidate(
-                planner_state,
-                Some(&input.auth_snapshot),
-                spec.api_format,
-                &input.requested_model,
-                &candidate,
-            );
-            affinity_remembered = true;
-        }
-        let execution_strategy =
-            if provider_api_format == spec.api_format.trim().to_ascii_lowercase() {
+    remember_first_local_candidate_affinity(
+        planner_state,
+        Some(&input.auth_snapshot),
+        spec_metadata.api_format,
+        Some(&input.requested_model),
+        &candidates,
+    );
+    let attempts = persist_available_local_execution_candidates_with_context(
+        planner_state,
+        trace_id,
+        persistence_policy.available,
+        candidates,
+        |eligible| {
+            let provider_api_format = eligible.provider_api_format.clone();
+            let execution_strategy = if provider_api_format == client_api_format {
                 ExecutionStrategy::LocalSameFormat
             } else {
                 ExecutionStrategy::LocalCrossFormat
             };
-        let conversion_mode =
-            if request_conversion_kind(spec.api_format, provider_api_format.as_str()).is_some() {
-                ConversionMode::Bidirectional
-            } else {
-                ConversionMode::None
-            };
-        let extra_data = append_execution_contract_fields_to_value(
-            json!({
-                "provider_api_format": provider_api_format,
-                "client_api_format": spec.api_format,
-                "global_model_id": candidate.global_model_id.clone(),
-                "global_model_name": candidate.global_model_name.clone(),
-                "model_id": candidate.model_id.clone(),
-                "selected_provider_model_name": candidate.selected_provider_model_name.clone(),
-                "mapping_matched_model": candidate.mapping_matched_model.clone(),
-                "provider_name": candidate.provider_name.clone(),
-                "key_name": candidate.key_name.clone(),
-            }),
-            execution_strategy,
-            conversion_mode,
-            spec.api_format,
-            candidate.endpoint_api_format.as_str(),
-        );
+            let conversion_mode =
+                if request_conversion_kind(spec_metadata.api_format, provider_api_format.as_str())
+                    .is_some()
+                {
+                    ConversionMode::Bidirectional
+                } else {
+                    ConversionMode::None
+                };
+            Some(build_local_execution_candidate_contract_metadata(
+                LocalExecutionCandidateMetadataParts {
+                    eligible,
+                    provider_api_format: provider_api_format.as_str(),
+                    client_api_format: spec_metadata.api_format,
+                    extra_fields: serde_json::Map::new(),
+                },
+                execution_strategy,
+                conversion_mode,
+                eligible.candidate.endpoint_api_format.as_str(),
+            ))
+        },
+    )
+    .await;
 
-        let candidate_id = planner_state
-            .persist_available_local_candidate(
-                trace_id,
-                &input.auth_context.user_id,
-                &input.auth_context.api_key_id,
-                &candidate,
-                candidate_index as u32,
-                &generated_candidate_id,
-                input.required_capabilities.as_ref(),
-                Some(extra_data),
-                created_at_unix_ms,
-                "gateway local openai cli decision request candidate upsert failed",
-            )
-            .await;
-
-        attempts.push(LocalOpenAiCliCandidateAttempt {
-            candidate,
-            candidate_index: candidate_index as u32,
-            candidate_id,
-        });
-    }
+    persist_skipped_local_execution_candidates_with_context(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        attempts.len() as u32,
+        skipped_candidates,
+    )
+    .await;
 
     Ok(attempts)
 }
-
-fn auth_snapshot_allows_cross_format_openai_cli_candidate(
-    auth_snapshot: &GatewayAuthApiKeySnapshot,
-    requested_model: &str,
-    candidate: &SchedulerMinimalCandidateSelectionCandidate,
-) -> bool {
-    if let Some(allowed_providers) = auth_snapshot.effective_allowed_providers() {
-        let provider_allowed = allowed_providers.iter().any(|value| {
-            value
-                .trim()
-                .eq_ignore_ascii_case(candidate.provider_id.trim())
-                || value
-                    .trim()
-                    .eq_ignore_ascii_case(candidate.provider_name.trim())
-        });
-        if !provider_allowed {
-            return false;
-        }
-    }
-
-    if let Some(allowed_models) = auth_snapshot.effective_allowed_models() {
-        let model_allowed = allowed_models
-            .iter()
-            .any(|value| value == requested_model || value == &candidate.global_model_name);
-        if !model_allowed {
-            return false;
-        }
-    }
-
-    true
-}
-
 pub(crate) async fn mark_skipped_local_openai_cli_candidate(
     state: &AppState,
     input: &LocalOpenAiCliDecisionInput,
@@ -304,18 +204,20 @@ pub(crate) async fn mark_skipped_local_openai_cli_candidate(
     candidate_id: &str,
     skip_reason: &'static str,
 ) {
-    PlannerAppState::new(state)
-        .persist_skipped_local_candidate(
-            trace_id,
-            &input.auth_context.user_id,
-            &input.auth_context.api_key_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            input.required_capabilities.as_ref(),
-            skip_reason,
-            current_unix_ms(),
-            "gateway local openai cli decision failed to persist skipped candidate",
-        )
-        .await;
+    let auth_context: &ExecutionRuntimeAuthContext = &input.auth_context;
+    let persistence_policy = build_local_candidate_persistence_policy(
+        auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::OpenAiCliDecision,
+    );
+    mark_skipped_local_execution_candidate(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+    )
+    .await;
 }

@@ -618,6 +618,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_sync_report_treats_null_error_field_as_success() {
+        let repository = Arc::new(InMemoryRequestCandidateRepository::seed(vec![
+            sample_request_candidate("cand-reporting-sync-null-1", "req-reporting-sync-null-1"),
+        ]));
+        let state = build_test_state(Arc::clone(&repository));
+
+        submit_sync_report(
+            &state,
+            "trace-reporting-sync-null-1",
+            GatewaySyncReportRequest {
+                trace_id: "trace-reporting-sync-null-1".to_string(),
+                report_kind: "claude_cli_sync_success".to_string(),
+                report_context: Some(json!({
+                    "request_id": "req-reporting-sync-null-1",
+                    "client_api_format": "claude:cli",
+                    "provider_api_format": "openai:cli"
+                })),
+                status_code: 200,
+                headers: BTreeMap::new(),
+                body_json: Some(json!({
+                    "id": "resp_1",
+                    "status": "completed",
+                    "error": null
+                })),
+                client_body_json: None,
+                body_base64: None,
+                telemetry: None,
+            },
+        )
+        .await
+        .expect("sync report should stay local");
+
+        let stored = repository
+            .list_by_request_id("req-reporting-sync-null-1")
+            .await
+            .expect("request candidates should list");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, RequestCandidateStatus::Success);
+        assert_eq!(stored[0].status_code, Some(200));
+    }
+
+    #[tokio::test]
     async fn submit_stream_report_handles_request_id_only_context_locally_when_unique_candidate_exists(
     ) {
         let repository = Arc::new(InMemoryRequestCandidateRepository::seed(vec![

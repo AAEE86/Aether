@@ -9,6 +9,7 @@ use crate::ai_pipeline::planner::plan_builders::{
     build_openai_cli_stream_plan_from_decision, build_openai_cli_sync_plan_from_decision,
     LocalStreamPlanAndReport, LocalSyncPlanAndReport,
 };
+use crate::ai_pipeline::planner::spec_metadata::local_openai_cli_spec_metadata;
 use crate::ai_pipeline::GatewayControlDecision;
 pub(crate) use crate::ai_pipeline::{
     resolve_openai_cli_stream_spec as resolve_stream_spec,
@@ -24,6 +25,7 @@ pub(super) async fn build_local_sync_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalOpenAiCliSpec,
 ) -> Result<Vec<LocalSyncPlanAndReport>, GatewayError> {
+    let spec_metadata = local_openai_cli_spec_metadata(spec);
     let Some(input) =
         resolve_local_openai_cli_decision_input(state, trace_id, decision, body_json).await
     else {
@@ -49,7 +51,7 @@ pub(super) async fn build_local_sync_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    api_format = spec.api_format,
+                    api_format = spec_metadata.api_format,
                     error = ?err,
                     "gateway local openai cli sync decision plan build failed"
                 );
@@ -68,6 +70,7 @@ pub(super) async fn build_local_stream_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalOpenAiCliSpec,
 ) -> Result<Vec<LocalStreamPlanAndReport>, GatewayError> {
+    let spec_metadata = local_openai_cli_spec_metadata(spec);
     let Some(input) =
         resolve_local_openai_cli_decision_input(state, trace_id, decision, body_json).await
     else {
@@ -93,7 +96,7 @@ pub(super) async fn build_local_stream_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    api_format = spec.api_format,
+                    api_format = spec_metadata.api_format,
                     error = ?err,
                     "gateway local openai cli stream decision plan build failed"
                 );

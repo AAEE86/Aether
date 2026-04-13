@@ -78,9 +78,5 @@ pub(crate) use self::family::{
 pub(crate) use self::plans::{
     build_local_stream_plan_and_reports, build_local_sync_plan_and_reports,
 };
-use self::request::{
-    build_same_format_provider_request_body, build_same_format_upstream_url,
-    extract_gemini_model_from_path,
-};
 
 const ANTIGRAVITY_ENVELOPE_NAME: &str = "antigravity:v1internal";

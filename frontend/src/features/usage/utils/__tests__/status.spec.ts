@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { isUsageRecordFailed, isUsageRecordSuccessful } from '../status'
+import {
+  isUsageRecordFailed,
+  isUsageRecordSuccessful,
+  mapRequestStatusToTimelineStatus,
+  normalizeRequestStatus,
+  resolveTimelineFinalStatus,
+} from '../status'
 import type { UsageRecord } from '../../types'
 
 function buildUsageRecord(overrides: Partial<UsageRecord> = {}): UsageRecord {
@@ -39,5 +45,45 @@ describe('usage status helpers', () => {
 
     expect(isUsageRecordFailed(record)).toBe(true)
     expect(isUsageRecordSuccessful(record)).toBe(false)
+  })
+
+  it('treats explicit failed status with a 2xx status code as successful for display', () => {
+    const record = buildUsageRecord({
+      status: 'failed',
+      status_code: 200,
+      error_message: 'stale failure flag'
+    })
+
+    expect(isUsageRecordFailed(record)).toBe(false)
+    expect(isUsageRecordSuccessful(record)).toBe(true)
+  })
+
+  it('normalizes request status strings before mapping timeline status', () => {
+    expect(normalizeRequestStatus(' Completed ')).toBe('completed')
+    expect(mapRequestStatusToTimelineStatus('completed')).toBe('success')
+    expect(mapRequestStatusToTimelineStatus('failed')).toBe('failed')
+  })
+
+  it('treats explicit success status code as authoritative for the timeline', () => {
+    expect(resolveTimelineFinalStatus({
+      traceFinalStatus: 'success',
+      requestStatus: 'failed',
+      statusCode: 200,
+    })).toBe('success')
+  })
+
+  it('falls back to request lifecycle status when status code and trace are missing', () => {
+    expect(resolveTimelineFinalStatus({
+      requestStatus: 'failed',
+    })).toBe('failed')
+  })
+
+  it('uses status code only as a last fallback for timeline status', () => {
+    expect(resolveTimelineFinalStatus({
+      statusCode: 200,
+    })).toBe('success')
+    expect(resolveTimelineFinalStatus({
+      statusCode: 503,
+    })).toBe('failed')
   })
 })

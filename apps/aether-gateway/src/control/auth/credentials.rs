@@ -5,7 +5,10 @@ use axum::http::Uri;
 use sha2::{Digest, Sha256};
 use url::form_urlencoded;
 
-use crate::headers::{header_value_str, is_json_request};
+use crate::{
+    ai_pipeline::extract_gemini_model_from_path,
+    headers::{header_value_str, is_json_request},
+};
 
 use super::super::GatewayControlDecision;
 use super::types::{
@@ -106,20 +109,6 @@ pub(super) fn build_auth_context_cache_key(
         bundle.query_key.unwrap_or_default(),
         bundle.cookie_header.unwrap_or_default(),
     ))
-}
-
-fn extract_gemini_model_from_path(path: &str) -> Option<String> {
-    let (_, suffix) = path.split_once("/models/")?;
-    let model = suffix
-        .split_once(':')
-        .map(|(value, _)| value)
-        .unwrap_or(suffix);
-    let model = model.trim();
-    if model.is_empty() {
-        None
-    } else {
-        Some(model.to_string())
-    }
 }
 
 fn extract_trusted_auth_headers(headers: &http::HeaderMap) -> Option<GatewayTrustedAuthHeaders> {

@@ -1,34 +1,35 @@
 use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
-use serde_json::json;
 use tracing::warn;
-use uuid::Uuid;
 
 use super::{LocalVideoCreateFamily, LocalVideoCreateSpec};
 use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
-use crate::ai_pipeline::planner::candidate_affinity::{
-    rank_local_execution_candidates, remember_scheduler_affinity_for_candidate,
+use crate::ai_pipeline::planner::candidate_eligibility::filter_and_rank_local_execution_candidates;
+use crate::ai_pipeline::planner::candidate_materialization::{
+    mark_skipped_local_execution_candidate,
+    persist_available_local_execution_candidates_with_context,
+    persist_skipped_local_execution_candidates_with_context,
+    remember_first_local_candidate_affinity,
 };
+use crate::ai_pipeline::planner::candidate_metadata::{
+    build_local_execution_candidate_metadata, LocalExecutionCandidateMetadataParts,
+};
+use crate::ai_pipeline::planner::common::extract_requested_model_from_request;
+use crate::ai_pipeline::planner::decision_input::{
+    build_local_requested_model_decision_input, resolve_local_authenticated_decision_input,
+};
+use crate::ai_pipeline::planner::materialization_policy::{
+    build_local_candidate_persistence_policy, LocalCandidatePersistencePolicyKind,
+};
+use crate::ai_pipeline::planner::spec_metadata::local_video_create_spec_metadata;
+use crate::ai_pipeline::PlannerAppState;
 use crate::ai_pipeline::{
     resolve_local_decision_execution_runtime_auth_context, GatewayControlDecision,
 };
-use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
-use crate::clock::{current_unix_ms, current_unix_secs};
+use crate::clock::current_unix_secs;
 use crate::AppState;
 
-#[derive(Debug, Clone)]
-pub(super) struct LocalVideoCreateDecisionInput {
-    pub(super) auth_context: ExecutionRuntimeAuthContext,
-    pub(super) requested_model: String,
-    pub(super) auth_snapshot: GatewayAuthApiKeySnapshot,
-    pub(super) required_capabilities: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct LocalVideoCreateCandidateAttempt {
-    pub(super) candidate: SchedulerMinimalCandidateSelectionCandidate,
-    pub(super) candidate_index: u32,
-    pub(super) candidate_id: String,
-}
+pub(super) use crate::ai_pipeline::planner::candidate_materialization::LocalExecutionCandidateAttempt as LocalVideoCreateCandidateAttempt;
+pub(super) use crate::ai_pipeline::planner::decision_input::LocalRequestedModelDecisionInput as LocalVideoCreateDecisionInput;
 
 pub(super) async fn resolve_local_video_create_decision_input(
     state: &AppState,
@@ -38,35 +39,33 @@ pub(super) async fn resolve_local_video_create_decision_input(
     body_json: &serde_json::Value,
     spec: LocalVideoCreateSpec,
 ) -> Option<LocalVideoCreateDecisionInput> {
-    let planner_state = PlannerAppState::new(state);
-    let Some(auth_context) = resolve_local_decision_execution_runtime_auth_context(decision) else {
+    let spec_metadata = local_video_create_spec_metadata(spec);
+    let Some(auth_context) = resolve_local_video_create_auth_context(decision, spec.family) else {
         return None;
     };
 
-    let requested_model = match spec.family {
-        LocalVideoCreateFamily::OpenAi => body_json
-            .get("model")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)?,
-        LocalVideoCreateFamily::Gemini => extract_gemini_video_model_from_path(parts.uri.path())?,
-    };
+    let requested_model = extract_requested_model_from_request(
+        parts,
+        body_json,
+        spec_metadata
+            .requested_model_family
+            .expect("video specs should declare requested-model family"),
+    )?;
 
-    let auth_snapshot = match planner_state
-        .read_auth_api_key_snapshot(
-            &auth_context.user_id,
-            &auth_context.api_key_id,
-            current_unix_secs(),
-        )
-        .await
+    let resolved_input = match resolve_local_authenticated_decision_input(
+        state,
+        auth_context,
+        Some(requested_model.as_str()),
+        None,
+    )
+    .await
     {
-        Ok(Some(snapshot)) => snapshot,
+        Ok(Some(resolved_input)) => resolved_input,
         Ok(None) => return None,
         Err(err) => {
             warn!(
                 trace_id = %trace_id,
-                decision_kind = spec.decision_kind,
+                decision_kind = spec_metadata.decision_kind,
                 error = ?err,
                 "gateway local video decision auth snapshot read failed"
             );
@@ -74,21 +73,20 @@ pub(super) async fn resolve_local_video_create_decision_input(
         }
     };
 
-    let required_capabilities = planner_state
-        .resolve_request_candidate_required_capabilities(
-            &auth_context.user_id,
-            &auth_context.api_key_id,
-            Some(requested_model.as_str()),
-            None,
-        )
-        .await;
-
-    Some(LocalVideoCreateDecisionInput {
-        auth_context,
+    Some(build_local_requested_model_decision_input(
+        resolved_input,
         requested_model,
-        auth_snapshot,
-        required_capabilities,
-    })
+    ))
+}
+
+fn resolve_local_video_create_auth_context(
+    decision: &GatewayControlDecision,
+    family: LocalVideoCreateFamily,
+) -> Option<ExecutionRuntimeAuthContext> {
+    let auth_context = resolve_local_decision_execution_runtime_auth_context(decision)?;
+    match family {
+        LocalVideoCreateFamily::OpenAi | LocalVideoCreateFamily::Gemini => Some(auth_context),
+    }
 }
 
 pub(super) async fn list_local_video_create_candidate_attempts(
@@ -141,62 +139,52 @@ async fn materialize_local_video_create_candidate_attempts(
     candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
     api_format: &str,
 ) -> Vec<LocalVideoCreateCandidateAttempt> {
-    let candidates = rank_local_execution_candidates(
+    let persistence_policy = build_local_candidate_persistence_policy(
+        &input.auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::VideoDecision,
+    );
+    let (candidates, skipped_candidates) = filter_and_rank_local_execution_candidates(
         state,
         candidates,
         api_format,
+        &input.requested_model,
         input.required_capabilities.as_ref(),
     )
     .await;
-    let created_at_unix_ms = current_unix_ms();
-    let mut attempts = Vec::with_capacity(candidates.len());
-    let mut affinity_remembered = false;
+    remember_first_local_candidate_affinity(
+        state,
+        Some(&input.auth_snapshot),
+        api_format,
+        Some(&input.requested_model),
+        &candidates,
+    );
+    let attempts = persist_available_local_execution_candidates_with_context(
+        state,
+        trace_id,
+        persistence_policy.available,
+        candidates,
+        |eligible| {
+            Some(build_local_execution_candidate_metadata(
+                LocalExecutionCandidateMetadataParts {
+                    eligible,
+                    provider_api_format: api_format,
+                    client_api_format: api_format,
+                    extra_fields: serde_json::Map::new(),
+                },
+            ))
+        },
+    )
+    .await;
 
-    for (candidate_index, candidate) in candidates.into_iter().enumerate() {
-        let generated_candidate_id = Uuid::new_v4().to_string();
-        if !affinity_remembered {
-            remember_scheduler_affinity_for_candidate(
-                state,
-                Some(&input.auth_snapshot),
-                api_format,
-                &input.requested_model,
-                &candidate,
-            );
-            affinity_remembered = true;
-        }
-        let extra_data = json!({
-            "provider_api_format": api_format,
-            "client_api_format": api_format,
-            "global_model_id": candidate.global_model_id.clone(),
-            "global_model_name": candidate.global_model_name.clone(),
-            "model_id": candidate.model_id.clone(),
-            "selected_provider_model_name": candidate.selected_provider_model_name.clone(),
-            "mapping_matched_model": candidate.mapping_matched_model.clone(),
-            "provider_name": candidate.provider_name.clone(),
-            "key_name": candidate.key_name.clone(),
-        });
-
-        let candidate_id = state
-            .persist_available_local_candidate(
-                trace_id,
-                &input.auth_context.user_id,
-                &input.auth_context.api_key_id,
-                &candidate,
-                candidate_index as u32,
-                &generated_candidate_id,
-                input.required_capabilities.as_ref(),
-                Some(extra_data),
-                created_at_unix_ms,
-                "gateway local video decision request candidate upsert failed",
-            )
-            .await;
-
-        attempts.push(LocalVideoCreateCandidateAttempt {
-            candidate,
-            candidate_index: candidate_index as u32,
-            candidate_id,
-        });
-    }
+    persist_skipped_local_execution_candidates_with_context(
+        state.app(),
+        trace_id,
+        persistence_policy.skipped,
+        attempts.len() as u32,
+        skipped_candidates,
+    )
+    .await;
 
     attempts
 }
@@ -210,27 +198,19 @@ pub(super) async fn mark_skipped_local_video_candidate(
     candidate_id: &str,
     skip_reason: &'static str,
 ) {
-    PlannerAppState::new(state)
-        .persist_skipped_local_candidate(
-            trace_id,
-            &input.auth_context.user_id,
-            &input.auth_context.api_key_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            input.required_capabilities.as_ref(),
-            skip_reason,
-            current_unix_ms(),
-            "gateway local video decision failed to persist skipped candidate",
-        )
-        .await;
-}
-
-fn extract_gemini_video_model_from_path(path: &str) -> Option<String> {
-    let suffix = path.strip_prefix("/v1beta/models/")?;
-    let model = suffix.split(':').next()?.trim();
-    if model.is_empty() {
-        return None;
-    }
-    Some(model.to_string())
+    let persistence_policy = build_local_candidate_persistence_policy(
+        &input.auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::VideoDecision,
+    );
+    mark_skipped_local_execution_candidate(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+    )
+    .await;
 }

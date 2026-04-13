@@ -267,7 +267,7 @@ pub fn sync_report_represents_failure(
             .body_json
             .as_ref()
             .and_then(|body| body.get("error"))
-            .is_some()
+            .is_some_and(|value| !value.is_null())
 }
 
 pub fn should_handle_local_sync_report(
@@ -432,6 +432,10 @@ mod tests {
         let mut error_body_payload = sample_sync_report("openai_chat_sync_success", 200);
         error_body_payload.body_json = Some(json!({"error": {"message": "bad request"}}));
         assert!(sync_report_represents_failure(&error_body_payload, None));
+
+        let mut null_error_payload = sample_sync_report("openai_chat_sync_success", 200);
+        null_error_payload.body_json = Some(json!({"error": null}));
+        assert!(!sync_report_represents_failure(&null_error_payload, None));
 
         let success_payload = sample_sync_report("openai_chat_sync_success", 200);
         assert!(!sync_report_represents_failure(&success_payload, None));

@@ -418,6 +418,1178 @@ fn ai_pipeline_planner_gateway_state_seam_is_split_by_role() {
 }
 
 #[test]
+fn ai_pipeline_planner_separates_local_candidate_eligibility_from_affinity_ranking() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    for pattern in [
+        "mod candidate_affinity;",
+        "mod candidate_eligibility;",
+        "mod candidate_preparation;",
+    ] {
+        assert!(
+            planner_mod.contains(pattern),
+            "planner/mod.rs should wire {pattern}"
+        );
+    }
+
+    let candidate_eligibility =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_eligibility.rs");
+    for pattern in [
+        "pub(crate) async fn filter_and_rank_local_execution_candidates(",
+        "pub(crate) async fn filter_and_rank_local_execution_candidates_without_transport_pair_gate(",
+        "pub(crate) async fn read_candidate_transport_snapshot(",
+    ] {
+        assert!(
+            candidate_eligibility.contains(pattern),
+            "planner/candidate_eligibility.rs should own {pattern}"
+        );
+    }
+
+    let candidate_affinity =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_affinity.rs");
+    assert!(
+        candidate_affinity.contains("#[cfg(test)]\nasync fn rank_local_execution_candidates("),
+        "planner/candidate_affinity.rs should keep raw local ranking as a test-only helper"
+    );
+    for forbidden in [
+        "struct SkippedLocalExecutionCandidate",
+        "async fn current_local_execution_candidate_skip_reason(",
+        "pub(crate) async fn filter_and_rank_local_execution_candidates(",
+    ] {
+        assert!(
+            !candidate_affinity.contains(forbidden),
+            "planner/candidate_affinity.rs should not own local candidate eligibility helper {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_candidate_preparation_owns_shared_auth_and_mapped_model_resolution() {
+    let candidate_preparation =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_preparation.rs");
+    for pattern in [
+        "pub(crate) async fn prepare_header_authenticated_candidate(",
+        "pub(crate) async fn resolve_candidate_oauth_auth(",
+        "pub(crate) fn resolve_candidate_mapped_model(",
+    ] {
+        assert!(
+            candidate_preparation.contains(pattern),
+            "planner/candidate_preparation.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/request.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/request.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/request.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("prepare_header_authenticated_candidate("),
+            "{path} should use shared header-auth candidate preparation"
+        );
+        assert!(
+            !source.contains("resolve_local_oauth_request_auth("),
+            "{path} should not inline oauth header-auth fallback after preparation extraction"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/request.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request/prepare.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("resolve_candidate_mapped_model("),
+            "{path} should use shared mapped-model preparation"
+        );
+        assert!(
+            !source.contains("selected_provider_model_name.trim().to_string()"),
+            "{path} should not inline mapped-model extraction after preparation extraction"
+        );
+    }
+
+    let same_format_provider_prepare = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request/prepare.rs",
+    );
+    assert!(
+        same_format_provider_prepare.contains("resolve_candidate_oauth_auth("),
+        "same-format provider preparation should use shared oauth candidate preparation"
+    );
+    assert!(
+        !same_format_provider_prepare.contains("resolve_local_oauth_request_auth("),
+        "same-format provider preparation should not inline oauth resolution after preparation extraction"
+    );
+}
+
+#[test]
+fn ai_pipeline_candidate_materialization_owns_affinity_and_candidate_runtime_persistence() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod candidate_materialization;"),
+        "planner/mod.rs should wire candidate_materialization helper module"
+    );
+
+    let candidate_materialization = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/candidate_materialization.rs",
+    );
+    for pattern in [
+        "pub(crate) struct LocalExecutionCandidateAttempt {",
+        "pub(crate) struct LocalAvailableCandidatePersistenceContext<'a> {",
+        "pub(crate) struct LocalSkippedCandidatePersistenceContext<'a> {",
+        "pub(crate) fn remember_first_local_candidate_affinity(",
+        "persist_available_local_execution_candidates",
+        "persist_available_local_execution_candidates_with_context",
+        "pub(crate) async fn persist_skipped_local_execution_candidate(",
+        "pub(crate) async fn mark_skipped_local_execution_candidate(",
+        "pub(crate) async fn persist_skipped_local_execution_candidates(",
+        "pub(crate) async fn persist_skipped_local_execution_candidates_with_context(",
+    ] {
+        assert!(
+            candidate_materialization.contains(pattern),
+            "planner/candidate_materialization.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+    ] {
+        let source = read_workspace_file(path);
+        for pattern in [
+            "remember_first_local_candidate_affinity(",
+            "persist_available_local_execution_candidates_with_context(",
+            "persist_skipped_local_execution_candidates_with_context(",
+        ] {
+            assert!(
+                source.contains(pattern),
+                "{path} should use shared candidate materialization helper {pattern}"
+            );
+        }
+        for forbidden in [
+            "remember_scheduler_affinity_for_candidate(",
+            "persist_available_local_candidate(",
+            "persist_skipped_local_candidate(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline candidate materialization step {forbidden}"
+            );
+        }
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("mark_skipped_local_execution_candidate("),
+            "{path} should route skipped candidate persistence through shared materialization helper"
+        );
+    }
+
+    for (path, pattern) in [
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/mod.rs",
+            "LocalExecutionCandidateAttempt as LocalStandardCandidateAttempt",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/mod.rs",
+            "LocalExecutionCandidateAttempt as LocalSameFormatProviderCandidateAttempt",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+            "LocalExecutionCandidateAttempt as LocalOpenAiChatCandidateAttempt",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+            "LocalExecutionCandidateAttempt as LocalOpenAiCliCandidateAttempt",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+            "LocalExecutionCandidateAttempt as LocalVideoCreateCandidateAttempt",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+            "LocalExecutionCandidateAttempt as LocalGeminiFilesCandidateAttempt",
+        ),
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains(pattern),
+            "{path} should rename shared LocalExecutionCandidateAttempt instead of redefining attempt structs"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_materialization_policy_owns_local_candidate_persistence_modes() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod materialization_policy;"),
+        "planner/mod.rs should wire materialization_policy helper module"
+    );
+
+    let materialization_policy = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/materialization_policy.rs",
+    );
+    for pattern in [
+        "pub(crate) enum LocalCandidatePersistencePolicyKind {",
+        "pub(crate) struct LocalCandidatePersistencePolicy<'a> {",
+        "pub(crate) fn build_local_candidate_persistence_policy<'a>(",
+        "LocalCandidatePersistencePolicyKind::StandardDecision",
+        "LocalCandidatePersistencePolicyKind::SameFormatProviderDecision",
+        "LocalCandidatePersistencePolicyKind::OpenAiChatDecision",
+        "LocalCandidatePersistencePolicyKind::OpenAiCliDecision",
+        "LocalCandidatePersistencePolicyKind::GeminiFilesDecision",
+        "LocalCandidatePersistencePolicyKind::VideoDecision",
+    ] {
+        assert!(
+            materialization_policy.contains(pattern),
+            "planner/materialization_policy.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("build_local_candidate_persistence_policy("),
+            "{path} should route candidate persistence policy through planner/materialization_policy.rs"
+        );
+        assert!(
+            source.contains("LocalCandidatePersistencePolicyKind::"),
+            "{path} should select a shared materialization policy kind"
+        );
+        for forbidden in [
+            "fn available_candidate_persistence_context(",
+            "fn skipped_candidate_persistence_context(",
+            "LocalAvailableCandidatePersistenceContext {",
+            "LocalSkippedCandidatePersistenceContext {",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline persistence policy helper {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ai_pipeline_candidate_metadata_owns_local_execution_candidate_extra_data_shape() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod candidate_metadata;"),
+        "planner/mod.rs should wire candidate_metadata helper module"
+    );
+
+    let candidate_metadata =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_metadata.rs");
+    for pattern in [
+        "pub(crate) struct LocalExecutionCandidateMetadataParts<'a> {",
+        "pub(crate) fn build_local_execution_candidate_metadata(",
+        "pub(crate) fn build_local_execution_candidate_contract_metadata(",
+    ] {
+        assert!(
+            candidate_metadata.contains(pattern),
+            "planner/candidate_metadata.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("build_local_execution_candidate_"),
+            "{path} should route candidate persistence metadata through candidate_metadata.rs"
+        );
+        for forbidden in [
+            "\"global_model_id\": eligible.candidate.global_model_id.clone()",
+            "\"provider_name\": eligible.candidate.provider_name.clone()",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline shared candidate metadata field {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ai_pipeline_runtime_miss_owns_local_execution_miss_state_machine() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod runtime_miss;"),
+        "planner/mod.rs should wire runtime_miss helper module"
+    );
+
+    let runtime_miss =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/runtime_miss.rs");
+    for pattern in [
+        "pub(crate) fn set_local_runtime_miss_diagnostic_reason(",
+        "pub(crate) fn build_local_runtime_execution_exhausted_diagnostic(",
+        "pub(crate) fn set_local_runtime_execution_exhausted_diagnostic(",
+        "pub(crate) fn build_local_runtime_candidate_evaluation_diagnostic(",
+        "pub(crate) fn set_local_runtime_candidate_evaluation_diagnostic(",
+        "pub(crate) fn apply_local_runtime_candidate_evaluation_progress(",
+        "pub(crate) fn apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(",
+        "pub(crate) fn apply_local_runtime_candidate_terminal_reason(",
+        "pub(crate) fn record_local_runtime_candidate_skip_reason(",
+    ] {
+        assert!(
+            runtime_miss.contains(pattern),
+            "planner/runtime_miss.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/build.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/plans.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/build.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/candidate_materialization.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/mod.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/diagnostic.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/sync.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/stream.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("runtime_miss")
+                || source.contains("set_local_runtime_")
+                || source.contains("apply_local_runtime_"),
+            "{path} should route runtime miss state handling through planner/runtime_miss.rs"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/build.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/plans.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/build.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/candidate_materialization.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/mod.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/diagnostic.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/sync.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/stream.rs",
+    ] {
+        let source = read_workspace_file(path);
+        for forbidden in [
+            "state.set_local_execution_runtime_miss_diagnostic(",
+            "state.mutate_local_execution_runtime_miss_diagnostic(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline runtime miss state mutation {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ai_pipeline_standard_family_routes_request_preparation_through_request_payload_seams() {
+    let standard_family_mod =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/standard/family/mod.rs");
+    assert!(
+        standard_family_mod.contains("mod request;"),
+        "standard family mod.rs should wire request seam"
+    );
+
+    let standard_family_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/request.rs",
+    );
+    for pattern in [
+        "pub(crate) struct LocalStandardCandidatePayloadParts {",
+        "pub(crate) async fn resolve_local_standard_candidate_payload_parts(",
+    ] {
+        assert!(
+            standard_family_request.contains(pattern),
+            "standard family request.rs should own {pattern}"
+        );
+    }
+
+    let standard_family_payload = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/payload.rs",
+    );
+    assert!(
+        standard_family_payload.contains("resolve_local_standard_candidate_payload_parts("),
+        "standard family payload.rs should consume request.rs preparation output"
+    );
+}
+
+#[test]
+fn ai_pipeline_same_format_provider_routes_request_preparation_through_request_payload_seams() {
+    let same_format_provider_mod = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/mod.rs",
+    );
+    assert!(
+        same_format_provider_mod.contains("mod request;"),
+        "same-format provider mod.rs should wire request seam"
+    );
+    assert!(
+        !workspace_file_exists(
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload/prepare.rs"
+        ),
+        "same-format provider payload/prepare.rs should stay removed after request seam extraction"
+    );
+
+    let same_format_provider_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request.rs",
+    );
+    assert!(
+        same_format_provider_request.contains("mod prepare;"),
+        "same-format provider request.rs should own its nested prepare module"
+    );
+    assert!(
+        !same_format_provider_request.contains("#[path = \"payload/prepare.rs\"]"),
+        "same-format provider request.rs should not path-import payload preparation after seam extraction"
+    );
+    for pattern in [
+        "pub(crate) struct LocalSameFormatProviderCandidatePayloadParts {",
+        "pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(",
+    ] {
+        assert!(
+            same_format_provider_request.contains(pattern),
+            "same-format provider request.rs should own {pattern}"
+        );
+    }
+
+    let same_format_provider_request_prepare = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request/prepare.rs",
+    );
+    for pattern in [
+        "pub(super) struct PreparedSameFormatProviderCandidate {",
+        "pub(super) async fn prepare_local_same_format_provider_candidate(",
+    ] {
+        assert!(
+            same_format_provider_request_prepare.contains(pattern),
+            "same-format provider request/prepare.rs should own {pattern}"
+        );
+    }
+
+    let same_format_provider_payload = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload.rs",
+    );
+    assert!(
+        same_format_provider_payload
+            .contains("resolve_local_same_format_provider_candidate_payload_parts("),
+        "same-format provider payload.rs should consume request.rs preparation output"
+    );
+    assert!(
+        !same_format_provider_payload.contains("prepare_local_same_format_provider_candidate("),
+        "same-format provider payload.rs should not inline request preparation after seam extraction"
+    );
+}
+
+#[test]
+fn ai_pipeline_video_routes_request_preparation_through_request_payload_seams() {
+    let specialized_video_mod =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/specialized/video.rs");
+    assert!(
+        specialized_video_mod.contains("mod request;"),
+        "specialized video mod.rs should wire request seam"
+    );
+
+    let specialized_video_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/request.rs",
+    );
+    for pattern in [
+        "pub(super) struct LocalVideoCreateCandidatePayloadParts {",
+        "pub(super) async fn resolve_local_video_create_candidate_payload_parts(",
+        "fn build_provider_request_body(",
+        "fn build_video_upstream_url(",
+    ] {
+        assert!(
+            specialized_video_request.contains(pattern),
+            "specialized video request.rs should own {pattern}"
+        );
+    }
+
+    let specialized_video_decision = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/decision.rs",
+    );
+    assert!(
+        specialized_video_decision.contains("resolve_local_video_create_candidate_payload_parts("),
+        "specialized video decision.rs should consume request.rs preparation output"
+    );
+    for forbidden in [
+        "resolve_candidate_mapped_model(",
+        "build_provider_request_body(",
+        "build_video_upstream_url(",
+        "resolve_local_openai_chat_auth(",
+        "resolve_local_gemini_auth(",
+    ] {
+        assert!(
+            !specialized_video_decision.contains(forbidden),
+            "specialized video decision.rs should not inline request preparation step {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_files_routes_request_preparation_through_request_payload_seams() {
+    let specialized_files_mod =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/specialized/files.rs");
+    assert!(
+        specialized_files_mod.contains("mod request;"),
+        "specialized files mod.rs should wire request seam"
+    );
+
+    let specialized_files_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/request.rs",
+    );
+    for pattern in [
+        "pub(super) struct LocalGeminiFilesCandidatePayloadParts {",
+        "pub(super) async fn resolve_local_gemini_files_candidate_payload_parts(",
+    ] {
+        assert!(
+            specialized_files_request.contains(pattern),
+            "specialized files request.rs should own {pattern}"
+        );
+    }
+
+    let specialized_files_decision = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/decision.rs",
+    );
+    assert!(
+        specialized_files_decision.contains("resolve_local_gemini_files_candidate_payload_parts("),
+        "specialized files decision.rs should consume request.rs preparation output"
+    );
+    for forbidden in [
+        "supports_local_gemini_transport_with_network(",
+        "resolve_local_gemini_auth(",
+        "apply_local_body_rules(",
+        "apply_local_header_rules(",
+        "build_gemini_files_passthrough_url(",
+    ] {
+        assert!(
+            !specialized_files_decision.contains(forbidden),
+            "specialized files decision.rs should not inline request preparation step {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_same_format_provider_root_request_separates_body_and_url_policy() {
+    let provider_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/request.rs",
+    );
+    for pattern in [
+        "mod body;",
+        "mod url;",
+        "pub(super) use self::body::build_same_format_provider_request_body;",
+        "pub(super) use self::url::build_same_format_upstream_url;",
+    ] {
+        assert!(
+            provider_request.contains(pattern),
+            "passthrough/provider/request.rs should own request seam pattern {pattern}"
+        );
+    }
+    for forbidden in [
+        "fn build_same_format_provider_request_body(",
+        "fn build_same_format_upstream_url(",
+        "fn maybe_add_gemini_stream_alt_sse(",
+        "fn extract_gemini_model_from_path(",
+    ] {
+        assert!(
+            !provider_request.contains(forbidden),
+            "passthrough/provider/request.rs should not inline request policy helper {forbidden}"
+        );
+    }
+
+    let provider_request_body = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/request/body.rs",
+    );
+    assert!(
+        provider_request_body.contains("fn build_same_format_provider_request_body("),
+        "passthrough/provider/request/body.rs should own same-format provider request-body policy"
+    );
+
+    let provider_request_url = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/request/url.rs",
+    );
+    for pattern in [
+        "fn build_same_format_upstream_url(",
+        "fn maybe_add_gemini_stream_alt_sse(",
+    ] {
+        assert!(
+            provider_request_url.contains(pattern),
+            "passthrough/provider/request/url.rs should own {pattern}"
+        );
+    }
+
+    let same_format_provider_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request.rs",
+    );
+    for pattern in [
+        "super::super::request::build_same_format_provider_request_body(",
+        "super::super::request::build_same_format_upstream_url(",
+    ] {
+        assert!(
+            same_format_provider_request.contains(pattern),
+            "same-format provider family request should consume root request seam via {pattern}"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_openai_chat_routes_request_preparation_through_request_payload_seams() {
+    let openai_chat_decision = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision.rs",
+    );
+    for pattern in [
+        "#[path = \"decision/payload.rs\"]",
+        "#[path = \"decision/request.rs\"]",
+        "pub(super) use self::payload::maybe_build_local_openai_chat_decision_payload_for_candidate;",
+    ] {
+        assert!(
+            openai_chat_decision.contains(pattern),
+            "openai chat decision.rs should wire {pattern}"
+        );
+    }
+
+    let openai_chat_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/request.rs",
+    );
+    for pattern in [
+        "pub(crate) struct LocalOpenAiChatCandidatePayloadParts {",
+        "pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(",
+    ] {
+        assert!(
+            openai_chat_request.contains(pattern),
+            "openai chat request.rs should own {pattern}"
+        );
+    }
+
+    let openai_chat_payload = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/payload.rs",
+    );
+    assert!(
+        openai_chat_payload.contains("resolve_local_openai_chat_candidate_payload_parts("),
+        "openai chat payload.rs should consume request.rs preparation output"
+    );
+}
+
+#[test]
+fn ai_pipeline_payload_metadata_owns_local_execution_decision_response_shape() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod payload_metadata;"),
+        "planner/mod.rs should wire payload_metadata helper module"
+    );
+
+    let payload_metadata =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/payload_metadata.rs");
+    for pattern in [
+        "pub(crate) struct LocalExecutionDecisionResponseParts {",
+        "pub(crate) fn build_local_execution_decision_response(",
+        "pub(crate) fn local_execution_decision_action(",
+    ] {
+        assert!(
+            payload_metadata.contains(pattern),
+            "planner/payload_metadata.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/decision.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/decision.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("build_local_execution_decision_response("),
+            "{path} should route local decision payload construction through payload_metadata"
+        );
+        assert!(
+            !source.contains("GatewayControlSyncDecisionResponse {"),
+            "{path} should not inline GatewayControlSyncDecisionResponse construction after payload metadata extraction"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_report_context_owns_local_execution_context_shape() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod report_context;"),
+        "planner/mod.rs should wire report_context helper module"
+    );
+
+    let report_context =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/report_context.rs");
+    for pattern in [
+        "pub(crate) struct LocalExecutionReportContextParts<'a> {",
+        "pub(crate) fn build_local_execution_report_context(",
+    ] {
+        assert!(
+            report_context.contains(pattern),
+            "planner/report_context.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/payload.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/decision.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/decision.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("build_local_execution_report_context("),
+            "{path} should route report-context base construction through report_context.rs"
+        );
+        for forbidden in [
+            "\"original_headers\": collect_control_headers(&parts.headers)",
+            "\"retry_index\": 0,",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline shared report-context base field {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ai_pipeline_standard_attempts_consume_eligible_local_candidates_without_transport_rereads() {
+    let openai_chat_support = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+    );
+    assert!(
+        openai_chat_support
+            .contains("LocalExecutionCandidateAttempt as LocalOpenAiChatCandidateAttempt"),
+        "openai chat attempts should reuse shared LocalExecutionCandidateAttempt"
+    );
+
+    let openai_cli_support = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+    );
+    assert!(
+        openai_cli_support
+            .contains("LocalExecutionCandidateAttempt as LocalOpenAiCliCandidateAttempt"),
+        "openai cli attempts should reuse shared LocalExecutionCandidateAttempt"
+    );
+
+    let standard_family_mod =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/standard/family/mod.rs");
+    assert!(
+        standard_family_mod
+            .contains("LocalExecutionCandidateAttempt as LocalStandardCandidateAttempt"),
+        "standard family attempts should reuse shared LocalExecutionCandidateAttempt"
+    );
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/request.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/request.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/request.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            !source.contains("read_provider_transport_snapshot("),
+            "{path} should consume eligibility-owned transport snapshots instead of rereading them"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_specialized_files_attempts_consume_eligible_local_candidates_without_transport_rereads(
+) {
+    let specialized_files_support = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+    );
+    assert!(
+        specialized_files_support
+            .contains("LocalExecutionCandidateAttempt as LocalGeminiFilesCandidateAttempt"),
+        "specialized files attempts should reuse shared LocalExecutionCandidateAttempt"
+    );
+    assert!(
+        specialized_files_support
+            .contains("filter_and_rank_local_execution_candidates_without_transport_pair_gate("),
+        "specialized files support should source runtime gating from candidate_eligibility"
+    );
+    assert!(
+        !specialized_files_support.contains("rank_local_execution_candidates("),
+        "specialized files support should not bypass candidate_eligibility with raw affinity ranking"
+    );
+
+    let specialized_files_decision = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/decision.rs",
+    );
+    assert!(
+        !specialized_files_decision.contains("read_provider_transport_snapshot("),
+        "specialized files decision should consume eligibility-owned transport snapshots instead of rereading them"
+    );
+}
+
+#[test]
+fn ai_pipeline_candidate_sources_share_cross_format_auth_filter_helper() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod candidate_source;"),
+        "planner/mod.rs should wire candidate_source helper module"
+    );
+
+    let candidate_source =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_source.rs");
+    assert!(
+        candidate_source.contains("pub(crate) fn auth_snapshot_allows_cross_format_candidate("),
+        "planner/candidate_source.rs should own shared cross-format auth filtering"
+    );
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("auth_snapshot_allows_cross_format_candidate("),
+            "{path} should use the shared cross-format auth filter helper"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_spec_metadata_owns_family_requested_model_and_plan_builder_routing() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod spec_metadata;"),
+        "planner/mod.rs should wire spec_metadata helper module"
+    );
+
+    let spec_metadata =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/spec_metadata.rs");
+    for pattern in [
+        "pub(crate) struct LocalExecutionSurfaceSpecMetadata {",
+        "pub(crate) fn requested_model_family_for_standard_source(",
+        "pub(crate) fn requested_model_family_for_same_format_provider(",
+        "pub(crate) fn requested_model_family_for_video_create(",
+        "pub(crate) fn local_standard_spec_metadata(",
+        "pub(crate) fn local_same_format_provider_spec_metadata(",
+        "pub(crate) fn local_openai_cli_spec_metadata(",
+        "pub(crate) fn local_gemini_files_spec_metadata(",
+        "pub(crate) fn local_video_create_spec_metadata(",
+        "pub(crate) fn build_sync_plan_from_requested_model_family(",
+        "pub(crate) fn build_stream_plan_from_requested_model_family(",
+    ] {
+        assert!(
+            spec_metadata.contains(pattern),
+            "planner/spec_metadata.rs should own {pattern}"
+        );
+    }
+
+    for (path, pattern) in [
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+            "local_standard_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/build.rs",
+            "local_standard_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/request.rs",
+            "local_standard_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/payload.rs",
+            "local_standard_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/candidates.rs",
+            "local_same_format_provider_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/plans.rs",
+            "local_same_format_provider_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/build.rs",
+            "local_same_format_provider_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request/prepare.rs",
+            "local_same_format_provider_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/payload.rs",
+            "local_same_format_provider_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+            "local_video_create_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/video.rs",
+            "local_video_create_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/decision.rs",
+            "local_video_create_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/files.rs",
+            "local_gemini_files_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/decision.rs",
+            "local_gemini_files_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/plans.rs",
+            "local_openai_cli_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+            "local_openai_cli_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/request.rs",
+            "local_openai_cli_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/payload.rs",
+            "local_openai_cli_spec_metadata(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/build.rs",
+            "build_sync_plan_from_requested_model_family(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/build.rs",
+            "build_stream_plan_from_requested_model_family(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/plans.rs",
+            "build_sync_plan_from_requested_model_family(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/plans.rs",
+            "build_stream_plan_from_requested_model_family(",
+        ),
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains(pattern),
+            "{path} should use shared spec metadata helper {pattern}"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_same_format_provider_request_policy_owns_provider_type_behavior() {
+    let request_root = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request.rs",
+    );
+    assert!(
+        request_root.contains("mod policy;"),
+        "same-format provider request seam should wire request/policy.rs"
+    );
+
+    let request_policy = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request/policy.rs",
+    );
+    for pattern in [
+        "pub(super) struct SameFormatProviderRequestBehavior {",
+        "pub(super) fn classify_same_format_provider_request_behavior(",
+        "pub(super) fn same_format_provider_transport_supported(",
+        "pub(super) fn should_try_same_format_provider_oauth_auth(",
+        "pub(super) fn resolve_same_format_provider_direct_auth(",
+    ] {
+        assert!(
+            request_policy.contains(pattern),
+            "same-format provider request policy should own {pattern}"
+        );
+    }
+
+    let request_prepare = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/request/prepare.rs",
+    );
+    for pattern in [
+        "classify_same_format_provider_request_behavior(",
+        "same_format_provider_transport_supported(",
+        "should_try_same_format_provider_oauth_auth(",
+        "resolve_same_format_provider_direct_auth(",
+    ] {
+        assert!(
+            request_prepare.contains(pattern),
+            "same-format provider request prepare should route provider-type behavior through request/policy.rs via {pattern}"
+        );
+    }
+    for forbidden in [
+        ".eq_ignore_ascii_case(\"antigravity\")",
+        ".eq_ignore_ascii_case(\"claude_code\")",
+        ".eq_ignore_ascii_case(\"vertex_ai\")",
+        ".eq_ignore_ascii_case(\"kiro\")",
+        "supports_local_claude_code_transport_with_network(",
+        "supports_local_kiro_request_transport_with_network(",
+        "supports_local_vertex_api_key_gemini_transport_with_network(",
+    ] {
+        assert!(
+            !request_prepare.contains(forbidden),
+            "same-format provider request prepare should not inline provider-type policy {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn ai_pipeline_decision_inputs_share_authenticated_input_helper() {
+    let planner_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/mod.rs");
+    assert!(
+        planner_mod.contains("mod decision_input;"),
+        "planner/mod.rs should wire decision_input helper module"
+    );
+
+    let decision_input =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/decision_input.rs");
+    for pattern in [
+        "pub(crate) struct ResolvedLocalDecisionAuthInput {",
+        "pub(crate) struct LocalRequestedModelDecisionInput {",
+        "pub(crate) struct LocalAuthenticatedDecisionInput {",
+        "pub(crate) fn build_local_requested_model_decision_input(",
+        "pub(crate) fn build_local_authenticated_decision_input(",
+        "pub(crate) async fn resolve_local_authenticated_decision_input(",
+    ] {
+        assert!(
+            decision_input.contains(pattern),
+            "planner/decision_input.rs should own {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/candidates.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/resolve.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains("resolve_local_authenticated_decision_input("),
+            "{path} should use the shared authenticated decision input helper"
+        );
+        if path.ends_with("/standard/openai/cli/decision/support.rs")
+            || path.ends_with("/standard/openai/chat/plans/resolve.rs")
+        {
+            assert!(
+                source.contains("extract_standard_requested_model("),
+                "{path} should use shared standard requested-model extraction"
+            );
+        } else if !path.ends_with("/specialized/files/support.rs") {
+            assert!(
+                source.contains("extract_requested_model_from_request("),
+                "{path} should use shared family-aware requested-model extraction"
+            );
+        }
+        for forbidden in [
+            "read_auth_api_key_snapshot(",
+            "resolve_request_candidate_required_capabilities(",
+            "fn extract_gemini_model_from_path(",
+            "fn extract_gemini_video_model_from_path(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline authenticated decision input step {forbidden}"
+            );
+        }
+    }
+
+    for (path, pattern) in [
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/mod.rs",
+            "LocalRequestedModelDecisionInput as LocalStandardDecisionInput",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/mod.rs",
+            "LocalRequestedModelDecisionInput as LocalSameFormatProviderDecisionInput",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/decision/support.rs",
+            "LocalRequestedModelDecisionInput as LocalOpenAiChatDecisionInput",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+            "LocalRequestedModelDecisionInput as LocalOpenAiCliDecisionInput",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+            "LocalRequestedModelDecisionInput as LocalVideoCreateDecisionInput",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+            "LocalAuthenticatedDecisionInput as LocalGeminiFilesDecisionInput",
+        ),
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains(pattern),
+            "{path} should rename shared decision input shapes instead of redefining local decision input structs"
+        );
+    }
+
+    for (path, pattern) in [
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/family/candidates.rs",
+            "build_local_requested_model_decision_input(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/candidates.rs",
+            "build_local_requested_model_decision_input(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/resolve.rs",
+            "build_local_requested_model_decision_input(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/cli/decision/support.rs",
+            "build_local_requested_model_decision_input(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/video/support.rs",
+            "build_local_requested_model_decision_input(",
+        ),
+        (
+            "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
+            "build_local_authenticated_decision_input(",
+        ),
+    ] {
+        let source = read_workspace_file(path);
+        assert!(
+            source.contains(pattern),
+            "{path} should build local decision inputs through shared decision_input builders"
+        );
+    }
+}
+
+#[test]
 fn ai_pipeline_leaf_planner_owners_route_contract_specs_through_gateway_seams() {
     for path in [
         "apps/aether-gateway/src/ai_pipeline/planner/specialized/files/support.rs",
@@ -1030,6 +2202,11 @@ fn ai_pipeline_planner_common_parser_is_owned_by_pipeline_crate() {
             .contains("force_upstream_streaming_for_provider as force_upstream_streaming_for_provider_impl"),
         "gateway planner/common.rs should delegate upstream streaming policy through the ai_pipeline root seam"
     );
+    assert!(
+        gateway_common_runtime
+            .contains("extract_gemini_model_from_path as extract_gemini_model_from_path_impl"),
+        "gateway planner/common.rs should delegate gemini request-path parsing through the ai_pipeline root seam"
+    );
 
     for forbidden in [
         "serde_json::from_slice::<serde_json::Value>",
@@ -1041,6 +2218,87 @@ fn ai_pipeline_planner_common_parser_is_owned_by_pipeline_crate() {
             "gateway planner/common.rs should not own parser implementation detail {forbidden}"
         );
     }
+    for pattern in [
+        "pub(crate) enum RequestedModelFamily {",
+        "pub(crate) fn extract_standard_requested_model(",
+        "pub(crate) fn extract_requested_model_from_request(",
+        "pub(crate) fn build_local_runtime_miss_diagnostic(",
+        "pub(crate) fn apply_local_candidate_evaluation_progress(",
+        "pub(crate) fn apply_local_candidate_terminal_plan_reason(",
+    ] {
+        assert!(
+            gateway_common_runtime.contains(pattern),
+            "gateway planner/common.rs should own shared planner helper {pattern}"
+        );
+    }
+
+    for path in [
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/family/build.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/plans.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/family/build.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/sync.rs",
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/stream.rs",
+    ] {
+        let source = read_workspace_file(path);
+        if !path.contains("openai/chat/plans/") {
+            assert!(
+                source.contains("extract_requested_model_from_request("),
+                "{path} should use shared requested-model extraction"
+            );
+        }
+        for forbidden in [
+            "fn extract_requested_model(",
+            "fn build_local_standard_miss_diagnostic(",
+            "fn build_local_same_format_miss_diagnostic(",
+            "let skipped_candidate_count = diagnostic.skipped_candidate_count.unwrap_or(0);",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} should not inline shared planner helper {forbidden}"
+            );
+        }
+    }
+
+    let openai_chat_diagnostic = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/standard/openai/chat/plans/diagnostic.rs",
+    );
+    assert!(
+        openai_chat_diagnostic.contains("set_local_runtime_miss_diagnostic_reason(")
+            || openai_chat_diagnostic.contains("set_local_runtime_candidate_evaluation_diagnostic("),
+        "openai chat diagnostic.rs should delegate miss diagnostic handling through planner/runtime_miss.rs"
+    );
+    assert!(
+        !openai_chat_diagnostic.contains("skip_reasons:"),
+        "openai chat diagnostic.rs should not inline miss diagnostic struct fields after helper extraction"
+    );
+}
+
+#[test]
+fn ai_pipeline_root_owns_shared_gemini_request_path_parser() {
+    let ai_pipeline_mod = read_workspace_file("apps/aether-gateway/src/ai_pipeline/mod.rs");
+    assert!(
+        ai_pipeline_mod.contains("pub(crate) fn extract_gemini_model_from_path("),
+        "ai_pipeline/mod.rs should own shared gemini request-path parsing"
+    );
+
+    let passthrough_provider_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/passthrough/provider/request.rs",
+    );
+    assert!(
+        !passthrough_provider_request.contains("fn extract_gemini_model_from_path("),
+        "passthrough/provider/request.rs should not locally own gemini request-path parsing"
+    );
+
+    let auth_credentials =
+        read_workspace_file("apps/aether-gateway/src/control/auth/credentials.rs");
+    assert!(
+        auth_credentials.contains("ai_pipeline::extract_gemini_model_from_path"),
+        "control/auth/credentials.rs should use ai_pipeline root seam for gemini request-path parsing"
+    );
+    assert!(
+        !auth_credentials.contains("fn extract_gemini_model_from_path("),
+        "control/auth/credentials.rs should not inline gemini request-path parsing"
+    );
 }
 
 #[test]

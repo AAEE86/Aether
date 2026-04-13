@@ -111,6 +111,22 @@ pub(crate) async fn execute_execution_runtime_stream(
     state
         .usage_runtime
         .record_pending(state.data.as_ref(), &lifecycle_seed);
+    let candidate_started_unix_secs = current_request_candidate_unix_ms();
+    record_local_request_candidate_status(
+        state,
+        &plan,
+        report_context.as_ref(),
+        SchedulerRequestCandidateStatusUpdate {
+            status: RequestCandidateStatus::Pending,
+            status_code: None,
+            error_type: None,
+            error_message: None,
+            latency_ms: None,
+            started_at_unix_ms: Some(candidate_started_unix_secs),
+            finished_at_unix_ms: None,
+        },
+    )
+    .await;
     let plan_request_id_for_log = short_request_id(plan.request_id.as_str());
     let provider_name = plan.provider_name.as_deref().unwrap_or("-");
     let endpoint_id = plan.endpoint_id.as_str();
@@ -142,6 +158,22 @@ pub(crate) async fn execute_execution_runtime_stream(
                     error = %err,
                     "gateway in-process stream execution unavailable"
                 );
+                let terminal_unix_secs = current_request_candidate_unix_ms();
+                record_local_request_candidate_status(
+                    state,
+                    &plan,
+                    report_context.as_ref(),
+                    SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Failed,
+                        status_code: None,
+                        error_type: Some("execution_runtime_unavailable".to_string()),
+                        error_message: Some(format!("{err:?}")),
+                        latency_ms: None,
+                        started_at_unix_ms: Some(candidate_started_unix_secs),
+                        finished_at_unix_ms: Some(terminal_unix_secs),
+                    },
+                )
+                .await;
                 return Ok(None);
             }
         };
@@ -154,6 +186,7 @@ pub(crate) async fn execute_execution_runtime_stream(
             plan_kind,
             report_kind,
             report_context,
+            candidate_started_unix_secs,
             frame_stream,
         )
         .await;
@@ -184,6 +217,22 @@ pub(crate) async fn execute_execution_runtime_stream(
                         error = %err,
                         "gateway in-process stream execution unavailable"
                     );
+                    let terminal_unix_secs = current_request_candidate_unix_ms();
+                    record_local_request_candidate_status(
+                        state,
+                        &plan,
+                        report_context.as_ref(),
+                        SchedulerRequestCandidateStatusUpdate {
+                            status: RequestCandidateStatus::Failed,
+                            status_code: None,
+                            error_type: Some("execution_runtime_unavailable".to_string()),
+                            error_message: Some(err.to_string()),
+                            latency_ms: None,
+                            started_at_unix_ms: Some(candidate_started_unix_secs),
+                            finished_at_unix_ms: Some(terminal_unix_secs),
+                        },
+                    )
+                    .await;
                     return Ok(None);
                 }
             };
@@ -196,6 +245,7 @@ pub(crate) async fn execute_execution_runtime_stream(
                 plan_kind,
                 report_kind,
                 report_context,
+                candidate_started_unix_secs,
                 frame_stream,
             )
             .await;
@@ -220,6 +270,22 @@ pub(crate) async fn execute_execution_runtime_stream(
                     error = ?err,
                     "gateway remote execution runtime stream unavailable"
                 );
+                let terminal_unix_secs = current_request_candidate_unix_ms();
+                record_local_request_candidate_status(
+                    state,
+                    &plan,
+                    report_context.as_ref(),
+                    SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Failed,
+                        status_code: None,
+                        error_type: Some("execution_runtime_unavailable".to_string()),
+                        error_message: Some(format!("{err:?}")),
+                        latency_ms: None,
+                        started_at_unix_ms: Some(candidate_started_unix_secs),
+                        finished_at_unix_ms: Some(terminal_unix_secs),
+                    },
+                )
+                .await;
                 return Ok(None);
             }
         };
@@ -239,7 +305,7 @@ pub(crate) async fn execute_execution_runtime_stream(
                         response.status()
                     )),
                     latency_ms: None,
-                    started_at_unix_ms: Some(terminal_unix_secs),
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
                     finished_at_unix_ms: Some(terminal_unix_secs),
                 },
             )
@@ -263,6 +329,7 @@ pub(crate) async fn execute_execution_runtime_stream(
             plan_kind,
             report_kind,
             report_context,
+            candidate_started_unix_secs,
             frame_stream,
         )
         .await;
@@ -375,6 +442,7 @@ async fn execute_stream_from_frame_stream(
     plan_kind: &str,
     report_kind: Option<String>,
     report_context: Option<serde_json::Value>,
+    candidate_started_unix_secs: u64,
     frame_stream: BoxStream<'static, Result<Bytes, IoError>>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let request_id = plan.request_id.as_str();
@@ -430,7 +498,7 @@ async fn execute_stream_from_frame_stream(
                             .to_string(),
                     ),
                     latency_ms: None,
-                    started_at_unix_ms: Some(terminal_unix_secs),
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
                     finished_at_unix_ms: Some(terminal_unix_secs),
                 },
             )
@@ -498,7 +566,7 @@ async fn execute_stream_from_frame_stream(
                         "execution runtime stream returned retryable status {status_code}"
                     )),
                     latency_ms: None,
-                    started_at_unix_ms: Some(terminal_unix_secs),
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
                     finished_at_unix_ms: Some(terminal_unix_secs),
                 },
             )
@@ -539,7 +607,7 @@ async fn execute_stream_from_frame_stream(
                         "stream decision fell back to control after status {status_code}"
                     )),
                     latency_ms: None,
-                    started_at_unix_ms: Some(terminal_unix_secs),
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
                     finished_at_unix_ms: Some(terminal_unix_secs),
                 },
             )
@@ -576,7 +644,7 @@ async fn execute_stream_from_frame_stream(
                     "execution runtime stream returned error status {status_code}"
                 )),
                 latency_ms: None,
-                started_at_unix_ms: Some(terminal_unix_secs),
+                started_at_unix_ms: Some(candidate_started_unix_secs),
                 finished_at_unix_ms: Some(terminal_unix_secs),
             },
         )
@@ -899,7 +967,6 @@ async fn execute_stream_from_frame_stream(
         }
     }
 
-    let candidate_started_unix_secs = current_request_candidate_unix_ms();
     state.usage_runtime.record_stream_started(
         state.data.as_ref(),
         &lifecycle_seed,

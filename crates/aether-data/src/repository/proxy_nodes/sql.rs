@@ -124,7 +124,7 @@ SET
   heartbeat_interval = COALESCE($2, heartbeat_interval),
   active_connections = COALESCE($3, active_connections),
   avg_latency_ms = COALESCE($4, avg_latency_ms),
-  proxy_metadata = COALESCE($5, proxy_metadata),
+  proxy_metadata = COALESCE($5::json, proxy_metadata),
   total_requests = total_requests + GREATEST(COALESCE($6, 0), 0),
   failed_requests = failed_requests + GREATEST(COALESCE($7, 0), 0),
   dns_failures = dns_failures + GREATEST(COALESCE($8, 0), 0),
@@ -205,11 +205,11 @@ VALUES (
   COALESCE($8, 0),
   COALESCE($9, 0),
   $10,
-  $11,
+  $11::json,
   $12,
   $13,
   FALSE,
-  $14
+  $14::json
 )
 "#;
 
@@ -226,10 +226,10 @@ SET
   active_connections = COALESCE($8, active_connections),
   total_requests = COALESCE($9, total_requests),
   avg_latency_ms = COALESCE($10, avg_latency_ms),
-  hardware_info = COALESCE($11, hardware_info),
+  hardware_info = COALESCE($11::json, hardware_info),
   estimated_max_concurrency = COALESCE($12, estimated_max_concurrency),
   tunnel_mode = $13,
-  proxy_metadata = COALESCE($14, proxy_metadata),
+  proxy_metadata = COALESCE($14::json, proxy_metadata),
   updated_at = NOW()
 WHERE id = $1
 "#;
@@ -248,7 +248,7 @@ const UPDATE_PROXY_NODE_REMOTE_CONFIG_SQL: &str = r#"
 UPDATE proxy_nodes
 SET
   name = COALESCE($2, name),
-  remote_config = $3,
+  remote_config = $3::json,
   config_version = config_version + 1,
   updated_at = NOW()
 WHERE id = $1
@@ -746,5 +746,29 @@ VALUES (
             .map_postgres_err()?;
 
         self.find_proxy_node(&mutation.node_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn proxy_node_sql_uses_json_casts_for_json_columns() {
+        assert!(super::APPLY_HEARTBEAT_SQL
+            .contains("proxy_metadata = COALESCE($5::json, proxy_metadata)"));
+        assert!(super::INSERT_PROXY_NODE_SQL
+            .contains("\n  $11::json,\n  $12,\n  $13,\n  FALSE,\n  $14::json\n"));
+        assert!(super::UPDATE_PROXY_NODE_REGISTRATION_SQL
+            .contains("hardware_info = COALESCE($11::json, hardware_info)"));
+        assert!(super::UPDATE_PROXY_NODE_REGISTRATION_SQL
+            .contains("proxy_metadata = COALESCE($14::json, proxy_metadata)"));
+        assert!(super::UPDATE_PROXY_NODE_REMOTE_CONFIG_SQL.contains("remote_config = $3::json"));
+    }
+
+    #[test]
+    fn proxy_node_sql_does_not_use_jsonb_casts() {
+        assert!(!super::APPLY_HEARTBEAT_SQL.contains("::jsonb"));
+        assert!(!super::INSERT_PROXY_NODE_SQL.contains("::jsonb"));
+        assert!(!super::UPDATE_PROXY_NODE_REGISTRATION_SQL.contains("::jsonb"));
+        assert!(!super::UPDATE_PROXY_NODE_REMOTE_CONFIG_SQL.contains("::jsonb"));
     }
 }

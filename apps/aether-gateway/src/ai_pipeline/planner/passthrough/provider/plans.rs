@@ -1,5 +1,14 @@
 use tracing::warn;
 
+use crate::ai_pipeline::planner::common::extract_requested_model_from_request;
+use crate::ai_pipeline::planner::runtime_miss::{
+    apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal,
+    apply_local_runtime_candidate_terminal_reason, set_local_runtime_miss_diagnostic_reason,
+};
+use crate::ai_pipeline::planner::spec_metadata::{
+    build_stream_plan_from_requested_model_family, build_sync_plan_from_requested_model_family,
+    local_same_format_provider_spec_metadata,
+};
 pub(crate) use crate::ai_pipeline::{
     resolve_local_same_format_stream_spec as resolve_stream_spec,
     resolve_local_same_format_sync_spec as resolve_sync_spec,
@@ -9,60 +18,8 @@ use super::{
     materialize_local_same_format_provider_candidate_attempts,
     maybe_build_local_same_format_provider_decision_payload_for_candidate,
     resolve_local_same_format_provider_decision_input, AppState, GatewayControlDecision,
-    GatewayError, LocalSameFormatProviderFamily, LocalSameFormatProviderSpec,
-    LocalStreamPlanAndReport, LocalSyncPlanAndReport,
+    GatewayError, LocalSameFormatProviderSpec, LocalStreamPlanAndReport, LocalSyncPlanAndReport,
 };
-use crate::ai_pipeline::planner::plan_builders::{
-    build_gemini_stream_plan_from_decision, build_gemini_sync_plan_from_decision,
-    build_standard_stream_plan_from_decision, build_standard_sync_plan_from_decision,
-};
-use crate::LocalExecutionRuntimeMissDiagnostic;
-
-fn extract_requested_model(
-    parts: &http::request::Parts,
-    body_json: &serde_json::Value,
-    spec: LocalSameFormatProviderSpec,
-) -> Option<String> {
-    match spec.family {
-        LocalSameFormatProviderFamily::Standard => body_json
-            .get("model")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned),
-        LocalSameFormatProviderFamily::Gemini => {
-            let marker = "/models/";
-            let start = parts.uri.path().find(marker)? + marker.len();
-            let tail = &parts.uri.path()[start..];
-            let end = tail.find(':').unwrap_or(tail.len());
-            let model = tail[..end].trim();
-            if model.is_empty() {
-                None
-            } else {
-                Some(model.to_string())
-            }
-        }
-    }
-}
-
-fn build_local_same_format_miss_diagnostic(
-    decision: &GatewayControlDecision,
-    spec: LocalSameFormatProviderSpec,
-    requested_model: Option<&str>,
-    reason: &str,
-) -> LocalExecutionRuntimeMissDiagnostic {
-    LocalExecutionRuntimeMissDiagnostic {
-        reason: reason.to_string(),
-        route_family: decision.route_family.clone(),
-        route_kind: decision.route_kind.clone(),
-        public_path: Some(decision.public_path.clone()),
-        plan_kind: Some(spec.decision_kind.to_string()),
-        requested_model: requested_model.map(ToOwned::to_owned),
-        candidate_count: None,
-        skipped_candidate_count: None,
-        skip_reasons: std::collections::BTreeMap::new(),
-    }
-}
 
 pub(crate) async fn build_local_sync_plan_and_reports(
     state: &AppState,
@@ -72,46 +29,42 @@ pub(crate) async fn build_local_sync_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalSameFormatProviderSpec,
 ) -> Result<Vec<LocalSyncPlanAndReport>, GatewayError> {
+    let spec_metadata = local_same_format_provider_spec_metadata(spec);
+    let requested_model_family = spec_metadata
+        .requested_model_family
+        .expect("same-format provider spec metadata should include requested-model family");
     let Some(input) = resolve_local_same_format_provider_decision_input(
         state, parts, trace_id, decision, body_json, spec,
     )
     .await
     else {
-        state.set_local_execution_runtime_miss_diagnostic(
+        set_local_runtime_miss_diagnostic_reason(
+            state,
             trace_id,
-            build_local_same_format_miss_diagnostic(
-                decision,
-                spec,
-                extract_requested_model(parts, body_json, spec).as_deref(),
-                "decision_input_unavailable",
-            ),
+            decision,
+            spec_metadata.decision_kind,
+            extract_requested_model_from_request(parts, body_json, requested_model_family)
+                .as_deref(),
+            "decision_input_unavailable",
         );
         return Ok(Vec::new());
     };
-    state.set_local_execution_runtime_miss_diagnostic(
+    set_local_runtime_miss_diagnostic_reason(
+        state,
         trace_id,
-        build_local_same_format_miss_diagnostic(
-            decision,
-            spec,
-            Some(input.requested_model.as_str()),
-            "candidate_evaluation_incomplete",
-        ),
+        decision,
+        spec_metadata.decision_kind,
+        Some(input.requested_model.as_str()),
+        "candidate_evaluation_incomplete",
     );
     let (attempts, candidate_count) =
         materialize_local_same_format_provider_candidate_attempts(state, trace_id, &input, spec)
             .await?;
-    let preserve_existing_candidate_signal = candidate_count == 0
-        && state.local_execution_runtime_miss_diagnostic_has_candidate_signal(trace_id);
-    if !preserve_existing_candidate_signal {
-        state.mutate_local_execution_runtime_miss_diagnostic(trace_id, |diagnostic| {
-            diagnostic.candidate_count = Some(candidate_count);
-            diagnostic.reason = if candidate_count == 0 {
-                "candidate_list_empty".to_string()
-            } else {
-                "candidate_evaluation_incomplete".to_string()
-            };
-        });
-    }
+    apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
+        state,
+        trace_id,
+        candidate_count,
+    );
     if candidate_count == 0 {
         return Ok(Vec::new());
     }
@@ -126,14 +79,12 @@ pub(crate) async fn build_local_sync_plan_and_reports(
             continue;
         };
 
-        let built = match spec.family {
-            LocalSameFormatProviderFamily::Standard => {
-                build_standard_sync_plan_from_decision(parts, body_json, payload)
-            }
-            LocalSameFormatProviderFamily::Gemini => {
-                build_gemini_sync_plan_from_decision(parts, body_json, payload)
-            }
-        };
+        let built = build_sync_plan_from_requested_model_family(
+            requested_model_family,
+            parts,
+            body_json,
+            payload,
+        );
 
         match built {
             Ok(Some(value)) => plans.push(value),
@@ -141,7 +92,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    api_format = spec.api_format,
+                    api_format = spec_metadata.api_format,
                     error = ?err,
                     "gateway local same-format sync decision plan build failed"
                 );
@@ -149,15 +100,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
         }
     }
 
-    state.mutate_local_execution_runtime_miss_diagnostic(trace_id, |diagnostic| {
-        let candidate_count = diagnostic.candidate_count.unwrap_or(0);
-        let skipped_candidate_count = diagnostic.skipped_candidate_count.unwrap_or(0);
-        diagnostic.reason = if candidate_count > 0 && skipped_candidate_count >= candidate_count {
-            "all_candidates_skipped".to_string()
-        } else {
-            "no_local_sync_plans".to_string()
-        };
-    });
+    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_sync_plans");
 
     Ok(plans)
 }
@@ -170,46 +113,42 @@ pub(crate) async fn build_local_stream_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalSameFormatProviderSpec,
 ) -> Result<Vec<LocalStreamPlanAndReport>, GatewayError> {
+    let spec_metadata = local_same_format_provider_spec_metadata(spec);
+    let requested_model_family = spec_metadata
+        .requested_model_family
+        .expect("same-format provider spec metadata should include requested-model family");
     let Some(input) = resolve_local_same_format_provider_decision_input(
         state, parts, trace_id, decision, body_json, spec,
     )
     .await
     else {
-        state.set_local_execution_runtime_miss_diagnostic(
+        set_local_runtime_miss_diagnostic_reason(
+            state,
             trace_id,
-            build_local_same_format_miss_diagnostic(
-                decision,
-                spec,
-                extract_requested_model(parts, body_json, spec).as_deref(),
-                "decision_input_unavailable",
-            ),
+            decision,
+            spec_metadata.decision_kind,
+            extract_requested_model_from_request(parts, body_json, requested_model_family)
+                .as_deref(),
+            "decision_input_unavailable",
         );
         return Ok(Vec::new());
     };
-    state.set_local_execution_runtime_miss_diagnostic(
+    set_local_runtime_miss_diagnostic_reason(
+        state,
         trace_id,
-        build_local_same_format_miss_diagnostic(
-            decision,
-            spec,
-            Some(input.requested_model.as_str()),
-            "candidate_evaluation_incomplete",
-        ),
+        decision,
+        spec_metadata.decision_kind,
+        Some(input.requested_model.as_str()),
+        "candidate_evaluation_incomplete",
     );
     let (attempts, candidate_count) =
         materialize_local_same_format_provider_candidate_attempts(state, trace_id, &input, spec)
             .await?;
-    let preserve_existing_candidate_signal = candidate_count == 0
-        && state.local_execution_runtime_miss_diagnostic_has_candidate_signal(trace_id);
-    if !preserve_existing_candidate_signal {
-        state.mutate_local_execution_runtime_miss_diagnostic(trace_id, |diagnostic| {
-            diagnostic.candidate_count = Some(candidate_count);
-            diagnostic.reason = if candidate_count == 0 {
-                "candidate_list_empty".to_string()
-            } else {
-                "candidate_evaluation_incomplete".to_string()
-            };
-        });
-    }
+    apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
+        state,
+        trace_id,
+        candidate_count,
+    );
     if candidate_count == 0 {
         return Ok(Vec::new());
     }
@@ -224,14 +163,12 @@ pub(crate) async fn build_local_stream_plan_and_reports(
             continue;
         };
 
-        let built = match spec.family {
-            LocalSameFormatProviderFamily::Standard => {
-                build_standard_stream_plan_from_decision(parts, body_json, payload, false)
-            }
-            LocalSameFormatProviderFamily::Gemini => {
-                build_gemini_stream_plan_from_decision(parts, body_json, payload)
-            }
-        };
+        let built = build_stream_plan_from_requested_model_family(
+            requested_model_family,
+            parts,
+            body_json,
+            payload,
+        );
 
         match built {
             Ok(Some(value)) => plans.push(value),
@@ -239,7 +176,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
             Err(err) => {
                 warn!(
                     trace_id = %trace_id,
-                    api_format = spec.api_format,
+                    api_format = spec_metadata.api_format,
                     error = ?err,
                     "gateway local same-format stream decision plan build failed"
                 );
@@ -247,15 +184,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
         }
     }
 
-    state.mutate_local_execution_runtime_miss_diagnostic(trace_id, |diagnostic| {
-        let candidate_count = diagnostic.candidate_count.unwrap_or(0);
-        let skipped_candidate_count = diagnostic.skipped_candidate_count.unwrap_or(0);
-        diagnostic.reason = if candidate_count > 0 && skipped_candidate_count >= candidate_count {
-            "all_candidates_skipped".to_string()
-        } else {
-            "no_local_stream_plans".to_string()
-        };
-    });
+    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_stream_plans");
 
     Ok(plans)
 }

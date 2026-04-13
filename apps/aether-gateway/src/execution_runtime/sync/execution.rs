@@ -107,6 +107,21 @@ pub(crate) async fn execute_execution_runtime_sync(
     state
         .usage_runtime
         .record_pending(state.data.as_ref(), &lifecycle_seed);
+    record_local_request_candidate_status(
+        state,
+        &plan,
+        report_context.as_ref(),
+        SchedulerRequestCandidateStatusUpdate {
+            status: RequestCandidateStatus::Pending,
+            status_code: None,
+            error_type: None,
+            error_message: None,
+            latency_ms: None,
+            started_at_unix_ms: Some(candidate_started_unix_secs),
+            finished_at_unix_ms: None,
+        },
+    )
+    .await;
     #[cfg(not(test))]
     let result = {
         match DirectSyncExecutionRuntime::new()
@@ -129,6 +144,22 @@ pub(crate) async fn execute_execution_runtime_sync(
                     error = %err,
                     "gateway in-process sync execution unavailable"
                 );
+                let terminal_unix_secs = current_request_candidate_unix_ms();
+                record_local_request_candidate_status(
+                    state,
+                    &plan,
+                    report_context.as_ref(),
+                    SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Failed,
+                        status_code: None,
+                        error_type: Some("execution_runtime_unavailable".to_string()),
+                        error_message: Some(err.to_string()),
+                        latency_ms: None,
+                        started_at_unix_ms: Some(candidate_started_unix_secs),
+                        finished_at_unix_ms: Some(terminal_unix_secs),
+                    },
+                )
+                .await;
                 return Ok(None);
             }
         }
@@ -159,6 +190,22 @@ pub(crate) async fn execute_execution_runtime_sync(
                         error = %err,
                         "gateway in-process sync execution unavailable"
                     );
+                    let terminal_unix_secs = current_request_candidate_unix_ms();
+                    record_local_request_candidate_status(
+                        state,
+                        &plan,
+                        report_context.as_ref(),
+                        SchedulerRequestCandidateStatusUpdate {
+                            status: RequestCandidateStatus::Failed,
+                            status_code: None,
+                            error_type: Some("execution_runtime_unavailable".to_string()),
+                            error_message: Some(err.to_string()),
+                            latency_ms: None,
+                            started_at_unix_ms: Some(candidate_started_unix_secs),
+                            finished_at_unix_ms: Some(terminal_unix_secs),
+                        },
+                    )
+                    .await;
                     return Ok(None);
                 }
             }
@@ -656,6 +703,22 @@ async fn execute_sync_via_remote_execution_runtime(
                 error = ?err,
                 "gateway remote execution runtime sync unavailable"
             );
+            let terminal_unix_secs = current_request_candidate_unix_ms();
+            record_local_request_candidate_status(
+                state,
+                plan,
+                report_context,
+                SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Failed,
+                    status_code: None,
+                    error_type: Some("execution_runtime_unavailable".to_string()),
+                    error_message: Some(format!("{err:?}")),
+                    latency_ms: None,
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
+                    finished_at_unix_ms: Some(terminal_unix_secs),
+                },
+            )
+            .await;
             return Ok(RemoteSyncFallbackOutcome::Unavailable);
         }
     };
