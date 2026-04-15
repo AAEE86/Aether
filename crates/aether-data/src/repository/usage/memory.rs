@@ -200,6 +200,11 @@ impl UsageReadRepository for InMemoryUsageReadRepository {
                         return false;
                     }
                 }
+                if let Some(statuses) = query.statuses.as_ref() {
+                    if !statuses.iter().any(|s| s == &item.status) {
+                        return false;
+                    }
+                }
                 true
             })
             .cloned()

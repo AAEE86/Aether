@@ -71,10 +71,7 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
                 UsageAuditListQuery::default()
             } else {
                 UsageAuditListQuery {
-                    statuses: Some(vec![
-                        "pending".to_string(),
-                        "streaming".to_string(),
-                    ]),
+                    statuses: Some(vec!["pending".to_string(), "streaming".to_string()]),
                     ..Default::default()
                 }
             };
