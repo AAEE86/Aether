@@ -9,6 +9,7 @@ use aether_contracts::{
     EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER, EXECUTION_REQUEST_HTTP1_ONLY_HEADER,
 };
 use aether_http::{apply_http_client_config, HttpClientConfig};
+use axum::body::Bytes;
 use base64::Engine as _;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use flate2::write::GzEncoder;
@@ -29,6 +30,7 @@ use crate::execution_runtime::remote_compat::execute_sync_plan_via_remote_execut
 use crate::frontdoor_loop_guard::{
     configured_gateway_frontdoor_base_url, gateway_frontdoor_self_loop_guard_error,
 };
+use crate::tunnel::{self, tunnel_protocol};
 use crate::{AppState, GatewayError};
 
 const HUB_RELAY_CONTENT_TYPE: &str = "application/vnd.aether.tunnel-envelope";
@@ -135,13 +137,17 @@ struct ExecutionTransportControls {
     http1_only: bool,
 }
 
-#[derive(Debug)]
+pub(crate) enum DirectUpstreamResponse {
+    Reqwest(reqwest::Response),
+    LocalTunnel(tunnel::DirectRelayResponse),
+}
+
 pub(crate) struct DirectUpstreamStreamExecution {
     pub(crate) request_id: String,
     pub(crate) candidate_id: Option<String>,
     pub(crate) status_code: u16,
     pub(crate) headers: BTreeMap<String, String>,
-    pub(crate) response: reqwest::Response,
+    pub(crate) response: DirectUpstreamResponse,
     pub(crate) started_at: Instant,
 }
 
@@ -225,7 +231,7 @@ impl DirectSyncExecutionRuntime {
             candidate_id: plan.candidate_id,
             status_code,
             headers,
-            response,
+            response: DirectUpstreamResponse::Reqwest(response),
             started_at,
         })
     }
@@ -252,12 +258,158 @@ pub(crate) async fn execute_sync_plan(
         }
     }
 
+    if resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).is_some() {
+        return execute_sync_plan_via_local_tunnel(state, plan)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()));
+    }
+
     let _ = state;
     let _ = trace_id;
     DirectSyncExecutionRuntime::new()
         .execute_sync(plan.clone())
         .await
         .map_err(|err| GatewayError::Internal(err.to_string()))
+}
+
+pub(crate) async fn execute_stream_plan_via_local_tunnel(
+    state: &AppState,
+    plan: &ExecutionPlan,
+) -> Result<Option<DirectUpstreamStreamExecution>, ExecutionRuntimeTransportError> {
+    let Some(node_id) = resolve_local_tunnel_node_id(state, plan.proxy.as_ref()) else {
+        return Ok(None);
+    };
+
+    if let Some(detail) = gateway_frontdoor_self_loop_guard_error(plan.url.as_str()) {
+        return Err(ExecutionRuntimeTransportError::UpstreamRequest(detail));
+    }
+
+    let body_bytes = build_request_body(plan)?;
+    let transport_controls = resolve_execution_transport_controls(&plan.headers);
+    let headers = build_request_headers(
+        &plan.headers,
+        plan.content_encoding.as_deref(),
+        plan.body.body_bytes_b64.is_some(),
+    )?;
+    let headers = append_execution_loop_guard_header(headers);
+    let started_at = Instant::now();
+    let response = state
+        .tunnel
+        .open_direct_relay_stream(
+            &node_id,
+            build_direct_tunnel_request_meta(plan, &headers, transport_controls),
+            Bytes::from(body_bytes),
+        )
+        .await
+        .map_err(ExecutionRuntimeTransportError::RelayError)?;
+    let status_code = response.status();
+    let headers = collect_tunnel_response_headers(response.headers());
+
+    Ok(Some(DirectUpstreamStreamExecution {
+        request_id: plan.request_id.clone(),
+        candidate_id: plan.candidate_id.clone(),
+        status_code,
+        headers,
+        response: DirectUpstreamResponse::LocalTunnel(response),
+        started_at,
+    }))
+}
+
+async fn execute_sync_plan_via_local_tunnel(
+    state: &AppState,
+    plan: &ExecutionPlan,
+) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
+    let node_id = resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).ok_or_else(|| {
+        ExecutionRuntimeTransportError::RelayError("local tunnel node unavailable".to_string())
+    })?;
+    if let Some(detail) = gateway_frontdoor_self_loop_guard_error(plan.url.as_str()) {
+        return Err(ExecutionRuntimeTransportError::UpstreamRequest(detail));
+    }
+
+    let body_bytes = build_request_body(plan)?;
+    let transport_controls = resolve_execution_transport_controls(&plan.headers);
+    let headers = build_request_headers(
+        &plan.headers,
+        plan.content_encoding.as_deref(),
+        plan.body.body_bytes_b64.is_some(),
+    )?;
+    let headers = append_execution_loop_guard_header(headers);
+
+    let started_at = Instant::now();
+    let mut response = state
+        .tunnel
+        .open_direct_relay_stream(
+            &node_id,
+            build_direct_tunnel_request_meta(plan, &headers, transport_controls),
+            Bytes::from(body_bytes),
+        )
+        .await
+        .map_err(ExecutionRuntimeTransportError::RelayError)?;
+    let ttfb_ms = started_at.elapsed().as_millis() as u64;
+    let status_code = response.status();
+    let headers = collect_tunnel_response_headers(response.headers());
+    let mut body_bytes = Vec::new();
+    while let Some(chunk) = response
+        .next_chunk()
+        .await
+        .map_err(ExecutionRuntimeTransportError::UpstreamRequest)?
+    {
+        body_bytes.extend_from_slice(&chunk);
+    }
+    let decoded_body_bytes =
+        decode_response_body_bytes(&headers, &body_bytes).unwrap_or_else(|| body_bytes.clone());
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let upstream_bytes = body_bytes.len() as u64;
+
+    let body = if body_bytes.is_empty() {
+        None
+    } else if plan.stream {
+        Some(ResponseBody {
+            json_body: None,
+            body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
+        })
+    } else if response_body_is_json(&headers, &decoded_body_bytes) {
+        let body_json: Value = serde_json::from_slice(&decoded_body_bytes)
+            .map_err(ExecutionRuntimeTransportError::InvalidJson)?;
+        Some(ResponseBody {
+            json_body: Some(body_json),
+            body_bytes_b64: None,
+        })
+    } else {
+        Some(ResponseBody {
+            json_body: None,
+            body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
+        })
+    };
+
+    Ok(ExecutionResult {
+        request_id: plan.request_id.clone(),
+        candidate_id: plan.candidate_id.clone(),
+        status_code,
+        headers,
+        body,
+        telemetry: Some(ExecutionTelemetry {
+            ttfb_ms: Some(ttfb_ms),
+            elapsed_ms: Some(elapsed_ms),
+            upstream_bytes: Some(upstream_bytes),
+        }),
+        error: None,
+    })
+}
+
+fn build_direct_tunnel_request_meta(
+    plan: &ExecutionPlan,
+    headers: &HeaderMap,
+    transport_controls: ExecutionTransportControls,
+) -> tunnel_protocol::RequestMeta {
+    tunnel_protocol::RequestMeta {
+        method: plan.method.clone(),
+        url: plan.url.clone(),
+        headers: header_map_to_string_map(headers).into_iter().collect(),
+        timeout: resolve_relay_timeout_seconds(plan),
+        follow_redirects: transport_controls.follow_redirects,
+        http1_only: transport_controls.http1_only,
+    }
 }
 
 async fn send_request(
@@ -526,6 +678,11 @@ fn resolve_tunnel_node_id(proxy: Option<&ProxySnapshot>) -> Option<String> {
     None
 }
 
+fn resolve_local_tunnel_node_id(state: &AppState, proxy: Option<&ProxySnapshot>) -> Option<String> {
+    let node_id = resolve_tunnel_node_id(proxy)?;
+    state.tunnel.has_local_proxy(&node_id).then_some(node_id)
+}
+
 fn build_client(
     timeouts: Option<&aether_contracts::ExecutionTimeouts>,
     proxy: Option<&ProxySnapshot>,
@@ -739,6 +896,13 @@ fn collect_response_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
     header_map_to_string_map(headers)
 }
 
+fn collect_tunnel_response_headers(headers: &[(String, String)]) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
+        .collect()
+}
+
 fn decode_response_body_bytes(
     headers: &BTreeMap<String, String>,
     body_bytes: &[u8],
@@ -782,22 +946,29 @@ fn response_body_is_json(headers: &BTreeMap<String, String>, body_bytes: &[u8]) 
 mod tests {
     use std::collections::BTreeMap;
     use std::io::Read;
+    use std::sync::Arc;
 
     use aether_contracts::{
         ExecutionPlan, ExecutionTimeouts, RequestBody, EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER,
         EXECUTION_REQUEST_HTTP1_ONLY_HEADER,
     };
     use axum::body::Bytes;
+    use axum::extract::ws::Message;
     use axum::extract::Path;
     use axum::routing::post;
     use axum::{Json, Router};
     use serde_json::json;
+    use tokio::sync::watch;
 
-    use super::{build_client, DirectSyncExecutionRuntime, ExecutionTransportControls};
+    use super::{
+        build_client, execute_sync_plan, DirectSyncExecutionRuntime, ExecutionTransportControls,
+    };
     use crate::frontdoor_loop_guard::{
         frontdoor_self_loop_public_ai_path, gateway_frontdoor_self_loop_guard_error_with_port,
         gateway_frontdoor_self_loop_guard_matches_with_port,
     };
+    use crate::tunnel::{tunnel_protocol, TunnelProxyConn};
+    use crate::AppState;
 
     #[test]
     fn gateway_frontdoor_self_loop_guard_matches_loopback_public_ai_route() {
@@ -1015,6 +1186,134 @@ mod tests {
         assert_eq!(
             result.body.and_then(|body| body.json_body),
             Some(json!({"tunnel": true, "node_id": "node-1"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_sync_plan_prefers_local_tunnel_stream_over_http_relay_loopback() {
+        let state = AppState::new().expect("app state should build");
+        let tunnel_app = state.tunnel.app_state();
+        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        tunnel_app.hub.register_proxy(Arc::new(TunnelProxyConn::new(
+            701,
+            "node-1".to_string(),
+            "Node 1".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+        )));
+
+        let plan = ExecutionPlan {
+            request_id: "req-local-tunnel-1".into(),
+            candidate_id: Some("cand-local-tunnel-1".into()),
+            provider_name: Some("openai".into()),
+            provider_id: "prov-1".into(),
+            endpoint_id: "ep-1".into(),
+            key_id: "key-1".into(),
+            method: "POST".into(),
+            url: "https://example.com/chat".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"model": "gpt-4.1"})),
+            stream: false,
+            client_api_format: "openai:chat".into(),
+            provider_api_format: "openai:chat".into(),
+            model_name: Some("gpt-4.1".into()),
+            proxy: Some(tunnel_proxy_snapshot("http://127.0.0.1:1".to_string())),
+            tls_profile: None,
+            timeouts: Some(ExecutionTimeouts {
+                connect_ms: Some(5_000),
+                total_ms: Some(5_000),
+                ..ExecutionTimeouts::default()
+            }),
+        };
+
+        let state_for_task = state.clone();
+        let plan_for_task = plan.clone();
+        let execution_task = tokio::spawn(async move {
+            execute_sync_plan(&state_for_task, Some("trace-local-tunnel"), &plan_for_task).await
+        });
+
+        let request_headers = match proxy_rx.recv().await.expect("headers frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_header = tunnel_protocol::FrameHeader::parse(&request_headers)
+            .expect("request header frame should parse");
+        assert_eq!(request_header.msg_type, tunnel_protocol::REQUEST_HEADERS);
+        let request_meta_payload =
+            tunnel_protocol::decode_payload(&request_headers, &request_header)
+                .expect("request meta payload should decode");
+        let request_meta =
+            serde_json::from_slice::<tunnel_protocol::RequestMeta>(&request_meta_payload)
+                .expect("request meta should decode");
+        assert_eq!(request_meta.method, "POST");
+        assert_eq!(request_meta.url, "https://example.com/chat");
+
+        let request_body = match proxy_rx.recv().await.expect("body frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_body_header = tunnel_protocol::FrameHeader::parse(&request_body)
+            .expect("request body frame should parse");
+        assert_eq!(request_body_header.msg_type, tunnel_protocol::REQUEST_BODY);
+        let request_body_payload =
+            tunnel_protocol::decode_payload(&request_body, &request_body_header)
+                .expect("request body payload should decode");
+        let request_json = serde_json::from_slice::<serde_json::Value>(&request_body_payload)
+            .expect("request body should decode");
+        assert_eq!(request_json["model"], "gpt-4.1");
+
+        let response_meta = tunnel_protocol::ResponseMeta {
+            status: 200,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+        };
+        let response_payload =
+            serde_json::to_vec(&response_meta).expect("response meta should serialize");
+        let mut response_headers_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_HEADERS,
+            0,
+            &response_payload,
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(701, &mut response_headers_frame)
+            .await;
+
+        let mut response_body_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_BODY,
+            0,
+            br#"{"local_tunnel":true}"#,
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(701, &mut response_body_frame)
+            .await;
+
+        let mut response_end_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::STREAM_END,
+            0,
+            &[],
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(701, &mut response_end_frame)
+            .await;
+
+        let result = execution_task
+            .await
+            .expect("execution task should complete")
+            .expect("local tunnel execution should succeed");
+
+        assert_eq!(result.status_code, 200);
+        assert_eq!(
+            result.body.and_then(|body| body.json_body),
+            Some(json!({"local_tunnel": true}))
         );
     }
 

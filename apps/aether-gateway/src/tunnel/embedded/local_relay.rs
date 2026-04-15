@@ -11,9 +11,11 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
 use bytes::BytesMut;
 use futures_util::StreamExt;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::api::response::apply_streaming_response_headers;
+use crate::headers::should_skip_response_header;
 use crate::maintenance::record_proxy_upgrade_traffic_success;
 
 use super::hub::{LocalBodyEvent, LocalStream};
@@ -35,6 +37,114 @@ impl Drop for StreamGuard {
             self.hub
                 .cancel_local_stream(self.stream_id, "local relay client dropped");
         }
+    }
+}
+
+pub(crate) struct DirectRelayResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body_rx: mpsc::Receiver<LocalBodyEvent>,
+    request_guard: StreamGuard,
+    _request_permit: Option<AdmissionPermit>,
+}
+
+impl DirectRelayResponse {
+    pub(crate) fn status(&self) -> u16 {
+        self.status
+    }
+
+    pub(crate) fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
+
+    pub(crate) async fn next_chunk(&mut self) -> Result<Option<Bytes>, String> {
+        let event = self.body_rx.recv().await;
+        match event {
+            Some(LocalBodyEvent::Chunk(chunk)) => Ok(Some(chunk)),
+            Some(LocalBodyEvent::End) | None => {
+                self.request_guard.finished = true;
+                Ok(None)
+            }
+            Some(LocalBodyEvent::Error(error)) => {
+                self.request_guard.finished = true;
+                Err(error)
+            }
+        }
+    }
+}
+
+pub(crate) async fn open_direct_relay_stream(
+    state: &AppState,
+    node_id: &str,
+    meta: protocol::RequestMeta,
+    body: Bytes,
+) -> Result<DirectRelayResponse, String> {
+    let request_permit = state
+        .try_acquire_request_permit()
+        .await
+        .map_err(map_request_admission_error)?;
+    let stream = state
+        .hub
+        .open_local_stream(node_id, &meta)
+        .map_err(|error| format!("connect: {error}"))?;
+    if let Err(error) = state.hub.push_local_request_body(stream.id, body, true) {
+        state.hub.cancel_local_stream(stream.id, &error);
+        return Err(format!("connect: {error}"));
+    }
+
+    let wait_timeout = Duration::from_secs(meta.timeout.clamp(5, 300));
+    let response_head = match stream.wait_headers(wait_timeout).await {
+        Ok(response) => response,
+        Err(error) => {
+            state.hub.cancel_local_stream(stream.id, &error);
+            return Err(format!("timeout: {error}"));
+        }
+    };
+    if let Err(error) = record_proxy_upgrade_traffic_success(state.data.as_ref(), node_id).await {
+        warn!(
+            node_id = %node_id,
+            error = %error,
+            "failed to record proxy upgrade traffic confirmation"
+        );
+    }
+
+    let Some(body_rx) = stream.take_body_receiver() else {
+        state
+            .hub
+            .cancel_local_stream(stream.id, "missing relay response body receiver");
+        return Err("relay: missing relay response body receiver".to_string());
+    };
+
+    Ok(DirectRelayResponse {
+        status: response_head.status,
+        headers: response_head.headers,
+        body_rx,
+        request_guard: StreamGuard {
+            hub: state.hub.clone(),
+            stream_id: stream.id,
+            finished: false,
+        },
+        _request_permit: request_permit,
+    })
+}
+
+fn map_request_admission_error(error: super::RequestAdmissionError) -> String {
+    match error {
+        super::RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Saturated {
+            ..
+        })
+        | super::RequestAdmissionError::Distributed(
+            aether_runtime::DistributedConcurrencyError::Saturated { .. },
+        )
+        | super::RequestAdmissionError::Distributed(
+            aether_runtime::DistributedConcurrencyError::Unavailable { .. },
+        ) => "overloaded: hub relay overloaded".to_string(),
+        super::RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Closed {
+            ..
+        }) => "overloaded: hub relay gate closed".to_string(),
+        super::RequestAdmissionError::Distributed(
+            aether_runtime::DistributedConcurrencyError::InvalidConfiguration(_),
+        ) => "overloaded: hub relay distributed gate invalid".to_string(),
     }
 }
 
@@ -319,6 +429,9 @@ fn try_decode_envelope_meta(
 
 fn append_headers(target: &mut HeaderMap, headers: &[(String, String)]) {
     for (name, value) in headers {
+        if should_skip_local_relay_response_header(name) {
+            continue;
+        }
         let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
             continue;
         };
@@ -327,6 +440,10 @@ fn append_headers(target: &mut HeaderMap, headers: &[(String, String)]) {
         };
         target.append(name, value);
     }
+}
+
+fn should_skip_local_relay_response_header(name: &str) -> bool {
+    should_skip_response_header(name) || name.eq_ignore_ascii_case("content-length")
 }
 
 fn tunnel_error_response(status: StatusCode, kind: &str, message: &str) -> Response<Body> {
@@ -608,5 +725,113 @@ mod tests {
         assert_eq!(tracked_nodes.len(), 1);
         assert!(tracked_nodes[0]["version_confirmed_at_unix_secs"].is_u64());
         assert!(tracked_nodes[0]["traffic_confirmed_at_unix_secs"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn relay_strips_hop_by_hop_and_stale_length_headers_from_proxy_response() {
+        let state = test_app_state();
+        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        state.hub.register_proxy(Arc::new(ProxyConn::new(
+            501,
+            "node-123".to_string(),
+            "Node 123".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+        )));
+
+        let meta = protocol::RequestMeta {
+            method: "GET".to_string(),
+            url: "https://example.com/headers".to_string(),
+            headers: HashMap::new(),
+            timeout: 30,
+            follow_redirects: None,
+            http1_only: false,
+        };
+        let request = Request::builder()
+            .body(Body::from(encode_relay_envelope(&meta, &[])))
+            .expect("request should build");
+
+        let relay_state = state.clone();
+        let relay_task = tokio::spawn(async move {
+            relay_request(
+                Path("node-123".to_string()),
+                State(relay_state),
+                ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242))),
+                request,
+            )
+            .await
+            .into_response()
+        });
+
+        let request_headers = match proxy_rx.recv().await.expect("headers frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_header = protocol::FrameHeader::parse(&request_headers)
+            .expect("request header frame should parse");
+        assert_eq!(request_header.msg_type, protocol::REQUEST_HEADERS);
+
+        let request_body = match proxy_rx.recv().await.expect("body frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_body_header =
+            protocol::FrameHeader::parse(&request_body).expect("request body frame should parse");
+        assert_eq!(request_body_header.msg_type, protocol::REQUEST_BODY);
+
+        let response_meta = protocol::ResponseMeta {
+            status: 200,
+            headers: vec![
+                ("content-length".to_string(), "999".to_string()),
+                ("transfer-encoding".to_string(), "chunked".to_string()),
+                ("connection".to_string(), "keep-alive".to_string()),
+                ("content-type".to_string(), "text/plain".to_string()),
+                (
+                    "x-proxy-timing".to_string(),
+                    "{\"mode\":\"tunnel\"}".to_string(),
+                ),
+            ],
+        };
+        let response_payload =
+            serde_json::to_vec(&response_meta).expect("response meta should serialize");
+        let mut response_headers_frame = protocol::encode_frame(
+            request_header.stream_id,
+            protocol::RESPONSE_HEADERS,
+            0,
+            &response_payload,
+        );
+        state
+            .hub
+            .handle_proxy_frame(501, &mut response_headers_frame)
+            .await;
+
+        let mut response_end_frame =
+            protocol::encode_frame(request_header.stream_id, protocol::STREAM_END, 0, &[]);
+        state
+            .hub
+            .handle_proxy_frame(501, &mut response_end_frame)
+            .await;
+
+        let response = relay_task.await.expect("relay task should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("content-length").is_none());
+        assert!(response.headers().get("transfer-encoding").is_none());
+        assert!(response.headers().get("connection").is_none());
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-proxy-timing")
+                .and_then(|value| value.to_str().ok()),
+            Some("{\"mode\":\"tunnel\"}")
+        );
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Error as IoError;
 
 use aether_contracts::{ExecutionPlan, ExecutionTelemetry, StreamFrame, StreamFramePayload};
@@ -49,7 +49,8 @@ use crate::execution_runtime::submission::{
     resolve_core_error_background_report_kind, submit_local_core_error_or_sync_finalize,
 };
 use crate::execution_runtime::transport::{
-    DirectSyncExecutionRuntime, DirectUpstreamStreamExecution,
+    execute_stream_plan_via_local_tunnel, DirectSyncExecutionRuntime,
+    DirectUpstreamStreamExecution, ExecutionRuntimeTransportError,
 };
 use crate::execution_runtime::{
     local_failover_response_text, resolve_core_stream_direct_finalize_report_kind,
@@ -94,6 +95,19 @@ fn record_stream_terminal_usage(
         &payload_seed,
         cancelled,
     );
+}
+
+async fn execute_in_process_stream(
+    state: &AppState,
+    plan: &ExecutionPlan,
+) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
+    if let Some(execution) = execute_stream_plan_via_local_tunnel(state, plan).await? {
+        return Ok(execution);
+    }
+
+    DirectSyncExecutionRuntime::new()
+        .execute_stream(plan.clone())
+        .await
 }
 
 #[allow(clippy::too_many_arguments)] // internal function, grouping would add unnecessary indirection
@@ -145,10 +159,7 @@ pub(crate) async fn execute_execution_runtime_stream(
         .unwrap_or_else(|| "-".to_string());
     #[cfg(not(test))]
     {
-        let execution = match DirectSyncExecutionRuntime::new()
-            .execute_stream(plan.clone())
-            .await
-        {
+        let execution = match execute_in_process_stream(state, &plan).await {
             Ok(execution) => execution,
             Err(err) => {
                 info!(
@@ -204,10 +215,7 @@ pub(crate) async fn execute_execution_runtime_stream(
             .execution_runtime_override_base_url()
             .unwrap_or_default();
         if remote_execution_runtime_base_url.trim().is_empty() {
-            let execution = match DirectSyncExecutionRuntime::new()
-                .execute_stream(plan.clone())
-                .await
-            {
+            let execution = match execute_in_process_stream(state, &plan).await {
                 Ok(execution) => execution,
                 Err(err) => {
                     info!(
@@ -353,6 +361,28 @@ fn decode_stream_data_chunk(
             .map_err(|err| GatewayError::Internal(err.to_string()));
     }
     Ok(text.unwrap_or_default().as_bytes().to_vec())
+}
+
+fn response_headers_indicate_sse(headers: &BTreeMap<String, String>) -> bool {
+    headers
+        .get("content-type")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+}
+
+fn encode_terminal_sse_error_event(failure: &StreamFailureReport) -> Result<Bytes, std::io::Error> {
+    let payload =
+        serde_json::to_string(&failure.body_json).map_err(|err| IoError::other(err.to_string()))?;
+    let mut event = String::from("event: aether.error\n");
+    for line in payload.lines() {
+        event.push_str("data: ");
+        event.push_str(line);
+        event.push('\n');
+    }
+    event.push('\n');
+    Ok(Bytes::from(event))
 }
 
 async fn next_stream_frame<R>(
@@ -1024,6 +1054,8 @@ async fn execute_stream_from_frame_stream(
     let request_id_for_report = request_id.to_string();
     let request_id_for_report_log = short_request_id(request_id);
     let candidate_id_for_report = candidate_id.map(ToOwned::to_owned);
+    let emit_passthrough_sse_terminal_error =
+        skip_direct_finalize_prefetch && response_headers_indicate_sse(&headers);
     tokio::spawn(async move {
         const MAX_STREAM_BODY_BUFFER_BYTES: usize = 256 * 1024; // 256KB
 
@@ -1330,6 +1362,43 @@ async fn execute_stream_from_frame_stream(
             }
         }
 
+        if !downstream_dropped && emit_passthrough_sse_terminal_error {
+            if let Some(failure) = terminal_failure.as_ref() {
+                match encode_terminal_sse_error_event(failure) {
+                    Ok(error_event) => {
+                        buffered_body.extend(error_event.iter().copied());
+                        if buffered_body.len() > MAX_STREAM_BODY_BUFFER_BYTES {
+                            let tail_start = buffered_body.len() - MAX_STREAM_BODY_BUFFER_BYTES;
+                            buffered_body.drain(..tail_start);
+                            client_body_truncated = true;
+                        }
+                        if tx.send(Ok(error_event)).await.is_err() {
+                            warn!(
+                                event_name = "stream_execution_downstream_terminal_error_disconnected",
+                                log_type = "ops",
+                                trace_id = %trace_id_owned,
+                                request_id = %request_id_for_report_log,
+                                candidate_id = ?candidate_id_for_report.as_deref(),
+                                "gateway stream downstream dropped while sending terminal SSE error event"
+                            );
+                            downstream_dropped = true;
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            event_name = "stream_execution_terminal_error_event_encode_failed",
+                            log_type = "ops",
+                            trace_id = %trace_id_owned,
+                            request_id = %request_id_for_report_log,
+                            candidate_id = ?candidate_id_for_report.as_deref(),
+                            error = ?err,
+                            "gateway failed to encode terminal SSE error event"
+                        );
+                    }
+                }
+            }
+        }
+
         drop(tx);
 
         if downstream_dropped {
@@ -1500,7 +1569,41 @@ async fn execute_stream_from_frame_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::should_skip_direct_finalize_prefetch;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use aether_contracts::{ExecutionPlan, ExecutionTimeouts, RequestBody};
+    use axum::body::to_bytes;
+    use axum::extract::ws::Message;
+    use serde_json::{json, Value};
+    use tokio::sync::watch;
+
+    use super::{execute_execution_runtime_stream, should_skip_direct_finalize_prefetch};
+    use crate::control::GatewayControlDecision;
+    use crate::tunnel::{tunnel_protocol, TunnelProxyConn};
+    use crate::AppState;
+
+    fn test_decision() -> GatewayControlDecision {
+        GatewayControlDecision::synthetic(
+            "/v1/chat/completions",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("chat".to_string()),
+            Some("openai:chat".to_string()),
+        )
+        .with_execution_runtime_candidate(true)
+    }
+
+    fn tunnel_proxy_snapshot(base_url: String) -> aether_contracts::ProxySnapshot {
+        aether_contracts::ProxySnapshot {
+            enabled: Some(true),
+            mode: Some("tunnel".into()),
+            node_id: Some("node-1".into()),
+            label: Some("relay-node".into()),
+            url: None,
+            extra: Some(json!({"tunnel_base_url": base_url})),
+        }
+    }
 
     #[test]
     fn skips_prefetch_for_same_format_passthrough_event_streams() {
@@ -1548,5 +1651,278 @@ mod tests {
             false,
             true,
         ));
+    }
+
+    #[tokio::test]
+    async fn execute_execution_runtime_stream_returns_client_error_with_local_tunnel_message_before_first_data(
+    ) {
+        let state = AppState::new().expect("app state should build");
+        let tunnel_app = state.tunnel.app_state();
+        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        tunnel_app.hub.register_proxy(Arc::new(TunnelProxyConn::new(
+            901,
+            "node-1".to_string(),
+            "Node 1".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+        )));
+
+        let plan = ExecutionPlan {
+            request_id: "req-client-stream-error-1".into(),
+            candidate_id: Some("cand-client-stream-error-1".into()),
+            provider_name: Some("openai".into()),
+            provider_id: "prov-1".into(),
+            endpoint_id: "ep-1".into(),
+            key_id: "key-1".into(),
+            method: "POST".into(),
+            url: "https://example.com/chat".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"stream": true})),
+            stream: true,
+            client_api_format: "openai:chat".into(),
+            provider_api_format: "openai:chat".into(),
+            model_name: Some("gpt-5".into()),
+            proxy: Some(tunnel_proxy_snapshot("http://127.0.0.1:1".to_string())),
+            tls_profile: None,
+            timeouts: Some(ExecutionTimeouts {
+                connect_ms: Some(5_000),
+                total_ms: Some(5_000),
+                ..ExecutionTimeouts::default()
+            }),
+        };
+        let decision = test_decision();
+
+        let state_for_task = state.clone();
+        let plan_for_task = plan.clone();
+        let decision_for_task = decision.clone();
+        let execution_task = tokio::spawn(async move {
+            execute_execution_runtime_stream(
+                &state_for_task,
+                plan_for_task,
+                "trace-local-stream-client-error",
+                &decision_for_task,
+                "openai_chat_stream",
+                None,
+                Some(json!({
+                    "client_api_format": "openai:chat",
+                    "provider_api_format": "openai:chat",
+                })),
+            )
+            .await
+        });
+
+        let request_headers = match proxy_rx.recv().await.expect("headers frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_header = tunnel_protocol::FrameHeader::parse(&request_headers)
+            .expect("request header frame should parse");
+        assert_eq!(request_header.msg_type, tunnel_protocol::REQUEST_HEADERS);
+
+        let request_body = match proxy_rx.recv().await.expect("body frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_body_header = tunnel_protocol::FrameHeader::parse(&request_body)
+            .expect("request body frame should parse");
+        assert_eq!(request_body_header.msg_type, tunnel_protocol::REQUEST_BODY);
+
+        let response_meta = tunnel_protocol::ResponseMeta {
+            status: 200,
+            // Use a non-SSE content type so direct finalize prefetch stays enabled and the
+            // pre-body tunnel error is surfaced as a client-visible structured error response.
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+        };
+        let response_payload =
+            serde_json::to_vec(&response_meta).expect("response meta should serialize");
+        let mut response_headers_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_HEADERS,
+            0,
+            &response_payload,
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(901, &mut response_headers_frame)
+            .await;
+
+        let original_error = "proxy disconnected before first upstream event";
+        let mut response_error_frame =
+            tunnel_protocol::encode_stream_error(request_header.stream_id, original_error);
+        tunnel_app
+            .hub
+            .handle_proxy_frame(901, &mut response_error_frame)
+            .await;
+
+        let response = execution_task
+            .await
+            .expect("execution task should complete")
+            .expect("execution should succeed")
+            .expect("execution should return a client response");
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let body_json: Value =
+            serde_json::from_slice(&body).expect("response body should decode as json");
+
+        let error_message = body_json
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .expect("response body should contain error.message");
+
+        assert_eq!(error_message, original_error);
+        assert!(
+            !error_message.contains("unexpected EOF during chunk size line"),
+            "client-facing response should preserve the original local tunnel error"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_execution_runtime_stream_emits_terminal_sse_error_event_after_body_started() {
+        let state = AppState::new().expect("app state should build");
+        let tunnel_app = state.tunnel.app_state();
+        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        tunnel_app.hub.register_proxy(Arc::new(TunnelProxyConn::new(
+            902,
+            "node-1".to_string(),
+            "Node 1".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+        )));
+
+        let plan = ExecutionPlan {
+            request_id: "req-client-stream-sse-error-1".into(),
+            candidate_id: Some("cand-client-stream-sse-error-1".into()),
+            provider_name: Some("openai".into()),
+            provider_id: "prov-1".into(),
+            endpoint_id: "ep-1".into(),
+            key_id: "key-1".into(),
+            method: "POST".into(),
+            url: "https://example.com/chat".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"stream": true})),
+            stream: true,
+            client_api_format: "openai:chat".into(),
+            provider_api_format: "openai:chat".into(),
+            model_name: Some("gpt-5".into()),
+            proxy: Some(tunnel_proxy_snapshot("http://127.0.0.1:1".to_string())),
+            tls_profile: None,
+            timeouts: Some(ExecutionTimeouts {
+                connect_ms: Some(5_000),
+                total_ms: Some(5_000),
+                ..ExecutionTimeouts::default()
+            }),
+        };
+        let decision = test_decision();
+
+        let state_for_task = state.clone();
+        let plan_for_task = plan.clone();
+        let decision_for_task = decision.clone();
+        let execution_task = tokio::spawn(async move {
+            execute_execution_runtime_stream(
+                &state_for_task,
+                plan_for_task,
+                "trace-local-stream-sse-error",
+                &decision_for_task,
+                "openai_chat_stream",
+                None,
+                Some(json!({
+                    "client_api_format": "openai:chat",
+                    "provider_api_format": "openai:chat",
+                })),
+            )
+            .await
+        });
+
+        let request_headers = match proxy_rx.recv().await.expect("headers frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_header = tunnel_protocol::FrameHeader::parse(&request_headers)
+            .expect("request header frame should parse");
+        assert_eq!(request_header.msg_type, tunnel_protocol::REQUEST_HEADERS);
+
+        let request_body = match proxy_rx.recv().await.expect("body frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_body_header = tunnel_protocol::FrameHeader::parse(&request_body)
+            .expect("request body frame should parse");
+        assert_eq!(request_body_header.msg_type, tunnel_protocol::REQUEST_BODY);
+
+        let response_meta = tunnel_protocol::ResponseMeta {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
+        };
+        let response_payload =
+            serde_json::to_vec(&response_meta).expect("response meta should serialize");
+        let mut response_headers_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_HEADERS,
+            0,
+            &response_payload,
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(902, &mut response_headers_frame)
+            .await;
+
+        let mut response_body_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_BODY,
+            0,
+            b"data: hello\n\n",
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(902, &mut response_body_frame)
+            .await;
+
+        let response = execution_task
+            .await
+            .expect("execution task should complete")
+            .expect("execution should succeed")
+            .expect("execution should return a client response");
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        let body_task = tokio::spawn(async move {
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body should read");
+            String::from_utf8(body.to_vec()).expect("response body should be utf8")
+        });
+
+        let original_error = "proxy disconnected while forwarding upstream body";
+        let mut response_error_frame =
+            tunnel_protocol::encode_stream_error(request_header.stream_id, original_error);
+        tunnel_app
+            .hub
+            .handle_proxy_frame(902, &mut response_error_frame)
+            .await;
+
+        let body = body_task.await.expect("body task should complete");
+        assert!(body.contains("data: hello\n\n"));
+        assert!(body.contains("event: aether.error\n"));
+        assert!(body.contains(original_error));
+        assert!(
+            !body.contains("unexpected EOF during chunk size line"),
+            "same-format SSE path should surface the original terminal error event"
+        );
     }
 }

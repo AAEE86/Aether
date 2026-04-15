@@ -33,6 +33,7 @@ use super::error::GatewayError;
 use super::headers::{extract_or_generate_trace_id, should_skip_request_header};
 use super::AppState;
 
+pub(crate) use embedded::DirectRelayResponse;
 pub(crate) use embedded::ProxyConn as TunnelProxyConn;
 pub use embedded::{
     build_router_with_state as build_tunnel_runtime_router_with_state, protocol as tunnel_protocol,
@@ -432,6 +433,15 @@ impl EmbeddedTunnelState {
 
     pub(crate) fn has_local_proxy(&self, node_id: &str) -> bool {
         self.inner.hub.has_local_proxy(node_id)
+    }
+
+    pub(crate) async fn open_direct_relay_stream(
+        &self,
+        node_id: &str,
+        meta: tunnel_protocol::RequestMeta,
+        body: Bytes,
+    ) -> Result<DirectRelayResponse, String> {
+        embedded::open_direct_relay_stream(&self.inner, node_id, meta, body).await
     }
 
     pub(crate) fn request_close_all_proxies(&self) -> usize {

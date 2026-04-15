@@ -24,6 +24,7 @@ use crate::data::GatewayDataState;
 pub use control_plane::ControlPlaneClient;
 pub use hub::{ConnConfig, HubRouter, LocalBodyEvent, ProxyConn};
 pub use local_relay::relay_request;
+pub(crate) use local_relay::{open_direct_relay_stream, DirectRelayResponse};
 
 #[derive(Clone)]
 pub struct AppState {

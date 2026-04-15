@@ -11,6 +11,7 @@ use futures_util::{Stream, StreamExt};
 use tracing::warn;
 
 use crate::execution_runtime::ndjson::encode_stream_frame_ndjson;
+use crate::execution_runtime::transport::DirectUpstreamResponse;
 use crate::execution_runtime::DirectUpstreamStreamExecution;
 
 pub(crate) fn build_direct_execution_frame_stream(
@@ -26,14 +27,7 @@ pub(crate) fn build_direct_execution_frame_stream(
             started_at,
         } = execution;
 
-        let headers_frame = StreamFrame {
-            frame_type: StreamFrameType::Headers,
-            payload: StreamFramePayload::Headers {
-                status_code,
-                headers,
-            },
-        };
-        match encode_stream_frame_ndjson(&headers_frame) {
+        match encode_headers_frame(status_code, headers) {
             Ok(frame) => yield Ok(frame),
             Err(err) => {
                 yield Err(err);
@@ -44,95 +38,109 @@ pub(crate) fn build_direct_execution_frame_stream(
         let mut upstream_bytes = 0u64;
         let mut ttfb_ms = None;
         let mut first_chunk_telemetry_emitted = false;
-        let mut bytes_stream = response.bytes_stream();
-        while let Some(item) = bytes_stream.next().await {
-            match item {
-                Ok(chunk) => {
-                    if ttfb_ms.is_none() {
-                        ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+        match response {
+            DirectUpstreamResponse::Reqwest(response) => {
+                let mut bytes_stream = response.bytes_stream();
+                while let Some(item) = bytes_stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if ttfb_ms.is_none() {
+                                ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+                            }
+                            if !first_chunk_telemetry_emitted {
+                                match encode_telemetry_frame(ttfb_ms, ttfb_ms, upstream_bytes) {
+                                    Ok(frame) => yield Ok(frame),
+                                    Err(err) => {
+                                        yield Err(err);
+                                        return;
+                                    }
+                                }
+                                first_chunk_telemetry_emitted = true;
+                            }
+                            upstream_bytes += chunk.len() as u64;
+                            match encode_data_frame(&chunk) {
+                                Ok(frame) => yield Ok(frame),
+                                Err(err) => {
+                                    yield Err(err);
+                                    return;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            let message = format_error_chain(&err);
+                            warn!(
+                                event_name = "stream_pump_body_read_error",
+                                log_type = "ops",
+                                status_code,
+                                upstream_bytes,
+                                error = %message,
+                                "upstream body stream read error"
+                            );
+                            match encode_error_frame(status_code, message) {
+                                Ok(frame) => yield Ok(frame),
+                                Err(encode_err) => {
+                                    yield Err(encode_err);
+                                    return;
+                                }
+                            }
+                            break;
+                        }
                     }
-                    if !first_chunk_telemetry_emitted {
-                        let telemetry_frame = StreamFrame {
-                            frame_type: StreamFrameType::Telemetry,
-                            payload: StreamFramePayload::Telemetry {
-                                telemetry: ExecutionTelemetry {
-                                    ttfb_ms,
-                                    elapsed_ms: ttfb_ms,
-                                    upstream_bytes: Some(upstream_bytes),
-                                },
-                            },
-                        };
-                        match encode_stream_frame_ndjson(&telemetry_frame) {
+                }
+            }
+            DirectUpstreamResponse::LocalTunnel(mut response) => loop {
+                match response.next_chunk().await {
+                    Ok(Some(chunk)) => {
+                        if ttfb_ms.is_none() {
+                            ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+                        }
+                        if !first_chunk_telemetry_emitted {
+                            match encode_telemetry_frame(ttfb_ms, ttfb_ms, upstream_bytes) {
+                                Ok(frame) => yield Ok(frame),
+                                Err(err) => {
+                                    yield Err(err);
+                                    return;
+                                }
+                            }
+                            first_chunk_telemetry_emitted = true;
+                        }
+                        upstream_bytes += chunk.len() as u64;
+                        match encode_data_frame(&chunk) {
                             Ok(frame) => yield Ok(frame),
                             Err(err) => {
                                 yield Err(err);
                                 return;
                             }
                         }
-                        first_chunk_telemetry_emitted = true;
                     }
-                    upstream_bytes += chunk.len() as u64;
-                    let frame = StreamFrame {
-                        frame_type: StreamFrameType::Data,
-                        payload: StreamFramePayload::Data {
-                            chunk_b64: Some(base64::engine::general_purpose::STANDARD.encode(&chunk)),
-                            text: None,
-                        },
-                    };
-                    match encode_stream_frame_ndjson(&frame) {
-                        Ok(frame) => yield Ok(frame),
-                        Err(err) => {
-                            yield Err(err);
-                            return;
+                    Ok(None) => break,
+                    Err(message) => {
+                        warn!(
+                            event_name = "stream_pump_body_read_error",
+                            log_type = "ops",
+                            status_code,
+                            upstream_bytes,
+                            error = %message,
+                            "upstream body stream read error"
+                        );
+                        match encode_error_frame(status_code, message) {
+                            Ok(frame) => yield Ok(frame),
+                            Err(encode_err) => {
+                                yield Err(encode_err);
+                                return;
+                            }
                         }
+                        break;
                     }
-                }
-                Err(err) => {
-                    let message = format_error_chain(&err);
-                    warn!(
-                        event_name = "stream_pump_body_read_error",
-                        log_type = "ops",
-                        status_code,
-                        upstream_bytes,
-                        error = %message,
-                        "upstream body stream read error"
-                    );
-                    let frame = StreamFrame {
-                        frame_type: StreamFrameType::Error,
-                        payload: StreamFramePayload::Error {
-                            error: ExecutionError {
-                                kind: ExecutionErrorKind::Internal,
-                                phase: ExecutionPhase::StreamRead,
-                                message,
-                                upstream_status: Some(status_code),
-                                retryable: false,
-                                failover_recommended: false,
-                            },
-                        },
-                    };
-                    match encode_stream_frame_ndjson(&frame) {
-                        Ok(frame) => yield Ok(frame),
-                        Err(encode_err) => {
-                            yield Err(encode_err);
-                            return;
-                        }
-                    }
-                    break;
                 }
             }
         }
 
-        let telemetry_frame = StreamFrame {
-            frame_type: StreamFrameType::Telemetry,
-            payload: StreamFramePayload::Telemetry {
-                telemetry: ExecutionTelemetry {
-                    ttfb_ms,
-                    elapsed_ms: Some(started_at.elapsed().as_millis() as u64),
-                    upstream_bytes: Some(upstream_bytes),
-                },
-            },
-        };
-        match encode_stream_frame_ndjson(&telemetry_frame) {
+        match encode_telemetry_frame(
+            ttfb_ms,
+            Some(started_at.elapsed().as_millis() as u64),
+            upstream_bytes,
+        ) {
             Ok(frame) => yield Ok(frame),
             Err(err) => {
                 yield Err(err);
@@ -144,6 +152,62 @@ pub(crate) fn build_direct_execution_frame_stream(
             Err(err) => yield Err(err),
         }
     }
+}
+
+fn encode_headers_frame(
+    status_code: u16,
+    headers: std::collections::BTreeMap<String, String>,
+) -> Result<Bytes, IoError> {
+    encode_stream_frame_ndjson(&StreamFrame {
+        frame_type: StreamFrameType::Headers,
+        payload: StreamFramePayload::Headers {
+            status_code,
+            headers,
+        },
+    })
+}
+
+fn encode_telemetry_frame(
+    ttfb_ms: Option<u64>,
+    elapsed_ms: Option<u64>,
+    upstream_bytes: u64,
+) -> Result<Bytes, IoError> {
+    encode_stream_frame_ndjson(&StreamFrame {
+        frame_type: StreamFrameType::Telemetry,
+        payload: StreamFramePayload::Telemetry {
+            telemetry: ExecutionTelemetry {
+                ttfb_ms,
+                elapsed_ms,
+                upstream_bytes: Some(upstream_bytes),
+            },
+        },
+    })
+}
+
+fn encode_data_frame(chunk: &Bytes) -> Result<Bytes, IoError> {
+    encode_stream_frame_ndjson(&StreamFrame {
+        frame_type: StreamFrameType::Data,
+        payload: StreamFramePayload::Data {
+            chunk_b64: Some(base64::engine::general_purpose::STANDARD.encode(chunk)),
+            text: None,
+        },
+    })
+}
+
+fn encode_error_frame(status_code: u16, message: String) -> Result<Bytes, IoError> {
+    encode_stream_frame_ndjson(&StreamFrame {
+        frame_type: StreamFrameType::Error,
+        payload: StreamFramePayload::Error {
+            error: ExecutionError {
+                kind: ExecutionErrorKind::Internal,
+                phase: ExecutionPhase::StreamRead,
+                message,
+                upstream_status: Some(status_code),
+                retryable: false,
+                failover_recommended: false,
+            },
+        },
+    })
 }
 
 fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
@@ -161,18 +225,36 @@ fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 mod tests {
     use std::collections::BTreeMap;
     use std::convert::Infallible;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use aether_contracts::{ExecutionPlan, ExecutionTimeouts, RequestBody};
     use async_stream::stream;
     use axum::body::{Body, Bytes};
+    use axum::extract::ws::Message;
     use axum::routing::post;
     use axum::{http::header, http::HeaderValue, Router};
     use futures_util::StreamExt;
     use serde_json::Value;
+    use tokio::sync::watch;
 
     use super::build_direct_execution_frame_stream;
-    use crate::execution_runtime::transport::DirectSyncExecutionRuntime;
+    use crate::execution_runtime::transport::{
+        execute_stream_plan_via_local_tunnel, DirectSyncExecutionRuntime,
+    };
+    use crate::tunnel::{tunnel_protocol, TunnelProxyConn};
+    use crate::AppState;
+
+    fn tunnel_proxy_snapshot(base_url: String) -> aether_contracts::ProxySnapshot {
+        aether_contracts::ProxySnapshot {
+            enabled: Some(true),
+            mode: Some("tunnel".into()),
+            node_id: Some("node-1".into()),
+            label: Some("relay-node".into()),
+            url: None,
+            extra: Some(serde_json::json!({"tunnel_base_url": base_url})),
+        }
+    }
 
     #[tokio::test]
     async fn direct_execution_frame_stream_reports_ttfb_after_first_upstream_chunk() {
@@ -356,6 +438,150 @@ mod tests {
         assert!(
             first_telemetry_idx < first_data_idx,
             "first telemetry frame should be emitted before the first data frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_execution_frame_stream_preserves_local_tunnel_stream_error_message() {
+        let state = AppState::new().expect("app state should build");
+        let tunnel_app = state.tunnel.app_state();
+        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        tunnel_app.hub.register_proxy(Arc::new(TunnelProxyConn::new(
+            801,
+            "node-1".to_string(),
+            "Node 1".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+        )));
+
+        let plan = ExecutionPlan {
+            request_id: "req-local-stream-error-1".into(),
+            candidate_id: Some("cand-local-stream-error-1".into()),
+            provider_name: Some("openai".into()),
+            provider_id: "prov-1".into(),
+            endpoint_id: "ep-1".into(),
+            key_id: "key-1".into(),
+            method: "POST".into(),
+            url: "https://example.com/chat".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(serde_json::json!({"stream": true})),
+            stream: true,
+            client_api_format: "openai:chat".into(),
+            provider_api_format: "openai:chat".into(),
+            model_name: Some("gpt-5".into()),
+            proxy: Some(tunnel_proxy_snapshot("http://127.0.0.1:1".to_string())),
+            tls_profile: None,
+            timeouts: Some(ExecutionTimeouts {
+                connect_ms: Some(5_000),
+                total_ms: Some(5_000),
+                ..ExecutionTimeouts::default()
+            }),
+        };
+
+        let state_for_task = state.clone();
+        let plan_for_task = plan.clone();
+        let execution_task = tokio::spawn(async move {
+            execute_stream_plan_via_local_tunnel(&state_for_task, &plan_for_task).await
+        });
+
+        let request_headers = match proxy_rx.recv().await.expect("headers frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_header = tunnel_protocol::FrameHeader::parse(&request_headers)
+            .expect("request header frame should parse");
+        assert_eq!(request_header.msg_type, tunnel_protocol::REQUEST_HEADERS);
+
+        let request_body = match proxy_rx.recv().await.expect("body frame should arrive") {
+            Message::Binary(data) => data,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let request_body_header = tunnel_protocol::FrameHeader::parse(&request_body)
+            .expect("request body frame should parse");
+        assert_eq!(request_body_header.msg_type, tunnel_protocol::REQUEST_BODY);
+
+        let response_meta = tunnel_protocol::ResponseMeta {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
+        };
+        let response_payload =
+            serde_json::to_vec(&response_meta).expect("response meta should serialize");
+        let mut response_headers_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_HEADERS,
+            0,
+            &response_payload,
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(801, &mut response_headers_frame)
+            .await;
+
+        let execution = execution_task
+            .await
+            .expect("execution task should complete")
+            .expect("local tunnel execution should resolve")
+            .expect("local tunnel execution should be available");
+
+        let frame_task = tokio::spawn(async move {
+            build_direct_execution_frame_stream(execution)
+                .map(|item| item.expect("frame should encode"))
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(|bytes| String::from_utf8(bytes.to_vec()).expect("frame should be utf8"))
+                .collect::<Vec<_>>()
+        });
+
+        let mut response_body_frame = tunnel_protocol::encode_frame(
+            request_header.stream_id,
+            tunnel_protocol::RESPONSE_BODY,
+            0,
+            b"data: hello\n\n",
+        );
+        tunnel_app
+            .hub
+            .handle_proxy_frame(801, &mut response_body_frame)
+            .await;
+
+        let original_error = "proxy disconnected while forwarding upstream body";
+        let mut response_error_frame =
+            tunnel_protocol::encode_stream_error(request_header.stream_id, original_error);
+        tunnel_app
+            .hub
+            .handle_proxy_frame(801, &mut response_error_frame)
+            .await;
+
+        let frames = frame_task.await.expect("frame task should complete");
+        let parsed_frames = frames
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).expect("frame should parse"))
+            .collect::<Vec<_>>();
+
+        assert!(
+            parsed_frames
+                .iter()
+                .any(|frame| { frame.get("type").and_then(Value::as_str) == Some("data") }),
+            "stream should contain at least one data frame before the error"
+        );
+
+        let error_message = parsed_frames
+            .iter()
+            .find(|frame| frame.get("type").and_then(Value::as_str) == Some("error"))
+            .and_then(|frame| frame.get("payload"))
+            .and_then(|payload| payload.get("error"))
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .expect("error frame should include a message");
+
+        assert_eq!(error_message, original_error);
+        assert!(
+            !error_message.contains("unexpected EOF during chunk size line"),
+            "local tunnel path should preserve the original proxy error text"
         );
     }
 }
