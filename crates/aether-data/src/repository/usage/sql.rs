@@ -870,20 +870,26 @@ DO UPDATE SET
   total_cost_usd = CASE WHEN "usage".billing_status = 'pending' THEN COALESCE(EXCLUDED.total_cost_usd, "usage".total_cost_usd) ELSE "usage".total_cost_usd END,
   actual_total_cost_usd = CASE WHEN "usage".billing_status = 'pending' THEN COALESCE(EXCLUDED.actual_total_cost_usd, "usage".actual_total_cost_usd) ELSE "usage".actual_total_cost_usd END,
   status_code = CASE WHEN "usage".billing_status = 'pending' THEN CASE
+    WHEN "usage".status = 'streaming' AND EXCLUDED.status = 'pending' THEN "usage".status_code
     WHEN EXCLUDED.status IN ('pending', 'streaming', 'completed', 'cancelled') AND EXCLUDED.status_code IS NULL THEN NULL
     ELSE COALESCE(EXCLUDED.status_code, "usage".status_code)
   END ELSE "usage".status_code END,
   error_message = CASE WHEN "usage".billing_status = 'pending' THEN CASE
+    WHEN "usage".status = 'streaming' AND EXCLUDED.status = 'pending' THEN "usage".error_message
     WHEN EXCLUDED.status IN ('pending', 'streaming', 'completed', 'cancelled') THEN EXCLUDED.error_message
     ELSE COALESCE(EXCLUDED.error_message, "usage".error_message)
   END ELSE "usage".error_message END,
   error_category = CASE WHEN "usage".billing_status = 'pending' THEN CASE
+    WHEN "usage".status = 'streaming' AND EXCLUDED.status = 'pending' THEN "usage".error_category
     WHEN EXCLUDED.status IN ('pending', 'streaming', 'completed', 'cancelled') THEN EXCLUDED.error_category
     ELSE COALESCE(EXCLUDED.error_category, "usage".error_category)
   END ELSE "usage".error_category END,
   response_time_ms = CASE WHEN "usage".billing_status = 'pending' THEN COALESCE(EXCLUDED.response_time_ms, "usage".response_time_ms) ELSE "usage".response_time_ms END,
   first_byte_time_ms = CASE WHEN "usage".billing_status = 'pending' THEN COALESCE(EXCLUDED.first_byte_time_ms, "usage".first_byte_time_ms) ELSE "usage".first_byte_time_ms END,
-  status = CASE WHEN "usage".billing_status = 'pending' THEN EXCLUDED.status ELSE "usage".status END,
+  status = CASE WHEN "usage".billing_status = 'pending' THEN CASE
+    WHEN "usage".status = 'streaming' AND EXCLUDED.status = 'pending' THEN "usage".status
+    ELSE EXCLUDED.status
+  END ELSE "usage".status END,
   billing_status = CASE WHEN "usage".billing_status = 'pending' THEN EXCLUDED.billing_status ELSE "usage".billing_status END,
   request_headers = NULL,
   request_body = CASE WHEN "usage".billing_status = 'pending' THEN CASE
@@ -3210,6 +3216,19 @@ mod tests {
         ));
         assert!(super::UPSERT_SQL.contains(
             "WHEN EXCLUDED.status IN ('pending', 'streaming', 'completed', 'cancelled') THEN EXCLUDED.error_category"
+        ));
+    }
+
+    #[test]
+    fn usage_sql_does_not_allow_streaming_to_regress_back_to_pending() {
+        assert!(super::UPSERT_SQL.contains(
+            "WHEN \"usage\".status = 'streaming' AND EXCLUDED.status = 'pending' THEN \"usage\".status_code"
+        ));
+        assert!(super::UPSERT_SQL.contains(
+            "WHEN \"usage\".status = 'streaming' AND EXCLUDED.status = 'pending' THEN \"usage\".error_message"
+        ));
+        assert!(super::UPSERT_SQL.contains(
+            "WHEN \"usage\".status = 'streaming' AND EXCLUDED.status = 'pending' THEN \"usage\".status"
         ));
     }
 
