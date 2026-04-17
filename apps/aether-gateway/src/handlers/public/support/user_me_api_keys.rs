@@ -10,7 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::handlers::shared::{
-    api_key_placeholder_display, generate_gateway_api_key_plaintext, masked_gateway_api_key_display,
+    api_key_placeholder_display, generate_gateway_api_key_plaintext,
+    masked_gateway_api_key_display, normalize_optional_api_key_concurrent_limit,
 };
 
 use super::{
@@ -28,6 +29,8 @@ struct UsersMeCreateApiKeyRequest {
     name: String,
     #[serde(default)]
     rate_limit: Option<i32>,
+    #[serde(default)]
+    concurrent_limit: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +39,8 @@ struct UsersMeUpdateApiKeyRequest {
     name: Option<String>,
     #[serde(default)]
     rate_limit: Option<i32>,
+    #[serde(default)]
+    concurrent_limit: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +153,7 @@ fn build_users_me_api_key_list_payload(
         "total_requests": record.total_requests,
         "total_cost_usd": record.total_cost_usd,
         "rate_limit": record.rate_limit,
+        "concurrent_limit": record.concurrent_limit,
         "allowed_providers": record.allowed_providers,
         "force_capabilities": record.force_capabilities,
     })
@@ -167,6 +173,7 @@ fn build_users_me_api_key_detail_payload(
         "allowed_providers": record.allowed_providers,
         "force_capabilities": record.force_capabilities,
         "rate_limit": record.rate_limit,
+        "concurrent_limit": record.concurrent_limit,
         "last_used_at": serde_json::Value::Null,
         "expires_at": format_users_me_optional_unix_secs_iso8601(record.expires_at_unix_secs),
         "created_at": serde_json::Value::Null,
@@ -515,6 +522,13 @@ pub(super) async fn handle_users_me_api_key_create(
             false,
         );
     }
+    let concurrent_limit =
+        match normalize_optional_api_key_concurrent_limit(payload.concurrent_limit) {
+            Ok(value) => value,
+            Err(detail) => {
+                return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
+            }
+        };
 
     let plaintext_key = generate_users_me_api_key_plaintext();
     let Some(key_encrypted) = encrypt_catalog_secret_with_fallbacks(state, &plaintext_key) else {
@@ -534,7 +548,7 @@ pub(super) async fn handle_users_me_api_key_create(
         allowed_api_formats: None,
         allowed_models: None,
         rate_limit,
-        concurrent_limit: 5,
+        concurrent_limit,
         force_capabilities: None,
         is_active: true,
         expires_at_unix_secs: None,
@@ -561,6 +575,7 @@ pub(super) async fn handle_users_me_api_key_create(
         "key": plaintext_key,
         "key_display": users_me_masked_api_key_display(state, created.key_encrypted.as_deref()),
         "rate_limit": created.rate_limit,
+        "concurrent_limit": created.concurrent_limit,
         "message": "API密钥创建成功",
     }))
     .into_response()
@@ -621,6 +636,13 @@ pub(super) async fn handle_users_me_api_key_update(
             false,
         );
     }
+    let concurrent_limit =
+        match normalize_optional_api_key_concurrent_limit(payload.concurrent_limit) {
+            Ok(value) => value,
+            Err(detail) => {
+                return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
+            }
+        };
 
     let Some(updated) = (match state
         .update_user_api_key_basic(aether_data::repository::auth::UpdateUserApiKeyBasicRecord {
@@ -628,6 +650,7 @@ pub(super) async fn handle_users_me_api_key_update(
             api_key_id: snapshot.api_key_id.clone(),
             name,
             rate_limit,
+            concurrent_limit,
         })
         .await
     {

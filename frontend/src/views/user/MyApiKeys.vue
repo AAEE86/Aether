@@ -174,6 +174,12 @@
                   >
                     {{ formatRateLimitSimple(apiKey.rate_limit) }}
                   </Badge>
+                  <Badge
+                    variant="secondary"
+                    class="h-5 px-2 py-0 text-[10px] font-medium"
+                  >
+                    {{ formatConcurrentLimitSimple(apiKey.concurrent_limit) }}
+                  </Badge>
                 </div>
               </TableCell>
 
@@ -258,6 +264,12 @@
                   class="text-[10px] px-1.5 py-0"
                 >
                   {{ formatRateLimitSimple(apiKey.rate_limit) }}
+                </Badge>
+                <Badge
+                  variant="secondary"
+                  class="text-[10px] px-1.5 py-0"
+                >
+                  {{ formatConcurrentLimitSimple(apiKey.concurrent_limit) }}
                 </Badge>
               </div>
               <div class="flex items-center gap-0.5 flex-shrink-0">
@@ -355,7 +367,7 @@
                 {{ editingApiKey ? '编辑 API 密钥' : '创建 API 密钥' }}
               </h3>
               <p class="text-xs text-muted-foreground">
-                {{ editingApiKey ? '更新密钥名称和速率限制' : '创建一个新的密钥用于访问 API 服务' }}
+                {{ editingApiKey ? '更新密钥名称、速率限制和并发限制' : '创建一个新的密钥用于访问 API 服务' }}
               </p>
             </div>
           </div>
@@ -398,6 +410,26 @@
           />
           <p class="text-xs text-muted-foreground">
             留空不限
+          </p>
+        </div>
+
+        <div class="space-y-2">
+          <Label
+            for="key-concurrent-limit"
+            class="text-sm font-semibold"
+          >并发限制</Label>
+          <Input
+            id="key-concurrent-limit"
+            :model-value="newKeyConcurrentLimit ?? ''"
+            type="number"
+            min="0"
+            max="10000"
+            placeholder="0 = 不限并发"
+            class="h-11 border-border/60"
+            @update:model-value="(v) => newKeyConcurrentLimit = parseNumberInput(v, { min: 0, max: 10000 })"
+          />
+          <p class="text-xs text-muted-foreground">
+            {{ editingApiKey ? '留空表示保持当前值，填 0 表示不限并发' : '留空表示不限并发，填 0 也表示不限并发' }}
           </p>
         </div>
       </div>
@@ -542,6 +574,7 @@ const showDeleteDialog = ref(false)
 
 const newKeyName = ref('')
 const newKeyRateLimit = ref<number | undefined>(undefined)
+const newKeyConcurrentLimit = ref<number | undefined>(undefined)
 const newKeyValue = ref('')
 const keyToDelete = ref<ApiKey | null>(null)
 const editingApiKey = ref<ApiKey | null>(null)
@@ -573,6 +606,7 @@ function openEditApiKeyDialog(apiKey: ApiKey) {
   editingApiKey.value = apiKey
   newKeyName.value = apiKey.name || ''
   newKeyRateLimit.value = apiKey.rate_limit ?? undefined
+  newKeyConcurrentLimit.value = apiKey.concurrent_limit ?? undefined
   showCreateDialog.value = true
 }
 
@@ -580,6 +614,7 @@ function openCreateApiKeyDialog() {
   editingApiKey.value = null
   newKeyName.value = ''
   newKeyRateLimit.value = undefined
+  newKeyConcurrentLimit.value = undefined
   showCreateDialog.value = true
 }
 
@@ -588,6 +623,7 @@ function closeApiKeyDialog() {
   editingApiKey.value = null
   newKeyName.value = ''
   newKeyRateLimit.value = undefined
+  newKeyConcurrentLimit.value = undefined
 }
 
 async function saveApiKey() {
@@ -602,12 +638,14 @@ async function saveApiKey() {
       await meApi.updateApiKey(editingApiKey.value.id, {
         name: newKeyName.value,
         rate_limit: newKeyRateLimit.value ?? 0,
+        concurrent_limit: newKeyConcurrentLimit.value,
       })
       success('API 密钥更新成功')
     } else {
       const newKey = await meApi.createApiKey({
         name: newKeyName.value,
         rate_limit: newKeyRateLimit.value ?? 0,
+        concurrent_limit: newKeyConcurrentLimit.value,
       })
       newKeyValue.value = newKey.key || ''
       showKeyDialog.value = true
@@ -709,6 +747,13 @@ function formatNumber(num: number | undefined | null): string {
     return '0'
   }
   return num.toLocaleString('zh-CN')
+}
+
+function formatConcurrentLimitSimple(concurrentLimit?: number | null): string {
+  if (concurrentLimit == null || concurrentLimit === 0) {
+    return '不限并发'
+  }
+  return `${concurrentLimit} 并发`
 }
 
 function formatDate(dateString: string): string {

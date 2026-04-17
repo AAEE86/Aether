@@ -60,6 +60,15 @@ pub(crate) fn masked_gateway_api_key_display(full_key: Option<&str>) -> String {
     format!("{prefix}...{suffix}")
 }
 
+pub(crate) fn normalize_optional_api_key_concurrent_limit(
+    value: Option<i32>,
+) -> Result<Option<i32>, String> {
+    if value.is_some_and(|limit| limit < 0) {
+        return Err("concurrent_limit 必须是非负整数".to_string());
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
