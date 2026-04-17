@@ -29,7 +29,7 @@ pub(super) async fn execute_admin_provider_oauth_refresh(
         Ok(None) => {
             return Ok(RefreshDispatch::Respond(response::control_error_response(
                 http::StatusCode::BAD_REQUEST,
-                "Token 刷新未执行，请检查授权配置",
+                "缺少 refresh_token，需要重新授权",
             )));
         }
         Err(AdminLocalOAuthRefreshError::HttpStatus {

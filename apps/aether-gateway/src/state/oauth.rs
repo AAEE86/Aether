@@ -619,7 +619,7 @@ impl AppState {
         for _ in 0..2 {
             let resolution = self
                 .oauth_refresh
-                .force_refresh_with_result(
+                .resolve_with_result(
                     &executor,
                     &current_transport,
                     distributed_lock.as_ref(),
