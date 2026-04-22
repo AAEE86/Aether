@@ -535,6 +535,13 @@ struct Args {
     #[arg(long, default_value_t = false)]
     apply_backfills: bool,
 
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_AUTO_PREPARE_DATABASE",
+        default_value_t = false
+    )]
+    auto_prepare_database: bool,
+
     /// Path to frontend static files directory (SPA). When set, the gateway
     /// serves the frontend directly without nginx.
     #[arg(long, env = "AETHER_GATEWAY_STATIC_DIR")]
@@ -616,11 +623,12 @@ struct Args {
 
 impl Args {
     fn runtime_config(&self) -> Result<ServiceRuntimeConfig, std::io::Error> {
-        let default_log_filter = if self.migrate || self.apply_backfills {
-            "aether_gateway=info,aether_data=info"
-        } else {
-            "aether_gateway=info"
-        };
+        let default_log_filter =
+            if self.migrate || self.apply_backfills || self.auto_prepare_database {
+                "aether_gateway=info,aether_data=info"
+            } else {
+                "aether_gateway=info"
+            };
         let config = self
             .logging
             .apply_to_runtime_config(ServiceRuntimeConfig::new(
@@ -927,8 +935,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         execution_runtime_configured = state.execution_runtime_configured(),
         "aether-gateway data layer configured"
     );
-    ensure_postgres_schema_is_current(&state).await?;
-    ensure_postgres_backfills_are_current(&state).await?;
+    prepare_postgres_startup_requirements(&state, args.auto_prepare_database).await?;
     let reset_stale_proxy_nodes = state.reset_stale_proxy_node_tunnel_statuses().await?;
     if reset_stale_proxy_nodes > 0 {
         info!(
@@ -1072,6 +1079,63 @@ async fn run_explicit_backfills(args: &Args) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+async fn prepare_postgres_startup_requirements(
+    state: &AppState,
+    auto_prepare_database: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !auto_prepare_database {
+        ensure_postgres_schema_is_current(state).await?;
+        ensure_postgres_backfills_are_current(state).await?;
+        return Ok(());
+    }
+
+    info!(
+        "auto database preparation enabled; applying pending migrations and backfills before serving traffic"
+    );
+
+    let Some(pending_migrations) = state.prepare_postgres_for_startup().await? else {
+        return Ok(());
+    };
+    if !pending_migrations.is_empty() {
+        let next = pending_migrations
+            .first()
+            .expect("pending migrations should have a first element");
+        info!(
+            pending_migrations = pending_migrations.len(),
+            next_version = next.version,
+            next_description = %next.description,
+            pending_versions = %format_pending_migrations(&pending_migrations),
+            "running database migrations during service startup..."
+        );
+        if state.run_postgres_migrations().await? {
+            info!("database migrations complete during service startup");
+        }
+    }
+
+    let Some(pending_backfills) = state.pending_postgres_backfills().await? else {
+        return Ok(());
+    };
+    if pending_backfills.is_empty() {
+        return Ok(());
+    }
+
+    let next = pending_backfills
+        .first()
+        .expect("pending backfills should have a first element");
+    info!(
+        pending_backfills = pending_backfills.len(),
+        next_version = next.version,
+        next_description = %next.description,
+        pending_versions = %format_pending_backfills(&pending_backfills),
+        "running database backfills during service startup..."
+    );
+    if state.run_postgres_backfills().await? {
+        info!("database backfills complete during service startup");
+    }
+
+    Ok(())
+}
+
 fn format_pending_migrations(pending: &[aether_data::migrate::PendingMigrationInfo]) -> String {
     pending
         .iter()
@@ -1166,6 +1230,7 @@ mod tests {
             node_role: NodeRoleArg::All,
             migrate: false,
             apply_backfills: false,
+            auto_prepare_database: false,
             static_dir: None,
             video_task_truth_source_mode: VideoTaskTruthSourceArg::PythonSyncReport,
             video_task_poller_interval_ms: 5_000,
@@ -1268,6 +1333,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_prepare_database_runtime_config_enables_data_logs() {
+        let mut args = test_args();
+        args.auto_prepare_database = true;
+        let config = args.runtime_config().expect("runtime config should build");
+        assert_eq!(
+            config.default_log_filter,
+            "aether_gateway=info,aether_data=info"
+        );
+    }
+
+    #[test]
     fn pending_schema_error_mentions_explicit_migrate_command() {
         let error = pending_schema_error(2, 20260413020000, "squash usage schema split");
         let message = error.to_string();
@@ -1304,6 +1380,14 @@ mod tests {
     async fn ensure_postgres_backfills_are_current_is_noop_without_postgres_pool() {
         let state = AppState::new().expect("state should build");
         ensure_postgres_backfills_are_current(&state)
+            .await
+            .expect("disabled data backend should not block startup");
+    }
+
+    #[tokio::test]
+    async fn auto_prepare_database_is_noop_without_postgres_pool() {
+        let state = AppState::new().expect("state should build");
+        super::prepare_postgres_startup_requirements(&state, true)
             .await
             .expect("disabled data backend should not block startup");
     }

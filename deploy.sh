@@ -139,6 +139,6 @@ docker image prune -f >/dev/null 2>&1 || true
 
 echo ">>> Done!"
 echo ">>> Note: empty databases auto-bootstrap on first start."
-echo ">>> Note: if the app exits because schema is behind, run:"
-echo ">>>   ${DC} run --rm app --migrate"
+echo ">>> Note: docker compose now defaults to auto-running pending migrations/backfills on app startup."
+echo ">>> Note: set AETHER_GATEWAY_AUTO_PREPARE_DATABASE=false if you want to keep manual rollout."
 $DC ps

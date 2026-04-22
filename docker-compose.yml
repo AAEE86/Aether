@@ -49,6 +49,7 @@ services:
       AETHER_LOG_RETENTION_DAYS: ${AETHER_LOG_RETENTION_DAYS:-7}
       AETHER_LOG_MAX_FILES: ${AETHER_LOG_MAX_FILES:-30}
       APP_PORT: ${APP_PORT:-8084}
+      AETHER_GATEWAY_AUTO_PREPARE_DATABASE: ${AETHER_GATEWAY_AUTO_PREPARE_DATABASE:-true}
     depends_on:
       postgres:
         condition: service_healthy
