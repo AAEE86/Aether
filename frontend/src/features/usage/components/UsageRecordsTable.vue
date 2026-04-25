@@ -425,11 +425,11 @@
               <div class="flex flex-col text-xs gap-0.5">
                 <span>{{ record.provider }}</span>
                 <span
-                  v-if="record.provider_key_name || record.api_key_name"
+                  v-if="record.provider_key_name"
                   class="text-muted-foreground truncate"
-                  :title="record.provider_key_name || record.api_key_name"
+                  :title="record.provider_key_name"
                 >
-                  {{ record.provider_key_name || record.api_key_name }}
+                  {{ record.provider_key_name }}
                   <span
                     v-if="record.rate_multiplier && record.rate_multiplier !== 1.0"
                     class="text-foreground/60"

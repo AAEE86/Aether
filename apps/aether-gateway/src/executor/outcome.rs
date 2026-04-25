@@ -12,7 +12,9 @@ use aether_usage_runtime::{
     build_usage_event_data_seed, UsageEvent, UsageEventData, UsageEventType,
 };
 use axum::body::Body;
-use axum::http::{self, Response};
+use axum::body::Bytes;
+use axum::http::{self, HeaderMap, Response};
+use base64::Engine as _;
 use serde_json::{json, Map, Value};
 use tracing::warn;
 
@@ -293,6 +295,8 @@ pub(crate) async fn record_failed_usage_for_runtime_miss_request(
     decision: Option<&GatewayControlDecision>,
     diagnostic: Option<&LocalExecutionRuntimeMissDiagnostic>,
     context: &LocalExecutionRuntimeMissContext,
+    request_headers: &HeaderMap,
+    request_body: Option<&Bytes>,
 ) {
     if !state.usage_runtime.is_enabled() {
         return;
@@ -311,7 +315,6 @@ pub(crate) async fn record_failed_usage_for_runtime_miss_request(
     let provider_name = selected_candidate
         .and_then(|value| value.provider_name.clone())
         .or_else(|| selected_candidate.and_then(|value| value.candidate.provider_id.clone()))
-        .or_else(|| trimmed_non_empty(decision.and_then(|value| value.route_family.as_deref())))
         .unwrap_or_else(|| "unknown".to_string());
     let model = trimmed_non_empty(diagnostic.and_then(|value| value.requested_model.as_deref()))
         .or_else(|| selected_candidate.and_then(|value| value.global_model_name.clone()))
@@ -391,6 +394,8 @@ pub(crate) async fn record_failed_usage_for_runtime_miss_request(
         error_message: Some(local_execution_runtime_miss_detail.to_string()),
         error_category: error_category_for_failed_status(status_code),
         response_time_ms: Some(started_at.elapsed().as_millis() as u64),
+        request_headers: Some(runtime_miss_original_headers_json(request_headers)),
+        request_body: runtime_miss_original_request_body_json(request_headers, request_body),
         response_headers: Some(json_header_map()),
         response_body: Some(client_body.clone()),
         client_response_headers: Some(Value::Object(client_headers)),
@@ -548,6 +553,69 @@ fn json_header_map() -> Value {
         "content-type".to_string(),
         Value::String("application/json".to_string()),
     )]))
+}
+
+fn runtime_miss_original_headers_json(headers: &HeaderMap) -> Value {
+    let mut headers = crate::headers::collect_control_headers(headers);
+    for (name, value) in headers.iter_mut() {
+        if runtime_miss_sensitive_header(name) {
+            *value = runtime_miss_mask_header_value(value);
+        }
+    }
+    serde_json::to_value(headers).unwrap_or_else(|_| json!({}))
+}
+
+fn runtime_miss_original_request_body_json(
+    headers: &HeaderMap,
+    body: Option<&Bytes>,
+) -> Option<Value> {
+    let body = body?;
+    if crate::headers::is_json_request(headers) {
+        if body.is_empty() {
+            return Some(json!({}));
+        }
+        return serde_json::from_slice::<Value>(body.as_ref()).ok();
+    }
+
+    (!body.is_empty()).then(|| {
+        json!({
+            "body_bytes_b64": base64::engine::general_purpose::STANDARD.encode(body.as_ref())
+        })
+    })
+}
+
+fn runtime_miss_sensitive_header(name: &str) -> bool {
+    const SENSITIVE_HEADERS: &[&str] = &[
+        "authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "cookie",
+        "proxy-authorization",
+    ];
+
+    SENSITIVE_HEADERS
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn runtime_miss_mask_header_value(value: &str) -> String {
+    let value = value.trim();
+    let char_count = value.chars().count();
+    if char_count <= 8 {
+        return "****".to_string();
+    }
+
+    let prefix: String = value.chars().take(4).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}****{suffix}")
 }
 
 async fn load_runtime_miss_candidate_contexts(

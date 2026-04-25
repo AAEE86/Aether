@@ -1358,6 +1358,8 @@ pub(crate) async fn proxy_request(
                 control_decision,
                 local_execution_runtime_miss_diagnostic.as_ref(),
                 &local_execution_runtime_miss_context,
+                &parts.headers,
+                Some(buffered_body),
             )
             .await;
         }
@@ -1365,8 +1367,9 @@ pub(crate) async fn proxy_request(
             &trace_id,
             control_decision,
             http::StatusCode::SERVICE_UNAVAILABLE,
-            beautify_local_execution_client_error_message(
+            local_execution_runtime_miss_client_message(
                 local_execution_runtime_miss_detail.as_str(),
+                local_execution_runtime_miss_diagnostic.as_ref(),
             )
             .as_str(),
         )?;
@@ -1433,6 +1436,17 @@ fn local_execution_runtime_miss_detail(
     }
 
     local_execution_runtime_miss_route_detail(decision).map(ToOwned::to_owned)
+}
+
+fn local_execution_runtime_miss_client_message(
+    detail: &str,
+    diagnostic: Option<&LocalExecutionRuntimeMissDiagnostic>,
+) -> String {
+    if diagnostic.is_some_and(|diagnostic| diagnostic.reason.as_str() == "candidate_list_empty") {
+        beautify_local_execution_client_error_message(detail)
+    } else {
+        detail.to_string()
+    }
 }
 
 fn local_execution_runtime_miss_diagnostic_detail(
@@ -1608,6 +1622,7 @@ fn local_execution_runtime_miss_skip_reason_label(reason: &str) -> &str {
         "mapped_model_missing" => "模型映射缺失",
         "provider_inactive" => "提供商未启用",
         "provider_request_body_missing" => "无法构建上游请求体",
+        "provider_request_body_build_failed" => "上游请求体转换失败",
         "transport_api_format_mismatch" => "传输层 API 格式不匹配",
         "transport_api_format_unsupported" => "传输层不支持该 API 格式",
         "transport_auth_unavailable" => "上游认证信息不可用",

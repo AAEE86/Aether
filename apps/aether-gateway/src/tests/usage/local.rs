@@ -972,7 +972,7 @@ async fn gateway_records_failed_usage_for_claude_runtime_miss_without_execution_
         stored_usage.user_id.as_deref(),
         Some("user-claude-runtime-miss-usage-1")
     );
-    assert_eq!(stored_usage.provider_name, "claude");
+    assert_eq!(stored_usage.provider_name, "unknown");
     assert_eq!(stored_usage.model, "claude-sonnet-4-5");
     assert_eq!(stored_usage.api_format.as_deref(), Some("claude:chat"));
     assert_eq!(
@@ -1593,7 +1593,7 @@ async fn gateway_records_failed_usage_when_all_local_claude_cli_candidates_are_s
         stored_usage.user_id.as_deref(),
         Some("user-claude-cli-usage-local-miss-1")
     );
-    assert_eq!(stored_usage.provider_name, "claude");
+    assert_eq!(stored_usage.provider_name, "unknown");
     assert_eq!(stored_usage.model, "gpt-5.4");
     assert_eq!(stored_usage.api_format.as_deref(), Some("claude:cli"));
     assert_eq!(
@@ -1618,6 +1618,31 @@ async fn gateway_records_failed_usage_when_all_local_claude_cli_candidates_are_s
             "没有可用提供商支持模型 gpt-5.4 的同步请求。请检查模型映射、端点启用状态和 API Key 权限（原因代码: candidate_list_empty）"
         )
     );
+    assert_eq!(
+        stored_usage
+            .request_headers
+            .as_ref()
+            .and_then(|value| value.get("authorization"))
+            .and_then(|value| value.as_str()),
+        Some("Bear****miss")
+    );
+    assert_eq!(
+        stored_usage
+            .request_headers
+            .as_ref()
+            .and_then(|value| value.get("content-type"))
+            .and_then(|value| value.as_str()),
+        Some("application/json")
+    );
+    assert_eq!(
+        stored_usage
+            .request_body
+            .as_ref()
+            .and_then(|value| value.get("model"))
+            .and_then(|value| value.as_str()),
+        Some("gpt-5.4")
+    );
+    assert!(stored_usage.provider_request_body.is_none());
     assert_eq!(
         stored_usage
             .request_metadata
@@ -1863,7 +1888,19 @@ async fn gateway_keeps_failed_usage_request_capture_lightweight_for_large_local_
     )
     .await;
     assert_eq!(stored_usage.status, "failed");
-    assert!(stored_usage.request_body.is_none());
+    assert_eq!(
+        stored_usage.request_body_state,
+        Some(UsageBodyCaptureState::Inline)
+    );
+    assert_eq!(
+        stored_usage
+            .request_body
+            .as_ref()
+            .and_then(|value| value.get("model"))
+            .and_then(|value| value.as_str()),
+        Some("gpt-5.4")
+    );
+    assert!(stored_usage.provider_request_body.is_none());
     assert_eq!(
         stored_usage
             .request_metadata

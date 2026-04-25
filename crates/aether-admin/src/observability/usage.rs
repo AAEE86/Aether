@@ -422,6 +422,38 @@ fn admin_usage_error_domain_json(
     })
 }
 
+fn admin_usage_local_execution_client_error_message(message: &str) -> String {
+    let without_reason = message
+        .split_once("（原因代码:")
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(message);
+    let mut simplified = without_reason.trim().to_string();
+    for marker in ["。请检查", "。请确认", ". 请检查", ". 请确认"] {
+        if let Some(index) = simplified.find(marker) {
+            simplified.truncate(index);
+            break;
+        }
+    }
+    simplified
+        .trim()
+        .trim_end_matches(['。', '.', '！', '!', '？', '?'])
+        .to_string()
+}
+
+fn admin_usage_client_error_fallback_message(item: &StoredRequestUsageAudit) -> Option<String> {
+    item.error_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|message| {
+            if item.routing_execution_path() == Some("local_execution_runtime_miss") {
+                admin_usage_local_execution_client_error_message(message)
+            } else {
+                message.to_string()
+            }
+        })
+}
+
 fn admin_usage_error_domain_message(domain: &Value) -> Option<String> {
     domain
         .get("message")
@@ -504,25 +536,15 @@ fn admin_usage_error_domains_json(item: &StoredRequestUsageAudit) -> Value {
     } else {
         Value::Null
     };
-    let mut client_error = admin_usage_error_domain_json(
+    let client_error_fallback_message = admin_usage_client_error_fallback_message(item);
+    let client_error = admin_usage_error_domain_json(
         "client_response",
         item.status_code,
         item.client_response_headers.as_ref(),
         item.client_response_body.as_ref(),
         item.error_category.as_deref(),
-        item.error_message.as_deref(),
+        client_error_fallback_message.as_deref(),
     );
-    if item.routing_execution_path() == Some("local_execution_runtime_miss") {
-        if let (Some(object), Some(message)) = (
-            client_error.as_object_mut(),
-            item.error_message
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty()),
-        ) {
-            object.insert("message".to_string(), Value::String(message.to_string()));
-        }
-    }
     let request_error = Value::Null;
     let failure_summary =
         admin_usage_failure_summary_json(item, &request_error, &upstream_error, &client_error);
@@ -2731,13 +2753,51 @@ mod tests {
         );
 
         assert!(payload["upstream_error"].is_null());
-        assert_eq!(payload["client_error"]["message"], message);
+        assert_eq!(payload["client_error"]["message"], client_message);
         assert_eq!(
             payload["client_response_body"]["error"]["message"],
             client_message
         );
         assert_eq!(payload["error_flow"]["source"], "gateway");
         assert_eq!(payload["error_flow"]["propagation"], "local");
+    }
+
+    #[test]
+    fn detail_payload_simplifies_local_client_error_when_client_body_is_unloaded() {
+        let message = "没有可用提供商支持模型 gpt-5.4 的流式请求。请检查模型映射、端点启用状态和 API Key 权限（原因代码: candidate_list_empty）";
+        let item = StoredRequestUsageAudit {
+            execution_path: Some("local_execution_runtime_miss".to_string()),
+            local_execution_runtime_miss_reason: Some("candidate_list_empty".to_string()),
+            error_category: Some("http_error".to_string()),
+            client_response_headers: Some(json!({"content-type": "application/json"})),
+            client_response_body: None,
+            client_response_body_ref: Some(
+                "usage://request/req-1/client_response_body".to_string(),
+            ),
+            response_body: None,
+            ..sample_usage("failed", Some(503), Some(message))
+        };
+
+        let payload = build_admin_usage_detail_payload(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+            false,
+            Some(json!({"model": "gpt-5.4", "stream": true})),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            payload["client_error"]["message"],
+            "没有可用提供商支持模型 gpt-5.4 的流式请求"
+        );
+        assert_eq!(
+            payload["failure_summary"]["message"],
+            "没有可用提供商支持模型 gpt-5.4 的流式请求"
+        );
     }
 
     #[test]
