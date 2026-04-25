@@ -14,7 +14,7 @@ use crate::ai_pipeline::planner::spec_metadata::local_openai_cli_spec_metadata;
 use crate::ai_pipeline::planner::standard::{
     apply_codex_openai_cli_special_headers, build_cross_format_openai_cli_request_body,
     build_cross_format_openai_cli_upstream_url, build_local_openai_cli_request_body,
-    build_local_openai_cli_upstream_url,
+    build_local_openai_cli_upstream_url, request_body_build_failure_extra_data,
 };
 use crate::ai_pipeline::transport::antigravity::{
     build_antigravity_safe_v1internal_request, build_antigravity_static_identity_headers,
@@ -34,13 +34,17 @@ use crate::ai_pipeline::transport::kiro::{
 };
 use crate::ai_pipeline::transport::local_standard_transport_unsupported_reason_with_network;
 use crate::ai_pipeline::transport::vertex::uses_vertex_api_key_query_auth;
-use crate::ai_pipeline::{ConversionMode, ExecutionStrategy};
+use crate::ai_pipeline::{CandidateFailureDiagnostic, ConversionMode, ExecutionStrategy};
 use crate::ai_pipeline::{
     GatewayProviderTransportSnapshot, LocalResolvedOAuthRequestAuth, PlannerAppState,
 };
 use crate::AppState;
 
-use super::support::{mark_skipped_local_openai_cli_candidate, LocalOpenAiCliDecisionInput};
+use super::support::{
+    mark_skipped_local_openai_cli_candidate,
+    mark_skipped_local_openai_cli_candidate_with_extra_data,
+    mark_skipped_local_openai_cli_candidate_with_failure_diagnostic, LocalOpenAiCliDecisionInput,
+};
 use super::LocalOpenAiCliSpec;
 
 const ANTIGRAVITY_ENVELOPE_NAME: &str = "antigravity:v1internal";
@@ -258,14 +262,19 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
             Some(input.auth_context.api_key_id.as_str()),
         )
     }) else {
-        mark_skipped_local_openai_cli_candidate(
+        mark_skipped_local_openai_cli_candidate_with_extra_data(
             state,
             input,
             trace_id,
             candidate,
             candidate_index,
             candidate_id,
-            "provider_request_body_missing",
+            "provider_request_body_build_failed",
+            request_body_build_failure_extra_data(
+                body_json,
+                spec_metadata.api_format,
+                provider_api_format,
+            ),
         )
         .await;
         return None;
@@ -304,14 +313,19 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         ) {
             AntigravityRequestEnvelopeSupport::Supported(envelope) => envelope,
             AntigravityRequestEnvelopeSupport::Unsupported(_) => {
-                mark_skipped_local_openai_cli_candidate(
+                mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
                     state,
                     input,
                     trace_id,
                     candidate,
                     candidate_index,
                     candidate_id,
-                    "provider_request_body_missing",
+                    "provider_request_body_build_failed",
+                    CandidateFailureDiagnostic::envelope_build_failed(
+                        spec_metadata.api_format,
+                        provider_api_format,
+                        "openai_cli_antigravity_envelope",
+                    ),
                 )
                 .await;
                 return None;
@@ -361,7 +375,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
             provider_api_format == "openai:compact",
         )
     }) else {
-        mark_skipped_local_openai_cli_candidate(
+        mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
             state,
             input,
             trace_id,
@@ -369,6 +383,11 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
             candidate_index,
             candidate_id,
             "upstream_url_missing",
+            CandidateFailureDiagnostic::upstream_url_missing(
+                spec_metadata.api_format,
+                provider_api_format,
+                "openai_cli_url",
+            ),
         )
         .await;
         return None;
@@ -416,7 +435,7 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
         &provider_request_body,
         Some(body_json),
     ) {
-        mark_skipped_local_openai_cli_candidate(
+        mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
             state,
             input,
             trace_id,
@@ -424,6 +443,11 @@ pub(crate) async fn resolve_local_openai_cli_candidate_payload_parts(
             candidate_index,
             candidate_id,
             "transport_header_rules_apply_failed",
+            CandidateFailureDiagnostic::header_rules_apply_failed(
+                spec_metadata.api_format,
+                provider_api_format,
+                "openai_cli_headers",
+            ),
         )
         .await;
         return None;
@@ -537,14 +561,19 @@ async fn build_kiro_openai_cli_payload_parts(
     ) {
         Some(body) => body,
         None => {
-            mark_skipped_local_openai_cli_candidate(
+            mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
                 state,
                 input,
                 trace_id,
                 candidate,
                 candidate_index,
                 candidate_id,
-                "provider_request_body_missing",
+                "provider_request_body_build_failed",
+                CandidateFailureDiagnostic::envelope_build_failed(
+                    client_api_format,
+                    provider_api_format,
+                    "openai_cli_kiro_envelope",
+                ),
             )
             .await;
             return None;
@@ -560,7 +589,7 @@ async fn build_kiro_openai_cli_payload_parts(
     ) {
         Some(url) => url,
         None => {
-            mark_skipped_local_openai_cli_candidate(
+            mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
                 state,
                 input,
                 trace_id,
@@ -568,6 +597,11 @@ async fn build_kiro_openai_cli_payload_parts(
                 candidate_index,
                 candidate_id,
                 "upstream_url_missing",
+                CandidateFailureDiagnostic::upstream_url_missing(
+                    client_api_format,
+                    provider_api_format,
+                    "openai_cli_kiro_url",
+                ),
             )
             .await;
             return None;
@@ -585,7 +619,7 @@ async fn build_kiro_openai_cli_payload_parts(
     }) {
         Some(headers) => headers,
         None => {
-            mark_skipped_local_openai_cli_candidate(
+            mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
                 state,
                 input,
                 trace_id,
@@ -593,6 +627,11 @@ async fn build_kiro_openai_cli_payload_parts(
                 candidate_index,
                 candidate_id,
                 "transport_header_rules_apply_failed",
+                CandidateFailureDiagnostic::header_rules_apply_failed(
+                    client_api_format,
+                    provider_api_format,
+                    "openai_cli_kiro_headers",
+                ),
             )
             .await;
             return None;

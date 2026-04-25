@@ -1,6 +1,9 @@
 use serde_json::json;
 
-use crate::ai_pipeline::planner::candidate_materialization::mark_skipped_local_execution_candidate;
+use crate::ai_pipeline::planner::candidate_materialization::{
+    mark_skipped_local_execution_candidate, mark_skipped_local_execution_candidate_with_extra_data,
+    mark_skipped_local_execution_candidate_with_failure_diagnostic,
+};
 use crate::ai_pipeline::planner::candidate_metadata::build_request_trace_proxy_value;
 use crate::ai_pipeline::planner::materialization_policy::{
     build_local_candidate_persistence_policy, LocalCandidatePersistencePolicyKind,
@@ -12,6 +15,7 @@ use crate::ai_pipeline::planner::report_context::{
     build_local_execution_report_context, LocalExecutionReportContextParts,
 };
 use crate::ai_pipeline::planner::spec_metadata::local_same_format_provider_spec_metadata;
+use crate::ai_pipeline::planner::CandidateFailureDiagnostic;
 use crate::ai_pipeline::transport::{
     resolve_transport_execution_timeouts, resolve_transport_tls_profile,
 };
@@ -195,6 +199,64 @@ pub(super) async fn mark_skipped_local_same_format_provider_candidate(
         candidate_index,
         candidate_id,
         skip_reason,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn mark_skipped_local_same_format_provider_candidate_with_extra_data(
+    state: &AppState,
+    input: &LocalSameFormatProviderDecisionInput,
+    trace_id: &str,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    extra_data: Option<serde_json::Value>,
+) {
+    let persistence_policy = build_local_candidate_persistence_policy(
+        &input.auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::SameFormatProviderDecision,
+    );
+    mark_skipped_local_execution_candidate_with_extra_data(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+        extra_data,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn mark_skipped_local_same_format_provider_candidate_with_failure_diagnostic(
+    state: &AppState,
+    input: &LocalSameFormatProviderDecisionInput,
+    trace_id: &str,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    diagnostic: CandidateFailureDiagnostic,
+) {
+    let persistence_policy = build_local_candidate_persistence_policy(
+        &input.auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::SameFormatProviderDecision,
+    );
+    mark_skipped_local_execution_candidate_with_failure_diagnostic(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+        diagnostic,
     )
     .await;
 }

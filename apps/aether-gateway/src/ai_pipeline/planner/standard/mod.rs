@@ -12,6 +12,7 @@ mod family;
 mod gemini;
 mod normalize;
 mod openai;
+mod request_body_diagnostics;
 
 pub(crate) use self::codex::apply_codex_openai_cli_special_headers;
 pub(crate) use self::family::{
@@ -34,6 +35,9 @@ pub(crate) use self::openai::{
     maybe_build_sync_local_openai_cli_decision_payload, parse_openai_stop_sequences,
     resolve_openai_chat_max_tokens, set_local_openai_chat_execution_exhausted_diagnostic,
     value_as_u64,
+};
+pub(crate) use self::request_body_diagnostics::{
+    request_body_build_failure_extra_data, same_format_provider_request_body_failure_extra_data,
 };
 pub(crate) use crate::ai_pipeline::conversion::{
     build_core_error_body_for_client_format, request_conversion_kind,

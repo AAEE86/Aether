@@ -6,6 +6,7 @@ use crate::ai_pipeline::planner::candidate_affinity::remember_scheduler_affinity
 use crate::ai_pipeline::planner::candidate_eligibility::{
     EligibleLocalExecutionCandidate, SkippedLocalExecutionCandidate,
 };
+use crate::ai_pipeline::planner::failure_diagnostic::CandidateFailureDiagnostic;
 use crate::ai_pipeline::planner::runtime_miss::record_local_runtime_candidate_skip_reason;
 use crate::ai_pipeline::{GatewayAuthApiKeySnapshot, PlannerAppState};
 use crate::clock::current_unix_ms;
@@ -234,6 +235,56 @@ pub(crate) async fn mark_skipped_local_execution_candidate(
         None,
         context.error_context,
         context.record_runtime_miss_diagnostic,
+    )
+    .await;
+}
+
+pub(crate) async fn mark_skipped_local_execution_candidate_with_extra_data(
+    state: &AppState,
+    trace_id: &str,
+    context: LocalSkippedCandidatePersistenceContext<'_>,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    extra_data: Option<Value>,
+) {
+    persist_skipped_local_execution_candidate(
+        state,
+        trace_id,
+        context.user_id,
+        context.api_key_id,
+        candidate,
+        candidate_index,
+        candidate_id,
+        context.required_capabilities,
+        skip_reason,
+        extra_data,
+        context.error_context,
+        context.record_runtime_miss_diagnostic,
+    )
+    .await;
+}
+
+pub(crate) async fn mark_skipped_local_execution_candidate_with_failure_diagnostic(
+    state: &AppState,
+    trace_id: &str,
+    context: LocalSkippedCandidatePersistenceContext<'_>,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    diagnostic: CandidateFailureDiagnostic,
+) {
+    mark_skipped_local_execution_candidate_with_extra_data(
+        state,
+        trace_id,
+        context,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+        Some(diagnostic.to_extra_data()),
     )
     .await;
 }

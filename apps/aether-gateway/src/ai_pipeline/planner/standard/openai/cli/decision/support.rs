@@ -10,7 +10,8 @@ use crate::ai_pipeline::planner::candidate_eligibility::{
     SkippedLocalExecutionCandidate,
 };
 use crate::ai_pipeline::planner::candidate_materialization::{
-    mark_skipped_local_execution_candidate,
+    mark_skipped_local_execution_candidate, mark_skipped_local_execution_candidate_with_extra_data,
+    mark_skipped_local_execution_candidate_with_failure_diagnostic,
     persist_available_local_execution_candidates_with_context,
     persist_skipped_local_execution_candidates_with_context,
     remember_first_local_candidate_affinity,
@@ -30,6 +31,7 @@ use crate::ai_pipeline::planner::materialization_policy::{
 };
 use crate::ai_pipeline::planner::runtime_miss::set_local_runtime_miss_diagnostic_reason;
 use crate::ai_pipeline::planner::spec_metadata::local_openai_cli_spec_metadata;
+use crate::ai_pipeline::planner::CandidateFailureDiagnostic;
 use crate::ai_pipeline::PlannerAppState;
 use crate::ai_pipeline::{
     resolve_local_decision_execution_runtime_auth_context, ConversionMode, ExecutionStrategy,
@@ -358,6 +360,66 @@ pub(crate) async fn mark_skipped_local_openai_cli_candidate(
         candidate_index,
         candidate_id,
         skip_reason,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mark_skipped_local_openai_cli_candidate_with_extra_data(
+    state: &AppState,
+    input: &LocalOpenAiCliDecisionInput,
+    trace_id: &str,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    extra_data: Option<serde_json::Value>,
+) {
+    let auth_context: &ExecutionRuntimeAuthContext = &input.auth_context;
+    let persistence_policy = build_local_candidate_persistence_policy(
+        auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::OpenAiCliDecision,
+    );
+    mark_skipped_local_execution_candidate_with_extra_data(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+        extra_data,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mark_skipped_local_openai_cli_candidate_with_failure_diagnostic(
+    state: &AppState,
+    input: &LocalOpenAiCliDecisionInput,
+    trace_id: &str,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    diagnostic: CandidateFailureDiagnostic,
+) {
+    let auth_context: &ExecutionRuntimeAuthContext = &input.auth_context;
+    let persistence_policy = build_local_candidate_persistence_policy(
+        auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::OpenAiCliDecision,
+    );
+    mark_skipped_local_execution_candidate_with_failure_diagnostic(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+        diagnostic,
     )
     .await;
 }

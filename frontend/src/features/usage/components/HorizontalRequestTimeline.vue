@@ -436,7 +436,16 @@
                   class="skip-reason"
                 >
                   <span class="reason-label">跳过原因</span>
-                  <span class="reason-value">{{ currentAttemptSkipReasonDisplay }}</span>
+                  <span class="reason-content">
+                    <span class="reason-value">{{ currentAttemptSkipReasonDisplay }}</span>
+                    <span
+                      v-if="currentAttemptFailureDiagnostic"
+                      class="reason-detail"
+                    >
+                      <code>{{ currentAttemptFailureDiagnostic.path }}</code>
+                      {{ currentAttemptFailureDiagnostic.message }}
+                    </span>
+                  </span>
                 </div>
 
                 <!-- 真实请求错误：节点级调试原因，和对客户端返回的摘要分开 -->
@@ -1358,6 +1367,13 @@ const currentAttemptSkipReasonDisplay = computed(() => {
   const attempt = currentAttempt.value
   if (!attempt?.skip_reason) return ''
 
+  if (attempt.skip_reason === 'provider_request_body_build_failed') {
+    return '上游请求体转换失败'
+  }
+  if (attempt.skip_reason === 'provider_request_body_missing') {
+    return '无法构建上游请求体'
+  }
+
   if (attempt.skip_reason !== 'transport_unsupported') {
     return attempt.skip_reason
   }
@@ -1369,6 +1385,31 @@ const currentAttemptSkipReasonDisplay = computed(() => {
     : ''
 
   return detailedReason || attempt.skip_reason
+})
+
+const currentAttemptFailureDiagnostic = computed<{
+  path: string
+  message: string
+} | null>(() => {
+  const attempt = currentAttempt.value
+  if (!attempt) return null
+  const extra = extractObject(attempt.extra_data)
+  const failureDiagnostic = extractObject(extra?.failure_diagnostic)
+  const safeToShow = failureDiagnostic?.safe_to_show !== false
+  const error = failureDiagnostic && safeToShow
+    ? failureDiagnostic
+    : extractObject(extra?.request_body_build_error)
+  const path = typeof error?.path === 'string' && error.path.trim()
+    ? error.path.trim()
+    : ''
+  const message = typeof error?.message === 'string' && error.message.trim()
+    ? error.message.trim()
+    : ''
+  if (!path && !message) return null
+  return {
+    path: path || '$',
+    message: message || '请求体转换失败',
+  }
 })
 
 const currentAttemptRequestError = computed<{
@@ -2501,6 +2542,28 @@ const getDisplayStatus = (attempt: CandidateRecord | null | undefined): string =
 
 .reason-value {
   color: hsl(var(--foreground));
+}
+
+.reason-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.reason-detail {
+  color: hsl(var(--muted-foreground));
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.reason-detail code {
+  margin-right: 0.4rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: hsl(var(--background) / 0.8);
+  color: hsl(var(--foreground));
+  font-size: 0.8rem;
 }
 
 /* 错误信息 */

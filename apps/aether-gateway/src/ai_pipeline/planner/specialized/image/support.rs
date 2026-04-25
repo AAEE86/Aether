@@ -7,6 +7,7 @@ use crate::ai_pipeline::planner::candidate_eligibility::{
 };
 use crate::ai_pipeline::planner::candidate_materialization::{
     mark_skipped_local_execution_candidate,
+    mark_skipped_local_execution_candidate_with_failure_diagnostic,
     persist_available_local_execution_candidates_with_context,
     persist_skipped_local_execution_candidates_with_context,
     remember_first_local_candidate_affinity,
@@ -24,7 +25,8 @@ use crate::ai_pipeline::planner::materialization_policy::{
 use crate::ai_pipeline::planner::spec_metadata::local_openai_image_spec_metadata;
 use crate::ai_pipeline::PlannerAppState;
 use crate::ai_pipeline::{
-    resolve_local_decision_execution_runtime_auth_context, GatewayControlDecision,
+    resolve_local_decision_execution_runtime_auth_context, CandidateFailureDiagnostic,
+    GatewayControlDecision,
 };
 use crate::clock::current_unix_secs;
 use crate::AppState;
@@ -236,6 +238,34 @@ pub(super) async fn mark_skipped_local_openai_image_candidate(
         candidate_index,
         candidate_id,
         skip_reason,
+    )
+    .await;
+}
+
+pub(super) async fn mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+    state: &AppState,
+    input: &LocalOpenAiImageDecisionInput,
+    trace_id: &str,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    skip_reason: &'static str,
+    diagnostic: CandidateFailureDiagnostic,
+) {
+    let persistence_policy = build_local_candidate_persistence_policy(
+        &input.auth_context,
+        input.required_capabilities.as_ref(),
+        LocalCandidatePersistencePolicyKind::ImageDecision,
+    );
+    mark_skipped_local_execution_candidate_with_failure_diagnostic(
+        state,
+        trace_id,
+        persistence_policy.skipped,
+        candidate,
+        candidate_index,
+        candidate_id,
+        skip_reason,
+        diagnostic,
     )
     .await;
 }

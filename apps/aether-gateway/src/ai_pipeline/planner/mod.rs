@@ -13,6 +13,7 @@ mod candidate_source;
 mod common;
 mod decision;
 mod decision_input;
+mod failure_diagnostic;
 mod materialization_policy;
 mod passthrough;
 mod payload_metadata;
@@ -27,6 +28,9 @@ mod standard;
 mod state;
 
 pub(crate) use self::candidate_eligibility::extract_pool_sticky_session_token;
+pub(crate) use self::failure_diagnostic::{
+    CandidateFailureDiagnostic, CandidateFailureDiagnosticKind,
+};
 pub(crate) use self::passthrough::{
     build_local_same_format_stream_plan_and_reports, build_local_same_format_sync_plan_and_reports,
 };
