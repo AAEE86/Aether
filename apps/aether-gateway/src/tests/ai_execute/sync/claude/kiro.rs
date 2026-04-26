@@ -9,8 +9,39 @@ use super::{
     DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
 };
 
-#[tokio::test]
-async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate() {
+const KIRO_CLAUDE_CLI_SYNC_TEST_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn run_kiro_claude_cli_sync_test<F, Fut>(test_name: &'static str, make_future: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(test_name.to_string())
+        .stack_size(KIRO_CLAUDE_CLI_SYNC_TEST_STACK_BYTES)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build");
+            runtime.block_on(make_future());
+        })
+        .expect("kiro claude cli sync test thread should spawn");
+
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate() {
+    run_kiro_claude_cli_sync_test(
+        "gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate",
+        gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_impl,
+    );
+}
+
+async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_impl() {
     use base64::Engine as _;
 
     #[derive(Debug, Clone)]
@@ -571,9 +602,16 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_after_refresh()
-{
+#[test]
+fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_after_refresh() {
+    run_kiro_claude_cli_sync_test(
+        "gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_after_refresh",
+        gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_after_refresh_impl,
+    );
+}
+
+async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candidate_after_refresh_impl(
+) {
     use base64::Engine as _;
 
     #[derive(Debug, Clone)]
