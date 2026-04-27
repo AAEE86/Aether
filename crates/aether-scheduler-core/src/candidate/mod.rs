@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_minimal_candidate_selection_with_auth_constraints() {
+    fn builds_ranked_minimal_candidate_selection_with_auth_constraints() {
         let mut disallowed = sample_row("2");
         disallowed.provider_id = "provider-blocked".to_string();
         disallowed.provider_name = "Blocked".to_string();
@@ -255,7 +255,8 @@ mod tests {
     }
 
     #[test]
-    fn minimal_candidate_selection_prefers_matching_requested_capabilities_before_priority() {
+    fn ranked_minimal_candidate_selection_prefers_matching_requested_capabilities_before_priority()
+    {
         let mut missing_capability = sample_row("1");
         missing_capability.key_capabilities = Some(serde_json::json!({"cache_1h": false}));
         missing_capability.provider_priority = 0;
