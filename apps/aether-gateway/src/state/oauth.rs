@@ -11,7 +11,7 @@ use crate::provider_key_auth::provider_key_is_oauth_managed;
 use aether_admin::provider::quota as admin_provider_quota_pure;
 use aether_contracts::{
     ExecutionPlan, ExecutionTimeouts, ProxySnapshot, RequestBody,
-    EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER,
+    EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER, EXECUTION_REQUEST_HTTP1_ONLY_HEADER,
 };
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -1262,6 +1262,11 @@ impl AppState {
                 EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER.to_string(),
                 "true".to_string(),
             );
+        } else {
+            headers.insert(
+                EXECUTION_REQUEST_HTTP1_ONLY_HEADER.to_string(),
+                "true".to_string(),
+            );
         }
         let plan = ExecutionPlan {
             request_id: request.request_id.to_string(),
@@ -1337,6 +1342,11 @@ impl AppState {
             follow_redirects = plan
                 .headers
                 .get(EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER)
+                .map(String::as_str)
+                .unwrap_or("-"),
+            http1_only = plan
+                .headers
+                .get(EXECUTION_REQUEST_HTTP1_ONLY_HEADER)
                 .map(String::as_str)
                 .unwrap_or("-"),
             "gateway local oauth execution request prepared"

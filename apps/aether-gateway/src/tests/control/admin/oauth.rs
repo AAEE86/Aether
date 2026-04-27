@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use aether_contracts::{ExecutionPlan, EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER};
+use aether_contracts::{
+    ExecutionPlan, EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER, EXECUTION_REQUEST_HTTP1_ONLY_HEADER,
+};
 use aether_crypto::{
     decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY,
 };
@@ -4706,6 +4708,13 @@ async fn gateway_refreshes_admin_provider_oauth_key_tunnel_proxy_without_follow_
             .headers
             .get(EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER),
         None
+    );
+    assert_eq!(
+        refresh_plan
+            .headers
+            .get(EXECUTION_REQUEST_HTTP1_ONLY_HEADER)
+            .map(String::as_str),
+        Some("true")
     );
 
     gateway_handle.abort();
