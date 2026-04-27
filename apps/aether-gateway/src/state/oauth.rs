@@ -16,6 +16,7 @@ use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKe
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use flate2::read::{DeflateDecoder, GzDecoder};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -49,6 +50,34 @@ fn tagged_reason(reason: Option<&str>, prefix: &str) -> Option<String> {
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
     })
+}
+
+fn oauth_auth_config_refresh_token_fingerprint(auth_config: Option<&str>) -> Option<String> {
+    let parsed = auth_config
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())?;
+    oauth_metadata_refresh_token_fingerprint(Some(&parsed))
+}
+
+fn oauth_metadata_refresh_token_fingerprint(metadata: Option<&Value>) -> Option<String> {
+    metadata
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("refresh_token"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(secret_fingerprint)
+}
+
+fn secret_fingerprint(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    let mut fingerprint = String::with_capacity(16);
+    for byte in digest.iter().take(8) {
+        use std::fmt::Write as _;
+        let _ = write!(&mut fingerprint, "{byte:02x}");
+    }
+    fingerprint
 }
 
 fn oauth_invalid_reason_is_account_block(reason: Option<&str>) -> bool {
@@ -820,6 +849,23 @@ impl AppState {
         let mut current_transport = transport.clone();
         current_transport.key.decrypted_api_key = "__placeholder__".to_string();
         let executor = GatewayLocalOAuthHttpExecutor { state: self };
+        let transport_refresh_token_fingerprint = oauth_auth_config_refresh_token_fingerprint(
+            current_transport.key.decrypted_auth_config.as_deref(),
+        )
+        .unwrap_or_else(|| "-".to_string());
+        tracing::info!(
+            key_id = %current_transport.key.id,
+            provider_id = %current_transport.provider.id,
+            provider_type = %current_transport.provider.provider_type,
+            transport_refresh_token_fingerprint = %transport_refresh_token_fingerprint,
+            has_transport_auth_config = current_transport
+                .key
+                .decrypted_auth_config
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty()),
+            "gateway manual oauth refresh starting"
+        );
 
         for _ in 0..2 {
             let resolution = self
@@ -1008,13 +1054,34 @@ impl AppState {
         let current_status_snapshot = latest_key.status_snapshot.take();
         latest_key.status_snapshot =
             sync_provider_key_oauth_status_snapshot(current_status_snapshot, &latest_key);
-        if self
+        let updated = self
             .update_provider_catalog_key(&latest_key)
             .await?
-            .is_some()
-        {
+            .is_some();
+        if updated {
             self.clear_provider_transport_snapshot_cache();
         }
+        let metadata_refresh_token_fingerprint =
+            oauth_metadata_refresh_token_fingerprint(entry.metadata.as_ref())
+                .unwrap_or_else(|| "-".to_string());
+        tracing::info!(
+            key_id = %key_id,
+            provider_id = %transport.provider.id,
+            provider_type = %transport.provider.provider_type,
+            updated,
+            metadata_has_refresh_token = entry
+                .metadata
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .and_then(|object| object.get("refresh_token"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty()),
+            metadata_refresh_token_fingerprint = %metadata_refresh_token_fingerprint,
+            expires_at_unix_secs = ?entry.expires_at_unix_secs,
+            cleared_provider_transport_snapshot_cache = updated,
+            "gateway local oauth refresh entry persisted"
+        );
         Ok(())
     }
 
@@ -1082,6 +1149,15 @@ impl AppState {
             self.clear_provider_transport_snapshot_cache();
             let _ = self.invalidate_local_oauth_refresh_entry(key_id).await;
         }
+        tracing::info!(
+            key_id = %key_id,
+            provider_id = %transport.provider.id,
+            provider_type = %transport.provider.provider_type,
+            status_code,
+            updated,
+            cleared_provider_transport_snapshot_cache = updated,
+            "gateway local oauth refresh failure state persisted"
+        );
         Ok(updated)
     }
 

@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use url::form_urlencoded;
 
 use super::oauth_refresh::{
@@ -256,15 +257,47 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
         else {
             return Ok(None);
         };
-        let mut metadata = self
-            .base_auth_config(transport, entry)
+        let (base_auth_config_source, base_auth_config) = if let Some(value) =
+            entry.and_then(|cached| Self::auth_config_from_entry(transport, cached))
+        {
+            ("cached_entry", Some(value))
+        } else {
+            let value = Self::auth_config_from_transport(transport);
+            let source = if value.is_some() {
+                "transport_auth_config"
+            } else {
+                "none"
+            };
+            (source, value)
+        };
+        let mut metadata = base_auth_config
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default();
         let Some(refresh_token) = metadata.get("refresh_token").and_then(non_empty_string) else {
+            tracing::warn!(
+                key_id = %transport.key.id,
+                provider_id = %transport.provider.id,
+                provider_type = template.provider_type,
+                auth_config_source = base_auth_config_source,
+                "gateway generic oauth refresh skipped because auth_config has no refresh_token"
+            );
             return Ok(None);
         };
 
         let token_url = self.token_url_for_template(template);
+        let request_refresh_token_fingerprint = secret_fingerprint(refresh_token.as_str());
+        tracing::info!(
+            key_id = %transport.key.id,
+            provider_id = %transport.provider.id,
+            endpoint_id = %transport.endpoint.id,
+            provider_type = template.provider_type,
+            auth_config_source = base_auth_config_source,
+            request_refresh_token_fingerprint = %request_refresh_token_fingerprint,
+            request_refresh_token_len = refresh_token.len(),
+            token_url = %token_url,
+            uses_json_payload = template.uses_json_payload,
+            "gateway generic oauth refresh request prepared"
+        );
         let scope = (!template.scopes.is_empty()).then(|| template.scopes.join(" "));
         let response = if template.uses_json_payload {
             let mut body = serde_json::Map::from_iter([
@@ -339,10 +372,21 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
         let status = reqwest::StatusCode::from_u16(response.status_code).unwrap_or_default();
         let body = response.body_text;
         if !status.is_success() {
+            let body_excerpt = truncate_body(&body);
+            tracing::warn!(
+                key_id = %transport.key.id,
+                provider_id = %transport.provider.id,
+                endpoint_id = %transport.endpoint.id,
+                provider_type = template.provider_type,
+                status_code = status.as_u16(),
+                request_refresh_token_fingerprint = %request_refresh_token_fingerprint,
+                body_excerpt = %body_excerpt,
+                "gateway generic oauth refresh returned error status"
+            );
             return Err(LocalOAuthRefreshError::HttpStatus {
                 provider_type: template.provider_type,
                 status_code: status.as_u16(),
-                body_excerpt: truncate_body(&body),
+                body_excerpt,
             });
         }
 
@@ -364,8 +408,19 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
             Value::String(template.provider_type.to_string()),
         );
         metadata.insert("updated_at".to_string(), json!(current_unix_secs()));
-        if let Some(refresh_token) = payload.get("refresh_token").and_then(non_empty_string) {
-            metadata.insert("refresh_token".to_string(), Value::String(refresh_token));
+        let response_refresh_token = payload.get("refresh_token").and_then(non_empty_string);
+        let response_refresh_token_fingerprint = response_refresh_token
+            .as_deref()
+            .map(secret_fingerprint)
+            .unwrap_or_else(|| "-".to_string());
+        let response_refresh_token_rotated = response_refresh_token
+            .as_deref()
+            .map(|value| value != refresh_token.as_str());
+        if let Some(refresh_token) = response_refresh_token.as_ref() {
+            metadata.insert(
+                "refresh_token".to_string(),
+                Value::String(refresh_token.clone()),
+            );
         }
         if let Some(token_type) = payload.get("token_type").and_then(non_empty_string) {
             metadata.insert("token_type".to_string(), Value::String(token_type));
@@ -380,6 +435,42 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
             None => {
                 metadata.remove("expires_at");
             }
+        }
+        let stored_refresh_token_fingerprint = metadata
+            .get("refresh_token")
+            .and_then(non_empty_string)
+            .map(|value| secret_fingerprint(value.as_str()))
+            .unwrap_or_else(|| "-".to_string());
+        let stored_refresh_token_source = if response_refresh_token.is_some() {
+            "response"
+        } else {
+            "existing"
+        };
+        tracing::info!(
+            key_id = %transport.key.id,
+            provider_id = %transport.provider.id,
+            endpoint_id = %transport.endpoint.id,
+            provider_type = template.provider_type,
+            status_code = status.as_u16(),
+            request_refresh_token_fingerprint = %request_refresh_token_fingerprint,
+            response_has_refresh_token = response_refresh_token.is_some(),
+            response_refresh_token_fingerprint = %response_refresh_token_fingerprint,
+            response_refresh_token_rotated = ?response_refresh_token_rotated,
+            stored_refresh_token_source = stored_refresh_token_source,
+            stored_refresh_token_fingerprint = %stored_refresh_token_fingerprint,
+            expires_at_unix_secs = ?expires_at_unix_secs,
+            "gateway generic oauth refresh succeeded"
+        );
+        if response_refresh_token.is_none() && template.provider_type == "codex" {
+            tracing::warn!(
+                key_id = %transport.key.id,
+                provider_id = %transport.provider.id,
+                endpoint_id = %transport.endpoint.id,
+                provider_type = template.provider_type,
+                request_refresh_token_fingerprint = %request_refresh_token_fingerprint,
+                stored_refresh_token_fingerprint = %stored_refresh_token_fingerprint,
+                "gateway codex oauth refresh succeeded without replacement refresh_token"
+            );
         }
 
         Ok(Some(self.build_cached_entry(
@@ -441,6 +532,16 @@ fn non_empty_string(value: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn secret_fingerprint(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    let mut fingerprint = String::with_capacity(16);
+    for byte in digest.iter().take(8) {
+        use std::fmt::Write as _;
+        let _ = write!(&mut fingerprint, "{byte:02x}");
+    }
+    fingerprint
 }
 
 fn current_unix_secs() -> u64 {
