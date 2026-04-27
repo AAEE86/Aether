@@ -1,7 +1,6 @@
 pub mod capability;
 pub mod enumeration;
 pub mod selectability;
-pub mod selection;
 pub mod types;
 
 pub use capability::{
@@ -14,9 +13,8 @@ pub use selectability::{
     auth_api_key_concurrency_limit_reached, candidate_is_selectable_with_runtime_state,
     candidate_runtime_skip_reason_with_state, CandidateRuntimeSelectabilityInput,
 };
-pub use selection::build_ranked_minimal_candidate_selection;
 pub use types::{
-    BuildMinimalCandidateSelectionInput, SchedulerMinimalCandidateSelectionCandidate,
+    EnumerateMinimalCandidateSelectionInput, SchedulerMinimalCandidateSelectionCandidate,
     SchedulerPriorityMode,
 };
 
@@ -33,11 +31,10 @@ mod tests {
     use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
 
     use super::{
-        auth_api_key_concurrency_limit_reached, build_ranked_minimal_candidate_selection,
-        candidate_is_selectable_with_runtime_state, candidate_supports_required_capability,
-        collect_global_model_names_for_required_capability, BuildMinimalCandidateSelectionInput,
-        CandidateRuntimeSelectabilityInput, SchedulerMinimalCandidateSelectionCandidate,
-        SchedulerPriorityMode,
+        auth_api_key_concurrency_limit_reached, candidate_is_selectable_with_runtime_state,
+        candidate_supports_required_capability, collect_global_model_names_for_required_capability,
+        CandidateRuntimeSelectabilityInput, EnumerateMinimalCandidateSelectionInput,
+        SchedulerMinimalCandidateSelectionCandidate,
     };
     use crate::SchedulerAuthConstraints;
 
@@ -176,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_ranked_minimal_candidate_selection_with_auth_constraints() {
+    fn enumerates_minimal_candidate_selection_with_auth_constraints() {
         let mut disallowed = sample_row("2");
         disallowed.provider_id = "provider-blocked".to_string();
         disallowed.provider_name = "Blocked".to_string();
@@ -187,7 +184,7 @@ mod tests {
             allowed_models: Some(vec!["gpt-5".to_string()]),
         };
         let candidates =
-            build_ranked_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+            super::enumerate_minimal_candidate_selection(EnumerateMinimalCandidateSelectionInput {
                 rows: vec![sample_row("1"), disallowed],
                 normalized_api_format: "openai:chat",
                 requested_model_name: "gpt-5",
@@ -195,8 +192,6 @@ mod tests {
                 require_streaming: false,
                 required_capabilities: None,
                 auth_constraints: Some(&constraints),
-                affinity_key: None,
-                priority_mode: SchedulerPriorityMode::Provider,
             })
             .expect("candidate selection should build");
 
@@ -213,7 +208,7 @@ mod tests {
         earlier_priority.provider_priority = 0;
 
         let candidates =
-            super::enumerate_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+            super::enumerate_minimal_candidate_selection(EnumerateMinimalCandidateSelectionInput {
                 rows: vec![later_priority, earlier_priority],
                 normalized_api_format: "openai:chat",
                 requested_model_name: "gpt-5",
@@ -221,8 +216,6 @@ mod tests {
                 require_streaming: false,
                 required_capabilities: None,
                 auth_constraints: None,
-                affinity_key: None,
-                priority_mode: SchedulerPriorityMode::Provider,
             })
             .expect("candidate enumeration should build");
 
@@ -255,8 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn ranked_minimal_candidate_selection_prefers_matching_requested_capabilities_before_priority()
-    {
+    fn requested_capability_priority_counts_missing_compatible_capabilities() {
         let mut missing_capability = sample_row("1");
         missing_capability.key_capabilities = Some(serde_json::json!({"cache_1h": false}));
         missing_capability.provider_priority = 0;
@@ -267,7 +259,7 @@ mod tests {
 
         let required_capabilities = serde_json::json!({"cache_1h": true});
         let candidates =
-            build_ranked_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+            super::enumerate_minimal_candidate_selection(EnumerateMinimalCandidateSelectionInput {
                 rows: vec![missing_capability, matching_capability],
                 normalized_api_format: "openai:chat",
                 requested_model_name: "gpt-5",
@@ -275,14 +267,20 @@ mod tests {
                 require_streaming: false,
                 required_capabilities: Some(&required_capabilities),
                 auth_constraints: None,
-                affinity_key: None,
-                priority_mode: SchedulerPriorityMode::Provider,
             })
             .expect("candidate selection should build");
+        let priority = candidates
+            .iter()
+            .map(|candidate| {
+                super::requested_capability_priority_for_candidate(
+                    Some(&required_capabilities),
+                    candidate,
+                )
+            })
+            .collect::<Vec<_>>();
 
         assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].key_id, "key-2");
-        assert_eq!(candidates[1].key_id, "key-1");
+        assert_eq!(priority, vec![(0, 1), (0, 0)]);
     }
 
     #[test]

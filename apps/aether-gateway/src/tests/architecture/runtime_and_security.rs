@@ -481,30 +481,9 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
     }
 
     assert!(
-        workspace_file_exists("crates/aether-scheduler-core/src/candidate/selection.rs"),
-        "core candidate/selection.rs should host legacy minimal selection compatibility helper"
+        !workspace_file_exists("crates/aether-scheduler-core/src/candidate/selection.rs"),
+        "core candidate/selection.rs compatibility helper should be removed"
     );
-    let core_candidate_selection =
-        read_workspace_file("crates/aether-scheduler-core/src/candidate/selection.rs");
-    for expected in [
-        "build_ranked_minimal_candidate_selection",
-        "apply_scheduler_candidate_ranking",
-    ] {
-        assert!(
-            core_candidate_selection.contains(expected),
-            "core candidate/selection.rs should host compatibility helper {expected}"
-        );
-    }
-    for forbidden in [
-        "collect_selectable_candidates_from_keys",
-        "reorder_candidates_by_scheduler_health",
-        "compare_candidates_by_priority_mode",
-    ] {
-        assert!(
-            !core_candidate_selection.contains(forbidden),
-            "core candidate/selection.rs should not keep removed legacy helper {forbidden}"
-        );
-    }
 
     let affinity_cache = read_workspace_file("apps/aether-gateway/src/cache/scheduler_affinity.rs");
     assert!(

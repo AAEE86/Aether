@@ -28,7 +28,7 @@ pub struct SchedulerMinimalCandidateSelectionCandidate {
     pub mapping_matched_model: Option<String>,
 }
 
-pub struct BuildMinimalCandidateSelectionInput<'a> {
+pub struct EnumerateMinimalCandidateSelectionInput<'a> {
     pub rows: Vec<StoredMinimalCandidateSelectionRow>,
     pub normalized_api_format: &'a str,
     pub requested_model_name: &'a str,
@@ -36,6 +36,4 @@ pub struct BuildMinimalCandidateSelectionInput<'a> {
     pub require_streaming: bool,
     pub required_capabilities: Option<&'a serde_json::Value>,
     pub auth_constraints: Option<&'a crate::SchedulerAuthConstraints>,
-    pub affinity_key: Option<&'a str>,
-    pub priority_mode: SchedulerPriorityMode,
 }

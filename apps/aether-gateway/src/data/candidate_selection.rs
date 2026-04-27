@@ -4,8 +4,8 @@ use aether_scheduler_core::{
     auth_constraints_allow_api_format, collect_global_model_names_for_required_capability,
     enumerate_minimal_candidate_selection, normalize_api_format,
     resolve_requested_global_model_name, row_supports_requested_model,
-    BuildMinimalCandidateSelectionInput, SchedulerAuthConstraints,
-    SchedulerMinimalCandidateSelectionCandidate, SchedulerPriorityMode,
+    EnumerateMinimalCandidateSelectionInput, SchedulerAuthConstraints,
+    SchedulerMinimalCandidateSelectionCandidate,
 };
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -77,7 +77,7 @@ pub(crate) async fn enumerate_minimal_candidate_selection_with_required_capabili
         return Ok(Vec::new());
     };
     let auth_constraints = auth_snapshot.map(auth_snapshot_constraints);
-    enumerate_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+    enumerate_minimal_candidate_selection(EnumerateMinimalCandidateSelectionInput {
         rows,
         normalized_api_format: &normalized_api_format,
         requested_model_name,
@@ -85,8 +85,6 @@ pub(crate) async fn enumerate_minimal_candidate_selection_with_required_capabili
         require_streaming,
         required_capabilities,
         auth_constraints: auth_constraints.as_ref(),
-        affinity_key: None,
-        priority_mode: SchedulerPriorityMode::Provider,
     })
 }
 
@@ -170,12 +168,6 @@ pub(crate) async fn read_global_model_names_for_api_format(
     }
 
     Ok(model_names.into_iter().collect())
-}
-
-fn auth_snapshot_affinity_key(auth_snapshot: Option<&GatewayAuthApiKeySnapshot>) -> Option<&str> {
-    auth_snapshot
-        .map(|snapshot| snapshot.api_key_id.trim())
-        .filter(|value| !value.is_empty())
 }
 
 fn auth_snapshot_constraints(snapshot: &GatewayAuthApiKeySnapshot) -> SchedulerAuthConstraints {

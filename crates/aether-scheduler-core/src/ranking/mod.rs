@@ -210,6 +210,26 @@ mod tests {
     }
 
     #[test]
+    fn capability_priority_precedes_provider_priority() {
+        let matching_capability = candidate("matching", 10, 0, None);
+        let mut missing_compatible_capability = candidate("missing", 0, 0, None);
+        missing_compatible_capability.capability_priority = (0, 1);
+
+        assert_eq!(
+            ranked_ids(
+                &[missing_compatible_capability, matching_capability],
+                SchedulerRankingContext {
+                    priority_mode: SchedulerPriorityMode::Provider,
+                    ranking_mode: SchedulerRankingMode::FixedOrder,
+                    include_health: false,
+                    load_balance_seed: 0,
+                },
+            ),
+            vec!["provider-matching", "provider-missing"]
+        );
+    }
+
+    #[test]
     fn cache_affinity_can_promote_cached_candidate_and_reports_reason() {
         let high_priority = candidate("high", 0, 0, Some(0));
         let mut cached = candidate("cached", 10, 0, Some(10));

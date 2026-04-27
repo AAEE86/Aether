@@ -65,26 +65,7 @@ pub fn requested_capability_priority_for_candidate(
     )
 }
 
-pub(crate) fn enabled_required_capabilities(
-    required_capabilities: Option<&serde_json::Value>,
-) -> Vec<RequiredCapabilityDescriptor<'_>> {
-    let Some(required_capabilities) = required_capabilities.and_then(serde_json::Value::as_object)
-    else {
-        return Vec::new();
-    };
-
-    required_capabilities
-        .iter()
-        .filter_map(|(capability, value)| {
-            requested_capability_is_enabled(value).then_some(RequiredCapabilityDescriptor {
-                name: capability.as_str(),
-                compatible: requested_capability_is_compatible(capability),
-            })
-        })
-        .collect()
-}
-
-pub(crate) fn requested_capability_priority_for_candidate_descriptors<'a, I>(
+fn requested_capability_priority_for_candidate_descriptors<'a, I>(
     required_capabilities: I,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
 ) -> (u32, u32)

@@ -4,13 +4,13 @@ use aether_data_contracts::repository::candidate_selection::StoredMinimalCandida
 use aether_data_contracts::DataLayerError;
 
 use super::types::{
-    BuildMinimalCandidateSelectionInput, SchedulerMinimalCandidateSelectionCandidate,
+    EnumerateMinimalCandidateSelectionInput, SchedulerMinimalCandidateSelectionCandidate,
 };
 
 pub fn enumerate_minimal_candidate_selection(
-    input: BuildMinimalCandidateSelectionInput<'_>,
+    input: EnumerateMinimalCandidateSelectionInput<'_>,
 ) -> Result<Vec<SchedulerMinimalCandidateSelectionCandidate>, DataLayerError> {
-    let BuildMinimalCandidateSelectionInput {
+    let EnumerateMinimalCandidateSelectionInput {
         rows,
         normalized_api_format,
         requested_model_name,
