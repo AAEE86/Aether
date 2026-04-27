@@ -355,9 +355,12 @@ impl LocalOAuthRefreshCoordinator {
             _ => None,
         };
 
-        let refresh_result = adapter
-            .refresh(executor, transport, cached_entry.as_ref())
-            .await;
+        let refresh_entry = if force_refresh {
+            None
+        } else {
+            cached_entry.as_ref()
+        };
+        let refresh_result = adapter.refresh(executor, transport, refresh_entry).await;
         if let (Some(lock), Some(lease)) = (distributed_lock, distributed_lease.as_ref()) {
             if let Err(err) = lock.release(lease).await {
                 tracing::warn!(
@@ -434,6 +437,7 @@ mod tests {
     #[derive(Debug)]
     struct TestAdapter {
         refresh_hits: Arc<AtomicUsize>,
+        refresh_with_entry_hits: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -478,9 +482,12 @@ mod tests {
             &self,
             _executor: &dyn LocalOAuthHttpExecutor,
             _transport: &GatewayProviderTransportSnapshot,
-            _entry: Option<&CachedOAuthEntry>,
+            entry: Option<&CachedOAuthEntry>,
         ) -> Result<Option<CachedOAuthEntry>, LocalOAuthRefreshError> {
             self.refresh_hits.fetch_add(1, Ordering::SeqCst);
+            if entry.is_some() {
+                self.refresh_with_entry_hits.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(Some(CachedOAuthEntry {
                 provider_type: "test-oauth".to_string(),
                 auth_header_name: "authorization".to_string(),
@@ -547,9 +554,11 @@ mod tests {
     #[tokio::test]
     async fn coordinator_reuses_runtime_cached_refresh_result() {
         let refresh_hits = Arc::new(AtomicUsize::new(0));
+        let refresh_with_entry_hits = Arc::new(AtomicUsize::new(0));
         let coordinator =
             LocalOAuthRefreshCoordinator::with_adapters_for_tests(vec![Arc::new(TestAdapter {
                 refresh_hits: Arc::clone(&refresh_hits),
+                refresh_with_entry_hits: Arc::clone(&refresh_with_entry_hits),
             })]);
         let transport = sample_transport();
         let executor = ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new());
@@ -597,9 +606,11 @@ mod tests {
     #[tokio::test]
     async fn coordinator_force_refresh_bypasses_runtime_cache() {
         let refresh_hits = Arc::new(AtomicUsize::new(0));
+        let refresh_with_entry_hits = Arc::new(AtomicUsize::new(0));
         let coordinator =
             LocalOAuthRefreshCoordinator::with_adapters_for_tests(vec![Arc::new(TestAdapter {
                 refresh_hits: Arc::clone(&refresh_hits),
+                refresh_with_entry_hits: Arc::clone(&refresh_with_entry_hits),
             })]);
         let transport = sample_transport();
         let executor = ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new());
@@ -616,5 +627,6 @@ mod tests {
         assert!(first.and_then(|result| result.refreshed_entry).is_some());
         assert!(forced.and_then(|result| result.refreshed_entry).is_some());
         assert_eq!(refresh_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(refresh_with_entry_hits.load(Ordering::SeqCst), 0);
     }
 }
