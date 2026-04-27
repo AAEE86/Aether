@@ -39,12 +39,9 @@ pub use model::{
 };
 pub use provider::{build_provider_concurrent_limit_map, should_skip_provider_quota};
 pub use ranking::{
-    apply_scheduler_candidate_ranking, candidate_priority_slot, candidates_share_priority_group,
-    compare_candidate_identity_for_ranking, compare_candidate_priority_slot,
-    scheduler_candidate_ranking_order, scheduler_ranking_outcomes, SchedulerRankableCandidate,
-    SchedulerRankingContext, SchedulerRankingMode, SchedulerRankingOutcome,
-    SchedulerTunnelAffinityBucket, RANKING_REASON_CACHED_AFFINITY, RANKING_REASON_CROSS_FORMAT,
-    RANKING_REASON_LOCAL_TUNNEL,
+    apply_scheduler_candidate_ranking, SchedulerRankableCandidate, SchedulerRankingContext,
+    SchedulerRankingMode, SchedulerRankingOutcome, SchedulerTunnelAffinityBucket,
+    RANKING_REASON_CACHED_AFFINITY, RANKING_REASON_CROSS_FORMAT, RANKING_REASON_LOCAL_TUNNEL,
 };
 pub use request_candidate::{
     build_execution_request_candidate_seed, build_local_request_candidate_status_record,

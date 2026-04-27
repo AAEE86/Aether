@@ -1,12 +1,11 @@
 use std::cmp::Ordering;
 
+use super::compare_candidate_identity_for_ranking;
+use super::format::compare_format_state;
+use super::priority::{candidates_share_priority_group, compare_candidate_priority_slot};
 use super::types::{SchedulerRankableCandidate, SchedulerRankingContext, SchedulerRankingMode};
-use super::{
-    candidates_share_priority_group, compare_candidate_identity_for_ranking,
-    compare_candidate_priority_slot, compare_format_state,
-};
 
-pub fn compare_rankable_candidates(
+pub(super) fn compare_rankable_candidates(
     left: &SchedulerRankableCandidate,
     right: &SchedulerRankableCandidate,
     context: SchedulerRankingContext,
@@ -79,7 +78,7 @@ fn compare_health(
         .then_with(|| right.health_score.total_cmp(&left.health_score))
 }
 
-pub fn apply_load_balance_rotation(
+pub(super) fn apply_load_balance_rotation(
     sorted_indices: &mut [usize],
     candidates: &[SchedulerRankableCandidate],
     context: SchedulerRankingContext,

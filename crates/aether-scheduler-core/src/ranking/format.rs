@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use super::types::SchedulerRankableCandidate;
 
-pub fn compare_format_state(
+pub(super) fn compare_format_state(
     left: &SchedulerRankableCandidate,
     right: &SchedulerRankableCandidate,
 ) -> Ordering {

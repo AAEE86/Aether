@@ -4,7 +4,7 @@ use crate::SchedulerPriorityMode;
 
 use super::types::SchedulerRankableCandidate;
 
-pub fn candidate_priority_slot(
+pub(super) fn candidate_priority_slot(
     candidate: &SchedulerRankableCandidate,
     priority_mode: SchedulerPriorityMode,
 ) -> i32 {
@@ -16,7 +16,7 @@ pub fn candidate_priority_slot(
     }
 }
 
-pub fn compare_candidate_priority_slot(
+pub(super) fn compare_candidate_priority_slot(
     left: &SchedulerRankableCandidate,
     right: &SchedulerRankableCandidate,
     priority_mode: SchedulerPriorityMode,
@@ -35,7 +35,7 @@ pub fn compare_candidate_priority_slot(
     }
 }
 
-pub fn candidates_share_priority_group(
+pub(super) fn candidates_share_priority_group(
     left: &SchedulerRankableCandidate,
     right: &SchedulerRankableCandidate,
     priority_mode: SchedulerPriorityMode,

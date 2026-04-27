@@ -4,13 +4,10 @@ mod priority;
 mod reasons;
 mod types;
 
-pub use format::compare_format_state;
-pub use modes::{apply_load_balance_rotation, compare_rankable_candidates};
-pub use priority::{
-    candidate_priority_slot, candidates_share_priority_group, compare_candidate_priority_slot,
-};
+use modes::{apply_load_balance_rotation, compare_rankable_candidates};
+use priority::candidate_priority_slot;
+use reasons::{demoted_by as ranking_demoted_by, promoted_by as ranking_promoted_by};
 pub use reasons::{
-    demoted_by as ranking_demoted_by, promoted_by as ranking_promoted_by,
     RANKING_REASON_CACHED_AFFINITY, RANKING_REASON_CROSS_FORMAT, RANKING_REASON_LOCAL_TUNNEL,
 };
 pub use types::{
@@ -18,7 +15,7 @@ pub use types::{
     SchedulerRankingOutcome, SchedulerTunnelAffinityBucket,
 };
 
-pub fn compare_candidate_identity_for_ranking(
+fn compare_candidate_identity_for_ranking(
     left: &SchedulerRankableCandidate,
     right: &SchedulerRankableCandidate,
 ) -> std::cmp::Ordering {
@@ -32,7 +29,7 @@ pub fn compare_candidate_identity_for_ranking(
         )
 }
 
-pub fn scheduler_candidate_ranking_order(
+fn scheduler_candidate_ranking_order(
     candidates: &[SchedulerRankableCandidate],
     context: SchedulerRankingContext,
 ) -> Vec<usize> {
@@ -44,7 +41,7 @@ pub fn scheduler_candidate_ranking_order(
     order
 }
 
-pub fn scheduler_ranking_outcomes(
+fn scheduler_ranking_outcomes(
     candidates: &[SchedulerRankableCandidate],
     context: SchedulerRankingContext,
 ) -> Vec<SchedulerRankingOutcome> {
