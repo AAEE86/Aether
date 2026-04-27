@@ -19,50 +19,8 @@ use aether_scheduler_core::{
 use super::candidate_affinity_cache::read_cached_scheduler_affinity_target;
 use super::candidate_resolution::EligibleLocalExecutionCandidate;
 use super::candidate_transport_ordering::{
-    resolve_cached_candidate_execution_ordering, resolve_cached_transport_execution_ordering,
-    CandidateExecutionOrdering,
+    resolve_cached_transport_execution_ordering, CandidateExecutionOrdering,
 };
-
-#[cfg(test)]
-async fn rank_local_execution_candidates(
-    state: PlannerAppState<'_>,
-    candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
-    client_api_format: &str,
-    required_capabilities: Option<&serde_json::Value>,
-) -> Vec<SchedulerMinimalCandidateSelectionCandidate> {
-    let normalized_client_api_format = client_api_format.trim().to_ascii_lowercase();
-    let ordering_config = read_scheduler_ordering_config_or_default(state).await;
-    let mut candidates = candidates;
-    let mut rankables = Vec::with_capacity(candidates.len());
-    let mut ordering_cache = BTreeMap::new();
-
-    for (original_index, candidate) in candidates.iter().enumerate() {
-        let ordering = resolve_cached_candidate_execution_ordering(
-            state,
-            &mut ordering_cache,
-            candidate,
-            ordering_config,
-        )
-        .await;
-        rankables.push(rankable_candidate_from_candidate(
-            candidate,
-            original_index,
-            ordering,
-            normalized_client_api_format.as_str(),
-            candidate.endpoint_api_format.as_str(),
-            required_capabilities,
-            false,
-        ));
-    }
-
-    drop(ordering_cache);
-    apply_scheduler_candidate_ranking(
-        &mut candidates,
-        &rankables,
-        planner_ranking_context(ordering_config),
-    );
-    candidates
-}
 
 pub(crate) async fn rank_eligible_local_execution_candidates(
     state: PlannerAppState<'_>,
@@ -224,26 +182,67 @@ async fn read_scheduler_ordering_config_or_default(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
     };
-    use aether_scheduler_core::RANKING_REASON_CACHED_AFFINITY;
+    use aether_scheduler_core::{
+        apply_scheduler_candidate_ranking, RANKING_REASON_CACHED_AFFINITY,
+    };
     use serde_json::json;
 
     use super::super::candidate_affinity_cache::remember_scheduler_affinity_for_candidate;
-    use super::{
-        rank_local_execution_candidates, PlannerAppState,
-        SchedulerMinimalCandidateSelectionCandidate,
-    };
+    use super::super::candidate_transport_ordering::resolve_cached_candidate_execution_ordering;
+    use super::{PlannerAppState, SchedulerMinimalCandidateSelectionCandidate};
     use crate::ai_pipeline::planner::candidate_resolution::filter_and_rank_local_execution_candidates;
     use crate::data::auth::GatewayAuthApiKeySnapshot;
     use crate::data::GatewayDataState;
     use crate::tunnel::TunnelAttachmentRecord;
     use crate::{scheduler::affinity::SCHEDULER_AFFINITY_TTL, AppState};
     use aether_data::repository::auth::StoredAuthApiKeySnapshot;
+
+    async fn rank_local_execution_candidates(
+        state: PlannerAppState<'_>,
+        candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
+        client_api_format: &str,
+        required_capabilities: Option<&serde_json::Value>,
+    ) -> Vec<SchedulerMinimalCandidateSelectionCandidate> {
+        let normalized_client_api_format = client_api_format.trim().to_ascii_lowercase();
+        let ordering_config = super::read_scheduler_ordering_config_or_default(state).await;
+        let mut candidates = candidates;
+        let mut rankables = Vec::with_capacity(candidates.len());
+        let mut ordering_cache = BTreeMap::new();
+
+        for (original_index, candidate) in candidates.iter().enumerate() {
+            let ordering = resolve_cached_candidate_execution_ordering(
+                state,
+                &mut ordering_cache,
+                candidate,
+                ordering_config,
+            )
+            .await;
+            rankables.push(super::rankable_candidate_from_candidate(
+                candidate,
+                original_index,
+                ordering,
+                normalized_client_api_format.as_str(),
+                candidate.endpoint_api_format.as_str(),
+                required_capabilities,
+                false,
+            ));
+        }
+
+        drop(ordering_cache);
+        apply_scheduler_candidate_ranking(
+            &mut candidates,
+            &rankables,
+            super::planner_ranking_context(ordering_config),
+        );
+        candidates
+    }
 
     fn sample_candidate(
         endpoint_id: &str,

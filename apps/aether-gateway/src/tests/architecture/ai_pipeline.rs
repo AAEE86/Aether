@@ -454,8 +454,12 @@ fn ai_pipeline_planner_separates_local_candidate_resolution_from_ranking() {
     let candidate_ranking =
         read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_ranking.rs");
     assert!(
-        candidate_ranking.contains("#[cfg(test)]\nasync fn rank_local_execution_candidates("),
-        "planner/candidate_ranking.rs should keep raw local ranking as a test-only helper"
+        candidate_ranking.contains("async fn rank_local_execution_candidates("),
+        "planner/candidate_ranking.rs should keep raw local ranking helper inside tests"
+    );
+    assert!(
+        !candidate_ranking.contains("#[cfg(test)]\nasync fn rank_local_execution_candidates("),
+        "planner/candidate_ranking.rs should not keep the test-only ranking helper at module root"
     );
     for forbidden in [
         "struct SkippedLocalExecutionCandidate",
