@@ -5,10 +5,6 @@ use tracing::warn;
 
 use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
 use crate::ai_pipeline::conversion::{request_candidate_api_formats, request_conversion_kind};
-use crate::ai_pipeline::planner::candidate_eligibility::{
-    extract_pool_sticky_session_token, filter_and_rank_local_execution_candidates,
-    SkippedLocalExecutionCandidate,
-};
 use crate::ai_pipeline::planner::candidate_materialization::{
     mark_skipped_local_execution_candidate, mark_skipped_local_execution_candidate_with_extra_data,
     mark_skipped_local_execution_candidate_with_failure_diagnostic,
@@ -20,6 +16,10 @@ use crate::ai_pipeline::planner::candidate_metadata::{
     build_local_execution_candidate_contract_metadata,
     build_local_execution_candidate_contract_metadata_for_candidate,
     LocalExecutionCandidateMetadataParts,
+};
+use crate::ai_pipeline::planner::candidate_resolution::{
+    extract_pool_sticky_session_token, filter_and_rank_local_execution_candidates,
+    SkippedLocalExecutionCandidate,
 };
 use crate::ai_pipeline::planner::candidate_source::auth_snapshot_allows_cross_format_candidate;
 use crate::ai_pipeline::planner::common::extract_standard_requested_model;
@@ -234,6 +234,7 @@ pub(crate) async fn materialize_local_openai_responses_candidate_attempts(
         candidates,
         spec_metadata.api_format,
         &input.requested_model,
+        Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         sticky_session_token.as_deref(),
     )

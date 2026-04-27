@@ -384,9 +384,9 @@ async fn fixed_order_disables_same_priority_affinity_hash_tiebreaker() {
     second.endpoint_id = "endpoint-b".to_string();
     second.key_id = "key-b".to_string();
     second.key_name = "beta".to_string();
-    second.provider_priority = 0;
+    second.provider_priority = 1;
     second.key_internal_priority = 0;
-    second.key_global_priority_by_format = Some(json!({"openai:chat": 0}));
+    second.key_global_priority_by_format = Some(json!({"openai:chat": 1}));
 
     let candidates = Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
         first, second,
@@ -438,9 +438,9 @@ async fn cache_affinity_promotes_cached_scheduler_affinity_candidate_when_enable
     second.endpoint_id = "endpoint-b".to_string();
     second.key_id = "key-b".to_string();
     second.key_name = "beta".to_string();
-    second.provider_priority = 1;
+    second.provider_priority = 0;
     second.key_internal_priority = 0;
-    second.key_global_priority_by_format = Some(json!({"openai:chat": 1}));
+    second.key_global_priority_by_format = Some(json!({"openai:chat": 0}));
 
     let candidates = Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
         first, second,

@@ -11,30 +11,56 @@ pub fn resolve_requested_global_model_name(
     requested_model_name: &str,
     api_format: &str,
 ) -> Option<String> {
-    resolve_global_model_name_by(rows, |row| {
-        row.model_provider_model_name == requested_model_name
-    })
-    .or_else(|| {
-        resolve_global_model_name_by(rows, |row| {
-            row.model_provider_model_mappings
-                .as_ref()
-                .is_some_and(|mappings| {
-                    mappings.iter().any(|mapping| {
-                        mapping_scope_matches(mapping, api_format)
-                            && mapping.name == requested_model_name
-                    })
-                })
-        })
-    })
-    .or_else(|| {
-        resolve_global_model_name_by(rows, |row| {
-            row.global_model_mappings.as_ref().is_some_and(|patterns| {
-                patterns
-                    .iter()
-                    .any(|pattern| matches_model_mapping(pattern, requested_model_name))
+    resolve_global_model_name_by(rows, |row| row.global_model_name == requested_model_name)
+        .or_else(|| {
+            resolve_global_model_name_by(rows, |row| {
+                row.model_provider_model_name == requested_model_name
             })
         })
-    })
+        .or_else(|| {
+            resolve_global_model_name_by(rows, |row| {
+                row.model_provider_model_mappings
+                    .as_ref()
+                    .is_some_and(|mappings| {
+                        mappings.iter().any(|mapping| {
+                            mapping_scope_matches(mapping, api_format)
+                                && mapping.name == requested_model_name
+                        })
+                    })
+            })
+        })
+        .or_else(|| {
+            resolve_global_model_name_by(rows, |row| {
+                row.global_model_mappings.as_ref().is_some_and(|patterns| {
+                    patterns
+                        .iter()
+                        .any(|pattern| matches_model_mapping(pattern, requested_model_name))
+                })
+            })
+        })
+}
+
+pub fn row_supports_requested_model(
+    row: &StoredMinimalCandidateSelectionRow,
+    requested_model_name: &str,
+    api_format: &str,
+) -> bool {
+    row.global_model_name == requested_model_name
+        || row.model_provider_model_name == requested_model_name
+        || row
+            .model_provider_model_mappings
+            .as_ref()
+            .is_some_and(|mappings| {
+                mappings.iter().any(|mapping| {
+                    mapping_scope_matches(mapping, api_format)
+                        && mapping.name == requested_model_name
+                })
+            })
+        || row.global_model_mappings.as_ref().is_some_and(|patterns| {
+            patterns
+                .iter()
+                .any(|pattern| matches_model_mapping(pattern, requested_model_name))
+        })
 }
 
 fn resolve_global_model_name_by<F>(

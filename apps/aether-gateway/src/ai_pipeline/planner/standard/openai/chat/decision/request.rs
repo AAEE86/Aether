@@ -4,10 +4,10 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::ai_pipeline::conversion::{request_conversion_direct_auth, request_conversion_kind};
-use crate::ai_pipeline::planner::candidate_eligibility::EligibleLocalExecutionCandidate;
 use crate::ai_pipeline::planner::candidate_preparation::{
     prepare_header_authenticated_candidate, OauthPreparationContext,
 };
+use crate::ai_pipeline::planner::candidate_resolution::EligibleLocalExecutionCandidate;
 use crate::ai_pipeline::planner::common::OPENAI_CHAT_STREAM_PLAN_KIND;
 use crate::ai_pipeline::planner::standard::{
     apply_codex_openai_responses_special_headers, build_cross_format_openai_chat_request_body,

@@ -1,10 +1,6 @@
 use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
 
 use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
-use crate::ai_pipeline::planner::candidate_eligibility::{
-    extract_pool_sticky_session_token, filter_and_rank_local_execution_candidates,
-    SkippedLocalExecutionCandidate,
-};
 use crate::ai_pipeline::planner::candidate_materialization::{
     mark_skipped_local_execution_candidate, mark_skipped_local_execution_candidate_with_extra_data,
     mark_skipped_local_execution_candidate_with_failure_diagnostic,
@@ -16,6 +12,10 @@ use crate::ai_pipeline::planner::candidate_metadata::{
     build_local_execution_candidate_contract_metadata,
     build_local_execution_candidate_contract_metadata_for_candidate,
     LocalExecutionCandidateMetadataParts,
+};
+use crate::ai_pipeline::planner::candidate_resolution::{
+    extract_pool_sticky_session_token, filter_and_rank_local_execution_candidates,
+    SkippedLocalExecutionCandidate,
 };
 use crate::ai_pipeline::planner::materialization_policy::{
     build_local_candidate_persistence_policy, LocalCandidatePersistencePolicyKind,
@@ -135,6 +135,7 @@ pub(crate) async fn materialize_local_openai_chat_candidate_attempts(
         candidates,
         "openai:chat",
         &input.requested_model,
+        Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         sticky_session_token.as_deref(),
     )

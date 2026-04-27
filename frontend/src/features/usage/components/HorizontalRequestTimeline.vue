@@ -229,6 +229,18 @@
                     </span>
                   </div>
                   <div
+                    v-if="currentAttemptRankingInfo"
+                    class="info-item"
+                  >
+                    <span class="info-label">排序原因</span>
+                    <span class="info-value info-value-stacked">
+                      <code class="format-code">{{ currentAttemptRankingInfo.summary }}</code>
+                      <span class="text-xs text-muted-foreground">
+                        {{ currentAttemptRankingInfo.hint }}
+                      </span>
+                    </span>
+                  </div>
+                  <div
                     v-if="currentAttempt.key_name || currentAttempt.key_id"
                     class="info-item"
                   >
@@ -1289,6 +1301,73 @@ const currentAttemptSchedulerInfo = computed<{
     providerPriorityLabel: providerPriority !== null ? String(providerPriority) : '-',
     keyPriorityLabel: keyInternalPriority !== null ? String(keyInternalPriority) : '-',
     hint,
+  }
+})
+
+const normalizeMetadataText = (value: unknown): string => {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+const formatRankingModeLabel = (value: string): string => {
+  const normalized = value.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()
+  const labels: Record<string, string> = {
+    fixed_order: '固定顺序',
+    cache_affinity: '亲和性优先',
+    load_balance: '负载均衡',
+  }
+  return labels[normalized] || value
+}
+
+const formatPriorityModeLabel = (value: string): string => {
+  const normalized = value.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()
+  const labels: Record<string, string> = {
+    provider: 'Provider 优先级',
+    global_key: '全局 Key 优先级',
+  }
+  return labels[normalized] || value
+}
+
+const formatRankingReasonLabel = (value: string): string => {
+  const labels: Record<string, string> = {
+    cached_affinity: '缓存亲和性命中',
+    local_tunnel: '本地隧道优先',
+    cross_format: '跨格式降级',
+  }
+  return labels[value] || value
+}
+
+const currentAttemptRankingInfo = computed<{
+  summary: string
+  hint: string
+} | null>(() => {
+  const attempt = currentAttempt.value
+  if (!attempt) return null
+  const extra = extractObject(attempt.extra_data)
+  if (!extra) return null
+
+  const rankingMode = normalizeMetadataText(extra.ranking_mode)
+  const priorityMode = normalizeMetadataText(extra.priority_mode)
+  const promotedBy = normalizeMetadataText(extra.promoted_by)
+  const demotedBy = normalizeMetadataText(extra.demoted_by)
+  const rankingIndex = normalizePriorityNumber(extra.ranking_index)
+  const prioritySlot = normalizePriorityNumber(extra.priority_slot)
+  if (!rankingMode && !priorityMode && !promotedBy && !demotedBy && rankingIndex === null && prioritySlot === null) {
+    return null
+  }
+
+  const summaryParts: string[] = []
+  if (rankingMode) summaryParts.push(formatRankingModeLabel(rankingMode))
+  if (promotedBy) summaryParts.push(formatRankingReasonLabel(promotedBy))
+  if (demotedBy) summaryParts.push(formatRankingReasonLabel(demotedBy))
+
+  const hintParts: string[] = []
+  if (rankingIndex !== null) hintParts.push(`排序 #${rankingIndex + 1}`)
+  if (priorityMode) hintParts.push(formatPriorityModeLabel(priorityMode))
+  if (prioritySlot !== null) hintParts.push(`槽位 ${prioritySlot}`)
+
+  return {
+    summary: summaryParts.length > 0 ? summaryParts.join(' / ') : '排序元数据',
+    hint: hintParts.length > 0 ? hintParts.join(' · ') : '候选排序由 scheduler ranking engine 生成',
   }
 })
 

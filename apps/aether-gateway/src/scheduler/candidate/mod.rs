@@ -1,10 +1,12 @@
-use self::affinity::candidate_affinity_hash;
 use self::selection::{
     collect_selectable_candidates, collect_selectable_candidates_with_skip_reasons,
 };
 use super::state::SchedulerRuntimeState;
 
 mod affinity;
+mod enumeration;
+mod ranking;
+mod resolution;
 mod runtime;
 mod selection;
 

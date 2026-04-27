@@ -1,10 +1,6 @@
 use tracing::warn;
 
 use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
-use crate::ai_pipeline::planner::candidate_eligibility::{
-    extract_pool_sticky_session_token, filter_and_rank_local_execution_candidates,
-    SkippedLocalExecutionCandidate,
-};
 use crate::ai_pipeline::planner::candidate_materialization::{
     mark_skipped_local_execution_candidate,
     mark_skipped_local_execution_candidate_with_failure_diagnostic,
@@ -15,6 +11,10 @@ use crate::ai_pipeline::planner::candidate_materialization::{
 use crate::ai_pipeline::planner::candidate_metadata::{
     build_local_execution_candidate_metadata,
     build_local_execution_candidate_metadata_for_candidate, LocalExecutionCandidateMetadataParts,
+};
+use crate::ai_pipeline::planner::candidate_resolution::{
+    extract_pool_sticky_session_token, filter_and_rank_local_execution_candidates,
+    SkippedLocalExecutionCandidate,
 };
 use crate::ai_pipeline::planner::decision_input::{
     build_local_requested_model_decision_input, resolve_local_authenticated_decision_input,
@@ -157,6 +157,7 @@ async fn materialize_local_openai_image_candidate_attempts(
         candidates,
         api_format,
         &input.requested_model,
+        Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         sticky_session_token.as_deref(),
     )

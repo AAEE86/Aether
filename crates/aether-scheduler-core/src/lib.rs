@@ -4,6 +4,7 @@ mod candidate;
 mod health;
 mod model;
 mod provider;
+mod ranking;
 mod request_candidate;
 
 pub use affinity::{
@@ -19,9 +20,10 @@ pub use candidate::{
     candidate_is_selectable_with_runtime_state, candidate_runtime_skip_reason_with_state,
     candidate_supports_required_capability, collect_global_model_names_for_required_capability,
     collect_selectable_candidates_from_keys, compare_candidates_by_priority_mode,
-    reorder_candidates_by_scheduler_health, requested_capability_priority_for_candidate,
-    BuildMinimalCandidateSelectionInput, CandidateRuntimeSelectabilityInput,
-    SchedulerMinimalCandidateSelectionCandidate, SchedulerPriorityMode,
+    enumerate_minimal_candidate_selection, reorder_candidates_by_scheduler_health,
+    requested_capability_priority_for_candidate, BuildMinimalCandidateSelectionInput,
+    CandidateRuntimeSelectabilityInput, SchedulerMinimalCandidateSelectionCandidate,
+    SchedulerPriorityMode,
 };
 pub use health::{
     aggregate_provider_key_health_score, count_recent_active_requests_for_api_key,
@@ -35,9 +37,17 @@ pub use health::{
 pub use model::{
     candidate_model_names, extract_global_priority_for_format, matches_model_mapping,
     normalize_api_format, resolve_provider_model_name, resolve_requested_global_model_name,
-    row_supports_required_capability, select_provider_model_name,
+    row_supports_requested_model, row_supports_required_capability, select_provider_model_name,
 };
 pub use provider::{build_provider_concurrent_limit_map, should_skip_provider_quota};
+pub use ranking::{
+    apply_scheduler_candidate_ranking, candidate_priority_slot, candidates_share_priority_group,
+    compare_candidate_identity_for_ranking, compare_candidate_priority_slot,
+    scheduler_candidate_ranking_order, scheduler_ranking_outcomes, SchedulerRankableCandidate,
+    SchedulerRankingContext, SchedulerRankingMode, SchedulerRankingOutcome,
+    SchedulerTunnelAffinityBucket, RANKING_REASON_CACHED_AFFINITY, RANKING_REASON_CROSS_FORMAT,
+    RANKING_REASON_LOCAL_TUNNEL,
+};
 pub use request_candidate::{
     build_execution_request_candidate_seed, build_local_request_candidate_status_record,
     build_report_request_candidate_status_record, execution_error_details,

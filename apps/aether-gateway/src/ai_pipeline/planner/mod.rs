@@ -9,6 +9,7 @@ mod candidate_eligibility;
 mod candidate_materialization;
 mod candidate_metadata;
 mod candidate_preparation;
+mod candidate_resolution;
 mod candidate_source;
 mod common;
 mod decision;
@@ -27,7 +28,7 @@ mod specialized;
 mod standard;
 mod state;
 
-pub(crate) use self::candidate_eligibility::extract_pool_sticky_session_token;
+pub(crate) use self::candidate_resolution::extract_pool_sticky_session_token;
 pub(crate) use self::failure_diagnostic::{
     CandidateFailureDiagnostic, CandidateFailureDiagnosticKind,
 };

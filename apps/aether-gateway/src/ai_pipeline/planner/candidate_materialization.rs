@@ -1,9 +1,10 @@
 use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
+use aether_scheduler_core::SchedulerRankingOutcome;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::ai_pipeline::planner::candidate_affinity::remember_scheduler_affinity_for_candidate;
-use crate::ai_pipeline::planner::candidate_eligibility::{
+use crate::ai_pipeline::planner::candidate_resolution::{
     EligibleLocalExecutionCandidate, SkippedLocalExecutionCandidate,
 };
 use crate::ai_pipeline::planner::failure_diagnostic::CandidateFailureDiagnostic;
@@ -70,7 +71,10 @@ pub(crate) fn remember_first_local_candidate_affinity(
 }
 
 fn should_persist_available_local_candidate(eligible: &EligibleLocalExecutionCandidate) -> bool {
-    eligible.orchestration.pool_key_index.is_none()
+    eligible
+        .orchestration
+        .pool_key_index
+        .is_none_or(|index| index == 0)
 }
 
 fn should_persist_skipped_local_candidate(candidate: &SkippedLocalExecutionCandidate) -> bool {
@@ -104,7 +108,10 @@ where
         let candidate_index = candidate_index as u32;
         let attempt_slots = local_attempt_slot_count(&eligible.transport);
         let pool_key_index = eligible.orchestration.pool_key_index;
-        let extra_data = build_extra_data(&eligible);
+        let extra_data = local_candidate_extra_data_with_ranking(
+            build_extra_data(&eligible),
+            eligible.ranking.as_ref(),
+        );
         let mut owned_eligible = Some(eligible);
 
         for retry_index in 0..attempt_slots {
@@ -151,6 +158,54 @@ where
     }
 
     materialized
+}
+
+fn local_candidate_extra_data_with_ranking(
+    extra_data: Option<Value>,
+    ranking: Option<&SchedulerRankingOutcome>,
+) -> Option<Value> {
+    let Some(ranking) = ranking else {
+        return extra_data;
+    };
+
+    let mut object = match extra_data {
+        Some(Value::Object(object)) => object,
+        Some(value) => {
+            let mut object = serde_json::Map::new();
+            object.insert("extra".to_string(), value);
+            object
+        }
+        None => serde_json::Map::new(),
+    };
+    object.insert(
+        "ranking_mode".to_string(),
+        Value::String(format!("{:?}", ranking.ranking_mode)),
+    );
+    object.insert(
+        "priority_mode".to_string(),
+        Value::String(format!("{:?}", ranking.priority_mode)),
+    );
+    object.insert(
+        "ranking_index".to_string(),
+        Value::Number(serde_json::Number::from(ranking.ranking_index as u64)),
+    );
+    object.insert(
+        "priority_slot".to_string(),
+        Value::Number(serde_json::Number::from(i64::from(ranking.priority_slot))),
+    );
+    if let Some(promoted_by) = ranking.promoted_by {
+        object.insert(
+            "promoted_by".to_string(),
+            Value::String(promoted_by.to_string()),
+        );
+    }
+    if let Some(demoted_by) = ranking.demoted_by {
+        object.insert(
+            "demoted_by".to_string(),
+            Value::String(demoted_by.to_string()),
+        );
+    }
+    Some(Value::Object(object))
 }
 
 pub(crate) async fn persist_available_local_execution_candidates_with_context<F>(
@@ -356,7 +411,10 @@ mod tests {
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider,
     };
-    use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
+    use aether_scheduler_core::{
+        SchedulerMinimalCandidateSelectionCandidate, SchedulerPriorityMode, SchedulerRankingMode,
+        SchedulerRankingOutcome,
+    };
     use serde_json::json;
 
     use super::*;
@@ -456,11 +514,12 @@ mod tests {
                 candidate_group_id: pool_key_index.map(|_| "pool-group".to_string()),
                 pool_key_index,
             },
+            ranking: None,
         }
     }
 
     #[tokio::test]
-    async fn pool_candidates_are_not_persisted_as_available_before_attempt() {
+    async fn pool_group_representatives_are_persisted_as_available_before_attempt() {
         let repository = Arc::new(InMemoryRequestCandidateRepository::default());
         let app = AppState::new()
             .expect("state should build")
@@ -478,6 +537,7 @@ mod tests {
             None,
             vec![
                 sample_eligible("pool-key", Some(0)),
+                sample_eligible("pool-key-internal", Some(1)),
                 sample_eligible("normal-key", None),
             ],
             "persist should not fail",
@@ -485,13 +545,74 @@ mod tests {
         )
         .await;
 
-        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts.len(), 3);
         let stored = app
             .read_request_candidates_by_request_id("trace-pool-lazy")
             .await
             .expect("request candidates should read");
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].key_id.as_deref(), Some("pool-key"));
+        assert_eq!(stored[0].candidate_index, 0);
+        assert_eq!(stored[1].key_id.as_deref(), Some("normal-key"));
+        assert_eq!(stored[1].candidate_index, 2);
+    }
+
+    #[tokio::test]
+    async fn available_candidates_persist_ranking_metadata_in_extra_data() {
+        let repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_request_candidate_repository_for_tests(Arc::clone(
+                    &repository,
+                )),
+            );
+        let mut eligible = sample_eligible("ranked-key", None);
+        eligible.ranking = Some(SchedulerRankingOutcome {
+            original_index: 1,
+            ranking_index: 0,
+            priority_mode: SchedulerPriorityMode::Provider,
+            ranking_mode: SchedulerRankingMode::CacheAffinity,
+            priority_slot: 7,
+            promoted_by: Some("cached_affinity"),
+            demoted_by: Some("cross_format"),
+        });
+
+        persist_available_local_execution_candidates(
+            PlannerAppState::new(&app),
+            "trace-ranking-extra-data",
+            "user-1",
+            "api-key-1",
+            None,
+            vec![eligible],
+            "persist should not fail",
+            |_| Some(json!({ "existing": "value" })),
+        )
+        .await;
+
+        let stored = app
+            .read_request_candidates_by_request_id("trace-ranking-extra-data")
+            .await
+            .expect("request candidates should read");
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].key_id.as_deref(), Some("normal-key"));
+        let extra_data = stored[0]
+            .extra_data
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .expect("ranking metadata should persist as object extra data");
+        assert_eq!(extra_data.get("existing"), Some(&json!("value")));
+        assert_eq!(
+            extra_data.get("ranking_mode"),
+            Some(&json!("CacheAffinity"))
+        );
+        assert_eq!(extra_data.get("priority_mode"), Some(&json!("Provider")));
+        assert_eq!(extra_data.get("ranking_index"), Some(&json!(0)));
+        assert_eq!(extra_data.get("priority_slot"), Some(&json!(7)));
+        assert_eq!(
+            extra_data.get("promoted_by"),
+            Some(&json!("cached_affinity"))
+        );
+        assert_eq!(extra_data.get("demoted_by"), Some(&json!("cross_format")));
     }
 
     #[tokio::test]

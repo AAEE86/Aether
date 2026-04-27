@@ -3,7 +3,6 @@ use serde_json::json;
 use tracing::warn;
 
 use crate::ai_pipeline::contracts::ExecutionRuntimeAuthContext;
-use crate::ai_pipeline::planner::candidate_eligibility::filter_and_rank_local_execution_candidates_without_transport_pair_gate;
 use crate::ai_pipeline::planner::candidate_materialization::{
     mark_skipped_local_execution_candidate,
     mark_skipped_local_execution_candidate_with_failure_diagnostic,
@@ -15,6 +14,7 @@ use crate::ai_pipeline::planner::candidate_metadata::{
     build_local_execution_candidate_metadata,
     build_local_execution_candidate_metadata_for_candidate, LocalExecutionCandidateMetadataParts,
 };
+use crate::ai_pipeline::planner::candidate_resolution::filter_and_rank_local_execution_candidates_without_transport_pair_gate;
 use crate::ai_pipeline::planner::decision_input::{
     build_local_authenticated_decision_input, resolve_local_authenticated_decision_input,
 };
@@ -95,6 +95,7 @@ pub(super) async fn materialize_local_gemini_files_candidate_attempts(
             candidates,
             GEMINI_FILES_CLIENT_API_FORMAT,
             None,
+            Some(&input.auth_snapshot),
             input.required_capabilities.as_ref(),
             None,
         )

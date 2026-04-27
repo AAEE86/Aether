@@ -2,7 +2,7 @@ use aether_contracts::ProxySnapshot;
 use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
 use serde_json::{json, Map, Value};
 
-use crate::ai_pipeline::planner::candidate_eligibility::EligibleLocalExecutionCandidate;
+use crate::ai_pipeline::planner::candidate_resolution::EligibleLocalExecutionCandidate;
 use crate::ai_pipeline::planner::passthrough::resolve_same_format_provider_transport_unsupported_reason_for_trace;
 use crate::ai_pipeline::transport::{
     body_rules_are_locally_supported, header_rules_are_locally_supported,

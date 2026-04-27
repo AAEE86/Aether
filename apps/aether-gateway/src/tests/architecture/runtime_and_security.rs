@@ -254,12 +254,20 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
         "selection.rs should not depend on gateway-local SchedulerAffinityTarget"
     );
     assert!(
-        selection.contains("reorder_candidates_by_scheduler_health_in_core"),
-        "selection.rs should depend on core candidate reorder helper"
+        selection.contains("enumerate_scheduler_candidates("),
+        "selection.rs should delegate candidate enumeration"
     );
     assert!(
-        selection.contains("collect_selectable_candidates_from_keys"),
-        "selection.rs should depend on core selectable-candidate collector"
+        selection.contains("read_candidate_runtime_selection_snapshot("),
+        "selection.rs should delegate runtime snapshot loading"
+    );
+    assert!(
+        selection.contains("resolve_scheduler_candidate_selectability("),
+        "selection.rs should delegate selectability resolution"
+    );
+    assert!(
+        selection.contains("rank_scheduler_candidates("),
+        "selection.rs should delegate final ranking"
     );
     for pattern in [
         "async fn collect_selectable_candidates(",
@@ -282,8 +290,10 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
         "read_provider_concurrent_limits(",
         "read_provider_key_rpm_states(",
         "candidate_is_selectable_with_runtime_state",
+        "collect_selectable_candidates_from_keys",
         "auth_api_key_concurrency_limit_reached",
         "build_provider_concurrent_limit_map(",
+        "reorder_candidates_by_scheduler_health",
     ] {
         assert!(
             !selection.contains(pattern),
@@ -558,8 +568,8 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
     let planner_candidate_affinity =
         read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_affinity.rs");
     assert!(
-        planner_candidate_affinity
-            .contains("aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate"),
+        planner_candidate_affinity.contains("use aether_scheduler_core::{")
+            && planner_candidate_affinity.contains("SchedulerMinimalCandidateSelectionCandidate"),
         "planner/candidate_affinity.rs should depend directly on core minimal candidate DTO"
     );
     assert!(

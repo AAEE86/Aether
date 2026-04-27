@@ -2,9 +2,10 @@ use aether_data::DataLayerError;
 use aether_data_contracts::repository::candidate_selection::StoredMinimalCandidateSelectionRow;
 use aether_scheduler_core::{
     auth_constraints_allow_api_format, build_minimal_candidate_selection,
-    collect_global_model_names_for_required_capability, normalize_api_format,
-    resolve_requested_global_model_name, BuildMinimalCandidateSelectionInput,
-    SchedulerAuthConstraints, SchedulerMinimalCandidateSelectionCandidate, SchedulerPriorityMode,
+    collect_global_model_names_for_required_capability, enumerate_minimal_candidate_selection,
+    normalize_api_format, resolve_requested_global_model_name, row_supports_requested_model,
+    BuildMinimalCandidateSelectionInput, SchedulerAuthConstraints,
+    SchedulerMinimalCandidateSelectionCandidate, SchedulerPriorityMode,
 };
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -30,31 +31,24 @@ pub(crate) async fn read_requested_model_rows(
     api_format: &str,
     requested_model_name: &str,
 ) -> Result<Option<(String, Vec<StoredMinimalCandidateSelectionRow>)>, DataLayerError> {
-    let exact_rows = state
-        .read_minimal_candidate_selection_rows_for_api_format_and_global_model(
-            api_format,
-            requested_model_name,
-        )
-        .await?;
-    if !exact_rows.is_empty() {
-        return Ok(Some((requested_model_name.to_string(), exact_rows)));
-    }
-
     let rows = state
         .read_minimal_candidate_selection_rows_for_api_format(api_format)
         .await?;
+    let rows = rows
+        .into_iter()
+        .filter(|row| row_supports_requested_model(row, requested_model_name, api_format))
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
     let Some(resolved_global_model_name) =
         resolve_requested_global_model_name(&rows, requested_model_name, api_format)
     else {
         return Ok(None);
     };
 
-    Ok(Some((
-        resolved_global_model_name.clone(),
-        rows.into_iter()
-            .filter(|row| row.global_model_name == resolved_global_model_name)
-            .collect(),
-    )))
+    Ok(Some((resolved_global_model_name, rows)))
 }
 
 pub(crate) async fn read_minimal_candidate_selection(
@@ -177,6 +171,45 @@ pub(crate) async fn read_minimal_candidate_selection_with_priority_mode_and_affi
         auth_constraints: auth_constraints.as_ref(),
         affinity_key,
         priority_mode,
+    })
+}
+
+pub(crate) async fn enumerate_minimal_candidate_selection_with_required_capabilities(
+    state: &(impl MinimalCandidateSelectionRowSource + Sync),
+    api_format: &str,
+    requested_model_name: &str,
+    require_streaming: bool,
+    auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
+    required_capabilities: Option<&serde_json::Value>,
+) -> Result<Vec<SchedulerMinimalCandidateSelectionCandidate>, DataLayerError> {
+    let normalized_api_format = normalize_api_format(api_format);
+    if normalized_api_format.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if !auth_constraints_allow_api_format(
+        auth_snapshot.map(auth_snapshot_constraints).as_ref(),
+        &normalized_api_format,
+    ) {
+        return Ok(Vec::new());
+    }
+
+    let Some((resolved_global_model_name, rows)) =
+        read_requested_model_rows(state, &normalized_api_format, requested_model_name).await?
+    else {
+        return Ok(Vec::new());
+    };
+    let auth_constraints = auth_snapshot.map(auth_snapshot_constraints);
+    enumerate_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+        rows,
+        normalized_api_format: &normalized_api_format,
+        requested_model_name,
+        resolved_global_model_name: resolved_global_model_name.as_str(),
+        require_streaming,
+        required_capabilities,
+        auth_constraints: auth_constraints.as_ref(),
+        affinity_key: None,
+        priority_mode: SchedulerPriorityMode::Provider,
     })
 }
 

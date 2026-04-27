@@ -423,6 +423,7 @@ fn ai_pipeline_planner_separates_local_candidate_eligibility_from_affinity_ranki
     for pattern in [
         "mod candidate_affinity;",
         "mod candidate_eligibility;",
+        "mod candidate_resolution;",
         "mod candidate_preparation;",
     ] {
         assert!(
@@ -431,18 +432,29 @@ fn ai_pipeline_planner_separates_local_candidate_eligibility_from_affinity_ranki
         );
     }
 
-    let candidate_eligibility =
-        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_eligibility.rs");
+    let candidate_resolution =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_resolution.rs");
     for pattern in [
         "pub(crate) async fn filter_and_rank_local_execution_candidates(",
         "pub(crate) async fn filter_and_rank_local_execution_candidates_without_transport_pair_gate(",
         "pub(crate) async fn read_candidate_transport_snapshot(",
     ] {
         assert!(
-            candidate_eligibility.contains(pattern),
-            "planner/candidate_eligibility.rs should own {pattern}"
+            candidate_resolution.contains(pattern),
+            "planner/candidate_resolution.rs should own {pattern}"
         );
     }
+
+    let candidate_eligibility =
+        read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_eligibility.rs");
+    assert!(
+        candidate_eligibility.contains("pub(crate) use super::candidate_resolution::*;"),
+        "planner/candidate_eligibility.rs should remain a compatibility shim"
+    );
+    assert!(
+        !candidate_eligibility.contains("async fn filter_and_rank_local_execution_candidates("),
+        "planner/candidate_eligibility.rs should not keep resolution implementation"
+    );
 
     let candidate_affinity =
         read_workspace_file("apps/aether-gateway/src/ai_pipeline/planner/candidate_affinity.rs");
@@ -1233,11 +1245,11 @@ fn ai_pipeline_specialized_files_attempts_consume_eligible_local_candidates_with
     assert!(
         specialized_files_support
             .contains("filter_and_rank_local_execution_candidates_without_transport_pair_gate("),
-        "specialized files support should source runtime gating from candidate_eligibility"
+        "specialized files support should source runtime gating from candidate_resolution"
     );
     assert!(
         !specialized_files_support.contains("rank_local_execution_candidates("),
-        "specialized files support should not bypass candidate_eligibility with raw affinity ranking"
+        "specialized files support should not bypass candidate_resolution with raw affinity ranking"
     );
 
     let specialized_files_decision = read_workspace_file(

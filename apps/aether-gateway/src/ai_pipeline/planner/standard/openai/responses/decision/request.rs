@@ -5,10 +5,10 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::ai_pipeline::conversion::{request_conversion_direct_auth, request_conversion_kind};
-use crate::ai_pipeline::planner::candidate_eligibility::EligibleLocalExecutionCandidate;
 use crate::ai_pipeline::planner::candidate_preparation::{
     prepare_header_authenticated_candidate, OauthPreparationContext,
 };
+use crate::ai_pipeline::planner::candidate_resolution::EligibleLocalExecutionCandidate;
 use crate::ai_pipeline::planner::common::force_upstream_streaming_for_provider;
 use crate::ai_pipeline::planner::spec_metadata::local_openai_responses_spec_metadata;
 use crate::ai_pipeline::planner::standard::{
