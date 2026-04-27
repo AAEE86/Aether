@@ -13,67 +13,68 @@ use super::candidate_resolution::read_candidate_transport_snapshot;
 pub(super) type CandidateTransportIdentity<'a> = (&'a str, &'a str, &'a str);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CandidateExecutionOrdering {
+pub(super) struct CandidateTransportRankingFacts {
     pub(super) tunnel_bucket: SchedulerTunnelAffinityBucket,
     pub(super) keep_priority_on_conversion: bool,
 }
 
-pub(super) async fn resolve_cached_candidate_execution_ordering<'a>(
+pub(super) async fn resolve_cached_candidate_transport_ranking_facts<'a>(
     state: PlannerAppState<'_>,
-    cache: &mut BTreeMap<CandidateTransportIdentity<'a>, CandidateExecutionOrdering>,
+    cache: &mut BTreeMap<CandidateTransportIdentity<'a>, CandidateTransportRankingFacts>,
     candidate: &'a SchedulerMinimalCandidateSelectionCandidate,
     ordering_config: SchedulerOrderingConfig,
-) -> CandidateExecutionOrdering {
+) -> CandidateTransportRankingFacts {
     let identity = candidate_transport_identity(candidate);
-    if let Some(ordering) = cache.get(&identity).copied() {
-        return ordering;
+    if let Some(facts) = cache.get(&identity).copied() {
+        return facts;
     }
 
-    let ordering = resolve_candidate_execution_ordering(state, candidate, ordering_config).await;
-    cache.insert(identity, ordering);
-    ordering
+    let facts = resolve_candidate_transport_ranking_facts(state, candidate, ordering_config).await;
+    cache.insert(identity, facts);
+    facts
 }
 
-pub(super) async fn resolve_cached_transport_execution_ordering<'a>(
+pub(super) async fn resolve_cached_transport_ranking_facts<'a>(
     state: PlannerAppState<'_>,
-    cache: &mut BTreeMap<CandidateTransportIdentity<'a>, CandidateExecutionOrdering>,
+    cache: &mut BTreeMap<CandidateTransportIdentity<'a>, CandidateTransportRankingFacts>,
     candidate: &'a SchedulerMinimalCandidateSelectionCandidate,
     transport: &GatewayProviderTransportSnapshot,
     ordering_config: SchedulerOrderingConfig,
-) -> CandidateExecutionOrdering {
+) -> CandidateTransportRankingFacts {
     let identity = candidate_transport_identity(candidate);
-    if let Some(ordering) = cache.get(&identity).copied() {
-        return ordering;
+    if let Some(facts) = cache.get(&identity).copied() {
+        return facts;
     }
 
-    let ordering =
-        resolve_candidate_execution_ordering_from_transport(state, transport, ordering_config)
+    let facts =
+        resolve_candidate_transport_ranking_facts_from_transport(state, transport, ordering_config)
             .await;
-    cache.insert(identity, ordering);
-    ordering
+    cache.insert(identity, facts);
+    facts
 }
 
-async fn resolve_candidate_execution_ordering(
+async fn resolve_candidate_transport_ranking_facts(
     state: PlannerAppState<'_>,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
     ordering_config: SchedulerOrderingConfig,
-) -> CandidateExecutionOrdering {
+) -> CandidateTransportRankingFacts {
     let Some(transport) = read_candidate_transport_snapshot(state, candidate).await else {
-        return CandidateExecutionOrdering {
+        return CandidateTransportRankingFacts {
             tunnel_bucket: SchedulerTunnelAffinityBucket::Neutral,
             keep_priority_on_conversion: ordering_config.keep_priority_on_conversion,
         };
     };
 
-    resolve_candidate_execution_ordering_from_transport(state, &transport, ordering_config).await
+    resolve_candidate_transport_ranking_facts_from_transport(state, &transport, ordering_config)
+        .await
 }
 
-async fn resolve_candidate_execution_ordering_from_transport(
+async fn resolve_candidate_transport_ranking_facts_from_transport(
     state: PlannerAppState<'_>,
     transport: &GatewayProviderTransportSnapshot,
     ordering_config: SchedulerOrderingConfig,
-) -> CandidateExecutionOrdering {
-    CandidateExecutionOrdering {
+) -> CandidateTransportRankingFacts {
+    CandidateTransportRankingFacts {
         tunnel_bucket: resolve_tunnel_owner_affinity_from_transport(state, transport).await,
         keep_priority_on_conversion: ordering_config.keep_priority_on_conversion
             || transport.provider.keep_priority_on_conversion,
@@ -120,11 +121,11 @@ async fn resolve_tunnel_owner_affinity_from_transport(
         Ok(None) => SchedulerTunnelAffinityBucket::Neutral,
         Err(error) => {
             warn!(
-                event_name = "candidate_transport_ordering_tunnel_owner_lookup_failed",
+                event_name = "candidate_transport_ranking_facts_tunnel_owner_lookup_failed",
                 log_type = "event",
                 node_id = node_id,
                 error = %error,
-                "failed to load tunnel attachment owner while evaluating scheduler candidate ordering"
+                "failed to load tunnel attachment owner while evaluating candidate transport ranking facts"
             );
             SchedulerTunnelAffinityBucket::Neutral
         }

@@ -18,8 +18,8 @@ use aether_scheduler_core::{
 
 use super::candidate_affinity_cache::read_cached_scheduler_affinity_target;
 use super::candidate_resolution::EligibleLocalExecutionCandidate;
-use super::candidate_transport_ordering::{
-    resolve_cached_transport_execution_ordering, CandidateExecutionOrdering,
+use super::candidate_transport_ranking_facts::{
+    resolve_cached_transport_ranking_facts, CandidateTransportRankingFacts,
 };
 
 pub(crate) async fn rank_eligible_local_execution_candidates(
@@ -50,7 +50,7 @@ pub(crate) async fn rank_eligible_local_execution_candidates(
     let mut ordering_cache = BTreeMap::new();
 
     for (original_index, eligible) in candidates.iter().enumerate() {
-        let ordering = resolve_cached_transport_execution_ordering(
+        let ranking_facts = resolve_cached_transport_ranking_facts(
             state,
             &mut ordering_cache,
             &eligible.candidate,
@@ -61,7 +61,7 @@ pub(crate) async fn rank_eligible_local_execution_candidates(
         rankables.push(rankable_candidate_from_candidate(
             &eligible.candidate,
             original_index,
-            ordering,
+            ranking_facts,
             normalized_client_api_format,
             eligible.provider_api_format.as_str(),
             required_capabilities,
@@ -89,7 +89,7 @@ pub(crate) async fn rank_eligible_local_execution_candidates(
 fn rankable_candidate_from_candidate(
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
     original_index: usize,
-    ordering: CandidateExecutionOrdering,
+    ranking_facts: CandidateTransportRankingFacts,
     normalized_client_api_format: &str,
     provider_api_format: &str,
     required_capabilities: Option<&serde_json::Value>,
@@ -109,9 +109,9 @@ fn rankable_candidate_from_candidate(
             candidate,
         ))
         .with_cached_affinity_match(cached_affinity_match)
-        .with_tunnel_bucket(ordering.tunnel_bucket)
+        .with_tunnel_bucket(ranking_facts.tunnel_bucket)
         .with_format_state(
-            !is_same_format && !ordering.keep_priority_on_conversion,
+            !is_same_format && !ranking_facts.keep_priority_on_conversion,
             candidate_api_format_preference(normalized_client_api_format, provider_api_format),
         )
 }
@@ -195,7 +195,7 @@ mod tests {
     use serde_json::json;
 
     use super::super::candidate_affinity_cache::remember_scheduler_affinity_for_candidate;
-    use super::super::candidate_transport_ordering::resolve_cached_candidate_execution_ordering;
+    use super::super::candidate_transport_ranking_facts::resolve_cached_candidate_transport_ranking_facts;
     use super::{PlannerAppState, SchedulerMinimalCandidateSelectionCandidate};
     use crate::ai_pipeline::planner::candidate_resolution::filter_and_rank_local_execution_candidates;
     use crate::data::auth::GatewayAuthApiKeySnapshot;
@@ -217,7 +217,7 @@ mod tests {
         let mut ordering_cache = BTreeMap::new();
 
         for (original_index, candidate) in candidates.iter().enumerate() {
-            let ordering = resolve_cached_candidate_execution_ordering(
+            let ranking_facts = resolve_cached_candidate_transport_ranking_facts(
                 state,
                 &mut ordering_cache,
                 candidate,
@@ -227,7 +227,7 @@ mod tests {
             rankables.push(super::rankable_candidate_from_candidate(
                 candidate,
                 original_index,
-                ordering,
+                ranking_facts,
                 normalized_client_api_format.as_str(),
                 candidate.endpoint_api_format.as_str(),
                 required_capabilities,

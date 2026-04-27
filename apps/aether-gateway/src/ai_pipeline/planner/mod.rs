@@ -11,7 +11,7 @@ mod candidate_preparation;
 mod candidate_ranking;
 mod candidate_resolution;
 mod candidate_source;
-mod candidate_transport_ordering;
+mod candidate_transport_ranking_facts;
 mod common;
 mod decision;
 mod decision_input;
