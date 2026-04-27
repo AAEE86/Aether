@@ -425,7 +425,7 @@ fn ai_pipeline_planner_separates_local_candidate_resolution_from_ranking() {
         "mod candidate_ranking;",
         "mod candidate_resolution;",
         "mod candidate_preparation;",
-        "mod candidate_transport_ordering;",
+        "mod candidate_transport_ranking_facts;",
     ] {
         assert!(
             planner_mod.contains(pattern),
@@ -469,7 +469,7 @@ fn ai_pipeline_planner_separates_local_candidate_resolution_from_ranking() {
     ] {
         assert!(
             !candidate_ranking.contains(forbidden),
-            "planner/candidate_ranking.rs should not own local candidate resolution or transport ordering helper {forbidden}"
+            "planner/candidate_ranking.rs should not own local candidate resolution or transport ranking facts helper {forbidden}"
         );
     }
 
@@ -496,18 +496,18 @@ fn ai_pipeline_planner_separates_local_candidate_resolution_from_ranking() {
         );
     }
 
-    let candidate_transport_ordering = read_workspace_file(
-        "apps/aether-gateway/src/ai_pipeline/planner/candidate_transport_ordering.rs",
+    let candidate_transport_ranking_facts = read_workspace_file(
+        "apps/aether-gateway/src/ai_pipeline/planner/candidate_transport_ranking_facts.rs",
     );
     for pattern in [
-        "pub(super) struct CandidateExecutionOrdering {",
-        "resolve_cached_candidate_execution_ordering",
-        "resolve_cached_transport_execution_ordering",
+        "pub(super) struct CandidateTransportRankingFacts {",
+        "resolve_cached_candidate_transport_ranking_facts",
+        "resolve_cached_transport_ranking_facts",
         "resolve_transport_proxy_snapshot_with_tunnel_affinity",
     ] {
         assert!(
-            candidate_transport_ordering.contains(pattern),
-            "planner/candidate_transport_ordering.rs should own {pattern}"
+            candidate_transport_ranking_facts.contains(pattern),
+            "planner/candidate_transport_ranking_facts.rs should own {pattern}"
         );
     }
     for forbidden in [
@@ -516,8 +516,8 @@ fn ai_pipeline_planner_separates_local_candidate_resolution_from_ranking() {
         "filter_and_rank_local_execution_candidates",
     ] {
         assert!(
-            !candidate_transport_ordering.contains(forbidden),
-            "planner/candidate_transport_ordering.rs should not own ranking or resolution helper {forbidden}"
+            !candidate_transport_ranking_facts.contains(forbidden),
+            "planner/candidate_transport_ranking_facts.rs should not own ranking or resolution helper {forbidden}"
         );
     }
 }
