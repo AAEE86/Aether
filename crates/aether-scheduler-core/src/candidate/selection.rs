@@ -8,7 +8,7 @@ use super::types::{
     BuildMinimalCandidateSelectionInput, SchedulerMinimalCandidateSelectionCandidate,
 };
 
-pub fn build_minimal_candidate_selection(
+pub fn build_ranked_minimal_candidate_selection(
     input: BuildMinimalCandidateSelectionInput<'_>,
 ) -> Result<Vec<SchedulerMinimalCandidateSelectionCandidate>, DataLayerError> {
     let priority_mode = input.priority_mode;

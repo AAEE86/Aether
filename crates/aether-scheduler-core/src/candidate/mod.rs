@@ -14,7 +14,7 @@ pub use selectability::{
     auth_api_key_concurrency_limit_reached, candidate_is_selectable_with_runtime_state,
     candidate_runtime_skip_reason_with_state, CandidateRuntimeSelectabilityInput,
 };
-pub use selection::build_minimal_candidate_selection;
+pub use selection::build_ranked_minimal_candidate_selection;
 pub use types::{
     BuildMinimalCandidateSelectionInput, SchedulerMinimalCandidateSelectionCandidate,
     SchedulerPriorityMode,
@@ -33,7 +33,7 @@ mod tests {
     use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
 
     use super::{
-        auth_api_key_concurrency_limit_reached, build_minimal_candidate_selection,
+        auth_api_key_concurrency_limit_reached, build_ranked_minimal_candidate_selection,
         candidate_is_selectable_with_runtime_state, candidate_supports_required_capability,
         collect_global_model_names_for_required_capability, BuildMinimalCandidateSelectionInput,
         CandidateRuntimeSelectabilityInput, SchedulerMinimalCandidateSelectionCandidate,
@@ -186,18 +186,19 @@ mod tests {
             allowed_api_formats: Some(vec!["OPENAI:CHAT".to_string()]),
             allowed_models: Some(vec!["gpt-5".to_string()]),
         };
-        let candidates = build_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
-            rows: vec![sample_row("1"), disallowed],
-            normalized_api_format: "openai:chat",
-            requested_model_name: "gpt-5",
-            resolved_global_model_name: "gpt-5",
-            require_streaming: false,
-            required_capabilities: None,
-            auth_constraints: Some(&constraints),
-            affinity_key: None,
-            priority_mode: SchedulerPriorityMode::Provider,
-        })
-        .expect("candidate selection should build");
+        let candidates =
+            build_ranked_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+                rows: vec![sample_row("1"), disallowed],
+                normalized_api_format: "openai:chat",
+                requested_model_name: "gpt-5",
+                resolved_global_model_name: "gpt-5",
+                require_streaming: false,
+                required_capabilities: None,
+                auth_constraints: Some(&constraints),
+                affinity_key: None,
+                priority_mode: SchedulerPriorityMode::Provider,
+            })
+            .expect("candidate selection should build");
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].provider_id, "provider-1");
@@ -264,18 +265,19 @@ mod tests {
         matching_capability.provider_priority = 10;
 
         let required_capabilities = serde_json::json!({"cache_1h": true});
-        let candidates = build_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
-            rows: vec![missing_capability, matching_capability],
-            normalized_api_format: "openai:chat",
-            requested_model_name: "gpt-5",
-            resolved_global_model_name: "gpt-5",
-            require_streaming: false,
-            required_capabilities: Some(&required_capabilities),
-            auth_constraints: None,
-            affinity_key: None,
-            priority_mode: SchedulerPriorityMode::Provider,
-        })
-        .expect("candidate selection should build");
+        let candidates =
+            build_ranked_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+                rows: vec![missing_capability, matching_capability],
+                normalized_api_format: "openai:chat",
+                requested_model_name: "gpt-5",
+                resolved_global_model_name: "gpt-5",
+                require_streaming: false,
+                required_capabilities: Some(&required_capabilities),
+                auth_constraints: None,
+                affinity_key: None,
+                priority_mode: SchedulerPriorityMode::Provider,
+            })
+            .expect("candidate selection should build");
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].key_id, "key-2");

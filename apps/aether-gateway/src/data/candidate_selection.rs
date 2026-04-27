@@ -1,7 +1,7 @@
 use aether_data::DataLayerError;
 use aether_data_contracts::repository::candidate_selection::StoredMinimalCandidateSelectionRow;
 use aether_scheduler_core::{
-    auth_constraints_allow_api_format, build_minimal_candidate_selection,
+    auth_constraints_allow_api_format, build_ranked_minimal_candidate_selection,
     collect_global_model_names_for_required_capability, enumerate_minimal_candidate_selection,
     normalize_api_format, resolve_requested_global_model_name, row_supports_requested_model,
     BuildMinimalCandidateSelectionInput, SchedulerAuthConstraints,
@@ -161,7 +161,7 @@ pub(crate) async fn read_minimal_candidate_selection_with_priority_mode_and_affi
         return Ok(Vec::new());
     };
     let auth_constraints = auth_snapshot.map(auth_snapshot_constraints);
-    build_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+    build_ranked_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
         rows,
         normalized_api_format: &normalized_api_format,
         requested_model_name,

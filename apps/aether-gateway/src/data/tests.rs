@@ -24,7 +24,7 @@ use aether_data_contracts::repository::video_tasks::{
     UpsertVideoTask, VideoTaskLookupKey, VideoTaskStatus, VideoTaskWriteRepository,
 };
 use aether_scheduler_core::{
-    build_minimal_candidate_selection, BuildMinimalCandidateSelectionInput,
+    build_ranked_minimal_candidate_selection, BuildMinimalCandidateSelectionInput,
     SchedulerAuthConstraints, SchedulerPriorityMode,
 };
 use serde_json::json;
@@ -622,7 +622,7 @@ async fn data_state_reads_minimal_candidate_selection_with_auth_filters() {
             .map(|items| items.to_vec()),
     };
 
-    let selection = build_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
+    let selection = build_ranked_minimal_candidate_selection(BuildMinimalCandidateSelectionInput {
         rows,
         normalized_api_format: "openai:chat",
         requested_model_name: "gpt-4.1",

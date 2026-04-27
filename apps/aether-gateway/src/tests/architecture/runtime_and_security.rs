@@ -186,7 +186,7 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
         "candidate/mod.rs should depend on core minimal candidate DTO"
     );
     assert!(
-        !candidate_mod.contains("build_minimal_candidate_selection"),
+        !candidate_mod.contains("build_ranked_minimal_candidate_selection"),
         "candidate/mod.rs should not own the core minimal candidate builder anymore"
     );
     assert!(
@@ -487,7 +487,7 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
     let core_candidate_selection =
         read_workspace_file("crates/aether-scheduler-core/src/candidate/selection.rs");
     for expected in [
-        "build_minimal_candidate_selection",
+        "build_ranked_minimal_candidate_selection",
         "apply_scheduler_candidate_ranking",
     ] {
         assert!(
@@ -571,7 +571,7 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
         "data/candidate_selection.rs should depend on core requested-model resolver"
     );
     assert!(
-        candidate_selection.contains("build_minimal_candidate_selection"),
+        candidate_selection.contains("build_ranked_minimal_candidate_selection"),
         "data/candidate_selection.rs should depend on core minimal candidate builder"
     );
     assert!(

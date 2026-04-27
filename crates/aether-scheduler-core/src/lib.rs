@@ -16,7 +16,7 @@ pub use auth::{
     auth_constraints_allow_provider, provider_matches_allowed_value, SchedulerAuthConstraints,
 };
 pub use candidate::{
-    auth_api_key_concurrency_limit_reached, build_minimal_candidate_selection,
+    auth_api_key_concurrency_limit_reached, build_ranked_minimal_candidate_selection,
     candidate_is_selectable_with_runtime_state, candidate_runtime_skip_reason_with_state,
     candidate_supports_required_capability, collect_global_model_names_for_required_capability,
     enumerate_minimal_candidate_selection, requested_capability_priority_for_candidate,
