@@ -56,7 +56,7 @@ fn resolves_mapping_matched_model_from_global_regex_mapping() {
     let resolved = resolve_provider_model_name(&row, "gpt-4.1", "openai:chat")
         .expect("candidate should resolve");
 
-    assert_eq!(resolved.0, "gpt-4.1-canary");
+    assert_eq!(resolved.0, "gpt-4.1-variant");
     assert_eq!(resolved.1, Some("gpt-4.1-variant".to_string()));
 }
 

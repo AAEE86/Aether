@@ -123,7 +123,7 @@ pub fn resolve_provider_model_name(
         for pattern in global_model_mappings {
             if matches_model_mapping(pattern, allowed_model) {
                 let allowed_model = allowed_model.to_owned();
-                return Some((selected_provider_model_name.clone(), Some(allowed_model)));
+                return Some((allowed_model.clone(), Some(allowed_model)));
             }
         }
     }
