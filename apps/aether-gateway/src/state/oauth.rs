@@ -990,10 +990,12 @@ impl AppState {
                     let _ = self
                         .invalidate_local_oauth_refresh_entry(&current_transport.key.id)
                         .await;
-                    return Err(provider_transport::LocalOAuthRefreshError::InvalidResponse {
-                        provider_type: "gateway",
-                        message: format!("local oauth refresh persistence failed: {err:?}"),
-                    });
+                    return Err(
+                        provider_transport::LocalOAuthRefreshError::InvalidResponse {
+                            provider_type: "gateway",
+                            message: format!("local oauth refresh persistence failed: {err:?}"),
+                        },
+                    );
                 }
                 self.oauth_refresh
                     .store_cached_entry(current_transport.key.id.trim(), refreshed_entry.clone())

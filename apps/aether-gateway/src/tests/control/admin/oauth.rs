@@ -5057,8 +5057,10 @@ async fn gateway_concurrent_manual_oauth_refresh_uses_rotated_refresh_token_afte
     provider_node.tunnel_mode = false;
     provider_node.tunnel_connected = false;
     provider_node.proxy_url = Some("http://proxy-provider.example:8080".to_string());
-    let proxy_node_repository =
-        Arc::new(InMemoryProxyNodeRepository::seed(vec![key_node, provider_node]));
+    let proxy_node_repository = Arc::new(InMemoryProxyNodeRepository::seed(vec![
+        key_node,
+        provider_node,
+    ]));
 
     let oauth_refresh =
         crate::provider_transport::LocalOAuthRefreshCoordinator::with_adapters_for_tests(vec![
@@ -5150,8 +5152,8 @@ async fn gateway_concurrent_manual_oauth_refresh_uses_rotated_refresh_token_afte
 }
 
 #[tokio::test]
-async fn gateway_manual_oauth_refresh_prefers_fresher_transport_auth_config_over_stale_runtime_cache()
-{
+async fn gateway_manual_oauth_refresh_prefers_fresher_transport_auth_config_over_stale_runtime_cache(
+) {
     let refresh_request_bodies = Arc::new(Mutex::new(Vec::<String>::new()));
     let refresh_request_bodies_clone = Arc::clone(&refresh_request_bodies);
     let execution_runtime = Router::new().route(
@@ -5312,7 +5314,10 @@ async fn gateway_manual_oauth_refresh_prefers_fresher_transport_auth_config_over
         .await
         .expect("initial refresh should succeed")
         .expect("initial refresh should return cached entry");
-    assert_eq!(cached_entry.auth_header_value, "Bearer cached-codex-access-token");
+    assert_eq!(
+        cached_entry.auth_header_value,
+        "Bearer cached-codex-access-token"
+    );
 
     let mut updated_key = provider_catalog_repository
         .list_keys_by_ids(&["key-codex-oauth-stale-cache".to_string()])

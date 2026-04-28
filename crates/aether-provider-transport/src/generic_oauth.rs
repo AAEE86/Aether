@@ -278,7 +278,8 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
         else {
             return Ok(None);
         };
-        let cached_auth_config = entry.and_then(|cached| Self::auth_config_from_entry(transport, cached));
+        let cached_auth_config =
+            entry.and_then(|cached| Self::auth_config_from_entry(transport, cached));
         let transport_auth_config = Self::auth_config_from_transport(transport);
         let base_auth_config = self.base_auth_config(transport, entry);
         let base_auth_config_source = match (
