@@ -232,6 +232,8 @@ fn normalize_local_oauth_refresh_error_message(
     }
     if error_code == "invalid_grant"
         || error_code == "invalid_refresh_token"
+        || error_code == "refresh_token_expired"
+        || lowered.contains("could not validate your refresh token")
         || (lowered.contains("refresh token")
             && ["expired", "revoked", "invalid"]
                 .iter()
@@ -1283,6 +1285,12 @@ impl AppState {
             EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER.to_string(),
             "true".to_string(),
         );
+        if proxy_is_tunnel {
+            headers.insert(
+                EXECUTION_REQUEST_HTTP1_ONLY_HEADER.to_string(),
+                "true".to_string(),
+            );
+        }
         let plan = ExecutionPlan {
             request_id: request.request_id.to_string(),
             candidate_id: None,
@@ -1664,5 +1672,15 @@ mod tests {
             .expect("snapshot read should succeed")
             .expect("snapshot should exist");
         assert!(!snapshot.provider.enable_format_conversion);
+    }
+
+    #[test]
+    fn normalizes_local_openai_refresh_token_expired_response() {
+        let body = r#"{"error":{"message":"Could not validate your refresh token. Please try signing in again.","type":"invalid_request_error","param":null,"code":"refresh_token_expired"}}"#;
+
+        assert_eq!(
+            super::normalize_local_oauth_refresh_error_message(Some(401), Some(body)),
+            "refresh_token 无效、已过期或已撤销，请重新登录授权"
+        );
     }
 }

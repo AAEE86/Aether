@@ -4712,8 +4712,9 @@ async fn gateway_refreshes_admin_provider_oauth_key_tunnel_proxy_with_direct_ref
     assert_eq!(
         refresh_plan
             .headers
-            .get(EXECUTION_REQUEST_HTTP1_ONLY_HEADER),
-        None
+            .get(EXECUTION_REQUEST_HTTP1_ONLY_HEADER)
+            .map(String::as_str),
+        Some("true")
     );
 
     gateway_handle.abort();

@@ -98,6 +98,8 @@ pub(crate) fn normalize_provider_oauth_refresh_error_message(
     }
     if error_code == "invalid_grant"
         || error_code == "invalid_refresh_token"
+        || error_code == "refresh_token_expired"
+        || lowered.contains("could not validate your refresh token")
         || (lowered.contains("refresh token")
             && ["expired", "revoked", "invalid"]
                 .iter()
@@ -142,4 +144,19 @@ pub(crate) fn merge_provider_oauth_refresh_failure_reason(
         return Some(format!("{current_reason}\n{refresh_reason}"));
     }
     Some(refresh_reason.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_provider_oauth_refresh_error_message;
+
+    #[test]
+    fn normalizes_openai_refresh_token_expired_response() {
+        let body = r#"{"error":{"message":"Could not validate your refresh token. Please try signing in again.","type":"invalid_request_error","param":null,"code":"refresh_token_expired"}}"#;
+
+        assert_eq!(
+            normalize_provider_oauth_refresh_error_message(Some(401), Some(body)),
+            "refresh_token 无效、已过期或已撤销，请重新登录授权"
+        );
+    }
 }
