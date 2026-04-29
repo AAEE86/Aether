@@ -95,8 +95,12 @@ pub async fn build_standard_models_fetch_execution_plan(
                 .ok_or_else(|| {
                     "Rust models fetch auth resolution is not supported for this key".to_string()
                 })?;
-        protected_headers.push(auth_header_name.clone());
-        headers.insert(auth_header_name.clone(), auth_header_value.clone());
+        insert_non_empty_auth_header(
+            &mut headers,
+            &mut protected_headers,
+            &auth_header_name,
+            &auth_header_value,
+        );
         headers = apply_fetch_header_rules(transport, headers, &protected_headers)?;
         ensure_upstream_auth_header(&mut headers, &auth_header_name, &auth_header_value);
     } else {
@@ -181,6 +185,7 @@ pub async fn build_gemini_cli_load_code_assist_plan(
 ) -> Result<ExecutionPlan, String> {
     let authorization = resolve_bearer_or_oauth_header_auth(runtime, transport)
         .await?
+        .filter(|(_, value)| !value.trim().is_empty())
         .ok_or_else(|| "GeminiCLI loadCodeAssist requires bearer or OAuth auth".to_string())?;
 
     let mut headers = BTreeMap::from([
@@ -188,8 +193,13 @@ pub async fn build_gemini_cli_load_code_assist_plan(
         ("accept-encoding".to_string(), "identity".to_string()),
         ("content-type".to_string(), "application/json".to_string()),
     ]);
-    headers.insert(authorization.0.clone(), authorization.1.clone());
-    let protected_headers = vec![authorization.0];
+    let mut protected_headers = Vec::new();
+    insert_non_empty_auth_header(
+        &mut headers,
+        &mut protected_headers,
+        &authorization.0,
+        &authorization.1,
+    );
     headers = apply_fetch_header_rules(transport, headers, &protected_headers)?;
 
     build_execution_plan(
@@ -225,8 +235,7 @@ pub async fn build_vertex_models_fetch_execution_plan(
     let mut headers = standard_models_fetch_headers(api_format, &transport.provider.provider_type);
     let mut protected_headers = Vec::<String>::new();
     if let Some((name, value)) = auth_header {
-        protected_headers.push(name.clone());
-        headers.insert(name.clone(), value.clone());
+        insert_non_empty_auth_header(&mut headers, &mut protected_headers, &name, &value);
         headers = apply_fetch_header_rules(transport, headers, &protected_headers)?;
         ensure_upstream_auth_header(&mut headers, &name, &value);
     } else {
@@ -470,6 +479,22 @@ fn append_query_param(mut url: String, key: &str, value: &str) -> String {
     url.push('=');
     url.push_str(value.trim());
     url
+}
+
+fn insert_non_empty_auth_header(
+    headers: &mut BTreeMap<String, String>,
+    protected_headers: &mut Vec<String>,
+    name: &str,
+    value: &str,
+) {
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() || value.is_empty() {
+        return;
+    }
+
+    protected_headers.push(name.to_string());
+    headers.insert(name.to_string(), value.to_string());
 }
 
 #[cfg(test)]

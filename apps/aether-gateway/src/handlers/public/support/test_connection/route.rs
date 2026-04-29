@@ -242,22 +242,23 @@ pub(super) async fn maybe_build_local_test_connection_route_response(
         return None;
     };
 
-    let mut provider_request_headers = BTreeMap::from([
-        ("content-type".to_string(), "application/json".to_string()),
-        (auth_header.clone(), auth_value.clone()),
-    ]);
+    let mut provider_request_headers =
+        BTreeMap::from([("content-type".to_string(), "application/json".to_string())]);
+    if !auth_header.trim().is_empty() && !auth_value.trim().is_empty() {
+        provider_request_headers.insert(auth_header.clone(), auth_value.clone());
+    }
     if uses_vertex_query_auth {
         provider_request_headers.remove("x-goog-api-key");
     }
-    let protected_headers = if uses_vertex_query_auth {
-        &["content-type"][..]
+    let protected_headers = if uses_vertex_query_auth || auth_value.trim().is_empty() {
+        vec!["content-type"]
     } else {
-        &[auth_header.as_str(), "content-type"][..]
+        vec![auth_header.as_str(), "content-type"]
     };
     if !crate::provider_transport::apply_local_header_rules(
         &mut provider_request_headers,
         transport.endpoint.header_rules.as_ref(),
-        protected_headers,
+        &protected_headers,
         &provider_request_body,
         None,
     ) {

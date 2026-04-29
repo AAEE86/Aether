@@ -236,7 +236,7 @@ pub fn resolve_local_openai_bearer_auth(
     }
     let secret = resolved_local_secret(transport)?;
 
-    Some(("authorization".to_string(), format!("Bearer {secret}")))
+    Some(("authorization".to_string(), bearer_auth_value(secret)))
 }
 
 pub fn resolve_local_standard_auth(
@@ -247,7 +247,7 @@ pub fn resolve_local_standard_auth(
 
     match auth_type.as_str() {
         "api_key" => Some(("x-api-key".to_string(), secret.to_string())),
-        "bearer" => Some(("authorization".to_string(), format!("Bearer {secret}"))),
+        "bearer" => Some(("authorization".to_string(), bearer_auth_value(secret))),
         _ => None,
     }
 }
@@ -260,7 +260,7 @@ pub fn resolve_local_gemini_auth(
 
     match auth_type.as_str() {
         "api_key" => Some(("x-goog-api-key".to_string(), secret.to_string())),
-        "bearer" => Some(("authorization".to_string(), format!("Bearer {secret}"))),
+        "bearer" => Some(("authorization".to_string(), bearer_auth_value(secret))),
         _ => None,
     }
 }
@@ -291,7 +291,21 @@ pub(crate) fn resolve_local_auth_type_for_transport_format(
 
 fn resolved_local_secret(transport: &GatewayProviderTransportSnapshot) -> Option<&str> {
     let secret = transport.key.decrypted_api_key.trim();
-    (!secret.is_empty() && secret != PLACEHOLDER_API_KEY).then_some(secret)
+    if !secret.is_empty() && secret != PLACEHOLDER_API_KEY {
+        Some(secret)
+    } else if transport.key.decrypted_auth_config.is_some() {
+        None
+    } else {
+        Some("")
+    }
+}
+
+fn bearer_auth_value(secret: &str) -> String {
+    if secret.is_empty() {
+        String::new()
+    } else {
+        format!("Bearer {secret}")
+    }
 }
 
 #[cfg(test)]
@@ -465,15 +479,30 @@ mod tests {
     }
 
     #[test]
-    fn local_standard_auth_rejects_placeholder_secret() {
-        assert!(resolve_local_standard_auth(&sample_transport()).is_none());
+    fn local_standard_auth_keeps_header_shape_for_placeholder_secret() {
+        assert_eq!(
+            resolve_local_standard_auth(&sample_transport()),
+            Some(("authorization".to_string(), String::new()))
+        );
     }
 
     #[test]
-    fn local_standard_auth_rejects_empty_secret() {
+    fn local_standard_auth_keeps_header_shape_for_empty_secret() {
         let mut transport = sample_transport();
         transport.key.auth_type = "api_key".to_string();
         transport.key.decrypted_api_key = String::new();
+
+        assert_eq!(
+            resolve_local_standard_auth(&transport),
+            Some(("x-api-key".to_string(), String::new()))
+        );
+    }
+
+    #[test]
+    fn local_standard_auth_defers_to_auth_config_when_raw_secret_is_empty() {
+        let mut transport = sample_transport();
+        transport.key.decrypted_auth_config =
+            Some(r#"{"access_token":"cached-token"}"#.to_string());
 
         assert!(resolve_local_standard_auth(&transport).is_none());
     }
