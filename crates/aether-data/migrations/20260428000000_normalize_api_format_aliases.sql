@@ -14,6 +14,20 @@ AS $$
   END
 $$;
 
+CREATE OR REPLACE FUNCTION public.aether_legacy_raw_api_format_auth_type(value text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE LOWER(BTRIM(COALESCE(value, '')))
+    WHEN 'claude:chat' THEN 'api_key'
+    WHEN 'claude:cli' THEN 'bearer'
+    WHEN 'gemini:chat' THEN 'api_key'
+    WHEN 'gemini:cli' THEN 'bearer'
+    ELSE NULL
+  END
+$$;
+
 ALTER TABLE IF EXISTS public.provider_endpoints
   DROP CONSTRAINT IF EXISTS uq_provider_api_format;
 
@@ -25,6 +39,181 @@ ALTER TABLE IF EXISTS public.provider_api_keys
 
 ALTER TABLE IF EXISTS public.provider_api_keys
   ALTER COLUMN api_key DROP NOT NULL;
+
+WITH legacy_key_formats AS (
+  SELECT
+    pak.id,
+    LOWER(BTRIM(COALESCE(provider.provider_type, ''))) AS provider_type,
+    LOWER(BTRIM(COALESCE(pak.auth_type, ''))) AS current_auth_type,
+    COALESCE(BOOL_OR(LOWER(BTRIM(format.value)) = 'claude:chat'), false) AS has_claude_chat,
+    COALESCE(BOOL_OR(LOWER(BTRIM(format.value)) = 'claude:cli'), false) AS has_claude_cli,
+    COALESCE(BOOL_OR(LOWER(BTRIM(format.value)) = 'gemini:chat'), false) AS has_gemini_chat,
+    COALESCE(BOOL_OR(LOWER(BTRIM(format.value)) = 'gemini:cli'), false) AS has_gemini_cli
+  FROM public.provider_api_keys AS pak
+  INNER JOIN public.providers AS provider
+    ON provider.id = pak.provider_id
+  LEFT JOIN LATERAL (
+    SELECT key_format.value
+    FROM json_array_elements_text(
+      CASE
+        WHEN pak.api_formats IS NOT NULL
+          AND json_typeof(pak.api_formats) = 'array'
+        THEN pak.api_formats
+        ELSE '[]'::json
+      END
+    ) AS key_format(value)
+    UNION ALL
+    SELECT endpoint.api_format AS value
+    FROM public.provider_endpoints AS endpoint
+    WHERE pak.api_formats IS NULL
+      AND endpoint.provider_id = pak.provider_id
+  ) AS format ON true
+  GROUP BY pak.id, provider_type, current_auth_type
+),
+inferred_key_auth AS (
+  SELECT
+    id,
+    current_auth_type,
+    CASE
+      WHEN provider_type IN ('claude_code', 'kiro')
+        AND has_claude_cli
+      THEN 'oauth'
+      WHEN provider_type IN ('gemini_cli', 'antigravity')
+        AND has_gemini_cli
+      THEN 'oauth'
+      WHEN provider_type NOT IN ('claude_code', 'codex', 'gemini_cli', 'vertex_ai', 'antigravity', 'kiro')
+        AND (has_claude_chat OR has_gemini_chat)
+        AND NOT (has_claude_cli OR has_gemini_cli)
+      THEN 'api_key'
+      ELSE NULL
+    END AS inferred_auth_type
+  FROM legacy_key_formats
+)
+UPDATE public.provider_api_keys AS pak
+SET
+  auth_type = inferred.inferred_auth_type,
+  updated_at = NOW()
+FROM inferred_key_auth AS inferred
+WHERE pak.id = inferred.id
+  AND inferred.inferred_auth_type IS NOT NULL
+  AND inferred.current_auth_type IS DISTINCT FROM inferred.inferred_auth_type
+  AND (
+    (
+      inferred.inferred_auth_type = 'oauth'
+      AND inferred.current_auth_type IN ('', 'api_key', 'bearer')
+    )
+    OR (
+      inferred.inferred_auth_type = 'api_key'
+      AND inferred.current_auth_type IN ('', 'bearer')
+    )
+  );
+
+WITH existing_auth_entries AS (
+  SELECT
+    pak.id,
+    public.aether_canonical_api_format_alias(entry.key) AS api_format,
+    CASE LOWER(BTRIM(COALESCE(entry.value #>> '{}', '')))
+      WHEN 'api_key' THEN 'api_key'
+      WHEN 'apikey' THEN 'api_key'
+      WHEN 'api-key' THEN 'api_key'
+      WHEN 'bearer' THEN 'bearer'
+      WHEN 'bearer_token' THEN 'bearer'
+      WHEN 'bearer-token' THEN 'bearer'
+      WHEN 'authorization' THEN 'bearer'
+      ELSE NULL
+    END AS auth_type,
+    0 AS source_priority,
+    entry.ordinality
+  FROM public.provider_api_keys AS pak
+  CROSS JOIN LATERAL json_each(
+    CASE
+      WHEN json_typeof(pak.auth_type_by_format) = 'object' THEN pak.auth_type_by_format
+      ELSE '{}'::json
+    END
+  ) WITH ORDINALITY AS entry(key, value, ordinality)
+  WHERE pak.auth_type_by_format IS NOT NULL
+),
+legacy_auth_entries AS (
+  SELECT
+    pak.id,
+    public.aether_canonical_api_format_alias(format.value) AS api_format,
+    MIN(public.aether_legacy_raw_api_format_auth_type(format.value)) AS auth_type,
+    1 AS source_priority,
+    MIN(format.ordinality) AS ordinality
+  FROM public.provider_api_keys AS pak
+  LEFT JOIN LATERAL (
+    SELECT key_format.value, key_format.ordinality
+    FROM json_array_elements_text(
+      CASE
+        WHEN pak.api_formats IS NOT NULL
+          AND json_typeof(pak.api_formats) = 'array'
+        THEN pak.api_formats
+        ELSE '[]'::json
+      END
+    ) WITH ORDINALITY AS key_format(value, ordinality)
+    UNION ALL
+    SELECT endpoint.api_format AS value, endpoint.ordinality
+    FROM (
+      SELECT endpoint.api_format, ROW_NUMBER() OVER (ORDER BY endpoint.id) AS ordinality
+      FROM public.provider_endpoints AS endpoint
+      WHERE pak.api_formats IS NULL
+        AND endpoint.provider_id = pak.provider_id
+    ) AS endpoint
+  ) AS format ON true
+  WHERE LOWER(BTRIM(COALESCE(pak.auth_type, ''))) IN ('api_key', 'bearer')
+    AND public.aether_legacy_raw_api_format_auth_type(format.value) IS NOT NULL
+  GROUP BY
+    pak.id,
+    public.aether_canonical_api_format_alias(format.value)
+  HAVING COUNT(DISTINCT public.aether_legacy_raw_api_format_auth_type(format.value)) = 1
+),
+auth_entries AS (
+  SELECT id, api_format, auth_type, source_priority, ordinality
+  FROM existing_auth_entries
+  WHERE api_format <> ''
+    AND auth_type IS NOT NULL
+  UNION ALL
+  SELECT
+    legacy.id,
+    legacy.api_format,
+    legacy.auth_type,
+    legacy.source_priority,
+    legacy.ordinality
+  FROM legacy_auth_entries AS legacy
+  INNER JOIN public.provider_api_keys AS pak
+    ON pak.id = legacy.id
+  WHERE legacy.api_format <> ''
+    AND legacy.auth_type IS NOT NULL
+    AND legacy.auth_type IS DISTINCT FROM LOWER(BTRIM(COALESCE(pak.auth_type, '')))
+),
+ranked AS (
+  SELECT
+    id,
+    api_format,
+    auth_type,
+    source_priority,
+    ordinality,
+    ROW_NUMBER() OVER (
+      PARTITION BY id, api_format
+      ORDER BY source_priority, ordinality
+    ) AS rank
+  FROM auth_entries
+),
+rebuilt AS (
+  SELECT
+    id,
+    jsonb_object_agg(api_format, to_jsonb(auth_type) ORDER BY source_priority, ordinality) AS auth_type_by_format
+  FROM ranked
+  WHERE rank = 1
+  GROUP BY id
+)
+UPDATE public.provider_api_keys AS pak
+SET
+  auth_type_by_format = rebuilt.auth_type_by_format::json,
+  updated_at = NOW()
+FROM rebuilt
+WHERE pak.id = rebuilt.id
+  AND pak.auth_type_by_format::jsonb IS DISTINCT FROM rebuilt.auth_type_by_format;
 
 WITH normalized AS (
   SELECT
@@ -307,4 +496,5 @@ FROM rebuilt
 WHERE pak.id = rebuilt.id
   AND pak.circuit_breaker_by_format IS DISTINCT FROM rebuilt.circuit_breaker_by_format;
 
+DROP FUNCTION public.aether_legacy_raw_api_format_auth_type(text);
 DROP FUNCTION public.aether_canonical_api_format_alias(text);

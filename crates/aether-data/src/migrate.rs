@@ -790,6 +790,11 @@ SELECT EXISTS (
 
         sqlx::raw_sql(
             r#"
+CREATE TABLE public.providers (
+  id text PRIMARY KEY,
+  provider_type text NOT NULL
+);
+
 CREATE TABLE public.provider_endpoints (
   id text PRIMARY KEY,
   provider_id text NOT NULL,
@@ -814,6 +819,10 @@ ALTER TABLE ONLY public.provider_endpoints
 
 CREATE TABLE public.provider_api_keys (
   id text PRIMARY KEY,
+  provider_id text NOT NULL,
+  api_key text,
+  auth_type text DEFAULT 'api_key' NOT NULL,
+  auth_type_by_format json,
   api_formats json,
   updated_at timestamp with time zone DEFAULT now() NOT NULL,
   rate_multipliers json,
@@ -839,6 +848,12 @@ CREATE TABLE public.models (
   provider_model_mappings jsonb,
   updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+INSERT INTO public.providers (id, provider_type)
+VALUES
+  ('provider-conflict', 'custom'),
+  ('provider-claude-code', 'claude_code'),
+  ('provider-gemini-cli', 'gemini_cli');
 
 INSERT INTO public.provider_endpoints (
   id,
@@ -884,23 +899,126 @@ INSERT INTO public.provider_endpoints (
     '{"transport":"cli"}'::json,
     '{"url":"http://proxy-cli"}'::jsonb,
     '{"accept":"cli"}'::json
+  ),
+  (
+    'endpoint-claude-oauth-cli',
+    'provider-claude-code',
+    'claude:cli',
+    'claude',
+    'cli',
+    'https://claude-oauth.example',
+    '/v1/messages',
+    3,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  ),
+  (
+    'endpoint-gemini-oauth-cli',
+    'provider-gemini-cli',
+    'gemini:cli',
+    'gemini',
+    'cli',
+    'https://gemini-oauth.example',
+    '/v1beta/models',
+    3,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL
   );
 
 INSERT INTO public.provider_api_keys (
   id,
+  provider_id,
+  auth_type,
+  auth_type_by_format,
   api_formats,
   rate_multipliers,
   global_priority_by_format,
   health_by_format,
   circuit_breaker_by_format
-) VALUES (
-  'provider-key',
-  '["claude:chat","claude:cli","openai:cli","openai:responses"]'::json,
-  '{"claude:chat":1,"openai:compact":2}'::json,
-  '{"gemini:cli":3}'::json,
-  '{"openai:cli":{"health_score":0.9}}'::jsonb,
-  '{"openai:compact":{"open":false}}'::jsonb
-);
+) VALUES
+  (
+    'provider-key',
+    'provider-conflict',
+    'api_key',
+    '{"claude:cli":"bearer","gemini:chat":"api-key"}'::json,
+    '["claude:chat","claude:cli","openai:cli","openai:responses"]'::json,
+    '{"claude:chat":1,"openai:compact":2}'::json,
+    '{"gemini:cli":3}'::json,
+    '{"openai:cli":{"health_score":0.9}}'::jsonb,
+    '{"openai:compact":{"open":false}}'::jsonb
+  ),
+  (
+    'provider-raw-cli-key',
+    'provider-conflict',
+    'api_key',
+    NULL,
+    '["claude:cli"]'::json,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  ),
+  (
+    'provider-chat-key',
+    'provider-conflict',
+    'bearer',
+    NULL,
+    '["gemini:chat"]'::json,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  ),
+  (
+    'provider-claude-oauth-key',
+    'provider-claude-code',
+    'api_key',
+    NULL,
+    '["claude:cli"]'::json,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  ),
+  (
+    'provider-claude-oauth-null-key',
+    'provider-claude-code',
+    'api_key',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  ),
+  (
+    'provider-gemini-oauth-key',
+    'provider-gemini-cli',
+    'api_key',
+    NULL,
+    '["gemini:cli"]'::json,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  ),
+  (
+    'provider-gemini-oauth-null-key',
+    'provider-gemini-cli',
+    'api_key',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  );
 
 INSERT INTO public.api_keys (id, allowed_api_formats)
 VALUES ('api-key', '["gemini:chat","gemini:cli"]'::json);
@@ -984,6 +1102,66 @@ ORDER BY id
         assert_eq!(
             provider_key_formats,
             serde_json::json!(["claude:messages", "openai:responses"])
+        );
+
+        let provider_key_auth_rows =
+            sqlx::query_as::<_, (String, String, Option<serde_json::Value>)>(
+                r#"
+SELECT id, auth_type, auth_type_by_format::jsonb
+FROM public.provider_api_keys
+WHERE id IN (
+  'provider-chat-key',
+  'provider-claude-oauth-key',
+  'provider-claude-oauth-null-key',
+  'provider-gemini-oauth-key',
+  'provider-gemini-oauth-null-key',
+  'provider-key',
+  'provider-raw-cli-key'
+)
+ORDER BY id
+"#,
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("provider key auth rows should be readable");
+        assert_eq!(
+            provider_key_auth_rows,
+            vec![
+                ("provider-chat-key".to_string(), "api_key".to_string(), None),
+                (
+                    "provider-claude-oauth-key".to_string(),
+                    "oauth".to_string(),
+                    None
+                ),
+                (
+                    "provider-claude-oauth-null-key".to_string(),
+                    "oauth".to_string(),
+                    None
+                ),
+                (
+                    "provider-gemini-oauth-key".to_string(),
+                    "oauth".to_string(),
+                    None
+                ),
+                (
+                    "provider-gemini-oauth-null-key".to_string(),
+                    "oauth".to_string(),
+                    None
+                ),
+                (
+                    "provider-key".to_string(),
+                    "api_key".to_string(),
+                    Some(serde_json::json!({
+                        "claude:messages": "bearer",
+                        "gemini:generate_content": "api_key"
+                    }))
+                ),
+                (
+                    "provider-raw-cli-key".to_string(),
+                    "api_key".to_string(),
+                    Some(serde_json::json!({"claude:messages": "bearer"}))
+                ),
+            ]
         );
 
         let provider_format_constraint_count: i64 = query_scalar(
