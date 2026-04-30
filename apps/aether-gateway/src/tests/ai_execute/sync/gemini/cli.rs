@@ -10,8 +10,39 @@ use super::{
     TRACE_ID_HEADER,
 };
 
-#[tokio::test]
-async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision() {
+const GEMINI_CLI_SYNC_TEST_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn run_gemini_cli_sync_test<F, Fut>(test_name: &'static str, make_future: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(test_name.to_string())
+        .stack_size(GEMINI_CLI_SYNC_TEST_STACK_BYTES)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build");
+            runtime.block_on(make_future());
+        })
+        .expect("gemini cli sync test thread should spawn");
+
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision() {
+    run_gemini_cli_sync_test(
+        "gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision",
+        gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision_impl,
+    );
+}
+
+async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision_impl() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         trace_id: String,
@@ -445,8 +476,15 @@ async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_syn
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_returns_gemini_cli_error_for_local_sync_failure() {
+#[test]
+fn gateway_returns_gemini_cli_error_for_local_sync_failure() {
+    run_gemini_cli_sync_test(
+        "gateway_returns_gemini_cli_error_for_local_sync_failure",
+        gateway_returns_gemini_cli_error_for_local_sync_failure_impl,
+    );
+}
+
+async fn gateway_returns_gemini_cli_error_for_local_sync_failure_impl() {
     fn hash_api_key(value: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(value.as_bytes());
@@ -716,8 +754,15 @@ async fn gateway_returns_gemini_cli_error_for_local_sync_failure() {
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh() {
+#[test]
+fn gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh() {
+    run_gemini_cli_sync_test(
+        "gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh",
+        gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh_impl,
+    );
+}
+
+async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh_impl() {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
         trace_id: String,
@@ -1220,8 +1265,15 @@ async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_re
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision(
+#[test]
+fn gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision() {
+    run_gemini_cli_sync_test(
+        "gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision",
+        gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision_impl,
+    );
+}
+
+async fn gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with_local_sync_decision_impl(
 ) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
@@ -1642,9 +1694,16 @@ async fn gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh()
-{
+#[test]
+fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh() {
+    run_gemini_cli_sync_test(
+        "gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh",
+        gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh_impl,
+    );
+}
+
+async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_after_oauth_refresh_impl(
+) {
     use base64::Engine as _;
 
     #[derive(Debug, Clone)]

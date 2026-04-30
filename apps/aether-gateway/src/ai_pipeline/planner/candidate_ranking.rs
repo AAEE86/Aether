@@ -609,8 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fixed_order_local_execution_ranking_keeps_provider_priority_before_format_preference()
-    {
+    async fn fixed_order_local_execution_ranking_demotes_cross_format_before_provider_priority() {
         let provider_catalog = InMemoryProviderCatalogReadRepository::seed(
             vec![
                 sample_provider_with_options("provider-same", false, 10),
@@ -662,8 +661,8 @@ mod tests {
         )
         .await;
 
-        assert_eq!(ranked[0].endpoint_id, "endpoint-cross");
-        assert_eq!(ranked[1].endpoint_id, "endpoint-same");
+        assert_eq!(ranked[0].endpoint_id, "endpoint-same");
+        assert_eq!(ranked[1].endpoint_id, "endpoint-cross");
     }
 
     #[tokio::test]
@@ -1403,6 +1402,181 @@ mod tests {
                 .and_then(|ranking| ranking.promoted_by),
             Some(RANKING_REASON_CACHED_AFFINITY)
         );
+    }
+
+    #[tokio::test]
+    async fn first_request_same_key_exact_endpoint_beats_cross_format_without_affinity() {
+        let mut openai_endpoint =
+            sample_endpoint_for_provider("provider-shared", "endpoint-openai", "openai:chat");
+        openai_endpoint.format_acceptance_config = Some(json!({
+            "enabled": true,
+            "accept_formats": ["claude:messages"],
+        }));
+
+        let provider_catalog = InMemoryProviderCatalogReadRepository::seed(
+            vec![sample_provider_with_options("provider-shared", false, 0)],
+            vec![
+                openai_endpoint,
+                sample_endpoint_for_provider(
+                    "provider-shared",
+                    "endpoint-claude",
+                    "claude:messages",
+                ),
+            ],
+            vec![sample_key_for_provider_with_options(
+                "provider-shared",
+                "key-shared",
+                "",
+                true,
+                Some(json!(["openai:chat", "claude:messages"])),
+                None,
+            )],
+        );
+        let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
+            std::sync::Arc::new(provider_catalog),
+            "development-key",
+        );
+        let state = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+
+        let (ranked, skipped) = resolve_and_rank_local_execution_candidates(
+            PlannerAppState::new(&state),
+            vec![
+                sample_priority_candidate(
+                    "provider-shared",
+                    "endpoint-openai",
+                    "key-shared",
+                    "openai:chat",
+                    Some(0),
+                    0,
+                ),
+                sample_priority_candidate(
+                    "provider-shared",
+                    "endpoint-claude",
+                    "key-shared",
+                    "claude:messages",
+                    Some(0),
+                    0,
+                ),
+            ],
+            "claude:messages",
+            "gpt-4.1",
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(skipped.is_empty());
+        assert_eq!(ranked[0].candidate.endpoint_id, "endpoint-claude");
+        assert_eq!(ranked[1].candidate.endpoint_id, "endpoint-openai");
+        assert_eq!(
+            ranked[1]
+                .ranking
+                .as_ref()
+                .and_then(|ranking| ranking.promoted_by),
+            None
+        );
+        assert_eq!(
+            ranked[1]
+                .ranking
+                .as_ref()
+                .and_then(|ranking| ranking.demoted_by),
+            Some(aether_scheduler_core::RANKING_REASON_CROSS_FORMAT)
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_affinity_promotes_cross_format_over_same_key_exact_endpoint() {
+        let mut openai_endpoint =
+            sample_endpoint_for_provider("provider-shared", "endpoint-openai", "openai:chat");
+        openai_endpoint.format_acceptance_config = Some(json!({
+            "enabled": true,
+            "accept_formats": ["claude:messages"],
+        }));
+
+        let provider_catalog = InMemoryProviderCatalogReadRepository::seed(
+            vec![sample_provider_with_options("provider-shared", false, 0)],
+            vec![
+                openai_endpoint,
+                sample_endpoint_for_provider(
+                    "provider-shared",
+                    "endpoint-claude",
+                    "claude:messages",
+                ),
+            ],
+            vec![sample_key_for_provider_with_options(
+                "provider-shared",
+                "key-shared",
+                "",
+                true,
+                Some(json!(["openai:chat", "claude:messages"])),
+                None,
+            )],
+        );
+        let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
+            std::sync::Arc::new(provider_catalog),
+            "development-key",
+        );
+        let state = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        let auth_snapshot = sample_auth_snapshot();
+        let cached_cross_format = sample_priority_candidate(
+            "provider-shared",
+            "endpoint-openai",
+            "key-shared",
+            "openai:chat",
+            Some(0),
+            0,
+        );
+        remember_scheduler_affinity_for_candidate(
+            PlannerAppState::new(&state),
+            Some(&auth_snapshot),
+            "claude:messages",
+            "gpt-4.1",
+            &cached_cross_format,
+        );
+
+        let (ranked, skipped) = resolve_and_rank_local_execution_candidates(
+            PlannerAppState::new(&state),
+            vec![
+                cached_cross_format,
+                sample_priority_candidate(
+                    "provider-shared",
+                    "endpoint-claude",
+                    "key-shared",
+                    "claude:messages",
+                    Some(0),
+                    0,
+                ),
+            ],
+            "claude:messages",
+            "gpt-4.1",
+            Some(&auth_snapshot),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(skipped.is_empty());
+        assert_eq!(ranked[0].candidate.endpoint_id, "endpoint-openai");
+        assert_eq!(
+            ranked[0]
+                .ranking
+                .as_ref()
+                .and_then(|ranking| ranking.promoted_by),
+            Some(RANKING_REASON_CACHED_AFFINITY)
+        );
+        assert_eq!(
+            ranked[0]
+                .ranking
+                .as_ref()
+                .and_then(|ranking| ranking.demoted_by),
+            Some(aether_scheduler_core::RANKING_REASON_CROSS_FORMAT)
+        );
+        assert_eq!(ranked[1].candidate.endpoint_id, "endpoint-claude");
     }
 
     #[tokio::test]

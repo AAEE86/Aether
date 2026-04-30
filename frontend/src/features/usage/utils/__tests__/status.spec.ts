@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatUsageStreamLabel,
   hasUsageFallback,
+  hasUsageRetry,
   isUsageRecordFailed,
   isUsageRecordSuccessful,
   mapRequestStatusToTimelineStatus,
@@ -115,6 +116,12 @@ describe('usage status helpers', () => {
     expect(hasUsageFallback(buildUsageRecord({ has_fallback: true }))).toBe(true)
     expect(hasUsageFallback(buildUsageRecord({ has_fallback: false }))).toBe(false)
     expect(hasUsageFallback(buildUsageRecord({ has_fallback: undefined }))).toBe(false)
+  })
+
+  it('uses explicit has_retry flag for retry filtering', () => {
+    expect(hasUsageRetry(buildUsageRecord({ has_retry: true }))).toBe(true)
+    expect(hasUsageRetry(buildUsageRecord({ has_retry: false }))).toBe(false)
+    expect(hasUsageRetry(buildUsageRecord({ has_retry: undefined }))).toBe(false)
   })
 
   it('prefers symmetric stream aliases when present', () => {

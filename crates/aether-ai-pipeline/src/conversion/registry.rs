@@ -461,6 +461,15 @@ mod tests {
             ]
         );
         assert_eq!(
+            request_candidate_api_formats("claude:messages", false),
+            vec![
+                "claude:messages",
+                "openai:chat",
+                "openai:responses",
+                "gemini:generate_content",
+            ]
+        );
+        assert_eq!(
             request_candidate_api_formats("openai:cli", false),
             Vec::<&'static str>::new()
         );

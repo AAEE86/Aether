@@ -31,7 +31,12 @@ const NON_COMPACT_STANDARD_CANDIDATE_API_FORMATS: &[&str] = &[
     "claude:messages",
     "gemini:generate_content",
 ];
-const STANDARD_API_FAMILY_ORDER: &[&str] = &["openai", "claude", "gemini"];
+const STANDARD_API_FORMAT_ORDER: &[&str] = &[
+    "openai:chat",
+    "openai:responses",
+    "claude:messages",
+    "gemini:generate_content",
+];
 
 pub fn request_candidate_api_format_preference(
     client_api_format: &str,
@@ -60,7 +65,7 @@ pub fn request_candidate_api_format_preference(
 
     Some((
         preference_bucket,
-        standard_api_family_priority(provider_family),
+        standard_api_format_priority(provider_api_format.as_str()),
     ))
 }
 
@@ -213,11 +218,12 @@ pub fn normalized_same_standard_api_format(left: &str, right: &str) -> bool {
     api_format_alias_matches(left, right)
 }
 
-fn standard_api_family_priority(family: &str) -> u8 {
-    STANDARD_API_FAMILY_ORDER
+fn standard_api_format_priority(api_format: &str) -> u8 {
+    let api_format = normalize_api_format_alias(api_format);
+    STANDARD_API_FORMAT_ORDER
         .iter()
-        .position(|candidate| *candidate == family)
-        .unwrap_or(STANDARD_API_FAMILY_ORDER.len()) as u8
+        .position(|candidate| *candidate == api_format)
+        .unwrap_or(STANDARD_API_FORMAT_ORDER.len()) as u8
 }
 
 #[cfg(test)]
@@ -368,6 +374,19 @@ mod tests {
                 "claude:messages",
                 "gemini:generate_content"
             ]
+        );
+        assert_eq!(
+            request_candidate_api_formats("claude:messages", false),
+            vec![
+                "claude:messages",
+                "openai:chat",
+                "openai:responses",
+                "gemini:generate_content"
+            ]
+        );
+        assert!(
+            request_candidate_api_format_preference("claude:messages", "openai:chat")
+                < request_candidate_api_format_preference("claude:messages", "openai:responses")
         );
         assert_eq!(
             request_candidate_api_formats("openai:cli", false),

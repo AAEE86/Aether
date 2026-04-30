@@ -27,6 +27,12 @@ export function hasUsageFallback(
   return record.has_fallback === true
 }
 
+export function hasUsageRetry(
+  record: Pick<UsageRecord, 'has_retry'>
+): boolean {
+  return record.has_retry === true
+}
+
 export function resolveUsageStreamModes(
   record: Pick<
     UsageRecord,
