@@ -1351,6 +1351,7 @@ pub(crate) fn build_admin_provider_key_response(
         json!(key.global_priority_by_format),
     );
     payload.insert("rpm_limit".to_string(), json!(key.rpm_limit));
+    payload.insert("concurrent_limit".to_string(), json!(key.concurrent_limit));
     payload.insert(
         "allowed_models".to_string(),
         serde_json::Value::Array(

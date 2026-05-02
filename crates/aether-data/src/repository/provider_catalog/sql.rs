@@ -155,6 +155,7 @@ SELECT
   proxy,
   fingerprint,
   rpm_limit,
+  concurrent_limit,
   learned_rpm_limit,
   concurrent_429_count,
   rpm_429_count,
@@ -213,6 +214,7 @@ SELECT
   proxy,
   fingerprint,
   rpm_limit,
+  concurrent_limit,
   learned_rpm_limit,
   concurrent_429_count,
   rpm_429_count,
@@ -273,6 +275,7 @@ SELECT
   NULL::jsonb AS proxy,
   NULL::jsonb AS fingerprint,
   NULL::integer AS rpm_limit,
+  NULL::integer AS concurrent_limit,
   NULL::integer AS learned_rpm_limit,
   NULL::integer AS concurrent_429_count,
   NULL::integer AS rpm_429_count,
@@ -611,6 +614,7 @@ SELECT
   proxy,
   fingerprint,
   rpm_limit,
+  concurrent_limit,
   learned_rpm_limit,
   concurrent_429_count,
   rpm_429_count,
@@ -1199,6 +1203,7 @@ INSERT INTO provider_api_keys (
   internal_priority,
   global_priority_by_format,
   rpm_limit,
+  concurrent_limit,
   learned_rpm_limit,
   allowed_models,
   capabilities,
@@ -1331,6 +1336,7 @@ INSERT INTO provider_api_keys (
         .bind(key.internal_priority)
         .bind(&key.global_priority_by_format)
         .bind(key.rpm_limit.map(|value| value as i32))
+        .bind(key.concurrent_limit)
         .bind(key.learned_rpm_limit.map(|value| value as i32))
         .bind(&key.allowed_models)
         .bind(&key.capabilities)
@@ -1726,8 +1732,8 @@ UPDATE provider_api_keys
 SET
   provider_id = $2,
   api_formats = $3,
-  auth_type_by_format = $39,
-  allow_auth_channel_mismatch_formats = $40,
+  auth_type_by_format = $40,
+  allow_auth_channel_mismatch_formats = $41,
   auth_type = $4,
   api_key = $5,
   auth_config = $6,
@@ -1737,46 +1743,47 @@ SET
   internal_priority = $10,
   global_priority_by_format = $11,
   rpm_limit = $12,
-  learned_rpm_limit = $13,
-  allowed_models = $14,
-  capabilities = $15,
-  cache_ttl_minutes = $16,
-  max_probe_interval_minutes = $17,
-  auto_fetch_models = $18,
-  locked_models = $19,
-  model_include_patterns = $20,
-  model_exclude_patterns = $21,
-  proxy = $22,
-  fingerprint = $23,
-  upstream_metadata = $24,
+  concurrent_limit = $13,
+  learned_rpm_limit = $14,
+  allowed_models = $15,
+  capabilities = $16,
+  cache_ttl_minutes = $17,
+  max_probe_interval_minutes = $18,
+  auto_fetch_models = $19,
+  locked_models = $20,
+  model_include_patterns = $21,
+  model_exclude_patterns = $22,
+  proxy = $23,
+  fingerprint = $24,
+  upstream_metadata = $25,
   expires_at = CASE
-    WHEN $38::double precision IS NULL THEN NULL
-    ELSE TO_TIMESTAMP($38::double precision)
+    WHEN $39::double precision IS NULL THEN NULL
+    ELSE TO_TIMESTAMP($39::double precision)
   END,
   oauth_invalid_at = CASE
-    WHEN $25::double precision IS NULL THEN NULL
-    ELSE TO_TIMESTAMP($25::double precision)
+    WHEN $26::double precision IS NULL THEN NULL
+    ELSE TO_TIMESTAMP($26::double precision)
   END,
-  oauth_invalid_reason = $26,
-  status_snapshot = $27,
-  concurrent_429_count = COALESCE($28, 0),
-  rpm_429_count = COALESCE($29, 0),
+  oauth_invalid_reason = $27,
+  status_snapshot = $28,
+  concurrent_429_count = COALESCE($29, 0),
+  rpm_429_count = COALESCE($30, 0),
   last_429_at = CASE
-    WHEN $30::double precision IS NULL THEN NULL
-    ELSE TO_TIMESTAMP($30::double precision)
+    WHEN $31::double precision IS NULL THEN NULL
+    ELSE TO_TIMESTAMP($31::double precision)
   END,
-  last_429_type = $31,
-  adjustment_history = $32,
-  utilization_samples = $33,
+  last_429_type = $32,
+  adjustment_history = $33,
+  utilization_samples = $34,
   last_probe_increase_at = CASE
-    WHEN $34::double precision IS NULL THEN NULL
-    ELSE TO_TIMESTAMP($34::double precision)
+    WHEN $35::double precision IS NULL THEN NULL
+    ELSE TO_TIMESTAMP($35::double precision)
   END,
-  last_rpm_peak = $35,
-  is_active = $36,
+  last_rpm_peak = $36,
+  is_active = $37,
   updated_at = CASE
-    WHEN $37::double precision IS NULL THEN NOW()
-    ELSE TO_TIMESTAMP($37::double precision)
+    WHEN $38::double precision IS NULL THEN NOW()
+    ELSE TO_TIMESTAMP($38::double precision)
   END
 WHERE id = $1
 "#,
@@ -1793,6 +1800,7 @@ WHERE id = $1
         .bind(key.internal_priority)
         .bind(&key.global_priority_by_format)
         .bind(key.rpm_limit.map(|value| value as i32))
+        .bind(key.concurrent_limit)
         .bind(key.learned_rpm_limit.map(|value| value as i32))
         .bind(&key.allowed_models)
         .bind(&key.capabilities)
@@ -2301,6 +2309,7 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
             })
         })
         .transpose()?;
+    let concurrent_limit = row_get::<Option<i32>>(row, "concurrent_limit")?;
     let learned_rpm_limit = row_get::<Option<i32>>(row, "learned_rpm_limit")?
         .map(|value| {
             u32::try_from(value).map_err(|_| {
@@ -2466,6 +2475,7 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
         let mut key = key
             .with_rate_limit_fields(
                 rpm_limit,
+                concurrent_limit,
                 learned_rpm_limit,
                 concurrent_429_count,
                 rpm_429_count,
@@ -2544,5 +2554,42 @@ mod tests {
             assert!(sql.contains("total_tokens"));
             assert!(sql.contains("total_cost_usd"));
         }
+    }
+
+    #[test]
+    fn provider_api_keys_concurrent_limit_queries_include_field() {
+        for sql in [
+            super::LIST_KEYS_BY_IDS_PREFIX,
+            super::LIST_KEYS_BY_PROVIDER_IDS_PREFIX,
+            super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX,
+        ] {
+            assert!(sql.contains("concurrent_limit"));
+        }
+
+        let source = include_str!("sql.rs");
+        assert!(source.contains("concurrent_limit,"));
+        assert!(source.contains("concurrent_limit = $13"));
+        assert!(source.contains(".bind(key.concurrent_limit)"));
+        assert!(source.contains("row_get::<Option<i32>>(row, \"concurrent_limit\")"));
+    }
+
+    #[test]
+    fn provider_api_keys_concurrent_limit_schema_is_nullable_without_default() {
+        let migration = include_str!(
+            "../../../migrations/20260502000000_add_provider_key_auth_channel_mismatch_formats.sql"
+        );
+        let concurrent_limit_line = migration
+            .lines()
+            .find(|line| line.contains("ADD COLUMN IF NOT EXISTS concurrent_limit"))
+            .expect("concurrent_limit migration line should exist")
+            .to_ascii_lowercase();
+        assert_eq!(
+            concurrent_limit_line.trim(),
+            "add column if not exists concurrent_limit integer;"
+        );
+
+        let baseline = include_str!("../../../bootstrap/20260413020000_baseline_v2.sql");
+        assert!(baseline.contains("CREATE TABLE IF NOT EXISTS public.provider_api_keys"));
+        assert!(baseline.contains("concurrent_limit integer,"));
     }
 }
