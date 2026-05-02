@@ -135,6 +135,7 @@ pub(crate) async fn materialize_local_openai_chat_candidate_attempts(
         Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         sticky_session_token.as_deref(),
+        input.request_auth_channel.as_deref(),
         persistence_policy,
         candidates,
         preselection_skipped,

@@ -95,6 +95,9 @@ pub(super) fn map_key(
             "provider_api_keys.api_formats",
         )?,
         auth_type_by_format: normalize_optional_json(key.auth_type_by_format),
+        allow_auth_channel_mismatch_formats: normalize_optional_json(
+            key.allow_auth_channel_mismatch_formats,
+        ),
         allowed_models: normalize_string_list(
             normalize_optional_json(key.allowed_models),
             "provider_api_keys.allowed_models",

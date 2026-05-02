@@ -104,8 +104,7 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
         }
     };
 
-    Some(build_local_requested_model_decision_input(
-        resolved_input,
-        requested_model,
-    ))
+    let mut input = build_local_requested_model_decision_input(resolved_input, requested_model);
+    input.request_auth_channel = decision.request_auth_channel.clone();
+    Some(input)
 }

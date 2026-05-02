@@ -164,6 +164,18 @@
                 </button>
               </div>
               <div
+                v-if="canToggleAuthChannelMismatch(format)"
+                class="flex items-center gap-1"
+                title="允许客户端认证方式不一致时使用"
+                @click.stop
+              >
+                <Switch
+                  :model-value="isAuthChannelMismatchAllowed(format)"
+                  class="scale-75"
+                  @update:model-value="(value) => setAuthChannelMismatchAllowed(format, value)"
+                />
+              </div>
+              <div
                 class="flex items-center text-xs text-muted-foreground gap-1"
                 @click.stop
               >
@@ -478,6 +490,25 @@ function sanitizeAuthTypeByFormat(
   return sanitized
 }
 
+function sanitizeAllowAuthChannelMismatchFormats(
+  formats: string[] | null | undefined,
+  selectedFormats = form.value.api_formats
+): string[] {
+  if (!formats) return []
+  const selected = new Set(selectedFormats.map(normalizeApiFormat))
+  const seen = new Set<string>()
+  const sanitized: string[] = []
+  for (const format of formats) {
+    const normalizedFormat = normalizeApiFormat(format)
+    if (!normalizedFormat || !selected.has(normalizedFormat) || seen.has(normalizedFormat)) {
+      continue
+    }
+    seen.add(normalizedFormat)
+    sanitized.push(normalizedFormat)
+  }
+  return sanitized
+}
+
 function getDefaultApiFormats(): string[] {
   const endpointFormat = props.endpoint?.api_format
   if (endpointFormat) {
@@ -549,10 +580,33 @@ function setFormatAuthType(format: string, authType: RawSecretAuthType) {
   form.value.auth_type_by_format = sanitizeAuthTypeByFormat(next)
 }
 
+function canToggleAuthChannelMismatch(format: string): boolean {
+  return canOverrideFormatAuth(format)
+}
+
+function isAuthChannelMismatchAllowed(format: string): boolean {
+  return form.value.allow_auth_channel_mismatch_formats.includes(normalizeApiFormat(format))
+}
+
+function setAuthChannelMismatchAllowed(format: string, allowed: boolean) {
+  const normalizedFormat = normalizeApiFormat(format)
+  const next = new Set(form.value.allow_auth_channel_mismatch_formats.map(normalizeApiFormat))
+  if (allowed) {
+    next.add(normalizedFormat)
+  } else {
+    next.delete(normalizedFormat)
+  }
+  form.value.allow_auth_channel_mismatch_formats = sanitizeAllowAuthChannelMismatchFormats([...next])
+}
 
 function buildAuthTypeByFormatPayload(): Record<string, RawSecretAuthType> | null {
   const sanitized = sanitizeAuthTypeByFormat(form.value.auth_type_by_format)
   return Object.keys(sanitized).length > 0 ? sanitized : null
+}
+
+function buildAllowAuthChannelMismatchFormatsPayload(): string[] {
+  const sanitized = sanitizeAllowAuthChannelMismatchFormats(form.value.allow_auth_channel_mismatch_formats)
+  return sanitized
 }
 
 const serviceAccountDescription = computed(() => (
@@ -564,6 +618,10 @@ const serviceAccountDescription = computed(() => (
 // 默认认证类型
 function getDefaultAuthType(): ProviderKeyFormAuthType {
   return authTypeOptions.value[0]?.value || 'api_key'
+}
+
+function getDefaultAllowAuthChannelMismatchFormats(formats = getDefaultApiFormats()): string[] {
+  return sanitizeAllowAuthChannelMismatchFormats(formats, formats)
 }
 
 // 显示自动获取模型警告：编辑模式下，原本未启用但现在启用，且已有 allowed_models
@@ -632,6 +690,7 @@ const form = ref({
   api_key: '',  // 标准 API Key
   auth_type: 'api_key' as ProviderKeyFormAuthType,  // 认证类型
   auth_type_by_format: {} as Record<string, RawSecretAuthType>,
+  allow_auth_channel_mismatch_formats: [] as string[],
   auth_config_text: '',  // Service Account JSON 文本（用于表单输入）
   api_formats: [] as string[],  // 支持的 API 格式列表
   rate_multipliers: {} as Record<string, number>,  // 按 API 格式的成本倍率
@@ -661,6 +720,9 @@ watch(
       form.value.api_formats = [...filtered]
     }
     form.value.auth_type_by_format = sanitizeAuthTypeByFormat(form.value.auth_type_by_format)
+    form.value.allow_auth_channel_mismatch_formats = sanitizeAllowAuthChannelMismatchFormats(
+      form.value.allow_auth_channel_mismatch_formats
+    )
   },
   { immediate: true }
 )
@@ -676,6 +738,10 @@ watch(
     if (filtered.length !== form.value.api_formats.length) {
       form.value.api_formats = [...filtered]
       form.value.auth_type_by_format = sanitizeAuthTypeByFormat(form.value.auth_type_by_format, filtered)
+      form.value.allow_auth_channel_mismatch_formats = sanitizeAllowAuthChannelMismatchFormats(
+        form.value.allow_auth_channel_mismatch_formats,
+        filtered
+      )
       return
     }
 
@@ -683,6 +749,8 @@ watch(
       const defaults = getDefaultApiFormats()
       if (defaults.length > 0) {
         form.value.api_formats = defaults
+        form.value.allow_auth_channel_mismatch_formats =
+          getDefaultAllowAuthChannelMismatchFormats(defaults)
       }
     }
   },
@@ -708,10 +776,14 @@ function toggleApiFormat(format: string) {
   if (index === -1) {
     // 添加格式
     form.value.api_formats.push(format)
+    setAuthChannelMismatchAllowed(format, true)
   } else {
     // 移除格式，但保留倍率配置（用户可能只是临时取消）
     form.value.api_formats.splice(index, 1)
   }
+  form.value.allow_auth_channel_mismatch_formats = sanitizeAllowAuthChannelMismatchFormats(
+    form.value.allow_auth_channel_mismatch_formats
+  )
 }
 
 // 更新指定格式的成本倍率
@@ -738,13 +810,16 @@ function updateRateMultiplier(format: string, value: string | number) {
 // 重置表单
 function resetForm() {
   formNonce.value = createFieldNonce()
+  const defaultApiFormats = getDefaultApiFormats()
   form.value = {
     name: '',
     api_key: '',
     auth_type: getDefaultAuthType(),
     auth_type_by_format: {},
+    allow_auth_channel_mismatch_formats:
+      getDefaultAllowAuthChannelMismatchFormats(defaultApiFormats),
     auth_config_text: '',
-    api_formats: getDefaultApiFormats(),
+    api_formats: defaultApiFormats,
     rate_multipliers: {},
     internal_priority: 10,
     rpm_limit: undefined,
@@ -766,6 +841,9 @@ function clearForNextAdd() {
   form.value.api_key = ''
   form.value.auth_config_text = ''
   form.value.auth_type_by_format = sanitizeAuthTypeByFormat(form.value.auth_type_by_format)
+  form.value.allow_auth_channel_mismatch_formats = sanitizeAllowAuthChannelMismatchFormats(
+    form.value.allow_auth_channel_mismatch_formats
+  )
 }
 
 // 加载密钥数据（编辑模式）
@@ -780,6 +858,10 @@ function loadKeyData() {
       props.editingKey.auth_type_by_format || {},
       props.editingKey.api_formats || [],
       normalizeFormAuthType(props.editingKey.auth_type)
+    ),
+    allow_auth_channel_mismatch_formats: sanitizeAllowAuthChannelMismatchFormats(
+      props.editingKey.allow_auth_channel_mismatch_formats || [],
+      props.editingKey.api_formats || []
     ),
     auth_config_text: '',  // auth_config 不返回给前端，编辑时需要重新输入
     api_formats: props.editingKey.api_formats?.length > 0
@@ -873,6 +955,9 @@ async function handleSave() {
   }
 
   form.value.api_formats = sanitizeApiFormats(form.value.api_formats)
+  form.value.allow_auth_channel_mismatch_formats = sanitizeAllowAuthChannelMismatchFormats(
+    form.value.allow_auth_channel_mismatch_formats
+  )
 
   // 验证至少选择一个 API 格式
   if (form.value.api_formats.length === 0) {
@@ -905,6 +990,7 @@ async function handleSave() {
     // 准备认证相关数据
     const authConfig = parseAuthConfig()
     const authTypeByFormat = buildAuthTypeByFormatPayload()
+    const allowAuthChannelMismatchFormats = buildAllowAuthChannelMismatchFormatsPayload()
 
     if (props.editingKey) {
       const shouldClearAllowedModels = !!props.editingKey.auto_fetch_models && !form.value.auto_fetch_models
@@ -916,6 +1002,7 @@ async function handleSave() {
         name: form.value.name,
         auth_type: form.value.auth_type,
         auth_type_by_format: authTypeByFormat,
+        allow_auth_channel_mismatch_formats: allowAuthChannelMismatchFormats,
         rate_multipliers: rateMultipliersData,
         internal_priority: form.value.internal_priority,
         rpm_limit: form.value.rpm_limit,
@@ -947,6 +1034,7 @@ async function handleSave() {
         api_key: form.value.api_key,
         auth_type: form.value.auth_type,
         auth_type_by_format: authTypeByFormat,
+        allow_auth_channel_mismatch_formats: allowAuthChannelMismatchFormats,
         auth_config: authConfig || undefined,
         name: form.value.name,
         rate_multipliers: rateMultipliersData,

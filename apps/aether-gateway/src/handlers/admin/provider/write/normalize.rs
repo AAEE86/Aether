@@ -81,6 +81,36 @@ pub(crate) fn normalize_auth_type_by_format(
     }
 }
 
+pub(crate) fn normalize_allow_auth_channel_mismatch_formats(
+    values: Option<Vec<String>>,
+    field_name: &str,
+    api_formats: &[String],
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    let allowed = api_formats.iter().cloned().collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for value in values {
+        let canonical = crate::ai_serving::normalize_api_format_alias(&value);
+        if canonical.is_empty() {
+            continue;
+        }
+        if !allowed.is_empty() && !allowed.contains(&canonical) {
+            return Err(format!("{field_name} 包含未选择的 API 格式: {canonical}"));
+        }
+        if seen.insert(canonical.clone()) {
+            normalized.push(serde_json::Value::String(canonical));
+        }
+    }
+    if normalized.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::Value::Array(normalized)))
+    }
+}
+
 pub(crate) fn normalize_auth_type(value: Option<&str>) -> Result<String, String> {
     let auth_type = value.unwrap_or("api_key").trim().to_ascii_lowercase();
     match auth_type.as_str() {

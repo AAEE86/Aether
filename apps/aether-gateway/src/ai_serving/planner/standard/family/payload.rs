@@ -338,6 +338,7 @@ mod tests {
             requested_model: "claude-sonnet-4-5".to_string(),
             auth_snapshot: sample_auth_snapshot(),
             required_capabilities: None,
+            request_auth_channel: None,
         }
     }
 
@@ -398,6 +399,7 @@ mod tests {
                     "openai:chat".to_string(),
                 ]),
                 auth_type_by_format: None,
+                allow_auth_channel_mismatch_formats: None,
                 allowed_models: None,
                 capabilities: None,
                 rate_multipliers: None,

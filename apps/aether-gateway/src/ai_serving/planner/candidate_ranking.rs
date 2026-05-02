@@ -1048,6 +1048,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1125,6 +1126,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1198,6 +1200,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1259,6 +1262,7 @@ mod tests {
             ],
             "openai:chat",
             "gpt-4.1",
+            None,
             None,
             None,
             None,
@@ -1342,6 +1346,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1411,6 +1416,7 @@ mod tests {
             "openai:chat",
             "gpt-4.1",
             Some(&auth_snapshot),
+            None,
             None,
             None,
         )
@@ -1485,6 +1491,7 @@ mod tests {
             ],
             "claude:messages",
             "gpt-4.1",
+            None,
             None,
             None,
             None,
@@ -1578,6 +1585,7 @@ mod tests {
             "claude:messages",
             "gpt-4.1",
             Some(&auth_snapshot),
+            None,
             None,
             None,
         )
@@ -1678,6 +1686,7 @@ mod tests {
             "openai:chat",
             "gpt-4.1",
             Some(&auth_snapshot),
+            None,
             None,
             None,
         )
@@ -1781,6 +1790,7 @@ mod tests {
             Some(&auth_snapshot),
             None,
             None,
+            None,
         )
         .await;
 
@@ -1880,6 +1890,7 @@ mod tests {
             "openai:chat",
             "gpt-4.1",
             Some(&auth_snapshot),
+            None,
             None,
             None,
         )

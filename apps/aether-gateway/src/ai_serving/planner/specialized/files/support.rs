@@ -92,6 +92,7 @@ pub(super) async fn materialize_local_gemini_files_candidate_attempts(
         Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         None,
+        None,
         persistence_policy,
         candidates,
         Vec::new(),

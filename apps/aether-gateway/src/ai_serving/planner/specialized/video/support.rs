@@ -73,10 +73,9 @@ pub(super) async fn resolve_local_video_create_decision_input(
         }
     };
 
-    Some(build_local_requested_model_decision_input(
-        resolved_input,
-        requested_model,
-    ))
+    let mut input = build_local_requested_model_decision_input(resolved_input, requested_model);
+    input.request_auth_channel = decision.request_auth_channel.clone();
+    Some(input)
 }
 
 fn resolve_local_video_create_auth_context(
@@ -167,6 +166,7 @@ async fn materialize_local_video_create_candidate_attempts(
         Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         sticky_session_token.as_deref(),
+        input.request_auth_channel.as_deref(),
         persistence_policy,
         candidates,
         preselection_skipped,

@@ -14,6 +14,8 @@ pub(crate) struct AdminProviderKeyCreateRequest {
     #[serde(default)]
     pub(crate) auth_type_by_format: Option<serde_json::Value>,
     #[serde(default)]
+    pub(crate) allow_auth_channel_mismatch_formats: Option<Option<Vec<String>>>,
+    #[serde(default)]
     pub(crate) auth_config: Option<serde_json::Value>,
     pub(crate) name: String,
     #[serde(default)]
@@ -52,6 +54,8 @@ pub(crate) struct AdminProviderKeyUpdateRequest {
     pub(crate) auth_type: Option<String>,
     #[serde(default)]
     pub(crate) auth_type_by_format: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) allow_auth_channel_mismatch_formats: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) auth_config: Option<serde_json::Value>,
     #[serde(default)]

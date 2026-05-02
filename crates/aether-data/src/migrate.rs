@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 static BASELINE_V2_SQL: &str = include_str!("../bootstrap/20260413020000_baseline_v2.sql");
-const BASELINE_V2_CUTOFF_VERSION: i64 = 20260428000000;
+const BASELINE_V2_CUTOFF_VERSION: i64 = 20260502000000;
 const MIGRATIONS_TABLE_EXISTS_SQL: &str =
     "SELECT to_regclass('public._sqlx_migrations') IS NOT NULL";
 const PUBLIC_BASE_TABLE_COUNT_SQL: &str = r#"
@@ -665,6 +665,7 @@ SELECT EXISTS (
                 20260423000000,
                 20260424000000,
                 20260428000000,
+                20260502000000,
             ]
         );
     }
@@ -732,7 +733,20 @@ SELECT EXISTS (
             .sql
             .contains("api_formats json DEFAULT '[]'::json NOT NULL"));
         assert!(BASELINE_V2_SQL.contains("api_formats json,"));
+        assert!(BASELINE_V2_SQL.contains("concurrent_limit integer,"));
+        assert!(BASELINE_V2_SQL.contains("allow_auth_channel_mismatch_formats json,"));
         assert!(!BASELINE_V2_SQL.contains("api_formats json DEFAULT '[]'::json NOT NULL"));
+
+        let auth_mismatch_migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 20260502000000)
+            .expect("auth mismatch migration should be embedded");
+        assert!(auth_mismatch_migration
+            .sql
+            .contains("allow_auth_channel_mismatch_formats = rebuilt.api_formats"));
+        assert!(auth_mismatch_migration
+            .sql
+            .contains("pak.allow_auth_channel_mismatch_formats IS NULL"));
     }
 
     #[test]
@@ -1256,6 +1270,7 @@ ORDER BY id
                 20260423000000,
                 20260424000000,
                 20260428000000,
+                20260502000000,
             ]
         );
     }

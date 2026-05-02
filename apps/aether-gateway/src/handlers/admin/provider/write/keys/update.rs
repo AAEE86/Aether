@@ -1,7 +1,8 @@
 use crate::handlers::admin::provider::shared::payloads::AdminProviderKeyUpdatePatch;
 use crate::handlers::admin::provider::write::normalize::{
-    normalize_api_format_json_object_keys, normalize_api_format_list, normalize_auth_type,
-    normalize_auth_type_by_format, validate_vertex_api_formats,
+    normalize_allow_auth_channel_mismatch_formats, normalize_api_format_json_object_keys,
+    normalize_api_format_list, normalize_auth_type, normalize_auth_type_by_format,
+    validate_vertex_api_formats,
 };
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::{
@@ -220,6 +221,32 @@ pub(crate) async fn build_admin_update_provider_key_record(
         }
     } else {
         updated.auth_type_by_format = None;
+    }
+    if fields.contains("allow_auth_channel_mismatch_formats") {
+        updated.allow_auth_channel_mismatch_formats =
+            normalize_allow_auth_channel_mismatch_formats(
+                payload.allow_auth_channel_mismatch_formats,
+                "allow_auth_channel_mismatch_formats",
+                &effective_api_formats,
+            )?;
+    } else if fields.contains("api_formats") {
+        let existing = updated
+            .allow_auth_channel_mismatch_formats
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            });
+        updated.allow_auth_channel_mismatch_formats =
+            normalize_allow_auth_channel_mismatch_formats(
+                existing,
+                "allow_auth_channel_mismatch_formats",
+                &effective_api_formats,
+            )?;
     }
 
     updated.auth_type = target_auth_type;

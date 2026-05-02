@@ -71,10 +71,9 @@ pub(crate) async fn resolve_local_same_format_provider_decision_input(
         }
     };
 
-    Some(build_local_requested_model_decision_input(
-        resolved_input,
-        requested_model,
-    ))
+    let mut input = build_local_requested_model_decision_input(resolved_input, requested_model);
+    input.request_auth_channel = decision.request_auth_channel.clone();
+    Some(input)
 }
 
 pub(crate) async fn materialize_local_same_format_provider_candidate_attempts(
@@ -110,6 +109,7 @@ pub(crate) async fn materialize_local_same_format_provider_candidate_attempts(
         Some(&input.auth_snapshot),
         input.required_capabilities.as_ref(),
         sticky_session_token.as_deref(),
+        input.request_auth_channel.as_deref(),
         persistence_policy,
         candidates,
         preselection_skipped

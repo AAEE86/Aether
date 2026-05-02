@@ -136,6 +136,7 @@ mod tests {
                 is_active: true,
                 api_formats: Some(vec!["openai:chat".to_string()]),
                 auth_type_by_format: None,
+                allow_auth_channel_mismatch_formats: None,
                 allowed_models: None,
                 capabilities: None,
                 rate_multipliers: None,

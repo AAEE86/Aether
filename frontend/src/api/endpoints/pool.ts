@@ -105,6 +105,7 @@ export interface PoolKeyDetail {
   is_active: boolean
   auth_type: string
   auth_type_by_format?: Record<string, 'api_key' | 'bearer'> | null
+  allow_auth_channel_mismatch_formats?: string[] | null
   credential_kind?: 'raw_secret' | 'oauth_session' | 'service_account' | string | null
   runtime_auth_kind?: 'api_key' | 'bearer' | 'service_account' | 'mixed' | 'unknown' | string | null
   oauth_managed?: boolean
@@ -212,6 +213,7 @@ export interface PoolKeySelectionItem {
   key_name: string
   auth_type: string
   auth_type_by_format?: Record<string, 'api_key' | 'bearer'> | null
+  allow_auth_channel_mismatch_formats?: string[] | null
   credential_kind?: 'raw_secret' | 'oauth_session' | 'service_account' | string | null
   runtime_auth_kind?: 'api_key' | 'bearer' | 'service_account' | 'mixed' | 'unknown' | string | null
   oauth_managed?: boolean

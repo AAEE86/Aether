@@ -18,6 +18,7 @@ pub(crate) struct LocalRequestedModelDecisionInput {
     pub(crate) requested_model: String,
     pub(crate) auth_snapshot: GatewayAuthApiKeySnapshot,
     pub(crate) required_capabilities: Option<serde_json::Value>,
+    pub(crate) request_auth_channel: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +94,7 @@ pub(crate) fn build_local_requested_model_decision_input(
         requested_model,
         auth_snapshot: resolved_input.auth_snapshot,
         required_capabilities: resolved_input.required_capabilities,
+        request_auth_channel: None,
     }
 }
 

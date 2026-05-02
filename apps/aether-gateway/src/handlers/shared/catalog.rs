@@ -1313,6 +1313,10 @@ pub(crate) fn build_admin_provider_key_response(
         json!(key.auth_type_by_format),
     );
     payload.insert(
+        "allow_auth_channel_mismatch_formats".to_string(),
+        json!(key.allow_auth_channel_mismatch_formats),
+    );
+    payload.insert(
         "credential_kind".to_string(),
         json!(auth_semantics.credential_kind().as_str()),
     );

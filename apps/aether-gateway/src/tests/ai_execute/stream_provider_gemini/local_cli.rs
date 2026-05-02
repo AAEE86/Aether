@@ -1093,7 +1093,7 @@ async fn gateway_executes_vertex_ai_gemini_cli_stream_via_local_decision_gate_wi
     }
 
     fn sample_provider_catalog_key() -> StoredProviderCatalogKey {
-        StoredProviderCatalogKey::new(
+        let mut key = StoredProviderCatalogKey::new(
             "key-vertex-cli-stream-local-1".to_string(),
             "provider-vertex-cli-stream-local-1".to_string(),
             "prod".to_string(),
@@ -1114,7 +1114,10 @@ async fn gateway_executes_vertex_ai_gemini_cli_stream_via_local_decision_gate_wi
             None,
             None,
         )
-        .expect("key transport should build")
+        .expect("key transport should build");
+        key.allow_auth_channel_mismatch_formats =
+            Some(serde_json::json!(["gemini:generate_content"]));
+        key
     }
 
     let seen_execution_runtime = Arc::new(Mutex::new(None::<SeenExecutionRuntimeStreamRequest>));

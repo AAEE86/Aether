@@ -141,6 +141,7 @@ SELECT
   is_active,
   api_formats,
   auth_type_by_format,
+  allow_auth_channel_mismatch_formats,
   api_key,
   auth_config,
   note,
@@ -198,6 +199,7 @@ SELECT
   is_active,
   api_formats,
   auth_type_by_format,
+  allow_auth_channel_mismatch_formats,
   api_key,
   auth_config,
   note,
@@ -1234,7 +1236,8 @@ INSERT INTO provider_api_keys (
   circuit_breaker_by_format,
   is_active,
   created_at,
-  updated_at
+  updated_at,
+  allow_auth_channel_mismatch_formats
 ) VALUES (
   $1,
   $2,
@@ -1310,7 +1313,8 @@ INSERT INTO provider_api_keys (
   CASE
     WHEN $51::double precision IS NULL THEN NOW()
     ELSE TO_TIMESTAMP($51::double precision)
-  END
+  END,
+  $52
 )
 "#,
         )
@@ -1373,7 +1377,7 @@ INSERT INTO provider_api_keys (
         .bind(key.is_active)
         .bind(key.created_at_unix_ms.map(|value| value as f64))
         .bind(key.updated_at_unix_secs.map(|value| value as f64))
-        .bind(key.expires_at_unix_secs.map(|value| value as f64))
+        .bind(&key.allow_auth_channel_mismatch_formats)
         .execute(&self.pool)
         .await
         .map_postgres_err()?;
@@ -1723,6 +1727,7 @@ SET
   provider_id = $2,
   api_formats = $3,
   auth_type_by_format = $39,
+  allow_auth_channel_mismatch_formats = $40,
   auth_type = $4,
   api_key = $5,
   auth_config = $6,
@@ -1818,6 +1823,7 @@ WHERE id = $1
         .bind(key.updated_at_unix_secs.map(|value| value as f64))
         .bind(key.expires_at_unix_secs.map(|value| value as f64))
         .bind(&key.auth_type_by_format)
+        .bind(&key.allow_auth_channel_mismatch_formats)
         .execute(&self.pool)
         .await
         .map_postgres_err()?
@@ -2479,6 +2485,8 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
             );
         key.note = row.try_get("note").ok();
         key.auth_type_by_format = row.try_get("auth_type_by_format").ok();
+        key.allow_auth_channel_mismatch_formats =
+            row.try_get("allow_auth_channel_mismatch_formats").ok();
         key.internal_priority = row.try_get("internal_priority").unwrap_or(50);
         key.cache_ttl_minutes = row.try_get("cache_ttl_minutes").unwrap_or(5);
         key.max_probe_interval_minutes = row.try_get("max_probe_interval_minutes").unwrap_or(32);

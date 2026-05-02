@@ -214,6 +214,8 @@ pub struct AdminSystemConfigProviderKey {
     #[serde(default)]
     pub auth_type_by_format: Option<Value>,
     #[serde(default)]
+    pub allow_auth_channel_mismatch_formats: Option<Vec<String>>,
+    #[serde(default)]
     pub rpm_limit: Option<u32>,
     #[serde(default)]
     pub allowed_models: Option<Vec<String>>,

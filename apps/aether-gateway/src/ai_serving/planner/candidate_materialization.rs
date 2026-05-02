@@ -69,6 +69,7 @@ struct GatewayLocalCandidateMaterializationPort<'a, F, G> {
     auth_snapshot: Option<&'a GatewayAuthApiKeySnapshot>,
     required_capabilities: Option<&'a Value>,
     sticky_session_token: Option<&'a str>,
+    request_auth_channel: Option<&'a str>,
     persistence_policy: LocalCandidatePersistencePolicy<'a>,
     resolution_mode: LocalCandidateResolutionMode,
     build_available_extra_data: F,
@@ -123,6 +124,7 @@ where
                     self.auth_snapshot,
                     self.required_capabilities,
                     self.sticky_session_token,
+                    self.request_auth_channel,
                 )
                 .await
             }
@@ -135,6 +137,7 @@ where
                     self.auth_snapshot,
                     self.required_capabilities,
                     self.sticky_session_token,
+                    self.request_auth_channel,
                 )
                 .await
             }
@@ -314,6 +317,7 @@ pub(crate) async fn materialize_local_execution_candidates_with_serving<F, G>(
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
     required_capabilities: Option<&Value>,
     sticky_session_token: Option<&str>,
+    request_auth_channel: Option<&str>,
     persistence_policy: LocalCandidatePersistencePolicy<'_>,
     candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
     preselection_skipped: Vec<SkippedLocalExecutionCandidate>,
@@ -333,6 +337,7 @@ where
         auth_snapshot,
         required_capabilities,
         sticky_session_token,
+        request_auth_channel,
         persistence_policy,
         resolution_mode,
         build_available_extra_data,
@@ -682,6 +687,7 @@ mod tests {
                 is_active: true,
                 api_formats: Some(vec!["openai:chat".to_string()]),
                 auth_type_by_format: None,
+                allow_auth_channel_mismatch_formats: None,
 
                 allowed_models: None,
                 capabilities: None,

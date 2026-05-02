@@ -62,6 +62,7 @@ pub struct GatewayProviderTransportKey {
     pub is_active: bool,
     pub api_formats: Option<Vec<String>>,
     pub auth_type_by_format: Option<serde_json::Value>,
+    pub allow_auth_channel_mismatch_formats: Option<serde_json::Value>,
     pub allowed_models: Option<Vec<String>>,
     pub capabilities: Option<serde_json::Value>,
     pub rate_multipliers: Option<serde_json::Value>,
@@ -388,6 +389,7 @@ mod tests {
                         "openai:responses".to_string(),
                     ]),
                     auth_type_by_format: None,
+                    allow_auth_channel_mismatch_formats: None,
 
                     allowed_models: Some(vec!["gpt-4.1".to_string(), "gpt-4.1-mini".to_string(),]),
                     capabilities: Some(serde_json::json!({"cache_1h": true})),

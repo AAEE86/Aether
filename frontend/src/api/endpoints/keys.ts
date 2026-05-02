@@ -140,6 +140,7 @@ export async function addProviderKey(
     api_key: string
     auth_type?: 'api_key' | 'service_account' | 'oauth' | 'bearer'  // 认证类型
     auth_type_by_format?: Record<string, 'api_key' | 'bearer'> | null
+    allow_auth_channel_mismatch_formats?: string[] | null
     auth_config?: Record<string, unknown>  // 认证配置（Vertex AI Service Account JSON）
     name: string
     rate_multipliers?: Record<string, number> | null  // 按 API 格式的成本倍率
@@ -169,6 +170,7 @@ export async function updateProviderKey(
     api_key: string
     auth_type: 'api_key' | 'service_account' | 'oauth' | 'bearer'  // 认证类型
     auth_type_by_format: Record<string, 'api_key' | 'bearer'> | null
+    allow_auth_channel_mismatch_formats: string[] | null
     auth_config: Record<string, unknown>  // 认证配置（Vertex AI Service Account JSON）
     name: string
     rate_multipliers: Record<string, number> | null  // 按 API 格式的成本倍率
