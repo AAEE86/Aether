@@ -112,6 +112,66 @@ CREATE INDEX IF NOT EXISTS usage_request_id_idx ON public.usage USING btree (req
 CREATE INDEX IF NOT EXISTS usage_user_id_idx ON public.usage USING btree (user_id);
 CREATE INDEX IF NOT EXISTS usage_wallet_id_idx ON public.usage USING btree (wallet_id);
 
+CREATE TABLE IF NOT EXISTS public.usage_body_blobs (
+    body_ref character varying(160) NOT NULL,
+    request_id character varying(128) NOT NULL,
+    body_field character varying(64) NOT NULL,
+    payload_gzip bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+ALTER TABLE ONLY public.usage_body_blobs ADD CONSTRAINT usage_body_blobs_pkey PRIMARY KEY (body_ref);
+ALTER TABLE ONLY public.usage_body_blobs ADD CONSTRAINT usage_body_blobs_request_id_field_key UNIQUE (request_id, body_field);
+CREATE INDEX IF NOT EXISTS usage_body_blobs_request_id_idx ON public.usage_body_blobs USING btree (request_id);
+ALTER TABLE ONLY public.usage_body_blobs ADD CONSTRAINT usage_body_blobs_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.usage(request_id) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS public.usage_http_audits (
+    request_id character varying(128) NOT NULL,
+    request_headers jsonb,
+    provider_request_headers jsonb,
+    response_headers jsonb,
+    client_response_headers jsonb,
+    request_body_ref character varying(160),
+    provider_request_body_ref character varying(160),
+    response_body_ref character varying(160),
+    client_response_body_ref character varying(160),
+    request_body_state character varying(32),
+    provider_request_body_state character varying(32),
+    response_body_state character varying(32),
+    client_response_body_state character varying(32),
+    body_capture_mode character varying(32) DEFAULT 'none' NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+ALTER TABLE ONLY public.usage_http_audits ADD CONSTRAINT usage_http_audits_pkey PRIMARY KEY (request_id);
+CREATE INDEX IF NOT EXISTS usage_http_audits_updated_at_idx ON public.usage_http_audits USING btree (updated_at);
+ALTER TABLE ONLY public.usage_http_audits ADD CONSTRAINT usage_http_audits_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.usage(request_id) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS public.usage_routing_snapshots (
+    request_id character varying(128) NOT NULL,
+    candidate_id character varying(160),
+    candidate_index bigint,
+    key_name character varying(255),
+    planner_kind character varying(120),
+    route_family character varying(80),
+    route_kind character varying(80),
+    execution_path character varying(80),
+    local_execution_runtime_miss_reason character varying(120),
+    selected_provider_id character varying(64),
+    selected_endpoint_id character varying(64),
+    selected_provider_api_key_id character varying(64),
+    has_format_conversion boolean,
+    created_at bigint DEFAULT 0 NOT NULL,
+    updated_at bigint DEFAULT 0 NOT NULL
+);
+
+ALTER TABLE ONLY public.usage_routing_snapshots ADD CONSTRAINT usage_routing_snapshots_pkey PRIMARY KEY (request_id);
+CREATE INDEX IF NOT EXISTS ix_usage_routing_snapshots_route_family_kind ON public.usage_routing_snapshots USING btree (route_family, route_kind);
+CREATE INDEX IF NOT EXISTS ix_usage_routing_snapshots_candidate_id ON public.usage_routing_snapshots USING btree (candidate_id);
+ALTER TABLE ONLY public.usage_routing_snapshots ADD CONSTRAINT usage_routing_snapshots_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.usage(request_id) ON DELETE CASCADE;
+
 CREATE TABLE IF NOT EXISTS public.usage_settlement_snapshots (
     request_id character varying(128) NOT NULL,
     billing_status character varying(64) NOT NULL,

@@ -110,6 +110,60 @@ CREATE INDEX IF NOT EXISTS usage_request_id_idx ON "usage" (request_id);
 CREATE INDEX IF NOT EXISTS usage_user_id_idx ON "usage" (user_id);
 CREATE INDEX IF NOT EXISTS usage_wallet_id_idx ON "usage" (wallet_id);
 
+CREATE TABLE IF NOT EXISTS usage_body_blobs (
+    body_ref TEXT PRIMARY KEY NOT NULL,
+    request_id TEXT NOT NULL,
+    body_field TEXT NOT NULL,
+    payload_gzip BLOB NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (request_id, body_field),
+    CONSTRAINT usage_body_blobs_request_id_fkey FOREIGN KEY (request_id) REFERENCES usage (request_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS usage_body_blobs_request_id_idx ON usage_body_blobs (request_id);
+
+CREATE TABLE IF NOT EXISTS usage_http_audits (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    request_headers TEXT,
+    provider_request_headers TEXT,
+    response_headers TEXT,
+    client_response_headers TEXT,
+    request_body_ref TEXT,
+    provider_request_body_ref TEXT,
+    response_body_ref TEXT,
+    client_response_body_ref TEXT,
+    request_body_state TEXT,
+    provider_request_body_state TEXT,
+    response_body_state TEXT,
+    client_response_body_state TEXT,
+    body_capture_mode TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT usage_http_audits_request_id_fkey FOREIGN KEY (request_id) REFERENCES usage (request_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS usage_http_audits_updated_at_idx ON usage_http_audits (updated_at);
+
+CREATE TABLE IF NOT EXISTS usage_routing_snapshots (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    candidate_id TEXT,
+    candidate_index INTEGER,
+    key_name TEXT,
+    planner_kind TEXT,
+    route_family TEXT,
+    route_kind TEXT,
+    execution_path TEXT,
+    local_execution_runtime_miss_reason TEXT,
+    selected_provider_id TEXT,
+    selected_endpoint_id TEXT,
+    selected_provider_api_key_id TEXT,
+    has_format_conversion INTEGER,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    CONSTRAINT usage_routing_snapshots_request_id_fkey FOREIGN KEY (request_id) REFERENCES usage (request_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_usage_routing_snapshots_route_family_kind ON usage_routing_snapshots (route_family, route_kind);
+CREATE INDEX IF NOT EXISTS ix_usage_routing_snapshots_candidate_id ON usage_routing_snapshots (candidate_id);
+
 CREATE TABLE IF NOT EXISTS usage_settlement_snapshots (
     request_id TEXT PRIMARY KEY NOT NULL,
     billing_status TEXT NOT NULL,

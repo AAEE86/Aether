@@ -111,6 +111,63 @@ CREATE TABLE IF NOT EXISTS `usage` (
     KEY usage_wallet_id_idx (`wallet_id`)
 );
 
+CREATE TABLE IF NOT EXISTS usage_body_blobs (
+    `body_ref` VARCHAR(160) NOT NULL,
+    `request_id` VARCHAR(128) NOT NULL,
+    `body_field` VARCHAR(64) NOT NULL,
+    `payload_gzip` LONGBLOB NOT NULL,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`body_ref`),
+    UNIQUE KEY usage_body_blobs_request_id_field_key (`request_id`, `body_field`),
+    KEY usage_body_blobs_request_id_idx (`request_id`),
+    CONSTRAINT usage_body_blobs_request_id_fkey FOREIGN KEY (`request_id`) REFERENCES usage (`request_id`) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS usage_http_audits (
+    `request_id` VARCHAR(128) NOT NULL,
+    `request_headers` JSON,
+    `provider_request_headers` JSON,
+    `response_headers` JSON,
+    `client_response_headers` JSON,
+    `request_body_ref` VARCHAR(160),
+    `provider_request_body_ref` VARCHAR(160),
+    `response_body_ref` VARCHAR(160),
+    `client_response_body_ref` VARCHAR(160),
+    `request_body_state` VARCHAR(32),
+    `provider_request_body_state` VARCHAR(32),
+    `response_body_state` VARCHAR(32),
+    `client_response_body_state` VARCHAR(32),
+    `body_capture_mode` VARCHAR(32) NOT NULL DEFAULT 'none',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`request_id`),
+    KEY usage_http_audits_updated_at_idx (`updated_at`),
+    CONSTRAINT usage_http_audits_request_id_fkey FOREIGN KEY (`request_id`) REFERENCES usage (`request_id`) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS usage_routing_snapshots (
+    `request_id` VARCHAR(128) NOT NULL,
+    `candidate_id` VARCHAR(160),
+    `candidate_index` BIGINT,
+    `key_name` VARCHAR(255),
+    `planner_kind` VARCHAR(120),
+    `route_family` VARCHAR(80),
+    `route_kind` VARCHAR(80),
+    `execution_path` VARCHAR(80),
+    `local_execution_runtime_miss_reason` VARCHAR(120),
+    `selected_provider_id` VARCHAR(64),
+    `selected_endpoint_id` VARCHAR(64),
+    `selected_provider_api_key_id` VARCHAR(64),
+    `has_format_conversion` TINYINT(1),
+    `created_at` BIGINT NOT NULL DEFAULT 0,
+    `updated_at` BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (`request_id`),
+    KEY ix_usage_routing_snapshots_route_family_kind (`route_family`, `route_kind`),
+    KEY ix_usage_routing_snapshots_candidate_id (`candidate_id`),
+    CONSTRAINT usage_routing_snapshots_request_id_fkey FOREIGN KEY (`request_id`) REFERENCES usage (`request_id`) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS usage_settlement_snapshots (
     `request_id` VARCHAR(128) NOT NULL,
     `billing_status` VARCHAR(64) NOT NULL,
