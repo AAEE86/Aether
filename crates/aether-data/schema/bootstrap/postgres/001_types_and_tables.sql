@@ -415,6 +415,7 @@ CREATE TABLE IF NOT EXISTS public.oauth_providers (
     frontend_callback_url character varying(500) NOT NULL,
     attribute_mapping json,
     extra_config json,
+    icon_url character varying(500),
     is_enabled boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
