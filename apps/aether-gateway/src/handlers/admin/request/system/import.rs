@@ -1885,6 +1885,7 @@ impl<'a> AdminAppState<'a> {
                         oauth_provider.extra_config,
                         "extra_config",
                     )),
+                    icon_url: None,
                     is_enabled: oauth_provider.is_enabled,
                 };
                 invalid!(record.validate().map_err(|err| err.to_string()));

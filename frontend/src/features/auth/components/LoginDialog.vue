@@ -63,7 +63,7 @@
             <!-- eslint-disable vue/no-v-html -->
             <span
               class="oauth-icon"
-              v-html="getOAuthIcon(oauthProviders[0].provider_type)"
+              v-html="getOAuthIcon(oauthProviders[0].provider_type, oauthProviders[0].icon_url)"
             />
             <!-- eslint-enable vue/no-v-html -->
             <span>使用 {{ oauthProviders[0].display_name }} 登录</span>
@@ -88,7 +88,7 @@
               <!-- eslint-disable vue/no-v-html -->
               <span
                 class="oauth-icon-lg"
-                v-html="getOAuthIcon(p.provider_type)"
+                v-html="getOAuthIcon(p.provider_type, p.icon_url)"
               />
               <!-- eslint-enable vue/no-v-html -->
             </button>

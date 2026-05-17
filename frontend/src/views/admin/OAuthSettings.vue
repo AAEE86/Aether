@@ -228,6 +228,20 @@
             </div>
           </div>
 
+          <!-- 图标 URL -->
+          <div>
+            <Label class="block text-sm font-medium">图标 URL</Label>
+            <Input
+              v-model="form.icon_url"
+              class="mt-1"
+              placeholder="https://example.com/icon.svg"
+              autocomplete="off"
+            />
+            <p class="mt-1 text-xs text-muted-foreground">
+              登录页显示的 Provider 图标，留空使用默认图标
+            </p>
+          </div>
+
           <!-- 高级选项（折叠） -->
           <details class="group">
             <summary class="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
@@ -308,6 +322,7 @@
                     自定义 OIDC 必填；填写 Authorization / Token / Userinfo URL 所属域名。
                   </p>
                 </div>
+
               </div>
             </div>
           </details>
@@ -394,6 +409,7 @@ interface OAuthConfigForm {
   frontend_callback_url: string
   attribute_mapping_json: string
   extra_config_json: string
+  icon_url: string
   new_provider_type: string
   new_display_name: string
 }
@@ -415,6 +431,7 @@ const form = ref<OAuthConfigForm>({
   frontend_callback_url: '',
   attribute_mapping_json: '',
   extra_config_json: '',
+  icon_url: '',
   new_provider_type: '',
   new_display_name: '',
 })
@@ -581,6 +598,7 @@ function handleClickAdd() {
     frontend_callback_url: defaultFrontendCallbackUrl(),
     attribute_mapping_json: '',
     extra_config_json: '',
+    icon_url: '',
     new_provider_type: providerType,
     new_display_name: '',
   }
@@ -625,6 +643,7 @@ function syncFormFromSelected() {
     frontend_callback_url: cfg?.frontend_callback_url || defaultFrontendCallbackUrl(),
     attribute_mapping_json: cfg?.attribute_mapping ? JSON.stringify(cfg.attribute_mapping, null, 2) : '',
     extra_config_json: cfg?.extra_config ? JSON.stringify(cfg.extra_config, null, 2) : '',
+    icon_url: cfg?.icon_url || '',
     new_provider_type: '',
     new_display_name: '',
   }
@@ -650,6 +669,7 @@ async function toggleProviderEnabled(providerType: string, enabled: boolean, for
       frontend_callback_url: cfg.frontend_callback_url,
       attribute_mapping: cfg.attribute_mapping || null,
       extra_config: cfg.extra_config || null,
+      icon_url: cfg.icon_url || null,
       is_enabled: enabled,
       force,
     }
@@ -724,6 +744,7 @@ async function handleSave() {
       frontend_callback_url: form.value.frontend_callback_url.trim(),
       attribute_mapping: parseJsonOrNull(form.value.attribute_mapping_json),
       extra_config: parseJsonOrNull(form.value.extra_config_json),
+      icon_url: form.value.icon_url.trim() || null,
       is_enabled: existingConfig?.is_enabled || false,
     }
 
