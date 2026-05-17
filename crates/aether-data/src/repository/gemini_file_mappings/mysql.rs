@@ -9,7 +9,6 @@ use super::types::{
 use crate::driver::mysql::MysqlPool;
 use crate::error::SqlResultExt;
 use crate::DataLayerError;
-use aether_data_query::{push_ci_contains_any, push_limit_offset, SqlDialect, WhereClause};
 
 #[derive(Debug, Clone)]
 pub struct MysqlGeminiFileMappingRepository {
@@ -243,9 +242,8 @@ LIMIT 1
 
 fn build_list_count_query(query: &GeminiFileMappingListQuery) -> QueryBuilder<'_, MySql> {
     let mut builder =
-        QueryBuilder::<MySql>::new("SELECT COUNT(*) AS total FROM gemini_file_mappings");
-    let mut where_clause = WhereClause::new();
-    apply_list_filters(&mut builder, &mut where_clause, query);
+        QueryBuilder::<MySql>::new("SELECT COUNT(*) AS total FROM gemini_file_mappings WHERE 1=1");
+    apply_list_filters(&mut builder, query);
     builder
 }
 
@@ -263,27 +261,20 @@ SELECT
   created_at AS created_at_unix_ms,
   expires_at AS expires_at_unix_secs
 FROM gemini_file_mappings
+WHERE 1=1
 "#,
     );
-    let mut where_clause = WhereClause::new();
-    apply_list_filters(&mut builder, &mut where_clause, query);
-    builder.push(" ORDER BY created_at DESC, file_name ASC");
-    push_limit_offset(
-        &mut builder,
-        i64::try_from(query.limit).unwrap_or(i64::MAX),
-        i64::try_from(query.offset).unwrap_or(i64::MAX),
-    );
+    apply_list_filters(&mut builder, query);
+    builder.push(" ORDER BY created_at DESC, file_name ASC LIMIT ");
+    builder.push_bind(i64::try_from(query.limit).unwrap_or(i64::MAX));
+    builder.push(" OFFSET ");
+    builder.push_bind(i64::try_from(query.offset).unwrap_or(i64::MAX));
     builder
 }
 
-fn apply_list_filters(
-    builder: &mut QueryBuilder<'_, MySql>,
-    where_clause: &mut WhereClause,
-    query: &GeminiFileMappingListQuery,
-) {
+fn apply_list_filters(builder: &mut QueryBuilder<'_, MySql>, query: &GeminiFileMappingListQuery) {
     if !query.include_expired {
-        where_clause.push_next(builder);
-        builder.push("expires_at > ");
+        builder.push(" AND expires_at > ");
         builder.push_bind(query.now_unix_secs as i64);
     }
     if let Some(search) = query
@@ -292,13 +283,12 @@ fn apply_list_filters(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        push_ci_contains_any(
-            builder,
-            where_clause,
-            SqlDialect::Mysql,
-            &["file_name", "COALESCE(display_name, '')"],
-            search,
-        );
+        let pattern = format!("%{}%", search.to_ascii_lowercase());
+        builder.push(" AND (LOWER(file_name) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" OR LOWER(COALESCE(display_name, '')) LIKE ");
+        builder.push_bind(pattern);
+        builder.push(")");
     }
 }
 

@@ -11,7 +11,6 @@ use super::{
 use crate::driver::mysql::MysqlPool;
 use crate::error::SqlResultExt;
 use crate::DataLayerError;
-use aether_data_query::{push_in, WhereClause};
 
 const CANDIDATE_COLUMNS: &str = r#"
 SELECT
@@ -133,8 +132,7 @@ impl RequestCandidateReadRepository for MysqlRequestCandidateRepository {
             return Ok(Vec::new());
         }
         let mut builder = QueryBuilder::<MySql>::new(CANDIDATE_COLUMNS);
-        let mut where_clause = WhereClause::new();
-        push_in(&mut builder, &mut where_clause, "endpoint_id", endpoint_ids);
+        push_endpoint_in_clause(&mut builder, endpoint_ids);
         builder
             .push(" AND created_at >= ")
             .push_bind(unix_secs_to_ms_i64(since_unix_secs)?)
@@ -156,8 +154,7 @@ impl RequestCandidateReadRepository for MysqlRequestCandidateRepository {
         let mut builder = QueryBuilder::<MySql>::new(
             "SELECT endpoint_id, status, COUNT(id) AS count FROM request_candidates",
         );
-        let mut where_clause = WhereClause::new();
-        push_in(&mut builder, &mut where_clause, "endpoint_id", endpoint_ids);
+        push_endpoint_in_clause(&mut builder, endpoint_ids);
         builder
             .push(" AND created_at >= ")
             .push_bind(unix_secs_to_ms_i64(since_unix_secs)?)
@@ -196,8 +193,7 @@ impl RequestCandidateReadRepository for MysqlRequestCandidateRepository {
         let since_ms = unix_secs_to_ms_i64(since_unix_secs)?;
         let until_ms = unix_secs_to_ms_i64(until_unix_secs)?;
         let mut builder = QueryBuilder::<MySql>::new(CANDIDATE_COLUMNS);
-        let mut where_clause = WhereClause::new();
-        push_in(&mut builder, &mut where_clause, "endpoint_id", endpoint_ids);
+        push_endpoint_in_clause(&mut builder, endpoint_ids);
         builder
             .push(" AND created_at >= ")
             .push_bind(since_ms)
@@ -341,6 +337,20 @@ ON DUPLICATE KEY UPDATE
     .await
     .map_sql_err()?;
     Ok(())
+}
+
+fn push_endpoint_in_clause<'args>(
+    builder: &mut QueryBuilder<'args, MySql>,
+    endpoint_ids: &'args [String],
+) {
+    builder.push(" WHERE endpoint_id IN (");
+    {
+        let mut separated = builder.separated(", ");
+        for endpoint_id in endpoint_ids {
+            separated.push_bind(endpoint_id);
+        }
+    }
+    builder.push(")");
 }
 
 fn merge_candidate(

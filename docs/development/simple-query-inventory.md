@@ -3,8 +3,7 @@
 This inventory tracks repository read paths that are intended to use the
 internal `aether-data-query` helpers. The first layer centralizes SQL fragments;
 the newer `SelectQuery` layer lets repositories describe simple `SELECT`
-queries once and render dialect-specific projections for Postgres, SQLite, and
-MySQL.
+queries once and render dialect-specific projections for Postgres and SQLite.
 
 ## Included In This Pass
 
@@ -27,7 +26,7 @@ MySQL.
   - `find_by_provider_id`
   - `find_by_provider_ids`
   - now uses one `SelectQuery` specification for the quota snapshot projection
-    across Postgres, SQLite, and MySQL
+    across Postgres and SQLite
 - `provider_catalog`
   - provider by-id/provider list reads in PG/SQLite
   - endpoint/key by-id and by-provider-id `IN` reads in PG/SQLite
@@ -63,9 +62,6 @@ MySQL.
 - `wallet` ledger, order, refund, callback, and redeem-code list logic.
 - write/upsert/delete paths, transactions, `RETURNING`, CTEs, window functions,
   advisory locks, and schema compatibility probes.
-- MySQL `provider_catalog` still delegates read paths through the existing
-  memory adapter; migrate it in a focused follow-up so MySQL parity can be tested
-  independently.
 - `users/auth` and `global_models` still contain additional simple read paths.
   `global_models/sqlite.rs` had pre-existing local edits and must be handled
   carefully in a dedicated slice.

@@ -25,25 +25,21 @@ fn quota_snapshot_select() -> SelectQuery<'static> {
         SelectColumn::expr(DialectSql::dialect(
             "CAST(monthly_quota_usd AS DOUBLE PRECISION)",
             "CAST(monthly_quota_usd AS REAL)",
-            "monthly_quota_usd",
         ))
         .alias("monthly_quota_usd"),
         SelectColumn::expr(DialectSql::dialect(
             "CAST(COALESCE(monthly_used_usd, 0) AS DOUBLE PRECISION)",
             "CAST(COALESCE(monthly_used_usd, 0) AS REAL)",
-            "COALESCE(monthly_used_usd, 0)",
         ))
         .alias("monthly_used_usd"),
         SelectColumn::expr("quota_reset_day"),
         SelectColumn::expr(DialectSql::dialect(
             "CAST(EXTRACT(EPOCH FROM quota_last_reset_at) AS BIGINT)",
             "quota_last_reset_at",
-            "quota_last_reset_at",
         ))
         .alias("quota_last_reset_at_unix_secs"),
         SelectColumn::expr(DialectSql::dialect(
             "CAST(EXTRACT(EPOCH FROM quota_expires_at) AS BIGINT)",
-            "quota_expires_at",
             "quota_expires_at",
         ))
         .alias("quota_expires_at_unix_secs"),
