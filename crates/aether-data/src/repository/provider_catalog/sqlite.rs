@@ -671,6 +671,11 @@ WHERE id = ?
                 "provider_api_keys.last_probe_increase_at",
             )?)
             .bind(optional_i64_from_u32(key.last_rpm_peak))
+            .bind(optional_i64_from_u64(
+                key.last_models_fetch_at_unix_secs,
+                "provider_api_keys.last_models_fetch_at",
+            )?)
+            .bind(&key.last_models_fetch_error)
             .bind(updated_at)
             .bind(&key.id)
             .execute(&self.pool)
@@ -1210,6 +1215,8 @@ SET
   utilization_samples = ?,
   last_probe_increase_at = ?,
   last_rpm_peak = ?,
+  last_models_fetch_at = ?,
+  last_models_fetch_error = ?,
   updated_at = ?
 WHERE id = ?
 "#
@@ -1702,7 +1709,7 @@ mod tests {
         assert_eq!(updated_endpoint.health_score, 0.5);
         assert!(!updated_endpoint.is_active);
 
-        let key = StoredProviderCatalogKey::new(
+        let mut key = StoredProviderCatalogKey::new(
             "key-write-1".to_string(),
             "provider-write-1".to_string(),
             "Default Key".to_string(),
@@ -1740,23 +1747,36 @@ mod tests {
             Some(json!({"openai:chat":{"score":1}})),
             Some(json!({"openai:chat":{"open":false}})),
         );
+        key.last_models_fetch_at_unix_secs = Some(1_730_000_100);
+        key.last_models_fetch_error = Some("stale models fetch error".to_string());
         let created_key = repository
             .create_key(&key)
             .await
             .expect("key should create");
         assert_eq!(created_key.concurrent_limit, Some(3));
         assert_eq!(created_key.total_tokens, 1234);
+        assert_eq!(
+            created_key.last_models_fetch_error.as_deref(),
+            Some("stale models fetch error")
+        );
 
         let mut updated_key = created_key.clone();
         updated_key.name = "Updated Key".to_string();
         updated_key.is_active = false;
         updated_key.upstream_metadata = Some(json!({"models":["gpt-4.1"]}));
+        updated_key.last_models_fetch_at_unix_secs = Some(1_730_000_200);
+        updated_key.last_models_fetch_error = None;
         let updated_key = repository
             .update_key(&updated_key)
             .await
             .expect("key should update");
         assert_eq!(updated_key.name, "Updated Key");
         assert!(!updated_key.is_active);
+        assert_eq!(
+            updated_key.last_models_fetch_at_unix_secs,
+            Some(1_730_000_200)
+        );
+        assert_eq!(updated_key.last_models_fetch_error, None);
 
         assert!(repository
             .update_key_upstream_metadata(

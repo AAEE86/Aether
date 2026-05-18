@@ -1798,7 +1798,12 @@ SET
   updated_at = CASE
     WHEN $38::double precision IS NULL THEN NOW()
     ELSE TO_TIMESTAMP($38::double precision)
-  END
+  END,
+  last_models_fetch_at = CASE
+    WHEN $42::double precision IS NULL THEN NULL
+    ELSE TO_TIMESTAMP($42::double precision)
+  END,
+  last_models_fetch_error = $43
 WHERE id = $1
 "#,
         )
@@ -1846,6 +1851,8 @@ WHERE id = $1
         .bind(key.expires_at_unix_secs.map(|value| value as f64))
         .bind(&key.auth_type_by_format)
         .bind(&key.allow_auth_channel_mismatch_formats)
+        .bind(key.last_models_fetch_at_unix_secs.map(|value| value as f64))
+        .bind(&key.last_models_fetch_error)
         .execute(&self.pool)
         .await
         .map_postgres_err()?
