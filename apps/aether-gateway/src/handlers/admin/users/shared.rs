@@ -20,6 +20,8 @@ pub(super) struct AdminCreateUserApiKeyRequest {
     #[serde(default)]
     pub(super) allowed_models: Option<Vec<String>>,
     #[serde(default)]
+    pub(super) allowed_ips: Option<Vec<String>>,
+    #[serde(default)]
     pub(super) rate_limit: Option<i32>,
     #[serde(default)]
     pub(super) concurrent_limit: Option<i32>,
@@ -49,6 +51,8 @@ pub(super) struct AdminUpdateUserApiKeyRequest {
     pub(super) concurrent_limit: Option<i32>,
     #[serde(default)]
     pub(super) feature_settings: Option<Option<Value>>,
+    #[serde(default)]
+    pub(super) allowed_ips: Option<Option<Vec<String>>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -278,6 +282,52 @@ pub(crate) fn normalize_admin_user_api_formats(
         }
     }
     Ok(Some(normalized))
+}
+
+pub(crate) fn normalize_admin_user_allowed_ips(
+    value: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(values) = value else {
+        return Ok(None);
+    };
+    if values.is_empty() {
+        return Err("IP 白名单不能为空列表，如需取消限制请不提供此字段".to_string());
+    }
+    let mut normalized = Vec::with_capacity(values.len());
+    for (index, raw) in values.into_iter().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(format!("IP 白名单第 {} 项为空", index + 1));
+        }
+        if !validate_admin_user_ip_or_cidr(trimmed) {
+            return Err(format!("无效的 IP 地址或 CIDR: {raw}"));
+        }
+        normalized.push(trimmed.to_string());
+    }
+    Ok(Some(normalized))
+}
+
+fn validate_admin_user_ip_or_cidr(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    if value.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let Some((host, prefix)) = value.split_once('/') else {
+        return false;
+    };
+    let Ok(ip) = host.trim().parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.trim().parse::<u8>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(_) => prefix <= 32,
+        std::net::IpAddr::V6(_) => prefix <= 128,
+    }
 }
 
 pub(crate) fn normalize_admin_list_policy_mode(value: &str) -> Result<String, String> {
