@@ -162,6 +162,7 @@ pub(super) async fn build_admin_create_api_key_response(
                 allowed_providers,
                 allowed_api_formats,
                 allowed_models,
+                allowed_ips: None,
                 rate_limit: payload.rate_limit,
                 concurrent_limit,
                 force_capabilities: None,
@@ -394,6 +395,7 @@ pub(super) async fn build_admin_update_api_key_response(
                 allowed_providers,
                 allowed_api_formats,
                 allowed_models,
+                allowed_ips: None,
                 expires_at_present: field_presence.contains("expires_at"),
                 expires_at_unix_secs: if field_presence.contains("expires_at") {
                     effective_expires_at_unix_secs
