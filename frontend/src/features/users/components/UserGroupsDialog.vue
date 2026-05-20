@@ -374,6 +374,7 @@ async function ensureDialogUsers(): Promise<void> {
 
   dialogUsers.value = await usersStore.listAllUsers({
     cacheTtlMs: isSameUserVersion ? USER_OPTIONS_CACHE_TTL_MS : 0,
+    cacheKeySuffix: isSameUserVersion ? undefined : `users-version-${props.usersVersion}`,
   })
   dialogUsersLoadedAt = Date.now()
   dialogUsersLoadedVersion = props.usersVersion

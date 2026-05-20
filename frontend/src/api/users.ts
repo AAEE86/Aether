@@ -262,6 +262,7 @@ export interface GetAllUsersOptions {
   skip?: number
   limit?: number
   cacheTtlMs?: number
+  cacheKeySuffix?: string
 }
 
 export interface AdminUsersListResponse {
@@ -308,6 +309,7 @@ export const usersApi = {
           options.group_id ?? '',
           options.skip ?? '',
           options.limit ?? '',
+          options.cacheKeySuffix ?? '',
         ].join(':')
 
     return cachedRequest(
