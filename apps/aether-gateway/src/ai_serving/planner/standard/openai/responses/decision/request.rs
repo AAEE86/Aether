@@ -843,6 +843,18 @@ fn build_openai_image_provider_body_from_openai_responses_body(
     } else if let Some(value) = object.get("stream") {
         body.insert("stream".to_string(), value.clone());
     }
+    let image_tool = tool.clone().unwrap_or_else(|| {
+        let mut tool = serde_json::Map::new();
+        tool.insert(
+            "type".to_string(),
+            Value::String("image_generation".to_string()),
+        );
+        tool
+    });
+    body.insert(
+        "tools".to_string(),
+        Value::Array(vec![Value::Object(image_tool)]),
+    );
 
     let mut summary = serde_json::Map::new();
     summary.insert(
@@ -1226,7 +1238,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openai_responses_image_bridge_body_does_not_inject_tools() {
+    fn openai_responses_image_bridge_body_preserves_image_generation_tool() {
         let body_json = json!({
             "model": "gpt-image-2",
             "input": "Draw a glass city",
@@ -1249,7 +1261,9 @@ mod tests {
         )
         .expect("responses image body should convert");
 
-        assert!(provider_body.get("tools").is_none());
+        assert_eq!(provider_body["tools"][0]["type"], "image_generation");
+        assert_eq!(provider_body["tools"][0]["size"], "1024x1024");
+        assert_eq!(provider_body["tools"][0]["output_format"], "png");
         assert_eq!(provider_body["model"], "gpt-image-2");
         assert_eq!(provider_body["input"], "Draw a glass city");
         assert_eq!(provider_body["stream"], true);

@@ -1027,6 +1027,15 @@ fn build_openai_image_provider_body_from_openai_chat_body(
         body.insert("model".to_string(), Value::String(model.to_string()));
     }
     body.insert("input".to_string(), input);
+    let mut image_tool = image_options.clone();
+    image_tool.insert(
+        "type".to_string(),
+        Value::String("image_generation".to_string()),
+    );
+    body.insert(
+        "tools".to_string(),
+        Value::Array(vec![Value::Object(image_tool)]),
+    );
     if upstream_is_stream {
         body.insert("stream".to_string(), Value::Bool(true));
     }
@@ -1507,7 +1516,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_chat_image_bridge_body_does_not_inject_tools() {
+    fn openai_chat_image_bridge_body_injects_image_generation_tool() {
         let body_json = json!({
             "model": "gpt-image-2",
             "messages": [
@@ -1521,7 +1530,9 @@ mod tests {
             build_openai_image_provider_body_from_openai_chat_body(&body_json, "gpt-image-2", true)
                 .expect("chat image body should convert");
 
-        assert!(provider_body.get("tools").is_none());
+        assert_eq!(provider_body["tools"][0]["type"], "image_generation");
+        assert_eq!(provider_body["tools"][0]["size"], "1024x1024");
+        assert_eq!(provider_body["tools"][0]["output_format"], "png");
         assert_eq!(provider_body["model"], "gpt-image-2");
         assert_eq!(provider_body["stream"], true);
         assert_eq!(provider_body["input"][0]["content"], "Draw a glass city");
