@@ -132,14 +132,21 @@ use aether_data_contracts::repository::settlement::{
     SettlementWriteRepository, StoredUsageSettlement, UsageSettlementInput,
 };
 use aether_data_contracts::repository::usage::{
-    PendingUsageCleanupSummary, StoredProviderUsageSummary, StoredRequestUsageAudit,
-    UpsertUsageRecord, UsageReadRepository, UsageWriteRepository,
+    ApiKeyLastUsedDelta, ManagementTokenCounterDelta, PendingUsageCleanupSummary,
+    ProxyNodeCounterDelta, StoredProviderUsageSummary, StoredRequestUsageAudit, UpsertUsageRecord,
+    UsageReadRepository, UsageWriteRepository,
 };
 use aether_data_contracts::repository::video_tasks::{
     StoredVideoTask, UpsertVideoTask, VideoTaskLookupKey, VideoTaskModelCount,
     VideoTaskQueryFilter, VideoTaskReadRepository, VideoTaskStatusCount, VideoTaskWriteRepository,
 };
 use aether_runtime_state::RuntimeQueueStore;
+
+pub(crate) use self::referrals::{
+    ReferralAdminStats, ReferralMutationStatus, ReferralRelationshipListQuery,
+    ReferralRelationshipRecord, ReferralRewardConfig, ReferralRewardListQuery,
+    ReferralRewardRecord, ReferralUserDashboard,
+};
 
 #[derive(Clone, Default)]
 pub(crate) struct GatewayDataState {
@@ -310,11 +317,13 @@ impl fmt::Debug for GatewayDataState {
 }
 
 mod auth;
+mod candidate_cache;
 mod catalog;
 mod core;
 mod integrations;
 mod models;
 mod pool_scores;
+mod referrals;
 mod routing_profiles;
 mod runtime;
 #[cfg(test)]

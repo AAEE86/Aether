@@ -570,7 +570,8 @@ fn normalize_proxy_version_label(value: &str) -> Option<String> {
     }
     Some(
         trimmed
-            .strip_prefix("proxy-v")
+            .strip_prefix("tunnel-v")
+            .or_else(|| trimmed.strip_prefix("proxy-v"))
             .unwrap_or(trimmed)
             .to_ascii_lowercase(),
     )
@@ -781,7 +782,7 @@ mod tests {
     fn normalizes_reported_versions_and_clears_completed_upgrade_targets() {
         let remote_config = json!({
             "node_name": "edge-1",
-            "upgrade_to": "proxy-v2.0.0",
+            "upgrade_to": "tunnel-v2.0.0",
         });
         let proxy_metadata = json!({
             "version": "2.0.0",
@@ -798,7 +799,7 @@ mod tests {
         );
 
         let reconciled =
-            reconcile_remote_config_after_heartbeat(Some(&remote_config), Some("proxy-v2.0.0"))
+            reconcile_remote_config_after_heartbeat(Some(&remote_config), Some("tunnel-v2.0.0"))
                 .expect("reconciled config should remain an object");
         assert_eq!(reconciled.get("upgrade_to"), None);
         assert_eq!(reconciled.get("node_name"), Some(&json!("edge-1")));

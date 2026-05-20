@@ -48,6 +48,7 @@ function normalizeProviderSummary(
     ...provider,
     chat_pii_redaction: normalizeChatPiiRedactionProvider(provider.chat_pii_redaction),
     pool_advanced: normalizePoolAdvanced(provider.pool_advanced),
+    kiro_simulated_cache_enabled: provider.kiro_simulated_cache_enabled ?? false,
   }
 }
 
@@ -91,7 +92,7 @@ export async function updateProvider(
   providerId: string,
   data: Partial<{
     name: string
-    provider_type: 'custom' | 'vertex_ai' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro'
+    provider_type: 'custom' | 'vertex_ai' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro' | 'grok'
     description: string | null
     website: string
     provider_priority: number
@@ -126,7 +127,7 @@ export async function updateProvider(
 export async function createProvider(
   data: {
     name: string
-    provider_type?: 'custom' | 'vertex_ai' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro'
+    provider_type?: 'custom' | 'vertex_ai' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro' | 'grok'
     description?: string
     website?: string
     billing_type?: 'monthly_quota' | 'pay_as_you_go' | 'free_tier'

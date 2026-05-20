@@ -529,7 +529,7 @@ SET
   name = COALESCE($3, name),
   rate_limit = COALESCE($4, rate_limit),
   concurrent_limit = COALESCE($5, concurrent_limit),
-  allowed_ips = CASE WHEN $6 THEN $7::json ELSE allowed_ips END,
+  allowed_ips = CASE WHEN $6 THEN $7::jsonb ELSE allowed_ips END,
   updated_at = NOW()
 WHERE user_id = $1
   AND id = $2
@@ -569,7 +569,7 @@ SET
   allowed_providers = CASE WHEN $7 THEN $8::json ELSE allowed_providers END,
   allowed_api_formats = CASE WHEN $9 THEN $10::json ELSE allowed_api_formats END,
   allowed_models = CASE WHEN $11 THEN $12::json ELSE allowed_models END,
-  allowed_ips = CASE WHEN $13 THEN $14::json ELSE allowed_ips END,
+  allowed_ips = CASE WHEN $13 THEN $14::jsonb ELSE allowed_ips END,
   expires_at = CASE WHEN $15 THEN $16::timestamptz ELSE expires_at END,
   auto_delete_on_expiry = CASE WHEN $17 THEN $18 ELSE auto_delete_on_expiry END,
   updated_at = NOW()
@@ -1572,7 +1572,7 @@ fn map_auth_api_key_export_row(
         row_get(row, "is_active")?,
         row_get(row, "expires_at_unix_secs")?,
         row_get(row, "auto_delete_on_expiry")?,
-        row_get::<i32>(row, "total_requests")?.into(),
+        row_get::<i64>(row, "total_requests")?,
         row_get::<i64>(row, "total_tokens")?,
         row_get(row, "total_cost_usd")?,
         row_get(row, "is_standalone")?,
@@ -1593,6 +1593,7 @@ mod tests {
     use super::{
         SqlxAuthApiKeySnapshotReadRepository, CREATE_STANDALONE_API_KEY_SQL,
         CREATE_USER_API_KEY_SQL, UPDATE_STANDALONE_API_KEY_BASIC_SQL,
+        UPDATE_USER_API_KEY_BASIC_SQL,
     };
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
 
@@ -1621,7 +1622,7 @@ mod tests {
         assert!(UPDATE_STANDALONE_API_KEY_BASIC_SQL
             .contains("allowed_models = CASE WHEN $11 THEN $12::json ELSE allowed_models END"));
         assert!(UPDATE_STANDALONE_API_KEY_BASIC_SQL
-            .contains("allowed_ips = CASE WHEN $13 THEN $14::json ELSE allowed_ips END"));
+            .contains("allowed_ips = CASE WHEN $13 THEN $14::jsonb ELSE allowed_ips END"));
         assert!(UPDATE_STANDALONE_API_KEY_BASIC_SQL
             .contains("rate_limit = CASE WHEN $3 THEN $4 ELSE rate_limit END"));
         assert!(UPDATE_STANDALONE_API_KEY_BASIC_SQL
@@ -1629,6 +1630,12 @@ mod tests {
         assert!(UPDATE_STANDALONE_API_KEY_BASIC_SQL.contains(
             "auto_delete_on_expiry = CASE WHEN $17 THEN $18 ELSE auto_delete_on_expiry END"
         ));
+    }
+
+    #[test]
+    fn update_user_api_key_basic_sql_casts_allowed_ips_as_jsonb() {
+        assert!(UPDATE_USER_API_KEY_BASIC_SQL
+            .contains("allowed_ips = CASE WHEN $6 THEN $7::jsonb ELSE allowed_ips END"));
     }
 
     #[tokio::test]

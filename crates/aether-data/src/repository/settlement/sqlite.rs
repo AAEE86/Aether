@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use sqlx::{sqlite::SqliteRow, Row};
 
 use super::{
-    finite_wallet_available_usd, plan_finite_wallet_debit, SettlementWriteRepository,
-    StoredUsageSettlement, UsageSettlementInput, SETTLEMENT_EPSILON_USD,
+    finite_wallet_available_usd, plan_finite_wallet_debit,
+    settlement_billing_status_for_usage_status, SettlementWriteRepository, StoredUsageSettlement,
+    UsageSettlementInput, SETTLEMENT_EPSILON_USD,
 };
 use crate::driver::sqlite::{sqlite_optional_real, sqlite_real, SqlitePool};
 use crate::error::SqlResultExt;
@@ -220,6 +221,7 @@ async fn consume_daily_quota_sqlite(
     request_id: &str,
     total_cost_usd: f64,
     wallet_available_usd: Option<f64>,
+    wallet_can_overdraft: bool,
     now_unix_secs: i64,
 ) -> Result<DailyQuotaDebitResult, DataLayerError> {
     if total_cost_usd <= 0.0 {
@@ -292,6 +294,7 @@ WHERE user_entitlement_id = ?
         });
     }
     if allow_wallet_overage
+        && !wallet_can_overdraft
         && wallet_available_usd.is_some_and(|available| {
             total_remaining + available + SETTLEMENT_EPSILON_USD < total_cost_usd
         })
@@ -377,11 +380,8 @@ impl SettlementWriteRepository for SqliteSettlementRepository {
             return Ok(Some(settlement));
         }
 
-        let mut final_billing_status = if input.status == "completed" {
-            "settled".to_string()
-        } else {
-            "void".to_string()
-        };
+        let mut final_billing_status =
+            settlement_billing_status_for_usage_status(&input.status).to_string();
         let mut settlement = StoredUsageSettlement {
             request_id: input.request_id.clone(),
             wallet_id: None,
@@ -461,6 +461,7 @@ LIMIT 1
                 None
             };
 
+            let wallet_can_overdraft = wallet_row.is_some();
             let wallet_available_usd = match wallet_row.as_ref() {
                 Some(row) => {
                     let limit_mode: String = row.try_get("limit_mode").map_sql_err()?;
@@ -497,6 +498,7 @@ LIMIT 1
                         &input.request_id,
                         input.total_cost_usd,
                         wallet_available_usd,
+                        wallet_can_overdraft,
                         updated_at,
                     )
                     .await?;
@@ -557,14 +559,8 @@ LIMIT 1
                             before_gift,
                             wallet_debit_cost_usd,
                         );
-                        if debit_plan.covered_usd() + SETTLEMENT_EPSILON_USD < wallet_debit_cost_usd
-                        {
-                            final_billing_status = "insufficient_quota".to_string();
-                            settlement.billing_status = final_billing_status.clone();
-                        } else {
-                            after_recharge = before_recharge - debit_plan.recharge_deduction;
-                            after_gift = before_gift - debit_plan.gift_deduction;
-                        }
+                        (after_recharge, after_gift) =
+                            debit_plan.after_balances(before_recharge, before_gift);
                     }
                     if final_billing_status == "settled" {
                         sqlx::query(
@@ -816,6 +812,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_repository_overdraws_finite_wallet_and_settles_usage() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        seed_settlement_rows(&pool).await;
+
+        let repository = SqliteSettlementRepository::new(pool.clone());
+        let settlement = repository
+            .settle_usage(UsageSettlementInput {
+                request_id: "request-overdraw".to_string(),
+                user_id: Some("user-1".to_string()),
+                api_key_id: None,
+                api_key_is_standalone: false,
+                provider_id: Some("provider-1".to_string()),
+                status: "completed".to_string(),
+                billing_status: "pending".to_string(),
+                total_cost_usd: 15.0,
+                actual_total_cost_usd: 7.5,
+                finalized_at_unix_secs: Some(1_236),
+            })
+            .await
+            .expect("settlement should run")
+            .expect("usage should exist");
+
+        assert_eq!(settlement.billing_status, "settled");
+        assert_eq!(settlement.wallet_id.as_deref(), Some("wallet-1"));
+        assert_eq!(settlement.wallet_balance_before, Some(12.0));
+        assert_eq!(settlement.wallet_balance_after, Some(-3.0));
+        assert_eq!(settlement.wallet_recharge_balance_after, Some(-3.0));
+        assert_eq!(settlement.wallet_gift_balance_after, Some(0.0));
+        assert_eq!(settlement.provider_monthly_used_usd, Some(12.5));
+
+        let wallet = sqlx::query(
+            "SELECT balance, gift_balance, total_consumed FROM wallets WHERE id = 'wallet-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("wallet should load");
+        assert_eq!(wallet.try_get::<f64, _>("balance").unwrap(), -3.0);
+        assert_eq!(wallet.try_get::<f64, _>("gift_balance").unwrap(), 0.0);
+        assert_eq!(wallet.try_get::<f64, _>("total_consumed").unwrap(), 15.0);
+    }
+
+    #[tokio::test]
     async fn sqlite_repository_records_wallet_for_quota_covered_user_usage() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -885,7 +930,8 @@ INSERT INTO "usage" (
 )
 VALUES
   ('request-1', 'user-1', 'provider-1', 'completed', 'pending', 3.0, 2.0),
-  ('request-2', 'user-1', 'provider-1', 'failed', 'pending', 3.0, 2.0);
+  ('request-2', 'user-1', 'provider-1', 'failed', 'pending', 3.0, 2.0),
+  ('request-overdraw', 'user-1', 'provider-1', 'completed', 'pending', 15.0, 7.5);
 "#,
         )
         .execute(pool)

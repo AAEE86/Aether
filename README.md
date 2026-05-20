@@ -73,14 +73,14 @@ make dev
 `make dev` 会同时启动后端 `aether-gateway` 和前端 `frontend` 的 Vite dev server。需要单独启动时可使用 `make dev-backend` 或 `make dev-frontend`。
 Postgres / Redis 本地依赖未就绪时，`make dev` 会自动执行 `docker compose up -d postgres redis`。
 
-## Aether Proxy (可选)
+## Aether Tunnel (可选)
 
-Aether Proxy 是配套的正向代理节点，部署在海外 VPS 上，为墙内的 Aether 实例中转 API 流量。
+Aether Tunnel 是配套的正向代理节点，部署在海外 VPS 上，为墙内的 Aether 实例中转 API 流量。
 
 - Docker Compose 部署或下载预编译二进制直接运行
-- 提供 macOS/Linux 与 Windows 一键脚本，自动下载最新 `proxy-v*` 制品并向现有 `aether-proxy.toml` 追加 `[[servers]]`
-- 通过 `aether-proxy setup` 完成交互式配置，自动注册为系统服务
-- 详细文档见 [apps/aether-proxy/README.md](apps/aether-proxy/README.md)
+- 提供 macOS/Linux 与 Windows 一键脚本，自动下载最新 `tunnel-v*` 制品并向现有 `aether-tunnel.toml` 追加 `[[servers]]`
+- 通过 `aether-tunnel setup` 完成交互式配置，自动注册为系统服务
+- 详细文档见 [apps/aether-tunnel/README.md](apps/aether-tunnel/README.md)
 
 ## API 文档
 

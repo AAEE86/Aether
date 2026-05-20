@@ -69,6 +69,7 @@ async fn gateway_handles_public_announcements_list_without_proxying_upstream() {
             5,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -84,6 +85,7 @@ async fn gateway_handles_public_announcements_list_without_proxying_upstream() {
             "info".to_string(),
             3,
             true,
+            false,
             false,
             Some("admin-2".to_string()),
             Some("ops".to_string()),
@@ -101,6 +103,7 @@ async fn gateway_handles_public_announcements_list_without_proxying_upstream() {
             100,
             false,
             true,
+            false,
             Some("admin-3".to_string()),
             Some("root".to_string()),
             None,
@@ -170,6 +173,7 @@ async fn gateway_handles_public_active_announcements_without_proxying_upstream()
             50,
             true,
             false,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             Some((now.saturating_sub(60)) as i64),
@@ -185,6 +189,7 @@ async fn gateway_handles_public_active_announcements_without_proxying_upstream()
             "info".to_string(),
             10,
             true,
+            false,
             false,
             Some("admin-2".to_string()),
             Some("ops".to_string()),
@@ -251,6 +256,7 @@ async fn gateway_handles_public_announcement_detail_without_proxying_upstream() 
             10,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             Some(1_711_000_000),
@@ -390,6 +396,7 @@ async fn gateway_updates_announcement_locally_with_trusted_admin_principal() {
             10,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -479,6 +486,7 @@ async fn gateway_deletes_announcement_locally_with_trusted_admin_principal() {
             10,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -561,6 +569,7 @@ async fn gateway_returns_service_unavailable_for_admin_announcement_writes_witho
             10,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -1436,6 +1445,22 @@ async fn gateway_handles_auth_registration_settings_without_proxying_upstream() 
             "turnstile_secret_key".to_string(),
             json!("secret-private-key"),
         ),
+        (
+            "registration_privacy_policy_enabled".to_string(),
+            json!(true),
+        ),
+        (
+            "registration_privacy_policy_format".to_string(),
+            json!("html"),
+        ),
+        (
+            "registration_privacy_policy_content".to_string(),
+            json!("<p>Policy</p>"),
+        ),
+        (
+            "registration_privacy_policy_version".to_string(),
+            json!("2026-05-16"),
+        ),
     ]);
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
@@ -1464,6 +1489,12 @@ async fn gateway_handles_auth_registration_settings_without_proxying_upstream() 
             "turnstile_enabled": true,
             "turnstile_site_key": "site-public-key",
             "turnstile_required_actions": ["send_verification_code", "register"],
+            "privacy_policy": {
+                "enabled": true,
+                "format": "html",
+                "content": "<p>Policy</p>",
+                "version": "2026-05-16",
+            },
         })
     );
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
@@ -1920,6 +1951,10 @@ async fn gateway_handles_public_test_connection_without_hitting_fallback_probe()
                 );
                 assert_eq!(body_json["model"], "gpt-5");
                 assert_eq!(body_json["messages"][0]["content"], "Health check");
+                assert!(
+                    body_json.get("max_tokens").is_none(),
+                    "public OpenAI-compatible test connection must not force a tiny max_tokens value"
+                );
                 Json(json!({"id": "resp_local_test"})).into_response()
             }
         }),
@@ -1975,6 +2010,91 @@ async fn gateway_handles_public_test_connection_without_hitting_fallback_probe()
 
     gateway_handle.abort();
     fallback_probe_handle.abort();
+    provider_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_gemini_test_connection_does_not_force_low_max_output_tokens() {
+    let provider_hits = Arc::new(Mutex::new(0usize));
+    let provider_hits_clone = Arc::clone(&provider_hits);
+    let provider = Router::new().route(
+        "/{*path}",
+        any(move |request: Request| {
+            let provider_hits_inner = Arc::clone(&provider_hits_clone);
+            async move {
+                *provider_hits_inner.lock().expect("mutex should lock") += 1;
+                let body = to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .expect("body should read");
+                let body_json: serde_json::Value =
+                    serde_json::from_slice(&body).expect("json body should parse");
+                assert_eq!(body_json["contents"][0]["parts"][0]["text"], "Health check");
+                assert!(
+                    body_json
+                        .get("generationConfig")
+                        .and_then(|config| config.get("maxOutputTokens"))
+                        .is_none(),
+                    "Gemini test connection must not force a tiny maxOutputTokens value"
+                );
+                Json(json!({
+                    "candidates": [{
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": "ok"}]
+                        },
+                        "finishReason": "STOP"
+                    }],
+                    "responseId": "gemini_test_connection_ok"
+                }))
+                .into_response()
+            }
+        }),
+    );
+
+    let (provider_url, provider_handle) = start_server(provider).await;
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![sample_provider("provider-gemini", "google", 10)],
+        vec![sample_endpoint(
+            "endpoint-gemini",
+            "provider-gemini",
+            "gemini:generate_content",
+            &provider_url,
+        )],
+        vec![sample_key(
+            "key-gemini",
+            "provider-gemini",
+            "gemini:generate_content",
+            "google-api-key",
+        )],
+    ));
+
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
+                provider_catalog_repository,
+                DEVELOPMENT_ENCRYPTION_KEY,
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{gateway_url}/v1/test-connection?provider=provider-gemini&model=gemini-3-flash-preview&api_format=gemini:generate_content"
+        ))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["status"], "success");
+    assert_eq!(payload["provider_id"], "provider-gemini");
+    assert_eq!(payload["endpoint_id"], "endpoint-gemini");
+    assert_eq!(payload["api_format"], "gemini:generate_content");
+    assert_eq!(*provider_hits.lock().expect("mutex should lock"), 1);
+
+    gateway_handle.abort();
     provider_handle.abort();
 }
 
@@ -2839,6 +2959,7 @@ async fn gateway_reads_announcement_unread_count_locally_without_proxying_upstre
                 10,
                 true,
                 false,
+                false,
                 Some("admin-1".to_string()),
                 Some("admin".to_string()),
                 None,
@@ -2855,6 +2976,7 @@ async fn gateway_reads_announcement_unread_count_locally_without_proxying_upstre
                 8,
                 true,
                 true,
+                false,
                 Some("admin-1".to_string()),
                 Some("admin".to_string()),
                 None,
@@ -2869,6 +2991,7 @@ async fn gateway_reads_announcement_unread_count_locally_without_proxying_upstre
                 "不计入未读".to_string(),
                 "warning".to_string(),
                 6,
+                false,
                 false,
                 false,
                 Some("admin-1".to_string()),
@@ -2918,6 +3041,122 @@ async fn gateway_reads_announcement_unread_count_locally_without_proxying_upstre
 }
 
 #[tokio::test]
+async fn gateway_lists_required_unread_announcements_locally_without_proxying_upstream() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-announcement-required-1"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let announcement_repository = Arc::new(InMemoryAnnouncementReadRepository::seed_with_reads(
+        vec![
+            StoredAnnouncement::new(
+                "announcement-required".to_string(),
+                "必读公告".to_string(),
+                "需要确认".to_string(),
+                "important".to_string(),
+                20,
+                true,
+                false,
+                true,
+                Some("admin-1".to_string()),
+                Some("admin".to_string()),
+                None,
+                None,
+                now.timestamp(),
+                now.timestamp(),
+            )
+            .expect("announcement should build"),
+            StoredAnnouncement::new(
+                "announcement-normal".to_string(),
+                "普通公告".to_string(),
+                "不需要弹窗".to_string(),
+                "info".to_string(),
+                10,
+                true,
+                false,
+                false,
+                Some("admin-1".to_string()),
+                Some("admin".to_string()),
+                None,
+                None,
+                now.timestamp(),
+                now.timestamp(),
+            )
+            .expect("announcement should build"),
+            StoredAnnouncement::new(
+                "announcement-read-required".to_string(),
+                "已读必读公告".to_string(),
+                "已经确认".to_string(),
+                "warning".to_string(),
+                8,
+                true,
+                false,
+                true,
+                Some("admin-1".to_string()),
+                Some("admin".to_string()),
+                None,
+                None,
+                now.timestamp(),
+                now.timestamp(),
+            )
+            .expect("announcement should build"),
+        ],
+        [(
+            "user-auth-1".to_string(),
+            "announcement-read-required".to_string(),
+        )],
+    ));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_announcement_gateway_with_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-announcement-required-1",
+                "device-announcement-required-1",
+                "refresh-token-placeholder",
+                now,
+            )],
+            announcement_repository,
+        )
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{gateway_url}/api/announcements/users/me/required-unread"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-announcement-required-1")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["total"], 1);
+    assert_eq!(payload["items"][0]["id"], "announcement-required");
+    assert_eq!(payload["items"][0]["requires_ack"], true);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_marks_announcement_read_status_locally_without_proxying_upstream() {
     let now = Utc::now();
     let user = sample_auth_user(now);
@@ -2946,6 +3185,7 @@ async fn gateway_marks_announcement_read_status_locally_without_proxying_upstrea
             20,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -3040,6 +3280,7 @@ async fn gateway_marks_all_announcements_read_locally_without_proxying_upstream(
             10,
             true,
             false,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -3054,6 +3295,7 @@ async fn gateway_marks_all_announcements_read_locally_without_proxying_upstream(
             "内容 B".to_string(),
             "warning".to_string(),
             8,
+            false,
             false,
             false,
             Some("admin-1".to_string()),
@@ -3072,6 +3314,7 @@ async fn gateway_marks_all_announcements_read_locally_without_proxying_upstream(
             6,
             true,
             true,
+            false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
             None,
@@ -3162,6 +3405,7 @@ async fn gateway_handles_announcement_user_routes_with_trailing_slash_locally() 
             "info".to_string(),
             10,
             true,
+            false,
             false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
@@ -3322,6 +3566,7 @@ async fn gateway_rejects_invalid_nested_announcement_paths_as_local_not_found_wi
             "info".to_string(),
             10,
             true,
+            false,
             false,
             Some("admin-1".to_string()),
             Some("admin".to_string()),
@@ -7972,6 +8217,54 @@ async fn gateway_handles_auth_register_locally_without_proxying_upstream() {
     assert_eq!(me_payload["username"], "alice");
     assert_eq!(me_payload["billing"]["gift_balance"], 12.5);
     assert_eq!(me_payload["billing"]["total_adjusted"], 12.5);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rejects_auth_register_without_current_privacy_policy_acceptance() {
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            let data_state = crate::data::GatewayDataState::disabled()
+                .with_system_config_values_for_tests(vec![
+                    ("enable_registration".to_string(), json!(true)),
+                    ("require_email_verification".to_string(), json!(true)),
+                    ("smtp_host".to_string(), json!("smtp.example.com")),
+                    ("smtp_from_email".to_string(), json!("ops@example.com")),
+                    (
+                        "registration_privacy_policy_enabled".to_string(),
+                        json!(true),
+                    ),
+                    (
+                        "registration_privacy_policy_version".to_string(),
+                        json!("2026-05-16"),
+                    ),
+                ]);
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(data_state)
+                .with_auth_email_verified_for_tests("alice@example.com")
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/auth/register"))
+        .json(&json!({
+            "email": "alice@example.com",
+            "username": "alice",
+            "password": "secret123",
+            "privacy_policy_accepted": true,
+            "privacy_policy_version": "old-version",
+        }))
+        .send()
+        .await
+        .expect("register request should succeed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "请先阅读并同意当前版本的隐私政策");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

@@ -7,6 +7,7 @@ pub mod conversion;
 mod diagnostics;
 mod gemini_files;
 mod generic_oauth;
+pub mod grok;
 mod headers;
 pub mod kiro;
 mod network;
@@ -14,6 +15,7 @@ pub mod oauth_refresh;
 mod openai_image;
 pub mod policy;
 pub mod provider_types;
+mod request_body;
 mod request_url;
 pub mod rules;
 pub mod same_format_provider;
@@ -30,7 +32,8 @@ pub use conversion::{
     candidate_common_transport_skip_reason, candidate_transport_pair_skip_reason,
     request_conversion_direct_auth, request_conversion_enabled_for_transport,
     request_conversion_transport_supported, request_conversion_transport_unsupported_reason,
-    request_pair_allowed_for_transport, CandidateTransportPolicyFacts,
+    request_pair_allowed_for_transport, request_pair_direct_auth,
+    request_pair_transport_unsupported_reason, CandidateTransportPolicyFacts,
 };
 pub use diagnostics::{
     append_transport_diagnostics_to_value, build_request_trace_proxy_value,
@@ -43,6 +46,17 @@ pub use gemini_files::{
 };
 pub use generic_oauth::{
     supports_local_generic_oauth_request_auth_resolution, GenericOAuthRefreshAdapter,
+};
+pub use grok::{
+    build_grok_app_chat_body, build_grok_browser_headers, build_grok_upstream_url, grok_base_url,
+    grok_browser_profile_id_from_user_agent,
+    grok_browser_profile_metadata_from_resolved_transport_profile,
+    grok_browser_resolved_transport_profile,
+    grok_browser_resolved_transport_profile_from_auth_config,
+    grok_browser_transport_fingerprint_from_auth_config, is_grok_provider_transport,
+    resolve_grok_session_auth, GrokBrowserProfileMetadata, GrokHeaderInput, GROK_CHAT_PATH,
+    GROK_DEFAULT_BASE_URL, GROK_DEFAULT_BROWSER_PROFILE, GROK_DEFAULT_USER_AGENT,
+    GROK_INTERNAL_HEADER, GROK_RATE_LIMITS_PATH,
 };
 pub use headers::{should_skip_request_header, should_skip_upstream_passthrough_header};
 pub use network::{
@@ -68,10 +82,14 @@ pub use policy::{
     local_standard_transport_unsupported_reason_with_network, supports_local_gemini_transport,
     supports_local_gemini_transport_with_network, supports_local_standard_transport,
 };
+pub use request_body::{
+    apply_transport_request_body_semantics, TransportRequestBodySemanticsError,
+};
 pub use request_url::{
     build_cross_format_openai_chat_upstream_url, build_cross_format_openai_responses_upstream_url,
     build_kiro_cross_format_upstream_url, build_local_openai_chat_upstream_url,
     build_local_openai_responses_upstream_url, build_transport_request_url,
+    build_transport_request_url_for_request_body, gemini_embedding_request_body_uses_batch,
     TransportRequestUrlParams,
 };
 pub use rules::{

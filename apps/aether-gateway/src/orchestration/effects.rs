@@ -19,7 +19,8 @@ use tracing::warn;
 use super::{
     local_failover_error_message, project_local_adaptive_rate_limit,
     project_local_adaptive_success, project_local_failure_health, project_local_key_circuit_closed,
-    project_local_key_circuit_open, project_local_success_health, LocalFailoverClassification,
+    project_local_key_circuit_failure, project_local_key_circuit_open,
+    project_local_success_health, LocalFailoverClassification,
 };
 use crate::ai_serving::extract_pool_sticky_session_token;
 use crate::client_session_affinity::{
@@ -521,21 +522,38 @@ async fn record_health_failure_effect(
     else {
         return;
     };
+    let observed_at_unix_secs = current_unix_secs();
     let Some(health_by_format) = project_local_failure_health(
         current_key.health_by_format.as_ref(),
         api_format,
         effect.classification,
         effect.status_code,
-        current_unix_secs(),
+        observed_at_unix_secs,
     ) else {
         return;
     };
+    let consecutive_failures = health_by_format
+        .get(api_format)
+        .and_then(|value| value.get("consecutive_failures"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let circuit_breaker_by_format = project_local_key_circuit_failure(
+        current_key.circuit_breaker_by_format.as_ref(),
+        api_format,
+        observed_at_unix_secs,
+        consecutive_failures,
+        current_key.max_probe_interval_minutes,
+    );
+    let circuit_breaker_update = circuit_breaker_by_format
+        .as_ref()
+        .or(current_key.circuit_breaker_by_format.as_ref());
 
     if let Err(err) = state
-        .update_provider_catalog_key_format_health(
+        .update_provider_catalog_key_health_state(
             &context.plan.key_id,
-            api_format,
-            &health_by_format,
+            current_key.is_active,
+            Some(&health_by_format),
+            circuit_breaker_update,
         )
         .await
     {
@@ -705,6 +723,7 @@ async fn open_pool_key_circuit_breaker(
         api_format,
         reason,
         current_unix_secs(),
+        current_key.max_probe_interval_minutes,
     ) else {
         return;
     };
@@ -821,7 +840,8 @@ fn local_candidate_failure_should_invalidate_affinity(
         LocalFailoverClassification::UseDefault | LocalFailoverClassification::StopStatusCode => {
             status_code >= 500
         }
-        LocalFailoverClassification::StopErrorPattern => false,
+        LocalFailoverClassification::StopErrorPattern
+        | LocalFailoverClassification::StopExecutionError => false,
     }
 }
 
@@ -1827,6 +1847,51 @@ mod tests {
                         .unwrap_or(Value::Null)
                 }
             }))
+        );
+    }
+
+    #[tokio::test]
+    async fn health_failure_opens_circuit_after_eight_consecutive_failures() {
+        let state = health_state();
+        let plan = sample_plan();
+
+        for _ in 0..8 {
+            apply_local_execution_effect(
+                &state,
+                LocalExecutionEffectContext {
+                    plan: &plan,
+                    report_context: None,
+                },
+                LocalExecutionEffect::HealthFailure(LocalHealthFailureEffect {
+                    status_code: 503,
+                    classification: LocalFailoverClassification::RetryUpstreamFailure,
+                }),
+            )
+            .await;
+        }
+
+        let stored_key = state
+            .read_provider_catalog_keys_by_ids(std::slice::from_ref(&plan.key_id))
+            .await
+            .expect("provider catalog keys should load")
+            .into_iter()
+            .next()
+            .expect("stored key should exist");
+        let circuit = stored_key
+            .circuit_breaker_by_format
+            .as_ref()
+            .and_then(|value| value.get("openai:chat"))
+            .expect("format circuit should be stored");
+        assert_eq!(circuit["open"], json!(true));
+        assert_eq!(circuit["reason"], json!("consecutive_failures_8"));
+        assert_eq!(circuit["probe_interval_minutes"], json!(1));
+        assert!(circuit["next_probe_at_unix_secs"].as_u64().is_some());
+        assert_eq!(
+            circuit["request_results_window"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default(),
+            8
         );
     }
 

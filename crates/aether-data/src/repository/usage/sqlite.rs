@@ -8,7 +8,8 @@ use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite};
 
 use super::{
     strip_deprecated_usage_display_fields, usage_can_recover_terminal_failure,
-    PendingUsageCleanupSummary, ProviderApiKeyWindowUsageRequest, StoredProviderApiKeyUsageSummary,
+    usage_request_metadata_client_family, PendingUsageCleanupSummary,
+    ProviderApiKeyWindowUsageRequest, StoredProviderApiKeyUsageSummary,
     StoredProviderApiKeyWindowUsageSummary, StoredProviderUsageSummary, StoredRequestUsageAudit,
     StoredUsageAuditAggregation, StoredUsageAuditSummary, StoredUsageBreakdownSummaryRow,
     StoredUsageCacheAffinityHitSummary, StoredUsageCacheAffinityIntervalRow,
@@ -3812,6 +3813,8 @@ fn map_usage_row(row: &SqliteRow) -> Result<StoredRequestUsageAudit, DataLayerEr
         .map(|raw| serde_json::from_str(&raw))
         .transpose()
         .map_err(|err| DataLayerError::UnexpectedValue(err.to_string()))?;
+    audit.client_family = usage_request_metadata_client_family(audit.request_metadata.as_ref())
+        .map(ToOwned::to_owned);
     let upstream_is_stream = row
         .try_get::<Option<i64>, _>("upstream_is_stream")
         .map_sql_err()?

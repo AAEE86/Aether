@@ -119,6 +119,107 @@ async fn gateway_handles_admin_provider_keys_locally_with_trusted_admin_principa
 }
 
 #[tokio::test]
+async fn gateway_provider_keys_expose_circuit_breaker_and_recover_clears_it() {
+    let key = sample_key("key-1", "provider-1", "openai:chat", "sk-test-a").with_health_fields(
+        Some(json!({"openai:chat": {
+            "health_score": 0.2,
+            "consecutive_failures": 8,
+            "last_failure_at": "2026-03-26T12:00:00+00:00"
+        }})),
+        Some(json!({"openai:chat": {
+            "open": true,
+            "open_at": "2026-03-26T12:00:00+00:00",
+            "reason": "consecutive_failures_8",
+            "next_probe_at": "2026-03-26T12:01:00+00:00",
+            "next_probe_at_unix_secs": 1774526460u64,
+            "probe_interval_minutes": 1,
+            "max_probe_interval_minutes": 32,
+            "half_open_until": null,
+            "half_open_successes": 0,
+            "half_open_failures": 0
+        }})),
+    );
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![sample_provider("provider-1", "openai", 10)],
+        vec![sample_endpoint(
+            "endpoint-1",
+            "provider-1",
+            "openai:chat",
+            "https://example.com/v1",
+        )],
+        vec![key],
+    ));
+    let gateway_state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(
+            GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
+                &provider_catalog_repository,
+            )),
+        );
+    let gateway = build_router_with_state(gateway_state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!(
+            "{gateway_url}/api/admin/endpoints/providers/provider-1/keys?skip=0&limit=50"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload[0]["circuit_breaker_open"], true);
+    assert_eq!(
+        payload[0]["circuit_breaker_by_format"]["openai:chat"]["reason"],
+        "consecutive_failures_8"
+    );
+    assert_eq!(
+        payload[0]["circuit_breaker_by_format"]["openai:chat"]["probe_interval_minutes"],
+        1
+    );
+    assert!(
+        payload[0]["circuit_breaker_by_format"]["openai:chat"]["next_probe_at_unix_secs"]
+            .as_u64()
+            .is_some()
+    );
+
+    let recover_response = client
+        .patch(format!(
+            "{gateway_url}/api/admin/endpoints/health/keys/key-1"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("recover request should succeed");
+    assert_eq!(recover_response.status(), StatusCode::OK);
+
+    let response = client
+        .get(format!(
+            "{gateway_url}/api/admin/endpoints/providers/provider-1/keys?skip=0&limit=50"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload[0]["circuit_breaker_open"], false);
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_admin_provider_keys_page_locally_with_total() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);

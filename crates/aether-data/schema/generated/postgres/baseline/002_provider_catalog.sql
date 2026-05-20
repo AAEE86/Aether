@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS public.provider_api_keys (
 
 ALTER TABLE ONLY public.provider_api_keys ADD CONSTRAINT provider_api_keys_pkey PRIMARY KEY (id);
 CREATE INDEX IF NOT EXISTS provider_api_keys_provider_id_idx ON public.provider_api_keys USING btree (provider_id);
+CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_default_sort ON public.provider_api_keys USING btree (provider_id, internal_priority, name, id);
 
 CREATE TABLE IF NOT EXISTS public.pool_member_scores (
     id character varying(192) NOT NULL,
@@ -296,6 +297,7 @@ ALTER TABLE ONLY public.video_tasks ADD CONSTRAINT video_tasks_short_id_key UNIQ
 ALTER TABLE ONLY public.video_tasks ADD CONSTRAINT video_tasks_request_id_key UNIQUE (request_id);
 CREATE INDEX IF NOT EXISTS video_tasks_external_id_idx ON public.video_tasks USING btree (external_task_id);
 CREATE INDEX IF NOT EXISTS video_tasks_next_poll_idx ON public.video_tasks USING btree (next_poll_at);
+CREATE INDEX IF NOT EXISTS video_tasks_due_poll_idx ON public.video_tasks USING btree (status, next_poll_at, updated_at);
 CREATE INDEX IF NOT EXISTS video_tasks_user_status_idx ON public.video_tasks USING btree (user_id, status);
 CREATE INDEX IF NOT EXISTS video_tasks_api_key_id_idx ON public.video_tasks USING btree (api_key_id);
 CREATE INDEX IF NOT EXISTS video_tasks_provider_id_idx ON public.video_tasks USING btree (provider_id);

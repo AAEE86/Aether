@@ -9,9 +9,10 @@ use aether_ai_formats::formats::conversion::response::{
 };
 use aether_ai_formats::formats::registry::{convert_response, FormatContext};
 use aether_ai_formats::{
-    canonical_to_claude_response, canonical_to_gemini_response, canonical_to_openai_chat_response,
-    canonical_to_openai_responses_compact_response, canonical_to_openai_responses_response,
-    from_claude_to_canonical_response, from_gemini_to_canonical_response,
+    canonical_to_claude_response, canonical_to_embedding_response, canonical_to_gemini_response,
+    canonical_to_openai_chat_response, canonical_to_openai_responses_compact_response,
+    canonical_to_openai_responses_response, from_claude_to_canonical_response,
+    from_embedding_to_canonical_response, from_gemini_to_canonical_response,
     from_openai_chat_to_canonical_response, from_openai_responses_to_canonical_response,
     sync_chat_response_conversion_kind, sync_cli_response_conversion_kind,
 };
@@ -22,8 +23,8 @@ use crate::formats::gemini::generate_content::stream::GeminiProviderState;
 use crate::formats::shared::model_directives::model_directive_display_model_from_report_context;
 use crate::formats::shared::response::remove_empty_pages_from_tool_arguments;
 use crate::formats::shared::stream_core::common::{
-    map_openai_finish_reason_to_gemini, parse_json_arguments_value, CanonicalContentPart,
-    CanonicalStreamEvent, CanonicalUsage,
+    content_part_from_openai_image_generation_item, map_openai_finish_reason_to_gemini,
+    parse_json_arguments_value, CanonicalContentPart, CanonicalStreamEvent, CanonicalUsage,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -330,6 +331,18 @@ pub fn maybe_build_standard_sync_finalize_product_from_normalized_payload(
         )));
     }
 
+    if let Some(product) = maybe_build_embedding_cross_format_sync_product_from_normalized_payload(
+        report_kind,
+        status_code,
+        report_context,
+        body_json,
+        body_base64,
+    )? {
+        return Ok(Some(StandardSyncFinalizeNormalizedProduct::CrossFormat(
+            product,
+        )));
+    }
+
     Ok(
         maybe_build_standard_cross_format_sync_product_from_normalized_payload(
             report_kind,
@@ -340,6 +353,90 @@ pub fn maybe_build_standard_sync_finalize_product_from_normalized_payload(
         )?
         .map(StandardSyncFinalizeNormalizedProduct::CrossFormat),
     )
+}
+
+pub fn maybe_build_embedding_cross_format_sync_product_from_normalized_payload(
+    report_kind: &str,
+    status_code: u16,
+    report_context: Option<&Value>,
+    body_json: Option<&Value>,
+    body_base64: Option<&str>,
+) -> Result<Option<StandardCrossFormatSyncProduct>, AiSurfaceFinalizeError> {
+    if report_kind != crate::contracts::OPENAI_EMBEDDING_SYNC_FINALIZE_REPORT_KIND
+        || status_code >= 400
+    {
+        return Ok(None);
+    }
+
+    let Some(report_context) = report_context else {
+        return Ok(None);
+    };
+    let provider_api_format = report_context
+        .get("provider_api_format")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let client_api_format = report_context
+        .get("client_api_format")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    if provider_api_format == client_api_format {
+        return Ok(None);
+    }
+
+    let Some(provider_namespace) =
+        embedding_response_namespace_for_api_format(&provider_api_format)
+    else {
+        return Ok(None);
+    };
+    let Some(client_namespace) = embedding_response_namespace_for_api_format(&client_api_format)
+    else {
+        return Ok(None);
+    };
+
+    let provider_body_json = match body_base64 {
+        Some(body_base64) => {
+            let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+            serde_json::from_slice::<Value>(&body_bytes).ok()
+        }
+        None => body_json.cloned(),
+    };
+    let Some(provider_body_json) =
+        provider_body_json.filter(|value| !is_error_like_sync_body(value))
+    else {
+        return Ok(None);
+    };
+
+    let mut canonical =
+        match from_embedding_to_canonical_response(&provider_body_json, provider_namespace) {
+            Some(canonical) => canonical,
+            None => return Ok(None),
+        };
+    apply_report_context_model_fallback(&mut canonical.model, report_context);
+    let Some(client_body_json) = canonical_to_embedding_response(&canonical, client_namespace)
+    else {
+        return Ok(None);
+    };
+    let client_body_json =
+        client_body_with_report_context_model(client_body_json, report_context, &client_api_format);
+
+    Ok(Some(StandardCrossFormatSyncProduct {
+        client_body_json,
+        provider_body_json,
+    }))
+}
+
+fn embedding_response_namespace_for_api_format(api_format: &str) -> Option<&'static str> {
+    match aether_ai_formats::normalize_api_format_alias(api_format).as_str() {
+        "openai:embedding" => Some("openai"),
+        "jina:embedding" => Some("jina"),
+        "gemini:embedding" => Some("gemini"),
+        _ => None,
+    }
 }
 
 fn maybe_build_standard_same_format_sync_body(
@@ -829,6 +926,9 @@ fn client_body_with_report_context_model(
         "openai:chat" | "openai:responses" | "openai:responses:compact" | "claude:messages" => {
             object.insert("model".to_string(), Value::String(display_model));
         }
+        "openai:embedding" | "jina:embedding" => {
+            object.insert("model".to_string(), Value::String(display_model));
+        }
         "gemini:generate_content" => {
             object.insert("modelVersion".to_string(), Value::String(display_model));
         }
@@ -1310,6 +1410,7 @@ fn standard_same_format_api_format(report_kind: &str) -> Option<&'static str> {
         "openai_chat_sync_finalize" => Some("openai:chat"),
         "claude_chat_sync_finalize" => Some("claude:messages"),
         "gemini_chat_sync_finalize" => Some("gemini:generate_content"),
+        "openai_embedding_sync_finalize" => Some("openai:embedding"),
         "claude_cli_sync_finalize" => Some("claude:messages"),
         "gemini_cli_sync_finalize" => Some("gemini:generate_content"),
         _ => None,
@@ -1577,6 +1678,7 @@ pub fn aggregate_openai_responses_stream_sync_response(body: &[u8]) -> Option<Va
     let mut message_states: BTreeMap<usize, OpenAIResponsesSyncMessageState> = BTreeMap::new();
     let mut reasoning_states: BTreeMap<usize, OpenAIResponsesSyncReasoningState> = BTreeMap::new();
     let mut tool_states: BTreeMap<usize, OpenAIResponsesSyncToolState> = BTreeMap::new();
+    let mut image_items: BTreeMap<usize, Value> = BTreeMap::new();
     let mut item_output_indexes = BTreeMap::<String, usize>::new();
 
     for event in events {
@@ -1734,6 +1836,9 @@ pub fn aggregate_openai_responses_stream_sync_response(body: &[u8]) -> Option<Va
                             item,
                         );
                     }
+                    "image_generation_call" => {
+                        image_items.insert(output_index, Value::Object(item.clone()));
+                    }
                     _ => {}
                 }
             }
@@ -1833,6 +1938,9 @@ pub fn aggregate_openai_responses_stream_sync_response(body: &[u8]) -> Option<Va
                                     item,
                                 );
                             }
+                            "image_generation_call" => {
+                                image_items.insert(output_index, Value::Object(item.clone()));
+                            }
                             _ => {}
                         }
                     }
@@ -1874,6 +1982,7 @@ pub fn aggregate_openai_responses_stream_sync_response(body: &[u8]) -> Option<Va
         .keys()
         .chain(reasoning_states.keys())
         .chain(tool_states.keys())
+        .chain(image_items.keys())
         .copied()
         .collect::<Vec<_>>();
     output_indexes.sort_unstable();
@@ -1896,6 +2005,9 @@ pub fn aggregate_openai_responses_stream_sync_response(body: &[u8]) -> Option<Va
             }
             if let Some(state) = tool_states.remove(&output_index) {
                 output.push(materialize_openai_responses_tool_item(output_index, state));
+            }
+            if let Some(item) = image_items.remove(&output_index) {
+                output.push(item);
             }
         }
         response.insert("output".to_string(), Value::Array(output));
@@ -2540,6 +2652,11 @@ pub fn aggregate_gemini_stream_sync_response(body: &[u8]) -> Option<Value> {
                 }
                 CanonicalStreamEvent::ContentPart(part) => {
                     parts.push(gemini_sync_part_from_canonical_content_part(part));
+                }
+                CanonicalStreamEvent::ImageGenerationCall { item, .. } => {
+                    if let Some(part) = content_part_from_openai_image_generation_item(&item) {
+                        parts.push(gemini_sync_part_from_canonical_content_part(part));
+                    }
                 }
                 CanonicalStreamEvent::ToolCallStart {
                     index,
@@ -3462,6 +3579,25 @@ mod tests {
             .expect("openai-responses stream should aggregate into a sync body");
 
         assert_eq!(result["output"][0]["content"][0]["text"], "Authoritative");
+    }
+
+    #[test]
+    fn reconstructs_openai_responses_image_generation_call_from_output_item_done() {
+        let body = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_image_123\",\"object\":\"response\",\"model\":\"gpt-5.4-mini\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"ig_123\",\"type\":\"image_generation_call\",\"status\":\"completed\",\"output_format\":\"png\",\"result\":\"aGVsbG8=\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_image_123\",\"object\":\"response\",\"model\":\"gpt-5.4-mini\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+        );
+
+        let result = aggregate_openai_responses_stream_sync_response(body.as_bytes())
+            .expect("openai-responses stream should aggregate into a sync body");
+
+        assert_eq!(result["output"][0]["type"], "image_generation_call");
+        assert_eq!(result["output"][0]["result"], "aGVsbG8=");
+        assert_eq!(result["output"][0]["output_format"], "png");
     }
 
     #[test]

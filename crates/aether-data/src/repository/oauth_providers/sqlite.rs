@@ -56,6 +56,7 @@ SELECT
   frontend_callback_url,
   attribute_mapping,
   extra_config,
+  icon_url,
   is_enabled,
   created_at AS created_at_unix_ms,
   updated_at AS updated_at_unix_secs
@@ -162,13 +163,14 @@ INSERT INTO oauth_providers (
   frontend_callback_url,
   attribute_mapping,
   extra_config,
+  icon_url,
   is_enabled,
   created_at,
   updated_at
 ) VALUES (
   ?, ?, ?,
   CASE ? WHEN 'set' THEN ? WHEN 'clear' THEN NULL ELSE NULL END,
-  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT(provider_type) DO UPDATE SET
   display_name = excluded.display_name,
@@ -186,6 +188,7 @@ ON CONFLICT(provider_type) DO UPDATE SET
   frontend_callback_url = excluded.frontend_callback_url,
   attribute_mapping = excluded.attribute_mapping,
   extra_config = excluded.extra_config,
+  icon_url = excluded.icon_url,
   is_enabled = excluded.is_enabled,
   updated_at = excluded.updated_at
 "#,
@@ -203,6 +206,7 @@ ON CONFLICT(provider_type) DO UPDATE SET
         .bind(&record.frontend_callback_url)
         .bind(json_to_string(record.attribute_mapping.as_ref())?)
         .bind(json_to_string(record.extra_config.as_ref())?)
+        .bind(record.icon_url.as_deref())
         .bind(record.is_enabled)
         .bind(now as i64)
         .bind(now as i64)
@@ -350,6 +354,7 @@ fn map_oauth_provider_row(row: &SqliteRow) -> Result<StoredOAuthProviderConfig, 
             row.try_get("extra_config").map_sql_err()?,
             "oauth_providers.extra_config",
         )?,
+        row.try_get("icon_url").map_sql_err()?,
         row.try_get("is_enabled").map_sql_err()?,
     )
     .with_timestamps(
@@ -381,6 +386,7 @@ mod tests {
             frontend_callback_url: "https://frontend.example.com/auth/callback".to_string(),
             attribute_mapping: Some(serde_json::json!({"email": "email"})),
             extra_config: Some(serde_json::json!({"team": true})),
+            icon_url: None,
             is_enabled: true,
         }
     }

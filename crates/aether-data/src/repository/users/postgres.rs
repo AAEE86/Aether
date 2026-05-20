@@ -336,8 +336,11 @@ SELECT
   users.role::text AS role,
   users.auth_source::text AS auth_source,
   users.allowed_providers,
+  users.allowed_providers_mode,
   users.allowed_api_formats,
+  users.allowed_api_formats_mode,
   users.allowed_models,
+  users.allowed_models_mode,
   users.is_active,
   users.is_deleted,
   users.created_at,
@@ -353,7 +356,7 @@ const TOUCH_OAUTH_LINK_SQL: &str = r#"
 UPDATE user_oauth_links
 SET provider_username = COALESCE($3, provider_username),
     provider_email = COALESCE($4, provider_email),
-    extra_data = COALESCE($5, extra_data),
+    extra_data = COALESCE($5::json, extra_data),
     last_login_at = $6
 WHERE provider_type = $1
   AND provider_user_id = $2

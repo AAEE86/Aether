@@ -253,7 +253,7 @@ async fn proxy_upgrade_rollout_advances_next_wave_after_version_health_confirmat
             dns_failures_delta: Some(0),
             stream_errors_delta: Some(0),
             proxy_metadata: Some(json!({"version": "2.0.0"})),
-            proxy_version: Some("proxy-v2.0.0".to_string()),
+            proxy_version: Some("tunnel-v2.0.0".to_string()),
         })
         .await
         .expect("heartbeat should succeed");
@@ -475,6 +475,7 @@ async fn proxy_upgrade_rollout_active_probe_advances_next_wave_after_version_con
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         )));
 
     let responder_hub = tunnel_state.hub.clone();

@@ -746,7 +746,7 @@ WHERE is_manual = 0
         };
         if !node.tunnel_mode {
             return Err(DataLayerError::InvalidInput(
-                "non-tunnel mode is no longer supported, please upgrade aether-proxy to use tunnel mode"
+                "non-tunnel mode is no longer supported, please upgrade aether-tunnel to use tunnel mode"
                     .to_string(),
             ));
         }
@@ -1431,7 +1431,7 @@ VALUES ('node-1', 'registered', 'ok', 3)
                 log_level: Some("debug".to_string()),
                 heartbeat_interval: Some(45),
                 scheduling_state: Some(Some("draining".to_string())),
-                upgrade_to: Some(Some("proxy-v2.0.0".to_string())),
+                upgrade_to: Some(Some("tunnel-v2.0.0".to_string())),
             })
             .await
             .expect("remote config should update")

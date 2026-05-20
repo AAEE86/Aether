@@ -41,8 +41,9 @@ async fn build_admin_provider_key_items_payload(
         .ok()
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let items = key_page
-        .items
+    let keys = key_page.items;
+
+    let items = keys
         .into_iter()
         .map(|key| {
             let api_formats =

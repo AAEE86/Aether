@@ -67,7 +67,10 @@ pub(crate) async fn maybe_build_local_openai_responses_decision_payload_for_cand
     let proxy = state
         .resolve_transport_proxy_snapshot_with_tunnel_affinity(&resolved.transport)
         .await;
-    let transport_profile = resolve_transport_profile(&resolved.transport);
+    let transport_profile = resolved
+        .transport_profile
+        .clone()
+        .or_else(|| resolve_transport_profile(&resolved.transport));
     let timeouts = resolve_transport_execution_timeouts(&resolved.transport);
     let mut extra_fields = serde_json::Map::new();
     if let Some(proxy_value) =
@@ -77,6 +80,30 @@ pub(crate) async fn maybe_build_local_openai_responses_decision_payload_for_cand
     }
     if let Some(envelope_name) = resolved.envelope_name {
         extra_fields.insert("envelope_name".to_string(), json!(envelope_name));
+    }
+    if let Some(image_request_summary) = resolved.image_request_summary.as_ref() {
+        extra_fields.insert("image_request".to_string(), image_request_summary.clone());
+    }
+    if resolved
+        .provider_api_format
+        .eq_ignore_ascii_case("openai:image")
+        && resolved
+            .transport
+            .provider
+            .provider_type
+            .trim()
+            .eq_ignore_ascii_case("chatgpt_web")
+    {
+        extra_fields.insert("chatgpt_web_image".to_string(), json!(true));
+        extra_fields.insert(
+            "local_failover_policy".to_string(),
+            json!({
+                "stop_status_codes": [400, 401, 403, 429, 500, 502, 503, 504],
+                "error_stop_patterns": [
+                    { "pattern": ".*" }
+                ]
+            }),
+        );
     }
     insert_provider_stream_event_api_format(
         &mut extra_fields,
@@ -175,6 +202,8 @@ pub(crate) async fn maybe_build_local_openai_responses_decision_payload_for_cand
         envelope_name: _,
         upstream_is_stream,
         transport,
+        transport_profile: _,
+        image_request_summary: _,
     } = resolved;
 
     let mut decision = build_ai_execution_decision_response(AiExecutionDecisionResponseParts {

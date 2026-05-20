@@ -4,7 +4,7 @@ use aether_data_contracts::repository::candidates::{
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
 
 const FAILURE_COOLDOWN_WINDOW_SECS: u64 = 60;
-const FAILURE_COOLDOWN_THRESHOLD: usize = 2;
+const FAILURE_COOLDOWN_THRESHOLD: usize = 8;
 const ACTIVE_REQUEST_WINDOW_SECS: u64 = 300;
 pub const PROVIDER_KEY_RPM_WINDOW_SECS: u64 = 60;
 const PROBE_PHASE_REQUESTS: u32 = 100;
@@ -694,11 +694,16 @@ mod tests {
     }
 
     #[test]
-    fn cooldown_triggers_after_two_recent_failures() {
-        let recent_candidates = vec![
-            stored_candidate("one", RequestCandidateStatus::Failed, 95),
-            stored_candidate("two", RequestCandidateStatus::Cancelled, 99),
-        ];
+    fn cooldown_triggers_after_eight_recent_failures() {
+        let recent_candidates = (0..8)
+            .map(|index| {
+                stored_candidate(
+                    &format!("failed-{index}"),
+                    RequestCandidateStatus::Failed,
+                    92 + index,
+                )
+            })
+            .collect::<Vec<_>>();
 
         assert!(is_candidate_in_recent_failure_cooldown(
             &recent_candidates,

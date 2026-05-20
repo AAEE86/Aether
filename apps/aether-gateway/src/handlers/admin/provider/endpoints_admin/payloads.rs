@@ -23,6 +23,10 @@ pub(super) fn endpoint_key_counts_by_format(
     admin_provider_endpoints_pure::endpoint_key_counts_by_format(provider_type, endpoints, keys)
 }
 
+pub(super) fn normalize_endpoint_api_format(api_format: &str) -> String {
+    admin_provider_endpoints_pure::normalize_endpoint_api_format(api_format)
+}
+
 pub(super) fn build_admin_provider_endpoint_response(
     endpoint: &StoredProviderCatalogEndpoint,
     provider_name: &str,

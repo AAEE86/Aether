@@ -14,6 +14,8 @@ use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKe
 use aether_pool_core::{
     run_pool_scheduler, PoolCandidateFacts, PoolCandidateInput, PoolCandidateOrchestration,
     PoolMemberSignals, PoolRuntimeState, PoolSchedulingConfig, PoolSchedulingPreset,
+    POOL_ACCOUNT_BLOCKED_SKIP_REASON, POOL_ACCOUNT_EXHAUSTED_SKIP_REASON,
+    POOL_COOLDOWN_SKIP_REASON, POOL_COST_LIMIT_REACHED_SKIP_REASON,
 };
 use aether_provider_pool::ProviderPoolService;
 use aether_routing_core::{RankingOverlay, ResolvedRoutingPolicy};
@@ -32,6 +34,7 @@ use crate::handlers::shared::provider_pool::{
     admin_provider_pool_cache_affinity_enabled, admin_provider_pool_config_from_config_value,
 };
 use crate::handlers::shared::provider_pool::{
+    admin_provider_pool_quota_probe_active_members_key,
     read_admin_provider_pool_key_cooldown_reason, AdminProviderPoolConfig,
     AdminProviderPoolRuntimeState,
 };
@@ -112,6 +115,7 @@ async fn schedule_pool_page_candidates(
     let key_context_by_id = read_pool_catalog_key_contexts_by_id(state, &candidates).await;
 
     let mut runtime_by_provider = BTreeMap::new();
+    let mut pool_config_by_provider = BTreeMap::new();
     let mut burst_provider_ids = BTreeSet::<String>::new();
     for (provider_id, (pool_config, key_ids)) in provider_runtime_requirements {
         let key_ids = key_ids.into_iter().collect::<Vec<_>>();
@@ -127,16 +131,44 @@ async fn schedule_pool_page_candidates(
             )
             .await
         };
-        if should_trigger_active_probe_burst_for_request(&pool_config, &runtime) {
-            burst_provider_ids.insert(provider_id.clone());
-        }
+        pool_config_by_provider.insert(provider_id.clone(), pool_config);
         runtime_by_provider.insert(provider_id, runtime);
     }
 
-    let (scheduled, skipped) = apply_local_execution_pool_scheduler_with_runtime_map(
+    let preflight_evictions = prune_unschedulable_active_probe_members_for_request(
+        &mut runtime_by_provider,
+        &candidates,
+        &key_context_by_id,
+    );
+    spawn_active_probe_member_evictions_for_request(state, &preflight_evictions);
+    burst_provider_ids.extend(preflight_evictions.keys().cloned());
+
+    for (provider_id, pool_config) in &pool_config_by_provider {
+        let Some(runtime) = runtime_by_provider.get(provider_id) else {
+            continue;
+        };
+        if should_trigger_active_probe_burst_for_request(pool_config, runtime) {
+            burst_provider_ids.insert(provider_id.clone());
+        }
+    }
+
+    let outcome = apply_local_execution_pool_scheduler_with_runtime_map_outcome(
         candidates,
         &runtime_by_provider,
         &key_context_by_id,
+    );
+    let scheduled = outcome.candidates;
+    let skipped = outcome.skipped;
+    burst_provider_ids.extend(outcome.active_probe_seal_fallback_provider_ids);
+    spawn_active_probe_member_evictions_for_request(
+        state,
+        &outcome.active_probe_evicted_members_by_provider,
+    );
+    burst_provider_ids.extend(
+        outcome
+            .active_probe_evicted_members_by_provider
+            .keys()
+            .cloned(),
     );
 
     for skipped_candidate in &skipped {
@@ -150,6 +182,113 @@ async fn schedule_pool_page_candidates(
     }
 
     (scheduled, skipped)
+}
+
+async fn remove_active_probe_members_for_request(
+    state: PlannerAppState<'_>,
+    evicted_members_by_provider: &BTreeMap<String, BTreeSet<String>>,
+) {
+    remove_active_probe_members(state.app().clone(), evicted_members_by_provider).await;
+}
+
+fn spawn_active_probe_member_evictions_for_request(
+    state: PlannerAppState<'_>,
+    evicted_members_by_provider: &BTreeMap<String, BTreeSet<String>>,
+) {
+    if evicted_members_by_provider.is_empty() {
+        return;
+    }
+    let app = state.app().clone();
+    let evicted_members_by_provider = evicted_members_by_provider.clone();
+    tokio::spawn(async move {
+        remove_active_probe_members(app, &evicted_members_by_provider).await;
+    });
+}
+
+async fn remove_active_probe_members(
+    app: crate::AppState,
+    evicted_members_by_provider: &BTreeMap<String, BTreeSet<String>>,
+) {
+    for (provider_id, key_ids) in evicted_members_by_provider {
+        let set_key = admin_provider_pool_quota_probe_active_members_key(provider_id);
+        for key_id in key_ids {
+            if let Err(err) = app
+                .runtime_state
+                .as_ref()
+                .set_remove(&set_key, key_id)
+                .await
+            {
+                warn!(
+                    event_name = "pool_active_probe_member_evict_failed",
+                    log_type = "event",
+                    provider_id,
+                    key_id,
+                    error = ?err,
+                    "gateway pool scheduler failed to evict unschedulable active probe member"
+                );
+            }
+        }
+    }
+}
+
+fn prune_unschedulable_active_probe_members_for_request(
+    runtime_by_provider: &mut BTreeMap<String, AdminProviderPoolRuntimeState>,
+    candidates: &[EligibleLocalExecutionCandidate],
+    key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut evicted = BTreeMap::<String, BTreeSet<String>>::new();
+    for candidate in candidates {
+        let Some(pool_config) = pool_config_for_candidate(candidate) else {
+            continue;
+        };
+        if !should_enforce_active_probe_sealed_pool(&pool_config) {
+            continue;
+        }
+        let provider_id = candidate.candidate.provider_id.as_str();
+        let key_id = candidate.candidate.key_id.as_str();
+        let Some(runtime) = runtime_by_provider.get_mut(provider_id) else {
+            continue;
+        };
+        if !runtime.active_probe_member_ids.contains(key_id) {
+            continue;
+        }
+        if !active_probe_member_is_unschedulable_for_request(
+            &pool_config,
+            runtime,
+            key_id,
+            key_context_by_id.get(key_id),
+        ) {
+            continue;
+        }
+        runtime.active_probe_member_ids.remove(key_id);
+        evicted
+            .entry(provider_id.to_string())
+            .or_default()
+            .insert(key_id.to_string());
+    }
+    evicted
+}
+
+fn active_probe_member_is_unschedulable_for_request(
+    pool_config: &AdminProviderPoolConfig,
+    runtime: &AdminProviderPoolRuntimeState,
+    key_id: &str,
+    key_context: Option<&PoolCatalogKeyContext>,
+) -> bool {
+    if runtime.cooldown_reason_by_key.contains_key(key_id) {
+        return true;
+    }
+    if pool_config.cost_limit_per_key_tokens.is_some_and(|limit| {
+        runtime
+            .cost_window_usage_by_key
+            .get(key_id)
+            .copied()
+            .unwrap_or(0)
+            >= limit
+    }) {
+        return true;
+    }
+    key_context.is_some_and(|context| context.account_blocked || context.quota_exhausted)
 }
 
 async fn expand_pool_group_candidate(
@@ -316,6 +455,32 @@ impl<'a> PoolKeyCursor<'a> {
 
     pub(crate) fn take_skipped_candidates(&mut self) -> Vec<SkippedLocalExecutionCandidate> {
         std::mem::take(&mut self.skipped_candidates)
+    }
+
+    pub(crate) fn exhausted_group_skipped_candidate(
+        &self,
+    ) -> Option<SkippedLocalExecutionCandidate> {
+        if self.returned_key_count > 0 {
+            return None;
+        }
+
+        let skip_reason_counts = self
+            .skip_reason_counts
+            .iter()
+            .map(|(reason, count)| ((*reason).to_string(), serde_json::json!(count)))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        Some(SkippedLocalExecutionCandidate {
+            candidate: self.group.candidate.clone(),
+            skip_reason: self.runtime_miss_pool_exhaustion_skip_reason(),
+            transport: Some(self.group.transport.clone()),
+            ranking: self.group.ranking.clone(),
+            extra_data: Some(serde_json::json!({
+                "pool_group_exhaustion": {
+                    "scanned_keys": self.scanned_keys,
+                    "skip_reason_counts": skip_reason_counts,
+                }
+            })),
+        })
     }
 
     pub(crate) fn log_exhausted(&mut self) {
@@ -631,6 +796,7 @@ impl<'a> PoolKeyCursor<'a> {
                         ranking: candidate.ranking.clone(),
                         extra_data: None,
                     });
+                self.spawn_active_probe_member_eviction_and_replenish(candidate);
                 true
             }
             Ok(None) => false,
@@ -648,6 +814,31 @@ impl<'a> PoolKeyCursor<'a> {
                 false
             }
         }
+    }
+
+    fn spawn_active_probe_member_eviction_and_replenish(
+        &self,
+        candidate: &EligibleLocalExecutionCandidate,
+    ) {
+        let Some(config) = pool_config_for_candidate(candidate) else {
+            return;
+        };
+        if !should_enforce_active_probe_sealed_pool(&config) {
+            return;
+        }
+        let provider_id = candidate.candidate.provider_id.as_str();
+        let key_id = candidate.candidate.key_id.as_str();
+        spawn_active_probe_member_evictions_for_request(
+            self.state,
+            &BTreeMap::from([(
+                provider_id.to_string(),
+                BTreeSet::from([key_id.to_string()]),
+            )]),
+        );
+        let _ = spawn_pool_quota_probe_replenish_for_request(
+            self.state.app().clone(),
+            provider_id.to_string(),
+        );
     }
 
     async fn record_score_schedule_interest(&self, scores: &[StoredPoolMemberScore]) {
@@ -913,6 +1104,125 @@ fn apply_local_execution_pool_scheduler_with_runtime_map(
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
 ) {
+    let outcome = apply_local_execution_pool_scheduler_with_runtime_map_outcome(
+        candidates,
+        runtime_by_provider,
+        key_context_by_id,
+    );
+    (outcome.candidates, outcome.skipped)
+}
+
+struct PoolSchedulerApplyOutcome {
+    candidates: Vec<EligibleLocalExecutionCandidate>,
+    skipped: Vec<SkippedLocalExecutionCandidate>,
+    active_probe_seal_fallback_provider_ids: BTreeSet<String>,
+    active_probe_evicted_members_by_provider: BTreeMap<String, BTreeSet<String>>,
+}
+
+fn apply_local_execution_pool_scheduler_with_runtime_map_outcome(
+    candidates: Vec<EligibleLocalExecutionCandidate>,
+    runtime_by_provider: &BTreeMap<String, AdminProviderPoolRuntimeState>,
+    key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
+) -> PoolSchedulerApplyOutcome {
+    let (scheduled, skipped) = run_local_execution_pool_scheduler_with_runtime_map(
+        candidates.clone(),
+        runtime_by_provider,
+        key_context_by_id,
+        true,
+    );
+    let mut active_probe_evicted_members_by_provider =
+        active_probe_evicted_members_from_skipped(&skipped, runtime_by_provider);
+    let active_probe_seal_fallback_provider_ids = if scheduled.is_empty() {
+        skipped
+            .iter()
+            .filter(|skipped| skipped.skip_reason == POOL_ACTIVE_PROBE_SEALED_SKIP_REASON)
+            .map(|skipped| skipped.candidate.provider_id.clone())
+            .collect::<BTreeSet<_>>()
+    } else {
+        BTreeSet::new()
+    };
+
+    if active_probe_seal_fallback_provider_ids.is_empty() {
+        return PoolSchedulerApplyOutcome {
+            candidates: scheduled,
+            skipped,
+            active_probe_seal_fallback_provider_ids,
+            active_probe_evicted_members_by_provider,
+        };
+    }
+
+    let (scheduled, skipped) = run_local_execution_pool_scheduler_with_runtime_map(
+        candidates,
+        runtime_by_provider,
+        key_context_by_id,
+        false,
+    );
+    merge_active_probe_evictions(
+        &mut active_probe_evicted_members_by_provider,
+        active_probe_evicted_members_from_skipped(&skipped, runtime_by_provider),
+    );
+    PoolSchedulerApplyOutcome {
+        candidates: scheduled,
+        skipped,
+        active_probe_seal_fallback_provider_ids,
+        active_probe_evicted_members_by_provider,
+    }
+}
+
+fn merge_active_probe_evictions(
+    target: &mut BTreeMap<String, BTreeSet<String>>,
+    source: BTreeMap<String, BTreeSet<String>>,
+) {
+    for (provider_id, key_ids) in source {
+        target.entry(provider_id).or_default().extend(key_ids);
+    }
+}
+
+fn active_probe_evicted_members_from_skipped(
+    skipped: &[SkippedLocalExecutionCandidate],
+    runtime_by_provider: &BTreeMap<String, AdminProviderPoolRuntimeState>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    if skipped.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let mut evicted = BTreeMap::<String, BTreeSet<String>>::new();
+    for skipped_candidate in skipped {
+        if !matches!(
+            skipped_candidate.skip_reason,
+            POOL_ACCOUNT_BLOCKED_SKIP_REASON
+                | POOL_ACCOUNT_EXHAUSTED_SKIP_REASON
+                | POOL_COOLDOWN_SKIP_REASON
+                | POOL_COST_LIMIT_REACHED_SKIP_REASON
+        ) {
+            continue;
+        }
+        let Some(runtime) = runtime_by_provider.get(&skipped_candidate.candidate.provider_id)
+        else {
+            continue;
+        };
+        if runtime
+            .active_probe_member_ids
+            .contains(&skipped_candidate.candidate.key_id)
+        {
+            evicted
+                .entry(skipped_candidate.candidate.provider_id.clone())
+                .or_default()
+                .insert(skipped_candidate.candidate.key_id.clone());
+        }
+    }
+    evicted
+}
+
+fn run_local_execution_pool_scheduler_with_runtime_map(
+    candidates: Vec<EligibleLocalExecutionCandidate>,
+    runtime_by_provider: &BTreeMap<String, AdminProviderPoolRuntimeState>,
+    key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
+    enforce_active_probe_seal: bool,
+) -> (
+    Vec<EligibleLocalExecutionCandidate>,
+    Vec<SkippedLocalExecutionCandidate>,
+) {
     let scheduler_runtime_by_provider = runtime_by_provider
         .iter()
         .map(|(provider_id, runtime)| (provider_id.clone(), pool_runtime_state(runtime)))
@@ -927,13 +1237,14 @@ fn apply_local_execution_pool_scheduler_with_runtime_map(
         let admin_pool_config = pool_config_for_candidate(&candidate);
 
         if let Some(config) = admin_pool_config.as_ref() {
-            if should_enforce_active_probe_sealed_pool(config) {
+            if enforce_active_probe_seal && should_enforce_active_probe_sealed_pool(config) {
                 let active_member_ids = runtime_by_provider
                     .get(&candidate.candidate.provider_id)
                     .map(|runtime| &runtime.active_probe_member_ids);
-                if !active_member_ids
-                    .is_some_and(|members| members.contains(&candidate.candidate.key_id))
-                {
+                let should_seal_cold_member = active_member_ids.is_some_and(|members| {
+                    !members.is_empty() && !members.contains(&candidate.candidate.key_id)
+                });
+                if should_seal_cold_member {
                     skipped_candidates.push(SkippedLocalExecutionCandidate {
                         candidate: candidate.candidate.clone(),
                         skip_reason: POOL_ACTIVE_PROBE_SEALED_SKIP_REASON,
@@ -1135,8 +1446,12 @@ fn apply_pool_orchestration(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_local_execution_pool_scheduler_with_runtime_map, build_pool_catalog_key_context,
-        pool_config_for_candidate, should_trigger_active_probe_burst_for_request,
+        admin_provider_pool_quota_probe_active_members_key,
+        apply_local_execution_pool_scheduler_with_runtime_map,
+        apply_local_execution_pool_scheduler_with_runtime_map_outcome,
+        build_pool_catalog_key_context, pool_config_for_candidate,
+        prune_unschedulable_active_probe_members_for_request,
+        remove_active_probe_members_for_request, should_trigger_active_probe_burst_for_request,
         PoolCatalogKeyContext, PoolKeyCursor, POOL_ACTIVE_PROBE_SEALED_SKIP_REASON,
         ROUTING_PROFILE_DISALLOWED_KEY_SKIP_REASON,
     };
@@ -1569,7 +1884,142 @@ mod tests {
     }
 
     #[test]
-    fn pool_scheduler_keeps_pool_out_keys_sealed_when_active_probe_pool_is_empty() {
+    fn pool_scheduler_falls_back_when_active_probe_members_are_unschedulable() {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "probing_enabled": true
+            }
+        }));
+        let key_hot = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-hot",
+            10,
+            provider_config.clone(),
+        );
+        let key_cold = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-cold",
+            10,
+            provider_config,
+        );
+
+        let runtime_by_provider = BTreeMap::from([(
+            "provider-pool".to_string(),
+            AdminProviderPoolRuntimeState {
+                active_probe_member_ids: BTreeSet::from(["key-hot".to_string()]),
+                cooldown_reason_by_key: BTreeMap::from([(
+                    "key-hot".to_string(),
+                    "429".to_string(),
+                )]),
+                provider_desired_hot: 1,
+                ..AdminProviderPoolRuntimeState::default()
+            },
+        )]);
+
+        let outcome = apply_local_execution_pool_scheduler_with_runtime_map_outcome(
+            vec![key_hot, key_cold],
+            &runtime_by_provider,
+            &BTreeMap::new(),
+        );
+        let scheduled = outcome.candidates;
+        let skipped = outcome.skipped;
+
+        assert_eq!(
+            scheduled
+                .iter()
+                .map(|item| item.candidate.key_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-cold"]
+        );
+        assert_eq!(
+            skipped
+                .iter()
+                .map(|item| (item.candidate.key_id.as_str(), item.skip_reason))
+                .collect::<Vec<_>>(),
+            vec![("key-hot", "pool_cooldown")]
+        );
+        assert_eq!(
+            outcome
+                .active_probe_evicted_members_by_provider
+                .get("provider-pool"),
+            Some(&BTreeSet::from(["key-hot".to_string()]))
+        );
+    }
+
+    #[test]
+    fn pool_scheduler_prunes_cold_active_probe_members_before_scheduling() {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "probing_enabled": true
+            }
+        }));
+        let key_hot = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-hot",
+            10,
+            provider_config,
+        );
+        let mut runtime_by_provider = BTreeMap::from([(
+            "provider-pool".to_string(),
+            AdminProviderPoolRuntimeState {
+                active_probe_member_ids: BTreeSet::from(["key-hot".to_string()]),
+                cooldown_reason_by_key: BTreeMap::from([(
+                    "key-hot".to_string(),
+                    "429".to_string(),
+                )]),
+                provider_desired_hot: 1,
+                ..AdminProviderPoolRuntimeState::default()
+            },
+        )]);
+
+        let evicted = prune_unschedulable_active_probe_members_for_request(
+            &mut runtime_by_provider,
+            &[key_hot],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            evicted.get("provider-pool"),
+            Some(&BTreeSet::from(["key-hot".to_string()]))
+        );
+        assert!(runtime_by_provider
+            .get("provider-pool")
+            .expect("runtime should exist")
+            .active_probe_member_ids
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn pool_scheduler_removes_unschedulable_member_from_active_probe_set() {
+        let app = AppState::new().expect("state should build");
+        let set_key = admin_provider_pool_quota_probe_active_members_key("provider-pool");
+        app.runtime_state
+            .set_add(&set_key, "key-hot")
+            .await
+            .expect("active member should insert");
+
+        remove_active_probe_members_for_request(
+            PlannerAppState::new(&app),
+            &BTreeMap::from([(
+                "provider-pool".to_string(),
+                BTreeSet::from(["key-hot".to_string()]),
+            )]),
+        )
+        .await;
+
+        let members = app
+            .runtime_state
+            .set_members(&set_key)
+            .await
+            .expect("active members should read");
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn pool_scheduler_allows_cold_start_when_active_probe_pool_is_empty() {
         let provider_config = Some(json!({
             "pool_advanced": {
                 "probing_enabled": true
@@ -1596,16 +2046,19 @@ mod tests {
             &BTreeMap::new(),
         );
 
-        assert!(scheduled.is_empty());
+        assert_eq!(
+            scheduled
+                .iter()
+                .map(|item| item.candidate.key_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-a", "key-b"]
+        );
         assert_eq!(
             skipped
                 .iter()
                 .map(|item| (item.candidate.key_id.as_str(), item.skip_reason))
                 .collect::<Vec<_>>(),
-            vec![
-                ("key-a", POOL_ACTIVE_PROBE_SEALED_SKIP_REASON),
-                ("key-b", POOL_ACTIVE_PROBE_SEALED_SKIP_REASON),
-            ]
+            Vec::<(&str, &str)>::new()
         );
     }
 

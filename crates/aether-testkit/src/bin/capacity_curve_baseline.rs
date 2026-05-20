@@ -7,9 +7,9 @@ use aether_contracts::{ExecutionPlan, ExecutionTimeouts, RequestBody};
 use aether_gateway::tunnel_protocol as protocol;
 use aether_testkit::{
     fetch_prometheus_samples, find_metric_value_u64, init_test_runtime_for, run_http_load_probe,
-    ExecutionRuntimeHarness, ExecutionRuntimeHarnessConfig, GatewayHarness, GatewayHarnessConfig,
-    HttpLoadProbeConfig, HttpLoadProbeResponseMode, HttpLoadProbeResult, SpawnedServer,
-    TunnelHarness, TunnelHarnessConfig,
+    BenchmarkRuntimeSnapshot, ExecutionRuntimeHarness, ExecutionRuntimeHarnessConfig,
+    GatewayHarness, GatewayHarnessConfig, HttpLoadProbeConfig, HttpLoadProbeResponseMode,
+    HttpLoadProbeResult, SpawnedServer, TunnelHarness, TunnelHarnessConfig,
 };
 use axum::body::{to_bytes, Body, Bytes};
 use axum::http::StatusCode;
@@ -84,9 +84,11 @@ struct CapacityCurvePointResult {
     throughput_rps: u64,
     p50_ms: u64,
     p95_ms: u64,
+    p99_ms: u64,
     max_ms: u64,
     mean_ms: u64,
     metrics: GateMetricSnapshot,
+    runtime: BenchmarkRuntimeSnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -387,9 +389,11 @@ fn capacity_point(
         throughput_rps,
         p50_ms: result.p50_ms,
         p95_ms: result.p95_ms,
+        p99_ms: result.p99_ms,
         max_ms: result.max_ms,
         mean_ms: result.mean_ms,
         metrics,
+        runtime: result.runtime,
     }
 }
 
@@ -636,6 +640,12 @@ async fn connect_protocol_peer(
     request
         .headers_mut()
         .insert("x-node-id", http::HeaderValue::from_static("node-baseline"));
+    request.headers_mut().insert(
+        aether_contracts::tunnel::TUNNEL_PROTOCOL_VERSION_HEADER,
+        http::HeaderValue::from_static(
+            aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION_STR,
+        ),
+    );
     request.headers_mut().insert(
         "x-node-name",
         http::HeaderValue::from_static("proxy-baseline"),

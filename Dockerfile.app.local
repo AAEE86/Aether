@@ -32,6 +32,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
+    cmake \
+    git \
+    libclang-dev \
     libssl-dev \
     pkg-config \
     perl

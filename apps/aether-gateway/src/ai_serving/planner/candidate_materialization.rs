@@ -81,6 +81,7 @@ enum LocalExecutionCandidateAttemptSourceItem<'a> {
         cursor: PoolKeyCursor<'a>,
         candidate_index: u32,
         pending_attempts: DispatchSequence<LocalExecutionCandidateAttempt>,
+        pool_exhaustion_persistence: Option<PoolGroupExhaustionPersistenceContext>,
     },
     RequestedModelPage {
         cursor: Box<RequestedModelAttemptPageCursor<'a>>,
@@ -117,11 +118,20 @@ impl<'a> LocalExecutionCandidateAttemptSource<'a> {
                     cursor,
                     candidate_index,
                     pending_attempts,
+                    pool_exhaustion_persistence,
                 } => {
                     if let Some(attempt) = next_attempt_from_dispatch_sequence(pending_attempts) {
                         return Some(attempt);
                     }
                     let Some(candidate) = cursor.next_key().await else {
+                        if let Some(skipped) = cursor.exhausted_group_skipped_candidate() {
+                            persist_pool_group_exhaustion_skipped_candidate(
+                                pool_exhaustion_persistence.as_ref(),
+                                *candidate_index,
+                                skipped,
+                            )
+                            .await;
+                        }
                         cursor.log_exhausted();
                         let _ = cursor.take_skipped_candidates();
                         self.items.pop_front();
@@ -184,6 +194,39 @@ pub(crate) struct LocalSkippedCandidatePersistenceContext<'a> {
     pub(crate) required_capabilities: Option<&'a Value>,
     pub(crate) error_context: &'static str,
     pub(crate) record_runtime_miss_diagnostic: bool,
+}
+
+#[derive(Clone)]
+struct PoolGroupExhaustionPersistenceContext {
+    app: AppState,
+    trace_id: String,
+    user_id: String,
+    api_key_id: String,
+    required_capabilities: Option<Value>,
+    error_context: &'static str,
+    client_api_format: String,
+    routing_policy: Option<ResolvedRoutingPolicy>,
+}
+
+impl PoolGroupExhaustionPersistenceContext {
+    fn new(
+        app: AppState,
+        trace_id: &str,
+        context: LocalSkippedCandidatePersistenceContext<'_>,
+        client_api_format: &str,
+        routing_policy: Option<&ResolvedRoutingPolicy>,
+    ) -> Self {
+        Self {
+            app,
+            trace_id: trace_id.to_string(),
+            user_id: context.user_id.to_string(),
+            api_key_id: context.api_key_id.to_string(),
+            required_capabilities: context.required_capabilities.cloned(),
+            error_context: context.error_context,
+            client_api_format: client_api_format.to_string(),
+            routing_policy: routing_policy.cloned(),
+        }
+    }
 }
 
 pub(crate) use aether_ai_serving::AiCandidateResolutionMode as LocalCandidateResolutionMode;
@@ -571,6 +614,13 @@ where
         requested_model,
         request_auth_channel,
         routing_policy,
+        Some(PoolGroupExhaustionPersistenceContext::new(
+            state.app().clone(),
+            trace_id,
+            persistence_policy.skipped,
+            client_api_format,
+            routing_policy,
+        )),
     );
 
     (
@@ -589,6 +639,7 @@ fn build_logical_candidate_items<'a>(
     requested_model: Option<&str>,
     request_auth_channel: Option<&str>,
     routing_policy: Option<&ResolvedRoutingPolicy>,
+    pool_exhaustion_persistence: Option<PoolGroupExhaustionPersistenceContext>,
 ) -> (VecDeque<LocalExecutionCandidateAttemptSourceItem<'a>>, u32) {
     let mut items = VecDeque::new();
     let mut next_candidate_index = starting_candidate_index;
@@ -625,6 +676,7 @@ fn build_logical_candidate_items<'a>(
                     cursor,
                     candidate_index,
                     pending_attempts: DispatchSequence::new(Vec::new()),
+                    pool_exhaustion_persistence: pool_exhaustion_persistence.clone(),
                 });
             }
         }
@@ -832,6 +884,16 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 Some(&self.requested_model),
                 self.request_auth_channel.as_deref(),
                 self.routing_policy.as_ref(),
+                Some(PoolGroupExhaustionPersistenceContext {
+                    app: self.state.app().clone(),
+                    trace_id: self.trace_id.clone(),
+                    user_id: self.skipped_user_id.clone(),
+                    api_key_id: self.skipped_api_key_id.clone(),
+                    required_capabilities: self.skipped_required_capabilities.clone(),
+                    error_context: self.skipped_error_context,
+                    client_api_format: self.client_api_format.clone(),
+                    routing_policy: self.routing_policy.clone(),
+                }),
             );
             self.next_candidate_index = next_candidate_index
                 .saturating_add(u32::try_from(skipped_candidate_count).unwrap_or(u32::MAX));
@@ -948,11 +1010,20 @@ async fn pop_attempt_from_items(
                 cursor,
                 candidate_index,
                 pending_attempts,
+                pool_exhaustion_persistence,
             } => {
                 if let Some(attempt) = next_attempt_from_dispatch_sequence(pending_attempts) {
                     return Some(attempt);
                 }
                 let Some(candidate) = cursor.next_key().await else {
+                    if let Some(skipped) = cursor.exhausted_group_skipped_candidate() {
+                        persist_pool_group_exhaustion_skipped_candidate(
+                            pool_exhaustion_persistence.as_ref(),
+                            *candidate_index,
+                            skipped,
+                        )
+                        .await;
+                    }
                     cursor.log_exhausted();
                     let _ = cursor.take_skipped_candidates();
                     items.pop_front();
@@ -1130,7 +1201,29 @@ where
                 }
                 let _ = cursor.take_skipped_candidates();
                 if attempts.len() == attempt_count_before_pool {
+                    let skipped = cursor.exhausted_group_skipped_candidate();
                     cursor.log_exhausted();
+                    if let Some(skipped) = skipped {
+                        let pool_exhaustion_context = PoolGroupExhaustionPersistenceContext::new(
+                            state.app().clone(),
+                            trace_id,
+                            LocalSkippedCandidatePersistenceContext {
+                                user_id: context.user_id,
+                                api_key_id: context.api_key_id,
+                                required_capabilities: context.required_capabilities,
+                                error_context: context.error_context,
+                                record_runtime_miss_diagnostic: false,
+                            },
+                            client_api_format,
+                            routing_policy,
+                        );
+                        persist_pool_group_exhaustion_skipped_candidate(
+                            Some(&pool_exhaustion_context),
+                            candidate_index,
+                            skipped,
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -1466,6 +1559,40 @@ fn build_unpersisted_local_execution_candidate_attempts(
     attempts
 }
 
+async fn persist_pool_group_exhaustion_skipped_candidate(
+    context: Option<&PoolGroupExhaustionPersistenceContext>,
+    candidate_index: u32,
+    skipped: SkippedLocalExecutionCandidate,
+) {
+    let Some(context) = context else {
+        return;
+    };
+    let skipped = attach_routing_trace_to_skipped_candidate(
+        context.routing_policy.as_ref(),
+        &context.client_api_format,
+        candidate_index,
+        skipped,
+    );
+    let extra_data =
+        ai_candidate_extra_data_with_ranking(skipped.extra_data.clone(), skipped.ranking.as_ref());
+    let candidate_id = Uuid::new_v4().to_string();
+    persist_skipped_local_execution_candidate(
+        &context.app,
+        &context.trace_id,
+        &context.user_id,
+        &context.api_key_id,
+        &skipped.candidate,
+        candidate_index,
+        candidate_id.as_str(),
+        context.required_capabilities.as_ref(),
+        skipped.skip_reason,
+        extra_data,
+        context.error_context,
+        false,
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_skipped_local_execution_candidate(
     state: &AppState,
@@ -1640,6 +1767,7 @@ mod tests {
     use aether_data::repository::candidate_selection::InMemoryMinimalCandidateSelectionReadRepository;
     use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
+    use aether_data_contracts::repository::candidates::RequestCandidateStatus;
     use aether_provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider,
@@ -1949,11 +2077,26 @@ mod tests {
             .read_request_candidates_by_request_id("trace-logical-pool")
             .await
             .expect("request candidates should read");
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].key_id.as_deref(), Some("normal-key"));
-        assert_eq!(stored[0].candidate_index, 1);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].key_id.as_deref(), Some("pool-group"));
+        assert_eq!(stored[0].status, RequestCandidateStatus::Skipped);
+        assert_eq!(
+            stored[0].skip_reason.as_deref(),
+            Some("pool_group_exhausted")
+        );
+        assert_eq!(stored[0].candidate_index, 0);
         assert_eq!(
             stored[0]
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("pool_group_exhaustion"))
+                .and_then(|value| value.get("scanned_keys")),
+            Some(&json!(0))
+        );
+        assert_eq!(stored[1].key_id.as_deref(), Some("normal-key"));
+        assert_eq!(stored[1].candidate_index, 1);
+        assert_eq!(
+            stored[1]
                 .extra_data
                 .as_ref()
                 .and_then(|value| value.get("dispatch_ref"))
@@ -2076,6 +2219,83 @@ mod tests {
         let remaining = source.drain_static_attempts();
         assert!(remaining.is_empty());
         assert!(source.next_attempt().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn dynamic_pool_exhaustion_persists_group_skip_summary() {
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
+                    Arc::new(InMemoryAuthApiKeySnapshotRepository::default()),
+                    Arc::new(InMemoryMinimalCandidateSelectionReadRepository::default()),
+                    Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )),
+                    Arc::clone(&request_candidate_repository),
+                    "test-encryption-key",
+                ),
+            );
+        let mut pool_group = sample_eligible("pool-group", None);
+        pool_group.kind = LocalExecutionCandidateKind::PoolGroup;
+        pool_group.transport = sample_transport(
+            "pool-group",
+            Some(json!({ "pool_advanced": { "scheduling_presets": [] } })),
+        );
+        let cursor = PoolKeyCursor::new(
+            PlannerAppState::new(&app),
+            pool_group,
+            None,
+            Some("gpt-5"),
+            None,
+        );
+        let pool_exhaustion_persistence = PoolGroupExhaustionPersistenceContext::new(
+            app.clone(),
+            "trace-dynamic-pool",
+            LocalSkippedCandidatePersistenceContext {
+                user_id: "user-1",
+                api_key_id: "api-key-1",
+                required_capabilities: None,
+                error_context: "persist should not fail",
+                record_runtime_miss_diagnostic: false,
+            },
+            "openai:chat",
+            None,
+        );
+        let mut source = LocalExecutionCandidateAttemptSource {
+            items: VecDeque::from([LocalExecutionCandidateAttemptSourceItem::Pool {
+                cursor,
+                candidate_index: 0,
+                pending_attempts: DispatchSequence::new(Vec::new()),
+                pool_exhaustion_persistence: Some(pool_exhaustion_persistence),
+            }]),
+        };
+
+        assert!(source.next_attempt().await.is_none());
+
+        let stored = app
+            .read_request_candidates_by_request_id("trace-dynamic-pool")
+            .await
+            .expect("request candidates should read");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, RequestCandidateStatus::Skipped);
+        assert_eq!(
+            stored[0].skip_reason.as_deref(),
+            Some("pool_group_exhausted")
+        );
+        assert_eq!(stored[0].candidate_index, 0);
+        assert_eq!(stored[0].key_id.as_deref(), Some("pool-group"));
+        assert_eq!(
+            stored[0]
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("pool_group_exhaustion"))
+                .and_then(|value| value.get("scanned_keys")),
+            Some(&json!(0))
+        );
     }
 
     #[tokio::test]

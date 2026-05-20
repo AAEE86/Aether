@@ -17,7 +17,6 @@ const AI_POST_ROUTE_PATTERNS: &[&str] = &[
     "/v1/responses/compact",
     "/v1/images/generations",
     "/v1/images/edits",
-    "/v1/images/variations",
 ];
 
 const AI_ANY_ROUTE_PATTERNS: &[&str] = &[
@@ -86,7 +85,12 @@ mod tests {
     fn supports_data_api_endpoint_signatures_and_public_paths() {
         for (api_format, family, kind, path) in [
             ("openai:embedding", "openai", "embedding", "/v1/embeddings"),
-            ("gemini:embedding", "gemini", "embedding", "/v1/embeddings"),
+            (
+                "gemini:embedding",
+                "gemini",
+                "embedding",
+                "/v1beta/models/{model}:{action}",
+            ),
             ("jina:embedding", "jina", "embedding", "/v1/embeddings"),
             ("doubao:embedding", "doubao", "embedding", "/v1/embeddings"),
             ("openai:rerank", "openai", "rerank", "/v1/rerank"),

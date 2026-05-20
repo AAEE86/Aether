@@ -1,7 +1,7 @@
 use super::extractors::admin_endpoint_id;
 use super::payloads::{
     build_admin_provider_endpoint_response, endpoint_key_counts_by_format,
-    AdminProviderEndpointUpdatePatch,
+    normalize_endpoint_api_format, AdminProviderEndpointUpdatePatch,
 };
 use super::support::build_admin_endpoints_data_unavailable_response;
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
@@ -152,7 +152,7 @@ pub(super) async fn maybe_handle(
         std::slice::from_ref(&updated),
         &keys,
     );
-    let updated_api_format = crate::ai_serving::normalize_api_format_alias(&updated.api_format);
+    let updated_api_format = normalize_endpoint_api_format(&updated.api_format);
 
     Ok(Some(
         Json(build_admin_provider_endpoint_response(

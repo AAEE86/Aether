@@ -235,25 +235,6 @@ fn usage_sql_summarizes_usage_by_provider_api_key_ids_in_database() {
 }
 
 #[test]
-fn usage_sql_materializes_provider_key_window_usage_in_status_snapshot() {
-    assert!(super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL
-        .contains("UPDATE provider_api_keys AS keys"));
-    assert!(super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL.contains("jsonb_set"));
-    assert!(
-        super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL.contains("'{quota,windows}'")
-    );
-    assert!(super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL.contains("'usage'"));
-    assert!(
-        super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL.contains("WHEN '5h' THEN 300")
-    );
-    assert!(super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL
-        .contains("WHEN 'weekly' THEN 10080"));
-    assert!(
-        !super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL.contains("usage_billing_facts")
-    );
-}
-
-#[test]
 fn usage_sql_rebuilds_provider_key_window_usage_into_status_snapshot() {
     assert!(super::REBUILD_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_STATS_SQL
         .contains("UPDATE provider_api_keys AS keys"));
@@ -281,17 +262,43 @@ fn usage_sql_serializes_request_id_upserts_before_reading_previous_usage() {
 }
 
 #[test]
+fn usage_sql_moves_shared_counter_updates_behind_outbox() {
+    let source = include_str!("mod.rs");
+    assert!(super::INSERT_USAGE_COUNTER_DELTA_SQL.contains("usage_counter_deltas"));
+    assert!(super::CLAIM_USAGE_COUNTER_DELTAS_SQL.contains("FOR UPDATE SKIP LOCKED"));
+    assert!(super::MARK_USAGE_COUNTER_DELTAS_PROCESSED_SQL.contains("processed_at = NOW()"));
+    assert!(super::TRY_LOCK_USAGE_COUNTER_FLUSH_SQL.contains("pg_try_advisory_xact_lock"));
+    assert!(source.contains("enqueue_api_key_usage_delta_in_tx("));
+    assert!(source.contains("enqueue_provider_api_key_usage_delta_in_tx("));
+    assert!(source.contains("enqueue_model_usage_delta_in_tx("));
+    assert!(source.contains("apply_provider_api_key_main_usage_delta_in_tx("));
+    assert!(source.contains("USAGE_COUNTER_KIND_PROVIDER_MONTHLY"));
+    assert!(source.contains("apply_provider_monthly_usage_delta_in_tx("));
+}
+
+#[test]
+fn usage_sql_exposes_counter_outbox_health() {
+    assert!(super::READ_USAGE_COUNTER_HEALTH_SQL.contains("pending_rows"));
+    assert!(super::READ_USAGE_COUNTER_HEALTH_SQL.contains("oldest_pending_created_at_unix_secs"));
+    assert!(super::READ_USAGE_COUNTER_HEALTH_SQL.contains("latest_processed_at_unix_secs"));
+    assert!(super::READ_PENDING_USAGE_COUNTER_DELTAS_BY_KIND_SQL.contains("GROUP BY kind"));
+}
+
+#[test]
 fn usage_sql_rebuild_matches_online_api_key_usage_semantics() {
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("COUNT(*)::INTEGER"));
+    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("COUNT(*)::BIGINT"));
     assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("COALESCE("));
     assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("total_tokens,"));
     assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL
         .contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
     assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("AND BTRIM(api_key_id) <> ''"));
+    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL
+        .contains("AND status NOT IN ('pending', 'streaming')"));
 }
 
 #[test]
 fn usage_sql_rebuild_matches_online_provider_key_usage_semantics() {
+    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL.contains("COUNT(*)::BIGINT"));
     assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
         .contains("NULLIF(BTRIM(error_message), '') IS NULL"));
     assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL.contains("COALESCE("));
@@ -300,6 +307,8 @@ fn usage_sql_rebuild_matches_online_provider_key_usage_semantics() {
         .contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
     assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
         .contains("AND BTRIM(provider_api_key_id) <> ''"));
+    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
+        .contains("AND status NOT IN ('pending', 'streaming')"));
 }
 
 #[test]
@@ -503,8 +512,7 @@ fn usage_sql_raw_aggregates_use_canonical_billing_facts() {
         .contains("FROM usage_billing_facts AS \"usage\""));
     assert!(super::SUMMARIZE_USAGE_TOTALS_BY_USER_IDS_SQL
         .contains("FROM usage_billing_facts AS \"usage\""));
-    assert!(!super::APPLY_PROVIDER_API_KEY_CODEX_WINDOW_USAGE_DELTA_SQL
-        .contains("usage_billing_facts AS \"usage\""));
+    assert!(!source.contains("apply_provider_api_key_codex_window_usage_delta_in_tx"));
 }
 
 #[test]
@@ -633,6 +641,14 @@ fn usage_sql_uses_json_null_placeholders_for_usage_payload_columns() {
         super::LIST_USAGE_AUDITS_PREFIX,
         super::LIST_RECENT_USAGE_AUDITS_PREFIX,
     ] {
+        assert!(sql.contains("jsonb_strip_nulls(jsonb_build_object("));
+        assert!(sql.contains("'client_ip'"));
+        assert!(sql.contains("request_metadata->>'client_ip'"));
+        assert!(sql.contains("'user_agent'"));
+        assert!(sql.contains("request_metadata->>'user_agent'"));
+        assert!(sql.contains("AS client_family"));
+        assert!(sql.contains("request_metadata->'client_session_affinity'->>'client_family'"));
+        assert!(sql.contains("request_metadata->>'client_family'"));
         assert!(sql.contains("CAST(\"usage\".input_tokens AS INTEGER) AS input_tokens"));
         assert!(sql.contains(
             "usage_settlement_snapshots.billing_input_tokens AS settlement_billing_input_tokens"
@@ -690,6 +706,8 @@ fn usage_sql_upsert_returning_includes_routing_placeholders() {
         super::UPSERT_SQL.contains("NULL::varchar AS settlement_billing_snapshot_schema_version")
     );
     assert!(super::UPSERT_SQL.contains("NULL::double precision AS settlement_input_price_per_1m"));
+    assert!(super::UPSERT_SQL.contains("input_output_total_tokens"));
+    assert!(super::UPSERT_SQL.contains("input_context_tokens"));
 }
 
 #[test]
@@ -721,6 +739,8 @@ fn usage_sql_updates_usage_mirror_columns_from_terminal_events_only() {
         "input_tokens = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".input_tokens, EXCLUDED.input_tokens) ELSE \"usage\".input_tokens END",
         "output_tokens = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".output_tokens, EXCLUDED.output_tokens) ELSE \"usage\".output_tokens END",
         "total_tokens = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".total_tokens, EXCLUDED.total_tokens) ELSE \"usage\".total_tokens END",
+        "input_output_total_tokens = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".input_output_total_tokens, EXCLUDED.input_output_total_tokens) ELSE \"usage\".input_output_total_tokens END",
+        "input_context_tokens = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".input_context_tokens, EXCLUDED.input_context_tokens) ELSE \"usage\".input_context_tokens END",
         "cache_creation_input_tokens = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".cache_creation_input_tokens, EXCLUDED.cache_creation_input_tokens) ELSE \"usage\".cache_creation_input_tokens END",
         "cache_creation_input_tokens_5m = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".cache_creation_input_tokens_5m, EXCLUDED.cache_creation_input_tokens_5m) ELSE \"usage\".cache_creation_input_tokens_5m END",
         "cache_creation_input_tokens_1h = CASE WHEN \"usage\".billing_status = 'pending' AND EXCLUDED.status IN ('completed', 'failed', 'cancelled') THEN GREATEST(\"usage\".cache_creation_input_tokens_1h, EXCLUDED.cache_creation_input_tokens_1h) ELSE \"usage\".cache_creation_input_tokens_1h END",

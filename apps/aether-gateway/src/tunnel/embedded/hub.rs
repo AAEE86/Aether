@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -91,8 +91,11 @@ pub struct ProxyConn {
     next_stream_id: AtomicU32,
     pub stream_count: AtomicUsize,
     pub max_streams: usize,
+    pub protocol_version: AtomicU8,
     draining: AtomicBool,
     congested_total: AtomicU64,
+    write_latency_last_us: AtomicU64,
+    write_latency_ewma_us: AtomicU64,
 }
 
 impl ProxyConn {
@@ -103,6 +106,7 @@ impl ProxyConn {
         tx: BoundedQueueSender<Message>,
         close_tx: watch::Sender<bool>,
         max_streams: usize,
+        protocol_version: u8,
     ) -> Self {
         Self {
             id,
@@ -112,9 +116,26 @@ impl ProxyConn {
             next_stream_id: AtomicU32::new(2),
             stream_count: AtomicUsize::new(0),
             max_streams,
+            protocol_version: AtomicU8::new(protocol_version.max(1)),
             draining: AtomicBool::new(false),
             congested_total: AtomicU64::new(0),
+            write_latency_last_us: AtomicU64::new(0),
+            write_latency_ewma_us: AtomicU64::new(0),
         }
+    }
+
+    pub fn record_write_latency(&self, elapsed: std::time::Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.write_latency_last_us.store(micros, Ordering::Relaxed);
+        let current = self.write_latency_ewma_us.load(Ordering::Relaxed);
+        let next = if current == 0 {
+            micros
+        } else {
+            let delta = micros as i128 - current as i128;
+            (current as i128 + (delta / 8)).max(1) as u64
+        };
+        self.write_latency_ewma_us
+            .store(next.max(1), Ordering::Relaxed);
     }
 
     pub fn alloc_stream_id(&self) -> Option<u32> {
@@ -214,11 +235,14 @@ impl ProxyConn {
             draining: self.is_draining(),
             stream_count,
             max_streams: self.max_streams,
+            protocol_version: self.protocol_version.load(Ordering::Relaxed),
             stream_pressure_percent,
             outbound,
             queue_pressure_percent,
             soft_avoid,
             congested_total: self.congested_total.load(Ordering::Relaxed),
+            write_latency_last_us: self.write_latency_last_us.load(Ordering::Relaxed),
+            write_latency_ewma_us: self.write_latency_ewma_us.load(Ordering::Relaxed),
         }
     }
 }
@@ -231,11 +255,14 @@ struct ProxyConnSnapshot {
     draining: bool,
     stream_count: usize,
     max_streams: usize,
+    protocol_version: u8,
     stream_pressure_percent: u64,
     outbound: QueueSnapshot,
     queue_pressure_percent: u64,
     soft_avoid: bool,
     congested_total: u64,
+    write_latency_last_us: u64,
+    write_latency_ewma_us: u64,
 }
 
 #[derive(Clone)]
@@ -245,11 +272,12 @@ struct ProxyConnCandidate {
 }
 
 impl ProxyConnCandidate {
-    fn rank_key(&self) -> (u8, u64, u64, usize, usize, u64) {
+    fn rank_key(&self) -> (u8, u64, u64, u64, usize, usize, u64) {
         (
             u8::from(self.snapshot.soft_avoid),
             self.snapshot.queue_pressure_percent,
             self.snapshot.stream_pressure_percent,
+            self.snapshot.write_latency_ewma_us,
             self.snapshot.outbound.depth,
             self.snapshot.stream_count,
             self.snapshot.conn_id,
@@ -744,8 +772,7 @@ impl HubRouter {
         payload: &[u8],
         end_stream: bool,
     ) -> Result<(), String> {
-        let (body_payload, body_flags) = protocol::compress_payload(payload)
-            .map_err(|e| format!("failed to compress request body: {e}"))?;
+        let (body_payload, body_flags) = protocol::raw_payload(payload);
         let body_frame = protocol::encode_frame(
             proxy_stream_id,
             protocol::REQUEST_BODY,
@@ -1052,6 +1079,24 @@ impl HubRouter {
             .iter()
             .map(|snapshot| snapshot.congested_total)
             .sum();
+        let protocol_v1_proxy_connections = proxy_conns
+            .iter()
+            .filter(|snapshot| snapshot.protocol_version == 1)
+            .count();
+        let protocol_v2_proxy_connections = proxy_conns
+            .iter()
+            .filter(|snapshot| snapshot.protocol_version >= 2)
+            .count();
+        let write_latency_last_us_max = proxy_conns
+            .iter()
+            .map(|snapshot| snapshot.write_latency_last_us)
+            .max()
+            .unwrap_or(0);
+        let write_latency_ewma_us_max = proxy_conns
+            .iter()
+            .map(|snapshot| snapshot.write_latency_ewma_us)
+            .max()
+            .unwrap_or(0);
 
         HubStats {
             proxy_connections: total_proxy,
@@ -1059,6 +1104,8 @@ impl HubRouter {
             closing_proxy_connections,
             draining_proxy_connections,
             soft_avoid_proxy_connections,
+            protocol_v1_proxy_connections,
+            protocol_v2_proxy_connections,
             nodes,
             active_streams: self.local_streams.len(),
             outbound_queue_depth_total,
@@ -1067,6 +1114,8 @@ impl HubRouter {
             outbound_queue_rejected_full_total,
             outbound_queue_rejected_closed_total,
             proxy_connection_congested_total,
+            proxy_connection_write_latency_last_us_max: write_latency_last_us_max,
+            proxy_connection_write_latency_ewma_us_max: write_latency_ewma_us_max,
             soft_avoid_selection_total: self.soft_avoid_selection_total.load(Ordering::Relaxed),
             selection_retry_total: self.selection_retry_total.load(Ordering::Relaxed),
             selection_unavailable_total: self.selection_unavailable_total.load(Ordering::Relaxed),
@@ -1095,6 +1144,8 @@ pub struct HubStats {
     pub closing_proxy_connections: usize,
     pub draining_proxy_connections: usize,
     pub soft_avoid_proxy_connections: usize,
+    pub protocol_v1_proxy_connections: usize,
+    pub protocol_v2_proxy_connections: usize,
     pub nodes: usize,
     pub active_streams: usize,
     pub outbound_queue_depth_total: usize,
@@ -1103,6 +1154,8 @@ pub struct HubStats {
     pub outbound_queue_rejected_full_total: u64,
     pub outbound_queue_rejected_closed_total: u64,
     pub proxy_connection_congested_total: u64,
+    pub proxy_connection_write_latency_last_us_max: u64,
+    pub proxy_connection_write_latency_ewma_us_max: u64,
     pub soft_avoid_selection_total: u64,
     pub selection_retry_total: u64,
     pub selection_unavailable_total: u64,
@@ -1140,6 +1193,18 @@ impl HubStats {
                 "Current number of available proxy connections currently soft-avoided by the scheduler.",
                 MetricKind::Gauge,
                 self.soft_avoid_proxy_connections as u64,
+            ),
+            MetricSample::new(
+                "tunnel_proxy_connections_protocol_v1",
+                "Current number of connected proxy sockets still using tunnel protocol v1.",
+                MetricKind::Gauge,
+                self.protocol_v1_proxy_connections as u64,
+            ),
+            MetricSample::new(
+                "tunnel_proxy_connections_protocol_v2",
+                "Current number of connected proxy sockets using tunnel protocol v2.",
+                MetricKind::Gauge,
+                self.protocol_v2_proxy_connections as u64,
             ),
             MetricSample::new(
                 "tunnel_nodes",
@@ -1188,6 +1253,18 @@ impl HubStats {
                 "Total number of times a proxy outbound queue became congested.",
                 MetricKind::Counter,
                 self.proxy_connection_congested_total,
+            ),
+            MetricSample::new(
+                "tunnel_proxy_connection_write_latency_last_us_max",
+                "Maximum observed last write latency across proxy connections in microseconds.",
+                MetricKind::Gauge,
+                self.proxy_connection_write_latency_last_us_max,
+            ),
+            MetricSample::new(
+                "tunnel_proxy_connection_write_latency_ewma_us_max",
+                "Maximum observed write latency EWMA across proxy connections in microseconds.",
+                MetricKind::Gauge,
+                self.proxy_connection_write_latency_ewma_us_max,
             ),
             MetricSample::new(
                 "tunnel_proxy_soft_avoid_selection_total",
@@ -1250,6 +1327,7 @@ mod tests {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         ));
         hub.register_proxy(proxy);
 
@@ -1285,6 +1363,7 @@ mod tests {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         ));
         hub.register_proxy(proxy);
 
@@ -1303,6 +1382,7 @@ mod tests {
         };
         let first_header = protocol::FrameHeader::parse(&first).expect("first body header");
         assert_eq!(first_header.msg_type, protocol::REQUEST_BODY);
+        assert_eq!(first_header.flags & protocol::FLAG_GZIP_COMPRESSED, 0);
         assert_eq!(first_header.flags & protocol::FLAG_END_STREAM, 0);
 
         let second = match proxy_rx.try_recv().expect("second body frame") {
@@ -1311,6 +1391,7 @@ mod tests {
         };
         let second_header = protocol::FrameHeader::parse(&second).expect("second body header");
         assert_eq!(second_header.msg_type, protocol::REQUEST_BODY);
+        assert_eq!(second_header.flags & protocol::FLAG_GZIP_COMPRESSED, 0);
         assert_ne!(second_header.flags & protocol::FLAG_END_STREAM, 0);
     }
 
@@ -1327,6 +1408,7 @@ mod tests {
             proxy_one_tx,
             proxy_one_close_tx,
             16,
+            2,
         ));
         hub.register_proxy(Arc::clone(&proxy_one));
 
@@ -1339,6 +1421,7 @@ mod tests {
             proxy_two_tx,
             proxy_two_close_tx,
             16,
+            2,
         ));
         hub.register_proxy(Arc::clone(&proxy_two));
 
@@ -1387,6 +1470,7 @@ mod tests {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         ));
         hub.register_proxy(proxy);
 
@@ -1414,6 +1498,7 @@ mod tests {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         ));
         hub.register_proxy(Arc::clone(&proxy));
 

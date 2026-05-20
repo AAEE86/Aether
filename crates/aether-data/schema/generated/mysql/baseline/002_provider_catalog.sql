@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS provider_api_keys (
     `created_at` BIGINT NOT NULL,
     `updated_at` BIGINT NOT NULL,
     PRIMARY KEY (`id`),
-    KEY provider_api_keys_provider_id_idx (`provider_id`)
+    KEY provider_api_keys_provider_id_idx (`provider_id`),
+    KEY idx_provider_api_keys_provider_default_sort (`provider_id`, `internal_priority`, `name`, `id`)
 );
 
 CREATE TABLE IF NOT EXISTS pool_member_scores (
@@ -286,6 +287,7 @@ CREATE TABLE IF NOT EXISTS video_tasks (
     UNIQUE KEY video_tasks_request_id_key (`request_id`),
     KEY video_tasks_external_id_idx (`external_task_id`),
     KEY video_tasks_next_poll_idx (`next_poll_at`),
+    KEY video_tasks_due_poll_idx (`status`, `next_poll_at`, `updated_at`),
     KEY video_tasks_user_status_idx (`user_id`, `status`),
     KEY video_tasks_api_key_id_idx (`api_key_id`),
     KEY video_tasks_provider_id_idx (`provider_id`),

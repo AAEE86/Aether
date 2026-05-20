@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use aether_gateway::tunnel_protocol as protocol;
 use aether_testkit::{
-    init_test_runtime_for, run_http_load_probe, HttpLoadProbeConfig, HttpLoadProbeResponseMode,
-    HttpLoadProbeResult, TunnelHarness, TunnelHarnessConfig,
+    fetch_prometheus_samples, find_metric_value_u64, init_test_runtime_for, run_http_load_probe,
+    HttpLoadProbeConfig, HttpLoadProbeResponseMode, HttpLoadProbeResult, TunnelHarness,
+    TunnelHarnessConfig,
 };
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Method;
@@ -38,6 +39,23 @@ impl Default for GatewayTunnelBaselineConfig {
 struct GatewayTunnelBaselineReport {
     suite: &'static str,
     scenario: HttpLoadProbeResult,
+    tunnel_metrics: TunnelMetricsSnapshot,
+}
+
+#[derive(Debug, Serialize)]
+struct TunnelMetricsSnapshot {
+    proxy_connections: u64,
+    active_streams: u64,
+    outbound_queue_depth_total: u64,
+    outbound_queue_depth_max: u64,
+    outbound_queue_capacity_total: u64,
+    outbound_queue_rejected_full_total: u64,
+    outbound_queue_rejected_closed_total: u64,
+    proxy_connection_congested_total: u64,
+    proxy_connection_write_latency_last_us_max: u64,
+    proxy_connection_write_latency_ewma_us_max: u64,
+    proxy_connections_protocol_v1: u64,
+    proxy_connections_protocol_v2: u64,
 }
 
 #[tokio::main]
@@ -81,11 +99,13 @@ async fn run_suite(
     .await
     .map_err(std::io::Error::other)?;
 
+    let tunnel_metrics = capture_tunnel_metrics(tunnel.base_url()).await?;
     drop(peer);
 
     Ok(GatewayTunnelBaselineReport {
         suite: "gateway_tunnel_stream_baseline",
         scenario: result,
+        tunnel_metrics,
     })
 }
 
@@ -128,6 +148,12 @@ async fn connect_protocol_peer(
         .headers_mut()
         .insert("x-node-id", http::HeaderValue::from_static("node-baseline"));
     request.headers_mut().insert(
+        aether_contracts::tunnel::TUNNEL_PROTOCOL_VERSION_HEADER,
+        http::HeaderValue::from_static(
+            aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION_STR,
+        ),
+    );
+    request.headers_mut().insert(
         "x-node-name",
         http::HeaderValue::from_static("proxy-baseline"),
     );
@@ -160,6 +186,80 @@ async fn connect_protocol_peer(
         }
         let _ = sink.close().await;
     }))
+}
+
+async fn capture_tunnel_metrics(
+    base_url: &str,
+) -> Result<TunnelMetricsSnapshot, Box<dyn std::error::Error>> {
+    let samples = fetch_prometheus_samples(&format!("{base_url}/metrics"))
+        .await
+        .map_err(std::io::Error::other)?;
+    Ok(TunnelMetricsSnapshot {
+        proxy_connections: find_metric_value_u64(&samples, "tunnel_proxy_connections", &[])
+            .unwrap_or_default(),
+        active_streams: find_metric_value_u64(&samples, "tunnel_active_streams", &[])
+            .unwrap_or_default(),
+        outbound_queue_depth_total: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_outbound_queue_depth_total",
+            &[],
+        )
+        .unwrap_or_default(),
+        outbound_queue_depth_max: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_outbound_queue_depth_max",
+            &[],
+        )
+        .unwrap_or_default(),
+        outbound_queue_capacity_total: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_outbound_queue_capacity_total",
+            &[],
+        )
+        .unwrap_or_default(),
+        outbound_queue_rejected_full_total: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_outbound_queue_rejected_full_total",
+            &[],
+        )
+        .unwrap_or_default(),
+        outbound_queue_rejected_closed_total: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_outbound_queue_rejected_closed_total",
+            &[],
+        )
+        .unwrap_or_default(),
+        proxy_connection_congested_total: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_connection_congested_total",
+            &[],
+        )
+        .unwrap_or_default(),
+        proxy_connection_write_latency_last_us_max: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_connection_write_latency_last_us_max",
+            &[],
+        )
+        .unwrap_or_default(),
+        proxy_connection_write_latency_ewma_us_max: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_connection_write_latency_ewma_us_max",
+            &[],
+        )
+        .unwrap_or_default(),
+        proxy_connections_protocol_v1: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_connections_protocol_v1",
+            &[],
+        )
+        .unwrap_or_default(),
+        proxy_connections_protocol_v2: find_metric_value_u64(
+            &samples,
+            "tunnel_proxy_connections_protocol_v2",
+            &[],
+        )
+        .unwrap_or_default(),
+    })
 }
 
 async fn handle_binary_frame<S>(

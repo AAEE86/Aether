@@ -4,7 +4,10 @@ use aether_data_contracts::repository::provider_catalog::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::payloads::{build_admin_provider_endpoint_response, endpoint_key_counts_by_format};
+use super::payloads::{
+    build_admin_provider_endpoint_response, endpoint_key_counts_by_format,
+    normalize_endpoint_api_format,
+};
 
 pub(crate) async fn build_admin_provider_endpoints_payload(
     state: &AdminAppState<'_>,
@@ -52,8 +55,7 @@ pub(crate) async fn build_admin_provider_endpoints_payload(
             .skip(skip)
             .take(limit)
             .map(|endpoint| {
-                let endpoint_api_format =
-                    crate::ai_serving::normalize_api_format_alias(&endpoint.api_format);
+                let endpoint_api_format = normalize_endpoint_api_format(&endpoint.api_format);
                 build_admin_provider_endpoint_response(
                     &endpoint,
                     &provider.name,
@@ -105,7 +107,7 @@ pub(crate) async fn build_admin_endpoint_payload(
         .ok()
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let endpoint_api_format = crate::ai_serving::normalize_api_format_alias(&endpoint.api_format);
+    let endpoint_api_format = normalize_endpoint_api_format(&endpoint.api_format);
 
     Some(build_admin_provider_endpoint_response(
         &endpoint,

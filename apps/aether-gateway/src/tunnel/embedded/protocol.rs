@@ -12,3 +12,8 @@ pub fn compress_payload(payload: &[u8]) -> Result<(Vec<u8>, u8), std::io::Error>
         aether_contracts::tunnel::compress_payload(Bytes::copy_from_slice(payload));
     Ok((compressed.to_vec(), flags))
 }
+
+pub fn raw_payload(payload: &[u8]) -> (Vec<u8>, u8) {
+    let (payload, flags) = aether_contracts::tunnel::raw_payload(Bytes::copy_from_slice(payload));
+    (payload.to_vec(), flags)
+}

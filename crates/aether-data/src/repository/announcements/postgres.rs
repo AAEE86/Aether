@@ -18,6 +18,7 @@ SELECT
   a.priority,
   a.is_active,
   a.is_pinned,
+  a.requires_ack,
   a.author_id,
   u.username AS author_username,
   EXTRACT(EPOCH FROM a.start_time)::bigint AS start_time_unix_secs,
@@ -26,6 +27,38 @@ SELECT
   EXTRACT(EPOCH FROM a.updated_at)::bigint AS updated_at_unix_secs
 FROM announcements a
 LEFT JOIN users u ON u.id = a.author_id
+"#;
+
+const LIST_REQUIRED_UNREAD_ACTIVE_ANNOUNCEMENTS_SQL: &str = r#"
+SELECT
+  a.id,
+  a.title,
+  a.content,
+  a.type,
+  a.priority,
+  a.is_active,
+  a.is_pinned,
+  a.requires_ack,
+  a.author_id,
+  u.username AS author_username,
+  EXTRACT(EPOCH FROM a.start_time)::bigint AS start_time_unix_secs,
+  EXTRACT(EPOCH FROM a.end_time)::bigint AS end_time_unix_secs,
+  EXTRACT(EPOCH FROM a.created_at)::bigint AS created_at_unix_ms,
+  EXTRACT(EPOCH FROM a.updated_at)::bigint AS updated_at_unix_secs
+FROM announcements a
+LEFT JOIN users u ON u.id = a.author_id
+WHERE a.is_active = TRUE
+  AND a.requires_ack = TRUE
+  AND (a.start_time IS NULL OR a.start_time <= TO_TIMESTAMP($2::double precision))
+  AND (a.end_time IS NULL OR a.end_time >= TO_TIMESTAMP($2::double precision))
+  AND NOT EXISTS (
+    SELECT 1
+    FROM announcement_reads r
+    WHERE r.user_id = $1
+      AND r.announcement_id = a.id
+  )
+ORDER BY a.is_pinned DESC, a.priority DESC, a.created_at DESC, a.id ASC
+LIMIT $3
 "#;
 
 const CREATE_ANNOUNCEMENT_SQL: &str = r#"
@@ -38,6 +71,7 @@ INSERT INTO announcements (
   author_id,
   is_active,
   is_pinned,
+  requires_ack,
   start_time,
   end_time,
   created_at,
@@ -54,6 +88,7 @@ VALUES (
   $7,
   $8,
   $9,
+  $10,
   NOW(),
   NOW()
 )
@@ -65,6 +100,7 @@ RETURNING
   priority,
   is_active,
   is_pinned,
+  requires_ack,
   author_id,
   (SELECT username FROM users WHERE id = announcements.author_id) AS author_username,
   EXTRACT(EPOCH FROM start_time)::bigint AS start_time_unix_secs,
@@ -82,8 +118,9 @@ SET
   priority = COALESCE($5, priority),
   is_active = COALESCE($6, is_active),
   is_pinned = COALESCE($7, is_pinned),
-  start_time = COALESCE($8, start_time),
-  end_time = COALESCE($9, end_time),
+  requires_ack = COALESCE($8, requires_ack),
+  start_time = COALESCE($9, start_time),
+  end_time = COALESCE($10, end_time),
   updated_at = NOW()
 WHERE id = $1
 RETURNING
@@ -94,6 +131,7 @@ RETURNING
   priority,
   is_active,
   is_pinned,
+  requires_ack,
   author_id,
   (SELECT username FROM users WHERE id = announcements.author_id) AS author_username,
   EXTRACT(EPOCH FROM start_time)::bigint AS start_time_unix_secs,
@@ -247,6 +285,22 @@ impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
             .max(0) as u64;
         Ok(total)
     }
+
+    async fn list_required_unread_active_announcements(
+        &self,
+        user_id: &str,
+        now_unix_secs: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredAnnouncement>, DataLayerError> {
+        let rows = sqlx::query(LIST_REQUIRED_UNREAD_ACTIVE_ANNOUNCEMENTS_SQL)
+            .bind(user_id)
+            .bind(now_unix_secs as f64)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_postgres_err()?;
+        rows.iter().map(map_announcement_row).collect()
+    }
 }
 
 #[async_trait]
@@ -264,6 +318,7 @@ impl AnnouncementWriteRepository for SqlxAnnouncementReadRepository {
             .bind(record.priority)
             .bind(record.author_id)
             .bind(record.is_pinned)
+            .bind(record.requires_ack)
             .bind(optional_datetime(record.start_time_unix_secs))
             .bind(optional_datetime(record.end_time_unix_secs))
             .fetch_one(&self.pool)
@@ -285,6 +340,7 @@ impl AnnouncementWriteRepository for SqlxAnnouncementReadRepository {
             .bind(record.priority)
             .bind(record.is_active)
             .bind(record.is_pinned)
+            .bind(record.requires_ack)
             .bind(optional_datetime(record.start_time_unix_secs))
             .bind(optional_datetime(record.end_time_unix_secs))
             .fetch_optional(&self.pool)
@@ -351,6 +407,7 @@ fn map_announcement_row(row: &PgRow) -> Result<StoredAnnouncement, DataLayerErro
         row.try_get("priority").map_postgres_err()?,
         row.try_get("is_active").map_postgres_err()?,
         row.try_get("is_pinned").map_postgres_err()?,
+        row.try_get("requires_ack").map_postgres_err()?,
         row.try_get("author_id").map_postgres_err()?,
         row.try_get("author_username").map_postgres_err()?,
         row.try_get("start_time_unix_secs").map_postgres_err()?,

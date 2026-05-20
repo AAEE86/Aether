@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use aether_contracts::ResolvedTransportProfile;
+use serde_json::{json, Value};
 
 use crate::ai_serving::planner::candidate_preparation::{
     prepare_header_authenticated_candidate, prepare_header_authenticated_candidate_from_auth,
@@ -15,9 +16,10 @@ use crate::ai_serving::planner::common::{
     request_requires_body_stream_field, OPENAI_CHAT_STREAM_PLAN_KIND,
 };
 use crate::ai_serving::planner::standard::{
-    apply_codex_openai_responses_special_headers, build_cross_format_openai_chat_request_body,
-    build_cross_format_openai_chat_upstream_url, build_local_openai_chat_request_body,
-    build_local_openai_chat_upstream_url, request_body_build_failure_extra_data,
+    apply_codex_openai_responses_special_body_edits, apply_codex_openai_responses_special_headers,
+    build_cross_format_openai_chat_request_body, build_cross_format_openai_chat_upstream_url,
+    build_local_openai_chat_request_body, build_local_openai_chat_upstream_url,
+    request_body_build_failure_extra_data,
 };
 use crate::ai_serving::transport::auth::resolve_local_openai_bearer_auth;
 use crate::ai_serving::transport::kiro::{
@@ -27,8 +29,11 @@ use crate::ai_serving::transport::kiro::{
 };
 use crate::ai_serving::transport::local_openai_chat_transport_unsupported_reason;
 use crate::ai_serving::transport::{
-    build_kiro_cross_format_upstream_url, build_standard_provider_request_headers,
-    StandardProviderRequestHeadersInput,
+    build_grok_browser_headers, build_grok_upstream_url, build_kiro_cross_format_upstream_url,
+    build_openai_image_headers, build_openai_image_upstream_url,
+    build_standard_provider_request_headers, openai_image_transport_unsupported_reason,
+    resolve_openai_image_auth, GrokHeaderInput, ProviderOpenAiImageHeadersInput,
+    StandardProviderRequestHeadersInput, GROK_CHAT_PATH,
 };
 use crate::ai_serving::{
     ai_local_execution_contract_for_formats, request_conversion_direct_auth,
@@ -51,6 +56,7 @@ use super::support::{
 };
 
 pub(crate) struct LocalOpenAiChatCandidatePayloadParts {
+    pub(super) client_api_format: String,
     pub(super) auth_header: String,
     pub(super) auth_value: String,
     pub(super) mapped_model: String,
@@ -64,6 +70,15 @@ pub(crate) struct LocalOpenAiChatCandidatePayloadParts {
     pub(super) envelope_name: Option<&'static str>,
     pub(super) transport: Arc<GatewayProviderTransportSnapshot>,
     pub(super) request_redacted: bool,
+    pub(super) transport_profile: Option<ResolvedTransportProfile>,
+    pub(super) image_request_summary: Option<Value>,
+}
+
+fn is_grok_text_provider_api_format(provider_api_format: &str) -> bool {
+    matches!(
+        crate::ai_serving::normalize_api_format_alias(provider_api_format).as_str(),
+        "openai:chat" | "openai:responses" | "openai:responses:compact" | "claude:messages"
+    )
 }
 
 fn request_identity_response_encoding_when_redacted(
@@ -147,6 +162,7 @@ async fn resolve_chat_pii_redaction_feature_settings(
         .await
         .map_err(|err| {
             warn!(
+
                 error = ?err,
                 "gateway failed to read api key chat pii redaction feature settings"
             );
@@ -177,6 +193,7 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
     let candidate = &eligible.candidate;
     let provider_api_format = eligible.provider_api_format.as_str();
     let transport = &eligible.transport;
+    let transport_profile = crate::ai_serving::transport::resolve_transport_profile(transport);
     let force_body_stream_field =
         endpoint_config_forces_body_stream_field(transport.endpoint.config.as_ref());
     let enable_model_directives =
@@ -191,6 +208,131 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
             .await?;
     let body_json = redaction.body_json.as_ref();
     let effective_headers = input.effective_headers(&parts.headers);
+    let is_grok = transport
+        .provider
+        .provider_type
+        .trim()
+        .eq_ignore_ascii_case("grok");
+
+    if is_grok && is_grok_text_provider_api_format(provider_api_format) {
+        let prepared_candidate = match prepare_header_authenticated_candidate(
+            planner_state,
+            transport,
+            candidate,
+            crate::ai_serving::transport::resolve_grok_session_auth(transport),
+            OauthPreparationContext {
+                trace_id,
+                api_format: provider_api_format,
+                operation: "openai_chat_same_format",
+            },
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(skip_reason) => {
+                mark_skipped_local_openai_chat_candidate(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    skip_reason,
+                )
+                .await;
+                return Ok(None);
+            }
+        };
+
+        let Some(provider_request_body) = build_local_openai_chat_request_body(
+            body_json,
+            &prepared_candidate.mapped_model,
+            upstream_is_stream,
+            force_body_stream_field,
+            transport.endpoint.body_rules.as_ref(),
+            effective_headers,
+            enable_model_directives,
+        ) else {
+            mark_skipped_local_openai_chat_candidate_with_extra_data(
+                state,
+                input,
+                trace_id,
+                candidate,
+                candidate_index,
+                candidate_id,
+                "provider_request_body_build_failed",
+                request_body_build_failure_extra_data(
+                    body_json,
+                    "openai:chat",
+                    provider_api_format,
+                ),
+            )
+            .await;
+            return Ok(None);
+        };
+
+        let upstream_url = build_grok_upstream_url(transport, GROK_CHAT_PATH);
+        let Some(mut provider_request_headers) = build_grok_browser_headers(GrokHeaderInput {
+            transport,
+            transport_profile: transport_profile.as_ref(),
+            request_headers: Some(effective_headers),
+            content_type: "application/json",
+            accept: "text/event-stream",
+            header_rules: transport.endpoint.header_rules.as_ref(),
+            provider_request_body: &provider_request_body,
+            original_request_body: body_json,
+        }) else {
+            mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+                state,
+                input,
+                trace_id,
+                candidate,
+                candidate_index,
+                candidate_id,
+                "transport_header_rules_apply_failed",
+                CandidateFailureDiagnostic::header_rules_apply_failed(
+                    "openai:chat",
+                    provider_api_format,
+                    "grok_openai_chat_headers",
+                ),
+            )
+            .await;
+            return Ok(None);
+        };
+
+        let (execution_strategy, conversion_mode) =
+            ai_local_execution_contract_for_formats("openai:chat", provider_api_format);
+        let resolved_report_kind =
+            if decision_kind == OPENAI_CHAT_STREAM_PLAN_KIND || !upstream_is_stream {
+                report_kind.to_string()
+            } else {
+                "openai_chat_sync_finalize".to_string()
+            };
+
+        request_identity_response_encoding_when_redacted(
+            &mut provider_request_headers,
+            redaction.redacted,
+        );
+
+        return Ok(Some(LocalOpenAiChatCandidatePayloadParts {
+            client_api_format: "openai:chat".to_string(),
+            auth_header: prepared_candidate.auth_header,
+            auth_value: prepared_candidate.auth_value,
+            mapped_model: prepared_candidate.mapped_model,
+            provider_api_format: provider_api_format.to_string(),
+            provider_request_body,
+            provider_request_headers,
+            upstream_url,
+            execution_strategy,
+            conversion_mode,
+            report_kind: resolved_report_kind,
+            envelope_name: None,
+            transport: Arc::clone(transport),
+            request_redacted: redaction.redacted,
+            transport_profile,
+            image_request_summary: None,
+        }));
+    }
 
     if provider_api_format == "openai:chat" {
         if let Some(skip_reason) = local_openai_chat_transport_unsupported_reason(transport) {
@@ -339,6 +481,7 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         );
 
         return Ok(Some(LocalOpenAiChatCandidatePayloadParts {
+            client_api_format: "openai:chat".to_string(),
             auth_header: resolved_headers.auth_header,
             auth_value: resolved_headers.auth_value,
             mapped_model: prepared_candidate.mapped_model,
@@ -352,10 +495,27 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
             envelope_name: None,
             transport: Arc::clone(transport),
             request_redacted: redaction.redacted,
+            transport_profile,
+            image_request_summary: None,
         }));
     };
 
     let provider_api_format = provider_api_format.trim().to_ascii_lowercase();
+    if provider_api_format == "openai:image" {
+        return resolve_openai_chat_to_openai_image_payload_parts(
+            state,
+            parts,
+            trace_id,
+            body_json,
+            input,
+            eligible,
+            candidate_index,
+            candidate_id,
+            upstream_is_stream,
+        )
+        .await;
+    }
+
     let Some(conversion_kind) =
         request_conversion_kind("openai:chat", provider_api_format.as_str())
     else {
@@ -627,6 +787,7 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         ai_local_execution_contract_for_formats("openai:chat", provider_api_format.as_str());
 
     Ok(Some(LocalOpenAiChatCandidatePayloadParts {
+        client_api_format: "openai:chat".to_string(),
         auth_header: resolved_headers.auth_header,
         auth_value: resolved_headers.auth_value,
         mapped_model: prepared_candidate.mapped_model,
@@ -640,7 +801,443 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         envelope_name: None,
         transport: Arc::clone(transport),
         request_redacted: redaction.redacted,
+        transport_profile: None,
+        image_request_summary: None,
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_openai_chat_to_openai_image_payload_parts(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    body_json: &serde_json::Value,
+    input: &LocalOpenAiChatDecisionInput,
+    eligible: &EligibleLocalExecutionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    upstream_is_stream: bool,
+) -> Result<Option<LocalOpenAiChatCandidatePayloadParts>, GatewayError> {
+    let candidate = &eligible.candidate;
+    let transport = &eligible.transport;
+    let provider_api_format = "openai:image";
+    if let Some(skip_reason) =
+        openai_image_transport_unsupported_reason(transport, provider_api_format)
+    {
+        mark_skipped_local_openai_chat_candidate(
+            state,
+            input,
+            trace_id,
+            candidate,
+            candidate_index,
+            candidate_id,
+            skip_reason,
+        )
+        .await;
+        return Ok(None);
+    }
+
+    let prepared_candidate = match prepare_header_authenticated_candidate(
+        crate::ai_serving::PlannerAppState::new(state),
+        transport,
+        candidate,
+        resolve_openai_image_auth(transport),
+        OauthPreparationContext {
+            trace_id,
+            api_format: provider_api_format,
+            operation: "openai_chat_image_bridge",
+        },
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(skip_reason) => {
+            mark_skipped_local_openai_chat_candidate(
+                state,
+                input,
+                trace_id,
+                candidate,
+                candidate_index,
+                candidate_id,
+                skip_reason,
+            )
+            .await;
+            return Ok(None);
+        }
+    };
+
+    let is_chatgpt_web = transport
+        .provider
+        .provider_type
+        .trim()
+        .eq_ignore_ascii_case("chatgpt_web");
+    let Some((mut provider_request_body, image_request_summary)) = (if is_chatgpt_web {
+        build_chatgpt_web_image_provider_body_from_openai_chat_body(
+            body_json,
+            &input.requested_model,
+        )
+    } else {
+        build_openai_image_provider_body_from_openai_chat_body(
+            body_json,
+            &input.requested_model,
+            upstream_is_stream,
+        )
+    }) else {
+        mark_skipped_local_openai_chat_candidate_with_extra_data(
+            state,
+            input,
+            trace_id,
+            candidate,
+            candidate_index,
+            candidate_id,
+            "provider_request_body_build_failed",
+            request_body_build_failure_extra_data(body_json, "openai:chat", provider_api_format),
+        )
+        .await;
+        return Ok(None);
+    };
+    if !is_chatgpt_web {
+        apply_codex_openai_responses_special_body_edits(
+            &mut provider_request_body,
+            transport.provider.provider_type.as_str(),
+            provider_api_format,
+            transport.endpoint.body_rules.as_ref(),
+            Some(candidate.key_id.as_str()),
+        );
+    }
+
+    let upstream_url = if is_chatgpt_web {
+        chatgpt_web_image_internal_url(&transport.endpoint.base_url)
+    } else {
+        build_openai_image_upstream_url(transport, parts.uri.query())
+    };
+    let Some(mut provider_request_headers) =
+        build_openai_image_headers(ProviderOpenAiImageHeadersInput {
+            headers: &parts.headers,
+            auth_header: &prepared_candidate.auth_header,
+            auth_value: &prepared_candidate.auth_value,
+            header_rules: transport.endpoint.header_rules.as_ref(),
+            provider_request_body: &provider_request_body,
+            original_request_body: body_json,
+        })
+    else {
+        mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+            state,
+            input,
+            trace_id,
+            candidate,
+            candidate_index,
+            candidate_id,
+            "transport_header_rules_apply_failed",
+            CandidateFailureDiagnostic::header_rules_apply_failed(
+                "openai:chat",
+                provider_api_format,
+                "openai_chat_image_bridge_headers",
+            ),
+        )
+        .await;
+        return Ok(None);
+    };
+    if is_chatgpt_web {
+        provider_request_headers.insert("x-aether-chatgpt-web-image".to_string(), "1".to_string());
+    } else {
+        apply_codex_openai_responses_special_headers(
+            &mut provider_request_headers,
+            &provider_request_body,
+            &parts.headers,
+            transport.provider.provider_type.as_str(),
+            provider_api_format,
+            Some(trace_id),
+            transport.key.decrypted_auth_config.as_deref(),
+        );
+    }
+
+    let (execution_strategy, conversion_mode) =
+        ai_local_execution_contract_for_formats("openai:chat", provider_api_format);
+
+    Ok(Some(LocalOpenAiChatCandidatePayloadParts {
+        client_api_format: "openai:chat".to_string(),
+        auth_header: prepared_candidate.auth_header,
+        auth_value: prepared_candidate.auth_value,
+        mapped_model: prepared_candidate.mapped_model,
+        provider_api_format: provider_api_format.to_string(),
+        provider_request_body,
+        provider_request_headers,
+        upstream_url,
+        execution_strategy,
+        conversion_mode,
+        report_kind: "openai_chat_stream_success".to_string(),
+        envelope_name: None,
+        transport: Arc::clone(transport),
+        request_redacted: false,
+        transport_profile: None,
+        image_request_summary: Some(image_request_summary),
+    }))
+}
+
+fn build_openai_image_provider_body_from_openai_chat_body(
+    body_json: &Value,
+    requested_model: &str,
+    upstream_is_stream: bool,
+) -> Option<(Value, Value)> {
+    let (prompt, images) = collect_openai_chat_image_prompt_and_images(body_json)?;
+    let operation = if images.is_empty() {
+        "generate"
+    } else {
+        "edit"
+    };
+    let mut image_options = serde_json::Map::new();
+    copy_openai_chat_image_option(body_json, &mut image_options, "size");
+    copy_openai_chat_image_option(body_json, &mut image_options, "quality");
+    copy_openai_chat_image_option(body_json, &mut image_options, "background");
+    copy_openai_chat_image_option(body_json, &mut image_options, "output_format");
+    copy_openai_chat_image_option(body_json, &mut image_options, "output_compression");
+    copy_openai_chat_image_option(body_json, &mut image_options, "moderation");
+    copy_openai_chat_image_option(body_json, &mut image_options, "input_fidelity");
+    copy_openai_chat_image_option(body_json, &mut image_options, "partial_images");
+
+    let input = if images.is_empty() {
+        serde_json::json!([{
+            "role": "user",
+            "content": prompt,
+        }])
+    } else {
+        let mut content = vec![serde_json::json!({
+            "type": "input_text",
+            "text": prompt,
+        })];
+        content.extend(images);
+        serde_json::json!([{
+            "role": "user",
+            "content": content,
+        }])
+    };
+
+    let mut body = serde_json::Map::new();
+    if let Some(model) = body_json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let requested_model = requested_model.trim();
+            (!requested_model.is_empty()).then_some(requested_model)
+        })
+    {
+        body.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    body.insert("input".to_string(), input);
+    if upstream_is_stream {
+        body.insert("stream".to_string(), Value::Bool(true));
+    }
+    if let Some(user) = body_json
+        .get("user")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body.insert("user".to_string(), Value::String(user.to_string()));
+    }
+
+    let mut summary = serde_json::Map::new();
+    summary.insert(
+        "operation".to_string(),
+        Value::String(operation.to_string()),
+    );
+    for key in ["output_format", "partial_images", "size", "quality"] {
+        if let Some(value) = image_options.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    Some((Value::Object(body), Value::Object(summary)))
+}
+
+fn build_chatgpt_web_image_provider_body_from_openai_chat_body(
+    body_json: &Value,
+    requested_model: &str,
+) -> Option<(Value, Value)> {
+    let (prompt, images) = collect_openai_chat_image_prompt_and_images(body_json)?;
+    let operation = if images.is_empty() {
+        "generate"
+    } else {
+        "edit"
+    };
+    let size = body_json
+        .get("size")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("1024x1024");
+    let output_format = body_json
+        .get("output_format")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("png");
+    let quality = body_json
+        .get("quality")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("medium");
+    let model = body_json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| requested_model.trim());
+    let web_model = body_json
+        .get("web_model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("gpt-5-5-thinking");
+    let image_urls = openai_image_inputs_as_urls(&images);
+
+    let body = json!({
+        "operation": operation,
+        "model": if model.is_empty() { "gpt-image-2" } else { model },
+        "web_model": web_model,
+        "prompt": prompt,
+        "size": size,
+        "ratio": chatgpt_web_ratio_for_size(size),
+        "output_format": output_format,
+        "images": image_urls,
+    });
+    let summary = json!({
+        "operation": operation,
+        "output_format": output_format,
+        "size": size,
+        "quality": quality,
+    });
+    Some((body, summary))
+}
+
+fn copy_openai_chat_image_option(
+    body_json: &Value,
+    image_options: &mut serde_json::Map<String, Value>,
+    key: &str,
+) {
+    if let Some(value) = body_json.get(key) {
+        image_options.insert(key.to_string(), value.clone());
+    }
+}
+
+fn collect_openai_chat_image_prompt_and_images(body_json: &Value) -> Option<(String, Vec<Value>)> {
+    let messages = body_json.get("messages").and_then(Value::as_array)?;
+    let mut prompt_parts = Vec::new();
+    let mut images = Vec::new();
+    for message in messages.iter().filter_map(Value::as_object) {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let content = message.get("content");
+        if matches!(role, "system" | "developer" | "user") {
+            if let Some(text) = crate::ai_serving::extract_openai_text_content(content)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            {
+                prompt_parts.push(text);
+            }
+        }
+        if role == "user" {
+            collect_openai_chat_image_inputs(content, &mut images);
+        }
+    }
+    let prompt = prompt_parts.join("\n").trim().to_string();
+    (!prompt.is_empty()).then_some((prompt, images))
+}
+
+fn collect_openai_chat_image_inputs(content: Option<&Value>, images: &mut Vec<Value>) {
+    let Some(parts) = content.and_then(Value::as_array) else {
+        return;
+    };
+    for part in parts.iter().filter_map(Value::as_object) {
+        let part_type = part
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if matches!(part_type, "image_url" | "input_image") {
+            if let Some(url) = part
+                .get("image_url")
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .or_else(|| value.get("url").and_then(Value::as_str))
+                })
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                images.push(serde_json::json!({
+                    "type": "input_image",
+                    "image_url": url,
+                }));
+            } else if let Some(file_id) = part
+                .get("file_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                images.push(serde_json::json!({
+                    "type": "input_image",
+                    "file_id": file_id,
+                }));
+            }
+        }
+    }
+}
+
+fn openai_image_inputs_as_urls(images: &[Value]) -> Vec<Value> {
+    images
+        .iter()
+        .filter_map(|image| {
+            image
+                .get("image_url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_string()))
+        })
+        .collect()
+}
+
+fn chatgpt_web_ratio_for_size(size: &str) -> String {
+    let Some((width, height)) = size.split_once('x') else {
+        return "1:1".to_string();
+    };
+    let Ok(width) = width.trim().parse::<u64>() else {
+        return "1:1".to_string();
+    };
+    let Ok(height) = height.trim().parse::<u64>() else {
+        return "1:1".to_string();
+    };
+    if width == 0 || height == 0 {
+        return "1:1".to_string();
+    }
+    let divisor = gcd(width, height);
+    format!("{}:{}", width / divisor, height / divisor)
+}
+
+fn gcd(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let next = left % right;
+        left = right;
+        right = next;
+    }
+    left.max(1)
+}
+
+fn chatgpt_web_image_internal_url(base_url: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    let base_url = if base_url.is_empty() {
+        "https://chatgpt.com"
+    } else {
+        base_url
+    };
+    format!("{base_url}/__aether/chatgpt-web-image")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -764,6 +1361,7 @@ async fn build_kiro_openai_chat_cross_format_payload_parts(
         ai_local_execution_contract_for_formats("openai:chat", provider_api_format);
 
     Some(LocalOpenAiChatCandidatePayloadParts {
+        client_api_format: "openai:chat".to_string(),
         auth_header,
         auth_value,
         mapped_model,
@@ -777,6 +1375,8 @@ async fn build_kiro_openai_chat_cross_format_payload_parts(
         envelope_name: Some(KIRO_ENVELOPE_NAME),
         transport: Arc::clone(transport),
         request_redacted,
+        transport_profile: None,
+        image_request_summary: None,
     })
 }
 
@@ -861,5 +1461,71 @@ fn redaction_mask_error_to_gateway_error(error: RedactionMaskError) -> GatewayEr
             status: limit.client_status(),
             message: limit.safe_message().to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_web_chat_image_bridge_body_uses_internal_web_shape() {
+        let body_json = json!({
+            "model": "gpt-image-2",
+            "messages": [
+                {"role": "system", "content": "Use crisp vector-like shapes."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Draw a glass city"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/ref.png"}}
+                    ]
+                }
+            ],
+            "size": "1536x1024",
+            "output_format": "webp",
+            "web_model": "gpt-5-image-test"
+        });
+
+        let (provider_body, summary) =
+            build_chatgpt_web_image_provider_body_from_openai_chat_body(&body_json, "gpt-image-2")
+                .expect("chat image body should convert");
+
+        assert_eq!(provider_body["operation"], "edit");
+        assert_eq!(provider_body["model"], "gpt-image-2");
+        assert_eq!(provider_body["web_model"], "gpt-5-image-test");
+        assert_eq!(
+            provider_body["prompt"],
+            "Use crisp vector-like shapes.\nDraw a glass city"
+        );
+        assert_eq!(provider_body["size"], "1536x1024");
+        assert_eq!(provider_body["ratio"], "3:2");
+        assert_eq!(provider_body["output_format"], "webp");
+        assert_eq!(provider_body["images"][0], "https://example.com/ref.png");
+        assert_eq!(summary["operation"], "edit");
+        assert_eq!(summary["output_format"], "webp");
+    }
+
+    #[test]
+    fn openai_chat_image_bridge_body_does_not_inject_tools() {
+        let body_json = json!({
+            "model": "gpt-image-2",
+            "messages": [
+                {"role": "user", "content": "Draw a glass city"}
+            ],
+            "size": "1024x1024",
+            "output_format": "png"
+        });
+
+        let (provider_body, summary) =
+            build_openai_image_provider_body_from_openai_chat_body(&body_json, "gpt-image-2", true)
+                .expect("chat image body should convert");
+
+        assert!(provider_body.get("tools").is_none());
+        assert_eq!(provider_body["model"], "gpt-image-2");
+        assert_eq!(provider_body["stream"], true);
+        assert_eq!(provider_body["input"][0]["content"], "Draw a glass city");
+        assert_eq!(summary["operation"], "generate");
+        assert_eq!(summary["output_format"], "png");
     }
 }

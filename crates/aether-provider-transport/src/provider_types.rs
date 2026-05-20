@@ -47,6 +47,7 @@ pub enum ProviderApiFormatInheritance {
     None,
     OAuth,
     OAuthOrBearer,
+    OAuthOrServiceAccount,
     OAuthOrConfiguredBearer,
 }
 
@@ -61,6 +62,9 @@ impl ProviderApiFormatInheritance {
             Self::None => false,
             Self::OAuth => auth_type == "oauth",
             Self::OAuthOrBearer => auth_type == "oauth" || auth_type == "bearer",
+            Self::OAuthOrServiceAccount => {
+                auth_type == "oauth" || auth_type == "service_account" || auth_type == "vertex_ai"
+            }
             Self::OAuthOrConfiguredBearer => {
                 auth_type == "oauth"
                     || auth_type == "bearer"
@@ -221,11 +225,12 @@ const GEMINI_CLI_RUNTIME_POLICY: ProviderRuntimePolicy = ProviderRuntimePolicy {
 };
 const VERTEX_AI_RUNTIME_POLICY: ProviderRuntimePolicy = ProviderRuntimePolicy {
     fixed_provider: true,
-    api_format_inheritance: ProviderApiFormatInheritance::OAuth,
+    api_format_inheritance: ProviderApiFormatInheritance::OAuthOrServiceAccount,
     enable_format_conversion_by_default: true,
     supports_model_fetch: false,
     supports_local_openai_chat_transport: false,
     supports_local_same_format_transport: false,
+    local_embedding_support: ProviderLocalEmbeddingSupport::Gemini,
     ..STANDARD_RUNTIME_POLICY
 };
 const ANTIGRAVITY_RUNTIME_POLICY: ProviderRuntimePolicy = ProviderRuntimePolicy {
@@ -233,6 +238,15 @@ const ANTIGRAVITY_RUNTIME_POLICY: ProviderRuntimePolicy = ProviderRuntimePolicy 
     api_format_inheritance: ProviderApiFormatInheritance::OAuth,
     enable_format_conversion_by_default: true,
     oauth_is_bearer_like: true,
+    supports_model_fetch: false,
+    supports_local_openai_chat_transport: false,
+    supports_local_same_format_transport: false,
+    ..STANDARD_RUNTIME_POLICY
+};
+const GROK_RUNTIME_POLICY: ProviderRuntimePolicy = ProviderRuntimePolicy {
+    fixed_provider: true,
+    api_format_inheritance: ProviderApiFormatInheritance::OAuth,
+    enable_format_conversion_by_default: true,
     supports_model_fetch: false,
     supports_local_openai_chat_transport: false,
     supports_local_same_format_transport: false,
@@ -330,6 +344,12 @@ const VERTEX_AI_FIXED_PROVIDER_TEMPLATE: FixedProviderTemplate = FixedProviderTe
             config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
         },
         FixedProviderEndpointTemplate {
+            item_key: "gemini:embedding",
+            api_format: "gemini:embedding",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
+        FixedProviderEndpointTemplate {
             item_key: "claude:messages",
             api_format: "claude:messages",
             custom_path: None,
@@ -350,6 +370,39 @@ const ANTIGRAVITY_FIXED_PROVIDER_TEMPLATE: FixedProviderTemplate = FixedProvider
         config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
     }],
     runtime_policy: ANTIGRAVITY_RUNTIME_POLICY,
+};
+
+const GROK_FIXED_PROVIDER_TEMPLATE: FixedProviderTemplate = FixedProviderTemplate {
+    provider_type: "grok",
+    version: 1,
+    base_url: "https://grok.com",
+    endpoints: &[
+        FixedProviderEndpointTemplate {
+            item_key: "openai:chat",
+            api_format: "openai:chat",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
+        FixedProviderEndpointTemplate {
+            item_key: "openai:responses",
+            api_format: "openai:responses",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
+        FixedProviderEndpointTemplate {
+            item_key: "claude:messages",
+            api_format: "claude:messages",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
+        FixedProviderEndpointTemplate {
+            item_key: "openai:image",
+            api_format: "openai:image",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
+    ],
+    runtime_policy: GROK_RUNTIME_POLICY,
 };
 
 pub fn provider_type_is_fixed(provider_type: &str) -> bool {
@@ -398,6 +451,7 @@ pub fn fixed_provider_template(provider_type: &str) -> Option<&'static FixedProv
         "codex" => Some(&CODEX_FIXED_PROVIDER_TEMPLATE),
         "chatgpt_web" => Some(&CHATGPT_WEB_FIXED_PROVIDER_TEMPLATE),
         "kiro" => Some(&KIRO_FIXED_PROVIDER_TEMPLATE),
+        "grok" => Some(&GROK_FIXED_PROVIDER_TEMPLATE),
         "gemini_cli" => Some(&GEMINI_CLI_FIXED_PROVIDER_TEMPLATE),
         "vertex_ai" => Some(&VERTEX_AI_FIXED_PROVIDER_TEMPLATE),
         "antigravity" => Some(&ANTIGRAVITY_FIXED_PROVIDER_TEMPLATE),
@@ -599,6 +653,29 @@ mod tests {
     }
 
     #[test]
+    fn grok_fixed_provider_template_exposes_chat_responses_messages_and_image() {
+        let template = fixed_provider_template("grok").expect("grok template should exist");
+        assert_eq!(template.base_url, "https://grok.com");
+        assert_eq!(template.version, 1);
+        assert_eq!(
+            template
+                .endpoints
+                .iter()
+                .map(|item| item.api_format)
+                .collect::<Vec<_>>(),
+            vec![
+                "openai:chat",
+                "openai:responses",
+                "claude:messages",
+                "openai:image"
+            ]
+        );
+        assert!(!template.runtime_policy.supports_model_fetch);
+        assert!(!template.runtime_policy.supports_local_openai_chat_transport);
+        assert!(!template.runtime_policy.supports_local_same_format_transport);
+    }
+
+    #[test]
     fn fixed_provider_key_inheritance_keeps_oauth_and_kiro_configured_bearer_keys_open() {
         assert!(fixed_provider_key_inherits_api_formats(
             "codex", "oauth", None
@@ -612,6 +689,11 @@ mod tests {
             "kiro",
             "bearer",
             Some("{}")
+        ));
+        assert!(fixed_provider_key_inherits_api_formats(
+            "vertex_ai",
+            "service_account",
+            None
         ));
         assert!(!fixed_provider_key_inherits_api_formats(
             "kiro", "bearer", None
@@ -681,6 +763,7 @@ mod tests {
             ("custom", "openai:embedding"),
             ("gemini", "gemini:embedding"),
             ("google", "gemini:embedding"),
+            ("vertex_ai", "gemini:embedding"),
             ("jina", "jina:embedding"),
             ("doubao", "doubao:embedding"),
             ("volcengine", "doubao:embedding"),
@@ -694,6 +777,7 @@ mod tests {
         for (provider_type, api_format) in [
             ("openai", "gemini:embedding"),
             ("gemini", "openai:embedding"),
+            ("vertex_ai", "openai:embedding"),
             ("jina", "doubao:embedding"),
             ("doubao", "jina:embedding"),
             ("claude_code", "openai:embedding"),
@@ -709,5 +793,29 @@ mod tests {
             " Google ",
             "GEMINI:EMBEDDING"
         ));
+    }
+
+    #[test]
+    fn vertex_fixed_provider_template_includes_gemini_embedding_endpoint() {
+        let template =
+            fixed_provider_template("vertex_ai").expect("vertex_ai template should exist");
+
+        assert_eq!(
+            template
+                .endpoints
+                .iter()
+                .map(|item| item.api_format)
+                .collect::<Vec<_>>(),
+            vec![
+                "gemini:generate_content",
+                "gemini:embedding",
+                "claude:messages",
+            ]
+        );
+
+        assert!(
+            fixed_provider_endpoint_template_by_api_format("vertex_ai", "gemini:embedding")
+                .is_some()
+        );
     }
 }

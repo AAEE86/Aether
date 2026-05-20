@@ -589,7 +589,7 @@ fn map_token_row(row: &PgRow) -> Result<StoredManagementToken, DataLayerError> {
         optional_unix_secs(row.try_get("expires_at_unix_secs").map_postgres_err()?),
         optional_unix_secs(row.try_get("last_used_at_unix_secs").map_postgres_err()?),
         row.try_get("last_used_ip").map_postgres_err()?,
-        u64::try_from(row.try_get::<i32, _>("usage_count").map_postgres_err()?).unwrap_or(0),
+        u64::try_from(row.try_get::<i64, _>("usage_count").map_postgres_err()?).unwrap_or(0),
         row.try_get("is_active").map_postgres_err()?,
     )
     .with_timestamps(

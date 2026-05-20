@@ -1,4 +1,5 @@
 use aether_data::{DataBackends, DataLayerError, DatabaseDriver};
+use aether_data_contracts::repository::candidate_selection::MinimalCandidateSelectionReadRepository;
 use aether_runtime_state::RuntimeQueueStore;
 use std::sync::Arc;
 
@@ -84,7 +85,17 @@ impl GatewayDataState {
         let gemini_file_mapping_reader = backends.read().gemini_file_mappings();
         let global_model_reader = backends.read().global_models();
         let global_model_writer = backends.write().global_models();
-        let minimal_candidate_selection_reader = backends.read().minimal_candidate_selection();
+        let minimal_candidate_selection_reader =
+            backends
+                .read()
+                .minimal_candidate_selection()
+                .map(|repository| {
+                    Arc::new(
+                        super::candidate_cache::CachedMinimalCandidateSelectionReadRepository::new(
+                            repository,
+                        ),
+                    ) as Arc<dyn MinimalCandidateSelectionReadRepository>
+                });
         let request_candidate_reader = backends.read().request_candidates();
         let request_candidate_writer = backends.write().request_candidates();
         let gemini_file_mapping_writer = backends.write().gemini_file_mappings();
@@ -259,6 +270,12 @@ impl GatewayDataState {
         self.minimal_candidate_selection_reader.is_some()
     }
 
+    pub(crate) fn clear_minimal_candidate_selection_cache(&self) {
+        if let Some(repository) = &self.minimal_candidate_selection_reader {
+            repository.clear_local_cache();
+        }
+    }
+
     pub(crate) fn has_request_candidate_reader(&self) -> bool {
         self.request_candidate_reader.is_some()
     }
@@ -327,6 +344,10 @@ impl GatewayDataState {
 
     pub(crate) fn has_usage_writer(&self) -> bool {
         self.usage_writer.is_some()
+    }
+
+    pub(crate) fn has_usage_counter_flush_backend(&self) -> bool {
+        self.has_usage_writer() && self.database_driver() == Some(DatabaseDriver::Postgres)
     }
 
     pub(crate) fn has_usage_worker_queue(&self) -> bool {

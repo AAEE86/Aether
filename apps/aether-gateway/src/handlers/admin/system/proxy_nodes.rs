@@ -380,7 +380,7 @@ pub(crate) async fn maybe_build_local_admin_proxy_nodes_response(
         };
         if !existing.tunnel_mode {
             return Ok(Some(bad_request_response(
-                "non-tunnel mode is no longer supported, please upgrade aether-proxy to use tunnel mode",
+                "non-tunnel mode is no longer supported, please upgrade aether-tunnel to use tunnel mode",
             )));
         }
         let Some(node) = state.apply_proxy_node_heartbeat(&mutation).await? else {
@@ -1049,7 +1049,7 @@ async fn test_proxy_node_connectivity(
             None,
             None,
             Some(
-                "non-tunnel mode is no longer supported, please upgrade aether-proxy to use tunnel mode"
+                "non-tunnel mode is no longer supported, please upgrade aether-tunnel to use tunnel mode"
                     .to_string(),
             ),
         );
@@ -1559,7 +1559,8 @@ fn admin_proxy_node_test_node_id_from_path(path: &str) -> Option<String> {
 fn normalize_proxy_upgrade_version(value: &str) -> String {
     value
         .trim()
-        .strip_prefix("proxy-v")
+        .strip_prefix("tunnel-v")
+        .or_else(|| value.trim().strip_prefix("proxy-v"))
         .unwrap_or(value.trim())
         .to_ascii_lowercase()
 }
@@ -2155,7 +2156,7 @@ async fn create_proxy_install_management_token(
         user,
         token_hash: hash_proxy_install_management_token(&raw_token),
         token_prefix: proxy_install_management_token_prefix(&raw_token),
-        name: format!("aether-proxy {node_name} {short_id}"),
+        name: format!("aether-tunnel {node_name} {short_id}"),
         description: Some("Created by proxy node one-click installer".to_string()),
         allowed_ips: None,
         permissions: Some(json!(["admin:proxy_nodes:write"])),

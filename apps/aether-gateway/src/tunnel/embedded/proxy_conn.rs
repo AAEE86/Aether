@@ -1,6 +1,6 @@
 /// Proxy-side WebSocket connection handler
 ///
-/// Handles the lifecycle of a single aether-proxy connection:
+/// Handles the lifecycle of a single aether-tunnel connection:
 /// accept -> authenticate (headers) -> read loop -> cleanup
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +23,7 @@ pub async fn handle_proxy_connection(
     node_id: String,
     node_name: String,
     max_streams: usize,
+    protocol_version: u8,
     cfg: ConnConfig,
 ) {
     let conn_id = hub.alloc_conn_id();
@@ -38,6 +39,7 @@ pub async fn handle_proxy_connection(
         tx,
         close_tx,
         max_streams,
+        protocol_version,
     ));
 
     hub.register_proxy(conn.clone());
@@ -55,12 +57,15 @@ pub async fn handle_proxy_connection(
                             Message::Binary(b) => b.len(),
                             _ => 0,
                         };
+                        let send_started_at = std::time::Instant::now();
                         let send_result = tokio::time::timeout(
                             Duration::from_secs(15),
                             ws_tx.send(msg),
                         ).await;
                         match send_result {
-                            Ok(Ok(())) => {}
+                            Ok(Ok(())) => {
+                                writer_conn.record_write_latency(send_started_at.elapsed());
+                            }
                             Ok(Err(e)) => {
                                 let snapshot = writer_conn.outbound.snapshot();
                                 warn!(

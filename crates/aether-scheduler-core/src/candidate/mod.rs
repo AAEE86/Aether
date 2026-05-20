@@ -442,6 +442,29 @@ mod tests {
     }
 
     #[test]
+    fn recent_failures_do_not_skip_without_persisted_circuit() {
+        let recent_candidates = vec![
+            stored_candidate("failed", RequestCandidateStatus::Failed, 95_000),
+            stored_candidate("cancelled", RequestCandidateStatus::Cancelled, 99_000),
+        ];
+
+        assert_eq!(
+            candidate_runtime_skip_reason_with_state(CandidateRuntimeSelectabilityInput {
+                candidate: &sample_candidate("1", None),
+                recent_candidates: &recent_candidates,
+                provider_concurrent_limits: &BTreeMap::new(),
+                provider_key_rpm_states: &BTreeMap::new(),
+                now_unix_secs: 100,
+                provider_quota_blocks_requests: false,
+                account_quota_exhausted: false,
+                oauth_invalid: false,
+                rpm_reset_at: None,
+            }),
+            None
+        );
+    }
+
+    #[test]
     fn provider_key_concurrency_limit_preserves_key_circuit_and_rpm_checks() {
         let mut circuit_open_key = sample_key_with_concurrent_limit("1", Some(2));
         circuit_open_key.circuit_breaker_by_format = Some(serde_json::json!({

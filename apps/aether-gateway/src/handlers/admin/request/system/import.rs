@@ -1197,7 +1197,7 @@ impl<'a> AdminAppState<'a> {
                                 Err(_) => {
                                     return Ok(Err(invalid_request(format!(
                                         "Provider '{provider_name}' 配置格式无效"
-                                    ))))
+                                    ))));
                                 }
                             };
                         let mut updated = invalid!(
@@ -1230,7 +1230,7 @@ impl<'a> AdminAppState<'a> {
                     Err(_) => {
                         return Ok(Err(invalid_request(format!(
                             "Provider '{provider_name}' 配置格式无效"
-                        ))))
+                        ))));
                     }
                 };
                 let (mut record, shift_existing_priorities_from) =
@@ -1301,7 +1301,7 @@ impl<'a> AdminAppState<'a> {
                                 Err(_) => {
                                     return Ok(Err(invalid_request(
                                         "Provider Endpoint 配置格式无效",
-                                    )))
+                                    )));
                                 }
                             };
                             let (fields, payload) = patch.into_parts();
@@ -1504,7 +1504,7 @@ impl<'a> AdminAppState<'a> {
                             ) {
                                 Ok(patch) => patch,
                                 Err(_) => {
-                                    return Ok(Err(invalid_request("Provider Key 配置格式无效")))
+                                    return Ok(Err(invalid_request("Provider Key 配置格式无效")));
                                 }
                             };
                             let mut updated = invalid!(
@@ -1885,6 +1885,7 @@ impl<'a> AdminAppState<'a> {
                         oauth_provider.extra_config,
                         "extra_config",
                     )),
+                    icon_url: None,
                     is_enabled: oauth_provider.is_enabled,
                 };
                 invalid!(record.validate().map_err(|err| err.to_string()));
@@ -1985,7 +1986,7 @@ impl<'a> AdminAppState<'a> {
             Err(_) => {
                 return Ok(Err(invalid_request(
                     "merge_mode 仅支持 skip / overwrite / error",
-                )))
+                )));
             }
         };
         let empty = Vec::new();

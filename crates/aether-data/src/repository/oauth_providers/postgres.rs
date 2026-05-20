@@ -22,6 +22,7 @@ SELECT
   frontend_callback_url,
   attribute_mapping,
   extra_config,
+  icon_url,
   is_enabled,
   EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_ms,
   EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_unix_secs
@@ -77,6 +78,7 @@ INSERT INTO oauth_providers (
   frontend_callback_url,
   attribute_mapping,
   extra_config,
+  icon_url,
   is_enabled,
   created_at,
   updated_at
@@ -99,6 +101,7 @@ VALUES (
   $12,
   $13,
   $14,
+  $15,
   NOW(),
   NOW()
 )
@@ -118,6 +121,7 @@ SET display_name = EXCLUDED.display_name,
     frontend_callback_url = EXCLUDED.frontend_callback_url,
     attribute_mapping = EXCLUDED.attribute_mapping,
     extra_config = EXCLUDED.extra_config,
+    icon_url = EXCLUDED.icon_url,
     is_enabled = EXCLUDED.is_enabled,
     updated_at = NOW()
 RETURNING
@@ -133,6 +137,7 @@ RETURNING
   frontend_callback_url,
   attribute_mapping,
   extra_config,
+  icon_url,
   is_enabled,
   EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_ms,
   EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_unix_secs
@@ -230,6 +235,7 @@ impl OAuthProviderWriteRepository for SqlxOAuthProviderRepository {
             .bind(&record.frontend_callback_url)
             .bind(record.attribute_mapping.as_ref())
             .bind(record.extra_config.as_ref())
+            .bind(record.icon_url.as_deref())
             .bind(record.is_enabled)
             .fetch_one(&self.pool)
             .await
@@ -330,6 +336,7 @@ fn map_oauth_provider_row(row: &PgRow) -> Result<StoredOAuthProviderConfig, Data
         parse_scopes(row.try_get("scopes").map_postgres_err()?)?,
         row.try_get("attribute_mapping").map_postgres_err()?,
         row.try_get("extra_config").map_postgres_err()?,
+        row.try_get("icon_url").map_postgres_err()?,
         row.try_get("is_enabled").map_postgres_err()?,
     )
     .with_timestamps(

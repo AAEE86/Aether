@@ -289,12 +289,12 @@ SELECT
   NULL::jsonb AS utilization_samples,
   NULL::bigint AS last_probe_increase_at_unix_secs,
   NULL::integer AS last_rpm_peak,
-  NULL::integer AS request_count,
+  NULL::bigint AS request_count,
   0::bigint AS total_tokens,
   0::double precision AS total_cost_usd,
-  NULL::integer AS success_count,
-  NULL::integer AS error_count,
-  NULL::integer AS total_response_time_ms,
+  NULL::bigint AS success_count,
+  NULL::bigint AS error_count,
+  NULL::bigint AS total_response_time_ms,
   NULL::bigint AS last_used_at_unix_secs,
   FALSE AS auto_fetch_models,
   NULL::bigint AS last_models_fetch_at_unix_secs,
@@ -1273,7 +1273,7 @@ INSERT INTO provider_api_keys (
                 .map(|value| value as f64),
         )
         .bind(key.last_rpm_peak.map(|value| value as i32))
-        .bind(key.request_count.map(|value| value as i32))
+        .bind(key.request_count.map(i64::from))
         .bind(Some(i64::try_from(key.total_tokens).map_err(|_| {
             DataLayerError::InvalidInput(format!(
                 "provider catalog key.total_tokens exceeds i64: {}",
@@ -1281,9 +1281,9 @@ INSERT INTO provider_api_keys (
             ))
         })?))
         .bind(key.total_cost_usd)
-        .bind(key.success_count.map(|value| value as i32))
-        .bind(key.error_count.map(|value| value as i32))
-        .bind(key.total_response_time_ms.map(|value| value as i32))
+        .bind(key.success_count.map(i64::from))
+        .bind(key.error_count.map(i64::from))
+        .bind(key.total_response_time_ms.map(i64::from))
         .bind(key.last_used_at_unix_secs.map(|value| value as f64))
         .bind(key.last_models_fetch_at_unix_secs.map(|value| value as f64))
         .bind(&key.last_models_fetch_error)
@@ -2293,7 +2293,7 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
             })
         })
         .transpose()?;
-    let request_count = row_get::<Option<i32>>(row, "request_count")?
+    let request_count = row_get::<Option<i64>>(row, "request_count")?
         .map(|value| {
             u32::try_from(value).map_err(|_| {
                 DataLayerError::UnexpectedValue(format!(
@@ -2314,7 +2314,7 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
             "invalid provider_api_keys.total_cost_usd".to_string(),
         ));
     }
-    let success_count = row_get::<Option<i32>>(row, "success_count")?
+    let success_count = row_get::<Option<i64>>(row, "success_count")?
         .map(|value| {
             u32::try_from(value).map_err(|_| {
                 DataLayerError::UnexpectedValue(format!(
@@ -2323,7 +2323,7 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
             })
         })
         .transpose()?;
-    let error_count = row_get::<Option<i32>>(row, "error_count")?
+    let error_count = row_get::<Option<i64>>(row, "error_count")?
         .map(|value| {
             u32::try_from(value).map_err(|_| {
                 DataLayerError::UnexpectedValue(format!(
@@ -2332,7 +2332,7 @@ fn map_key_row(row: &PgRow) -> Result<StoredProviderCatalogKey, DataLayerError> 
             })
         })
         .transpose()?;
-    let total_response_time_ms = row_get::<Option<i32>>(row, "total_response_time_ms")?
+    let total_response_time_ms = row_get::<Option<i64>>(row, "total_response_time_ms")?
         .map(|value| {
             u32::try_from(value).map_err(|_| {
                 DataLayerError::UnexpectedValue(format!(

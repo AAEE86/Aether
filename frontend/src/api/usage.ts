@@ -24,6 +24,11 @@ export interface UsageRecord {
   response_time?: number
   created_at: string
   has_fallback?: boolean // 🆕 是否发生了 fallback
+  client_family?: string | null
+  client_ip?: string | null
+  user_agent?: string | null
+  request_path?: string | null
+  request_path_and_query?: string | null
 }
 
 export interface UsageStats {
@@ -107,6 +112,7 @@ export interface UsageFilters {
   granularity?: 'hour' | 'day' | 'week' | 'month'
   timezone?: string
   tz_offset_minutes?: number
+  client_family?: string
   page?: number
   page_size?: number
 }

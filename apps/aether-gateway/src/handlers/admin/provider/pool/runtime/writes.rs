@@ -4,7 +4,8 @@ use super::keys::{
 };
 use crate::handlers::admin::provider::pool::config::admin_provider_pool_cache_affinity_enabled;
 use crate::handlers::admin::provider::shared::support::{
-    AdminProviderPoolConfig, AdminProviderPoolUnschedulableRule,
+    admin_provider_pool_quota_probe_active_members_key, AdminProviderPoolConfig,
+    AdminProviderPoolUnschedulableRule,
 };
 use aether_runtime_state::RuntimeState;
 use regex::Regex;
@@ -311,6 +312,27 @@ async fn set_pool_cooldown(
             std::time::Duration::from_secs(ttl_seconds.saturating_add(60)),
         )
         .await;
+    spawn_remove_pool_active_probe_member(runtime, provider_id, key_id);
+}
+
+fn spawn_remove_pool_active_probe_member(runtime: &RuntimeState, provider_id: &str, key_id: &str) {
+    let runtime = runtime.clone();
+    let provider_id = provider_id.to_string();
+    let key_id = key_id.to_string();
+    tokio::spawn(async move {
+        if let Err(err) = runtime
+            .set_remove(
+                &admin_provider_pool_quota_probe_active_members_key(&provider_id),
+                &key_id,
+            )
+            .await
+        {
+            warn!(
+                "gateway admin provider pool: failed to remove active probe member for provider {provider_id} key {key_id}: {:?}",
+                err
+            );
+        }
+    });
 }
 
 async fn invalidate_pool_oauth_cache(runtime: &RuntimeState, key_id: &str) {
@@ -423,10 +445,12 @@ pub(crate) async fn record_admin_provider_pool_error(
 
     if status_code == 401 {
         invalidate_pool_oauth_cache(runtime, key_id).await;
+        spawn_remove_pool_active_probe_member(runtime, provider_id, key_id);
         return;
     }
 
     if status_code == 402 {
+        spawn_remove_pool_active_probe_member(runtime, provider_id, key_id);
         return;
     }
 
@@ -435,6 +459,7 @@ pub(crate) async fn record_admin_provider_pool_error(
             .iter()
             .any(|pattern| error_message.contains(pattern))
         {
+            spawn_remove_pool_active_probe_member(runtime, provider_id, key_id);
             return;
         }
         set_pool_cooldown(
@@ -569,8 +594,8 @@ mod tests {
     };
     use crate::handlers::admin::provider::pool::runtime::reads::read_admin_provider_pool_runtime_state;
     use crate::handlers::admin::provider::shared::support::{
-        AdminProviderPoolConfig, AdminProviderPoolSchedulingPreset,
-        AdminProviderPoolUnschedulableRule,
+        admin_provider_pool_quota_probe_active_members_key, AdminProviderPoolConfig,
+        AdminProviderPoolSchedulingPreset, AdminProviderPoolUnschedulableRule,
     };
     use crate::AppState;
     use aether_runtime_state::{RedisClientConfig, RuntimeState, RuntimeStateConfig};
@@ -640,6 +665,24 @@ mod tests {
         AppState::new()
             .expect("app state should build")
             .with_runtime_state(std::sync::Arc::new(runtime_state))
+    }
+
+    async fn wait_for_active_probe_members_empty(runtime: &RuntimeState, set_key: &str) {
+        for _ in 0..20 {
+            let members = runtime
+                .set_members(set_key)
+                .await
+                .expect("active members should read");
+            if members.is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let members = runtime
+            .set_members(set_key)
+            .await
+            .expect("active members should read");
+        assert!(members.is_empty());
     }
 
     #[test]
@@ -908,6 +951,50 @@ mod tests {
             .cooldown_ttl_by_key
             .get("key-2")
             .is_some_and(|ttl| *ttl <= 120 && *ttl >= 100));
+    }
+
+    #[tokio::test]
+    async fn error_feedback_removes_active_probe_member_when_key_becomes_unschedulable() {
+        let Some(redis) = start_managed_redis_or_skip().await else {
+            return;
+        };
+        let app = build_runner_app(redis.redis_url(), "pool_runtime_evict_active_probe").await;
+        let runtime = app.runtime_state.as_ref();
+        let pool_config = sample_pool_config();
+        let set_key = admin_provider_pool_quota_probe_active_members_key("provider-1");
+        runtime
+            .set_add(&set_key, "key-2")
+            .await
+            .expect("active member should insert");
+
+        record_admin_provider_pool_error(
+            runtime,
+            "provider-1",
+            "key-2",
+            &pool_config,
+            429,
+            Some(r#"{"error":{"message":"rate limited"}}"#),
+            None,
+        )
+        .await;
+
+        wait_for_active_probe_members_empty(runtime, &set_key).await;
+
+        runtime
+            .set_add(&set_key, "key-402")
+            .await
+            .expect("active member should insert");
+        record_admin_provider_pool_error(
+            runtime,
+            "provider-1",
+            "key-402",
+            &pool_config,
+            402,
+            Some(r#"{"error":{"message":"quota exhausted"}}"#),
+            None,
+        )
+        .await;
+        wait_for_active_probe_members_empty(runtime, &set_key).await;
     }
 
     #[tokio::test]

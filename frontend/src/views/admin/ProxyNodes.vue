@@ -524,7 +524,7 @@
     <Dialog
       :model-value="showAddDialog"
       :title="editingNode ? '编辑代理节点' : '添加代理节点'"
-      :description="editingNode ? '修改手动代理节点的配置' : '推荐使用一键脚本部署 aether-proxy，也可手动添加已有 HTTP/SOCKS 代理'"
+      :description="editingNode ? '修改手动代理节点的配置' : '推荐使用一键脚本部署 aether-tunnel，也可手动添加已有 HTTP/SOCKS 代理'"
       :icon="editingNode ? SquarePen : Plus"
       size="lg"
       @update:model-value="handleDialogClose"
@@ -733,11 +733,11 @@
       </template>
     </Dialog>
 
-    <!-- 远程配置对话框 (aether-proxy 节点) -->
+    <!-- 远程配置对话框 (aether-tunnel 节点) -->
     <Dialog
       :model-value="showConfigDialog"
       title="远程配置"
-      description="修改后将在下次心跳时自动下发到 aether-proxy 节点"
+      description="修改后将在下次心跳时自动下发到 aether-tunnel 节点"
       :icon="Settings"
       size="md"
       @update:model-value="handleConfigDialogClose"
@@ -1053,7 +1053,7 @@ const proxyInstallHint = computed(() => {
   return `这条命令将在 ${Math.floor(proxyInstallSession.value.expires_in_seconds / 60)} 分钟内有效，成功使用后立即失效。`
 })
 
-// 远程配置对话框 (aether-proxy 节点)
+// 远程配置对话框 (aether-tunnel 节点)
 const showConfigDialog = ref(false)
 const savingConfig = ref(false)
 const configNode = ref<ProxyNode | null>(null)

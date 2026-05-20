@@ -28,7 +28,7 @@ const ANTIGRAVITY_DAILY_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.
 const ANTIGRAVITY_PROD_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_BLOCKED_MODELS: &[&str] = &["chat_23310", "chat_20706"];
 const VERTEX_API_BASE_URL: &str = "https://aiplatform.googleapis.com";
-const VERTEX_MODEL_GARDEN_LIST_API_VERSION: &str = "v1beta1";
+const VERTEX_MODEL_GARDEN_API_VERSION: &str = "v1beta1";
 const VERTEX_PAGE_SIZE: &str = "100";
 const VERTEX_MAX_PAGES: usize = 20;
 const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -465,8 +465,6 @@ async fn fetch_vertex_service_account_models(
         });
     };
     let token = exchange_vertex_service_account_token(runtime, &transports[0], auth_config).await?;
-    let project_id = json_string(auth_config.get("project_id"))
-        .ok_or_else(|| "vertex_ai(service_account): missing project_id".to_string())?;
     let gemini_transport =
         select_transport_for_api_format(transports, "gemini:").unwrap_or(&transports[0]);
     let claude_transport =
@@ -477,18 +475,12 @@ async fn fetch_vertex_service_account_models(
     let mut soft_errors = Vec::new();
     let mut has_success = false;
 
-    for region in vertex_regions(auth_config) {
-        let base = if region == "global" {
-            VERTEX_API_BASE_URL.to_string()
-        } else {
-            format!("https://{region}-aiplatform.googleapis.com")
-        };
+    for base in iter_vertex_base_urls(transports) {
         for (publisher, transport, api_format) in [
             ("google", gemini_transport, "gemini:generate_content"),
             ("anthropic", claude_transport, "claude:messages"),
         ] {
-            let url =
-                build_vertex_service_account_list_url(&base, &project_id, &region, publisher, None);
+            let url = build_vertex_service_account_list_url(&base, publisher, None);
             let outcome = fetch_vertex_models_from_url(
                 runtime,
                 transport,
@@ -930,7 +922,7 @@ fn iter_vertex_base_urls(transports: &[GatewayProviderTransportSnapshot]) -> Vec
 }
 
 fn build_vertex_google_list_url(base_url: &str, api_key: &str, page_token: Option<&str>) -> String {
-    let url = build_vertex_model_garden_list_url(base_url, "google");
+    let url = build_vertex_publisher_models_list_base_url(base_url, "google");
     let mut url = append_query_param(url, "key", api_key);
     url = append_query_param(url, "pageSize", VERTEX_PAGE_SIZE);
     if let Some(page_token) = page_token {
@@ -941,12 +933,10 @@ fn build_vertex_google_list_url(base_url: &str, api_key: &str, page_token: Optio
 
 fn build_vertex_service_account_list_url(
     base_url: &str,
-    _project_id: &str,
-    _region: &str,
     publisher: &str,
     page_token: Option<&str>,
 ) -> String {
-    let mut url = build_vertex_model_garden_list_url(base_url, publisher);
+    let mut url = build_vertex_publisher_models_list_base_url(base_url, publisher);
     url = append_query_param(url, "pageSize", VERTEX_PAGE_SIZE);
     if let Some(page_token) = page_token {
         url = append_query_param(url, "pageToken", page_token);
@@ -954,18 +944,19 @@ fn build_vertex_service_account_list_url(
     url
 }
 
-fn build_vertex_model_garden_list_url(base_url: &str, publisher: &str) -> String {
-    let trimmed_base = base_url.trim().trim_end_matches('/');
-    let unversioned_base = trimmed_base
-        .strip_suffix("/v1beta1")
-        .or_else(|| trimmed_base.strip_suffix("/v1"))
-        .unwrap_or(trimmed_base);
-    let path = format!("/{VERTEX_MODEL_GARDEN_LIST_API_VERSION}/publishers/{publisher}/models");
-    build_simple_path_url(unversioned_base, &path)
+fn build_vertex_publisher_models_list_base_url(base_url: &str, publisher: &str) -> String {
+    let path = format!("/{VERTEX_MODEL_GARDEN_API_VERSION}/publishers/{publisher}/models");
+    build_vertex_model_garden_path_url(base_url, &path)
 }
 
-fn build_simple_path_url(base_url: &str, path: &str) -> String {
-    format!("{}{}", base_url.trim().trim_end_matches('/'), path.trim())
+fn build_vertex_model_garden_path_url(base_url: &str, path: &str) -> String {
+    let base = base_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/v1beta1")
+        .trim_end_matches("/v1beta")
+        .trim_end_matches("/v1");
+    format!("{}{}", base, path.trim())
 }
 
 fn parse_vertex_models_payload(
@@ -1087,38 +1078,6 @@ fn vertex_effective_format(model_id: &str, auth_config: Option<&Value>) -> Strin
     } else {
         "gemini:generate_content".to_string()
     }
-}
-
-fn vertex_regions(auth_config: &Value) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut regions = Vec::new();
-    let auth_config = auth_config.as_object();
-
-    let mut push_region = |region: Option<&str>| {
-        let Some(region) = region.map(str::trim).filter(|value| !value.is_empty()) else {
-            return;
-        };
-        if seen.insert(region.to_string()) {
-            regions.push(region.to_string());
-        }
-    };
-
-    push_region(
-        auth_config
-            .and_then(|value| value.get("region"))
-            .and_then(Value::as_str),
-    );
-    if let Some(model_regions) = auth_config
-        .and_then(|value| value.get("model_regions"))
-        .and_then(Value::as_object)
-    {
-        for value in model_regions.values() {
-            push_region(value.as_str());
-        }
-    }
-    push_region(Some("global"));
-    push_region(Some("us-central1"));
-    regions
 }
 
 fn is_soft_not_found(error: &str) -> bool {
@@ -1316,6 +1275,7 @@ mod tests {
     struct TestRuntime {
         executed_urls: Arc<Mutex<Vec<String>>>,
         response_body: Value,
+        status_code: u16,
     }
 
     #[async_trait]
@@ -1346,7 +1306,7 @@ mod tests {
             Ok(ExecutionResult {
                 request_id: plan.request_id.clone(),
                 candidate_id: plan.candidate_id.clone(),
-                status_code: 200,
+                status_code: self.status_code,
                 headers: BTreeMap::new(),
                 body: Some(ResponseBody {
                     json_body: Some(self.response_body.clone()),
@@ -1494,6 +1454,7 @@ mod tests {
                     "name": "publishers/google/models/gemini-3.1-pro-preview"
                 }]
             }),
+            status_code: 200,
         };
         let outcome =
             fetch_models_from_transports(&runtime, &[sample_custom_aiplatform_transport()])
@@ -1517,7 +1478,7 @@ mod tests {
     fn vertex_model_fetch_uses_model_garden_list_endpoint() {
         assert_eq!(
             build_vertex_google_list_url(
-                "https://aiplatform.googleapis.com/v1",
+                "https://aiplatform.googleapis.com",
                 "vertex-secret",
                 None,
             ),
@@ -1526,12 +1487,56 @@ mod tests {
         assert_eq!(
             build_vertex_service_account_list_url(
                 "https://aiplatform.googleapis.com",
-                "project-1",
-                "global",
                 "google",
                 Some("page-2"),
             ),
             "https://aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100&pageToken=page-2"
+        );
+    }
+
+    #[test]
+    fn vertex_publisher_models_list_url_uses_model_garden_resource_not_runtime_resource() {
+        let url = super::build_vertex_service_account_list_url(
+            "https://aiplatform.googleapis.com",
+            "google",
+            None,
+        );
+
+        assert_eq!(
+            url,
+            "https://aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100"
+        );
+        assert!(
+            !url.contains("/projects/") && !url.contains("/locations/"),
+            "Model Garden publisher list must not use Vertex runtime project/location path"
+        );
+    }
+
+    #[test]
+    fn vertex_service_account_fetches_model_garden_publishers_without_project_prefix() {
+        assert_eq!(
+            super::build_vertex_service_account_list_url(
+                "https://us-central1-aiplatform.googleapis.com",
+                "google",
+                None
+            ),
+            "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100"
+        );
+        assert_eq!(
+            super::build_vertex_service_account_list_url(
+                "https://aiplatform.googleapis.com/v1",
+                "anthropic",
+                Some("next")
+            ),
+            "https://aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&pageToken=next"
+        );
+        assert_eq!(
+            super::build_vertex_google_list_url(
+                "https://aiplatform.googleapis.com/v1beta1",
+                "vertex-secret",
+                Some("next")
+            ),
+            "https://aiplatform.googleapis.com/v1beta1/publishers/google/models?key=vertex-secret&pageSize=100&pageToken=next"
         );
     }
 
@@ -1545,6 +1550,7 @@ mod tests {
                     "id": "gpt-5.4-upstream"
                 }]
             }),
+            status_code: 200,
         };
         let outcome = fetch_models_from_transports(&runtime, &[sample_codex_transport()])
             .await
@@ -1585,6 +1591,7 @@ mod tests {
                     }
                 ]
             }),
+            status_code: 200,
         };
         let outcome = fetch_models_from_transports(&runtime, &[sample_kiro_transport()])
             .await

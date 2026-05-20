@@ -7,8 +7,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use aether_contracts::{
-    ExecutionPlan, ExecutionStreamTerminalSummary, ExecutionTelemetry, StreamFrame,
-    StreamFramePayload,
+    ExecutionPlan, ExecutionStreamTerminalSummary, ExecutionTelemetry, StandardizedUsage,
+    StreamFrame, StreamFramePayload,
 };
 use aether_data_contracts::repository::candidates::RequestCandidateStatus;
 use aether_data_contracts::repository::usage::UsageBodyCaptureState;
@@ -60,6 +60,14 @@ use crate::constants::{CONTROL_CANDIDATE_ID_HEADER, CONTROL_REQUEST_ID_HEADER};
 use crate::control::GatewayControlDecision;
 use crate::execution_runtime::build_direct_execution_frame_stream;
 use crate::execution_runtime::chatgpt_web_image::maybe_execute_chatgpt_web_image_stream;
+use crate::execution_runtime::grok::maybe_execute_grok_stream;
+use crate::execution_runtime::kiro_cache::{
+    billed_input_tokens as kiro_billed_input_tokens, build_kiro_prompt_cache_profile,
+    estimate_kiro_prompt_input_tokens, kiro_prompt_cache_tracker,
+    kiro_simulated_cache_enabled_from_provider_config,
+    kiro_simulated_cache_enabled_from_report_context, KiroPromptCacheUsage,
+    KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
+};
 use crate::execution_runtime::kiro_web_search::maybe_execute_kiro_web_search_stream;
 use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry;
 #[cfg(test)]
@@ -310,6 +318,268 @@ fn build_stream_usage_payload(
     }
 }
 
+fn seed_kiro_report_context_input_tokens(plan: &ExecutionPlan, report_context: &mut Option<Value>) {
+    if !plan
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
+    {
+        return;
+    }
+
+    let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    if context
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .is_some_and(|input_tokens| input_tokens > 0)
+    {
+        return;
+    }
+
+    let Some(original_request_body) = context.get("original_request_body").cloned() else {
+        return;
+    };
+    let estimated_input_tokens = estimate_kiro_prompt_input_tokens(&original_request_body);
+    context.insert(
+        "input_tokens".to_string(),
+        Value::from(estimated_input_tokens),
+    );
+}
+
+async fn seed_kiro_simulated_cache_enabled(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: &mut Option<Value>,
+) {
+    if !plan
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
+    {
+        return;
+    }
+
+    let enabled = match state
+        .read_provider_catalog_providers_by_ids(std::slice::from_ref(&plan.provider_id))
+        .await
+    {
+        Ok(providers) => providers
+            .iter()
+            .find(|provider| provider.id == plan.provider_id)
+            .filter(|provider| provider.provider_type.eq_ignore_ascii_case("kiro"))
+            .is_some_and(|provider| {
+                kiro_simulated_cache_enabled_from_provider_config(provider.config.as_ref())
+            }),
+        Err(err) => {
+            warn!(
+                event_name = "kiro_simulated_cache_config_read_failed",
+                log_type = "event",
+                request_id = %plan.request_id,
+                provider_id = %plan.provider_id,
+                error = ?err,
+                "failed to read Kiro simulated cache provider config; defaulting disabled"
+            );
+            false
+        }
+    };
+
+    let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    if enabled {
+        context.insert(
+            KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD.to_string(),
+            Value::Bool(true),
+        );
+    } else {
+        context.remove(KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD);
+    }
+}
+
+fn seed_kiro_report_context_prompt_cache_usage(
+    plan: &ExecutionPlan,
+    report_context: &mut Option<Value>,
+) {
+    if !plan
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
+    {
+        return;
+    }
+
+    let simulated_cache_enabled =
+        kiro_simulated_cache_enabled_from_report_context(report_context.as_ref());
+    let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    if context
+        .get("kiro_web_search_mcp")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if !simulated_cache_enabled {
+        return;
+    }
+    if kiro_cache_usage_from_context_object(context).is_some() {
+        return;
+    }
+
+    let Some(original_request_body) = context.get("original_request_body").cloned() else {
+        return;
+    };
+    let input_tokens = context
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            let estimated = estimate_kiro_prompt_input_tokens(&original_request_body);
+            context.insert("input_tokens".to_string(), Value::from(estimated));
+            estimated
+        });
+    let Some(profile) = build_kiro_prompt_cache_profile(&original_request_body, input_tokens)
+    else {
+        return;
+    };
+
+    let cache_usage = kiro_prompt_cache_tracker()
+        .compute_and_update(kiro_stream_cache_credential_id(plan), &profile);
+    if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
+        return;
+    }
+    context.insert(
+        "cache_creation_input_tokens".to_string(),
+        Value::from(cache_usage.cache_creation_input_tokens),
+    );
+    context.insert(
+        "cache_read_input_tokens".to_string(),
+        Value::from(cache_usage.cache_read_input_tokens),
+    );
+}
+
+fn kiro_stream_cache_credential_id(plan: &ExecutionPlan) -> String {
+    format!("{}:{}:{}", plan.provider_id, plan.endpoint_id, plan.key_id)
+}
+
+fn kiro_cache_usage_from_context_object(
+    context: &serde_json::Map<String, Value>,
+) -> Option<KiroPromptCacheUsage> {
+    let cache_creation_input_tokens = context
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_read_input_tokens = context
+        .get("cache_read_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    (cache_creation_input_tokens > 0 || cache_read_input_tokens > 0).then_some(
+        KiroPromptCacheUsage {
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        },
+    )
+}
+
+fn kiro_cache_usage_from_report_context(report_context: &Value) -> Option<KiroPromptCacheUsage> {
+    report_context
+        .as_object()
+        .and_then(kiro_cache_usage_from_context_object)
+}
+
+fn maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+    summary: &mut Option<ExecutionStreamTerminalSummary>,
+) {
+    if !plan
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
+    {
+        return;
+    }
+
+    let Some(report_context) = report_context else {
+        return;
+    };
+    let Some(original_request_body) = report_context.get("original_request_body") else {
+        return;
+    };
+    let simulated_cache_enabled =
+        kiro_simulated_cache_enabled_from_report_context(Some(report_context));
+
+    let summary = summary.get_or_insert_with(ExecutionStreamTerminalSummary::default);
+    let usage = summary
+        .standardized_usage
+        .get_or_insert_with(StandardizedUsage::new);
+    let estimated_input_tokens = report_context
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            let estimated_input_tokens = estimate_kiro_prompt_input_tokens(original_request_body);
+            if estimated_input_tokens > 0 {
+                estimated_input_tokens
+            } else {
+                usage.input_tokens.max(0) as u64
+            }
+        });
+
+    if !simulated_cache_enabled {
+        usage.cache_creation_tokens = 0;
+        usage.cache_read_tokens = 0;
+        if usage.input_tokens <= 0 {
+            usage.input_tokens = estimated_input_tokens as i64;
+        }
+        return;
+    }
+
+    if let Some(cache_usage) = kiro_cache_usage_from_report_context(report_context) {
+        usage.input_tokens = kiro_billed_input_tokens(estimated_input_tokens, cache_usage) as i64;
+        usage.cache_creation_tokens = cache_usage.cache_creation_input_tokens as i64;
+        usage.cache_read_tokens = cache_usage.cache_read_input_tokens as i64;
+        return;
+    }
+
+    if usage.cache_creation_tokens > 0 || usage.cache_read_tokens > 0 {
+        if usage.input_tokens <= 0 {
+            usage.input_tokens = kiro_billed_input_tokens(
+                estimated_input_tokens,
+                KiroPromptCacheUsage {
+                    cache_creation_input_tokens: usage.cache_creation_tokens.max(0) as u64,
+                    cache_read_input_tokens: usage.cache_read_tokens.max(0) as u64,
+                },
+            ) as i64;
+        }
+        return;
+    }
+
+    if usage.input_tokens <= 0 {
+        usage.input_tokens = estimated_input_tokens as i64;
+    }
+
+    let Some(profile) =
+        build_kiro_prompt_cache_profile(original_request_body, estimated_input_tokens)
+    else {
+        return;
+    };
+
+    let cache_usage = kiro_prompt_cache_tracker()
+        .compute_and_update(kiro_stream_cache_credential_id(plan), &profile);
+    if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
+        return;
+    }
+
+    let billed_input_tokens = kiro_billed_input_tokens(estimated_input_tokens, cache_usage);
+    usage.input_tokens = billed_input_tokens as i64;
+    usage.cache_creation_tokens = cache_usage.cache_creation_input_tokens as i64;
+    usage.cache_read_tokens = cache_usage.cache_read_input_tokens as i64;
+}
+
 fn append_stream_capture_bytes(
     buffer: &mut Vec<u8>,
     chunk: &[u8],
@@ -479,6 +749,7 @@ pub(crate) async fn execute_execution_runtime_stream(
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let stream_started_at = Instant::now();
     ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
+    seed_kiro_report_context_input_tokens(&plan, &mut report_context);
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
     let request_candidate_status_snapshot =
         snapshot_local_request_candidate_status(&plan, report_context.as_ref());
@@ -525,6 +796,58 @@ pub(crate) async fn execute_execution_runtime_stream(
         key_id.as_str(),
     )
     .await;
+    match maybe_execute_grok_stream(&plan, report_context.as_ref()).await {
+        Ok(Some(grok_stream)) => {
+            return execute_stream_from_frame_stream(
+                state,
+                plan,
+                trace_id,
+                decision,
+                plan_kind,
+                report_kind,
+                grok_stream.report_context.or(report_context),
+                candidate_started_unix_secs,
+                stream_started_at,
+                grok_stream.frame_stream,
+                provider_pool_in_flight_guard.take(),
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            info!(
+                event_name = "grok_execution_unavailable",
+                log_type = "ops",
+                trace_id = %trace_id,
+                request_id = %plan_request_id_for_log,
+                candidate_id = ?plan.candidate_id,
+                provider_name = provider_name.as_str(),
+                endpoint_id = %endpoint_id,
+                key_id = %key_id,
+                model_name = model_name.as_str(),
+                candidate_index = candidate_index.as_str(),
+                error = %err,
+                "gateway Grok stream execution unavailable"
+            );
+            let terminal_unix_secs = current_request_candidate_unix_ms();
+            record_local_request_candidate_status(
+                state,
+                &plan,
+                report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Failed,
+                    status_code: None,
+                    error_type: Some("grok_execution_unavailable".to_string()),
+                    error_message: Some(format!("{err:?}")),
+                    latency_ms: None,
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
+                    finished_at_unix_ms: Some(terminal_unix_secs),
+                },
+            )
+            .await;
+            return Ok(None);
+        }
+    }
     match maybe_execute_kiro_web_search_stream(state, &plan, report_context.as_ref()).await {
         Ok(Some(kiro_web_search)) => {
             return execute_stream_from_frame_stream(
@@ -991,6 +1314,12 @@ fn build_sse_body_stream(
     }
 }
 
+fn stream_chunk_contains_sse_done(chunk: &[u8]) -> bool {
+    std::str::from_utf8(chunk)
+        .ok()
+        .is_some_and(|text| text.lines().any(|line| line.trim() == "data: [DONE]"))
+}
+
 async fn next_stream_frame<R>(
     buffered_frames: &mut VecDeque<StreamFrame>,
     lines: &mut FramedRead<R, LinesCodec>,
@@ -1033,6 +1362,33 @@ fn should_refresh_stream_usage_telemetry(
 
     (next_ttfb.is_some() && next_ttfb != previous_ttfb)
         || (next_elapsed.is_some() && next_elapsed != previous_elapsed)
+}
+
+fn build_terminal_stream_telemetry(
+    stream_started_at: Instant,
+    telemetry: Option<&ExecutionTelemetry>,
+    usage_stream_telemetry: Option<&ExecutionTelemetry>,
+    upstream_bytes: u64,
+) -> ExecutionTelemetry {
+    let current_elapsed_ms = stream_started_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let ttfb_ms = telemetry
+        .and_then(|telemetry| telemetry.ttfb_ms)
+        .or_else(|| usage_stream_telemetry.and_then(|telemetry| telemetry.ttfb_ms));
+    let prior_elapsed_ms = telemetry
+        .and_then(|telemetry| telemetry.elapsed_ms)
+        .or_else(|| usage_stream_telemetry.and_then(|telemetry| telemetry.elapsed_ms))
+        .unwrap_or(0);
+    let elapsed_ms = current_elapsed_ms
+        .max(prior_elapsed_ms)
+        .max(ttfb_ms.unwrap_or(0));
+    ExecutionTelemetry {
+        ttfb_ms,
+        elapsed_ms: Some(elapsed_ms),
+        upstream_bytes: Some(upstream_bytes),
+    }
 }
 
 fn should_skip_direct_finalize_prefetch(
@@ -1152,8 +1508,13 @@ async fn execute_stream_from_frame_stream(
             "execution runtime stream must start with headers frame".to_string(),
         ));
     };
-    let report_context =
+    let mut report_context =
         attach_provider_response_headers_to_report_context(report_context, &headers);
+    seed_kiro_report_context_input_tokens(&plan, &mut report_context);
+    if status_code == 200 {
+        seed_kiro_simulated_cache_enabled(state, &plan, &mut report_context).await;
+        seed_kiro_report_context_prompt_cache_usage(&plan, &mut report_context);
+    }
     let mut buffered_frames = VecDeque::new();
     let mut stream_terminal_summary: Option<ExecutionStreamTerminalSummary> = None;
     if status_code == 200 && should_probe_success_failover_before_stream(&headers) {
@@ -1999,6 +2360,8 @@ async fn execute_stream_from_frame_stream(
             max_stream_body_buffer_bytes,
             &mut client_body_truncated,
         );
+        let mut client_visible_stream_completed =
+            stream_chunk_contains_sse_done(&prefetched_body_for_report);
         let mut usage_stream_telemetry: Option<ExecutionTelemetry> = initial_telemetry.clone();
         let mut telemetry: Option<ExecutionTelemetry> = initial_telemetry;
         let reached_eof = initial_reached_eof;
@@ -2425,6 +2788,8 @@ async fn execute_stream_from_frame_stream(
                         );
                         let rewritten_chunk_len =
                             u64::try_from(rewritten_chunk.len()).unwrap_or(u64::MAX);
+                        let chunk_completed_stream =
+                            stream_chunk_contains_sse_done(&rewritten_chunk);
                         if tx.send(Ok(Bytes::from(rewritten_chunk))).await.is_err() {
                             warn!(
                                 event_name = "stream_execution_downstream_disconnected",
@@ -2437,6 +2802,7 @@ async fn execute_stream_from_frame_stream(
                             downstream_dropped = true;
                             break;
                         } else {
+                            client_visible_stream_completed |= chunk_completed_stream;
                             client_stream_bytes.fetch_add(rewritten_chunk_len, Ordering::Relaxed);
                             last_client_chunk_elapsed_ms.store(
                                 stream_started_at_for_report
@@ -2551,6 +2917,8 @@ async fn execute_stream_from_frame_stream(
                             );
                             let rewritten_chunk_len =
                                 u64::try_from(rewritten_chunk.len()).unwrap_or(u64::MAX);
+                            let chunk_completed_stream =
+                                stream_chunk_contains_sse_done(&rewritten_chunk);
                             if tx.send(Ok(Bytes::from(rewritten_chunk))).await.is_err() {
                                 warn!(
                                     event_name = "stream_execution_downstream_flush_disconnected",
@@ -2562,6 +2930,7 @@ async fn execute_stream_from_frame_stream(
                                 );
                                 downstream_dropped = true;
                             } else {
+                                client_visible_stream_completed |= chunk_completed_stream;
                                 client_stream_bytes
                                     .fetch_add(rewritten_chunk_len, Ordering::Relaxed);
                                 last_client_chunk_elapsed_ms.store(
@@ -2608,6 +2977,8 @@ async fn execute_stream_from_frame_stream(
                             );
                             let flushed_chunk_len =
                                 u64::try_from(flushed_chunk.len()).unwrap_or(u64::MAX);
+                            let chunk_completed_stream =
+                                stream_chunk_contains_sse_done(&flushed_chunk);
                             if tx.send(Ok(Bytes::from(flushed_chunk))).await.is_err() {
                                 warn!(
                                     event_name = "stream_execution_downstream_rewrite_flush_disconnected",
@@ -2619,6 +2990,7 @@ async fn execute_stream_from_frame_stream(
                                 );
                                 downstream_dropped = true;
                             } else {
+                                client_visible_stream_completed |= chunk_completed_stream;
                                 client_stream_bytes.fetch_add(flushed_chunk_len, Ordering::Relaxed);
                                 last_client_chunk_elapsed_ms.store(
                                     stream_started_at_for_report
@@ -2728,6 +3100,18 @@ async fn execute_stream_from_frame_stream(
             ),
         );
 
+        if downstream_dropped && client_visible_stream_completed && terminal_failure.is_none() {
+            debug!(
+                event_name = "execution_runtime_stream_downstream_closed_after_done",
+                log_type = "debug",
+                trace_id = %trace_id_owned,
+                request_id = %request_id_for_report_log,
+                candidate_id = ?candidate_id_for_report.as_deref(),
+                "gateway treats downstream close after client-visible SSE DONE as completed"
+            );
+            downstream_dropped = false;
+        }
+
         if downstream_dropped {
             debug!(
                 event_name = "execution_runtime_stream_report_skipped",
@@ -2738,6 +3122,12 @@ async fn execute_stream_from_frame_stream(
                 trace_id = %trace_id_owned,
                 "gateway skipped stream report because downstream disconnected before completion"
             );
+            let terminal_telemetry = Some(build_terminal_stream_telemetry(
+                stream_started_at_for_report,
+                telemetry.as_ref(),
+                usage_stream_telemetry.as_ref(),
+                provider_stream_bytes.load(Ordering::Relaxed),
+            ));
             let usage_payload = build_stream_usage_payload(
                 trace_id_owned,
                 report_kind_owned.unwrap_or_default(),
@@ -2749,7 +3139,7 @@ async fn execute_stream_from_frame_stream(
                 &buffered_body,
                 client_body_truncated,
                 stream_terminal_summary,
-                telemetry,
+                terminal_telemetry,
             );
             record_stream_terminal_usage(
                 &state_for_report,
@@ -2781,6 +3171,12 @@ async fn execute_stream_from_frame_stream(
 
         if let Some(failure) = terminal_failure {
             record_manual_proxy_stream_error(&state_for_report, &plan_for_report).await;
+            let terminal_telemetry = Some(build_terminal_stream_telemetry(
+                stream_started_at_for_report,
+                telemetry.as_ref(),
+                usage_stream_telemetry.as_ref(),
+                provider_stream_bytes.load(Ordering::Relaxed),
+            ));
             submit_midstream_stream_failure(
                 &state_for_report,
                 &trace_id_owned,
@@ -2788,7 +3184,7 @@ async fn execute_stream_from_frame_stream(
                 direct_stream_finalize_kind_owned.as_deref(),
                 report_context_owned,
                 headers_for_report,
-                telemetry,
+                terminal_telemetry,
                 &provider_buffered_body,
                 candidate_started_unix_secs_for_report,
                 failure,
@@ -2797,7 +3193,19 @@ async fn execute_stream_from_frame_stream(
             return;
         }
 
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan_for_report,
+            report_context_owned.as_ref(),
+            &mut stream_terminal_summary,
+        );
+
         let should_submit_report = report_kind_owned.is_some();
+        let terminal_telemetry = Some(build_terminal_stream_telemetry(
+            stream_started_at_for_report,
+            telemetry.as_ref(),
+            usage_stream_telemetry.as_ref(),
+            provider_stream_bytes.load(Ordering::Relaxed),
+        ));
         let usage_payload = build_stream_usage_payload(
             trace_id_owned.clone(),
             report_kind_owned.unwrap_or_default(),
@@ -2809,7 +3217,7 @@ async fn execute_stream_from_frame_stream(
             &buffered_body,
             client_body_truncated,
             stream_terminal_summary,
-            telemetry,
+            terminal_telemetry,
         );
         apply_local_execution_effect(
             &state_for_report,
@@ -2954,8 +3362,9 @@ mod tests {
 
     use super::{
         build_sse_body_stream, execute_execution_runtime_stream, execute_stream_from_frame_stream,
-        merge_stream_terminal_summary, should_limit_direct_finalize_prefetch,
-        should_probe_success_failover_before_stream, should_skip_direct_finalize_prefetch,
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary, merge_stream_terminal_summary,
+        should_limit_direct_finalize_prefetch, should_probe_success_failover_before_stream,
+        should_skip_direct_finalize_prefetch,
     };
     use crate::control::GatewayControlDecision;
     use crate::tunnel::{tunnel_protocol, TunnelProxyConn};
@@ -3017,6 +3426,592 @@ mod tests {
         assert_eq!(merged.response_id.as_deref(), Some("resp_123"));
         assert!(merged.observed_finish);
         assert_eq!(merged.unknown_event_count, 3);
+    }
+
+    #[test]
+    fn kiro_stream_summary_applies_prompt_cache_usage_from_original_request() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "cacheable system ".repeat(600),
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "cacheable prompt ".repeat(1200),
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
+            ]
+        });
+        let report_context = json!({
+            "original_request_body": request_body,
+            "kiro_simulated_cache_enabled": true,
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-cache-stream".into(),
+            candidate_id: Some("cand-kiro-cache-stream".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-cache-stream".into(),
+            endpoint_id: "endpoint-kiro-cache-stream".into(),
+            key_id: "key-kiro-cache-stream".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+
+        let mut first_summary = Some(ExecutionStreamTerminalSummary {
+            standardized_usage: Some(StandardizedUsage {
+                input_tokens: 6_000,
+                output_tokens: 17,
+                ..StandardizedUsage::new()
+            }),
+            ..ExecutionStreamTerminalSummary::default()
+        });
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan,
+            Some(&report_context),
+            &mut first_summary,
+        );
+        let first_usage = first_summary
+            .as_ref()
+            .and_then(|summary| summary.standardized_usage.as_ref())
+            .expect("first usage should exist");
+        assert!(first_usage.cache_creation_tokens > 0);
+        assert_eq!(first_usage.cache_read_tokens, 0);
+
+        let mut second_summary = Some(ExecutionStreamTerminalSummary {
+            standardized_usage: Some(StandardizedUsage {
+                input_tokens: 6_000,
+                output_tokens: 19,
+                ..StandardizedUsage::new()
+            }),
+            ..ExecutionStreamTerminalSummary::default()
+        });
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan,
+            Some(&report_context),
+            &mut second_summary,
+        );
+        let second_usage = second_summary
+            .as_ref()
+            .and_then(|summary| summary.standardized_usage.as_ref())
+            .expect("second usage should exist");
+        assert!(second_usage.cache_read_tokens > 0);
+        assert_eq!(second_usage.cache_creation_tokens, 0);
+        assert!(second_usage.input_tokens < 6_000);
+        assert_eq!(second_usage.output_tokens, 19);
+    }
+
+    #[test]
+    fn kiro_stream_summary_seeds_input_tokens_without_cache_control() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "non cacheable system ".repeat(400)
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "non cacheable prompt ".repeat(800)
+                        }
+                    ]
+                }
+            ]
+        });
+        let report_context = json!({
+            "original_request_body": request_body,
+            "kiro_simulated_cache_enabled": true,
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-non-cache".into(),
+            candidate_id: Some("cand-kiro-non-cache".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-non-cache".into(),
+            endpoint_id: "endpoint-kiro-non-cache".into(),
+            key_id: "key-kiro-non-cache".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+
+        let mut summary = Some(ExecutionStreamTerminalSummary {
+            standardized_usage: Some(StandardizedUsage {
+                input_tokens: 0,
+                output_tokens: 13,
+                ..StandardizedUsage::new()
+            }),
+            ..ExecutionStreamTerminalSummary::default()
+        });
+
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan,
+            Some(&report_context),
+            &mut summary,
+        );
+
+        let usage = summary
+            .as_ref()
+            .and_then(|summary| summary.standardized_usage.as_ref())
+            .expect("usage should exist");
+
+        assert!(usage.input_tokens > 0);
+        assert_eq!(usage.cache_creation_tokens, 0);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.output_tokens, 13);
+    }
+
+    #[test]
+    fn kiro_stream_summary_bills_existing_cache_usage_when_input_is_zero() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "cached system ".repeat(800)
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "cached prompt ".repeat(1400)
+                        }
+                    ]
+                }
+            ]
+        });
+        let report_context = json!({
+            "original_request_body": request_body,
+            "kiro_simulated_cache_enabled": true,
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-existing-cache".into(),
+            candidate_id: Some("cand-kiro-existing-cache".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-existing-cache".into(),
+            endpoint_id: "endpoint-kiro-existing-cache".into(),
+            key_id: "key-kiro-existing-cache".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+
+        let mut summary = Some(ExecutionStreamTerminalSummary {
+            standardized_usage: Some(StandardizedUsage {
+                input_tokens: 0,
+                output_tokens: 23,
+                cache_read_tokens: 200,
+                ..StandardizedUsage::new()
+            }),
+            ..ExecutionStreamTerminalSummary::default()
+        });
+
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan,
+            Some(&report_context),
+            &mut summary,
+        );
+
+        let usage = summary
+            .as_ref()
+            .and_then(|summary| summary.standardized_usage.as_ref())
+            .expect("usage should exist");
+
+        assert!(usage.input_tokens > 0);
+        assert_eq!(usage.cache_read_tokens, 200);
+        assert_eq!(usage.cache_creation_tokens, 0);
+        assert_eq!(usage.output_tokens, 23);
+    }
+
+    #[test]
+    fn kiro_stream_summary_clears_cache_usage_when_simulated_cache_disabled() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "disabled cache summary system ".repeat(800),
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "disabled cache summary prompt ".repeat(1400),
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
+            ]
+        });
+        let report_context = json!({
+            "original_request_body": request_body,
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-summary-cache-disabled".into(),
+            candidate_id: Some("cand-kiro-summary-cache-disabled".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-summary-cache-disabled".into(),
+            endpoint_id: "endpoint-kiro-summary-cache-disabled".into(),
+            key_id: "key-kiro-summary-cache-disabled".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+
+        let mut summary = Some(ExecutionStreamTerminalSummary {
+            standardized_usage: Some(StandardizedUsage {
+                input_tokens: 0,
+                output_tokens: 23,
+                cache_creation_tokens: 500,
+                cache_read_tokens: 700,
+                ..StandardizedUsage::new()
+            }),
+            ..ExecutionStreamTerminalSummary::default()
+        });
+
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan,
+            Some(&report_context),
+            &mut summary,
+        );
+
+        let usage = summary
+            .as_ref()
+            .and_then(|summary| summary.standardized_usage.as_ref())
+            .expect("usage should exist");
+
+        assert!(usage.input_tokens > 0);
+        assert_eq!(usage.cache_creation_tokens, 0);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.output_tokens, 23);
+    }
+
+    #[test]
+    fn kiro_stream_summary_does_not_subtract_cache_from_already_billed_input() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "cached history ".repeat(400),
+                            "cache_control": {"type": "ephemeral"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "new user turn"
+                        }
+                    ]
+                }
+            ]
+        });
+        let report_context = json!({
+            "original_request_body": request_body,
+            "input_tokens": 24_770,
+            "cache_creation_input_tokens": 175,
+            "cache_read_input_tokens": 24_463,
+            "kiro_simulated_cache_enabled": true
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-billed-input".into(),
+            candidate_id: Some("cand-kiro-billed-input".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-billed-input".into(),
+            endpoint_id: "endpoint-kiro-billed-input".into(),
+            key_id: "key-kiro-billed-input".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+
+        let mut summary = Some(ExecutionStreamTerminalSummary {
+            standardized_usage: Some(StandardizedUsage {
+                input_tokens: 132,
+                output_tokens: 167,
+                cache_creation_tokens: 175,
+                cache_read_tokens: 24_463,
+                ..StandardizedUsage::new()
+            }),
+            ..ExecutionStreamTerminalSummary::default()
+        });
+
+        maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
+            &plan,
+            Some(&report_context),
+            &mut summary,
+        );
+
+        let usage = summary
+            .as_ref()
+            .and_then(|summary| summary.standardized_usage.as_ref())
+            .expect("usage should exist");
+
+        assert_eq!(usage.input_tokens, 132);
+        assert_eq!(usage.cache_creation_tokens, 175);
+        assert_eq!(usage.cache_read_tokens, 24_463);
+        assert_eq!(usage.output_tokens, 167);
+    }
+
+    #[tokio::test]
+    async fn kiro_report_context_seeds_input_tokens_from_original_request_body() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "seeded system ".repeat(600)
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "seeded prompt ".repeat(1200)
+                        }
+                    ]
+                }
+            ]
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-seed".into(),
+            candidate_id: Some("cand-kiro-seed".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-seed".into(),
+            endpoint_id: "endpoint-kiro-seed".into(),
+            key_id: "key-kiro-seed".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let mut report_context = Some(json!({
+            "original_request_body": request_body,
+            "kiro_simulated_cache_enabled": true,
+        }));
+
+        super::seed_kiro_report_context_input_tokens(&plan, &mut report_context);
+
+        let input_tokens = report_context
+            .as_ref()
+            .and_then(|context| context.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .expect("kiro input tokens should be seeded");
+        assert!(input_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn kiro_report_context_seeds_prompt_cache_usage_before_stream_rewrite() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "cache seed system ".repeat(600),
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "cache seed prompt ".repeat(1200),
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
+            ]
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-cache-seed".into(),
+            candidate_id: Some("cand-kiro-cache-seed".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-cache-seed".into(),
+            endpoint_id: "endpoint-kiro-cache-seed".into(),
+            key_id: "key-kiro-cache-seed".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let mut report_context = Some(json!({
+            "original_request_body": request_body,
+            "kiro_simulated_cache_enabled": true,
+        }));
+
+        super::seed_kiro_report_context_input_tokens(&plan, &mut report_context);
+        super::seed_kiro_report_context_prompt_cache_usage(&plan, &mut report_context);
+
+        let context = report_context.as_ref().expect("context should exist");
+        assert!(context
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0));
+        assert!(context
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0));
+        assert_eq!(
+            context
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn kiro_report_context_skips_prompt_cache_usage_when_disabled() {
+        let request_body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "disabled cache system ".repeat(600),
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "disabled cache prompt ".repeat(1200),
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
+            ]
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-kiro-cache-disabled".into(),
+            candidate_id: Some("cand-kiro-cache-disabled".into()),
+            provider_name: Some("Kiro".into()),
+            provider_id: "provider-kiro-cache-disabled".into(),
+            endpoint_id: "endpoint-kiro-cache-disabled".into(),
+            key_id: "key-kiro-cache-disabled".into(),
+            method: "POST".into(),
+            url: "https://q.us-east-1.amazonaws.com/generateAssistantResponse?beta=true".into(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"conversationState": {}})),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "claude:messages".into(),
+            model_name: Some("claude-opus-4-7".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let mut report_context = Some(json!({
+            "original_request_body": request_body,
+        }));
+
+        super::seed_kiro_report_context_input_tokens(&plan, &mut report_context);
+        super::seed_kiro_report_context_prompt_cache_usage(&plan, &mut report_context);
+
+        let context = report_context.as_ref().expect("context should exist");
+        assert!(context
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0));
+        assert_eq!(context.get("cache_creation_input_tokens"), None);
+        assert_eq!(context.get("cache_read_input_tokens"), None);
     }
 
     #[test]
@@ -3312,6 +4307,7 @@ mod tests {
         .await
         .expect("first business chunk should arrive");
         assert_eq!(first.as_ref(), b"data: {\"id\":\"first\"}\n\n");
+        tokio::time::sleep(Duration::from_millis(30)).await;
         drop(body_stream);
 
         tokio::time::timeout(Duration::from_secs(1), frame_stream_dropped.notified())
@@ -3339,6 +4335,172 @@ mod tests {
             candidates[0].error_type.as_deref(),
             Some("downstream_disconnect")
         );
+
+        let stored_usage = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let usage = usage_repository
+                    .find_by_request_id("req-client-drop-cancels-upstream")
+                    .await
+                    .expect("usage should read");
+                if usage
+                    .as_ref()
+                    .is_some_and(|usage| usage.status == "cancelled")
+                {
+                    break usage.expect("cancelled usage should exist");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("usage should be marked cancelled");
+        assert_eq!(stored_usage.billing_status, "pending");
+        assert_eq!(stored_usage.status_code, Some(499));
+        let first_byte_time_ms = stored_usage
+            .first_byte_time_ms
+            .expect("cancelled stream should retain first byte time");
+        let response_time_ms = stored_usage
+            .response_time_ms
+            .expect("cancelled stream should record terminal duration");
+        assert!(
+            response_time_ms > first_byte_time_ms,
+            "terminal duration should include time after the first byte"
+        );
+    }
+
+    #[tokio::test]
+    async fn image_stream_downstream_close_after_done_is_recorded_success() {
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                    Arc::clone(&request_candidate_repository),
+                    Arc::clone(&usage_repository),
+                ),
+            )
+            .with_usage_runtime_for_tests(UsageRuntimeConfig {
+                enabled: true,
+                ..UsageRuntimeConfig::default()
+            });
+        let plan = ExecutionPlan {
+            request_id: "req-image-done-close-success".into(),
+            candidate_id: Some("cand-image-done-close-success".into()),
+            provider_name: Some("openai".into()),
+            provider_id: "prov-1".into(),
+            endpoint_id: "ep-1".into(),
+            key_id: "key-1".into(),
+            method: "POST".into(),
+            url: "https://example.com/v1/images/generations".into(),
+            headers: BTreeMap::from([("accept".into(), "text/event-stream".into())]),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({
+                "model": "gpt-image-2",
+                "prompt": "draw a small image",
+                "stream": true
+            })),
+            stream: true,
+            client_api_format: "openai:chat".into(),
+            provider_api_format: "openai:image".into(),
+            model_name: Some("gpt-image-2".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let frame_stream = stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}}\n",
+            ));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"{\"type\":\"data\",\"payload\":{\"kind\":\"data\",\"text\":\"event: response.output_item.done\\ndata: {\\\"type\\\":\\\"response.output_item.done\\\",\\\"output_index\\\":0,\\\"item\\\":{\\\"id\\\":\\\"ig_1\\\",\\\"type\\\":\\\"image_generation_call\\\",\\\"result\\\":\\\"aGVsbG8=\\\"}}\\n\\nevent: response.completed\\ndata: {\\\"type\\\":\\\"response.completed\\\",\\\"response\\\":{\\\"id\\\":\\\"resp_1\\\",\\\"model\\\":\\\"gpt-image-2\\\",\\\"status\\\":\\\"completed\\\",\\\"usage\\\":null}}\\n\\n\"}}\n",
+            ));
+            std::future::pending::<()>().await;
+        }
+        .boxed();
+
+        let response = execute_stream_from_frame_stream(
+            &state,
+            plan,
+            "trace-image-done-close-success",
+            &test_decision(),
+            "openai_chat_stream",
+            Some("openai_chat_stream_success".to_string()),
+            Some(json!({
+                "request_id": "req-image-done-close-success",
+                "candidate_id": "cand-image-done-close-success",
+                "candidate_index": 0,
+                "retry_index": 0,
+                "provider_api_format": "openai:image",
+                "client_api_format": "openai:chat",
+                "image_request": {
+                    "size": "1024x1024",
+                    "quality": "medium"
+                }
+            })),
+            crate::clock::current_unix_ms(),
+            Instant::now(),
+            frame_stream,
+            None,
+        )
+        .await
+        .expect("execution should succeed")
+        .expect("execution should return a client response");
+
+        let mut body_stream = response.into_body().into_data_stream();
+        let mut body = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !String::from_utf8_lossy(&body).contains("data: [DONE]") {
+                let chunk = body_stream
+                    .next()
+                    .await
+                    .expect("body should yield until done")
+                    .expect("chunk should be ok");
+                body.extend_from_slice(&chunk);
+            }
+        })
+        .await
+        .expect("final DONE should arrive");
+        drop(body_stream);
+
+        let candidates = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let candidates = request_candidate_repository
+                    .list_by_request_id("req-image-done-close-success")
+                    .await
+                    .expect("request candidates should read");
+                if candidates
+                    .first()
+                    .is_some_and(|candidate| candidate.status == RequestCandidateStatus::Success)
+                {
+                    break candidates;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("candidate should be marked success");
+        assert_eq!(candidates[0].status_code, Some(200));
+
+        let stored_usage = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let usage = usage_repository
+                    .find_by_request_id("req-image-done-close-success")
+                    .await
+                    .expect("usage should read");
+                if usage
+                    .as_ref()
+                    .is_some_and(|usage| usage.status == "completed")
+                {
+                    break usage.expect("completed usage should exist");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("usage should be marked completed");
+        assert_eq!(stored_usage.status_code, Some(200));
+        assert!(stored_usage.total_tokens > 0);
     }
 
     #[tokio::test]
@@ -3935,6 +5097,7 @@ mod tests {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         )));
 
         let plan = ExecutionPlan {
@@ -4064,6 +5227,7 @@ mod tests {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         )));
 
         let plan = ExecutionPlan {

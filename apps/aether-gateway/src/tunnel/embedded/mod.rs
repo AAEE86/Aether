@@ -211,6 +211,7 @@ pub async fn ws_proxy(
         .to_string();
 
     let max_streams = resolve_proxy_max_streams(&headers, state.max_streams);
+    let protocol_version = resolve_proxy_protocol_version(&headers);
 
     if node_id.is_empty() {
         warn!("proxy connection rejected: missing X-Node-ID header");
@@ -251,6 +252,7 @@ pub async fn ws_proxy(
                     node_id,
                     node_name,
                     max_streams,
+                    protocol_version,
                     state.proxy_conn_cfg,
                 )
                 .await
@@ -268,11 +270,20 @@ fn resolve_proxy_max_streams(headers: &HeaderMap, fallback: usize) -> usize {
         .clamp(1, 2048)
 }
 
+fn resolve_proxy_protocol_version(headers: &HeaderMap) -> u8 {
+    headers
+        .get(aether_contracts::tunnel::TUNNEL_PROTOCOL_VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|value| *value >= 1)
+        .unwrap_or(1)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::resolve_proxy_max_streams;
+    use super::{resolve_proxy_max_streams, resolve_proxy_protocol_version};
 
     #[test]
     fn proxy_max_streams_honors_small_advertised_capacity() {
@@ -288,5 +299,22 @@ mod tests {
         headers.insert("x-tunnel-max-streams", HeaderValue::from_static("9999"));
 
         assert_eq!(resolve_proxy_max_streams(&headers, 128), 2048);
+    }
+
+    #[test]
+    fn proxy_protocol_version_defaults_to_v1_when_header_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(resolve_proxy_protocol_version(&headers), 1);
+    }
+
+    #[test]
+    fn proxy_protocol_version_reads_advertised_version() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            aether_contracts::tunnel::TUNNEL_PROTOCOL_VERSION_HEADER,
+            HeaderValue::from_static("2"),
+        );
+
+        assert_eq!(resolve_proxy_protocol_version(&headers), 2);
     }
 }

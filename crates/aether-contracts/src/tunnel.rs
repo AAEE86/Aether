@@ -8,6 +8,9 @@ use flate2::Compression;
 pub const HEADER_SIZE: usize = 10;
 pub const TUNNEL_RELAY_FORWARDED_BY_HEADER: &str = "x-aether-tunnel-forwarded-by";
 pub const TUNNEL_RELAY_OWNER_INSTANCE_HEADER: &str = "x-aether-tunnel-owner-instance-id";
+pub const TUNNEL_PROTOCOL_VERSION_HEADER: &str = "x-aether-tunnel-protocol-version";
+pub const CURRENT_TUNNEL_PROTOCOL_VERSION: u8 = 2;
+pub const CURRENT_TUNNEL_PROTOCOL_VERSION_STR: &str = "2";
 
 pub mod flags {
     pub const END_STREAM: u8 = 0x01;
@@ -304,6 +307,10 @@ pub fn compress_payload(data: Bytes) -> (Bytes, u8) {
     (data, 0)
 }
 
+pub fn raw_payload(data: Bytes) -> (Bytes, u8) {
+    (data, 0)
+}
+
 const COMPRESS_MIN_SIZE: usize = 512;
 
 fn decompress_gzip(data: &[u8]) -> Result<Bytes, std::io::Error> {
@@ -324,7 +331,12 @@ fn compress_gzip(data: &[u8]) -> Result<Bytes, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_ping, Frame, FrameHeader, MsgType, RequestMeta, FLAG_GZIP_COMPRESSED};
+    use super::{
+        compress_payload, decode_payload, encode_frame, encode_ping, raw_payload, Frame,
+        FrameHeader, MsgType, RequestMeta, CURRENT_TUNNEL_PROTOCOL_VERSION,
+        CURRENT_TUNNEL_PROTOCOL_VERSION_STR, FLAG_GZIP_COMPRESSED, REQUEST_HEADERS,
+        TUNNEL_PROTOCOL_VERSION_HEADER,
+    };
     use bytes::Bytes;
 
     #[test]
@@ -357,5 +369,36 @@ mod tests {
         let header = FrameHeader::parse(&encoded).expect("ping header should parse");
         assert_eq!(header.msg_type, MsgType::Ping as u8);
         assert_eq!(header.flags & FLAG_GZIP_COMPRESSED, 0);
+    }
+
+    #[test]
+    fn raw_payload_never_compresses_body_frames() {
+        let body = Bytes::from(vec![b'a'; 4 * 1024]);
+        let (payload, flags) = raw_payload(body.clone());
+
+        assert_eq!(payload, body);
+        assert_eq!(flags & FLAG_GZIP_COMPRESSED, 0);
+    }
+
+    #[test]
+    fn compress_payload_remains_available_for_control_payloads() {
+        let control_payload = Bytes::from(vec![b'a'; 4 * 1024]);
+        let (payload, flags) = compress_payload(control_payload.clone());
+        assert_ne!(flags & FLAG_GZIP_COMPRESSED, 0);
+
+        let encoded = encode_frame(1, REQUEST_HEADERS, flags, &payload);
+        let header = FrameHeader::parse(&encoded).expect("frame should parse");
+        let decoded = decode_payload(&encoded, &header).expect("payload should decode");
+        assert_eq!(decoded, control_payload.to_vec());
+    }
+
+    #[test]
+    fn tunnel_protocol_version_header_defaults_to_v2() {
+        assert_eq!(
+            TUNNEL_PROTOCOL_VERSION_HEADER,
+            "x-aether-tunnel-protocol-version"
+        );
+        assert_eq!(CURRENT_TUNNEL_PROTOCOL_VERSION, 2);
+        assert_eq!(CURRENT_TUNNEL_PROTOCOL_VERSION_STR, "2");
     }
 }

@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS provider_api_keys (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS provider_api_keys_provider_id_idx ON provider_api_keys (provider_id);
+CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_default_sort ON provider_api_keys (provider_id, internal_priority, name, id);
 
 CREATE TABLE IF NOT EXISTS pool_member_scores (
     id TEXT PRIMARY KEY NOT NULL,
@@ -278,6 +279,7 @@ CREATE TABLE IF NOT EXISTS video_tasks (
 );
 CREATE INDEX IF NOT EXISTS video_tasks_external_id_idx ON video_tasks (external_task_id);
 CREATE INDEX IF NOT EXISTS video_tasks_next_poll_idx ON video_tasks (next_poll_at);
+CREATE INDEX IF NOT EXISTS video_tasks_due_poll_idx ON video_tasks (status, next_poll_at, updated_at);
 CREATE INDEX IF NOT EXISTS video_tasks_user_status_idx ON video_tasks (user_id, status);
 CREATE INDEX IF NOT EXISTS video_tasks_api_key_id_idx ON video_tasks (api_key_id);
 CREATE INDEX IF NOT EXISTS video_tasks_provider_id_idx ON video_tasks (provider_id);

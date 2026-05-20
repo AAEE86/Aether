@@ -755,7 +755,7 @@ WHERE is_manual = 0
         };
         if !node.tunnel_mode {
             return Err(DataLayerError::InvalidInput(
-                "non-tunnel mode is no longer supported, please upgrade aether-proxy to use tunnel mode"
+                "non-tunnel mode is no longer supported, please upgrade aether-tunnel to use tunnel mode"
                     .to_string(),
             ));
         }

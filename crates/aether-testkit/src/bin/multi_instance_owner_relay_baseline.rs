@@ -285,6 +285,12 @@ async fn connect_protocol_peer(
         .headers_mut()
         .insert("x-node-id", http::HeaderValue::from_static(NODE_ID));
     request.headers_mut().insert(
+        aether_contracts::tunnel::TUNNEL_PROTOCOL_VERSION_HEADER,
+        http::HeaderValue::from_static(
+            aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION_STR,
+        ),
+    );
+    request.headers_mut().insert(
         "x-node-name",
         http::HeaderValue::from_static("proxy-owner-relay-baseline"),
     );

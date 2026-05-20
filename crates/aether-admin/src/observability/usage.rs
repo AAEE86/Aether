@@ -1059,6 +1059,71 @@ fn admin_usage_upstream_is_stream(item: &StoredRequestUsageAudit) -> bool {
         .unwrap_or(item.is_stream)
 }
 
+fn admin_usage_metadata_string<'a>(
+    item: &'a StoredRequestUsageAudit,
+    key: &str,
+) -> Option<&'a str> {
+    item.request_metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn infer_client_family_from_user_agent(user_agent: &str) -> Option<&'static str> {
+    let normalized = user_agent.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.starts_with("codex_vscode") {
+        return Some("codex_vscode");
+    }
+    if normalized.starts_with("codex") {
+        return Some("codex");
+    }
+    if normalized.contains("claude-code") || normalized.contains("claude_code") {
+        return Some("claude_code");
+    }
+    if normalized.contains("opencode") {
+        return Some("opencode");
+    }
+    if normalized.contains("geminicli") || normalized.contains("gemini-cli") {
+        return Some("gemini_cli");
+    }
+    if normalized.starts_with("openai/js") {
+        return Some("openai_js_sdk");
+    }
+    None
+}
+
+pub fn admin_usage_client_family(item: &StoredRequestUsageAudit) -> Option<&str> {
+    item.client_family
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            item.request_metadata
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|metadata| {
+                    metadata
+                        .get("client_session_affinity")
+                        .and_then(Value::as_object)
+                        .and_then(|affinity| affinity.get("client_family"))
+                        .and_then(Value::as_str)
+                        .or_else(|| metadata.get("client_family").and_then(Value::as_str))
+                })
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            admin_usage_metadata_string(item, "user_agent")
+                .and_then(infer_client_family_from_user_agent)
+        })
+}
+
 fn admin_usage_active_request_json(
     item: &StoredRequestUsageAudit,
     api_key_name: Option<String>,
@@ -1091,6 +1156,11 @@ fn admin_usage_active_request_json(
         "upstream_is_stream": upstream_is_stream,
         "client_requested_stream": client_is_stream,
         "client_is_stream": client_is_stream,
+        "client_family": admin_usage_client_family(item),
+        "client_ip": admin_usage_metadata_string(item, "client_ip"),
+        "user_agent": admin_usage_metadata_string(item, "user_agent"),
+        "request_path": admin_usage_metadata_string(item, "request_path"),
+        "request_path_and_query": admin_usage_metadata_string(item, "request_path_and_query"),
         "has_fallback": admin_usage_has_fallback(item),
     });
     if let Some(api_format) = item.api_format.as_ref() {
@@ -1192,6 +1262,27 @@ pub fn admin_usage_record_json(
         json!(client_is_stream),
     );
     object.insert("client_is_stream".to_string(), json!(client_is_stream));
+    maybe_insert_string_field(object, "client_family", admin_usage_client_family(item));
+    maybe_insert_string_field(
+        object,
+        "client_ip",
+        admin_usage_metadata_string(item, "client_ip"),
+    );
+    maybe_insert_string_field(
+        object,
+        "user_agent",
+        admin_usage_metadata_string(item, "user_agent"),
+    );
+    maybe_insert_string_field(
+        object,
+        "request_path",
+        admin_usage_metadata_string(item, "request_path"),
+    );
+    maybe_insert_string_field(
+        object,
+        "request_path_and_query",
+        admin_usage_metadata_string(item, "request_path_and_query"),
+    );
     payload
 }
 
@@ -2441,6 +2532,74 @@ mod tests {
         assert_eq!(record["upstream_is_stream"], true);
         assert_eq!(record["client_requested_stream"], false);
         assert_eq!(record["client_is_stream"], false);
+    }
+
+    #[test]
+    fn admin_usage_record_infers_client_family_from_user_agent() {
+        let item = StoredRequestUsageAudit {
+            request_metadata: Some(json!({
+                "client_ip": "192.168.0.28",
+                "user_agent": "codex_vscode/0.131.0-alpha.9 (Windows 10.0.26200; x86_64)"
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let record = admin_usage_record_json(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+        );
+        let active = admin_usage_active_request_json(&item, None, None, None);
+
+        assert_eq!(record["client_family"], "codex_vscode");
+        assert_eq!(record["client_ip"], "192.168.0.28");
+        assert_eq!(active["client_family"], "codex_vscode");
+    }
+
+    #[test]
+    fn admin_usage_record_labels_openai_js_user_agent_as_sdk() {
+        let item = StoredRequestUsageAudit {
+            request_metadata: Some(json!({
+                "user_agent": "OpenAI/JS 6.34.0"
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let record = admin_usage_record_json(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+        );
+
+        assert_eq!(record["client_family"], "openai_js_sdk");
+    }
+
+    #[test]
+    fn admin_usage_record_prefers_typed_client_family() {
+        let item = StoredRequestUsageAudit {
+            client_family: Some("codex".to_string()),
+            request_metadata: Some(json!({
+                "user_agent": "OpenAI/JS 6.34.0"
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let record = admin_usage_record_json(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+        );
+
+        assert_eq!(record["client_family"], "codex");
     }
 
     #[test]

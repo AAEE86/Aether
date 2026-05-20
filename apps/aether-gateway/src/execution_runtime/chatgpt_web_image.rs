@@ -3,19 +3,22 @@ use std::io::Error as IoError;
 use std::time::Instant;
 
 use aether_contracts::{
-    ExecutionPlan, ExecutionResult, ExecutionTelemetry, RequestBody, ResponseBody, StreamFrame,
-    StreamFramePayload, StreamFrameType, EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER,
-    EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER,
+    ExecutionPlan, ExecutionResult, ExecutionStreamTerminalSummary, ExecutionTelemetry,
+    RequestBody, ResolvedTransportProfile, ResponseBody, StreamFrame, StreamFramePayload,
+    StreamFrameType, EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER,
+    EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER, TRANSPORT_BACKEND_BROWSER_WREQ,
+    TRANSPORT_HTTP_MODE_AUTO, TRANSPORT_POOL_SCOPE_KEY,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
 use chrono::{FixedOffset, Utc};
 use futures_util::stream::{self, BoxStream};
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::clock::current_unix_secs;
 use crate::execution_runtime::ndjson::encode_stream_frame_ndjson;
 use crate::execution_runtime::transport::{
@@ -30,6 +33,7 @@ const CHATGPT_WEB_CLIENT_VERSION: &str = "prod-be885abbfcfe7b1f511e88b3003d9ee44
 const CHATGPT_WEB_BUILD_NUMBER: &str = "5955942";
 const CHATGPT_WEB_SEC_CH_UA: &str =
     r#""Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24""#;
+const CHATGPT_WEB_BROWSER_PROFILE: &str = "chrome143";
 
 pub(crate) struct ChatGptWebImageStream {
     pub(crate) frame_stream: BoxStream<'static, Result<Bytes, IoError>>,
@@ -109,16 +113,15 @@ pub(crate) async fn maybe_execute_chatgpt_web_image_stream(
         Err(err) => chatgpt_web_transport_error_execution_result(plan, started_at, &err),
     };
     Ok(Some(ChatGptWebImageStream {
-        frame_stream: execution_result_frame_stream(&result),
+        frame_stream: execution_result_frame_stream(plan, &result, report_context),
         report_context: report_context.cloned(),
     }))
 }
 
 fn is_chatgpt_web_image_plan(plan: &ExecutionPlan, report_context: Option<&Value>) -> bool {
-    if !plan.client_api_format.eq_ignore_ascii_case("openai:image")
-        || !plan
-            .provider_api_format
-            .eq_ignore_ascii_case("openai:image")
+    if !plan
+        .provider_api_format
+        .eq_ignore_ascii_case("openai:image")
     {
         return false;
     }
@@ -921,12 +924,40 @@ async fn execute_subrequest(
         provider_api_format: plan.provider_api_format.clone(),
         model_name: plan.model_name.clone(),
         proxy: plan.proxy.clone(),
-        transport_profile: plan.transport_profile.clone(),
+        transport_profile: chatgpt_web_image_transport_profile(plan),
         timeouts: plan.timeouts.clone(),
     };
     DirectSyncExecutionRuntime::new()
         .execute_sync(&subplan)
         .await
+}
+
+fn chatgpt_web_image_transport_profile(plan: &ExecutionPlan) -> Option<ResolvedTransportProfile> {
+    match plan.transport_profile.as_ref() {
+        Some(profile)
+            if profile
+                .backend
+                .trim()
+                .eq_ignore_ascii_case(TRANSPORT_BACKEND_BROWSER_WREQ) =>
+        {
+            Some(profile.clone())
+        }
+        _ => Some(default_chatgpt_web_image_transport_profile()),
+    }
+}
+
+fn default_chatgpt_web_image_transport_profile() -> ResolvedTransportProfile {
+    ResolvedTransportProfile {
+        profile_id: CHATGPT_WEB_BROWSER_PROFILE.to_string(),
+        backend: TRANSPORT_BACKEND_BROWSER_WREQ.to_string(),
+        http_mode: TRANSPORT_HTTP_MODE_AUTO.to_string(),
+        pool_scope: TRANSPORT_POOL_SCOPE_KEY.to_string(),
+        header_fingerprint: None,
+        extra: Some(json!({
+            "browser_profile": CHATGPT_WEB_BROWSER_PROFILE,
+            "source": "chatgpt_web_image_default",
+        })),
+    }
 }
 
 fn web_base_headers(fp: &WebFingerprint, token: &str, path: &str) -> BTreeMap<String, String> {
@@ -1480,9 +1511,12 @@ fn bytes_execution_result(
 }
 
 fn execution_result_frame_stream(
+    plan: &ExecutionPlan,
     result: &ExecutionResult,
+    report_context: Option<&Value>,
 ) -> BoxStream<'static, Result<Bytes, IoError>> {
     let body = execution_result_body_bytes_lossy(result);
+    let terminal_summary = chatgpt_web_stream_terminal_summary(plan, result, report_context, &body);
     let mut frames = vec![
         StreamFrame {
             frame_type: StreamFrameType::Headers,
@@ -1521,13 +1555,88 @@ fn execution_result_frame_stream(
             }),
         },
     });
-    frames.push(StreamFrame::eof());
+    frames.push(StreamFrame::eof_with_summary(terminal_summary));
     stream::iter(
         frames
             .into_iter()
             .map(|frame| encode_stream_frame_ndjson(&frame)),
     )
     .boxed()
+}
+
+fn chatgpt_web_stream_terminal_summary(
+    plan: &ExecutionPlan,
+    result: &ExecutionResult,
+    report_context: Option<&Value>,
+    body: &[u8],
+) -> Option<ExecutionStreamTerminalSummary> {
+    if !(200..300).contains(&result.status_code) || body.is_empty() {
+        return None;
+    }
+
+    let observer_context = chatgpt_web_stream_observer_context(plan, report_context);
+    let mut observer = StreamingStandardTerminalObserver::default();
+    let mut line_start = 0usize;
+    for (index, byte) in body.iter().enumerate() {
+        if *byte != b'\n' {
+            continue;
+        }
+        observer
+            .push_line(&observer_context, body[line_start..=index].to_vec())
+            .ok()?;
+        line_start = index.saturating_add(1);
+    }
+    if line_start < body.len() {
+        observer
+            .push_line(&observer_context, body[line_start..].to_vec())
+            .ok()?;
+    }
+    observer.finish(&observer_context).ok().flatten()
+}
+
+fn chatgpt_web_stream_observer_context(
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+) -> Value {
+    let mut context = report_context
+        .cloned()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let object = context
+        .as_object_mut()
+        .expect("observer context should be an object");
+    object
+        .entry("provider_api_format".to_string())
+        .or_insert_with(|| Value::String(plan.provider_api_format.clone()));
+    object
+        .entry("client_api_format".to_string())
+        .or_insert_with(|| Value::String(plan.client_api_format.clone()));
+    object
+        .entry("model".to_string())
+        .or_insert_with(|| Value::String(plan.model_name.clone().unwrap_or_default()));
+    if !object.contains_key("image_request") {
+        if let Some(image_request) = chatgpt_web_image_request_context(plan) {
+            object.insert("image_request".to_string(), image_request);
+        }
+    }
+    context
+}
+
+fn chatgpt_web_image_request_context(plan: &ExecutionPlan) -> Option<Value> {
+    let body = plan.body.json_body.as_ref()?.as_object()?;
+    let mut image_request = Map::new();
+    image_request.insert(
+        "operation".to_string(),
+        Value::String("generate".to_string()),
+    );
+    for key in ["model", "size", "quality", "output_format"] {
+        if let Some(value) = body.get(key).and_then(Value::as_str).map(str::trim) {
+            if !value.is_empty() {
+                image_request.insert(key.to_string(), Value::String(value.to_string()));
+            }
+        }
+    }
+    Some(Value::Object(image_request))
 }
 
 fn telemetry(started_at: Instant, upstream_bytes: u64) -> ExecutionTelemetry {
@@ -1962,6 +2071,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chatgpt_web_image_subrequests_default_to_browser_wreq_transport() {
+        let plan = sample_plan(
+            CHATGPT_WEB_DEFAULT_BASE_URL,
+            json!({"prompt": "draw a small test image"}),
+            false,
+        );
+
+        let profile = chatgpt_web_image_transport_profile(&plan).expect("transport profile");
+
+        assert_eq!(profile.backend, TRANSPORT_BACKEND_BROWSER_WREQ);
+        assert_eq!(profile.profile_id, CHATGPT_WEB_BROWSER_PROFILE);
+        assert_eq!(profile.http_mode, TRANSPORT_HTTP_MODE_AUTO);
+        assert_eq!(profile.pool_scope, TRANSPORT_POOL_SCOPE_KEY);
+        assert_eq!(
+            profile
+                .extra
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(Value::as_str),
+            Some("chatgpt_web_image_default")
+        );
+    }
+
     async fn start_mock_chatgpt_web() -> (String, tokio::task::JoinHandle<()>) {
         let app = Router::new().fallback(any(|request: Request| async move {
             let path = request.uri().path().to_string();
@@ -2226,6 +2359,31 @@ data: [DONE]
         assert!(decoded_data.contains("\"width\":2"));
         assert!(decoded_data.contains("\"height\":3"));
         assert!(text.contains("\"type\":\"eof\""));
+        let eof_frame = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|frame| frame.get("type").and_then(Value::as_str) == Some("eof"))
+            .expect("eof frame should exist");
+        assert_eq!(
+            eof_frame
+                .get("payload")
+                .and_then(|payload| payload.get("summary"))
+                .and_then(|summary| summary.get("standardized_usage"))
+                .and_then(|usage| usage.get("dimensions"))
+                .and_then(|dimensions| dimensions.get("image_count"))
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            eof_frame
+                .get("payload")
+                .and_then(|payload| payload.get("summary"))
+                .and_then(|summary| summary.get("standardized_usage"))
+                .and_then(|usage| usage.get("dimensions"))
+                .and_then(|dimensions| dimensions.get("image_size"))
+                .and_then(Value::as_str),
+            Some("1024x1024")
+        );
 
         handle.abort();
     }
@@ -2257,6 +2415,32 @@ data: [DONE]
         assert_eq!(result.status_code, 400);
         let body = execution_result_json(&result).expect("error should be json");
         assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "chatgpt_web_image_unsupported");
+    }
+
+    #[tokio::test]
+    async fn chatgpt_web_image_executor_accepts_marked_responses_client_plan() {
+        let state = crate::AppState::new().expect("state should build");
+        let mut plan = sample_plan(
+            CHATGPT_WEB_DEFAULT_BASE_URL,
+            json!({
+                "error": {
+                    "message": "ChatGPT-Web 不支持该分辨率",
+                    "type": "invalid_request_error",
+                    "code": "chatgpt_web_image_unsupported"
+                }
+            }),
+            false,
+        );
+        plan.client_api_format = "openai:responses".to_string();
+
+        let result = maybe_execute_chatgpt_web_image_sync(&state, &plan, None)
+            .await
+            .expect("executor should run")
+            .expect("marked image provider plan should be intercepted");
+
+        assert_eq!(result.status_code, 400);
+        let body = execution_result_json(&result).expect("error should be json");
         assert_eq!(body["error"]["code"], "chatgpt_web_image_unsupported");
     }
 

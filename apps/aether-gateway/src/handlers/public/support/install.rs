@@ -14,11 +14,11 @@ use super::{
 
 const INSTALL_SESSION_TTL_SECS: u64 = 15 * 60;
 const INSTALL_SESSION_KEY_PREFIX: &str = "install:session:";
-const PROXY_INSTALL_SESSION_KEY_PREFIX: &str = "proxy-install:session:";
-const PROXY_INSTALL_UNIX_SCRIPT_URL: &str =
-    "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-proxy/install.sh";
-const PROXY_INSTALL_POWERSHELL_SCRIPT_URL: &str =
-    "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-proxy/install.ps1";
+const TUNNEL_INSTALL_SESSION_KEY_PREFIX: &str = "tunnel-install:session:";
+const TUNNEL_INSTALL_UNIX_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-tunnel/install.sh";
+const TUNNEL_INSTALL_POWERSHELL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-tunnel/install.ps1";
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -55,7 +55,7 @@ struct StoredInstallSession {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct StoredProxyInstallSession {
+struct StoredTunnelInstallSession {
     aether_url: String,
     management_token: String,
     node_name: String,
@@ -91,9 +91,10 @@ fn install_code_from_path(request_path: &str) -> Option<(String, bool)> {
     (!code.is_empty()).then(|| (code.to_string(), is_powershell))
 }
 
-fn proxy_install_code_from_path(request_path: &str) -> Option<(String, bool)> {
+fn tunnel_install_code_from_path(request_path: &str) -> Option<(String, bool)> {
     let raw = request_path
-        .strip_prefix("/install-proxy/")?
+        .strip_prefix("/install-tunnel/")
+        .or_else(|| request_path.strip_prefix("/install-proxy/"))?
         .trim()
         .trim_matches('/');
     if raw.is_empty() || raw.contains('/') {
@@ -108,8 +109,8 @@ fn install_session_runtime_key(code: &str) -> String {
     format!("{INSTALL_SESSION_KEY_PREFIX}{code}")
 }
 
-fn proxy_install_session_runtime_key(code: &str) -> String {
-    format!("{PROXY_INSTALL_SESSION_KEY_PREFIX}{code}")
+fn tunnel_install_session_runtime_key(code: &str) -> String {
+    format!("{TUNNEL_INSTALL_SESSION_KEY_PREFIX}{code}")
 }
 
 fn generate_install_code() -> String {
@@ -164,42 +165,42 @@ fn powershell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn build_proxy_unix_script(session: &StoredProxyInstallSession) -> String {
+fn build_tunnel_unix_script(session: &StoredTunnelInstallSession) -> String {
     format!(
         r###"#!/bin/sh
 set -eu
-export AETHER_PROXY_AETHER_URL={aether_url}
-export AETHER_PROXY_MANAGEMENT_TOKEN={management_token}
-export AETHER_PROXY_NODE_NAME={node_name}
+export AETHER_TUNNEL_AETHER_URL={aether_url}
+export AETHER_TUNNEL_MANAGEMENT_TOKEN={management_token}
+export AETHER_TUNNEL_NODE_NAME={node_name}
 
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL {script_url} | sh
 elif command -v wget >/dev/null 2>&1; then
   wget -qO- {script_url} | sh
 else
-  printf '%s\n' "[Aether Proxy] 需要 curl 或 wget 下载安装脚本" >&2
+  printf '%s\n' "[Aether Tunnel] 需要 curl 或 wget 下载安装脚本" >&2
   exit 1
 fi
 "###,
         aether_url = shell_single_quote(&session.aether_url),
         management_token = shell_single_quote(&session.management_token),
         node_name = shell_single_quote(&session.node_name),
-        script_url = shell_single_quote(PROXY_INSTALL_UNIX_SCRIPT_URL),
+        script_url = shell_single_quote(TUNNEL_INSTALL_UNIX_SCRIPT_URL),
     )
 }
 
-fn build_proxy_powershell_script(session: &StoredProxyInstallSession) -> String {
+fn build_tunnel_powershell_script(session: &StoredTunnelInstallSession) -> String {
     format!(
         r###"$ErrorActionPreference = 'Stop'
-$env:AETHER_PROXY_AETHER_URL = {aether_url}
-$env:AETHER_PROXY_MANAGEMENT_TOKEN = {management_token}
-$env:AETHER_PROXY_NODE_NAME = {node_name}
+$env:AETHER_TUNNEL_AETHER_URL = {aether_url}
+$env:AETHER_TUNNEL_MANAGEMENT_TOKEN = {management_token}
+$env:AETHER_TUNNEL_NODE_NAME = {node_name}
 irm {script_url} | iex
 "###,
         aether_url = powershell_single_quote(&session.aether_url),
         management_token = powershell_single_quote(&session.management_token),
         node_name = powershell_single_quote(&session.node_name),
-        script_url = powershell_single_quote(PROXY_INSTALL_POWERSHELL_SCRIPT_URL),
+        script_url = powershell_single_quote(TUNNEL_INSTALL_POWERSHELL_SCRIPT_URL),
     )
 }
 
@@ -659,7 +660,7 @@ pub(crate) async fn build_proxy_node_install_session_response(
 ) -> Response<Body> {
     let code = generate_install_code();
     let expires_at_unix_secs = unix_secs_now().saturating_add(INSTALL_SESSION_TTL_SECS);
-    let session = StoredProxyInstallSession {
+    let session = StoredTunnelInstallSession {
         aether_url: base_url_from_request(headers, request_context),
         management_token,
         node_name,
@@ -670,14 +671,14 @@ pub(crate) async fn build_proxy_node_install_session_response(
         Err(err) => {
             return build_auth_error_response(
                 http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("proxy install session serialize failed: {err:?}"),
+                format!("tunnel install session serialize failed: {err:?}"),
                 false,
             )
         }
     };
     if let Err(err) = state
         .runtime_kv_setex(
-            &proxy_install_session_runtime_key(&code),
+            &tunnel_install_session_runtime_key(&code),
             &serialized,
             INSTALL_SESSION_TTL_SECS,
         )
@@ -685,7 +686,7 @@ pub(crate) async fn build_proxy_node_install_session_response(
     {
         return build_auth_error_response(
             http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("proxy install session create failed: {err:?}"),
+            format!("tunnel install session create failed: {err:?}"),
             false,
         );
     }
@@ -697,8 +698,8 @@ pub(crate) async fn build_proxy_node_install_session_response(
         "expires_in_seconds": INSTALL_SESSION_TTL_SECS,
         "node_name": session.node_name,
         "aether_url": session.aether_url,
-        "unix_command": format!("curl -fsSL {base_url}/install-proxy/{code} | sh"),
-        "powershell_command": format!("irm {base_url}/install-proxy/{code}.ps1 | iex"),
+        "unix_command": format!("curl -fsSL {base_url}/install-tunnel/{code} | sh"),
+        "powershell_command": format!("irm {base_url}/install-tunnel/{code}.ps1 | iex"),
     }))
     .into_response()
 }
@@ -711,8 +712,10 @@ pub(super) async fn maybe_build_local_install_response(
     if decision.route_family.as_deref() != Some("install") {
         return None;
     }
-    if request_context.request_path.starts_with("/install-proxy/") {
-        return Some(maybe_build_local_proxy_install_response(state, request_context).await);
+    if request_context.request_path.starts_with("/install-tunnel/")
+        || request_context.request_path.starts_with("/install-proxy/")
+    {
+        return Some(maybe_build_local_tunnel_install_response(state, request_context).await);
     }
     let Some((code, wants_powershell)) = install_code_from_path(&request_context.request_path)
     else {
@@ -789,45 +792,45 @@ pub(super) async fn maybe_build_local_install_response(
     Some(response)
 }
 
-async fn maybe_build_local_proxy_install_response(
+async fn maybe_build_local_tunnel_install_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
 ) -> Response<Body> {
     let Some((code, wants_powershell)) =
-        proxy_install_code_from_path(&request_context.request_path)
+        tunnel_install_code_from_path(&request_context.request_path)
     else {
         return build_auth_error_response(
             http::StatusCode::NOT_FOUND,
-            "proxy install code 不存在或已失效",
+            "tunnel install code 不存在或已失效",
             false,
         );
     };
     let raw = match state
-        .runtime_kv_getdel(&proxy_install_session_runtime_key(&code))
+        .runtime_kv_getdel(&tunnel_install_session_runtime_key(&code))
         .await
     {
         Ok(Some(value)) => value,
         Ok(None) => {
             return build_auth_error_response(
                 http::StatusCode::NOT_FOUND,
-                "proxy install code 不存在、已过期或已使用",
+                "tunnel install code 不存在、已过期或已使用",
                 false,
             )
         }
         Err(err) => {
             return build_auth_error_response(
                 http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("proxy install session lookup failed: {err:?}"),
+                format!("tunnel install session lookup failed: {err:?}"),
                 false,
             )
         }
     };
-    let session = match serde_json::from_str::<StoredProxyInstallSession>(&raw) {
+    let session = match serde_json::from_str::<StoredTunnelInstallSession>(&raw) {
         Ok(value) => value,
         Err(_) => {
             return build_auth_error_response(
                 http::StatusCode::BAD_REQUEST,
-                "proxy install code 数据无效",
+                "tunnel install code 数据无效",
                 false,
             )
         }
@@ -835,14 +838,14 @@ async fn maybe_build_local_proxy_install_response(
     if session.expires_at_unix_secs <= unix_secs_now() {
         return build_auth_error_response(
             http::StatusCode::NOT_FOUND,
-            "proxy install code 已过期",
+            "tunnel install code 已过期",
             false,
         );
     }
     let body = if wants_powershell {
-        build_proxy_powershell_script(&session)
+        build_tunnel_powershell_script(&session)
     } else {
-        build_proxy_unix_script(&session)
+        build_tunnel_unix_script(&session)
     };
     let content_type = if wants_powershell {
         "text/plain; charset=utf-8"
@@ -885,8 +888,8 @@ mod tests {
         }
     }
 
-    fn test_proxy_session() -> StoredProxyInstallSession {
-        StoredProxyInstallSession {
+    fn test_tunnel_session() -> StoredTunnelInstallSession {
+        StoredTunnelInstallSession {
             aether_url: "https://aether.example".to_string(),
             management_token: "ae-test-token".to_string(),
             node_name: "jp-proxy-01".to_string(),
@@ -895,41 +898,45 @@ mod tests {
     }
 
     #[test]
-    fn proxy_install_path_accepts_shell_and_powershell_codes() {
+    fn tunnel_install_path_accepts_shell_and_powershell_codes() {
         assert_eq!(
-            proxy_install_code_from_path("/install-proxy/abc123"),
+            tunnel_install_code_from_path("/install-tunnel/abc123"),
             Some(("abc123".to_string(), false))
         );
         assert_eq!(
-            proxy_install_code_from_path("/install-proxy/abc123.ps1"),
+            tunnel_install_code_from_path("/install-tunnel/abc123.ps1"),
             Some(("abc123".to_string(), true))
         );
-        assert_eq!(proxy_install_code_from_path("/install-proxy/a/b"), None);
+        assert_eq!(
+            tunnel_install_code_from_path("/install-proxy/abc123"),
+            Some(("abc123".to_string(), false))
+        );
+        assert_eq!(tunnel_install_code_from_path("/install-tunnel/a/b"), None);
     }
 
     #[test]
-    fn proxy_unix_script_exports_session_values_and_reuses_proxy_installer() {
-        let script = build_proxy_unix_script(&test_proxy_session());
+    fn tunnel_unix_script_exports_session_values_and_reuses_tunnel_installer() {
+        let script = build_tunnel_unix_script(&test_tunnel_session());
 
-        assert!(script.contains("export AETHER_PROXY_AETHER_URL='https://aether.example'"));
-        assert!(script.contains("export AETHER_PROXY_MANAGEMENT_TOKEN='ae-test-token'"));
-        assert!(script.contains("export AETHER_PROXY_NODE_NAME='jp-proxy-01'"));
+        assert!(script.contains("export AETHER_TUNNEL_AETHER_URL='https://aether.example'"));
+        assert!(script.contains("export AETHER_TUNNEL_MANAGEMENT_TOKEN='ae-test-token'"));
+        assert!(script.contains("export AETHER_TUNNEL_NODE_NAME='jp-proxy-01'"));
         assert!(script.contains(
-            "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-proxy/install.sh"
+            "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-tunnel/install.sh"
         ));
         assert!(!script.contains("aether-rust-pioneer"));
         assert!(!script.contains("[[servers]]"));
     }
 
     #[test]
-    fn proxy_powershell_script_exports_session_values_and_reuses_proxy_installer() {
-        let script = build_proxy_powershell_script(&test_proxy_session());
+    fn tunnel_powershell_script_exports_session_values_and_reuses_tunnel_installer() {
+        let script = build_tunnel_powershell_script(&test_tunnel_session());
 
-        assert!(script.contains("$env:AETHER_PROXY_AETHER_URL = 'https://aether.example'"));
-        assert!(script.contains("$env:AETHER_PROXY_MANAGEMENT_TOKEN = 'ae-test-token'"));
-        assert!(script.contains("$env:AETHER_PROXY_NODE_NAME = 'jp-proxy-01'"));
+        assert!(script.contains("$env:AETHER_TUNNEL_AETHER_URL = 'https://aether.example'"));
+        assert!(script.contains("$env:AETHER_TUNNEL_MANAGEMENT_TOKEN = 'ae-test-token'"));
+        assert!(script.contains("$env:AETHER_TUNNEL_NODE_NAME = 'jp-proxy-01'"));
         assert!(script.contains(
-            "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-proxy/install.ps1"
+            "https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-tunnel/install.ps1"
         ));
         assert!(!script.contains("aether-rust-pioneer"));
         assert!(!script.contains("[[servers]]"));

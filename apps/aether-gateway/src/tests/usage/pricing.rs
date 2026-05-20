@@ -113,10 +113,7 @@ struct ExpectedUsagePricing {
 
 impl ExpectedUsagePricing {
     fn total_tokens(self) -> u64 {
-        self.input_tokens
-            .saturating_add(self.output_tokens)
-            .saturating_add(self.cache_creation_tokens)
-            .saturating_add(self.cache_read_tokens)
+        self.input_tokens.saturating_add(self.output_tokens)
     }
 
     fn cache_creation_uncategorized_tokens(self) -> u64 {
@@ -1180,7 +1177,13 @@ async fn gateway_records_gemini_sync_usage_and_pricing_with_cache_read_tokens_im
         },
         "body": {
             "json_body": {
-                "candidates": [],
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "Hello from Gemini"}]
+                    },
+                    "finishReason": "STOP"
+                }],
                 "usageMetadata": {
                     "promptTokenCount": expected.input_tokens,
                     "candidatesTokenCount": expected.output_tokens,

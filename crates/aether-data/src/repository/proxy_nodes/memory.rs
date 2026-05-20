@@ -561,7 +561,7 @@ impl ProxyNodeWriteRepository for InMemoryProxyNodeRepository {
             };
             if !node.tunnel_mode {
                 return Err(DataLayerError::InvalidInput(
-                    "non-tunnel mode is no longer supported, please upgrade aether-proxy to use tunnel mode"
+                    "non-tunnel mode is no longer supported, please upgrade aether-tunnel to use tunnel mode"
                         .to_string(),
                 ));
             }
@@ -1163,7 +1163,7 @@ mod tests {
                 dns_failures_delta: Some(0),
                 stream_errors_delta: Some(0),
                 proxy_metadata: Some(json!({"arch": "arm64"})),
-                proxy_version: Some("proxy-v2.2.0".to_string()),
+                proxy_version: Some("tunnel-v2.2.0".to_string()),
             })
             .await
             .expect("heartbeat should succeed")

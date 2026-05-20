@@ -296,6 +296,8 @@ async fn gateway_handles_admin_system_stats_locally_with_trusted_admin_principal
     assert_eq!(payload["providers"]["active"], json!(1));
     assert_eq!(payload["api_keys"], json!(0));
     assert_eq!(payload["requests"], json!(0));
+    assert_eq!(payload["usage_counter"]["status"], json!("idle"));
+    assert_eq!(payload["usage_counter"]["outbox_pending_rows"], json!(0));
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -1152,6 +1154,14 @@ async fn gateway_handles_admin_system_api_formats_locally_with_trusted_admin_pri
         .expect("formats should be an array");
     assert_eq!(formats[0]["value"], "openai:chat");
     assert_eq!(formats[0]["default_path"], "/v1/chat/completions");
+    let gemini_embedding = formats
+        .iter()
+        .find(|item| item["value"] == "gemini:embedding")
+        .expect("gemini embedding format should exist");
+    assert_eq!(
+        gemini_embedding["default_path"],
+        "/v1beta/models/{model}:{action}"
+    );
     assert!(formats
         .iter()
         .any(|item| item["value"] == "openai:embedding"));

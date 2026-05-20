@@ -736,7 +736,7 @@ const ADMIN_API_FORMAT_DEFINITIONS: &[AdminApiFormatDefinition] = &[
     AdminApiFormatDefinition {
         value: "gemini:embedding",
         label: "Gemini Embedding",
-        default_path: "/v1/embeddings",
+        default_path: "/v1beta/models/{model}:{action}",
         aliases: &["gemini_embedding"],
     },
     AdminApiFormatDefinition {
@@ -861,6 +861,7 @@ pub fn build_admin_system_stats_payload(
     active_providers: u64,
     total_api_keys: u64,
     total_requests: u64,
+    usage_counter: serde_json::Value,
 ) -> serde_json::Value {
     json!({
         "users": {
@@ -873,6 +874,7 @@ pub fn build_admin_system_stats_payload(
         },
         "api_keys": total_api_keys,
         "requests": total_requests,
+        "usage_counter": usage_counter,
     })
 }
 

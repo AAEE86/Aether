@@ -63,7 +63,7 @@
             <!-- eslint-disable vue/no-v-html -->
             <span
               class="oauth-icon"
-              v-html="getOAuthIcon(oauthProviders[0].provider_type)"
+              v-html="getOAuthIcon(oauthProviders[0].provider_type, oauthProviders[0].icon_url)"
             />
             <!-- eslint-enable vue/no-v-html -->
             <span>使用 {{ oauthProviders[0].display_name }} 登录</span>
@@ -88,7 +88,7 @@
               <!-- eslint-disable vue/no-v-html -->
               <span
                 class="oauth-icon-lg"
-                v-html="getOAuthIcon(p.provider_type)"
+                v-html="getOAuthIcon(p.provider_type, p.icon_url)"
               />
               <!-- eslint-enable vue/no-v-html -->
             </button>
@@ -241,6 +241,7 @@
     :password-policy-level="passwordPolicyLevel"
     :turnstile-enabled="turnstileEnabled"
     :turnstile-site-key="turnstileSiteKey"
+    :privacy-policy="privacyPolicy"
     @success="handleRegisterSuccess"
     @switch-to-login="handleSwitchToLogin"
   />
@@ -248,7 +249,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Dialog } from '@/components/ui'
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
@@ -259,7 +260,7 @@ import { useSiteInfo } from '@/composables/useSiteInfo'
 import { normalizePasswordPolicyLevel, type PasswordPolicyLevel } from '@/utils/passwordPolicy'
 import { isDemoMode, DEMO_ACCOUNTS } from '@/config/demo'
 import RegisterDialog from './RegisterDialog.vue'
-import { authApi } from '@/api/auth'
+import { authApi, type RegistrationPrivacyPolicySettings } from '@/api/auth'
 import { oauthApi, type OAuthProviderInfo } from '@/api/oauth'
 import { getClientDeviceId } from '@/utils/deviceId'
 import { getApiUrl } from '@/utils/url'
@@ -274,6 +275,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const { success: showSuccess, warning: showWarning, error: showError } = useToast()
 const { siteName } = useSiteInfo()
@@ -287,6 +289,12 @@ const passwordPolicyLevel = ref<PasswordPolicyLevel>('weak')
 const turnstileEnabled = ref(false)
 const turnstileSiteKey = ref<string | null>(null)
 const allowRegistration = ref(false) // 由系统配置控制，默认关闭
+const privacyPolicy = ref<RegistrationPrivacyPolicySettings>({
+  enabled: false,
+  format: 'markdown',
+  content: '',
+  version: ''
+})
 
 // LDAP authentication settings
 const PREFERRED_AUTH_TYPE_KEY = 'aether_preferred_auth_type'
@@ -446,6 +454,12 @@ onMounted(async () => {
     passwordPolicyLevel.value = normalizePasswordPolicyLevel(regSettings.password_policy_level)
     turnstileEnabled.value = !!regSettings.turnstile_enabled
     turnstileSiteKey.value = regSettings.turnstile_site_key || null
+    privacyPolicy.value = regSettings.privacy_policy ?? {
+      enabled: false,
+      format: 'markdown',
+      content: '',
+      version: ''
+    }
 
     localEnabled.value = authSettings.local_enabled
     ldapEnabled.value = authSettings.ldap_enabled
@@ -465,6 +479,10 @@ onMounted(async () => {
     }
 
     oauthProviders.value = providers
+    if (allowRegistration.value && (route.path === '/register' || typeof route.query.invite === 'string')) {
+      isOpen.value = false
+      showRegisterDialog.value = true
+    }
   } catch {
     // If获取失败，保持默认：关闭注册 & 关闭邮箱验证 & 使用本地认证
     allowRegistration.value = false
@@ -473,6 +491,12 @@ onMounted(async () => {
     passwordPolicyLevel.value = 'weak'
     turnstileEnabled.value = false
     turnstileSiteKey.value = null
+    privacyPolicy.value = {
+      enabled: false,
+      format: 'markdown',
+      content: '',
+      version: ''
+    }
     localEnabled.value = true
     ldapEnabled.value = false
     ldapExclusive.value = false

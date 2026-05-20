@@ -341,36 +341,6 @@
                       </span>
                     </span>
                   </div>
-                  <div
-                    v-if="activeCapabilities.length > 0"
-                    class="info-item"
-                  >
-                    <span class="info-label">请求能力</span>
-                    <span class="info-value">
-                      <span class="capability-tags">
-                        <span
-                          v-for="cap in activeCapabilities"
-                          :key="`required-${cap}`"
-                          class="capability-tag active"
-                        >{{ formatCapabilityLabel(cap) }}</span>
-                      </span>
-                    </span>
-                  </div>
-                  <div
-                    v-if="keyCapabilities.length > 0"
-                    class="info-item"
-                  >
-                    <span class="info-label">Key 能力</span>
-                    <span class="info-value">
-                      <span class="capability-tags">
-                        <span
-                          v-for="cap in keyCapabilities"
-                          :key="`key-${cap}`"
-                          class="capability-tag"
-                        >{{ formatCapabilityLabel(cap) }}</span>
-                      </span>
-                    </span>
-                  </div>
                 </div>
 
                 <div
@@ -1489,26 +1459,6 @@ const currentAttemptExtraDataDisplay = computed<Record<string, unknown> | null>(
   return Object.keys(display).length > 0 ? display : null
 })
 
-// 计算当前尝试启用的能力标签（请求需要的能力）
-const activeCapabilities = computed(() => {
-  if (!currentAttempt.value?.required_capabilities) return []
-  const caps = currentAttempt.value.required_capabilities
-  // 只返回值为 true 的能力
-  return Object.entries(caps)
-    .filter(([_, enabled]) => enabled)
-    .map(([key]) => key)
-})
-
-// 计算当前 Key 支持的能力标签
-const keyCapabilities = computed(() => {
-  if (!currentAttempt.value?.key_capabilities) return []
-  const caps = currentAttempt.value.key_capabilities
-  // 只返回值为 true 的能力
-  return Object.entries(caps)
-    .filter(([_, enabled]) => enabled)
-    .map(([key]) => key)
-})
-
 const hasActiveImageProgress = computed(() => {
   return rawTimeline.value.some((candidate) => {
     const progress = normalizeImageProgress(candidate.image_progress)
@@ -1540,20 +1490,6 @@ const formatAuthTypeWithPlan = (authType: string, planType?: string): string => 
     return `${typeName} ${planType}`
   }
   return typeName
-}
-
-// 格式化能力标签显示
-const formatCapabilityLabel = (cap: string): string => {
-  const labels: Record<string, string> = {
-    'cache_1h': '1h缓存',
-    'cache_5min': '5min缓存',
-    'context_1m': '1M上下文',
-    'context_200k': '200K上下文',
-    'extended_thinking': '深度思考',
-    'vision': '视觉',
-    'function_calling': '函数调用',
-  }
-  return labels[cap] || cap
 }
 
 const poolSelectionLabel = (reason: string): string => {
@@ -2500,35 +2436,6 @@ function getDisplayStatus(attempt: CandidateRecord | null | undefined): string {
 .pool-skip-type {
   font-weight: 500;
   color: hsl(var(--muted-foreground));
-}
-
-/* 能力标签 */
-.capability-tags {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-}
-
-.capability-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.15rem 0.5rem;
-  font-size: 0.7rem;
-  font-weight: 500;
-  color: hsl(var(--muted-foreground));
-  white-space: nowrap;
-  border-radius: 4px;
-  background: transparent;
-  border: 1px dashed hsl(var(--border));
-  transition: all 0.15s ease;
-}
-
-/* 被请求使用的能力（高亮边框） */
-.capability-tag.active {
-  color: hsl(var(--primary));
-  border-color: hsl(var(--primary) / 0.5);
-  background: hsl(var(--primary) / 0.08);
 }
 
 .image-progress-block {

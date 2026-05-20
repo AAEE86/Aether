@@ -62,15 +62,6 @@ pub fn candidate_runtime_skip_reason_with_state(
     if oauth_invalid {
         return Some("oauth_invalid");
     }
-    if crate::is_candidate_in_recent_failure_cooldown(
-        recent_candidates,
-        candidate.provider_id.as_str(),
-        candidate.endpoint_id.as_str(),
-        candidate.key_id.as_str(),
-        now_unix_secs,
-    ) {
-        return Some("recent_failure_cooldown");
-    }
     if provider_concurrent_limits
         .get(&candidate.provider_id)
         .is_some_and(|limit| {

@@ -1224,6 +1224,7 @@ async fn gateway_tests_connected_tunnel_proxy_nodes_with_active_probe() {
             proxy_tx,
             proxy_close_tx,
             16,
+            2,
         )));
 
     let gateway = build_router_with_state(state);
