@@ -688,36 +688,6 @@
                   </TabsContent>
 
                   <TabsContent value="response-body">
-                    <div
-                      v-if="selectedInspectionImagePreviews.length > 0"
-                      class="mb-3 rounded-md border border-border/60 bg-muted/20 p-3"
-                    >
-                      <div class="mb-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                        <span>图片预览</span>
-                        <span>{{ selectedInspectionImagePreviews.length }} 张</span>
-                      </div>
-                      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                        <button
-                          v-for="(preview, index) in selectedInspectionImagePreviews"
-                          :key="`${preview.src}-${index}`"
-                          type="button"
-                          class="group block overflow-hidden rounded-md border border-border/60 bg-background text-left transition-colors hover:border-primary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70"
-                          @click="openImagePreview(preview)"
-                        >
-                          <div class="aspect-square w-full overflow-hidden bg-muted/30">
-                            <img
-                              :src="preview.src"
-                              :alt="preview.label"
-                              class="h-full w-full object-contain"
-                              loading="lazy"
-                            >
-                          </div>
-                          <div class="border-t border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
-                            {{ preview.label }}
-                          </div>
-                        </button>
-                      </div>
-                    </div>
                     <JsonContent
                       :data="selectedInspectionAttempt.response_body"
                       view-mode="formatted"
@@ -1250,12 +1220,6 @@ const selectedInspectionAttempt = computed(() => {
 
   return inspectableAttempts.value[0] ?? resultAttempts.value[0] ?? null
 })
-
-const selectedInspectionImagePreviews = computed(() => (
-  selectedInspectionAttempt.value
-    ? extractModelTestImagePreviews(selectedInspectionAttempt.value.response_body)
-    : []
-))
 
 const resultImageAttempt = computed(() => {
   return resultAttempts.value.find(attempt => attempt.status === 'success' && attemptImagePreviews(attempt).length > 0)
