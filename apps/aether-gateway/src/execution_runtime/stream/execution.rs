@@ -3365,6 +3365,14 @@ async fn execute_stream_from_frame_stream(
         ));
         let stream_failed =
             stream_terminal_summary_represents_failure(stream_terminal_summary.as_ref());
+        let stream_terminal_error_message = stream_terminal_summary
+            .as_ref()
+            .and_then(|summary| summary.parser_error.clone())
+            .or_else(|| {
+                missing_observed_finish.then(|| {
+                    "execution runtime stream ended before provider terminal event".to_string()
+                })
+            });
         let usage_payload = build_stream_usage_payload(
             trace_id_owned.clone(),
             report_kind_owned.unwrap_or_default(),
@@ -3378,7 +3386,7 @@ async fn execute_stream_from_frame_stream(
             stream_terminal_summary,
             terminal_telemetry,
         );
-        if missing_observed_finish {
+        if stream_failed {
             warn!(
                 event_name = "execution_runtime_stream_missing_terminal_event",
                 log_type = "ops",
@@ -3386,7 +3394,8 @@ async fn execute_stream_from_frame_stream(
                 request_id = %request_id_for_report_log,
                 candidate_id = ?candidate_id_for_report.as_deref(),
                 status_code,
-                "gateway stream ended before provider terminal event"
+                error_message = stream_terminal_error_message.as_deref().unwrap_or_default(),
+                "gateway stream ended with a failed terminal state"
             );
         } else {
             apply_local_execution_effect(
@@ -3446,19 +3455,9 @@ async fn execute_stream_from_frame_stream(
                 } else {
                     None
                 },
-                error_message: if stream_failed {
-                    stream_terminal_summary
-                        .as_ref()
-                        .and_then(|summary| summary.parser_error.clone())
-                        .or_else(|| {
-                            missing_observed_finish.then(|| {
-                                "execution runtime stream ended before provider terminal event"
-                                    .to_string()
-                            })
-                        })
-                } else {
-                    None
-                },
+                error_message: stream_failed
+                    .then(|| stream_terminal_error_message)
+                    .flatten(),
                 latency_ms: usage_payload
                     .telemetry
                     .as_ref()
