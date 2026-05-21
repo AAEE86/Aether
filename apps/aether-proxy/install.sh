@@ -10,6 +10,12 @@ fi
 if [ -n "${AETHER_PROXY_NODE_NAME:-}" ] && [ -z "${AETHER_TUNNEL_NODE_NAME:-}" ]; then
   export AETHER_TUNNEL_NODE_NAME="${AETHER_PROXY_NODE_NAME}"
 fi
+if [ -n "${AETHER_PROXY_TUNNEL_SECURITY:-}" ] && [ -z "${AETHER_TUNNEL_SECURITY:-}" ]; then
+  export AETHER_TUNNEL_SECURITY="${AETHER_PROXY_TUNNEL_SECURITY}"
+fi
+if [ -n "${AETHER_PROXY_TUNNEL_ENCRYPTION_KEY:-}" ] && [ -z "${AETHER_TUNNEL_ENCRYPTION_KEY:-}" ]; then
+  export AETHER_TUNNEL_ENCRYPTION_KEY="${AETHER_PROXY_TUNNEL_ENCRYPTION_KEY}"
+fi
 
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL 'https://raw.githubusercontent.com/fawney19/Aether/main/apps/aether-tunnel/install.sh' | sh
