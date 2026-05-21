@@ -128,8 +128,25 @@
           <div class="space-y-4 border-t border-border/60 pt-5">
             <div class="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 pb-2 border-b border-border/60">
               <span class="text-sm font-medium">组权限</span>
-              <span class="text-[11px] text-muted-foreground">
-                多个组与用户额外限制取交集
+              <span class="flex items-center gap-1 text-[11px] text-muted-foreground">
+                组权限叠加，Key 可再收窄
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger as-child>
+                      <button
+                        type="button"
+                        class="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border/70 bg-muted/40 text-muted-foreground outline-none transition-colors hover:border-primary/50 hover:text-primary focus-visible:border-primary/60 focus-visible:text-primary"
+                        :title="groupPolicyHelpText"
+                        aria-label="查看组权限合并规则"
+                      >
+                        <Info class="h-3 w-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent class="max-w-72 text-xs leading-5">
+                      {{ groupPolicyHelpText }}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </span>
             </div>
 
@@ -247,7 +264,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { BadgeCheck, ChevronRight, Plus, Trash2 } from 'lucide-vue-next'
+import { BadgeCheck, ChevronRight, Info, Plus, Trash2 } from 'lucide-vue-next'
 import {
   Badge,
   Button,
@@ -255,6 +272,10 @@ import {
   Input,
   Label,
   Switch,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
 } from '@/components/ui'
 import { MultiSelect } from '@/components/common'
 import { useUsersStore } from '@/stores/users'
@@ -301,6 +322,8 @@ const memberUserIds = ref<string[]>([])
 const USER_OPTIONS_CACHE_TTL_MS = 30 * 1000
 let dialogUsersLoadedAt = 0
 let dialogUsersLoadedVersion = -1
+
+const groupPolicyHelpText = '模型、供应商和端点会在多个用户组之间叠加授权；unrestricted 仍表示不限制，deny_all 只是不授予额外权限。速率限制按付费档位取更高额度，0 表示不限速；用户/API Key 自身限制仍会收窄最终权限。'
 
 const form = ref({
   name: '',
