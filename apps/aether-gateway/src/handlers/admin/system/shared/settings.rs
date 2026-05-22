@@ -481,140 +481,6 @@ fn select_release_tarball_urls(release: &GitHubRelease) -> (Option<String>, Opti
     (tarball_url, sha256sums_url)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn update_channel_detects_stable_rc_beta_and_other_prerelease() {
-        assert_eq!(update_channel_for_version("v1.2.3"), UpdateChannel::Stable);
-        assert_eq!(update_channel_for_version("1.2.3-rc1"), UpdateChannel::Rc);
-        assert_eq!(
-            update_channel_for_version("1.2.3-beta.2"),
-            UpdateChannel::Beta
-        );
-        assert_eq!(
-            update_channel_for_version("1.2.3-alpha.1"),
-            UpdateChannel::OtherPrerelease
-        );
-    }
-
-    #[test]
-    fn stable_channel_does_not_allow_prereleases() {
-        assert!(!UpdateChannel::Stable.allows_prerelease("v1.2.3-rc1"));
-    }
-
-    #[test]
-    fn prerelease_channels_only_follow_matching_channel() {
-        assert!(UpdateChannel::Rc.allows_prerelease("v1.2.3-rc2"));
-        assert!(!UpdateChannel::Rc.allows_prerelease("v1.2.3-beta.1"));
-        assert!(UpdateChannel::Beta.allows_prerelease("v1.2.3-beta.2"));
-        assert!(!UpdateChannel::Beta.allows_prerelease("v1.2.3-rc1"));
-        assert!(UpdateChannel::OtherPrerelease.allows_prerelease("v1.2.3-alpha.1"));
-        assert!(UpdateChannel::OtherPrerelease.allows_prerelease("v1.2.3-rc1"));
-    }
-
-    #[test]
-    fn github_release_tag_url_points_to_explicit_tag_page() {
-        assert_eq!(
-            github_release_tag_url("v0.7.3"),
-            "https://github.com/fawney19/Aether/releases/tag/v0.7.3"
-        );
-    }
-
-    #[test]
-    fn successful_release_cache_is_reused_within_ttl() {
-        assert!(should_reuse_releases_cache(
-            false,
-            false,
-            Duration::from_secs(60)
-        ));
-    }
-
-    #[test]
-    fn failed_release_cache_is_not_reused() {
-        assert!(!should_reuse_releases_cache(
-            false,
-            true,
-            Duration::from_secs(60)
-        ));
-    }
-
-    #[test]
-    fn force_refresh_bypasses_release_cache() {
-        assert!(!should_reuse_releases_cache(
-            true,
-            false,
-            Duration::from_secs(60)
-        ));
-    }
-
-    #[test]
-    fn github_rate_limit_response_is_marked_retryable() {
-        let err = github_release_response_error(
-            reqwest::StatusCode::FORBIDDEN,
-            r#"{"message":"API rate limit exceeded for 1.2.3.4."}"#,
-        );
-        assert!(err.rate_limited);
-        assert!(err.message.contains("GitHub Releases API 已触发限流"));
-    }
-
-    #[test]
-    fn non_rate_limit_github_response_keeps_http_status_message() {
-        let err = github_release_response_error(
-            reqwest::StatusCode::FORBIDDEN,
-            r#"{"message":"Resource not accessible"}"#,
-        );
-        assert!(!err.rate_limited);
-        assert!(err.message.contains("HTTP 403 Forbidden"));
-        assert!(err.message.contains("Resource not accessible"));
-    }
-
-    #[test]
-    fn source_build_check_update_override_marks_latest_release_non_updatable() {
-        let mut payload = json!({
-            "has_update": true,
-            "updatable": true,
-            "update_blocker": serde_json::Value::Null
-        });
-
-        apply_source_build_check_update_override(&mut payload, false);
-
-        assert_eq!(payload["updatable"], false);
-        assert_eq!(payload["update_blocker"], SOURCE_BUILD_UPDATE_BLOCKER);
-    }
-
-    #[test]
-    fn source_build_releases_override_marks_non_current_entries_non_updatable() {
-        let mut payload = json!({
-            "releases": [
-                {
-                    "version": "v0.7.3",
-                    "is_current": false,
-                    "updatable": true,
-                    "update_blocker": serde_json::Value::Null
-                },
-                {
-                    "version": "v0.7.2",
-                    "is_current": true,
-                    "updatable": true,
-                    "update_blocker": "当前版本"
-                }
-            ]
-        });
-
-        apply_source_build_releases_override(&mut payload, false);
-
-        assert_eq!(payload["releases"][0]["updatable"], false);
-        assert_eq!(
-            payload["releases"][0]["update_blocker"],
-            SOURCE_BUILD_RELEASE_BLOCKER
-        );
-        assert_eq!(payload["releases"][1]["updatable"], true);
-        assert_eq!(payload["releases"][1]["update_blocker"], "当前版本");
-    }
-}
-
 pub(crate) async fn build_admin_system_stats_payload(
     state: &AdminAppState<'_>,
 ) -> Result<serde_json::Value, GatewayError> {
@@ -761,4 +627,138 @@ pub(crate) async fn apply_admin_system_settings_update(
 
 pub(crate) fn build_admin_api_formats_payload() -> serde_json::Value {
     build_admin_api_formats_payload_pure()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_channel_detects_stable_rc_beta_and_other_prerelease() {
+        assert_eq!(update_channel_for_version("v1.2.3"), UpdateChannel::Stable);
+        assert_eq!(update_channel_for_version("1.2.3-rc1"), UpdateChannel::Rc);
+        assert_eq!(
+            update_channel_for_version("1.2.3-beta.2"),
+            UpdateChannel::Beta
+        );
+        assert_eq!(
+            update_channel_for_version("1.2.3-alpha.1"),
+            UpdateChannel::OtherPrerelease
+        );
+    }
+
+    #[test]
+    fn stable_channel_does_not_allow_prereleases() {
+        assert!(!UpdateChannel::Stable.allows_prerelease("v1.2.3-rc1"));
+    }
+
+    #[test]
+    fn prerelease_channels_only_follow_matching_channel() {
+        assert!(UpdateChannel::Rc.allows_prerelease("v1.2.3-rc2"));
+        assert!(!UpdateChannel::Rc.allows_prerelease("v1.2.3-beta.1"));
+        assert!(UpdateChannel::Beta.allows_prerelease("v1.2.3-beta.2"));
+        assert!(!UpdateChannel::Beta.allows_prerelease("v1.2.3-rc1"));
+        assert!(UpdateChannel::OtherPrerelease.allows_prerelease("v1.2.3-alpha.1"));
+        assert!(UpdateChannel::OtherPrerelease.allows_prerelease("v1.2.3-rc1"));
+    }
+
+    #[test]
+    fn github_release_tag_url_points_to_explicit_tag_page() {
+        assert_eq!(
+            github_release_tag_url("v0.7.3"),
+            "https://github.com/fawney19/Aether/releases/tag/v0.7.3"
+        );
+    }
+
+    #[test]
+    fn successful_release_cache_is_reused_within_ttl() {
+        assert!(should_reuse_releases_cache(
+            false,
+            false,
+            Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn failed_release_cache_is_not_reused() {
+        assert!(!should_reuse_releases_cache(
+            false,
+            true,
+            Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn force_refresh_bypasses_release_cache() {
+        assert!(!should_reuse_releases_cache(
+            true,
+            false,
+            Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn github_rate_limit_response_is_marked_retryable() {
+        let err = github_release_response_error(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"message":"API rate limit exceeded for 1.2.3.4."}"#,
+        );
+        assert!(err.rate_limited);
+        assert!(err.message.contains("GitHub Releases API 已触发限流"));
+    }
+
+    #[test]
+    fn non_rate_limit_github_response_keeps_http_status_message() {
+        let err = github_release_response_error(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"message":"Resource not accessible"}"#,
+        );
+        assert!(!err.rate_limited);
+        assert!(err.message.contains("HTTP 403 Forbidden"));
+        assert!(err.message.contains("Resource not accessible"));
+    }
+
+    #[test]
+    fn source_build_check_update_override_marks_latest_release_non_updatable() {
+        let mut payload = json!({
+            "has_update": true,
+            "updatable": true,
+            "update_blocker": serde_json::Value::Null
+        });
+
+        apply_source_build_check_update_override(&mut payload, false);
+
+        assert_eq!(payload["updatable"], false);
+        assert_eq!(payload["update_blocker"], SOURCE_BUILD_UPDATE_BLOCKER);
+    }
+
+    #[test]
+    fn source_build_releases_override_marks_non_current_entries_non_updatable() {
+        let mut payload = json!({
+            "releases": [
+                {
+                    "version": "v0.7.3",
+                    "is_current": false,
+                    "updatable": true,
+                    "update_blocker": serde_json::Value::Null
+                },
+                {
+                    "version": "v0.7.2",
+                    "is_current": true,
+                    "updatable": true,
+                    "update_blocker": "当前版本"
+                }
+            ]
+        });
+
+        apply_source_build_releases_override(&mut payload, false);
+
+        assert_eq!(payload["releases"][0]["updatable"], false);
+        assert_eq!(
+            payload["releases"][0]["update_blocker"],
+            SOURCE_BUILD_RELEASE_BLOCKER
+        );
+        assert_eq!(payload["releases"][1]["updatable"], true);
+        assert_eq!(payload["releases"][1]["update_blocker"], "当前版本");
+    }
 }

@@ -36,7 +36,7 @@ use crate::constants::{
 };
 use crate::data::GatewayDataState;
 
-static SYSTEM_UPDATE_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SYSTEM_UPDATE_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn gateway_handles_admin_system_version_locally_with_trusted_admin_principal() {
@@ -162,9 +162,7 @@ async fn gateway_handles_admin_system_check_update_locally_with_bearer_admin_ses
 
 #[tokio::test]
 async fn gateway_handles_admin_system_update_capability_locally() {
-    let _lock = SYSTEM_UPDATE_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = SYSTEM_UPDATE_TEST_MUTEX.lock().await;
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -205,9 +203,7 @@ async fn gateway_handles_admin_system_update_capability_locally() {
 
 #[tokio::test]
 async fn gateway_prepares_admin_system_update_locally() {
-    let _lock = SYSTEM_UPDATE_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = SYSTEM_UPDATE_TEST_MUTEX.lock().await;
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -246,9 +242,7 @@ async fn gateway_prepares_admin_system_update_locally() {
 
 #[tokio::test]
 async fn gateway_rejects_admin_system_apply_update_without_prepared_version() {
-    let _lock = SYSTEM_UPDATE_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = SYSTEM_UPDATE_TEST_MUTEX.lock().await;
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -287,9 +281,7 @@ async fn gateway_rejects_admin_system_apply_update_without_prepared_version() {
 
 #[tokio::test]
 async fn gateway_rejects_admin_system_rollback_without_previous_release() {
-    let _lock = SYSTEM_UPDATE_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = SYSTEM_UPDATE_TEST_MUTEX.lock().await;
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -369,9 +361,7 @@ async fn gateway_handles_admin_system_releases_locally() {
 
 #[tokio::test]
 async fn gateway_rejects_admin_system_apply_update_with_nonexistent_version() {
-    let _lock = SYSTEM_UPDATE_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = SYSTEM_UPDATE_TEST_MUTEX.lock().await;
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -412,9 +402,7 @@ async fn gateway_rejects_admin_system_apply_update_with_nonexistent_version() {
 
 #[tokio::test]
 async fn gateway_handles_admin_system_update_status_locally() {
-    let _lock = SYSTEM_UPDATE_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = SYSTEM_UPDATE_TEST_MUTEX.lock().await;
     let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
