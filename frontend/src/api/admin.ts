@@ -918,8 +918,8 @@ export const adminApi = {
     return response.data
   },
 
-  async testImportantNotification(options: 'all' | 'email' | 'server_chan' | {
-    channel?: 'all' | 'email' | 'server_chan'
+  async testImportantNotification(options: 'all' | 'email' | 'server_chan' | 'bark' | {
+    channel?: 'all' | 'email' | 'server_chan' | 'bark'
     item_key?: string
   } = 'all'): Promise<{
     success: boolean

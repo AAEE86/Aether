@@ -40,6 +40,9 @@
                   <SelectItem value="server_chan">
                     Server 酱
                   </SelectItem>
+                  <SelectItem value="bark">
+                    Bark
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -60,7 +63,7 @@
             </div>
           </div>
 
-          <div class="grid gap-6 border-t border-border/60 pt-5 lg:grid-cols-2">
+          <div class="grid gap-6 border-t border-border/60 pt-5 lg:grid-cols-3">
             <section class="space-y-4">
               <div class="flex items-center justify-between gap-3">
                 <div>
@@ -128,6 +131,31 @@
                 class="inline-flex h-11 items-center rounded-xl border border-border/60 bg-card/60 px-4 text-sm font-semibold text-foreground hover:border-primary/60 hover:bg-primary/10 hover:text-primary"
               >
                 配置 Server 酱推送
+              </RouterLink>
+            </section>
+
+            <section class="space-y-4">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <Label class="text-sm font-medium">
+                      Bark
+                    </Label>
+                    <Badge :variant="barkReady ? 'success' : 'outline'">
+                      {{ barkReady ? '可用' : '未就绪' }}
+                    </Badge>
+                  </div>
+                  <p class="mt-1 text-xs text-muted-foreground">
+                    通过 Bark 向 iOS 设备推送通知
+                  </p>
+                </div>
+              </div>
+
+              <RouterLink
+                to="/admin/modules/bark"
+                class="inline-flex h-11 items-center rounded-xl border border-border/60 bg-card/60 px-4 text-sm font-semibold text-foreground hover:border-primary/60 hover:bg-primary/10 hover:text-primary"
+              >
+                配置 Bark 推送
               </RouterLink>
             </section>
           </div>
@@ -231,6 +259,9 @@
                     <SelectItem value="server_chan">
                       Server 酱
                     </SelectItem>
+                    <SelectItem value="bark">
+                      Bark
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -326,6 +357,9 @@
               <SelectItem value="server_chan">
                 Server 酱
               </SelectItem>
+              <SelectItem value="bark">
+                Bark
+              </SelectItem>
             </SelectContent>
           </Select>
           <Button
@@ -382,7 +416,7 @@ import { useToast } from '@/composables/useToast'
 import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
 
-type DeliveryChannel = 'global' | 'all' | 'email' | 'server_chan'
+type DeliveryChannel = 'global' | 'all' | 'email' | 'server_chan' | 'bark'
 
 interface NotificationItem {
   local_id: string
@@ -412,6 +446,7 @@ const CONFIG_KEYS = {
   default_channel: 'module.important_notification.default_channel',
   items: 'module.important_notification.items',
   server_chan_send_key: 'module.server_chan_push.send_key',
+  bark_device_key: 'module.bark_push.device_key',
 } as const
 
 const DEFAULT_ITEMS: NotificationItem[] = [
@@ -460,6 +495,8 @@ const testing = ref(false)
 const smtpConfigured = ref(false)
 const serverChanKeyIsSet = ref(false)
 const serverChanStatus = ref<ModuleStatus | null>(null)
+const barkKeyIsSet = ref(false)
+const barkStatus = ref<ModuleStatus | null>(null)
 const testItemKey = ref('provider_quota_alert')
 const testChannel = ref<DeliveryChannel>('global')
 const lastTestResult = ref<Array<{ channel: string; success: boolean; message: string }>>([])
@@ -478,6 +515,10 @@ const emailReady = computed(() => {
 
 const serverChanReady = computed(() => {
   return serverChanStatus.value?.enabled === true && serverChanKeyIsSet.value
+})
+
+const barkReady = computed(() => {
+  return barkStatus.value?.enabled === true && barkKeyIsSet.value
 })
 
 const canEnableService = computed(() => {
@@ -499,6 +540,8 @@ async function loadConfig() {
       items,
       serverChanModuleStatus,
       serverChanKey,
+      barkModuleStatus,
+      barkDeviceKey,
       smtpHost,
       smtpFromEmail,
     ] = await Promise.all([
@@ -509,6 +552,8 @@ async function loadConfig() {
       adminApi.getSystemConfig(CONFIG_KEYS.items),
       modulesApi.getStatus('server_chan_push'),
       adminApi.getSystemConfig(CONFIG_KEYS.server_chan_send_key),
+      modulesApi.getStatus('bark_push'),
+      adminApi.getSystemConfig(CONFIG_KEYS.bark_device_key),
       adminApi.getSystemConfig('smtp_host'),
       adminApi.getSystemConfig('smtp_from_email'),
     ])
@@ -520,6 +565,8 @@ async function loadConfig() {
     config.value.items = normalizeItems(items.value)
     serverChanStatus.value = serverChanModuleStatus
     serverChanKeyIsSet.value = serverChanKey.is_set === true
+    barkStatus.value = barkModuleStatus
+    barkKeyIsSet.value = barkDeviceKey.is_set === true
     smtpConfigured.value = isNonEmptyString(smtpHost.value) && isNonEmptyString(smtpFromEmail.value)
     if (!config.value.items.some(item => item.key === testItemKey.value)) {
       testItemKey.value = config.value.items[0]?.key || ''
@@ -604,9 +651,10 @@ function isItemReady(item: NotificationItem): boolean {
 }
 
 function deliveryReady(channel: Exclude<DeliveryChannel, 'global'>): boolean {
-  if (channel === 'all') return emailReady.value || serverChanReady.value
+  if (channel === 'all') return emailReady.value || serverChanReady.value || barkReady.value
   if (channel === 'email') return emailReady.value
   if (channel === 'server_chan') return serverChanReady.value
+  if (channel === 'bark') return barkReady.value
   return false
 }
 
@@ -661,12 +709,12 @@ function normalizeItemKey(value: unknown): string {
 }
 
 function normalizeItemChannel(value: unknown): DeliveryChannel {
-  if (value === 'all' || value === 'email' || value === 'server_chan') return value
+  if (value === 'all' || value === 'email' || value === 'server_chan' || value === 'bark') return value
   return 'global'
 }
 
 function normalizeDefaultChannel(value: unknown): Exclude<DeliveryChannel, 'global'> {
-  if (value === 'email' || value === 'server_chan') return value
+  if (value === 'email' || value === 'server_chan' || value === 'bark') return value
   return 'all'
 }
 
@@ -691,6 +739,7 @@ function normalizeRecipients(value: unknown): string {
 function formatChannel(channel: string): string {
   if (channel === 'email') return '邮件'
   if (channel === 'server_chan') return 'Server 酱'
+  if (channel === 'bark') return 'Bark'
   if (channel === 'user_email') return '用户邮件'
   if (channel === 'module') return '模块'
   if (channel === 'item') return '通知项'

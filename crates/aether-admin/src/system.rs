@@ -705,11 +705,13 @@ struct AdminApiFormatDefinition {
 
 const REQUEST_RECORD_LEVEL_KEY: &str = "request_record_level";
 const LEGACY_REQUEST_LOG_LEVEL_KEY: &str = "request_log_level";
+const DEFAULT_BARK_API_BASE: &str = "https://api.day.app";
 const SENSITIVE_SYSTEM_CONFIG_KEYS: &[&str] = &[
     "smtp_password",
     "turnstile_secret_key",
     "module.server_chan_push.send_key",
     "module.important_notification.server_chan_send_key",
+    "module.bark_push.device_key",
 ];
 const ADMIN_API_FORMAT_DEFINITIONS: &[AdminApiFormatDefinition] = &[
     AdminApiFormatDefinition {
@@ -1207,6 +1209,7 @@ pub fn build_admin_module_validation_result(
     gemini_files_has_capable_key: bool,
     important_notification_configured: bool,
     server_chan_push_configured: bool,
+    bark_push_configured: bool,
 ) -> (bool, Option<String>) {
     match module_name {
         "oauth" => {
@@ -1291,6 +1294,13 @@ pub fn build_admin_module_validation_result(
                 (false, Some("请先配置 Server 酱 SendKey".to_string()))
             }
         }
+        "bark_push" => {
+            if bark_push_configured {
+                (true, None)
+            } else {
+                (false, Some("请先配置 Bark Device Key".to_string()))
+            }
+        }
         "gemini_files" => {
             if gemini_files_has_capable_key {
                 (true, None)
@@ -1315,6 +1325,7 @@ pub fn build_admin_module_health(
         | "model_directives"
         | "proxy_nodes"
         | "important_notification"
+        | "bark_push"
         | "server_chan_push" => "healthy",
         "gemini_files" => {
             if gemini_files_has_capable_key {
@@ -1661,6 +1672,10 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "module.server_chan_push.enabled" => Some(json!(false)),
         "module.server_chan_push.send_key" => Some(serde_json::Value::Null),
         "module.server_chan_push.template" => Some(json!("")),
+        "module.bark_push.enabled" => Some(json!(false)),
+        "module.bark_push.device_key" => Some(serde_json::Value::Null),
+        "module.bark_push.server_url" => Some(json!(DEFAULT_BARK_API_BASE)),
+        "module.bark_push.template" => Some(json!("")),
         "module.chat_pii_redaction.enabled" => Some(json!(false)),
         "module.chat_pii_redaction.rules" => Some(chat_pii_redaction_default_rules()),
         "module.chat_pii_redaction.cache_ttl_seconds" => Some(json!(300)),
@@ -1849,6 +1864,25 @@ fn normalize_nullable_string_config_value(
     }
 }
 
+fn normalize_bark_server_url_config_value(
+    value: serde_json::Value,
+) -> Result<serde_json::Value, ()> {
+    match value {
+        Value::Null => Ok(json!(DEFAULT_BARK_API_BASE)),
+        Value::String(raw) => {
+            let raw = raw.trim().trim_end_matches('/');
+            if raw.is_empty() {
+                return Ok(json!(DEFAULT_BARK_API_BASE));
+            }
+            if !raw.starts_with("https://") && !raw.starts_with("http://") {
+                return Err(());
+            }
+            Ok(json!(raw))
+        }
+        _ => Err(()),
+    }
+}
+
 fn normalize_notification_channel_value(value: serde_json::Value) -> Result<serde_json::Value, ()> {
     match value {
         Value::Null => Ok(json!("all")),
@@ -1865,6 +1899,7 @@ fn normalize_notification_channel(raw: &str, allow_global: bool) -> Result<&'sta
         "all" => Ok("all"),
         "email" => Ok("email"),
         "server_chan" | "serverchan" | "serve_chan" => Ok("server_chan"),
+        "bark" => Ok("bark"),
         "global" | "" if allow_global => Ok("global"),
         _ => Err(()),
     }
@@ -2023,7 +2058,8 @@ pub fn parse_admin_system_config_update(
     match normalized_key.as_str() {
         "module.important_notification.enabled"
         | "module.important_notification.email_enabled"
-        | "module.server_chan_push.enabled" => match value.as_bool() {
+        | "module.server_chan_push.enabled"
+        | "module.bark_push.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => {
                 value = admin_system_config_default_value(&normalized_key).unwrap_or(json!(false));
@@ -2072,6 +2108,34 @@ pub fn parse_admin_system_config_update(
             })?;
         }
         "module.server_chan_push.template" => {
+            value = match value {
+                Value::Null => json!(""),
+                Value::String(raw) => json!(raw),
+                _ => {
+                    return Err((
+                        http::StatusCode::BAD_REQUEST,
+                        json!({ "detail": "请求数据验证失败" }),
+                    ));
+                }
+            };
+        }
+        "module.bark_push.device_key" => {
+            value = normalize_nullable_string_config_value(value).map_err(|_| {
+                (
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                )
+            })?;
+        }
+        "module.bark_push.server_url" => {
+            value = normalize_bark_server_url_config_value(value).map_err(|_| {
+                (
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                )
+            })?;
+        }
+        "module.bark_push.template" => {
             value = match value {
                 Value::Null => json!(""),
                 Value::String(raw) => json!(raw),
@@ -3145,6 +3209,9 @@ mod tests {
         assert!(is_sensitive_admin_system_config_key(
             "module.important_notification.server_chan_send_key"
         ));
+        assert!(is_sensitive_admin_system_config_key(
+            "module.bark_push.device_key"
+        ));
         assert!(!is_sensitive_admin_system_config_key("site_name"));
     }
 
@@ -3206,6 +3273,25 @@ mod tests {
         assert_eq!(update.value[0]["name"], json!("用户余额不足"));
         assert_eq!(update.value[0]["text_template"], json!(""));
         assert_eq!(update.value[0]["user_email_enabled"], json!(true));
+    }
+
+    #[test]
+    fn bark_push_config_values_are_normalized() {
+        let update = parse_admin_system_config_update(
+            "module.bark_push.server_url",
+            r#"{ "value": " https://api.day.app/ " }"#.as_bytes(),
+        )
+        .expect("server url should parse");
+
+        assert_eq!(update.normalized_key, "module.bark_push.server_url");
+        assert_eq!(update.value, json!("https://api.day.app"));
+
+        let err = parse_admin_system_config_update(
+            "module.bark_push.server_url",
+            r#"{ "value": "api.day.app" }"#.as_bytes(),
+        )
+        .expect_err("server url without scheme should fail");
+        assert_eq!(err.0, http::StatusCode::BAD_REQUEST);
     }
 
     #[test]

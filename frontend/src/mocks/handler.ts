@@ -1805,7 +1805,7 @@ registerDynamicRoute('GET', '/api/admin/system/configs/:configKey', async (_conf
   if (!entry) {
     throw { response: createMockResponse({ detail: `配置项 '${key}' 不存在` }, 404) }
   }
-  if (key === 'module.server_chan_push.send_key') {
+  if (key === 'module.server_chan_push.send_key' || key === 'module.bark_push.device_key') {
     return createMockResponse({
       key: entry.key,
       value: null,

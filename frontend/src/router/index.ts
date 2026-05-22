@@ -295,6 +295,16 @@ const routes: RouteRecordRaw[] = [
         meta: { module: 'server_chan_push' }
       },
       {
+        path: 'bark',
+        redirect: '/admin/modules/bark'
+      },
+      {
+        path: 'modules/bark',
+        name: 'BarkSettings',
+        component: () => importWithRetry(() => import('@/views/admin/modules/BarkSettings.vue')),
+        meta: { module: 'bark_push' }
+      },
+      {
         path: 'email',
         name: 'EmailSettings',
         component: () => importWithRetry(() => import('@/views/admin/EmailSettings.vue'))

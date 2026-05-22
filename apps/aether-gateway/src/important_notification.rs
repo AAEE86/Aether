@@ -1,4 +1,5 @@
 use crate::admin_api::AdminAppState;
+use crate::bark_push::{read_bark_push_config, send_bark_push, BarkPushConfig};
 use crate::email_delivery::{
     read_smtp_delivery_config, send_smtp_email, ComposedEmail, SmtpDeliveryConfig,
 };
@@ -35,6 +36,7 @@ pub(crate) enum ImportantNotificationChannelFilter {
     All,
     Email,
     ServerChan,
+    Bark,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +47,7 @@ struct ImportantNotificationConfig {
     default_channel: ImportantNotificationChannelFilter,
     items: Vec<ImportantNotificationItemConfig>,
     server_chan: ServerChanPushConfig,
+    bark: BarkPushConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +66,7 @@ struct ImportantNotificationItemConfig {
 struct NotificationChannelReadiness {
     email: bool,
     server_chan: bool,
+    bark: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,6 +230,7 @@ async fn read_notification_channel_readiness(
     Ok(NotificationChannelReadiness {
         email: config.email_enabled && !config.email_recipients.is_empty() && smtp_config.is_some(),
         server_chan: config.server_chan.enabled && config.server_chan.send_key.is_some(),
+        bark: config.bark.enabled && config.bark.device_key.is_some(),
     })
 }
 
@@ -234,9 +239,12 @@ fn channel_filter_has_ready_channel(
     readiness: NotificationChannelReadiness,
 ) -> bool {
     match filter {
-        ImportantNotificationChannelFilter::All => readiness.email || readiness.server_chan,
+        ImportantNotificationChannelFilter::All => {
+            readiness.email || readiness.server_chan || readiness.bark
+        }
         ImportantNotificationChannelFilter::Email => readiness.email,
         ImportantNotificationChannelFilter::ServerChan => readiness.server_chan,
+        ImportantNotificationChannelFilter::Bark => readiness.bark,
     }
 }
 
@@ -283,6 +291,20 @@ async fn dispatch_important_notification(
         ImportantNotificationChannelFilter::All | ImportantNotificationChannelFilter::ServerChan
     ) {
         maybe_send_server_chan_notification(
+            state,
+            &config,
+            &notification,
+            bypass_enable_checks,
+            &mut reports,
+        )
+        .await;
+    }
+
+    if matches!(
+        channel_filter,
+        ImportantNotificationChannelFilter::All | ImportantNotificationChannelFilter::Bark
+    ) {
+        maybe_send_bark_notification(
             state,
             &config,
             &notification,
@@ -385,6 +407,7 @@ async fn read_important_notification_config(
             .unwrap_or(ImportantNotificationChannelFilter::All),
         items: parse_notification_items(items.as_ref()),
         server_chan: read_server_chan_push_config(state).await?,
+        bark: read_bark_push_config(state).await?,
     })
 }
 
@@ -395,6 +418,7 @@ fn parse_channel_filter(raw: &str) -> Option<ImportantNotificationChannelFilter>
         "server_chan" | "serverchan" | "serve_chan" => {
             Some(ImportantNotificationChannelFilter::ServerChan)
         }
+        "bark" => Some(ImportantNotificationChannelFilter::Bark),
         "global" | "" => None,
         _ => None,
     }
@@ -680,6 +704,48 @@ async fn maybe_send_server_chan_notification(
     }
 }
 
+async fn maybe_send_bark_notification(
+    state: &AppState,
+    config: &ImportantNotificationConfig,
+    notification: &ImportantNotification,
+    bypass_channel_toggle: bool,
+    reports: &mut Vec<ImportantNotificationChannelReport>,
+) {
+    if !bypass_channel_toggle && !config.bark.enabled {
+        return;
+    }
+    if config.bark.device_key.is_none() {
+        reports.push(ImportantNotificationChannelReport {
+            channel: "bark",
+            success: false,
+            message: "未配置 Bark Device Key".to_string(),
+        });
+        return;
+    };
+    match send_bark_push(
+        state,
+        &config.bark,
+        &notification.title,
+        &notification.markdown_body,
+    )
+    .await
+    {
+        Ok(()) => reports.push(ImportantNotificationChannelReport {
+            channel: "bark",
+            success: true,
+            message: "Bark 通知已发送".to_string(),
+        }),
+        Err(err) => {
+            warn!(error = ?err, "failed to send bark important notification");
+            reports.push(ImportantNotificationChannelReport {
+                channel: "bark",
+                success: false,
+                message: format!("Bark 通知发送失败: {err:?}"),
+            });
+        }
+    }
+}
+
 fn single_report(
     channel: &'static str,
     success: bool,
@@ -743,8 +809,8 @@ fn escape_html(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_notification_item_template, parse_notification_items, parse_recipient_list,
-        ImportantNotification, ImportantNotificationChannelFilter,
+        apply_notification_item_template, parse_channel_filter, parse_notification_items,
+        parse_recipient_list, ImportantNotification, ImportantNotificationChannelFilter,
     };
     use serde_json::json;
 
@@ -783,6 +849,14 @@ mod tests {
             Some(ImportantNotificationChannelFilter::Email)
         );
         assert!(items[0].user_email_enabled);
+    }
+
+    #[test]
+    fn parse_channel_filter_accepts_bark() {
+        assert_eq!(
+            parse_channel_filter("bark"),
+            Some(ImportantNotificationChannelFilter::Bark)
+        );
     }
 
     #[test]

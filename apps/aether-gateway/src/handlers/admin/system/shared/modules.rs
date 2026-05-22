@@ -1,3 +1,4 @@
+use crate::bark_push::bark_push_configured;
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::shared::{module_available_from_env, system_config_bool};
 use crate::important_notification::{
@@ -97,6 +98,18 @@ pub(crate) const ADMIN_MODULE_DEFINITIONS: &[AdminModuleDefinition] = &[
         admin_menu_order: 59,
     },
     AdminModuleDefinition {
+        name: "bark_push",
+        display_name: "Bark 推送",
+        description: "第三方推送服务，配置 Bark Device Key 并测试 iOS 推送",
+        category: "integration",
+        env_key: "BARK_PUSH_AVAILABLE",
+        default_available: true,
+        admin_route: Some("/admin/modules/bark"),
+        admin_menu_icon: Some("Send"),
+        admin_menu_group: Some("system"),
+        admin_menu_order: 59,
+    },
+    AdminModuleDefinition {
         name: "model_directives",
         display_name: "模型后缀参数",
         description: "允许通过模型名后缀覆盖推理参数",
@@ -169,6 +182,7 @@ pub(crate) struct AdminModuleRuntimeState {
     gemini_files_has_capable_key: bool,
     important_notification_configured: bool,
     server_chan_push_configured: bool,
+    bark_push_configured: bool,
 }
 
 pub(crate) fn admin_module_by_name(name: &str) -> Option<&'static AdminModuleDefinition> {
@@ -257,6 +271,7 @@ pub(crate) async fn build_admin_module_runtime_state(
 
     let notification_configured = important_notification_configured(state.app()).await?;
     let server_chan_configured = server_chan_push_configured(state.app()).await?;
+    let bark_configured = bark_push_configured(state.app()).await?;
 
     Ok(AdminModuleRuntimeState {
         oauth_providers,
@@ -264,6 +279,7 @@ pub(crate) async fn build_admin_module_runtime_state(
         gemini_files_has_capable_key,
         important_notification_configured: notification_configured,
         server_chan_push_configured: server_chan_configured,
+        bark_push_configured: bark_configured,
     })
 }
 
@@ -278,6 +294,7 @@ pub(crate) fn build_admin_module_validation_result(
         runtime.gemini_files_has_capable_key,
         runtime.important_notification_configured,
         runtime.server_chan_push_configured,
+        runtime.bark_push_configured,
     )
 }
 
