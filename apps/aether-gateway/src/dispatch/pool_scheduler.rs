@@ -1098,10 +1098,52 @@ fn build_pool_catalog_key_context(
     let mut signals =
         provider_pool_service.member_signals(provider_type, key, auth_config.as_ref());
     signals.account_blocked |= admin_provider_pool_pure::admin_pool_key_is_known_banned(key);
+    signals.account_blocked |=
+        pool_key_requires_reauth_for_scheduling(key, current_unix_ms().saturating_div(1000));
     signals.health_score = health_score;
     signals.latency_avg_ms = latency_avg_ms;
     signals.catalog_lru_score = Some(key.last_used_at_unix_secs.unwrap_or(0) as f64);
     signals
+}
+
+fn pool_key_requires_reauth_for_scheduling(
+    key: &StoredProviderCatalogKey,
+    now_unix_secs: u64,
+) -> bool {
+    if !key.auth_type.trim().eq_ignore_ascii_case("oauth") {
+        return false;
+    }
+
+    let invalid_reason = key
+        .oauth_invalid_reason
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    if !invalid_reason.is_empty() {
+        if pool_oauth_reason_has_tag(invalid_reason, "[OAUTH_EXPIRED]")
+            || pool_oauth_reason_has_tag(invalid_reason, "[ACCOUNT_BLOCK]")
+        {
+            return true;
+        }
+        if pool_oauth_reason_has_tag(invalid_reason, "[REQUEST_FAILED]") {
+            return false;
+        }
+        if pool_oauth_reason_has_tag(invalid_reason, "[REFRESH_FAILED]") {
+            return key
+                .expires_at_unix_secs
+                .is_none_or(|expires_at| expires_at == 0 || expires_at <= now_unix_secs);
+        }
+        return true;
+    }
+
+    key.oauth_invalid_at_unix_secs.is_some()
+}
+
+fn pool_oauth_reason_has_tag(reason: &str, tag: &str) -> bool {
+    reason
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with(tag))
 }
 
 fn apply_local_execution_pool_scheduler_with_runtime_map(
@@ -1454,10 +1496,11 @@ fn apply_pool_orchestration(
 #[cfg(test)]
 mod tests {
     use super::{
-        admin_provider_pool_quota_probe_active_members_key,
+        admin_provider_pool_quota_probe_active_members_key, apply_local_execution_pool_scheduler,
         apply_local_execution_pool_scheduler_with_runtime_map,
         apply_local_execution_pool_scheduler_with_runtime_map_outcome,
         build_pool_catalog_key_context, pool_config_for_candidate,
+        pool_key_requires_reauth_for_scheduling,
         prune_unschedulable_active_probe_members_for_request,
         remove_active_probe_members_for_request, should_trigger_active_probe_burst_for_request,
         PoolCatalogKeyContext, PoolKeyCursor, POOL_ACTIVE_PROBE_SEALED_SKIP_REASON,
@@ -2879,6 +2922,243 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pool_scheduler_skips_invalid_and_exhausted_high_priority_hot_pool_before_fallback_provider(
+    ) {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "probing_enabled": true,
+                "skip_exhausted_accounts": true,
+                "scheduling_presets": [
+                    {"preset": "single_account", "enabled": true}
+                ]
+            }
+        }));
+        let provider_a = sample_codex_pool_provider("provider-a", 0, provider_config.clone());
+        let provider_b = sample_codex_pool_provider("provider-b", 10, provider_config.clone());
+        let endpoint_a = sample_codex_pool_endpoint("provider-a", "endpoint-a");
+        let endpoint_b = sample_codex_pool_endpoint("provider-b", "endpoint-b");
+
+        let mut key_a_invalid = sample_codex_pool_key("provider-a", "key-a-invalid");
+        key_a_invalid.oauth_invalid_at_unix_secs = Some(1_710_000_000);
+        key_a_invalid.oauth_invalid_reason =
+            Some("[OAUTH_EXPIRED] Codex Token 无效或已过期 (401)".to_string());
+        let exhausted_status_snapshot = json!({
+            "quota": {
+                "provider_type": "codex",
+                "exhausted": true,
+                "usage_ratio": 1.0,
+                "windows": [
+                    {
+                        "code": "daily",
+                        "used_ratio": 1.0,
+                        "remaining_ratio": 0.0
+                    }
+                ]
+            }
+        });
+        key_a_invalid.status_snapshot = Some(exhausted_status_snapshot.clone());
+        let mut key_a_exhausted = sample_codex_pool_key("provider-a", "key-a-exhausted");
+        key_a_exhausted.status_snapshot = Some(exhausted_status_snapshot);
+        let key_b_ready = sample_codex_pool_key("provider-b", "key-b-ready");
+
+        let rows = vec![
+            sample_codex_pool_row("provider-a", "endpoint-a", "key-a-invalid", 0),
+            sample_codex_pool_row("provider-a", "endpoint-a", "key-a-exhausted", 0),
+            sample_codex_pool_row("provider-b", "endpoint-b", "key-b-ready", 10),
+        ];
+
+        let data_state =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider_a, provider_b],
+                    vec![endpoint_a, endpoint_b],
+                    vec![key_a_invalid, key_a_exhausted, key_b_ready],
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY);
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        app.runtime_state
+            .set_add(
+                &admin_provider_pool_quota_probe_active_members_key("provider-a"),
+                "key-a-invalid",
+            )
+            .await
+            .expect("provider-a hot member should insert");
+        app.runtime_state
+            .set_add(
+                &admin_provider_pool_quota_probe_active_members_key("provider-b"),
+                "key-b-ready",
+            )
+            .await
+            .expect("provider-b hot member should insert");
+
+        let group_a =
+            sample_codex_pool_group("provider-a", "endpoint-a", 0, provider_config.clone());
+        let group_b = sample_codex_pool_group("provider-b", "endpoint-b", 10, provider_config);
+
+        let (scheduled, skipped) = apply_local_execution_pool_scheduler(
+            PlannerAppState::new(&app),
+            vec![group_a, group_b],
+            None,
+            Some("gpt-5"),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            scheduled
+                .iter()
+                .map(|item| item.candidate.key_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-b-ready"]
+        );
+        let skipped_pairs = skipped
+            .iter()
+            .map(|item| (item.candidate.key_id.as_str(), item.skip_reason))
+            .collect::<Vec<_>>();
+        assert!(skipped_pairs.contains(&("key-a-invalid", "pool_account_blocked")));
+        assert!(skipped_pairs.contains(&(
+            "key-a-exhausted",
+            aether_pool_core::POOL_ACCOUNT_EXHAUSTED_SKIP_REASON
+        )));
+    }
+
+    #[tokio::test]
+    async fn pool_scheduler_skips_invalid_high_priority_hot_pool_account_even_with_remaining_quota()
+    {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "probing_enabled": true,
+                "skip_exhausted_accounts": true,
+                "scheduling_presets": [
+                    {"preset": "single_account", "enabled": true}
+                ]
+            }
+        }));
+        let provider_a = sample_codex_pool_provider("provider-a", 0, provider_config.clone());
+        let provider_b = sample_codex_pool_provider("provider-b", 10, provider_config.clone());
+        let endpoint_a = sample_codex_pool_endpoint("provider-a", "endpoint-a");
+        let endpoint_b = sample_codex_pool_endpoint("provider-b", "endpoint-b");
+
+        let mut key_a_invalid = sample_codex_pool_key("provider-a", "key-a-invalid");
+        key_a_invalid.oauth_invalid_at_unix_secs = Some(1_710_000_000);
+        key_a_invalid.oauth_invalid_reason =
+            Some("[OAUTH_EXPIRED] Codex Token 无效或已过期 (401)".to_string());
+        key_a_invalid.status_snapshot = Some(json!({
+            "quota": {
+                "provider_type": "codex",
+                "exhausted": false,
+                "usage_ratio": 0.25,
+                "windows": [
+                    {
+                        "code": "daily",
+                        "used_ratio": 0.25,
+                        "remaining_ratio": 0.75
+                    }
+                ]
+            }
+        }));
+        let key_b_ready = sample_codex_pool_key("provider-b", "key-b-ready");
+
+        let rows = vec![
+            sample_codex_pool_row("provider-a", "endpoint-a", "key-a-invalid", 0),
+            sample_codex_pool_row("provider-b", "endpoint-b", "key-b-ready", 10),
+        ];
+
+        let data_state =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider_a, provider_b],
+                    vec![endpoint_a, endpoint_b],
+                    vec![key_a_invalid, key_b_ready],
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY);
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        app.runtime_state
+            .set_add(
+                &admin_provider_pool_quota_probe_active_members_key("provider-a"),
+                "key-a-invalid",
+            )
+            .await
+            .expect("provider-a hot member should insert");
+        app.runtime_state
+            .set_add(
+                &admin_provider_pool_quota_probe_active_members_key("provider-b"),
+                "key-b-ready",
+            )
+            .await
+            .expect("provider-b hot member should insert");
+
+        let group_a =
+            sample_codex_pool_group("provider-a", "endpoint-a", 0, provider_config.clone());
+        let group_b = sample_codex_pool_group("provider-b", "endpoint-b", 10, provider_config);
+
+        let (scheduled, skipped) = apply_local_execution_pool_scheduler(
+            PlannerAppState::new(&app),
+            vec![group_a, group_b],
+            None,
+            Some("gpt-5"),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            scheduled
+                .iter()
+                .map(|item| item.candidate.key_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-b-ready"]
+        );
+        let skipped_pairs = skipped
+            .iter()
+            .map(|item| (item.candidate.key_id.as_str(), item.skip_reason))
+            .collect::<Vec<_>>();
+        assert!(skipped_pairs.contains(&("key-a-invalid", "pool_account_blocked")));
+    }
+
+    #[test]
+    fn pool_key_reauth_scheduling_keeps_recoverable_oauth_markers_usable() {
+        let mut key = sample_codex_pool_key("provider-a", "key-refresh-failed");
+        key.expires_at_unix_secs = Some(200);
+        key.oauth_invalid_reason = Some(
+            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换，请重新登录授权"
+                .to_string(),
+        );
+
+        assert!(!pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(pool_key_requires_reauth_for_scheduling(&key, 200));
+
+        key.oauth_invalid_reason = Some("[REQUEST_FAILED] 账号状态检查失败".to_string());
+        key.oauth_invalid_at_unix_secs = Some(100);
+        assert!(!pool_key_requires_reauth_for_scheduling(&key, 300));
+    }
+
+    #[test]
+    fn pool_key_reauth_scheduling_blocks_invalid_oauth_markers_without_affecting_non_oauth_keys() {
+        let mut key = sample_codex_pool_key("provider-a", "key-invalid");
+        key.oauth_invalid_reason = Some("[ACCOUNT_BLOCK] account has been deactivated".to_string());
+        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+
+        key.oauth_invalid_reason = Some("Kiro Token 无效或已过期".to_string());
+        key.oauth_invalid_at_unix_secs = None;
+        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+
+        key.oauth_invalid_reason = None;
+        key.oauth_invalid_at_unix_secs = Some(100);
+        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+
+        key.auth_type = "api_key".to_string();
+        assert!(!pool_key_requires_reauth_for_scheduling(&key, 100));
+    }
+
+    #[tokio::test]
     async fn pool_key_cursor_simulates_large_lru_pool_with_lazy_pages_and_dynamic_skips() {
         const KEY_COUNT: usize = 2048;
         let provider_config = Some(json!({
@@ -3323,6 +3603,209 @@ mod tests {
             });
         }
         (provider, endpoint, keys, rows)
+    }
+
+    fn sample_codex_pool_provider(
+        provider_id: &str,
+        provider_priority: i32,
+        provider_config: Option<serde_json::Value>,
+    ) -> StoredProviderCatalogProvider {
+        StoredProviderCatalogProvider::new(
+            provider_id.to_string(),
+            provider_id.to_string(),
+            Some("https://example.com".to_string()),
+            "codex".to_string(),
+        )
+        .expect("provider should build")
+        .with_routing_fields(provider_priority)
+        .with_transport_fields(
+            true,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            provider_config,
+        )
+    }
+
+    fn sample_codex_pool_endpoint(
+        provider_id: &str,
+        endpoint_id: &str,
+    ) -> StoredProviderCatalogEndpoint {
+        StoredProviderCatalogEndpoint::new(
+            endpoint_id.to_string(),
+            provider_id.to_string(),
+            "openai:responses".to_string(),
+            Some("openai".to_string()),
+            Some("responses".to_string()),
+            true,
+        )
+        .expect("endpoint should build")
+        .with_health_score(1.0)
+        .with_transport_fields(
+            "https://example.com/v1/responses".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("endpoint transport should build")
+    }
+
+    fn sample_codex_pool_key(provider_id: &str, key_id: &str) -> StoredProviderCatalogKey {
+        let mut key = StoredProviderCatalogKey::new(
+            key_id.to_string(),
+            provider_id.to_string(),
+            key_id.to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+        .with_transport_fields(
+            Some(json!(["openai:responses"])),
+            Some(format!("secret-{key_id}")),
+            None,
+            None,
+            Some(json!({"openai:responses": 1})),
+            None,
+            Some(4_102_444_800),
+            None,
+            None,
+        )
+        .expect("key transport should build");
+        key.internal_priority = 10;
+        key
+    }
+
+    fn sample_codex_pool_row(
+        provider_id: &str,
+        endpoint_id: &str,
+        key_id: &str,
+        provider_priority: i32,
+    ) -> StoredMinimalCandidateSelectionRow {
+        StoredMinimalCandidateSelectionRow {
+            provider_id: provider_id.to_string(),
+            provider_name: provider_id.to_string(),
+            provider_type: "codex".to_string(),
+            provider_priority,
+            provider_is_active: true,
+            endpoint_id: endpoint_id.to_string(),
+            endpoint_api_format: "openai:responses".to_string(),
+            endpoint_api_family: Some("openai".to_string()),
+            endpoint_kind: Some("responses".to_string()),
+            endpoint_is_active: true,
+            key_id: key_id.to_string(),
+            key_name: key_id.to_string(),
+            key_auth_type: "oauth".to_string(),
+            key_is_active: true,
+            key_api_formats: Some(vec!["openai:responses".to_string()]),
+            key_allowed_models: None,
+            key_capabilities: None,
+            key_internal_priority: 10,
+            key_global_priority_by_format: Some(json!({"openai:responses": 1})),
+            model_id: "model-1".to_string(),
+            global_model_id: "global-model-1".to_string(),
+            global_model_name: "gpt-5".to_string(),
+            global_model_mappings: None,
+            global_model_supports_streaming: Some(true),
+            model_provider_model_name: "gpt-5".to_string(),
+            model_provider_model_mappings: None,
+            model_supports_streaming: Some(true),
+            model_is_active: true,
+            model_is_available: true,
+        }
+    }
+
+    fn sample_codex_pool_group(
+        provider_id: &str,
+        endpoint_id: &str,
+        provider_priority: i32,
+        provider_config: Option<serde_json::Value>,
+    ) -> EligibleLocalExecutionCandidate {
+        EligibleLocalExecutionCandidate {
+            kind: LocalExecutionCandidateKind::PoolGroup,
+            candidate: SchedulerMinimalCandidateSelectionCandidate {
+                provider_id: provider_id.to_string(),
+                provider_name: provider_id.to_string(),
+                provider_type: "codex".to_string(),
+                provider_priority,
+                endpoint_id: endpoint_id.to_string(),
+                endpoint_api_format: "openai:responses".to_string(),
+                key_id: format!("{provider_id}-pool-group"),
+                key_name: format!("{provider_id}-pool-group"),
+                key_auth_type: "oauth".to_string(),
+                key_internal_priority: 10,
+                key_global_priority_for_format: Some(1),
+                key_capabilities: None,
+                model_id: "model-1".to_string(),
+                global_model_id: "global-model-1".to_string(),
+                global_model_name: "gpt-5".to_string(),
+                selected_provider_model_name: "gpt-5".to_string(),
+                mapping_matched_model: None,
+            },
+            provider_api_format: "openai:responses".to_string(),
+            orchestration: LocalExecutionCandidateMetadata::default(),
+            ranking: None,
+            transport: Arc::new(crate::ai_serving::GatewayProviderTransportSnapshot {
+                provider: GatewayProviderTransportProvider {
+                    id: provider_id.to_string(),
+                    name: provider_id.to_string(),
+                    provider_type: "codex".to_string(),
+                    website: None,
+                    is_active: true,
+                    keep_priority_on_conversion: false,
+                    enable_format_conversion: false,
+                    concurrent_limit: None,
+                    max_retries: None,
+                    proxy: None,
+                    request_timeout_secs: None,
+                    stream_first_byte_timeout_secs: None,
+                    config: provider_config,
+                },
+                endpoint: GatewayProviderTransportEndpoint {
+                    id: endpoint_id.to_string(),
+                    provider_id: provider_id.to_string(),
+                    api_format: "openai:responses".to_string(),
+                    api_family: Some("openai".to_string()),
+                    endpoint_kind: Some("responses".to_string()),
+                    is_active: true,
+                    base_url: "https://example.com/v1/responses".to_string(),
+                    header_rules: None,
+                    body_rules: None,
+                    max_retries: None,
+                    custom_path: None,
+                    config: None,
+                    format_acceptance_config: None,
+                    proxy: None,
+                },
+                key: GatewayProviderTransportKey {
+                    id: format!("{provider_id}-pool-group"),
+                    provider_id: provider_id.to_string(),
+                    name: format!("{provider_id}-pool-group"),
+                    auth_type: "oauth".to_string(),
+                    is_active: true,
+                    api_formats: Some(vec!["openai:responses".to_string()]),
+                    auth_type_by_format: None,
+                    allow_auth_channel_mismatch_formats: None,
+                    allowed_models: None,
+                    capabilities: None,
+                    rate_multipliers: None,
+                    global_priority_by_format: None,
+                    expires_at_unix_secs: None,
+                    proxy: None,
+                    fingerprint: None,
+                    decrypted_api_key: "secret".to_string(),
+                    decrypted_auth_config: None,
+                },
+            }),
+        }
     }
 
     fn routing_policy_with_allowed_keys<const N: usize>(
