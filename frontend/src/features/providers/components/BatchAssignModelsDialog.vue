@@ -19,6 +19,25 @@
               class="pl-8 h-9"
             />
           </div>
+          <Button
+            v-if="autoMatchKey"
+            variant="outline"
+            size="sm"
+            class="h-9 shrink-0"
+            :disabled="loadingGlobalModels || fetchingAutoMatchedModels"
+            :title="`按 ${autoMatchKeyLabel} 的上游模型自动勾选同名模型`"
+            @click="applyAutoMatchFromKey(true)"
+          >
+            <Loader2
+              v-if="fetchingAutoMatchedModels"
+              class="w-3.5 h-3.5 mr-1.5 animate-spin"
+            />
+            <ListChecks
+              v-else
+              class="w-3.5 h-3.5 mr-1.5"
+            />
+            匹配勾选
+          </Button>
         </div>
 
         <!-- 模型列表 -->
@@ -126,13 +145,14 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Layers, Loader2, Search, Check } from 'lucide-vue-next'
+import { Layers, Loader2, Search, Check, ListChecks } from 'lucide-vue-next'
 import Dialog from '@/components/ui/dialog/Dialog.vue'
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { parseApiError } from '@/utils/errorParser'
+import { useUpstreamModelsCache } from '../composables/useUpstreamModelsCache'
 import {
   getGlobalModels,
   type GlobalModelResponse
@@ -144,10 +164,17 @@ import {
   type Model
 } from '@/api/endpoints'
 
+interface AutoMatchKey {
+  id: string
+  name?: string | null
+  api_key_masked?: string | null
+}
+
 const props = defineProps<{
   open: boolean
   providerId: string
   providerName?: string
+  autoMatchKey?: AutoMatchKey | null
 }>()
 
 const emit = defineEmits<{
@@ -155,12 +182,15 @@ const emit = defineEmits<{
   'changed': []
 }>()
 
-const { error: showError, success } = useToast()
+const { error: showError, success, warning: showWarning } = useToast()
 const { confirmWarning } = useConfirm()
+const { fetchModels: fetchCachedModels } = useUpstreamModelsCache()
 
 // 状态
 const loadingGlobalModels = ref(false)
 const saving = ref(false)
+const fetchingAutoMatchedModels = ref(false)
+const autoMatchedKeyId = ref<string | null>(null)
 
 // 数据
 const allGlobalModels = ref<GlobalModelResponse[]>([])
@@ -174,6 +204,13 @@ const initialGlobalModelIds = ref<Set<string>>(new Set())
 
 // 搜索状态
 const searchQuery = ref('')
+
+const autoMatchKey = computed(() => props.autoMatchKey ?? null)
+const autoMatchKeyLabel = computed(() => {
+  const key = autoMatchKey.value
+  if (!key) return ''
+  return key.name || key.api_key_masked || key.id.slice(0, 8)
+})
 
 // 已关联的全局模型 ID 集合（从已有数据计算）
 const existingGlobalModelIds = computed(() => {
@@ -264,6 +301,73 @@ function toggleAllGlobalModels() {
   selectedGlobalModelIds.value = new Set(selectedGlobalModelIds.value)
 }
 
+function normalizeModelName(name: string | null | undefined): string {
+  return (name || '').trim()
+}
+
+async function applyAutoMatchFromKey(forceRefresh = false) {
+  const key = autoMatchKey.value
+  if (!props.providerId || !key || fetchingAutoMatchedModels.value) return
+  if (!forceRefresh && autoMatchedKeyId.value === key.id) return
+
+  fetchingAutoMatchedModels.value = true
+  try {
+    const result = await fetchCachedModels(props.providerId, key.id, forceRefresh)
+    if (!props.open || autoMatchKey.value?.id !== key.id) return
+
+    if (result.error && result.models.length > 0) {
+      showWarning(`部分格式获取失败: ${result.error}`)
+    }
+
+    if (result.models.length === 0) {
+      if (result.error) {
+        showError(result.error, '获取上游模型失败')
+      } else {
+        showWarning('此 Key 未返回可用模型')
+      }
+      autoMatchedKeyId.value = key.id
+      return
+    }
+
+    const upstreamModelIds = new Set(
+      result.models
+        .map(model => normalizeModelName(model.id))
+        .filter(Boolean)
+    )
+    const matchedGlobalModelIds = allGlobalModels.value
+      .filter(model => upstreamModelIds.has(normalizeModelName(model.name)))
+      .map(model => model.id)
+
+    autoMatchedKeyId.value = key.id
+
+    if (matchedGlobalModelIds.length === 0) {
+      showWarning('未找到与此 Key 上游模型 ID 同名的全局模型')
+      return
+    }
+
+    const nextSelected = new Set(selectedGlobalModelIds.value)
+    let newlySelectedCount = 0
+    for (const id of matchedGlobalModelIds) {
+      if (!nextSelected.has(id)) {
+        newlySelectedCount++
+      }
+      nextSelected.add(id)
+    }
+    selectedGlobalModelIds.value = nextSelected
+    searchQuery.value = ''
+
+    if (newlySelectedCount > 0) {
+      success(`已按 ${autoMatchKeyLabel.value} 勾选 ${matchedGlobalModelIds.length} 个同名模型`)
+    } else {
+      success(`${matchedGlobalModelIds.length} 个同名模型已在选中列表中`)
+    }
+  } catch (err: unknown) {
+    showError(parseApiError(err, '自动匹配模型失败'), '错误')
+  } finally {
+    fetchingAutoMatchedModels.value = false
+  }
+}
+
 // 处理关闭
 async function handleClose() {
   if (hasChanges.value) {
@@ -350,11 +454,17 @@ function syncGlobalModelSelection() {
 // 监听打开状态
 watch(() => props.open, async (isOpen) => {
   if (isOpen && props.providerId) {
+    autoMatchedKeyId.value = null
     await loadData()
+    if (autoMatchKey.value) {
+      await applyAutoMatchFromKey(false)
+    }
   } else {
     searchQuery.value = ''
     selectedGlobalModelIds.value = new Set()
     initialGlobalModelIds.value = new Set()
+    fetchingAutoMatchedModels.value = false
+    autoMatchedKeyId.value = null
   }
 })
 
