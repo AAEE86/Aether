@@ -12,6 +12,9 @@ use crate::ai_serving::planner::common::{
     endpoint_config_forces_body_stream_field, enforce_provider_body_stream_policy,
     request_requires_body_stream_field, resolve_upstream_is_stream_for_provider,
 };
+use crate::ai_serving::planner::redaction::{
+    request_identity_response_encoding_when_redacted, resolve_provider_chat_pii_redaction,
+};
 use crate::ai_serving::planner::spec_metadata::local_standard_spec_metadata;
 use crate::ai_serving::planner::standard::{
     apply_codex_openai_responses_special_headers, apply_deepseek_tool_call_thinking_compat,
@@ -37,7 +40,7 @@ use crate::ai_serving::{
     build_openai_image_request_body_from_gemini_image_request, gemini_request_is_image_generation,
     CandidateFailureDiagnostic, GatewayProviderTransportSnapshot, LocalResolvedOAuthRequestAuth,
 };
-use crate::AppState;
+use crate::{AppState, GatewayError};
 
 use super::payload::{
     mark_skipped_local_standard_candidate, mark_skipped_local_standard_candidate_with_extra_data,
@@ -59,6 +62,7 @@ pub(crate) struct LocalStandardCandidatePayloadParts {
     pub(super) envelope_name: Option<&'static str>,
     pub(super) transport: Arc<GatewayProviderTransportSnapshot>,
     pub(super) transport_profile: Option<ResolvedTransportProfile>,
+    pub(super) request_redacted: bool,
 }
 
 fn is_grok_text_provider_api_format(provider_api_format: &str) -> bool {
@@ -284,7 +288,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
     input: &LocalStandardDecisionInput,
     attempt: &LocalStandardCandidateAttempt,
     spec: LocalStandardSpec,
-) -> Option<LocalStandardCandidatePayloadParts> {
+) -> Result<Option<LocalStandardCandidatePayloadParts>, GatewayError> {
     let spec_metadata = local_standard_spec_metadata(spec);
     let planner_state = crate::ai_serving::PlannerAppState::new(state);
     let candidate = &attempt.eligible.candidate;
@@ -301,10 +305,12 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         && provider_api_format == "openai:image"
         && gemini_request_is_image_generation(body_json)
     {
-        return resolve_local_gemini_image_to_openai_image_candidate_payload_parts(
-            state, parts, trace_id, body_json, input, attempt,
-        )
-        .await;
+        return Ok(
+            resolve_local_gemini_image_to_openai_image_candidate_payload_parts(
+                state, parts, trace_id, body_json, input, attempt,
+            )
+            .await,
+        );
     }
     let is_kiro_claude_cli = is_kiro_claude_messages_transport(transport, provider_api_format);
     if is_grok && is_grok_text_provider_api_format(provider_api_format) {
@@ -333,9 +339,20 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                     skip_reason,
                 )
                 .await;
-                return None;
+                return Ok(None);
             }
         };
+
+        let redaction = resolve_provider_chat_pii_redaction(
+            state,
+            parts,
+            body_json,
+            &input.auth_context,
+            spec_metadata.api_format,
+            &attempt.candidate_id,
+        )
+        .await?;
+        let body_json = redaction.body_json.as_ref();
 
         let mut provider_request_body = body_json.clone();
         if let Some(object) = provider_request_body.as_object_mut() {
@@ -362,7 +379,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         );
 
         let upstream_url = build_grok_upstream_url(transport, GROK_CHAT_PATH);
-        let Some(provider_request_headers) = build_grok_browser_headers(GrokHeaderInput {
+        let Some(mut provider_request_headers) = build_grok_browser_headers(GrokHeaderInput {
             transport,
             transport_profile: transport_profile.as_ref(),
             request_headers: Some(effective_headers),
@@ -387,10 +404,14 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                 ),
             )
             .await;
-            return None;
+            return Ok(None);
         };
+        request_identity_response_encoding_when_redacted(
+            &mut provider_request_headers,
+            redaction.redacted,
+        );
 
-        return Some(LocalStandardCandidatePayloadParts {
+        return Ok(Some(LocalStandardCandidatePayloadParts {
             auth_header: prepared_candidate.auth_header,
             auth_value: prepared_candidate.auth_value,
             mapped_model: prepared_candidate.mapped_model,
@@ -402,7 +423,8 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             envelope_name: None,
             transport: Arc::clone(transport),
             transport_profile,
-        });
+            request_redacted: redaction.redacted,
+        }));
     }
 
     if !crate::ai_serving::request_pair_allowed_for_transport(
@@ -410,7 +432,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         spec_metadata.api_format,
         provider_api_format,
     ) {
-        return None;
+        return Ok(None);
     }
 
     let is_windsurf_cascade =
@@ -435,7 +457,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             skip_reason,
         )
         .await;
-        return None;
+        return Ok(None);
     }
 
     let oauth_context = OauthPreparationContext {
@@ -463,7 +485,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                     "transport_auth_unavailable",
                 )
                 .await;
-                return None;
+                return Ok(None);
             }
         }
     } else {
@@ -488,7 +510,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                     skip_reason,
                 )
                 .await;
-                return None;
+                return Ok(None);
             }
         }
     } else {
@@ -513,7 +535,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                     skip_reason,
                 )
                 .await;
-                return None;
+                return Ok(None);
             }
         }
     };
@@ -534,6 +556,16 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             Some(&input.requested_model),
         )
         .await;
+    let redaction = resolve_provider_chat_pii_redaction(
+        state,
+        parts,
+        body_json,
+        &input.auth_context,
+        spec_metadata.api_format,
+        &attempt.candidate_id,
+    )
+    .await?;
+    let body_json = redaction.body_json.as_ref();
     let mut provider_request_body =
         match crate::ai_serving::planner::standard::build_standard_request_body_with_model_directives_and_request_headers(
             body_json,
@@ -569,7 +601,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                     ),
                 )
                 .await;
-                return None;
+                return Ok(None);
             }
         };
     enforce_provider_body_stream_policy(
@@ -599,7 +631,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             ),
         )
         .await;
-        return None;
+        return Ok(None);
     }
     apply_non_native_claude_thinking_signature_compat(
         &mut provider_request_body,
@@ -654,7 +686,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                 ),
             )
             .await;
-            return None;
+            return Ok(None);
         }
         apply_non_native_claude_thinking_signature_compat(
             &mut provider_request_body,
@@ -671,7 +703,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
     }
 
     if let Some(kiro_auth) = kiro_auth.as_ref() {
-        return build_kiro_cross_format_payload_parts(
+        return Ok(build_kiro_cross_format_payload_parts(
             state,
             parts,
             trace_id,
@@ -686,11 +718,12 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             provider_request_body,
             upstream_is_stream,
             kiro_auth,
+            redaction.redacted,
         )
-        .await;
+        .await);
     }
     if is_windsurf_cascade {
-        return build_windsurf_cross_format_payload_parts(
+        return Ok(build_windsurf_cross_format_payload_parts(
             state,
             parts,
             trace_id,
@@ -704,8 +737,9 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             prepared_candidate.auth_value,
             provider_request_body,
             upstream_is_stream,
+            redaction.redacted,
         )
-        .await;
+        .await);
     }
 
     let upstream_url = match crate::ai_serving::planner::standard::build_standard_upstream_url(
@@ -733,7 +767,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                 ),
             )
             .await;
-            return None;
+            return Ok(None);
         }
     };
     let Some(resolved_headers) =
@@ -766,7 +800,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             ),
         )
         .await;
-        return None;
+        return Ok(None);
     };
     let mut provider_request_headers = resolved_headers.headers;
     apply_codex_openai_responses_special_headers(
@@ -778,8 +812,12 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         Some(trace_id),
         transport.key.decrypted_auth_config.as_deref(),
     );
+    request_identity_response_encoding_when_redacted(
+        &mut provider_request_headers,
+        redaction.redacted,
+    );
 
-    Some(LocalStandardCandidatePayloadParts {
+    Ok(Some(LocalStandardCandidatePayloadParts {
         auth_header: resolved_headers.auth_header,
         auth_value: resolved_headers.auth_value,
         mapped_model: prepared_candidate.mapped_model,
@@ -791,7 +829,8 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         envelope_name: None,
         transport: Arc::clone(transport),
         transport_profile: None,
-    })
+        request_redacted: redaction.redacted,
+    }))
 }
 
 fn apply_transport_request_body_semantics(
@@ -821,6 +860,7 @@ async fn build_windsurf_cross_format_payload_parts(
     auth_value: String,
     openai_chat_request_body: Value,
     upstream_is_stream: bool,
+    request_redacted: bool,
 ) -> Option<LocalStandardCandidatePayloadParts> {
     let candidate = &attempt.eligible.candidate;
     let effective_headers = input.effective_headers(&parts.headers);
@@ -876,7 +916,7 @@ async fn build_windsurf_cross_format_payload_parts(
             return None;
         }
     };
-    let provider_request_headers = match build_windsurf_cascade_headers(
+    let mut provider_request_headers = match build_windsurf_cascade_headers(
         effective_headers,
         &provider_request_body,
         original_body_json,
@@ -905,6 +945,10 @@ async fn build_windsurf_cross_format_payload_parts(
             return None;
         }
     };
+    request_identity_response_encoding_when_redacted(
+        &mut provider_request_headers,
+        request_redacted,
+    );
 
     Some(LocalStandardCandidatePayloadParts {
         auth_header,
@@ -918,6 +962,7 @@ async fn build_windsurf_cross_format_payload_parts(
         envelope_name: Some(WINDSURF_ENVELOPE_NAME),
         transport: Arc::clone(transport),
         transport_profile: None,
+        request_redacted,
     })
 }
 
@@ -1056,6 +1101,7 @@ async fn resolve_local_gemini_image_to_openai_image_candidate_payload_parts(
         envelope_name: None,
         transport: Arc::clone(transport),
         transport_profile: None,
+        request_redacted: false,
     })
 }
 
@@ -1075,6 +1121,7 @@ async fn build_kiro_cross_format_payload_parts(
     claude_request_body: Value,
     upstream_is_stream: bool,
     kiro_auth: &KiroRequestAuth,
+    request_redacted: bool,
 ) -> Option<LocalStandardCandidatePayloadParts> {
     let candidate = &attempt.eligible.candidate;
     let effective_headers = input.effective_headers(&parts.headers);
@@ -1133,7 +1180,7 @@ async fn build_kiro_cross_format_payload_parts(
             return None;
         }
     };
-    let provider_request_headers = match build_kiro_provider_headers(KiroProviderHeadersInput {
+    let mut provider_request_headers = match build_kiro_provider_headers(KiroProviderHeadersInput {
         headers: effective_headers,
         provider_request_body: &provider_request_body,
         original_request_body: original_body_json,
@@ -1163,6 +1210,10 @@ async fn build_kiro_cross_format_payload_parts(
             return None;
         }
     };
+    request_identity_response_encoding_when_redacted(
+        &mut provider_request_headers,
+        request_redacted,
+    );
 
     Some(LocalStandardCandidatePayloadParts {
         auth_header,
@@ -1176,6 +1227,7 @@ async fn build_kiro_cross_format_payload_parts(
         envelope_name: Some(KIRO_ENVELOPE_NAME),
         transport: Arc::clone(transport),
         transport_profile: None,
+        request_redacted,
     })
 }
 

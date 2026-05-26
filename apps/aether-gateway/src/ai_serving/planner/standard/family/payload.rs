@@ -75,9 +75,14 @@ pub(super) async fn maybe_build_local_standard_decision_payload_for_candidate(
     let Some(resolved) = resolve_local_standard_candidate_payload_parts(
         state, parts, trace_id, body_json, input, &attempt, spec,
     )
-    .await
+    .await?
     else {
         return Ok(None);
+    };
+    let original_request_body_json = if resolved.request_redacted {
+        Some(&resolved.provider_request_body)
+    } else {
+        Some(body_json)
     };
     let proxy = state
         .resolve_transport_proxy_snapshot_with_tunnel_affinity(&resolved.transport)
@@ -131,7 +136,7 @@ pub(super) async fn maybe_build_local_standard_decision_payload_for_candidate(
                 request_path: Some(parts.uri.path()),
                 request_query_string: parts.uri.query(),
                 request_origin: Some(crate::ai_serving::request_origin_from_parts(parts)),
-                original_request_body_json: Some(body_json),
+                original_request_body_json,
                 original_request_body_base64: None,
                 client_session_affinity: input.client_session_affinity.as_ref(),
                 scheduler_affinity_epoch: eligible.orchestration.scheduler_affinity_epoch,
@@ -168,6 +173,7 @@ pub(super) async fn maybe_build_local_standard_decision_payload_for_candidate(
         envelope_name: _,
         transport,
         transport_profile: _,
+        request_redacted: _,
     } = resolved;
 
     let mut decision = build_ai_execution_decision_response(AiExecutionDecisionResponseParts {
