@@ -440,7 +440,21 @@ pub fn admin_provider_ops_verify_headers(
                 )?;
             }
         }
-        "nekocode" | "done_hub" => {
+        "nekocode" => {
+            if let Some(session_cookie) = credentials
+                .get("session_cookie")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                insert_header(
+                    &mut headers,
+                    "Cookie",
+                    &admin_provider_ops_session_cookie_header(session_cookie),
+                )?;
+            }
+        }
+        "done_hub" => {
+            insert_header(&mut headers, "User-Agent", ADMIN_PROVIDER_OPS_USER_AGENT)?;
             if let Some(session_cookie) = credentials
                 .get("session_cookie")
                 .and_then(Value::as_str)
@@ -1004,6 +1018,12 @@ mod tests {
         assert_eq!(
             headers.get(COOKIE).and_then(|value| value.to_str().ok()),
             Some("session=abc")
+        );
+        assert_eq!(
+            headers
+                .get(USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(ADMIN_PROVIDER_OPS_USER_AGENT)
         );
     }
 
