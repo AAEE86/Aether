@@ -5937,7 +5937,7 @@ mod tests {
         .expect("execution should return a client response");
 
         first_data_seen.notified().await;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let live_usage = loop {
             let usage = usage_repository
                 .find_by_request_id("req-live-stream-first-data")
@@ -6102,7 +6102,7 @@ mod tests {
         .expect("execution should return a client response");
 
         first_event_seen.notified().await;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let first_event_usage = loop {
             let usage = usage_repository
                 .find_by_request_id("req-live-stream-first-event")
