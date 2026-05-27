@@ -10,6 +10,9 @@ use crate::antigravity::{
     AntigravityRequestUrlAction,
 };
 use crate::claude_code::build_claude_code_messages_url;
+use crate::gemini_cli::{
+    build_gemini_cli_v1internal_url, is_gemini_cli_provider_transport, GeminiCliRequestUrlAction,
+};
 use crate::snapshot::GatewayProviderTransportSnapshot;
 use crate::url::{
     build_claude_messages_url, build_gemini_content_url, build_openai_chat_url,
@@ -285,6 +288,22 @@ fn build_transport_hook_url(
 
     match aether_ai_formats::normalize_api_format_alias(params.provider_api_format).as_str() {
         "gemini:generate_content" => {
+            if is_gemini_cli_provider_transport(transport) {
+                let query = params.request_query.map(|raw| {
+                    form_urlencoded::parse(raw.as_bytes())
+                        .into_owned()
+                        .collect::<BTreeMap<String, String>>()
+                });
+                return build_gemini_cli_v1internal_url(
+                    &transport.endpoint.base_url,
+                    if params.upstream_is_stream {
+                        GeminiCliRequestUrlAction::StreamGenerateContent
+                    } else {
+                        GeminiCliRequestUrlAction::GenerateContent
+                    },
+                    query.as_ref(),
+                );
+            }
             if let Some(auth) = resolve_local_vertex_api_key_query_auth(transport) {
                 return build_vertex_api_key_gemini_content_url(
                     params.mapped_model?,
@@ -689,6 +708,58 @@ mod tests {
         assert_eq!(
             url,
             "https://aiplatform.googleapis.com/v1/projects/demo-project/locations/global/publishers/google/models/gemini-embedding-2:predict?foo=bar"
+        );
+    }
+
+    #[test]
+    fn gemini_cli_generate_content_uses_v1internal_code_assist_url() {
+        let transport = sample_transport(
+            "gemini_cli",
+            "gemini:generate_content",
+            "https://cloudcode-pa.googleapis.com",
+            None,
+        );
+
+        assert_eq!(
+            build_transport_request_url(
+                &transport,
+                TransportRequestUrlParams {
+                    provider_api_format: "gemini:generate_content",
+                    mapped_model: Some("gemini-2.5-pro"),
+                    upstream_is_stream: false,
+                    request_query: Some("key=blocked&beta=true&foo=bar"),
+                    kiro_api_region: None,
+                },
+            )
+            .as_deref(),
+            Some("https://cloudcode-pa.googleapis.com/v1internal:generateContent?foo=bar")
+        );
+    }
+
+    #[test]
+    fn gemini_cli_stream_generate_content_uses_v1internal_code_assist_url() {
+        let transport = sample_transport(
+            "gemini_cli",
+            "gemini:generate_content",
+            "https://cloudcode-pa.googleapis.com",
+            None,
+        );
+
+        assert_eq!(
+            build_transport_request_url(
+                &transport,
+                TransportRequestUrlParams {
+                    provider_api_format: "gemini:generate_content",
+                    mapped_model: Some("gemini-2.5-pro"),
+                    upstream_is_stream: true,
+                    request_query: Some("foo=bar"),
+                    kiro_api_region: None,
+                },
+            )
+            .as_deref(),
+            Some(
+                "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse&foo=bar"
+            )
         );
     }
 

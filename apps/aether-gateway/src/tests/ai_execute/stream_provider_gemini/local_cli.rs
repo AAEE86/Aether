@@ -452,7 +452,9 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
     struct SeenExecutionRuntimeStreamRequest {
         trace_id: String,
         url: String,
-        has_model_field: bool,
+        outer_model: String,
+        user_prompt_id: String,
+        inner_model_present: bool,
         accept: String,
         authorization: String,
         exact_temperature: f64,
@@ -574,7 +576,7 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
         )
         .expect("endpoint should build")
         .with_transport_fields(
-            "https://generativelanguage.googleapis.com".to_string(),
+            "https://cloudcode-pa.googleapis.com".to_string(),
             Some(serde_json::json!([
                 {"action":"set","key":"x-endpoint-tag","value":"gemini-cli-oauth-local"}
             ])),
@@ -584,7 +586,7 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
                 {"action":"drop","path":"toolConfig"}
             ])),
             Some(2),
-            Some("/custom/v1beta/models/gemini-cli-upstream:streamGenerateContent".to_string()),
+            None,
             None,
             None,
             None,
@@ -730,9 +732,24 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
                             .and_then(|value| value.as_str())
                             .unwrap_or_default()
                             .to_string(),
-                        has_model_field: payload
+                        outer_model: payload
                             .get("body")
                             .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("model"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        user_prompt_id: payload
+                            .get("body")
+                            .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("user_prompt_id"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        inner_model_present: payload
+                            .get("body")
+                            .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("request"))
                             .and_then(|value| value.get("model"))
                             .is_some(),
                         accept: payload
@@ -750,6 +767,7 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
                         exact_temperature: payload
                             .get("body")
                             .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("request"))
                             .and_then(|value| value.get("generationConfig"))
                             .and_then(|value| value.get("temperature"))
                             .and_then(|value| value.as_f64())
@@ -763,6 +781,7 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
                         metadata_mode: payload
                             .get("body")
                             .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("request"))
                             .and_then(|value| value.get("metadata"))
                             .and_then(|value| value.get("mode"))
                             .and_then(|value| value.as_str())
@@ -771,6 +790,7 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
                         metadata_source: payload
                             .get("body")
                             .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("request"))
                             .and_then(|value| value.get("metadata"))
                             .and_then(|value| value.get("source"))
                             .and_then(|value| value.as_str())
@@ -779,6 +799,7 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
                         tool_config_present: payload
                             .get("body")
                             .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("request"))
                             .and_then(|value| value.get("toolConfig"))
                             .is_some(),
                         proxy_node_id: payload
@@ -909,9 +930,17 @@ async fn gateway_executes_gemini_cli_stream_via_local_decision_gate_after_oauth_
     );
     assert_eq!(
         seen_execution_runtime_request.url,
-        "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-cli-upstream:streamGenerateContent?alt=sse"
+        "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
     );
-    assert!(!seen_execution_runtime_request.has_model_field);
+    assert_eq!(
+        seen_execution_runtime_request.outer_model,
+        "gemini-cli-upstream"
+    );
+    assert_eq!(
+        seen_execution_runtime_request.user_prompt_id,
+        "trace-gemini-cli-oauth-local-stream-123"
+    );
+    assert!(!seen_execution_runtime_request.inner_model_present);
     assert_eq!(seen_execution_runtime_request.accept, "text/event-stream");
     assert_eq!(
         seen_execution_runtime_request.authorization,

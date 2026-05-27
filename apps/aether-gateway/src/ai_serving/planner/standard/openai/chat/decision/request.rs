@@ -23,6 +23,11 @@ use crate::ai_serving::planner::standard::{
     build_local_openai_chat_upstream_url, request_body_build_failure_extra_data,
 };
 use crate::ai_serving::transport::auth::resolve_local_openai_bearer_auth;
+use crate::ai_serving::transport::gemini_cli::{
+    build_gemini_cli_v1internal_request, is_gemini_cli_provider_transport,
+    resolve_local_gemini_cli_request_auth, GeminiCliRequestAuthSupport,
+    GeminiCliRequestEnvelopeSupport,
+};
 use crate::ai_serving::transport::kiro::{
     build_kiro_provider_headers, build_kiro_provider_request_body,
     is_kiro_claude_messages_transport, KiroProviderHeadersInput, KiroRequestAuth,
@@ -126,6 +131,7 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         .provider_type
         .trim()
         .eq_ignore_ascii_case("grok");
+    let is_gemini_cli = is_gemini_cli_provider_transport(transport);
 
     if is_grok && is_grok_text_provider_api_format(provider_api_format) {
         let prepared_candidate = match prepare_header_authenticated_candidate(
@@ -440,6 +446,8 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
     };
 
     let provider_api_format = provider_api_format.trim().to_ascii_lowercase();
+    let normalized_provider_api_format =
+        crate::ai_serving::normalize_api_format_alias(provider_api_format.as_str());
     if provider_api_format == "openai:image" {
         return resolve_openai_chat_to_openai_image_payload_parts(
             state,
@@ -474,17 +482,19 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         transport,
         conversion_kind,
     ) {
-        mark_skipped_local_openai_chat_candidate(
-            state,
-            input,
-            trace_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            skip_reason,
-        )
-        .await;
-        return Ok(None);
+        if !(is_gemini_cli && normalized_provider_api_format == "gemini:generate_content") {
+            mark_skipped_local_openai_chat_candidate(
+                state,
+                input,
+                trace_id,
+                candidate,
+                candidate_index,
+                candidate_id,
+                skip_reason,
+            )
+            .await;
+            return Ok(None);
+        }
     }
     let is_kiro_claude_cli =
         is_kiro_claude_messages_transport(transport, provider_api_format.as_str());
@@ -629,6 +639,64 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         Some(body_json),
     );
 
+    let gemini_cli_auth = if is_gemini_cli_provider_transport(transport)
+        && normalized_provider_api_format == "gemini:generate_content"
+    {
+        match resolve_local_gemini_cli_request_auth(transport) {
+            GeminiCliRequestAuthSupport::Supported(auth) => Some(auth),
+            GeminiCliRequestAuthSupport::Unsupported(_) => {
+                mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "provider_request_body_build_failed",
+                    CandidateFailureDiagnostic::envelope_build_failed(
+                        "openai:chat",
+                        provider_api_format.as_str(),
+                        "openai_chat_gemini_cli_envelope",
+                    ),
+                )
+                .await;
+                return Ok(None);
+            }
+        }
+    } else {
+        None
+    };
+    let provider_request_body = if let Some(gemini_cli_auth) = gemini_cli_auth.as_ref() {
+        match build_gemini_cli_v1internal_request(
+            gemini_cli_auth,
+            trace_id,
+            &prepared_candidate.mapped_model,
+            &provider_request_body,
+        ) {
+            GeminiCliRequestEnvelopeSupport::Supported(envelope) => envelope,
+            GeminiCliRequestEnvelopeSupport::Unsupported(_) => {
+                mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "provider_request_body_build_failed",
+                    CandidateFailureDiagnostic::envelope_build_failed(
+                        "openai:chat",
+                        provider_api_format.as_str(),
+                        "openai_chat_gemini_cli_envelope",
+                    ),
+                )
+                .await;
+                return Ok(None);
+            }
+        }
+    } else {
+        provider_request_body
+    };
+
     if let Some(kiro_auth) = kiro_auth.as_ref() {
         return Ok(build_kiro_openai_chat_cross_format_payload_parts(
             state,
@@ -744,7 +812,9 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
         execution_strategy,
         conversion_mode,
         report_kind: resolved_report_kind,
-        envelope_name: None,
+        envelope_name: gemini_cli_auth
+            .as_ref()
+            .map(|_| aether_ai_formats::api::GEMINI_CLI_V1INTERNAL_ENVELOPE_NAME),
         transport: Arc::clone(transport),
         request_redacted: redaction.redacted,
         transport_profile: None,

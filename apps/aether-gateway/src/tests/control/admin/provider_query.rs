@@ -5027,7 +5027,7 @@ async fn gateway_handles_gemini_cli_test_model_with_oauth_header_fallback() {
             assert_eq!(plan.provider_api_format, "gemini:generate_content");
             assert_eq!(
                 plan.url,
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+                "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
             );
             assert_eq!(
                 plan.headers.get("authorization").map(String::as_str),
@@ -5082,7 +5082,7 @@ async fn gateway_handles_gemini_cli_test_model_with_oauth_header_fallback() {
             "endpoint-gemini-cli",
             "provider-gemini",
             "gemini:generate_content",
-            "https://generativelanguage.googleapis.com",
+            "https://cloudcode-pa.googleapis.com",
         )],
         vec![key],
     ));

@@ -33,6 +33,11 @@ use crate::ai_serving::transport::antigravity::{
 use crate::ai_serving::transport::auth::{
     resolve_local_gemini_auth, resolve_local_openai_bearer_auth, resolve_local_standard_auth,
 };
+use crate::ai_serving::transport::gemini_cli::{
+    build_gemini_cli_v1internal_request, is_gemini_cli_provider_transport,
+    resolve_local_gemini_cli_request_auth, GeminiCliRequestAuthSupport,
+    GeminiCliRequestEnvelopeSupport,
+};
 use crate::ai_serving::transport::kiro::{
     build_kiro_provider_headers, build_kiro_provider_request_body,
     is_kiro_claude_messages_transport,
@@ -111,9 +116,12 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
     let planner_state = PlannerAppState::new(state);
     let candidate = &eligible.candidate;
     let provider_api_format = eligible.provider_api_format.as_str();
+    let normalized_provider_api_format =
+        crate::ai_serving::normalize_api_format_alias(provider_api_format);
     let transport = &eligible.transport;
     let transport_profile = crate::ai_serving::transport::resolve_transport_profile(transport);
     let is_antigravity = is_antigravity_provider_transport(transport);
+    let is_gemini_cli = is_gemini_cli_provider_transport(transport);
     let is_kiro_claude_cli = is_kiro_claude_messages_transport(transport, provider_api_format);
     let is_grok = transport
         .provider
@@ -140,25 +148,29 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
 
     let same_format = api_format_alias_matches(provider_api_format, &client_api_format);
     let conversion_kind = request_conversion_kind(spec_metadata.api_format, provider_api_format);
-    let transport_unsupported_reason = if is_grok
-        && is_grok_text_provider_api_format(provider_api_format)
-    {
-        None
-    } else if same_format && is_kiro_claude_cli {
-        local_kiro_request_transport_unsupported_reason_with_network(transport)
-    } else if same_format {
-        local_standard_transport_unsupported_reason_with_network(transport, provider_api_format)
-    } else if is_windsurf_cascade {
-        local_windsurf_request_transport_unsupported_reason_with_network(transport)
-    } else {
-        match conversion_kind {
-            Some(_) if is_antigravity && provider_api_format == "gemini:generate_content" => None,
-            Some(kind) => {
-                crate::ai_serving::request_conversion_transport_unsupported_reason(transport, kind)
+    let transport_unsupported_reason =
+        if is_grok && is_grok_text_provider_api_format(provider_api_format) {
+            None
+        } else if same_format && is_kiro_claude_cli {
+            local_kiro_request_transport_unsupported_reason_with_network(transport)
+        } else if same_format {
+            local_standard_transport_unsupported_reason_with_network(transport, provider_api_format)
+        } else if is_windsurf_cascade {
+            local_windsurf_request_transport_unsupported_reason_with_network(transport)
+        } else {
+            match conversion_kind {
+                Some(_)
+                    if (is_antigravity || is_gemini_cli)
+                        && normalized_provider_api_format == "gemini:generate_content" =>
+                {
+                    None
+                }
+                Some(kind) => crate::ai_serving::request_conversion_transport_unsupported_reason(
+                    transport, kind,
+                ),
+                None => Some("transport_api_format_unsupported"),
             }
-            None => Some("transport_api_format_unsupported"),
-        }
-    };
+        };
     if let Some(skip_reason) = transport_unsupported_reason {
         mark_skipped_local_openai_responses_candidate(
             state,
@@ -420,6 +432,32 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
     } else {
         None
     };
+    let gemini_cli_auth =
+        if is_gemini_cli && normalized_provider_api_format == "gemini:generate_content" {
+            match resolve_local_gemini_cli_request_auth(transport) {
+                GeminiCliRequestAuthSupport::Supported(auth) => Some(auth),
+                GeminiCliRequestAuthSupport::Unsupported(_) => {
+                    mark_skipped_local_openai_responses_candidate_with_failure_diagnostic(
+                        state,
+                        input,
+                        trace_id,
+                        candidate,
+                        candidate_index,
+                        candidate_id,
+                        "provider_request_body_build_failed",
+                        CandidateFailureDiagnostic::envelope_build_failed(
+                            spec_metadata.api_format,
+                            provider_api_format,
+                            "openai_responses_gemini_cli_envelope",
+                        ),
+                    )
+                    .await;
+                    return Ok(None);
+                }
+            }
+        } else {
+            None
+        };
     let provider_request_body = if let Some(antigravity_auth) = antigravity_auth.as_ref() {
         match build_antigravity_safe_v1internal_request(
             antigravity_auth,
@@ -442,6 +480,33 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
                         spec_metadata.api_format,
                         provider_api_format,
                         "openai_responses_antigravity_envelope",
+                    ),
+                )
+                .await;
+                return Ok(None);
+            }
+        }
+    } else if let Some(gemini_cli_auth) = gemini_cli_auth.as_ref() {
+        match build_gemini_cli_v1internal_request(
+            gemini_cli_auth,
+            trace_id,
+            &mapped_model,
+            &base_provider_request_body,
+        ) {
+            GeminiCliRequestEnvelopeSupport::Supported(envelope) => envelope,
+            GeminiCliRequestEnvelopeSupport::Unsupported(_) => {
+                mark_skipped_local_openai_responses_candidate_with_failure_diagnostic(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "provider_request_body_build_failed",
+                    CandidateFailureDiagnostic::envelope_build_failed(
+                        spec_metadata.api_format,
+                        provider_api_format,
+                        "openai_responses_gemini_cli_envelope",
                     ),
                 )
                 .await;
@@ -664,6 +729,8 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
             || antigravity_auth.is_some() && ANTIGRAVITY_ENVELOPE_NAME == "antigravity:v1internal",
         envelope_name: if is_antigravity || antigravity_auth.is_some() {
             Some(ANTIGRAVITY_ENVELOPE_NAME)
+        } else if gemini_cli_auth.is_some() {
+            Some(aether_ai_formats::api::GEMINI_CLI_V1INTERNAL_ENVELOPE_NAME)
         } else {
             None
         },

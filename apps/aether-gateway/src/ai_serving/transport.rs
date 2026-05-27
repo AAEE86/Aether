@@ -18,6 +18,10 @@ pub(crate) mod grok {
     pub(crate) use aether_provider_transport::grok::*;
 }
 
+pub(crate) mod gemini_cli {
+    pub(crate) use aether_provider_transport::gemini_cli::*;
+}
+
 pub(crate) mod oauth_refresh {
     pub(crate) use aether_provider_transport::oauth_refresh::*;
 }
