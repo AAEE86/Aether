@@ -562,6 +562,61 @@ export interface PublicEndpointStatusMonitorResponse {
   formats: PublicEndpointStatusMonitor[]
 }
 
+export interface ModelHealthEvent {
+  timestamp: string
+  status: 'success' | 'failed'
+  status_code?: number | null
+  latency_ms?: number | null
+  first_byte_time_ms?: number | null
+  error_type?: string | null
+}
+
+export interface ModelStatusMonitor {
+  model: string
+  display_name?: string | null
+  total_attempts: number
+  success_count: number
+  failed_count: number
+  success_rate: number
+  avg_latency_ms?: number | null
+  avg_first_byte_ms?: number | null
+  provider_count?: number
+  last_event_at?: string | null
+  events: ModelHealthEvent[]
+  timeline?: string[]
+  time_range_start?: string | null
+  time_range_end?: string | null
+}
+
+export interface ModelStatusMonitorResponse {
+  generated_at: string
+  models: ModelStatusMonitor[]
+}
+
+export interface ProviderStatusMonitor {
+  provider_id: string
+  provider_name: string
+  provider_type?: string | null
+  is_active: boolean
+  total_attempts: number
+  success_count: number
+  failed_count: number
+  success_rate: number
+  avg_latency_ms?: number | null
+  avg_first_byte_ms?: number | null
+  model_count: number
+  last_event_at?: string | null
+  timeline?: string[]
+  time_range_start?: string | null
+  time_range_end?: string | null
+  models: ModelStatusMonitor[]
+}
+
+export interface ProviderStatusMonitorResponse {
+  generated_at: string
+  providers: ProviderStatusMonitor[]
+}
+
 export type ProviderType = 'custom' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro' | 'grok' | 'windsurf' | 'vertex_ai'
 
 export interface ClaudeCodeAdvancedConfig {

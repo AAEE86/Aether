@@ -528,6 +528,11 @@ fn usage_matches_breakdown_summary_query(
             return false;
         }
     }
+    if let Some(provider_name) = query.provider_name.as_deref() {
+        if item.provider_name != provider_name {
+            return false;
+        }
+    }
     match query.group_by {
         UsageBreakdownGroupBy::Model | UsageBreakdownGroupBy::Provider => true,
         UsageBreakdownGroupBy::ApiFormat => item.api_format.is_some(),
