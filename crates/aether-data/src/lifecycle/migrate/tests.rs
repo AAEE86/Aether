@@ -319,6 +319,7 @@ fn empty_database_snapshot_covers_current_cutoff_versions() {
             20260524000000,
             20260527000000,
             20260528000000,
+            20260528010000,
         ]
     );
 }
@@ -343,7 +344,7 @@ fn empty_database_snapshot_includes_tables_created_by_stamped_migrations() {
 fn routing_profiles_repair_migration_creates_missing_tables() {
     let migration = POSTGRES_MIGRATOR
         .iter()
-        .find(|migration| migration.version == 20260528000000)
+        .find(|migration| migration.version == 20260528010000)
         .expect("routing profiles repair migration should be embedded");
 
     assert!(migration
@@ -1555,6 +1556,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260524000000,
             20260527000000,
             20260528000000,
+            20260528010000,
         ]
     );
 }
