@@ -4218,7 +4218,7 @@ mod tests {
     }
 
     #[test]
-    fn kiro_stream_summary_reads_cached_prefix_beyond_tail_lookback_window() {
+    fn kiro_stream_summary_reads_cached_prefix_within_prompt_cache_lookback_window() {
         let first_request_body = json!({
             "model": "claude-sonnet-4.6",
             "messages": [{
