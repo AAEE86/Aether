@@ -1394,17 +1394,14 @@ pub async fn handle_stream(
 
     server.active_connections.fetch_add(1, Ordering::Release);
 
-    let connect_elapsed = handle_stream_inner(
-        &state,
-        &server,
-        stream_id,
-        meta,
+    let stream_io = StreamIo {
         body_rx,
-        &frame_tx,
-        response_window.as_ref(),
-        permit,
-    )
-    .await;
+        frame_tx: &frame_tx,
+        response_window: response_window.as_ref(),
+        admission_permit: permit,
+    };
+
+    let connect_elapsed = handle_stream_inner(&state, &server, stream_id, meta, stream_io).await;
 
     server.active_connections.fetch_sub(1, Ordering::Release);
     if let Some(d) = connect_elapsed {
@@ -1459,16 +1456,27 @@ async fn send_frame(tx: &FrameSender, frame: TunnelFrame) -> bool {
 /// Returns the connection-establishment duration (DNS + TCP/TLS + TTFB) if the
 /// upstream request succeeded, or `None` if the request never reached the
 /// response-headers stage.
+struct StreamIo<'a> {
+    body_rx: mpsc::Receiver<TunnelFrame>,
+    frame_tx: &'a FrameSender,
+    response_window: &'a StreamSendWindow,
+    admission_permit: Option<AdmissionPermit>,
+}
+
 async fn handle_stream_inner(
     state: &AppState,
     server: &ServerContext,
     stream_id: u32,
     meta: RequestMeta,
-    body_rx: mpsc::Receiver<TunnelFrame>,
-    frame_tx: &FrameSender,
-    response_window: &StreamSendWindow,
-    mut admission_permit: Option<AdmissionPermit>,
+    stream_io: StreamIo<'_>,
 ) -> Option<Duration> {
+    let StreamIo {
+        body_rx,
+        frame_tx,
+        response_window,
+        mut admission_permit,
+    } = stream_io;
+
     let mut current_method: hyper::Method = parse_request_method(&meta.method);
     let mut current_url = match url::Url::parse(&meta.url) {
         Ok(u) => u,

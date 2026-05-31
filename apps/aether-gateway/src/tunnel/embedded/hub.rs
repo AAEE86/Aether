@@ -44,8 +44,7 @@ static DRAIN_DEADLINE_MS: LazyLock<u64> = LazyLock::new(|| {
 static STREAM_MIN_WINDOW_UPDATE_BYTES: LazyLock<u32> = LazyLock::new(|| {
     STREAM_INITIAL_WINDOW_BYTES
         .saturating_div(4)
-        .max(1)
-        .min(1024 * 1024)
+        .clamp(1, 1024 * 1024)
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,9 +375,8 @@ impl ProxyConn {
     }
 
     pub fn update_protocol_version(&self, protocol_version: u8) {
-        let negotiated = protocol_version
-            .max(1)
-            .min(aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION);
+        let negotiated =
+            protocol_version.clamp(1, aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION);
         self.protocol_version.store(negotiated, Ordering::Relaxed);
     }
 
