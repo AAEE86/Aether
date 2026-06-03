@@ -14,6 +14,7 @@ use crate::ai_serving::transport::antigravity::{
     build_antigravity_safe_v1internal_request, build_antigravity_static_identity_headers,
     classify_local_antigravity_request_support, AntigravityEnvelopeRequestType,
     AntigravityRequestEnvelopeSupport, AntigravityRequestSideSupport,
+    AntigravityRequestSideUnsupportedReason,
 };
 use crate::ai_serving::transport::{
     build_gemini_cli_v1internal_request, build_grok_browser_headers, build_grok_upstream_url,
@@ -230,11 +231,32 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
     }
 
     let antigravity_auth = if prepared.is_antigravity {
-        match classify_local_antigravity_request_support(
+        let mut antigravity_support = classify_local_antigravity_request_support(
             &transport,
             &base_provider_request_body,
             AntigravityEnvelopeRequestType::Agent,
+        );
+        if matches!(
+            antigravity_support,
+            AntigravityRequestSideSupport::Unsupported(
+                AntigravityRequestSideUnsupportedReason::UnsupportedAuth(
+                    crate::provider_transport::antigravity::AntigravityRequestAuthUnsupportedReason::MissingProjectId
+                )
+            )
         ) {
+            if let Some(hydrated) = state
+                .hydrate_antigravity_project_metadata_for_transport(&transport)
+                .await
+            {
+                transport = Arc::new(hydrated);
+                antigravity_support = classify_local_antigravity_request_support(
+                    &transport,
+                    &base_provider_request_body,
+                    AntigravityEnvelopeRequestType::Agent,
+                );
+            }
+        }
+        match antigravity_support {
             AntigravityRequestSideSupport::Supported(spec) => Some(spec.auth),
             AntigravityRequestSideSupport::Unsupported(_) => {
                 mark_skipped_local_same_format_provider_candidate(
