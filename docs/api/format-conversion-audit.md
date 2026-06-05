@@ -98,7 +98,7 @@ Provider schema refresh is not a runtime dependency. Same-format runtime paths d
 | `reasoning.effort` | OpenAI enum | `reasoning_effort` | mapped; invalid enum blocked |
 | `reasoning.summary` | Responses-only | none | lossy-blocked |
 | `reasoning.budget_tokens` | Responses-only | none | lossy-blocked |
-| `stream` | Responses extension | `stream` | extension-preserved |
+| `stream` | Responses request transport policy | none | lossy-blocked; target stream policy is transport-owned |
 | `include` | Responses-only | none | lossy-blocked; legacy emitter no longer leaks |
 | `previous_response_id` | Responses-only | none | lossy-blocked; legacy emitter no longer leaks |
 | `truncation` | Responses-only | none | lossy-blocked |

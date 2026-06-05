@@ -379,7 +379,7 @@ Statuses used in this matrix: `native`, `mapped`, `mapped/lossy-blocked`, `exten
 | OpenAI | `CreateResponse` | `safety_identifier` | 否 | `string` | openai:responses standard | native | extension-preserved | mapped | OpenAI-family only; blocked to non-OpenAI targets |
 | OpenAI | `CreateResponse` | `service_tier` | 否 | `ServiceTier` | openai:responses standard | native | extension-preserved | mapped | OpenAI-family only; blocked to non-OpenAI targets |
 | OpenAI | `CreateResponse` | `store` | 否 | `boolean \| null` | openai:responses standard | native | mapped | mapped | Responses request field maps provider-specifically; target-incompatible cases fail closed |
-| OpenAI | `CreateResponse` | `stream` | 否 | `boolean \| null` | openai:responses standard | native | mapped | mapped | Responses request field maps provider-specifically; target-incompatible cases fail closed |
+| OpenAI | `CreateResponse` | `stream` | 否 | `boolean \| null` | openai:responses standard | native | extension-preserved | lossy-blocked | target stream policy is transport-owned; cross-format conversion does not emit provider stream flags |
 | OpenAI | `CreateResponse` | `stream_options` | 否 | `ResponseStreamOptions` | openai:responses standard | native | extension-preserved | lossy-blocked | Responses-only field has no audited lossless Chat/Claude/Gemini target equivalent |
 | OpenAI | `CreateResponse` | `temperature` | 否 | `number \| null` | openai:responses standard | native | mapped | mapped | Responses request field maps provider-specifically; target-incompatible cases fail closed |
 | OpenAI | `CreateResponse` | `text` | 否 | `ResponseTextParam` | openai:responses standard | native | mapped | mapped | text.format and text.verbosity map provider-specifically |

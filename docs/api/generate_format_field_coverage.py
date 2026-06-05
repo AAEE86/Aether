@@ -95,7 +95,6 @@ OPENAI_RESPONSES_MAPPED = {
     "tools",
     "tool_choice",
     "reasoning",
-    "stream",
     "store",
     "service_tier",
     "safety_identifier",
@@ -113,6 +112,7 @@ OPENAI_RESPONSES_BLOCKED = {
     "max_tool_calls",
     "user",
     "context_management",
+    "stream",
     "stream_options",
 }
 

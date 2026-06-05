@@ -2416,7 +2416,7 @@ mod tests {
     }
 
     #[test]
-    fn pure_claude_to_openai_chat_maps_max_output_effort_to_xhigh() {
+    fn pure_claude_to_openai_chat_clamps_max_output_effort_to_high() {
         let body = json!({
             "model": "claude-sonnet",
             "messages": [{"role": "user", "content": "hello"}],
@@ -2430,7 +2430,7 @@ mod tests {
             .expect("pure conversion should succeed")
             .value;
 
-        assert_eq!(converted["reasoning_effort"], "xhigh");
+        assert_eq!(converted["reasoning_effort"], "high");
     }
 
     #[test]
@@ -3256,7 +3256,7 @@ mod tests {
         )
         .expect("legacy conversion should still emit a chat body");
 
-        assert_eq!(converted["stream"], true);
+        assert!(converted.get("stream").is_none());
         assert!(converted.get("include").is_none());
         assert!(converted.get("previous_response_id").is_none());
     }
