@@ -1,13 +1,16 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::{json, Map, Value};
 
 use crate::{
     formats::context::FormatContext,
     protocol::canonical::{
-        canonical_content_block_to_openai_responses_part,
+        canonical_content_block_to_openai_responses_part, canonical_extension_object_mut,
         canonical_usage_to_openai_responses_usage, canonicalize_tool_arguments,
-        flush_openai_responses_message_item, namespace_extension_object,
+        flush_openai_responses_message_item, is_openai_thinking_block, namespace_extension_object,
         openai_responses_extensions, openai_responses_output_to_canonical_blocks,
         openai_usage_to_canonical, CanonicalContentBlock, CanonicalResponse,
         CanonicalResponseOutput, CanonicalRole, CanonicalStopReason,
@@ -42,11 +45,19 @@ pub fn from_raw(body_json: &Value) -> Option<CanonicalResponse> {
         Some(CanonicalStopReason::ToolUse)
     } else {
         match body.get("status").and_then(Value::as_str) {
-            Some("incomplete") => Some(CanonicalStopReason::MaxTokens),
+            Some("incomplete") => Some(openai_responses_incomplete_stop_reason(body)),
             Some("failed") => Some(CanonicalStopReason::Unknown),
             _ => Some(CanonicalStopReason::EndTurn),
         }
     };
+    let mut extensions = openai_responses_extensions(
+        body,
+        &["id", "object", "model", "output", "usage", "status"],
+    );
+    if let Some(raw_status) = body.get("status").cloned() {
+        canonical_extension_object_mut(&mut extensions, OPENAI_RESPONSES_EXTENSION_NAMESPACE)
+            .insert("raw_status".to_string(), raw_status);
+    }
     Some(CanonicalResponse {
         id: body
             .get("id")
@@ -68,11 +79,21 @@ pub fn from_raw(body_json: &Value) -> Option<CanonicalResponse> {
         content,
         stop_reason,
         usage: openai_usage_to_canonical(body.get("usage")),
-        extensions: openai_responses_extensions(
-            body,
-            &["id", "object", "model", "output", "usage", "status"],
-        ),
+        extensions,
     })
+}
+
+fn openai_responses_incomplete_stop_reason(body: &Map<String, Value>) -> CanonicalStopReason {
+    match body
+        .get("incomplete_details")
+        .and_then(Value::as_object)
+        .and_then(|details| details.get("reason"))
+        .and_then(Value::as_str)
+    {
+        Some("content_filter") => CanonicalStopReason::ContentFiltered,
+        Some("tool_calls") | Some("function_call") => CanonicalStopReason::ToolUse,
+        _ => CanonicalStopReason::MaxTokens,
+    }
 }
 
 pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, _compact: bool) -> Value {
@@ -82,6 +103,20 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, _compact: b
     response.insert("object".to_string(), Value::String("response".to_string()));
     response.insert("status".to_string(), Value::String("completed".to_string()));
     response.insert("model".to_string(), Value::String(canonical.model.clone()));
+    if let Some(raw_status) = canonical
+        .extensions
+        .get(OPENAI_RESPONSES_EXTENSION_NAMESPACE)
+        .or_else(|| {
+            canonical
+                .extensions
+                .get(OPENAI_RESPONSES_LEGACY_EXTENSION_NAMESPACE)
+        })
+        .and_then(Value::as_object)
+        .and_then(|openai| openai.get("raw_status"))
+        .cloned()
+    {
+        response.insert("status".to_string(), raw_status);
+    }
 
     let mut output = Vec::new();
     let mut message_content = Vec::new();
@@ -123,8 +158,16 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, _compact: b
             CanonicalContentBlock::Thinking {
                 text,
                 encrypted_content,
+                extensions,
                 ..
             } => {
+                let encrypted_content = encrypted_content
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .filter(|_| is_openai_thinking_block(extensions));
+                if text.trim().is_empty() && encrypted_content.is_none() {
+                    continue;
+                }
                 flush_openai_responses_message_item(
                     &mut output,
                     &mut message_content,
@@ -138,9 +181,7 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, _compact: b
                     Value::String(format!("{}_rs_{}", response_id, output.len())),
                 );
                 item.insert("status".to_string(), Value::String("completed".to_string()));
-                if let Some(encrypted_content) =
-                    encrypted_content.as_ref().filter(|value| !value.is_empty())
-                {
+                if let Some(encrypted_content) = encrypted_content {
                     item.insert(
                         "encrypted_content".to_string(),
                         Value::String(encrypted_content.clone()),
@@ -272,17 +313,98 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, _compact: b
             response.insert("service_tier".to_string(), service_tier);
         }
     }
-    response.extend(namespace_extension_object(
+    let mut extension_fields = namespace_extension_object(
         &canonical.extensions,
         OPENAI_RESPONSES_EXTENSION_NAMESPACE,
         &response,
-    ));
-    response.extend(namespace_extension_object(
+    );
+    extension_fields.remove("raw_status");
+    response.extend(extension_fields);
+    let mut legacy_extension_fields = namespace_extension_object(
         &canonical.extensions,
         OPENAI_RESPONSES_LEGACY_EXTENSION_NAMESPACE,
         &response,
-    ));
+    );
+    legacy_extension_fields.remove("raw_status");
+    response.extend(legacy_extension_fields);
+    ensure_modern_openai_responses_response_fields(&mut response);
     Value::Object(response)
+}
+
+pub(crate) fn ensure_modern_openai_responses_response_fields(
+    response: &mut Map<String, Value>,
+) -> bool {
+    let mut changed = false;
+    if !response
+        .get("output")
+        .is_some_and(|value| matches!(value, Value::Array(_)))
+    {
+        response.insert("output".to_string(), Value::Array(Vec::new()));
+        changed = true;
+    }
+    if !response.contains_key("created_at") {
+        let created_at = response
+            .get("created")
+            .and_then(openai_responses_timestamp_value)
+            .unwrap_or_else(openai_responses_current_timestamp);
+        response.insert("created_at".to_string(), Value::from(created_at));
+        changed = true;
+    }
+    if response
+        .get("status")
+        .and_then(Value::as_str)
+        .is_none_or(|status| status == "completed")
+        && !response.contains_key("completed_at")
+    {
+        let completed_at = response
+            .get("created_at")
+            .and_then(openai_responses_timestamp_value)
+            .unwrap_or_else(openai_responses_current_timestamp);
+        response.insert("completed_at".to_string(), Value::from(completed_at));
+        changed = true;
+    }
+    if !response.contains_key("output_text") {
+        let output_text = openai_responses_output_text_from_output(response.get("output"));
+        response.insert("output_text".to_string(), Value::String(output_text));
+        changed = true;
+    }
+    changed
+}
+
+pub(crate) fn openai_responses_output_text_from_output(output: Option<&Value>) -> String {
+    output
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .flat_map(|item| {
+            item.get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|part| {
+            let part = part.as_object()?;
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("output_text" | "text")
+            )
+            .then(|| part.get("text").and_then(Value::as_str).unwrap_or_default())
+        })
+        .collect::<String>()
+}
+
+pub(crate) fn openai_responses_current_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn openai_responses_timestamp_value(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
 }
 
 fn image_block_is_generation_call(extensions: &BTreeMap<String, Value>) -> bool {
@@ -379,6 +501,101 @@ mod tests {
         assert_eq!(body["output"][0]["status"], "completed");
         assert_eq!(body["output"][0]["action"]["type"], "search");
         assert_eq!(body["output"][0]["action"]["query"], "today tech");
+        assert_eq!(body["output_text"], "");
+        assert!(body["created_at"].as_i64().is_some());
+        assert!(body["completed_at"].as_i64().is_some());
+    }
+
+    #[test]
+    fn responses_response_builder_emits_modern_output_text_and_preserves_source_fields() {
+        let mut extensions = BTreeMap::new();
+        extensions.insert(
+            OPENAI_RESPONSES_EXTENSION_NAMESPACE.to_string(),
+            json!({
+                "created_at": 111,
+                "completed_at": 222,
+                "output_text": "source text",
+                "conversation": {"id": "conv_123"}
+            }),
+        );
+        let response = CanonicalResponse {
+            id: "resp_text".to_string(),
+            model: "gpt-5".to_string(),
+            content: vec![CanonicalContentBlock::Text {
+                text: "generated text".to_string(),
+                extensions: BTreeMap::new(),
+            }],
+            outputs: Vec::new(),
+            stop_reason: Some(CanonicalStopReason::EndTurn),
+            usage: None,
+            extensions,
+        };
+
+        let body = to_raw(&response, &json!({}), false);
+
+        assert_eq!(body["output_text"], "source text");
+        assert_eq!(body["created_at"], 111);
+        assert_eq!(body["completed_at"], 222);
+        assert_eq!(body["conversation"]["id"], "conv_123");
+    }
+
+    #[test]
+    fn responses_response_parser_preserves_encrypted_reasoning_without_summary() {
+        let body = json!({
+            "id": "resp_test",
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [{
+                "type": "reasoning",
+                "id": "rs_1",
+                "status": "completed",
+                "summary": [],
+                "encrypted_content": "openai-opaque"
+            }]
+        });
+
+        let canonical = from_raw(&body).expect("response should parse");
+
+        assert!(matches!(
+            canonical.content.first(),
+            Some(CanonicalContentBlock::Thinking {
+                text,
+                encrypted_content,
+                ..
+            }) if text.is_empty() && encrypted_content.as_deref() == Some("openai-opaque")
+        ));
+
+        let rebuilt = to_raw(&canonical, &json!({}), false);
+        assert_eq!(rebuilt["output"][0]["type"], "reasoning");
+        assert_eq!(
+            rebuilt["output"][0]["encrypted_content"],
+            json!("openai-opaque")
+        );
+    }
+
+    #[test]
+    fn responses_response_builder_does_not_emit_claude_redacted_as_openai_encrypted_content() {
+        let mut extensions = BTreeMap::new();
+        extensions.insert("aether".to_string(), json!({"source": "claude_thinking"}));
+        let response = CanonicalResponse {
+            id: "msg_claude".to_string(),
+            model: "claude-sonnet".to_string(),
+            content: vec![CanonicalContentBlock::Thinking {
+                text: String::new(),
+                signature: None,
+                encrypted_content: Some("{\"type\":\"redacted_thinking\",\"v\":5}".to_string()),
+                extensions,
+            }],
+            outputs: Vec::new(),
+            stop_reason: Some(CanonicalStopReason::EndTurn),
+            usage: None,
+            extensions: BTreeMap::new(),
+        };
+
+        let body = to_raw(&response, &json!({}), false);
+
+        assert!(body["output"].as_array().expect("output").is_empty());
+        assert!(!body.to_string().contains("encrypted_content"));
     }
 
     #[test]

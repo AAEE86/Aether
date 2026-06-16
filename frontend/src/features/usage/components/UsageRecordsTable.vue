@@ -366,6 +366,7 @@
               <ElapsedTimeText
                 class="text-primary"
                 :created-at="record.created_at"
+                :response-time-updated-at="record.response_time_updated_at ?? null"
                 :status="getDisplayStatus(record)"
                 :response-time-ms="record.response_time_ms ?? null"
               />
@@ -987,6 +988,7 @@
                 <ElapsedTimeText
                   class="text-primary"
                   :created-at="record.created_at"
+                  :response-time-updated-at="record.response_time_updated_at ?? null"
                   :status="getDisplayStatus(record)"
                   :response-time-ms="record.response_time_ms ?? null"
                 />
