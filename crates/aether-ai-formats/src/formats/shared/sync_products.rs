@@ -70,19 +70,41 @@ pub fn maybe_build_standard_cross_format_sync_product_from_normalized_payload(
         .and_then(Value::as_str)
         .unwrap_or_default();
 
-    let aggregated_stream_body = match body_base64 {
+    let (aggregated_stream_body, aggregated_stream_api_format) = match body_base64 {
         Some(body_base64) => {
             let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+            let provider_stream_event_api_format =
+                provider_stream_event_api_format_for_report_context(
+                    report_context,
+                    provider_api_format,
+                );
             if is_standard_chat_finalize_kind(report_kind) {
-                try_aggregate_standard_chat_stream_sync_response(&body_bytes, provider_api_format)?
+                let body = try_aggregate_standard_chat_stream_sync_response(
+                    &body_bytes,
+                    &provider_stream_event_api_format,
+                )?;
+                let api_format = body
+                    .as_ref()
+                    .map(|_| provider_stream_event_api_format.clone());
+                (body, api_format)
             } else if is_standard_cli_finalize_kind(report_kind) {
-                try_aggregate_standard_cli_stream_sync_response(&body_bytes, provider_api_format)?
+                let body = try_aggregate_standard_cli_stream_sync_response(
+                    &body_bytes,
+                    &provider_stream_event_api_format,
+                )?;
+                let api_format = body
+                    .as_ref()
+                    .map(|_| provider_stream_event_api_format.clone());
+                (body, api_format)
             } else {
                 return Ok(None);
             }
         }
-        None => None,
+        None => (None, None),
     };
+    let provider_body_api_format = aggregated_stream_api_format
+        .as_deref()
+        .unwrap_or(provider_api_format);
 
     let Some(provider_body_json) = aggregated_stream_body.or_else(|| body_json.cloned()) else {
         return Ok(None);
@@ -90,7 +112,7 @@ pub fn maybe_build_standard_cross_format_sync_product_from_normalized_payload(
 
     Ok(maybe_build_standard_cross_format_sync_product(
         report_kind,
-        provider_api_format,
+        provider_body_api_format,
         client_api_format,
         report_context,
         provider_body_json,
@@ -547,11 +569,29 @@ fn maybe_build_standard_same_format_stream_sync_body(
         return Ok(None);
     };
     let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
-    Ok(
-        try_aggregate_same_format_stream_sync_response(expected_api_format, &body_bytes)?.map(
-            |body| client_body_with_report_context_model(body, report_context, &client_api_format),
-        ),
-    )
+    let provider_stream_event_api_format =
+        provider_stream_event_api_format_for_report_context(report_context, &provider_api_format);
+    let Some(body) = try_aggregate_standard_chat_stream_sync_response(
+        &body_bytes,
+        &provider_stream_event_api_format,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(client_body) = convert_aggregated_stream_body_to_client_sync_response(
+        report_kind,
+        body,
+        &provider_stream_event_api_format,
+        &client_api_format,
+        report_context,
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(client_body_with_report_context_model(
+        client_body,
+        report_context,
+        &client_api_format,
+    )))
 }
 
 fn maybe_build_openai_responses_same_family_sync_body(
@@ -1464,16 +1504,52 @@ fn standard_same_format_api_format(report_kind: &str) -> Option<&'static str> {
     }
 }
 
-fn try_aggregate_same_format_stream_sync_response(
-    api_format: &str,
-    body: &[u8],
-) -> Result<Option<Value>, AiSurfaceFinalizeError> {
-    match api_format {
-        "openai:chat" => try_aggregate_openai_chat_stream_sync_response(body),
-        "claude:messages" => try_aggregate_claude_stream_sync_response(body),
-        "gemini:generate_content" => try_aggregate_gemini_stream_sync_response(body),
-        _ => Ok(None),
+fn provider_stream_event_api_format_for_report_context(
+    report_context: &Value,
+    provider_api_format: &str,
+) -> String {
+    report_context_api_format_field(report_context, "provider_stream_event_api_format")
+        .or_else(|| report_context_api_format_field(report_context, "provider_stream_api_format"))
+        .unwrap_or_else(|| provider_api_format.trim().to_ascii_lowercase())
+}
+
+fn report_context_api_format_field(report_context: &Value, key: &str) -> Option<String> {
+    let value = report_context.get(key)?.as_str()?.trim();
+    (!value.is_empty()).then(|| value.to_ascii_lowercase())
+}
+
+fn api_formats_match(left: &str, right: &str) -> bool {
+    aether_ai_formats::normalize_api_format_alias(left)
+        == aether_ai_formats::normalize_api_format_alias(right)
+}
+
+fn convert_aggregated_stream_body_to_client_sync_response(
+    report_kind: &str,
+    body: Value,
+    provider_stream_event_api_format: &str,
+    client_api_format: &str,
+    report_context: &Value,
+) -> Option<Value> {
+    if api_formats_match(provider_stream_event_api_format, client_api_format) {
+        return Some(body);
     }
+    if is_standard_chat_finalize_kind(report_kind) {
+        return convert_standard_chat_response(
+            &body,
+            provider_stream_event_api_format,
+            client_api_format,
+            report_context,
+        );
+    }
+    if is_standard_cli_finalize_kind(report_kind) {
+        return convert_standard_cli_response(
+            &body,
+            provider_stream_event_api_format,
+            client_api_format,
+            report_context,
+        );
+    }
+    None
 }
 
 fn is_openai_responses_family_api_format(api_format: &str) -> bool {
@@ -5214,6 +5290,77 @@ mod tests {
                 provider_body_json
             ))
         );
+    }
+
+    #[test]
+    fn standard_sync_finalize_uses_explicit_stream_event_format_for_same_format_body() {
+        let body = concat!(
+            "event: keepalive\n",
+            "data: {\"type\":\"keepalive\",\"sequence_number\":1}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_keepalive_sync_123\",\"output_index\":0,\"content_index\":0,\"delta\":\"pong\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_keepalive_sync_123\",\"object\":\"response\",\"model\":\"gpt-5\",\"status\":\"completed\",\"output\":[]}}\n\n",
+        );
+        let report_context = json!({
+            "provider_api_format": "openai:chat",
+            "provider_stream_event_api_format": "openai:responses",
+            "client_api_format": "openai:chat",
+            "needs_conversion": false,
+        });
+
+        let product = maybe_build_standard_sync_finalize_product_from_normalized_payload(
+            "openai_chat_sync_finalize",
+            200,
+            Some(&report_context),
+            None,
+            Some(&base64::engine::general_purpose::STANDARD.encode(body)),
+        )
+        .expect("responses stream event format should aggregate")
+        .expect("dispatch should produce a body");
+
+        let StandardSyncFinalizeNormalizedProduct::SuccessBody(body_json) = product else {
+            panic!("same-format response should be a success body");
+        };
+        assert_eq!(body_json["object"], "chat.completion");
+        assert_eq!(body_json["choices"][0]["message"]["content"], "pong");
+    }
+
+    #[test]
+    fn standard_cross_format_finalize_uses_explicit_stream_event_format_for_provider_body() {
+        let body = concat!(
+            "event: keepalive\n",
+            "data: {\"type\":\"keepalive\",\"sequence_number\":1}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_keepalive_cross_123\",\"output_index\":0,\"content_index\":0,\"delta\":\"pong\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_keepalive_cross_123\",\"object\":\"response\",\"model\":\"gpt-5\",\"status\":\"completed\",\"output\":[]}}\n\n",
+        );
+        let report_context = json!({
+            "provider_api_format": "openai:chat",
+            "provider_stream_event_api_format": "openai:responses",
+            "client_api_format": "claude:messages",
+            "model": "claude-sonnet-4-5",
+            "mapped_model": "gpt-5",
+            "needs_conversion": true,
+        });
+
+        let product = maybe_build_standard_sync_finalize_product_from_normalized_payload(
+            "claude_chat_sync_finalize",
+            200,
+            Some(&report_context),
+            None,
+            Some(&base64::engine::general_purpose::STANDARD.encode(body)),
+        )
+        .expect("responses stream event format should aggregate")
+        .expect("dispatch should produce a product");
+
+        let StandardSyncFinalizeNormalizedProduct::CrossFormat(product) = product else {
+            panic!("cross-format response should produce a conversion product");
+        };
+        assert_eq!(product.provider_body_json["object"], "response");
+        assert_eq!(product.client_body_json["type"], "message");
+        assert_eq!(product.client_body_json["content"][0]["text"], "pong");
     }
 
     #[test]
