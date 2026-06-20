@@ -2180,6 +2180,7 @@ async fn provider_query_execute_openai_image_test_candidate(
     } else {
         crate::provider_transport::build_openai_image_headers(
             crate::provider_transport::ProviderOpenAiImageHeadersInput {
+                transport: &transport,
                 headers: &parts.headers,
                 auth_header: &auth_header,
                 auth_value: &auth_value,

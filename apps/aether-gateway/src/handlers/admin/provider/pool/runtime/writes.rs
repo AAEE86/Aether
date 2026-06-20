@@ -437,10 +437,6 @@ pub(crate) async fn record_admin_provider_pool_error(
     error_body: Option<&str>,
     response_headers: Option<&BTreeMap<String, String>>,
 ) {
-    if !pool_config.health_policy_enabled {
-        return;
-    }
-
     let error_message = extract_error_message(error_body).to_ascii_lowercase();
 
     if status_code == 401 {
@@ -553,7 +549,7 @@ pub(crate) async fn record_admin_provider_pool_stream_timeout(
     key_id: &str,
     pool_config: &AdminProviderPoolConfig,
 ) {
-    if !pool_config.health_policy_enabled || pool_config.stream_timeout_threshold == 0 {
+    if pool_config.stream_timeout_threshold == 0 {
         return;
     }
 
@@ -637,7 +633,6 @@ mod tests {
             cost_limit_per_key_tokens: Some(10_000),
             rate_limit_cooldown_seconds: 300,
             overload_cooldown_seconds: 30,
-            health_policy_enabled: true,
             probing_enabled: false,
             probing_target_percent: None,
             probing_target_count: None,

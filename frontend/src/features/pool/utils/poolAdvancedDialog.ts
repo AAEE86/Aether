@@ -1,5 +1,4 @@
 export type PoolHealthToggleKey =
-  | 'health_policy_enabled'
   | 'probing_enabled'
   | 'account_self_check_enabled'
   | 'auto_remove_banned_keys'
@@ -16,22 +15,8 @@ export interface PoolCooldownFieldLayout {
   desktopColumnsClass: string
 }
 
-export interface PoolSecondarySectionLayout {
-  wrapperClass: string
-}
-
-export interface PoolCostFieldLayout {
-  fields: string[]
-  desktopColumnsClass: string
-}
-
 export function buildPoolHealthToggleCards(): PoolHealthToggleCard[] {
   return [
-    {
-      key: 'health_policy_enabled',
-      label: '健康策略',
-      description: '按上游错误自动冷却并跳过异常账号。',
-    },
     {
       key: 'probing_enabled',
       label: '自适应热池',
@@ -60,26 +45,7 @@ export function buildPoolCooldownFieldLayout(): PoolCooldownFieldLayout {
     fields: [
       'rate_limit_cooldown_seconds',
       'overload_cooldown_seconds',
-      'sticky_session_ttl_seconds',
-      'global_priority',
     ],
-    desktopColumnsClass: 'xl:grid-cols-4',
-  }
-}
-
-export function buildPoolSecondarySectionLayout(): PoolSecondarySectionLayout {
-  return {
-    wrapperClass: 'space-y-4',
-  }
-}
-
-export function buildPoolCostFieldLayout(): PoolCostFieldLayout {
-  return {
-    fields: [
-      'cost_window_seconds',
-      'cost_limit_per_key_tokens',
-      'cost_soft_threshold_percent',
-    ],
-    desktopColumnsClass: 'xl:grid-cols-3',
+    desktopColumnsClass: 'xl:grid-cols-2',
   }
 }

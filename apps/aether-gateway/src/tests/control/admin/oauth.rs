@@ -3418,6 +3418,95 @@ async fn gateway_imports_codex_access_token_without_refresh_token_as_temporary_a
 }
 
 #[tokio::test]
+async fn gateway_imports_codex_header_authorization_without_overwriting_payload_access_token() {
+    let mut provider = sample_provider("provider-codex", "codex", 10);
+    provider.provider_type = "codex".to_string();
+    let endpoint = sample_endpoint(
+        "endpoint-codex-chat",
+        "provider-codex",
+        "openai:chat",
+        "https://chatgpt.com/backend-api/codex",
+    );
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![],
+    ));
+
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(
+                    provider_catalog_repository.clone(),
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let access_token =
+        sample_codex_access_token_with_profile_email("profile@example.com", "acct-profile-123");
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{gateway_url}/api/admin/provider-oauth/providers/provider-codex/import-refresh-token"
+        ))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "access_token": access_token,
+            "headers": {
+                "authorization": "Bearer imported-session-token",
+                "chatgpt-account-id": "acct-header"
+            },
+            "name": "temporary-codex-header-auth",
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    let status = response.status();
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(status, StatusCode::OK, "payload={payload}");
+
+    let reloaded = provider_catalog_repository
+        .list_keys_by_provider_ids(&["provider-codex".to_string()])
+        .await
+        .expect("keys should load");
+    let persisted = reloaded.first().expect("persisted key should exist");
+    let decrypted_api_key = decrypt_python_fernet_ciphertext(
+        DEVELOPMENT_ENCRYPTION_KEY,
+        persisted
+            .encrypted_api_key
+            .as_deref()
+            .expect("api key should be present"),
+    )
+    .expect("api key should decrypt");
+    assert_eq!(decrypted_api_key, access_token);
+    let decrypted_auth_config = decrypt_python_fernet_ciphertext(
+        DEVELOPMENT_ENCRYPTION_KEY,
+        persisted
+            .encrypted_auth_config
+            .as_deref()
+            .expect("auth config should be stored"),
+    )
+    .expect("auth config should decrypt");
+    let auth_config: serde_json::Value =
+        serde_json::from_str(&decrypted_auth_config).expect("auth config json should parse");
+    assert_eq!(auth_config["email"], "profile@example.com");
+    assert_eq!(auth_config["access_token"], access_token);
+    assert_eq!(
+        auth_config["headers"]["authorization"],
+        "Bearer imported-session-token"
+    );
+    assert_eq!(auth_config["headers"]["chatgpt-account-id"], "acct-header");
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_imports_chatgpt_web_access_token_without_refresh_token_as_temporary_account() {
     let token_hits = Arc::new(Mutex::new(0usize));
     let token_hits_clone = Arc::clone(&token_hits);

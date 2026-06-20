@@ -237,6 +237,7 @@ export interface EndpointAPIKey {
   credential_kind?: 'raw_secret' | 'oauth_session' | 'service_account' | string | null
   runtime_auth_kind?: 'api_key' | 'bearer' | 'service_account' | 'mixed' | 'unknown' | string | null
   oauth_managed?: boolean
+  oauth_header_auth?: boolean
   can_refresh_oauth?: boolean
   can_export_oauth?: boolean
   can_edit_oauth?: boolean
@@ -708,7 +709,9 @@ export interface PoolScoreRules {
 }
 
 export interface PoolAdvancedConfig {
+  // deprecated: hidden from pool advanced dialog, retained for backward-compatible reads
   global_priority?: number | null
+  // deprecated: hidden from pool advanced dialog, retained for backward-compatible reads
   sticky_session_ttl_seconds?: number | null
   load_threshold_percent?: number | null
   skip_exhausted_accounts?: boolean | null
@@ -725,13 +728,15 @@ export interface PoolAdvancedConfig {
   } | null
   latency_window_seconds?: number | null
   latency_sample_limit?: number | null
+  // deprecated: hidden from pool advanced dialog, retained for backward-compatible reads
   cost_window_seconds?: number | null
+  // deprecated: hidden from pool advanced dialog, retained for backward-compatible reads
   cost_limit_per_key_tokens?: number | null
+  // deprecated: hidden from pool advanced dialog, retained for backward-compatible reads
   cost_soft_threshold_percent?: number | null
   rate_limit_cooldown_seconds?: number | null
   overload_cooldown_seconds?: number | null
   proactive_refresh_seconds?: number | null
-  health_policy_enabled?: boolean
   unschedulable_rules?: Array<Record<string, unknown>> | null
   batch_concurrency?: number | null
   probe_concurrency?: number | null
