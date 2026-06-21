@@ -458,12 +458,10 @@ pub(crate) fn admin_provider_pool_config_from_config_value(
         rate_limit_cooldown_seconds: pool_advanced
             .get("rate_limit_cooldown_seconds")
             .and_then(json_u64)
-            .filter(|value| *value > 0)
             .unwrap_or(300),
         overload_cooldown_seconds: pool_advanced
             .get("overload_cooldown_seconds")
             .and_then(json_u64)
-            .filter(|value| *value > 0)
             .unwrap_or(30),
         probing_enabled: pool_advanced
             .get("probing_enabled")
@@ -670,6 +668,20 @@ mod tests {
         .expect("pool config should parse");
 
         assert_eq!(config.sticky_session_ttl_seconds, 0);
+    }
+
+    #[test]
+    fn parses_zero_cooldown_seconds_to_disable_error_cooldowns() {
+        let config = admin_provider_pool_config_from_config_value(Some(&json!({
+            "pool_advanced": {
+                "rate_limit_cooldown_seconds": 0,
+                "overload_cooldown_seconds": 0
+            }
+        })))
+        .expect("pool config should parse");
+
+        assert_eq!(config.rate_limit_cooldown_seconds, 0);
+        assert_eq!(config.overload_cooldown_seconds, 0);
     }
 
     #[test]
