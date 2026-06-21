@@ -223,12 +223,70 @@ impl From<GatewayLogRotationArg> for LogRotation {
 }
 
 const GATEWAY_TOKIO_WORKER_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
+const DEFAULT_SQL_POOL_ACQUIRE_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_SQL_POOL_IDLE_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_SQL_POOL_MAX_LIFETIME_MS: u64 = 30 * 60_000;
+const DEFAULT_SQL_POOL_STATEMENT_CACHE_CAPACITY: usize = 100;
+const DEFAULT_SQLITE_POOL_MAX_CONNECTIONS: u32 = 1;
+// Per-process default for server SQL backends. Keep this below common
+// database server max_connections defaults; operators can override with
+// AETHER_GATEWAY_DATA_POSTGRES_{MIN,MAX}_CONNECTIONS after sizing the DB.
+const AUTO_SERVER_SQL_POOL_CONNECTIONS_PER_CPU: u32 = 4;
+const AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_FLOOR: u32 = 4;
+const AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_CAP: u32 = 16;
+const AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_FLOOR: u32 = 20;
+const AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_CAP: u32 = 100;
 fn env_var_trimmed(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn available_parallelism_u32() -> u32 {
+    std::thread::available_parallelism()
+        .map(|value| u32::try_from(value.get()).unwrap_or(u32::MAX))
+        .unwrap_or(AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_FLOOR)
+        .max(1)
+}
+
+fn automatic_sql_pool_config(driver: DatabaseDriver) -> SqlPoolConfig {
+    automatic_sql_pool_config_for_parallelism(driver, available_parallelism_u32())
+}
+
+fn automatic_sql_pool_config_for_parallelism(
+    driver: DatabaseDriver,
+    parallelism: u32,
+) -> SqlPoolConfig {
+    let (min_connections, max_connections) = match driver {
+        DatabaseDriver::Sqlite => (1, DEFAULT_SQLITE_POOL_MAX_CONNECTIONS),
+        DatabaseDriver::Mysql | DatabaseDriver::Postgres => {
+            let cpu_count = parallelism.max(1);
+            let max_connections = cpu_count
+                .saturating_mul(AUTO_SERVER_SQL_POOL_CONNECTIONS_PER_CPU)
+                .clamp(
+                    AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_FLOOR,
+                    AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_CAP,
+                );
+            let min_connections = cpu_count
+                .clamp(
+                    AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_FLOOR,
+                    AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_CAP,
+                )
+                .min(max_connections);
+            (min_connections, max_connections)
+        }
+    };
+
+    SqlPoolConfig {
+        min_connections,
+        max_connections,
+        acquire_timeout_ms: DEFAULT_SQL_POOL_ACQUIRE_TIMEOUT_MS,
+        idle_timeout_ms: DEFAULT_SQL_POOL_IDLE_TIMEOUT_MS,
+        max_lifetime_ms: DEFAULT_SQL_POOL_MAX_LIFETIME_MS,
+        statement_cache_capacity: DEFAULT_SQL_POOL_STATEMENT_CACHE_CAPACITY,
+        require_ssl: false,
+    }
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -251,47 +309,23 @@ struct GatewayDataArgs {
     #[arg(long, env = "AETHER_GATEWAY_DATA_REDIS_KEY_PREFIX")]
     redis_key_prefix: Option<String>,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_DATA_POSTGRES_MIN_CONNECTIONS",
-        default_value_t = 4
-    )]
-    postgres_min_connections: u32,
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_MIN_CONNECTIONS")]
+    postgres_min_connections: Option<u32>,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS",
-        default_value_t = 20
-    )]
-    postgres_max_connections: u32,
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS")]
+    postgres_max_connections: Option<u32>,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS",
-        default_value_t = 10_000
-    )]
-    postgres_acquire_timeout_ms: u64,
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS")]
+    postgres_acquire_timeout_ms: Option<u64>,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_DATA_POSTGRES_IDLE_TIMEOUT_MS",
-        default_value_t = 30_000
-    )]
-    postgres_idle_timeout_ms: u64,
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_IDLE_TIMEOUT_MS")]
+    postgres_idle_timeout_ms: Option<u64>,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_LIFETIME_MS",
-        default_value_t = 1_800_000
-    )]
-    postgres_max_lifetime_ms: u64,
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_LIFETIME_MS")]
+    postgres_max_lifetime_ms: Option<u64>,
 
-    #[arg(
-        long,
-        env = "AETHER_GATEWAY_DATA_POSTGRES_STATEMENT_CACHE_CAPACITY",
-        default_value_t = 100
-    )]
-    postgres_statement_cache_capacity: usize,
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_STATEMENT_CACHE_CAPACITY")]
+    postgres_statement_cache_capacity: Option<usize>,
 
     #[arg(
         long,
@@ -339,16 +373,47 @@ impl GatewayDataArgs {
         Some(SqlDatabaseConfig {
             driver,
             url,
-            pool: SqlPoolConfig {
-                min_connections: self.postgres_min_connections,
-                max_connections: self.postgres_max_connections,
-                acquire_timeout_ms: self.postgres_acquire_timeout_ms,
-                idle_timeout_ms: self.postgres_idle_timeout_ms,
-                max_lifetime_ms: self.postgres_max_lifetime_ms,
-                statement_cache_capacity: self.postgres_statement_cache_capacity,
-                require_ssl: driver != DatabaseDriver::Sqlite && self.postgres_require_ssl,
-            },
+            pool: self.effective_sql_pool_config(driver),
         })
+    }
+
+    fn effective_sql_pool_config(&self, driver: DatabaseDriver) -> SqlPoolConfig {
+        let auto = automatic_sql_pool_config(driver);
+        let mut min_connections = self
+            .postgres_min_connections
+            .unwrap_or(auto.min_connections);
+        let mut max_connections = self
+            .postgres_max_connections
+            .unwrap_or(auto.max_connections)
+            .max(1);
+
+        match (self.postgres_min_connections, self.postgres_max_connections) {
+            (None, Some(_)) if min_connections > max_connections => {
+                min_connections = max_connections;
+            }
+            (Some(_), None) if max_connections < min_connections => {
+                max_connections = min_connections.max(1);
+            }
+            _ => {}
+        }
+
+        SqlPoolConfig {
+            min_connections,
+            max_connections,
+            acquire_timeout_ms: self
+                .postgres_acquire_timeout_ms
+                .unwrap_or(auto.acquire_timeout_ms),
+            idle_timeout_ms: self
+                .postgres_idle_timeout_ms
+                .unwrap_or(auto.idle_timeout_ms),
+            max_lifetime_ms: self
+                .postgres_max_lifetime_ms
+                .unwrap_or(auto.max_lifetime_ms),
+            statement_cache_capacity: self
+                .postgres_statement_cache_capacity
+                .unwrap_or(auto.statement_cache_capacity),
+            require_ssl: driver != DatabaseDriver::Sqlite && self.postgres_require_ssl,
+        }
     }
 
     fn effective_postgres_url(&self) -> Option<String> {
@@ -1139,6 +1204,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|database| database.driver.as_str())
             .unwrap_or("-"),
+        data_database_pool_min_connections = sql_database_config
+            .as_ref()
+            .map(|database| database.pool.min_connections)
+            .unwrap_or_default(),
+        data_database_pool_max_connections = sql_database_config
+            .as_ref()
+            .map(|database| database.pool.max_connections)
+            .unwrap_or_default(),
         data_postgres_configured = data_postgres_url.is_some(),
         runtime_redis_configured = matches!(runtime_backend, RuntimeBackendArg::Redis),
         data_redis_url_supplied = data_redis_url.is_some(),
@@ -1628,6 +1701,7 @@ fn pending_backfills_error(
 #[cfg(test)]
 mod tests {
     use super::{
+        automatic_sql_pool_config, automatic_sql_pool_config_for_parallelism,
         ensure_database_backfills_are_current, ensure_database_schema_is_current,
         pending_backfills_error, pending_schema_error, resolve_healthcheck_url, Args,
         DatabaseDriverArg, DeploymentTopologyArg, GatewayDataArgs, GatewayFrontdoorArgs,
@@ -1671,12 +1745,12 @@ mod tests {
                 encryption_key: None,
                 redis_url: None,
                 redis_key_prefix: None,
-                postgres_min_connections: 4,
-                postgres_max_connections: 20,
-                postgres_acquire_timeout_ms: 10_000,
-                postgres_idle_timeout_ms: 30_000,
-                postgres_max_lifetime_ms: 1_800_000,
-                postgres_statement_cache_capacity: 100,
+                postgres_min_connections: None,
+                postgres_max_connections: None,
+                postgres_acquire_timeout_ms: None,
+                postgres_idle_timeout_ms: None,
+                postgres_max_lifetime_ms: None,
+                postgres_statement_cache_capacity: None,
                 postgres_require_ssl: false,
             },
             usage: GatewayUsageArgs {
@@ -1764,6 +1838,109 @@ mod tests {
             config.default_log_filter,
             "aether_gateway=info,aether_data=info"
         );
+    }
+
+    #[test]
+    fn gateway_data_pool_auto_sizes_sqlite_to_single_connection() {
+        let mut args = test_args();
+        args.data.database_driver = Some(DatabaseDriverArg::Sqlite);
+        args.data.database_url = Some("sqlite://./data/aether.db".to_string());
+
+        let database = args
+            .data
+            .effective_sql_database_config()
+            .expect("sqlite database config should build");
+
+        assert_eq!(database.driver, DatabaseDriver::Sqlite);
+        assert_eq!(database.pool.min_connections, 1);
+        assert_eq!(database.pool.max_connections, 1);
+    }
+
+    #[test]
+    fn gateway_data_pool_auto_sizes_server_databases_from_runtime_cpu() {
+        let mut args = test_args();
+        args.data.database_driver = Some(DatabaseDriverArg::Postgres);
+        args.data.database_url = Some("postgres://postgres:postgres@localhost/aether".to_string());
+
+        let database = args
+            .data
+            .effective_sql_database_config()
+            .expect("postgres database config should build");
+        let auto = automatic_sql_pool_config(DatabaseDriver::Postgres);
+
+        assert_eq!(database.driver, DatabaseDriver::Postgres);
+        assert_eq!(database.pool.min_connections, auto.min_connections);
+        assert_eq!(database.pool.max_connections, auto.max_connections);
+    }
+
+    #[test]
+    fn gateway_data_pool_cpu_sizing_examples() {
+        let two_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 2);
+        assert_eq!(two_cpu.min_connections, 4);
+        assert_eq!(two_cpu.max_connections, 20);
+
+        let eight_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 8);
+        assert_eq!(eight_cpu.min_connections, 8);
+        assert_eq!(eight_cpu.max_connections, 32);
+
+        let sixteen_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 16);
+        assert_eq!(sixteen_cpu.min_connections, 16);
+        assert_eq!(sixteen_cpu.max_connections, 64);
+
+        let many_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 32);
+        assert_eq!(many_cpu.min_connections, 16);
+        assert_eq!(many_cpu.max_connections, 100);
+    }
+
+    #[test]
+    fn gateway_data_pool_explicit_values_override_auto_sizing() {
+        let mut args = test_args();
+        args.data.database_driver = Some(DatabaseDriverArg::Sqlite);
+        args.data.database_url = Some("sqlite://./data/aether.db".to_string());
+        args.data.postgres_min_connections = Some(2);
+        args.data.postgres_max_connections = Some(8);
+        args.data.postgres_acquire_timeout_ms = Some(2_000);
+
+        let database = args
+            .data
+            .effective_sql_database_config()
+            .expect("sqlite database config should build");
+
+        assert_eq!(database.pool.min_connections, 2);
+        assert_eq!(database.pool.max_connections, 8);
+        assert_eq!(database.pool.acquire_timeout_ms, 2_000);
+    }
+
+    #[test]
+    fn gateway_data_pool_partial_max_override_clamps_auto_minimum() {
+        let mut args = test_args();
+        args.data.database_driver = Some(DatabaseDriverArg::Postgres);
+        args.data.database_url = Some("postgres://postgres:postgres@localhost/aether".to_string());
+        args.data.postgres_max_connections = Some(2);
+
+        let database = args
+            .data
+            .effective_sql_database_config()
+            .expect("postgres database config should build");
+
+        assert_eq!(database.pool.min_connections, 2);
+        assert_eq!(database.pool.max_connections, 2);
+    }
+
+    #[test]
+    fn gateway_data_pool_partial_min_override_raises_auto_maximum() {
+        let mut args = test_args();
+        args.data.database_driver = Some(DatabaseDriverArg::Postgres);
+        args.data.database_url = Some("postgres://postgres:postgres@localhost/aether".to_string());
+        args.data.postgres_min_connections = Some(128);
+
+        let database = args
+            .data
+            .effective_sql_database_config()
+            .expect("postgres database config should build");
+
+        assert_eq!(database.pool.min_connections, 128);
+        assert_eq!(database.pool.max_connections, 128);
     }
 
     #[test]
