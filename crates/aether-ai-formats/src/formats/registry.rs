@@ -864,37 +864,32 @@ fn request_extension_key_is_cross_format_safe(
             _,
             "claude",
             "context_management" | "output_config",
+        ) | (
+            FormatId::ClaudeMessages,
+            FormatId::OpenAiChat | FormatId::GeminiGenerateContent,
+            "openai",
+            "web_search_options",
+        ) | (
+            FormatId::GeminiGenerateContent,
+            _,
+            "gemini",
+            "thinking_config" | "raw_tools" | "raw_tool_config",
+        ) | (
+            FormatId::GeminiGenerateContent,
+            FormatId::OpenAiChat,
+            "gemini",
+            "builtin_tools" | "grounding",
+        ) | (
+            FormatId::GeminiGenerateContent,
+            FormatId::GeminiGenerateContent,
+            "gemini",
+            _
+        ) | (
+            FormatId::GeminiGenerateContent,
+            FormatId::OpenAiChat,
+            "openai",
+            "web_search_options",
         )
-            | (
-                FormatId::ClaudeMessages,
-                FormatId::OpenAiChat | FormatId::GeminiGenerateContent,
-                "openai",
-                "web_search_options",
-            )
-            | (
-                FormatId::GeminiGenerateContent,
-                _,
-                "gemini",
-                "thinking_config" | "raw_tools" | "raw_tool_config",
-            )
-            | (
-                FormatId::GeminiGenerateContent,
-                FormatId::OpenAiChat,
-                "gemini",
-                "builtin_tools" | "grounding",
-            )
-            | (
-                FormatId::GeminiGenerateContent,
-                FormatId::GeminiGenerateContent,
-                "gemini",
-                _
-            )
-            | (
-                FormatId::GeminiGenerateContent,
-                FormatId::OpenAiChat,
-                "openai",
-                "web_search_options",
-            )
     )
 }
 
