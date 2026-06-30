@@ -75,6 +75,24 @@ pub(super) async fn admin_provider_ops_run_query_balance_action(
     let start = std::time::Instant::now();
     let url = admin_provider_ops_request_url(base_url, action_config, "/api/user/balance");
     let method = admin_provider_ops_request_method(action_config, "GET");
+
+    // done_hub 查询余额时需要添加 Referer 头
+    let headers_owned;
+    let headers = if architecture.architecture_id == "done_hub" {
+        headers_owned = {
+            let mut h = headers.clone();
+            if let Ok(referer) =
+                reqwest::header::HeaderValue::from_str(&format!("{}/panel/profile", base_url))
+            {
+                h.insert(reqwest::header::REFERER, referer);
+            }
+            h
+        };
+        &headers_owned
+    } else {
+        headers
+    };
+
     let (status, response_json) = match admin_provider_ops_execute_json_request(
         state,
         &format!(
@@ -83,7 +101,7 @@ pub(super) async fn admin_provider_ops_run_query_balance_action(
         ),
         method,
         &url,
-        headers,
+        &headers,
         None,
         proxy_snapshot,
     )

@@ -68,6 +68,18 @@ pub(super) async fn admin_provider_ops_local_verify_response(
         Ok(headers) => headers,
         Err(message) => return admin_provider_ops_verify_failure(message),
     };
+    // done_hub 验证时需要添加 Referer 头
+    let headers = if architecture.architecture_id == "done_hub" {
+        let mut headers = headers;
+        if let Ok(referer) = reqwest::header::HeaderValue::from_str(
+            &format!("{}/panel/profile", base_url),
+        ) {
+            headers.insert(reqwest::header::REFERER, referer);
+        }
+        headers
+    } else {
+        headers
+    };
     let verify_url = format!("{base_url}{}", architecture.verify_endpoint);
     let (status, response_json) = match request::admin_provider_ops_execute_get_json(
         state,
