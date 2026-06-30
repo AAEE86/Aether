@@ -1424,19 +1424,7 @@ CREATE INDEX IF NOT EXISTS ix_user_preferences_id ON public.user_preferences USI
 
 
 
---
--- Name: ix_user_sessions_client_device_id; Type: INDEX; Schema: public; Owner: -
---
 
-CREATE INDEX IF NOT EXISTS ix_user_sessions_client_device_id ON public.user_sessions USING btree (client_device_id);
-
-
-
---
--- Name: ix_user_sessions_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON public.user_sessions USING btree (user_id);
 
 
 
