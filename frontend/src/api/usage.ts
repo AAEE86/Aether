@@ -29,6 +29,7 @@ export interface UsageRecord {
   total_tokens: number
   cost?: number
   response_time?: number
+  is_websocket?: boolean
   created_at: string
   updated_at?: string | null
   response_time_updated_at?: string | null
@@ -564,6 +565,7 @@ export const usageApi = {
       api_format?: string | null
       endpoint_api_format?: string | null
       is_stream?: boolean | null
+      is_websocket?: boolean | null
       upstream_is_stream?: boolean | null
       client_requested_stream?: boolean | null
       client_is_stream?: boolean | null

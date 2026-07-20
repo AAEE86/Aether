@@ -118,6 +118,7 @@ export interface UsageRecord {
   response_time_ms?: number | null
   first_byte_time_ms?: number | null  // 首字时间 (TTFB)
   is_stream: boolean
+  is_websocket?: boolean
   upstream_is_stream?: boolean
   client_requested_stream?: boolean
   client_is_stream?: boolean

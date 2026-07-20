@@ -4,9 +4,11 @@ use crate::handlers::admin::provider::shared::support::{
     normalize_provider_transfer_limit_json, parse_optional_rfc3339_unix_secs,
     PROVIDER_MAX_TRANSFER_COUNT_CONFIG_KEY, PROVIDER_MAX_TRANSFER_TIMEOUT_SECONDS_CONFIG_KEY,
 };
-use crate::handlers::admin::provider::write::normalize::normalize_chat_pii_redaction_config;
-use crate::handlers::admin::provider::write::normalize::normalize_pool_advanced_config;
-use crate::handlers::admin::provider::write::normalize::normalize_provider_type_input;
+use crate::handlers::admin::provider::write::normalize::{
+    normalize_chat_pii_redaction_config, normalize_pool_advanced_config,
+    normalize_provider_type_input, set_codex_responses_websocket_enabled,
+    validate_codex_responses_websocket_config,
+};
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::normalize_json_object;
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider;
@@ -157,6 +159,10 @@ pub(crate) async fn build_admin_create_provider_record(
             config_map.insert("chat_pii_redaction".to_string(), value);
         }
     }
+    if let Some(enabled) = payload.codex_responses_websocket_enabled {
+        set_codex_responses_websocket_enabled(&provider_type, &mut config_map, enabled)?;
+    }
+    validate_codex_responses_websocket_config(&provider_type, &config_map)?;
     let config = (!config_map.is_empty()).then_some(serde_json::Value::Object(config_map));
     crate::provider_transport::validate_anthropic_compatibility_profile_config(config.as_ref())
         .map_err(|_| "无效的 Anthropic compatibility profile".to_string())?;

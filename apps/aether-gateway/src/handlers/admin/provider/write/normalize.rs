@@ -184,6 +184,61 @@ pub(crate) fn normalize_chat_pii_redaction_config(
     }
 }
 
+pub(crate) fn set_codex_responses_websocket_enabled(
+    provider_type: &str,
+    config: &mut serde_json::Map<String, serde_json::Value>,
+    enabled: bool,
+) -> Result<(), String> {
+    if !provider_type.trim().eq_ignore_ascii_case("codex") {
+        return Err("codex_responses_websocket_enabled 仅适用于 provider_type=codex".to_string());
+    }
+
+    let mut codex = match config.remove("codex") {
+        None => serde_json::Map::new(),
+        Some(serde_json::Value::Object(config)) => config,
+        Some(_) => return Err("config.codex 必须是 JSON 对象".to_string()),
+    };
+    codex.insert(
+        "responses_websocket_enabled".to_string(),
+        serde_json::Value::Bool(enabled),
+    );
+    config.insert("codex".to_string(), serde_json::Value::Object(codex));
+    Ok(())
+}
+
+pub(crate) fn remove_codex_responses_websocket_enabled(
+    config: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(serde_json::Value::Object(codex)) = config.get_mut("codex") else {
+        return;
+    };
+    codex.remove("responses_websocket_enabled");
+    if codex.is_empty() {
+        config.remove("codex");
+    }
+}
+
+pub(crate) fn validate_codex_responses_websocket_config(
+    provider_type: &str,
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(serde_json::Value::Object(codex)) = config.get("codex") else {
+        return Ok(());
+    };
+    let Some(value) = codex.get("responses_websocket_enabled") else {
+        return Ok(());
+    };
+    if !value.is_boolean() {
+        return Err("config.codex.responses_websocket_enabled 必须是布尔值".to_string());
+    }
+    if !provider_type.trim().eq_ignore_ascii_case("codex") {
+        return Err(
+            "config.codex.responses_websocket_enabled 仅适用于 provider_type=codex".to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_vertex_api_formats(
     provider_type: &str,
     auth_type: &str,
@@ -233,7 +288,9 @@ mod tests {
         normalize_allow_auth_channel_mismatch_formats, normalize_api_format_json_object_keys,
         normalize_api_format_list, normalize_auth_type, normalize_auth_type_by_format,
         normalize_chat_pii_redaction_config, normalize_pool_advanced_config,
-        normalize_provider_type_input, normalize_rate_multipliers, validate_vertex_api_formats,
+        normalize_provider_type_input, normalize_rate_multipliers,
+        remove_codex_responses_websocket_enabled, set_codex_responses_websocket_enabled,
+        validate_codex_responses_websocket_config, validate_vertex_api_formats,
     };
     use serde_json::json;
 
@@ -290,6 +347,23 @@ mod tests {
             normalize_chat_pii_redaction_config(Some(json!({ "enabled": "yes" }))).unwrap_err(),
             "chat_pii_redaction.enabled 必须是布尔值"
         );
+    }
+
+    #[test]
+    fn codex_responses_websocket_setting_is_limited_to_codex_providers() {
+        let mut config = serde_json::Map::new();
+        set_codex_responses_websocket_enabled("codex", &mut config, true)
+            .expect("Codex setting should be accepted");
+        assert_eq!(
+            config.get("codex"),
+            Some(&json!({"responses_websocket_enabled": true}))
+        );
+        validate_codex_responses_websocket_config("codex", &config)
+            .expect("Codex setting should validate");
+        assert!(set_codex_responses_websocket_enabled("custom", &mut config, true).is_err());
+
+        remove_codex_responses_websocket_enabled(&mut config);
+        assert!(config.get("codex").is_none());
     }
 
     #[test]

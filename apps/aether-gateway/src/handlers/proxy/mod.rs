@@ -1,10 +1,13 @@
 mod body_buffer;
+mod codex_ws;
+mod codex_ws_finalize;
 mod local;
 
 use self::body_buffer::{
     buffer_and_normalize_request_body, build_request_body_buffer_error_response,
     RequestBodyBufferError, RequestBodyBufferPolicy,
 };
+pub(crate) use self::codex_ws::codex_responses_websocket;
 use self::local::{
     maybe_build_local_admin_proxy_response, maybe_build_local_internal_proxy_response,
 };

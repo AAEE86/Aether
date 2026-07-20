@@ -261,6 +261,24 @@ pub(crate) fn codex_cyber_flag_passthrough_enabled(
         .unwrap_or(true)
 }
 
+/// Whether this Codex provider explicitly enables the Responses WebSocket
+/// bridge. The setting is provider-scoped so a rollout can target only the
+/// accounts and endpoints that have been verified for WebSocket mode.
+pub(crate) fn codex_responses_websocket_enabled(
+    provider_type: &str,
+    provider_config: Option<&Value>,
+) -> bool {
+    if !provider_type.trim().eq_ignore_ascii_case("codex") {
+        return false;
+    }
+    provider_config
+        .and_then(|config| config.get("codex"))
+        .and_then(Value::as_object)
+        .and_then(|codex| codex.get("responses_websocket_enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn local_failover_regex_rule_to_value(rule: &LocalFailoverRegexRule) -> Value {
     json!({
         "pattern": rule.pattern,
@@ -331,8 +349,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        append_local_failover_policy_to_value, local_failover_policy_from_report_context,
-        local_failover_policy_from_transport, LocalFailoverPolicy, LocalFailoverRegexRule,
+        append_local_failover_policy_to_value, codex_responses_websocket_enabled,
+        local_failover_policy_from_report_context, local_failover_policy_from_transport,
+        LocalFailoverPolicy, LocalFailoverRegexRule,
     };
     use crate::provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
@@ -505,5 +524,22 @@ mod tests {
 
         transport.provider.provider_type = "llm".to_string();
         assert!(local_failover_policy_from_transport(&transport).stop_cyber_policy_errors);
+    }
+
+    #[test]
+    fn codex_responses_websocket_requires_an_explicit_provider_switch() {
+        assert!(!codex_responses_websocket_enabled("codex", None));
+        assert!(!codex_responses_websocket_enabled(
+            "custom",
+            Some(&json!({"codex": {"responses_websocket_enabled": true}})),
+        ));
+        assert!(codex_responses_websocket_enabled(
+            "codex",
+            Some(&json!({"codex": {"responses_websocket_enabled": true}})),
+        ));
+        assert!(!codex_responses_websocket_enabled(
+            "codex",
+            Some(&json!({"codex": {"responses_websocket_enabled": false}})),
+        ));
     }
 }

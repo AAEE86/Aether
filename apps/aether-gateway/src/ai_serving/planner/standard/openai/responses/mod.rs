@@ -165,3 +165,74 @@ pub(crate) async fn maybe_build_stream_local_openai_responses_decision_payload(
 
     Ok(None)
 }
+
+/// Builds one upstream decision for a Codex Responses WebSocket turn. The
+/// bridge reuses this decision for same-model turns and invokes the planner
+/// again when a later `response.create` changes the public model.
+pub(crate) async fn maybe_build_codex_responses_websocket_decision(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    body_json: &serde_json::Value,
+) -> Result<Option<AiExecutionDecision>, GatewayError> {
+    let Some(spec) = resolve_stream_spec(aether_ai_formats::api::OPENAI_RESPONSES_STREAM_PLAN_KIND)
+    else {
+        return Ok(None);
+    };
+    let Some(input) = resolve_local_openai_responses_decision_input(
+        state,
+        parts,
+        trace_id,
+        decision,
+        body_json,
+        spec.decision_kind,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let body_json = input.effective_body_json(body_json);
+    let (mut source, _) = build_local_openai_responses_candidate_attempt_source(
+        state, trace_id, &input, body_json, spec,
+    )
+    .await?;
+
+    while let Some(attempt) = source.next_attempt().await? {
+        if !attempt
+            .eligible
+            .transport
+            .provider
+            .provider_type
+            .trim()
+            .eq_ignore_ascii_case("codex")
+        {
+            continue;
+        }
+        if !crate::orchestration::codex_responses_websocket_enabled(
+            &attempt.eligible.transport.provider.provider_type,
+            attempt.eligible.transport.provider.config.as_ref(),
+        ) {
+            continue;
+        }
+        let Some(payload) = maybe_build_local_openai_responses_decision_payload_for_candidate(
+            state, parts, trace_id, body_json, &input, attempt, spec,
+        )
+        .await?
+        else {
+            continue;
+        };
+        if payload
+            .provider_type
+            .as_deref()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("codex"))
+            && payload.provider_api_format.as_deref().is_some_and(|value| {
+                crate::ai_serving::normalize_api_format_alias(value) == "openai:responses"
+            })
+        {
+            return Ok(Some(payload));
+        }
+    }
+
+    Ok(None)
+}
