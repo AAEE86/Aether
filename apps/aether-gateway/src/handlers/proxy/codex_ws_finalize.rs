@@ -28,7 +28,7 @@ use tracing::warn;
 
 use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
-use crate::clock::current_unix_ms;
+use crate::clock::{current_unix_ms, current_unix_secs};
 use crate::execution_runtime::attach_provider_response_headers_to_report_context;
 use crate::request_candidate_runtime::{
     ensure_execution_request_candidate_slot, record_local_request_candidate_status,
@@ -38,6 +38,7 @@ use crate::{AppState, GatewayError};
 
 const WEBSOCKET_CONNECTION_TRACE_REPORT_CONTEXT_FIELD: &str = "websocket_connection_trace_id";
 const WEBSOCKET_TURN_INDEX_REPORT_CONTEXT_FIELD: &str = "websocket_turn_index";
+const CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD: &str = "codex_websocket_rate_limits";
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +357,11 @@ impl CodexWebSocketTurn {
         };
 
         self.capture_sse_event(&event);
+        attach_codex_websocket_rate_limits_to_report_context(
+            &mut self.report_context,
+            &event,
+            current_unix_secs(),
+        );
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
@@ -617,6 +623,29 @@ fn prepare_websocket_report_context(
     Value::Object(object)
 }
 
+fn attach_codex_websocket_rate_limits_to_report_context(
+    report_context: &mut Option<Value>,
+    event: &Value,
+    updated_at_unix_secs: u64,
+) {
+    let Some(rate_limits) =
+        aether_admin::provider::quota::parse_codex_websocket_rate_limits_response(
+            event,
+            updated_at_unix_secs,
+        )
+    else {
+        return;
+    };
+    let context = report_context.get_or_insert_with(|| Value::Object(Map::new()));
+    let Some(context) = context.as_object_mut() else {
+        return;
+    };
+    context.insert(
+        CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD.to_string(),
+        rate_limits,
+    );
+}
+
 fn provider_terminal_outcome(event_type: &str, event: &Value) -> Option<CodexWebSocketTurnOutcome> {
     match event_type {
         "response.completed" | "response.incomplete" => {
@@ -745,9 +774,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        prepare_websocket_report_context, provider_terminal_outcome,
-        resolve_codex_websocket_turn_timeouts, websocket_event_as_sse_line,
-        CodexWebSocketTurnDeadline, CodexWebSocketTurnOutcome, CodexWebSocketTurnTimeoutPhase,
+        attach_codex_websocket_rate_limits_to_report_context, prepare_websocket_report_context,
+        provider_terminal_outcome, resolve_codex_websocket_turn_timeouts,
+        websocket_event_as_sse_line, CodexWebSocketTurnDeadline, CodexWebSocketTurnOutcome,
+        CodexWebSocketTurnTimeoutPhase,
     };
 
     #[test]
@@ -808,6 +838,37 @@ mod tests {
         let capture = String::from_utf8(websocket_event_as_sse_line(&event))
             .expect("capture should be UTF-8");
         assert_eq!(capture, format!("data: {event}\n\n"));
+    }
+
+    #[test]
+    fn websocket_rate_limit_chunk_is_kept_for_the_terminal_report() {
+        let mut context = Some(json!({"key_id": "codex-key"}));
+        attach_codex_websocket_rate_limits_to_report_context(
+            &mut context,
+            &json!({
+                "chunks": [{
+                    "type": "codex.rate_limits",
+                    "plan_type": "free",
+                    "rate_limits": {
+                        "allowed": true,
+                        "limit_reached": false,
+                        "primary": {
+                            "used_percent": 91,
+                            "window_minutes": 43200,
+                            "reset_after_seconds": 2590791
+                        }
+                    }
+                }]
+            }),
+            1_787_000_000,
+        );
+
+        assert_eq!(
+            context.as_ref().and_then(
+                |context| context.pointer("/codex_websocket_rate_limits/primary_used_percent")
+            ),
+            Some(&json!(91.0))
+        );
     }
 
     #[test]

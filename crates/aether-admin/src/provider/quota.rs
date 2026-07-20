@@ -800,6 +800,75 @@ pub fn parse_codex_wham_usage_response(
     Some(serde_json::Value::Object(result))
 }
 
+/// Normalizes the quota event emitted by the Codex Responses WebSocket.
+///
+/// The upstream sends this as a `codex.rate_limits` item inside a `chunks`
+/// envelope. Keeping this parser next to the HTTP quota parsers makes the
+/// resulting metadata independent of the transport that supplied it.
+pub fn parse_codex_websocket_rate_limits_response(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    let mut latest = parse_codex_websocket_rate_limits_chunk(value, updated_at_unix_secs);
+    for chunk in value
+        .get("chunks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(parsed) = parse_codex_websocket_rate_limits_chunk(chunk, updated_at_unix_secs) {
+            latest = Some(parsed);
+        }
+    }
+    latest
+}
+
+fn parse_codex_websocket_rate_limits_chunk(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    let root = value.as_object()?;
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("codex.rate_limits") {
+        return None;
+    }
+    let rate_limits = root
+        .get("rate_limits")
+        .and_then(serde_json::Value::as_object)?;
+
+    let mut result = serde_json::Map::new();
+    let plan_type = root
+        .get("plan_type")
+        .or_else(|| rate_limits.get("plan_type"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| normalize_codex_plan_type(Some(value)));
+    if let Some(plan_type) = plan_type {
+        result.insert("plan_type".to_string(), json!(plan_type));
+    }
+    if let Some(allowed) = rate_limits.get("allowed").and_then(coerce_json_bool) {
+        result.insert("allowed".to_string(), json!(allowed));
+    }
+    if let Some(limit_reached) = rate_limits.get("limit_reached").and_then(coerce_json_bool) {
+        result.insert("limit_reached".to_string(), json!(limit_reached));
+    }
+    if let Some(primary) = rate_limits
+        .get("primary")
+        .and_then(serde_json::Value::as_object)
+    {
+        codex_write_window(&mut result, primary, "primary");
+    }
+    if let Some(secondary) = rate_limits
+        .get("secondary")
+        .and_then(serde_json::Value::as_object)
+    {
+        codex_write_window(&mut result, secondary, "secondary");
+    }
+    if result.is_empty() {
+        return None;
+    }
+    result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
+    Some(serde_json::Value::Object(result))
+}
+
 fn parse_codex_reset_credit_timestamp(value: Option<&serde_json::Value>) -> Option<u64> {
     let value = value?;
     if let Some(timestamp) = coerce_json_u64(value) {
@@ -2125,8 +2194,9 @@ mod tests {
         codex_build_invalid_state, codex_runtime_invalid_reason, extract_execution_error_detail,
         normalize_codex_reset_credit_consume_outcome, parse_antigravity_usage_response,
         parse_chatgpt_web_conversation_init_response, parse_codex_backend_me_response,
-        parse_codex_usage_headers, parse_codex_wham_reset_credits_detail_response,
-        parse_codex_wham_usage_response, parse_gemini_cli_retrieve_user_quota_response,
+        parse_codex_usage_headers, parse_codex_websocket_rate_limits_response,
+        parse_codex_wham_reset_credits_detail_response, parse_codex_wham_usage_response,
+        parse_gemini_cli_retrieve_user_quota_response,
         parse_gemini_cli_v1internal_credits_response, parse_windsurf_model_configs_response,
         parse_windsurf_rate_limit_response, parse_windsurf_user_status_response,
         provider_auto_remove_quota_exhausted_keys, quota_refresh_success_invalid_state,
@@ -2626,6 +2696,47 @@ mod tests {
         );
         assert!(parsed.get("secondary_used_percent").is_none());
         assert!(parsed.get("secondary_window_minutes").is_none());
+    }
+
+    #[test]
+    fn parses_codex_websocket_rate_limits_from_chunk_envelope() {
+        let parsed = parse_codex_websocket_rate_limits_response(
+            &json!({
+                "chunks": [
+                    {"type": "response.output_text.delta", "delta": "ignored"},
+                    {
+                        "type": "codex.rate_limits",
+                        "plan_type": "free",
+                        "rate_limits": {
+                            "allowed": true,
+                            "limit_reached": false,
+                            "primary": {
+                                "used_percent": 91,
+                                "window_minutes": 43200,
+                                "reset_after_seconds": 2590791,
+                                "reset_at": 1787154563u64
+                            }
+                        }
+                    }
+                ]
+            }),
+            1_787_000_000,
+        )
+        .expect("Codex WebSocket quota chunk should parse");
+
+        assert_eq!(parsed.get("plan_type"), Some(&json!("free")));
+        assert_eq!(parsed.get("allowed"), Some(&json!(true)));
+        assert_eq!(parsed.get("limit_reached"), Some(&json!(false)));
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(91.0)));
+        assert_eq!(
+            parsed.get("primary_window_minutes"),
+            Some(&json!(43_200u64))
+        );
+        assert_eq!(
+            parsed.get("primary_reset_after_seconds"),
+            Some(&json!(2_590_791u64))
+        );
+        assert!(parsed.get("secondary_used_percent").is_none());
     }
 
     #[test]

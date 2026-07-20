@@ -24,6 +24,7 @@ use crate::{AppState, GatewayError};
 const CODEX_QUOTA_CACHE_TTL_SECONDS: u64 = 30;
 const CODEX_QUOTA_CACHE_MAX_ENTRIES: usize = 4096;
 const RUNTIME_METADATA_CAS_MAX_ATTEMPTS: usize = 16;
+const CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD: &str = "codex_websocket_rate_limits";
 
 type HeaderFingerprintCache = Mutex<HashMap<String, (String, Instant)>>;
 
@@ -89,6 +90,13 @@ fn report_context_provider_response_headers(
         out.insert(key.clone(), value.to_string());
     }
     (!out.is_empty()).then_some(out)
+}
+
+fn codex_websocket_quota_from_report_context(report_context: Option<&Value>) -> Option<Value> {
+    report_context
+        .and_then(|context| context.get(CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD))
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+        .cloned()
 }
 
 fn is_volatile_compare_field(key: &str) -> bool {
@@ -328,6 +336,35 @@ fn gemini_cli_credits_from_stream_payload(
             )
         {
             latest = Some(credits);
+        }
+    }
+    latest
+}
+
+fn codex_websocket_quota_from_stream_payload(
+    payload: &GatewayStreamReportRequest,
+    now_unix_secs: u64,
+) -> Option<Value> {
+    let body_base64 = payload.provider_body_base64.as_deref()?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(body_base64)
+        .ok()?;
+    let text = std::str::from_utf8(&body).ok()?;
+    let mut latest = None::<Value>;
+    for raw_line in text.lines() {
+        let line = raw_line.trim_matches('\r').trim();
+        let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+        if data.is_empty() || data == "[DONE]" || data.starts_with(':') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if let Some(quota) = admin_provider_quota_pure::parse_codex_websocket_rate_limits_response(
+            &value,
+            now_unix_secs,
+        ) {
+            latest = Some(quota);
         }
     }
     latest
@@ -646,21 +683,40 @@ async fn apply_local_sync_report_effect(state: &AppState, payload: &GatewaySyncR
 }
 
 async fn apply_local_stream_report_effect(state: &AppState, payload: &GatewayStreamReportRequest) {
-    if let Err(err) = sync_codex_quota_from_response_headers(
-        state,
-        payload.report_context.as_ref(),
-        &payload.headers,
-    )
-    .await
+    let websocket_quota_seen = match sync_codex_websocket_quota_from_stream_payload(state, payload)
+        .await
     {
-        warn!(
-            event_name = "codex_realtime_quota_sync_failed",
-            log_type = "ops",
-            report_kind = %payload.report_kind,
-            report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
-            error = ?err,
-            "gateway failed to persist codex realtime quota from stream response headers"
-        );
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist Codex realtime quota from WebSocket response body"
+            );
+            false
+        }
+    };
+    if !websocket_quota_seen {
+        if let Err(err) = sync_codex_quota_from_response_headers(
+            state,
+            payload.report_context.as_ref(),
+            &payload.headers,
+        )
+        .await
+        {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist codex realtime quota from stream response headers"
+            );
+        }
     }
     if let Err(err) = sync_grok_quota_from_report_context(
         state,
@@ -834,11 +890,6 @@ async fn sync_codex_quota_from_response_headers(
     report_context: Option<&Value>,
     headers: &BTreeMap<String, String>,
 ) -> Result<bool, GatewayError> {
-    let key_id = match report_context_key_id(report_context) {
-        Some(value) => value,
-        None => return Ok(false),
-    };
-
     let now_unix_secs = current_unix_secs();
     let provider_headers = report_context_provider_response_headers(report_context);
     let parsed_from_provider_headers = provider_headers.as_ref().and_then(|headers| {
@@ -849,11 +900,46 @@ async fn sync_codex_quota_from_response_headers(
     else {
         return Ok(false);
     };
+    sync_codex_quota_metadata(state, report_context, parsed, "response_headers").await
+}
+
+async fn sync_codex_websocket_quota_from_stream_payload(
+    state: &AppState,
+    payload: &GatewayStreamReportRequest,
+) -> Result<Option<bool>, GatewayError> {
+    let now_unix_secs = current_unix_secs();
+    let parsed = codex_websocket_quota_from_report_context(payload.report_context.as_ref())
+        .or_else(|| codex_websocket_quota_from_stream_payload(payload, now_unix_secs));
+    let Some(parsed) = parsed else {
+        return Ok(None);
+    };
+    Ok(Some(
+        sync_codex_quota_metadata(
+            state,
+            payload.report_context.as_ref(),
+            parsed,
+            "websocket_response_body",
+        )
+        .await?,
+    ))
+}
+
+async fn sync_codex_quota_metadata(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+    source: &'static str,
+) -> Result<bool, GatewayError> {
+    let key_id = match report_context_key_id(report_context) {
+        Some(value) => value,
+        None => return Ok(false),
+    };
     let Some(incoming_fingerprint) = fingerprint_codex_payload(&parsed) else {
         return Ok(false);
     };
 
     let now = Instant::now();
+    let now_unix_secs = current_unix_secs();
     if get_cached_codex_quota_fingerprint(&key_id, now).as_deref()
         == Some(incoming_fingerprint.as_str())
     {
@@ -906,7 +992,7 @@ async fn sync_codex_quota_from_response_headers(
         key.status_snapshot.as_ref(),
         provider.provider_type.as_str(),
         updated_upstream_metadata.as_ref(),
-        "response_headers",
+        source,
     );
     let updated = state
         .update_provider_catalog_key_runtime_metadata(&ProviderCatalogKeyRuntimeMetadataUpdate {
