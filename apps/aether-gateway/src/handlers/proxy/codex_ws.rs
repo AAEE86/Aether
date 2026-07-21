@@ -51,6 +51,7 @@ use crate::handlers::shared::ip_rules_allow;
 use crate::headers::{
     effective_client_ip, extract_or_generate_trace_id, request_origin_from_headers_and_remote_addr,
 };
+use crate::orchestration::sync_codex_websocket_quota_metadata;
 use crate::rate_limit::FrontdoorUserRpmOutcome;
 use crate::router::RequestAdmissionError;
 use crate::{AppState, GatewayError};
@@ -162,6 +163,7 @@ struct BoundCodexConnection {
     active_turn: Option<CodexWebSocketTurn>,
     next_turn_index: u64,
     upstream_response_headers: BTreeMap<String, String>,
+    account_quota_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -734,6 +736,7 @@ async fn bind_codex_upstream(
         active_turn: None,
         next_turn_index: 2,
         upstream_response_headers,
+        account_quota_exhausted: false,
     })
 }
 
@@ -1020,6 +1023,41 @@ async fn relay_bound_connection(
                         "gateway received Codex WebSocket event"
                     );
                 }
+                if let Some(rate_limits) = codex_websocket_rate_limits_from_message(
+                    &upstream_message,
+                    crate::clock::current_unix_secs(),
+                ) {
+                    if aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&rate_limits)
+                        && !bound.account_quota_exhausted
+                    {
+                        bound.account_quota_exhausted = true;
+                        if let Err(error) = sync_codex_websocket_quota_metadata(
+                            state,
+                            bound.decision_template.report_context.as_ref(),
+                            rate_limits,
+                        )
+                        .await
+                        {
+                            warn!(
+                                event_name = "codex_websocket_quota_exhausted_sync_failed",
+                                log_type = "ops",
+                                transport = WEBSOCKET_LOG_TRANSPORT,
+                                websocket = true,
+                                trace_id = %context.trace_id,
+                                error = ?error,
+                                "gateway failed to persist an exhausted Codex WebSocket account before draining the connection"
+                            );
+                        }
+                        info!(
+                            event_name = "codex_websocket_account_quota_exhausted",
+                            log_type = "event",
+                            transport = WEBSOCKET_LOG_TRANSPORT,
+                            websocket = true,
+                            trace_id = %context.trace_id,
+                            "gateway will drain the Codex WebSocket after the active response"
+                        );
+                    }
+                }
                 let observation = match &upstream_message {
                     WreqWsMessage::Text(text) => bound
                         .active_turn
@@ -1040,6 +1078,11 @@ async fn relay_bound_connection(
                 if let Some(CodexWebSocketTurnObservation::Terminal(outcome)) = observation {
                     finalize_active_turn(bound, state, outcome);
                 }
+                let drain_for_quota = quota_drain_ready(
+                    bound.account_quota_exhausted,
+                    bound.response_in_flight,
+                    observation,
+                );
                 let is_close = matches!(upstream_message, WreqWsMessage::Close(_));
                 if is_close {
                     finalize_active_turn(
@@ -1057,12 +1100,42 @@ async fn relay_bound_connection(
                     let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
                     break;
                 }
+                if drain_for_quota {
+                    send_gateway_error(
+                        client_socket,
+                        "codex_account_quota_exhausted",
+                        "The bound Codex account quota is exhausted; reconnect to select another account",
+                    )
+                    .await;
+                    let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
+                    close_client_socket(
+                        client_socket,
+                        CLOSE_TRY_AGAIN,
+                        "account_quota_exhausted",
+                    )
+                    .await;
+                    break;
+                }
                 if is_close {
                     break;
                 }
             }
         }
     }
+}
+
+fn codex_websocket_rate_limits_from_message(
+    message: &WreqWsMessage,
+    updated_at_unix_secs: u64,
+) -> Option<Value> {
+    let WreqWsMessage::Text(text) = message else {
+        return None;
+    };
+    let event = serde_json::from_str::<Value>(text.as_str()).ok()?;
+    aether_admin::provider::quota::parse_codex_websocket_rate_limits_response(
+        &event,
+        updated_at_unix_secs,
+    )
 }
 
 async fn wait_for_active_turn_deadline(deadline: Option<CodexWebSocketTurnDeadline>) {
@@ -1088,6 +1161,19 @@ enum RelayDisposition {
     Continue,
     Close,
     UpstreamError(&'static str),
+}
+
+fn quota_drain_ready(
+    account_quota_exhausted: bool,
+    response_in_flight: bool,
+    observation: Option<CodexWebSocketTurnObservation>,
+) -> bool {
+    account_quota_exhausted
+        && (!response_in_flight
+            || matches!(
+                observation,
+                Some(CodexWebSocketTurnObservation::Terminal(_))
+            ))
 }
 
 async fn forward_client_message(
@@ -1800,10 +1886,14 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use tokio::sync::{oneshot, Mutex};
+    use wreq::ws::message::Message as WreqWsMessage;
 
-    use super::super::codex_ws_finalize::CodexWebSocketTurnTimeoutPhase;
+    use super::super::codex_ws_finalize::{
+        CodexWebSocketTurnObservation, CodexWebSocketTurnOutcome, CodexWebSocketTurnTimeoutPhase,
+    };
     use super::{
-        bind_codex_upstream, changed_followup_response_create_model, decisions_reuse_upstream,
+        bind_codex_upstream, changed_followup_response_create_model,
+        codex_websocket_rate_limits_from_message, decisions_reuse_upstream,
         normalize_followup_response_create, planned_response_create_event,
         wait_for_active_turn_deadline, websocket_event_type_for_log, websocket_handshake_headers,
         websocket_timeouts, websocket_upstream_url, CodexWebSocketTurnDeadline,
@@ -1819,6 +1909,41 @@ mod tests {
         authorization_present: bool,
         account_header_present: bool,
         event: serde_json::Value,
+    }
+
+    #[test]
+    fn websocket_message_exposes_exhausted_codex_rate_limits() {
+        let message = WreqWsMessage::text(
+            json!({
+                "chunks": [{
+                    "type": "codex.rate_limits",
+                    "rate_limits": {
+                        "allowed": false,
+                        "limit_reached": true
+                    }
+                }]
+            })
+            .to_string(),
+        );
+        let parsed = codex_websocket_rate_limits_from_message(&message, 1_787_000_000)
+            .expect("rate-limit message should parse");
+
+        assert!(aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&parsed));
+        assert_eq!(parsed.get("updated_at"), Some(&json!(1_787_000_000u64)));
+    }
+
+    #[test]
+    fn quota_drain_waits_for_an_active_turn_terminal_event() {
+        assert!(!super::quota_drain_ready(true, true, None));
+        assert!(super::quota_drain_ready(
+            true,
+            true,
+            Some(CodexWebSocketTurnObservation::Terminal(
+                CodexWebSocketTurnOutcome::upstream_closed()
+            ))
+        ));
+        assert!(!super::quota_drain_ready(false, false, None));
+        assert!(super::quota_drain_ready(true, false, None));
     }
 
     #[test]

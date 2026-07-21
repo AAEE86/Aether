@@ -57,7 +57,8 @@ pub(crate) use self::recovery::{
 #[cfg(test)]
 pub(crate) use self::report_effects::clear_local_report_effect_caches_for_tests;
 pub(crate) use self::report_effects::{
-    apply_local_report_effect, store_local_gemini_file_mapping, LocalReportEffect,
+    apply_local_report_effect, store_local_gemini_file_mapping,
+    sync_codex_websocket_quota_metadata, LocalReportEffect,
 };
 
 pub(crate) async fn resolve_local_failover_analysis_for_attempt(

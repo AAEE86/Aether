@@ -99,6 +99,34 @@ fn codex_websocket_quota_from_report_context(report_context: Option<&Value>) -> 
         .cloned()
 }
 
+fn codex_quota_snapshot_matches_metadata(status_snapshot: Option<&Value>, parsed: &Value) -> bool {
+    let expected_allowed = parsed
+        .get("allowed")
+        .and_then(admin_provider_quota_pure::coerce_json_bool);
+    let expected_limit_reached = parsed
+        .get("limit_reached")
+        .and_then(admin_provider_quota_pure::coerce_json_bool);
+    if expected_allowed.is_none() && expected_limit_reached.is_none() {
+        return true;
+    }
+    let Some(quota) = status_snapshot
+        .and_then(|snapshot| snapshot.get("quota"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    let expected_exhausted = admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(parsed);
+    quota.get("exhausted").and_then(Value::as_bool) == Some(expected_exhausted)
+        && quota
+            .get("allowed")
+            .and_then(admin_provider_quota_pure::coerce_json_bool)
+            == expected_allowed
+        && quota
+            .get("limit_reached")
+            .and_then(admin_provider_quota_pure::coerce_json_bool)
+            == expected_limit_reached
+}
+
 fn is_volatile_compare_field(key: &str) -> bool {
     key == "updated_at" || key.ends_with("_reset_seconds") || key.ends_with("_reset_after_seconds")
 }
@@ -981,8 +1009,10 @@ async fn sync_codex_quota_metadata(
         set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
         return Ok(false);
     };
-    if current_fingerprint == incoming_fingerprint {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
+    if current_fingerprint == incoming_fingerprint
+        && codex_quota_snapshot_matches_metadata(key.status_snapshot.as_ref(), &parsed)
+    {
+        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint, now);
         return Ok(false);
     }
 
@@ -1012,6 +1042,14 @@ async fn sync_codex_quota_metadata(
     // conflict means a newer snapshot/delta won, so avoid replaying stale
     // data over it.
     Ok(false)
+}
+
+pub(crate) async fn sync_codex_websocket_quota_metadata(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+) -> Result<bool, GatewayError> {
+    sync_codex_quota_metadata(state, report_context, parsed, "websocket_response_body").await
 }
 
 #[cfg(test)]
@@ -1106,6 +1144,33 @@ mod tests {
         assert_eq!(status["learning_confidence"], json!(0.7));
         assert_eq!(status["oauth"], json!({"invalid":false}));
         assert_eq!(status["quota"]["provider_type"], json!("gemini_cli"));
+    }
+
+    #[test]
+    fn codex_quota_snapshot_match_requires_explicit_signal_projection() {
+        let parsed = json!({
+            "allowed": false,
+            "limit_reached": true,
+        });
+
+        assert!(!codex_quota_snapshot_matches_metadata(
+            Some(&json!({
+                "quota": {
+                    "exhausted": true
+                }
+            })),
+            &parsed,
+        ));
+        assert!(codex_quota_snapshot_matches_metadata(
+            Some(&json!({
+                "quota": {
+                    "exhausted": true,
+                    "allowed": false,
+                    "limit_reached": true
+                }
+            })),
+            &parsed,
+        ));
     }
 
     #[test]

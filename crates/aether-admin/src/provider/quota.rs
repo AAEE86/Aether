@@ -823,6 +823,26 @@ pub fn parse_codex_websocket_rate_limits_response(
     latest
 }
 
+/// Returns whether normalized Codex rate-limit metadata says that the account
+/// cannot accept another request. Explicit upstream flags take precedence, and
+/// the percentage fallback keeps older payloads working when those flags are
+/// absent.
+pub fn codex_rate_limit_metadata_exhausted(value: &serde_json::Value) -> bool {
+    let allowed = value.get("allowed").and_then(coerce_json_bool);
+    let limit_reached = value.get("limit_reached").and_then(coerce_json_bool);
+    if allowed == Some(false) || limit_reached == Some(true) {
+        return true;
+    }
+    if allowed == Some(true) || limit_reached == Some(false) {
+        return false;
+    }
+    ["primary_used_percent", "secondary_used_percent"]
+        .into_iter()
+        .filter_map(|key| value.get(key))
+        .filter_map(coerce_json_f64)
+        .any(|used_percent| used_percent >= 100.0 - 1e-6)
+}
+
 fn parse_codex_websocket_rate_limits_chunk(
     value: &serde_json::Value,
     updated_at_unix_secs: u64,
@@ -2191,7 +2211,8 @@ pub fn parse_chatgpt_web_conversation_init_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_build_invalid_state, codex_runtime_invalid_reason, extract_execution_error_detail,
+        codex_build_invalid_state, codex_rate_limit_metadata_exhausted,
+        codex_runtime_invalid_reason, extract_execution_error_detail,
         normalize_codex_reset_credit_consume_outcome, parse_antigravity_usage_response,
         parse_chatgpt_web_conversation_init_response, parse_codex_backend_me_response,
         parse_codex_usage_headers, parse_codex_websocket_rate_limits_response,
@@ -2737,6 +2758,27 @@ mod tests {
             Some(&json!(2_590_791u64))
         );
         assert!(parsed.get("secondary_used_percent").is_none());
+    }
+
+    #[test]
+    fn codex_rate_limit_metadata_detects_explicit_and_window_exhaustion() {
+        assert!(codex_rate_limit_metadata_exhausted(&json!({
+            "allowed": false
+        })));
+        assert!(codex_rate_limit_metadata_exhausted(&json!({
+            "limit_reached": true
+        })));
+        assert!(codex_rate_limit_metadata_exhausted(&json!({
+            "primary_used_percent": 100
+        })));
+        assert!(!codex_rate_limit_metadata_exhausted(&json!({
+            "allowed": true,
+            "primary_used_percent": 100
+        })));
+        assert!(!codex_rate_limit_metadata_exhausted(&json!({
+            "limit_reached": false,
+            "secondary_used_percent": 100
+        })));
     }
 
     #[test]
