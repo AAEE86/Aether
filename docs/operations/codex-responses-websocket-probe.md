@@ -5,6 +5,12 @@ Responses WebSocket upstream. It verifies two sequential `response.create`
 warmups on one socket, with the second request continuing from the first
 response ID.
 
+The command, environment variables, JSON report shape, and Codex-specific
+handshake headers remain stable. It now shares only the protocol-driving core
+with the separate [OpenAI Responses WebSocket probe](openai-responses-websocket-probe.md);
+the two probes intentionally retain independent authentication profiles and
+provider-specific assertions.
+
 The probe is intentionally not a production proxy. It does not persist,
 refresh, log, or print credentials, account IDs, response IDs, request bodies,
 or response bodies.

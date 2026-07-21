@@ -261,6 +261,29 @@ pub(crate) fn codex_cyber_flag_passthrough_enabled(
         .unwrap_or(true)
 }
 
+/// Selects the protocol adapter responsible for one eligible Responses
+/// WebSocket upstream.  Provider-scoped feature switches remain the source of
+/// truth; this enum only makes the transport decision explicit so a second
+/// adapter can be added without reopening the public WebSocket route design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponsesWebSocketAdapter {
+    Codex,
+}
+
+impl ResponsesWebSocketAdapter {
+    pub(crate) const fn provider_type(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+        }
+    }
+
+    pub(crate) fn supports_provider_type(self, provider_type: &str) -> bool {
+        provider_type
+            .trim()
+            .eq_ignore_ascii_case(self.provider_type())
+    }
+}
+
 /// Whether this Codex provider explicitly enables the Responses WebSocket
 /// bridge. The setting is provider-scoped so a rollout can target only the
 /// accounts and endpoints that have been verified for WebSocket mode.
@@ -277,6 +300,17 @@ pub(crate) fn codex_responses_websocket_enabled(
         .and_then(|codex| codex.get("responses_websocket_enabled"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Returns the enabled Responses WebSocket adapter for a provider.  Today the
+/// only verified adapter is Codex; keeping the resolver here prevents planner
+/// and handler code from coupling a future adapter to Codex configuration.
+pub(crate) fn responses_websocket_adapter(
+    provider_type: &str,
+    provider_config: Option<&Value>,
+) -> Option<ResponsesWebSocketAdapter> {
+    codex_responses_websocket_enabled(provider_type, provider_config)
+        .then_some(ResponsesWebSocketAdapter::Codex)
 }
 
 fn local_failover_regex_rule_to_value(rule: &LocalFailoverRegexRule) -> Value {
@@ -351,7 +385,8 @@ mod tests {
     use super::{
         append_local_failover_policy_to_value, codex_responses_websocket_enabled,
         local_failover_policy_from_report_context, local_failover_policy_from_transport,
-        LocalFailoverPolicy, LocalFailoverRegexRule,
+        responses_websocket_adapter, LocalFailoverPolicy, LocalFailoverRegexRule,
+        ResponsesWebSocketAdapter,
     };
     use crate::provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
@@ -541,5 +576,22 @@ mod tests {
             "codex",
             Some(&json!({"codex": {"responses_websocket_enabled": false}})),
         ));
+
+        assert_eq!(
+            responses_websocket_adapter(
+                "codex",
+                Some(&json!({"codex": {"responses_websocket_enabled": true}})),
+            ),
+            Some(ResponsesWebSocketAdapter::Codex)
+        );
+        assert_eq!(
+            responses_websocket_adapter(
+                "openai",
+                Some(&json!({"codex": {"responses_websocket_enabled": true}})),
+            ),
+            None
+        );
+        assert!(ResponsesWebSocketAdapter::Codex.supports_provider_type("CODEX"));
+        assert!(!ResponsesWebSocketAdapter::Codex.supports_provider_type("openai"));
     }
 }

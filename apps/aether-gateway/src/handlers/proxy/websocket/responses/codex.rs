@@ -24,7 +24,9 @@ use super::codex_turn::{
     CodexWebSocketTurnObservation, CodexWebSocketTurnOutcome,
 };
 
-use crate::ai_serving::{maybe_build_codex_responses_websocket_decision, AiExecutionDecision};
+use crate::ai_serving::{
+    maybe_build_responses_websocket_decision, AiExecutionDecision, ResponsesWebSocketDecision,
+};
 use crate::control::{request_model_local_rejection, GatewayControlDecision};
 use crate::handlers::proxy::websocket::ingress::{
     WebSocketConnectionLog, WebSocketConnectionLogSpec, WebSocketIngressSpec,
@@ -39,7 +41,7 @@ use crate::handlers::proxy::websocket::transport::{
     upstream_message_to_client, UpstreamWebSocketErrorCodes,
 };
 use crate::headers::request_origin_from_headers_and_remote_addr;
-use crate::orchestration::sync_codex_websocket_quota_metadata;
+use crate::orchestration::{sync_codex_websocket_quota_metadata, ResponsesWebSocketAdapter};
 use crate::rate_limit::FrontdoorUserRpmOutcome;
 use crate::AppState;
 
@@ -93,6 +95,16 @@ macro_rules! warn {
 }
 
 type CodexWebSocketRequestContext = WebSocketRequestContext;
+
+/// This adapter remains the only registered Responses WebSocket capability.
+/// Keeping the match explicit makes a future adapter addition require an
+/// intentional public-session dispatch path instead of silently using Codex
+/// lifecycle and quota behavior.
+fn codex_execution_decision(planned: ResponsesWebSocketDecision) -> AiExecutionDecision {
+    match planned.adapter {
+        ResponsesWebSocketAdapter::Codex => planned.execution,
+    }
+}
 
 struct BoundCodexConnection {
     upstream: wreq::ws::WebSocket,
@@ -258,7 +270,7 @@ pub(super) async fn run_codex_responses_websocket(
         }
     }
 
-    let decision = match maybe_build_codex_responses_websocket_decision(
+    let planned = match maybe_build_responses_websocket_decision(
         &state,
         &planning_parts,
         &context.trace_id,
@@ -308,6 +320,7 @@ pub(super) async fn run_codex_responses_websocket(
         }
     };
 
+    let decision = codex_execution_decision(planned);
     let first_provider_event = match planned_response_create_event(&decision, &first_event)
         .and_then(|event| {
             serde_json::from_str::<Value>(&event).map_err(|_| "codex_websocket_request_invalid")
@@ -1172,7 +1185,7 @@ async fn forward_replanned_response_create(
     }
 
     let turn_request_id = Uuid::new_v4().to_string();
-    let decision = match maybe_build_codex_responses_websocket_decision(
+    let planned = match maybe_build_responses_websocket_decision(
         state,
         &planning_parts,
         &turn_request_id,
@@ -1211,6 +1224,7 @@ async fn forward_replanned_response_create(
             return RelayDisposition::Continue;
         }
     };
+    let decision = codex_execution_decision(planned);
     let provider_event =
         match planned_response_create_event(&decision, &client_event).and_then(|event| {
             serde_json::from_str::<Value>(&event)

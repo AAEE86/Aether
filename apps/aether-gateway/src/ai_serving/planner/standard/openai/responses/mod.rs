@@ -1,5 +1,6 @@
 use crate::ai_serving::planner::plan_builders::{AiStreamAttempt, AiSyncAttempt};
 use crate::ai_serving::GatewayControlDecision;
+use crate::orchestration::{responses_websocket_adapter, ResponsesWebSocketAdapter};
 use crate::{AiExecutionDecision, AppState, GatewayError};
 
 mod decision;
@@ -166,16 +167,26 @@ pub(crate) async fn maybe_build_stream_local_openai_responses_decision_payload(
     Ok(None)
 }
 
-/// Builds one upstream decision for a Codex Responses WebSocket turn. The
-/// bridge reuses this decision for same-model turns and invokes the planner
-/// again when a later `response.create` changes the public model.
-pub(crate) async fn maybe_build_codex_responses_websocket_decision(
+/// One eligible upstream plus the adapter that is allowed to speak to it.
+///
+/// The adapter is selected from the provider-scoped capability before the
+/// decision leaves the planner. This prevents a public Responses socket from
+/// choosing an arbitrary provider protocol after scheduling has completed.
+pub(crate) struct ResponsesWebSocketDecision {
+    pub(crate) execution: AiExecutionDecision,
+    pub(crate) adapter: ResponsesWebSocketAdapter,
+}
+
+/// Builds one upstream decision for a Responses WebSocket turn. The session
+/// reuses this decision for same-model turns and invokes the planner again when
+/// a later `response.create` changes the public model.
+pub(crate) async fn maybe_build_responses_websocket_decision(
     state: &AppState,
     parts: &http::request::Parts,
     trace_id: &str,
     decision: &GatewayControlDecision,
     body_json: &serde_json::Value,
-) -> Result<Option<AiExecutionDecision>, GatewayError> {
+) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
     let Some(spec) = resolve_stream_spec(aether_ai_formats::api::OPENAI_RESPONSES_STREAM_PLAN_KIND)
     else {
         return Ok(None);
@@ -199,22 +210,12 @@ pub(crate) async fn maybe_build_codex_responses_websocket_decision(
     .await?;
 
     while let Some(attempt) = source.next_attempt().await? {
-        if !attempt
-            .eligible
-            .transport
-            .provider
-            .provider_type
-            .trim()
-            .eq_ignore_ascii_case("codex")
-        {
-            continue;
-        }
-        if !crate::orchestration::codex_responses_websocket_enabled(
+        let Some(adapter) = responses_websocket_adapter(
             &attempt.eligible.transport.provider.provider_type,
             attempt.eligible.transport.provider.config.as_ref(),
-        ) {
+        ) else {
             continue;
-        }
+        };
         let Some(payload) = maybe_build_local_openai_responses_decision_payload_for_candidate(
             state, parts, trace_id, body_json, &input, attempt, spec,
         )
@@ -225,12 +226,15 @@ pub(crate) async fn maybe_build_codex_responses_websocket_decision(
         if payload
             .provider_type
             .as_deref()
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("codex"))
+            .is_some_and(|value| adapter.supports_provider_type(value))
             && payload.provider_api_format.as_deref().is_some_and(|value| {
                 crate::ai_serving::normalize_api_format_alias(value) == "openai:responses"
             })
         {
-            return Ok(Some(payload));
+            return Ok(Some(ResponsesWebSocketDecision {
+                execution: payload,
+                adapter,
+            }));
         }
     }
 
