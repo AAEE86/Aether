@@ -7,152 +7,92 @@
 //! upstream when the planner resolves to the same target; otherwise the bridge
 //! transparently replaces the upstream between responses.
 
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::time::{Duration, Instant};
-
-use axum::body::{Body, Bytes};
-use axum::extract::ws::{
-    CloseFrame as AxumCloseFrame, Message as AxumWsMessage, WebSocket, WebSocketUpgrade,
-};
-use axum::extract::{ConnectInfo, State};
-use axum::http::header::{
-    ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH,
-    CONTENT_TYPE, HOST, TRANSFER_ENCODING, UPGRADE,
-};
-use axum::http::{HeaderMap, Method, Response, StatusCode, Uri};
+use axum::body::Bytes;
+use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
+use axum::http::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, UPGRADE};
+use axum::http::Method;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
-use url::Url;
 use uuid::Uuid;
-use wreq::ws::message::{CloseFrame as WreqCloseFrame, Message as WreqWsMessage};
+use wreq::ws::message::Message as WreqWsMessage;
 
-use super::codex_ws_finalize::{
+use super::codex_turn::{
     begin_codex_websocket_turn, prepare_codex_websocket_turn_decision,
     spawn_codex_websocket_turn_finalization, CodexWebSocketTurn, CodexWebSocketTurnDeadline,
     CodexWebSocketTurnObservation, CodexWebSocketTurnOutcome,
 };
 
 use crate::ai_serving::{maybe_build_codex_responses_websocket_decision, AiExecutionDecision};
-use crate::api::response::{
-    build_local_auth_rejection_response, build_local_http_error_response,
-    build_local_overloaded_response,
+use crate::control::{request_model_local_rejection, GatewayControlDecision};
+use crate::handlers::proxy::websocket::ingress::{
+    WebSocketConnectionLog, WebSocketConnectionLogSpec, WebSocketIngressSpec,
+    WebSocketRequestContext,
 };
-use crate::control::{
-    request_model_local_rejection, trusted_auth_local_rejection, GatewayControlDecision,
-    GatewayLocalAuthRejection,
+use crate::handlers::proxy::websocket::session::{
+    wait_for_optional_deadline, CLOSE_INTERNAL_ERROR, CLOSE_POLICY_VIOLATION, CLOSE_TRY_AGAIN,
+    RESPONSES_WEBSOCKET_SESSION_LIMITS, WEBSOCKET_LOG_TRANSPORT,
 };
-use crate::execution_runtime::transport::{
-    build_browser_wreq_client, build_request_headers, ExecutionTransportControls,
+use crate::handlers::proxy::websocket::transport::{
+    client_close_to_upstream, close_client_socket, connect_upstream_websocket, send_gateway_error,
+    upstream_message_to_client, UpstreamWebSocketErrorCodes,
 };
-use crate::handlers::shared::ip_rules_allow;
-use crate::headers::{
-    effective_client_ip, extract_or_generate_trace_id, request_origin_from_headers_and_remote_addr,
-};
+use crate::headers::request_origin_from_headers_and_remote_addr;
 use crate::orchestration::sync_codex_websocket_quota_metadata;
 use crate::rate_limit::FrontdoorUserRpmOutcome;
-use crate::router::RequestAdmissionError;
-use crate::{AppState, GatewayError};
+use crate::AppState;
 
-const MAX_FRAME_SIZE: usize = 16 << 20;
-const MAX_MESSAGE_SIZE: usize = 16 << 20;
-const INITIAL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_CONNECTION_DURATION: Duration = Duration::from_secs(60 * 60);
-const CLOSE_POLICY_VIOLATION: u16 = 1008;
-const CLOSE_INTERNAL_ERROR: u16 = 1011;
-const CLOSE_TRY_AGAIN: u16 = 1013;
-const WEBSOCKET_LOG_TRANSPORT: &str = "websocket";
+// Keep the pre-refactor target stable so existing deployments that enable
+// `aether_gateway::handlers::proxy::codex_ws=debug` retain their diagnostics.
+const CODEX_WEBSOCKET_LOG_TARGET: &str = "aether_gateway::handlers::proxy::codex_ws";
 
-#[derive(Clone)]
-struct CodexWebSocketRequestContext {
-    trace_id: String,
-    headers: HeaderMap,
-    uri: Uri,
-    remote_addr: SocketAddr,
-    decision: GatewayControlDecision,
-    rpm_bypassed: bool,
+pub(super) const CODEX_RESPONSES_INGRESS_SPEC: WebSocketIngressSpec = WebSocketIngressSpec {
+    route_unavailable_message: "WebSocket route is unavailable",
+    ip_whitelist_failure_event_name: "codex_websocket_ip_whitelist_check_failed",
+};
+
+const CODEX_RESPONSES_CONNECTION_LOG_SPEC: WebSocketConnectionLogSpec =
+    WebSocketConnectionLogSpec {
+        opened_event_name: "codex_websocket_connection_opened",
+        closed_event_name: "codex_websocket_connection_closed",
+        opened_message: "gateway accepted Codex Responses WebSocket connection",
+        closed_message: "gateway closed Codex Responses WebSocket connection",
+        execution_path: "codex_websocket_bridge",
+        provider_type: "codex",
+    };
+
+const CODEX_UPSTREAM_WEBSOCKET_ERRORS: UpstreamWebSocketErrorCodes = UpstreamWebSocketErrorCodes {
+    upstream_url_missing: "codex_upstream_url_missing",
+    upstream_url_invalid: "codex_upstream_url_invalid",
+    headers_invalid: "codex_websocket_headers_invalid",
+    client_build_failed: "codex_websocket_client_build_failed",
+    proxy_invalid: "codex_websocket_proxy_invalid",
+    tunnel_proxy_unsupported: "codex_websocket_tunnel_proxy_unsupported",
+    handshake_failed: "codex_websocket_handshake_failed",
+    upgrade_rejected: "codex_websocket_upgrade_rejected",
+    upgrade_failed: "codex_websocket_upgrade_failed",
+};
+
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        tracing::debug!(target: CODEX_WEBSOCKET_LOG_TARGET, $($arg)*)
+    };
 }
 
-struct CodexWebSocketConnectionLog {
-    trace_id: String,
-    remote_addr: SocketAddr,
-    path: String,
-    route_class: String,
-    user_id: String,
-    api_key_id: String,
-    started_at: Instant,
+macro_rules! info {
+    ($($arg:tt)*) => {
+        tracing::info!(target: CODEX_WEBSOCKET_LOG_TARGET, $($arg)*)
+    };
 }
 
-impl CodexWebSocketConnectionLog {
-    fn new(context: &CodexWebSocketRequestContext) -> Self {
-        let auth_context = context.decision.auth_context.as_ref();
-        Self {
-            trace_id: context.trace_id.clone(),
-            remote_addr: context.remote_addr,
-            path: context.uri.path().to_string(),
-            route_class: context
-                .decision
-                .route_class
-                .as_deref()
-                .unwrap_or("ai_public")
-                .to_string(),
-            user_id: auth_context
-                .map(|auth_context| auth_context.user_id.clone())
-                .unwrap_or_else(|| "-".to_string()),
-            api_key_id: auth_context
-                .map(|auth_context| auth_context.api_key_id.clone())
-                .unwrap_or_else(|| "-".to_string()),
-            started_at: Instant::now(),
-        }
-    }
-
-    fn log_opened(&self) {
-        info!(
-            event_name = "codex_websocket_connection_opened",
-            log_type = "access",
-            transport = WEBSOCKET_LOG_TRANSPORT,
-            websocket = true,
-            status = "upgraded",
-            status_code = 101u16,
-            trace_id = %self.trace_id,
-            remote_addr = %self.remote_addr,
-            method = "GET",
-            path = %self.path,
-            user_id = %self.user_id,
-            api_key_id = %self.api_key_id,
-            route_class = %self.route_class,
-            execution_path = "codex_websocket_bridge",
-            provider_type = "codex",
-            "gateway accepted Codex Responses WebSocket connection"
-        );
-    }
+macro_rules! warn {
+    ($($arg:tt)*) => {
+        tracing::warn!(target: CODEX_WEBSOCKET_LOG_TARGET, $($arg)*)
+    };
 }
 
-impl Drop for CodexWebSocketConnectionLog {
-    fn drop(&mut self) {
-        info!(
-            event_name = "codex_websocket_connection_closed",
-            log_type = "access",
-            transport = WEBSOCKET_LOG_TRANSPORT,
-            websocket = true,
-            status = "closed",
-            status_code = 101u16,
-            trace_id = %self.trace_id,
-            remote_addr = %self.remote_addr,
-            method = "GET",
-            path = %self.path,
-            user_id = %self.user_id,
-            api_key_id = %self.api_key_id,
-            route_class = %self.route_class,
-            execution_path = "codex_websocket_bridge",
-            provider_type = "codex",
-            elapsed_ms = self.started_at.elapsed().as_millis() as u64,
-            "gateway closed Codex Responses WebSocket connection"
-        );
-    }
-}
+type CodexWebSocketRequestContext = WebSocketRequestContext;
 
 struct BoundCodexConnection {
     upstream: wreq::ws::WebSocket,
@@ -200,131 +140,12 @@ impl InitialMessageError {
     }
 }
 
-pub(crate) async fn codex_responses_websocket(
-    State(state): State<AppState>,
-    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
-    ws: WebSocketUpgrade,
-    headers: HeaderMap,
-    uri: Uri,
-) -> Result<Response<Body>, GatewayError> {
-    let trace_id = extract_or_generate_trace_id(&headers);
-    let client_ip = effective_client_ip(&headers, &remote_addr);
-    if state.admin_security_ip_blacklisted(client_ip).await? {
-        return build_local_http_error_response(
-            &trace_id,
-            None,
-            StatusCode::FORBIDDEN,
-            "当前 IP 已被禁止访问",
-        );
-    }
-
-    let request_context = crate::control::resolve_public_request_context(
-        &state,
-        &Method::GET,
-        &uri,
-        &headers,
-        &trace_id,
-    )
-    .await?;
-    let Some(decision) = request_context.control_decision else {
-        return build_local_http_error_response(
-            &trace_id,
-            None,
-            StatusCode::NOT_FOUND,
-            "WebSocket route is unavailable",
-        );
-    };
-    if let Some(rejection) = trusted_auth_local_rejection(Some(&decision), &headers) {
-        return build_local_auth_rejection_response(&trace_id, Some(&decision), &rejection);
-    }
-    let Some(auth_context) = decision.auth_context.as_ref() else {
-        return build_local_auth_rejection_response(
-            &trace_id,
-            Some(&decision),
-            &GatewayLocalAuthRejection::InvalidApiKey,
-        );
-    };
-    if !auth_context.access_allowed {
-        return build_local_auth_rejection_response(
-            &trace_id,
-            Some(&decision),
-            &GatewayLocalAuthRejection::InvalidApiKey,
-        );
-    }
-    if !ip_rules_allow(auth_context.ip_rules.as_deref(), client_ip) {
-        return build_local_auth_rejection_response(
-            &trace_id,
-            Some(&decision),
-            &GatewayLocalAuthRejection::IpNotAllowed {
-                remote_ip: client_ip.to_string(),
-            },
-        );
-    }
-
-    let ip_whitelisted = match state.admin_security_ip_whitelisted(client_ip).await {
-        Ok(value) => value,
-        Err(error) => {
-            warn!(
-                event_name = "codex_websocket_ip_whitelist_check_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %trace_id,
-                client_ip = %client_ip,
-                error = ?error,
-                "gateway continued with WebSocket rate limiting after IP whitelist check error"
-            );
-            false
-        }
-    };
-    let request_permit = match state.try_acquire_request_permit().await {
-        Ok(permit) => permit,
-        Err(RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Saturated {
-            gate,
-            limit,
-        }))
-        | Err(RequestAdmissionError::Distributed(
-            aether_runtime_state::RuntimeSemaphoreError::Saturated { gate, limit },
-        ))
-        | Err(RequestAdmissionError::Distributed(
-            aether_runtime_state::RuntimeSemaphoreError::Unavailable { gate, limit, .. },
-        )) => {
-            return build_local_overloaded_response(&trace_id, Some(&decision), gate, limit);
-        }
-        Err(RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Closed { gate })) => {
-            return Err(GatewayError::Internal(format!(
-                "gateway request concurrency gate {gate} is closed"
-            )));
-        }
-        Err(RequestAdmissionError::Distributed(
-            aether_runtime_state::RuntimeSemaphoreError::InvalidConfiguration(message),
-        )) => return Err(GatewayError::Internal(message)),
-    };
-
-    let context = CodexWebSocketRequestContext {
-        trace_id,
-        headers,
-        uri,
-        remote_addr,
-        decision,
-        rpm_bypassed: ip_whitelisted,
-    };
-    Ok(ws
-        .max_frame_size(MAX_FRAME_SIZE)
-        .max_message_size(MAX_MESSAGE_SIZE)
-        .on_upgrade(move |socket| async move {
-            // The permit intentionally covers the lifetime of this active socket.
-            let _request_permit = request_permit;
-            run_codex_responses_websocket(socket, state, context).await;
-        }))
-}
-
-async fn run_codex_responses_websocket(
+pub(super) async fn run_codex_responses_websocket(
     mut client_socket: WebSocket,
     state: AppState,
     context: CodexWebSocketRequestContext,
 ) {
-    let connection_log = CodexWebSocketConnectionLog::new(&context);
+    let connection_log = WebSocketConnectionLog::new(&context, CODEX_RESPONSES_CONNECTION_LOG_SPEC);
     connection_log.log_opened();
 
     let (first_text, first_event) = match receive_initial_response_create(&mut client_socket).await
@@ -594,9 +415,12 @@ async fn receive_initial_response_create(
     client_socket: &mut WebSocket,
 ) -> Result<(String, Value), InitialMessageError> {
     loop {
-        let message = timeout(INITIAL_MESSAGE_TIMEOUT, client_socket.next())
-            .await
-            .map_err(|_| InitialMessageError::TimedOut)?;
+        let message = timeout(
+            RESPONSES_WEBSOCKET_SESSION_LIMITS.initial_message_timeout,
+            client_socket.next(),
+        )
+        .await
+        .map_err(|_| InitialMessageError::TimedOut)?;
         let Some(message) = message else {
             return Err(InitialMessageError::ClientClosed);
         };
@@ -674,31 +498,15 @@ async fn bind_codex_upstream(
     decision: &AiExecutionDecision,
     initial_event: &Value,
 ) -> Result<BoundCodexConnection, &'static str> {
-    let upstream_url = decision
-        .upstream_url
-        .as_deref()
-        .ok_or("codex_upstream_url_missing")?;
-    let upstream_url = websocket_upstream_url(upstream_url)?;
-    let headers = websocket_handshake_headers(&decision.provider_request_headers)?;
-    let client = build_websocket_client(decision)?;
-    let response = client
-        .websocket(upstream_url.as_str())
-        .headers(headers)
-        .max_frame_size(MAX_FRAME_SIZE)
-        .max_message_size(MAX_MESSAGE_SIZE)
-        .send()
-        .await
-        .map_err(|_| "codex_websocket_handshake_failed")?;
-    if response.status().as_u16() != 101 {
-        return Err("codex_websocket_upgrade_rejected");
-    }
-    let upstream_response_headers = websocket_response_headers(response.headers());
-    let mut upstream = response
-        .into_websocket()
-        .await
-        .map_err(|_| "codex_websocket_upgrade_failed")?;
+    let mut upstream = connect_upstream_websocket(
+        decision,
+        RESPONSES_WEBSOCKET_SESSION_LIMITS,
+        CODEX_UPSTREAM_WEBSOCKET_ERRORS,
+    )
+    .await?;
     let first_event = planned_response_create_event(decision, initial_event)?;
     upstream
+        .socket
         .send(WreqWsMessage::text(first_event))
         .await
         .map_err(|_| "codex_websocket_initial_send_failed")?;
@@ -728,117 +536,16 @@ async fn bind_codex_upstream(
         .to_string();
 
     Ok(BoundCodexConnection {
-        upstream,
+        upstream: upstream.socket,
         client_model,
         provider_model,
         response_in_flight: true,
         decision_template: decision.clone(),
         active_turn: None,
         next_turn_index: 2,
-        upstream_response_headers,
+        upstream_response_headers: upstream.response_headers,
         account_quota_exhausted: false,
     })
-}
-
-fn websocket_response_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_string(), value.to_string()))
-        })
-        .collect()
-}
-
-fn websocket_upstream_url(raw: &str) -> Result<Url, &'static str> {
-    let mut url = Url::parse(raw).map_err(|_| "codex_upstream_url_invalid")?;
-    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
-        return Err("codex_upstream_url_invalid");
-    }
-    let websocket_scheme = match url.scheme() {
-        "https" => "wss",
-        "http" => "ws",
-        "wss" | "ws" => return Ok(url),
-        _ => return Err("codex_upstream_url_invalid"),
-    };
-    url.set_scheme(websocket_scheme)
-        .map_err(|_| "codex_upstream_url_invalid")?;
-    Ok(url)
-}
-
-fn websocket_handshake_headers(
-    provider_headers: &BTreeMap<String, String>,
-) -> Result<HeaderMap, &'static str> {
-    let mut headers = build_request_headers(provider_headers, None, false)
-        .map_err(|_| "codex_websocket_headers_invalid")?;
-    for header in [
-        ACCEPT,
-        ACCEPT_ENCODING,
-        CONNECTION,
-        CONTENT_ENCODING,
-        CONTENT_LENGTH,
-        CONTENT_TYPE,
-        HOST,
-        TRANSFER_ENCODING,
-        UPGRADE,
-    ] {
-        headers.remove(header);
-    }
-    Ok(headers)
-}
-
-fn build_websocket_client(decision: &AiExecutionDecision) -> Result<wreq::Client, &'static str> {
-    // HTTP read and total timeouts are unsuitable for a long-lived Responses
-    // socket. Keep only the configured connection timeout; the bridge owns the
-    // 60-minute connection limit above.
-    let timeouts = websocket_timeouts(decision);
-    if let Some(profile) = decision.transport_profile.as_ref() {
-        return build_browser_wreq_client(
-            timeouts.as_ref(),
-            decision.proxy.as_ref(),
-            profile,
-            ExecutionTransportControls::default(),
-            false,
-        )
-        .map_err(|_| "codex_websocket_client_build_failed");
-    }
-
-    let mut builder = wreq::Client::builder();
-    if let Some(connect_ms) = timeouts.as_ref().and_then(|timeouts| timeouts.connect_ms) {
-        builder = builder.connect_timeout(Duration::from_millis(connect_ms));
-    }
-    if let Some(proxy) = decision
-        .proxy
-        .as_ref()
-        .filter(|proxy| proxy.enabled != Some(false))
-    {
-        if let Some(proxy_url) = proxy
-            .url
-            .as_deref()
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let proxy = wreq::Proxy::all(proxy_url).map_err(|_| "codex_websocket_proxy_invalid")?;
-            builder = builder.proxy(proxy);
-        } else if proxy.node_id.is_some() || proxy.mode.as_deref() == Some("tunnel") {
-            return Err("codex_websocket_tunnel_proxy_unsupported");
-        }
-    }
-    builder
-        .build()
-        .map_err(|_| "codex_websocket_client_build_failed")
-}
-
-fn websocket_timeouts(
-    decision: &AiExecutionDecision,
-) -> Option<aether_contracts::ExecutionTimeouts> {
-    let mut timeouts = decision.timeouts.clone()?;
-    timeouts.read_ms = None;
-    timeouts.first_byte_ms = None;
-    timeouts.total_ms = None;
-    Some(timeouts)
 }
 
 fn planned_response_create_event(
@@ -867,7 +574,7 @@ async fn relay_bound_connection(
     state: &AppState,
     context: &CodexWebSocketRequestContext,
 ) {
-    let connection_deadline = sleep(MAX_CONNECTION_DURATION);
+    let connection_deadline = sleep(RESPONSES_WEBSOCKET_SESSION_LIMITS.max_connection_duration);
     tokio::pin!(connection_deadline);
 
     loop {
@@ -888,7 +595,7 @@ async fn relay_bound_connection(
                 close_client_socket(client_socket, CLOSE_TRY_AGAIN, "connection_limit_reached").await;
                 break;
             }
-            _ = wait_for_active_turn_deadline(active_turn_deadline) => {
+            _ = wait_for_optional_deadline(active_turn_deadline.map(|deadline| deadline.deadline)) => {
                 let Some(turn_deadline) = active_turn_deadline else {
                     continue;
                 };
@@ -1091,7 +798,11 @@ async fn relay_bound_connection(
                         CodexWebSocketTurnOutcome::upstream_closed(),
                     );
                 }
-                if client_socket.send(wreq_message_to_axum(upstream_message)).await.is_err() {
+                if client_socket
+                    .send(upstream_message_to_client(upstream_message))
+                    .await
+                    .is_err()
+                {
                     finalize_active_turn(
                         bound,
                         state,
@@ -1136,15 +847,6 @@ fn codex_websocket_rate_limits_from_message(
         &event,
         updated_at_unix_secs,
     )
-}
-
-async fn wait_for_active_turn_deadline(deadline: Option<CodexWebSocketTurnDeadline>) {
-    match deadline {
-        Some(deadline) => {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.deadline)).await
-        }
-        None => std::future::pending::<()>().await,
-    }
 }
 
 fn finalize_active_turn(
@@ -1396,7 +1098,7 @@ async fn forward_client_message(
                 "codex_websocket_send_failed",
             )),
         AxumWsMessage::Close(frame) => {
-            let _ = bound.upstream.send(axum_close_to_wreq(frame)).await;
+            let _ = bound.upstream.send(client_close_to_upstream(frame)).await;
             RelayDisposition::Close
         }
     }
@@ -1827,49 +1529,6 @@ fn safe_websocket_event_label(value: &str) -> String {
     value.to_string()
 }
 
-fn wreq_message_to_axum(message: WreqWsMessage) -> AxumWsMessage {
-    match message {
-        WreqWsMessage::Text(text) => AxumWsMessage::Text(text.to_string().into()),
-        WreqWsMessage::Binary(data) => AxumWsMessage::Binary(data),
-        WreqWsMessage::Ping(data) => AxumWsMessage::Ping(data),
-        WreqWsMessage::Pong(data) => AxumWsMessage::Pong(data),
-        WreqWsMessage::Close(frame) => AxumWsMessage::Close(frame.map(|frame| AxumCloseFrame {
-            code: frame.code.into(),
-            reason: frame.reason.to_string().into(),
-        })),
-    }
-}
-
-fn axum_close_to_wreq(frame: Option<AxumCloseFrame>) -> WreqWsMessage {
-    WreqWsMessage::Close(frame.map(|frame| WreqCloseFrame {
-        code: frame.code.into(),
-        reason: frame.reason.to_string().into(),
-    }))
-}
-
-async fn send_gateway_error(client_socket: &mut WebSocket, code: &str, message: &str) {
-    let event = json!({
-        "type": "error",
-        "error": {
-            "type": "gateway_error",
-            "code": code,
-            "message": message,
-        },
-    });
-    let _ = client_socket
-        .send(AxumWsMessage::Text(event.to_string().into()))
-        .await;
-}
-
-async fn close_client_socket(client_socket: &mut WebSocket, code: u16, reason: &str) {
-    let _ = client_socket
-        .send(AxumWsMessage::Close(Some(AxumCloseFrame {
-            code,
-            reason: reason.to_string().into(),
-        })))
-        .await;
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1888,17 +1547,20 @@ mod tests {
     use tokio::sync::{oneshot, Mutex};
     use wreq::ws::message::Message as WreqWsMessage;
 
-    use super::super::codex_ws_finalize::{
+    use super::super::codex_turn::{
         CodexWebSocketTurnObservation, CodexWebSocketTurnOutcome, CodexWebSocketTurnTimeoutPhase,
     };
     use super::{
         bind_codex_upstream, changed_followup_response_create_model,
         codex_websocket_rate_limits_from_message, decisions_reuse_upstream,
         normalize_followup_response_create, planned_response_create_event,
-        wait_for_active_turn_deadline, websocket_event_type_for_log, websocket_handshake_headers,
-        websocket_timeouts, websocket_upstream_url, CodexWebSocketTurnDeadline,
+        websocket_event_type_for_log, CodexWebSocketTurnDeadline,
     };
     use crate::ai_serving::AiExecutionDecision;
+    use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;
+    use crate::handlers::proxy::websocket::transport::{
+        websocket_handshake_headers, websocket_timeouts, websocket_upstream_url,
+    };
 
     #[derive(Default)]
     struct MockState {
@@ -1948,8 +1610,11 @@ mod tests {
 
     #[test]
     fn maps_http_codex_url_to_websocket_url_without_losing_path_or_query() {
-        let url = websocket_upstream_url("https://example.test/backend-api/codex/responses?x=1")
-            .expect("URL should convert");
+        let url = websocket_upstream_url(
+            "https://example.test/backend-api/codex/responses?x=1",
+            "codex_upstream_url_invalid",
+        )
+        .expect("URL should convert");
         assert_eq!(
             url.as_str(),
             "wss://example.test/backend-api/codex/responses?x=1"
@@ -1958,19 +1623,26 @@ mod tests {
 
     #[test]
     fn rejects_embedded_upstream_credentials() {
-        assert!(websocket_upstream_url("https://token@example.test/responses").is_err());
+        assert!(websocket_upstream_url(
+            "https://token@example.test/responses",
+            "codex_upstream_url_invalid",
+        )
+        .is_err());
     }
 
     #[test]
     fn strips_http_entity_headers_from_websocket_handshake() {
-        let headers = websocket_handshake_headers(&BTreeMap::from([
-            (
-                "authorization".to_string(),
-                "Bearer provider-token".to_string(),
-            ),
-            ("chatgpt-account-id".to_string(), "account-id".to_string()),
-            ("content-type".to_string(), "application/json".to_string()),
-        ]))
+        let headers = websocket_handshake_headers(
+            &BTreeMap::from([
+                (
+                    "authorization".to_string(),
+                    "Bearer provider-token".to_string(),
+                ),
+                ("chatgpt-account-id".to_string(), "account-id".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]),
+            "codex_websocket_headers_invalid",
+        )
         .expect("headers should build");
         assert!(headers.contains_key(AUTHORIZATION));
         assert!(!headers.contains_key(CONTENT_TYPE));
@@ -2110,7 +1782,7 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_millis(50),
-            wait_for_active_turn_deadline(Some(deadline)),
+            wait_for_optional_deadline(Some(deadline.deadline)),
         )
         .await
         .expect("expired deadline should resolve immediately");
