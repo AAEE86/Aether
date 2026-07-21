@@ -1,4 +1,4 @@
-//! Per-turn lifecycle accounting for the Codex Responses WebSocket bridge.
+//! Per-turn lifecycle accounting for the standard Responses WebSocket bridge.
 //!
 //! Every `response.create` remains a separate billable and auditable request,
 //! including turns that cause the bridge to re-plan a changed model. This
@@ -26,9 +26,10 @@ use base64::Engine as _;
 use serde_json::{json, Map, Value};
 use tracing::warn;
 
+use super::adapter::ResponsesWebSocketProtocolAdapter;
 use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
-use crate::clock::{current_unix_ms, current_unix_secs};
+use crate::clock::current_unix_ms;
 use crate::execution_runtime::attach_provider_response_headers_to_report_context;
 use crate::request_candidate_runtime::{
     ensure_execution_request_candidate_slot, record_local_request_candidate_status,
@@ -38,57 +39,56 @@ use crate::{AppState, GatewayError};
 
 const WEBSOCKET_CONNECTION_TRACE_REPORT_CONTEXT_FIELD: &str = "websocket_connection_trace_id";
 const WEBSOCKET_TURN_INDEX_REPORT_CONTEXT_FIELD: &str = "websocket_turn_index";
-const CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD: &str = "codex_websocket_rate_limits";
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CodexWebSocketTurnObservation {
+pub(super) enum ResponsesWebSocketTurnObservation {
     Started,
-    Terminal(CodexWebSocketTurnOutcome),
+    Terminal(ResponsesWebSocketTurnOutcome),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CodexWebSocketTurnTimeoutPhase {
+pub(super) enum ResponsesWebSocketTurnTimeoutPhase {
     AwaitingFirstEvent,
     AwaitingTerminal,
 }
 
-impl CodexWebSocketTurnTimeoutPhase {
+impl ResponsesWebSocketTurnTimeoutPhase {
     pub(super) const fn error_code(self) -> &'static str {
         match self {
-            Self::AwaitingFirstEvent => "codex_websocket_first_event_timeout",
-            Self::AwaitingTerminal => "codex_websocket_turn_timeout",
+            Self::AwaitingFirstEvent => "responses_websocket_first_event_timeout",
+            Self::AwaitingTerminal => "responses_websocket_turn_timeout",
         }
     }
 
     pub(super) const fn client_message(self) -> &'static str {
         match self {
             Self::AwaitingFirstEvent => {
-                "Codex provider did not emit a response event before the configured timeout"
+                "Provider did not emit a response event before the configured timeout"
             }
             Self::AwaitingTerminal => {
-                "Codex provider did not finish the response before the configured timeout"
+                "Provider did not finish the response before the configured timeout"
             }
         }
     }
 
-    pub(super) const fn outcome(self) -> CodexWebSocketTurnOutcome {
+    pub(super) const fn outcome(self) -> ResponsesWebSocketTurnOutcome {
         match self {
-            Self::AwaitingFirstEvent => CodexWebSocketTurnOutcome::first_event_timeout(),
-            Self::AwaitingTerminal => CodexWebSocketTurnOutcome::terminal_timeout(),
+            Self::AwaitingFirstEvent => ResponsesWebSocketTurnOutcome::first_event_timeout(),
+            Self::AwaitingTerminal => ResponsesWebSocketTurnOutcome::terminal_timeout(),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct CodexWebSocketTurnDeadline {
-    pub(super) phase: CodexWebSocketTurnTimeoutPhase,
+pub(super) struct ResponsesWebSocketTurnDeadline {
+    pub(super) phase: ResponsesWebSocketTurnTimeoutPhase,
     pub(super) deadline: Instant,
     pub(super) timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CodexWebSocketTurnOutcome {
+pub(super) enum ResponsesWebSocketTurnOutcome {
     ProviderTerminal {
         status_code: u16,
         cancelled: bool,
@@ -102,7 +102,7 @@ pub(super) enum CodexWebSocketTurnOutcome {
     },
 }
 
-impl CodexWebSocketTurnOutcome {
+impl ResponsesWebSocketTurnOutcome {
     pub(super) const fn client_disconnected() -> Self {
         Self::Cancelled {
             reason: "client disconnected before provider terminal event",
@@ -118,21 +118,21 @@ impl CodexWebSocketTurnOutcome {
     pub(super) const fn upstream_closed() -> Self {
         Self::Failure {
             status_code: 502,
-            reason: "Codex upstream WebSocket closed before provider terminal event",
+            reason: "upstream WebSocket closed before provider terminal event",
         }
     }
 
     pub(super) const fn upstream_receive_failed() -> Self {
         Self::Failure {
             status_code: 502,
-            reason: "Codex upstream WebSocket receive failed before provider terminal event",
+            reason: "upstream WebSocket receive failed before provider terminal event",
         }
     }
 
     pub(super) const fn upstream_send_failed() -> Self {
         Self::Failure {
             status_code: 502,
-            reason: "gateway could not forward response.create to the Codex upstream",
+            reason: "gateway could not forward response.create to the upstream",
         }
     }
 
@@ -146,14 +146,14 @@ impl CodexWebSocketTurnOutcome {
     pub(super) const fn first_event_timeout() -> Self {
         Self::Failure {
             status_code: 504,
-            reason: "Codex upstream WebSocket did not emit a response event before timeout",
+            reason: "upstream WebSocket did not emit a response event before timeout",
         }
     }
 
     pub(super) const fn terminal_timeout() -> Self {
         Self::Failure {
             status_code: 504,
-            reason: "Codex upstream WebSocket did not finish the response before timeout",
+            reason: "upstream WebSocket did not finish the response before timeout",
         }
     }
 
@@ -184,7 +184,7 @@ impl CodexWebSocketTurnOutcome {
     }
 }
 
-pub(super) struct CodexWebSocketTurn {
+pub(super) struct ResponsesWebSocketTurn {
     plan: ExecutionPlan,
     trace_id: String,
     report_kind: String,
@@ -202,7 +202,7 @@ pub(super) struct CodexWebSocketTurn {
     terminal_timeout: Duration,
 }
 
-pub(super) fn prepare_codex_websocket_turn_decision(
+pub(super) fn prepare_responses_websocket_turn_decision(
     template: &AiExecutionDecision,
     request_id: String,
     reuse_selected_candidate: bool,
@@ -229,25 +229,26 @@ pub(super) fn prepare_codex_websocket_turn_decision(
     decision
 }
 
-pub(super) async fn begin_codex_websocket_turn(
+pub(super) async fn begin_responses_websocket_turn(
     state: &AppState,
     parts: &http::request::Parts,
     decision: AiExecutionDecision,
     client_event: &Value,
-) -> Result<CodexWebSocketTurn, GatewayError> {
+) -> Result<ResponsesWebSocketTurn, GatewayError> {
     let attempt =
         build_openai_responses_stream_plan_from_decision(parts, client_event, decision, false)?
             .ok_or_else(|| {
                 GatewayError::Internal(
-                    "Codex WebSocket request could not build a usage/audit stream plan".to_string(),
+                    "Responses WebSocket request could not build a usage/audit stream plan"
+                        .to_string(),
                 )
             })?;
     let mut plan = attempt.plan;
     let (first_event_timeout, terminal_timeout) =
-        resolve_codex_websocket_turn_timeouts(plan.timeouts.as_ref());
+        resolve_responses_websocket_turn_timeouts(plan.timeouts.as_ref());
     let report_kind = attempt.report_kind.ok_or_else(|| {
         GatewayError::Internal(
-            "Codex WebSocket request is missing an execution report kind".to_string(),
+            "Responses WebSocket request is missing an execution report kind".to_string(),
         )
     })?;
     let mut report_context = attempt.report_context;
@@ -277,7 +278,7 @@ pub(super) async fn begin_codex_websocket_turn(
     )
     .await;
 
-    Ok(CodexWebSocketTurn {
+    Ok(ResponsesWebSocketTurn {
         trace_id: plan.request_id.clone(),
         plan,
         report_kind,
@@ -296,7 +297,7 @@ pub(super) async fn begin_codex_websocket_turn(
     })
 }
 
-impl CodexWebSocketTurn {
+impl ResponsesWebSocketTurn {
     pub(super) fn set_provider_response_headers(&mut self, headers: BTreeMap<String, String>) {
         self.report_context = attach_provider_response_headers_to_report_context(
             self.report_context.take(),
@@ -312,19 +313,19 @@ impl CodexWebSocketTurn {
         self.first_event_elapsed_ms = None;
     }
 
-    pub(super) fn deadline(&self) -> CodexWebSocketTurnDeadline {
+    pub(super) fn deadline(&self) -> ResponsesWebSocketTurnDeadline {
         let (phase, timeout) = if self.first_event_elapsed_ms.is_some() {
             (
-                CodexWebSocketTurnTimeoutPhase::AwaitingTerminal,
+                ResponsesWebSocketTurnTimeoutPhase::AwaitingTerminal,
                 self.terminal_timeout,
             )
         } else {
             (
-                CodexWebSocketTurnTimeoutPhase::AwaitingFirstEvent,
+                ResponsesWebSocketTurnTimeoutPhase::AwaitingFirstEvent,
                 self.first_event_timeout.min(self.terminal_timeout),
             )
         };
-        CodexWebSocketTurnDeadline {
+        ResponsesWebSocketTurnDeadline {
             phase,
             deadline: self.started_at + timeout,
             timeout,
@@ -334,7 +335,8 @@ impl CodexWebSocketTurn {
     pub(super) fn observe_upstream_text(
         &mut self,
         text: &str,
-    ) -> Option<CodexWebSocketTurnObservation> {
+        adapter: &dyn ResponsesWebSocketProtocolAdapter,
+    ) -> Option<ResponsesWebSocketTurnObservation> {
         self.upstream_bytes = self.upstream_bytes.saturating_add(text.len() as u64);
         if self.first_event_elapsed_ms.is_none() {
             self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
@@ -344,24 +346,20 @@ impl CodexWebSocketTurn {
             Ok(event) => event,
             Err(_) => {
                 self.capture_sse_event(&json!({
-                    "type": "error",
-                    "error": {
-                        "type": "gateway_protocol_error",
-                        "message": "Codex upstream WebSocket event was not valid JSON"
+                        "type": "error",
+                        "error": {
+                            "type": "gateway_protocol_error",
+                        "message": "upstream Responses WebSocket event was not valid JSON"
                     }
                 }));
                 self.observer
-                    .disable_with_error("Codex upstream WebSocket event was not valid JSON");
+                    .disable_with_error("upstream Responses WebSocket event was not valid JSON");
                 return None;
             }
         };
 
         self.capture_sse_event(&event);
-        attach_codex_websocket_rate_limits_to_report_context(
-            &mut self.report_context,
-            &event,
-            current_unix_secs(),
-        );
+        adapter.decorate_turn_report_context(&mut self.report_context, &event);
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
@@ -379,13 +377,13 @@ impl CodexWebSocketTurn {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if let Some(outcome) = provider_terminal_outcome(event_type, &event) {
-            return Some(CodexWebSocketTurnObservation::Terminal(outcome));
+            return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));
         }
         if matches!(
             event_type,
             "response.created" | "response.in_progress" | "response.queued"
         ) {
-            return Some(CodexWebSocketTurnObservation::Started);
+            return Some(ResponsesWebSocketTurnObservation::Started);
         }
         None
     }
@@ -420,7 +418,7 @@ impl CodexWebSocketTurn {
         .await;
     }
 
-    async fn finalize(mut self, state: &AppState, outcome: CodexWebSocketTurnOutcome) {
+    async fn finalize(mut self, state: &AppState, outcome: ResponsesWebSocketTurnOutcome) {
         let summary = self.finish_summary(outcome);
         let cancelled = outcome.cancelled();
         let status_code = outcome.status_code();
@@ -463,7 +461,8 @@ impl CodexWebSocketTurn {
             (
                 Some("stream_missing_terminal_event".to_string()),
                 Some(summary.parser_error.clone().unwrap_or_else(|| {
-                    "Codex upstream WebSocket ended before a provider terminal event".to_string()
+                    "upstream Responses WebSocket ended before a provider terminal event"
+                        .to_string()
                 })),
             )
         } else if failed {
@@ -508,13 +507,13 @@ impl CodexWebSocketTurn {
         if !cancelled {
             if let Err(error) = submit_stream_report(state, payload).await {
                 warn!(
-                    event_name = "codex_websocket_execution_report_submit_failed",
+                    event_name = "responses_websocket_execution_report_submit_failed",
                     log_type = "ops",
                     transport = "websocket",
                     websocket = true,
                     trace_id = %self.trace_id,
                     error = ?error,
-                    "gateway failed to submit Codex WebSocket terminal report"
+                    "gateway failed to submit Responses WebSocket terminal report"
                 );
             }
         }
@@ -530,7 +529,7 @@ impl CodexWebSocketTurn {
 
     fn finish_summary(
         &mut self,
-        outcome: CodexWebSocketTurnOutcome,
+        outcome: ResponsesWebSocketTurnOutcome,
     ) -> ExecutionStreamTerminalSummary {
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
@@ -556,8 +555,9 @@ impl CodexWebSocketTurn {
                 summary.finish_reason = Some("cancelled".to_string());
             }
         } else if !summary.observed_finish && summary.parser_error.is_none() {
-            summary.parser_error =
-                Some("Codex upstream WebSocket ended before a provider terminal event".to_string());
+            summary.parser_error = Some(
+                "upstream Responses WebSocket ended before a provider terminal event".to_string(),
+            );
         }
         summary
     }
@@ -571,10 +571,10 @@ impl CodexWebSocketTurn {
     }
 }
 
-pub(super) fn spawn_codex_websocket_turn_finalization(
+pub(super) fn spawn_responses_websocket_turn_finalization(
     state: AppState,
-    turn: CodexWebSocketTurn,
-    outcome: CodexWebSocketTurnOutcome,
+    turn: ResponsesWebSocketTurn,
+    outcome: ResponsesWebSocketTurnOutcome,
 ) {
     tokio::spawn(async move {
         turn.finalize(&state, outcome).await;
@@ -623,46 +623,26 @@ fn prepare_websocket_report_context(
     Value::Object(object)
 }
 
-fn attach_codex_websocket_rate_limits_to_report_context(
-    report_context: &mut Option<Value>,
+fn provider_terminal_outcome(
+    event_type: &str,
     event: &Value,
-    updated_at_unix_secs: u64,
-) {
-    let Some(rate_limits) =
-        aether_admin::provider::quota::parse_codex_websocket_rate_limits_response(
-            event,
-            updated_at_unix_secs,
-        )
-    else {
-        return;
-    };
-    let context = report_context.get_or_insert_with(|| Value::Object(Map::new()));
-    let Some(context) = context.as_object_mut() else {
-        return;
-    };
-    context.insert(
-        CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD.to_string(),
-        rate_limits,
-    );
-}
-
-fn provider_terminal_outcome(event_type: &str, event: &Value) -> Option<CodexWebSocketTurnOutcome> {
+) -> Option<ResponsesWebSocketTurnOutcome> {
     match event_type {
         "response.completed" | "response.incomplete" => {
-            Some(CodexWebSocketTurnOutcome::ProviderTerminal {
+            Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
                 status_code: websocket_event_status_code(event, 200),
                 cancelled: false,
             })
         }
-        "response.cancelled" => Some(CodexWebSocketTurnOutcome::ProviderTerminal {
+        "response.cancelled" => Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
             status_code: 499,
             cancelled: true,
         }),
-        "response.failed" => Some(CodexWebSocketTurnOutcome::ProviderTerminal {
+        "response.failed" => Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
             status_code: websocket_event_status_code(event, 200),
             cancelled: false,
         }),
-        "error" => Some(CodexWebSocketTurnOutcome::ProviderTerminal {
+        "error" => Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
             status_code: websocket_event_status_code(event, 502),
             cancelled: false,
         }),
@@ -684,7 +664,7 @@ fn websocket_event_status_code(event: &Value, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
-fn resolve_codex_websocket_turn_timeouts(
+fn resolve_responses_websocket_turn_timeouts(
     timeouts: Option<&ExecutionTimeouts>,
 ) -> (Duration, Duration) {
     let first_event_timeout_ms = timeouts
@@ -703,16 +683,16 @@ fn resolve_codex_websocket_turn_timeouts(
     )
 }
 
-fn outcome_reason(outcome: CodexWebSocketTurnOutcome) -> String {
+fn outcome_reason(outcome: ResponsesWebSocketTurnOutcome) -> String {
     match outcome {
-        CodexWebSocketTurnOutcome::ProviderTerminal {
+        ResponsesWebSocketTurnOutcome::ProviderTerminal {
             cancelled: true, ..
-        } => "Codex provider cancelled the response".to_string(),
-        CodexWebSocketTurnOutcome::ProviderTerminal {
+        } => "provider cancelled the response".to_string(),
+        ResponsesWebSocketTurnOutcome::ProviderTerminal {
             cancelled: false, ..
-        } => "Codex provider returned a terminal response event".to_string(),
-        CodexWebSocketTurnOutcome::Cancelled { reason }
-        | CodexWebSocketTurnOutcome::Failure { reason, .. } => reason.to_string(),
+        } => "provider returned a terminal response event".to_string(),
+        ResponsesWebSocketTurnOutcome::Cancelled { reason }
+        | ResponsesWebSocketTurnOutcome::Failure { reason, .. } => reason.to_string(),
     }
 }
 
@@ -722,7 +702,7 @@ fn websocket_event_as_sse_line(event: &Value) -> Vec<u8> {
             "type": "error",
             "error": {
                 "type": "gateway_protocol_error",
-                "message": "Codex upstream WebSocket event could not be serialized"
+                "message": "upstream Responses WebSocket event could not be serialized"
             }
         })
         .to_string()
@@ -774,10 +754,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        attach_codex_websocket_rate_limits_to_report_context, prepare_websocket_report_context,
-        provider_terminal_outcome, resolve_codex_websocket_turn_timeouts,
-        websocket_event_as_sse_line, CodexWebSocketTurnDeadline, CodexWebSocketTurnOutcome,
-        CodexWebSocketTurnTimeoutPhase,
+        prepare_websocket_report_context, provider_terminal_outcome,
+        resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
+        ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
+        ResponsesWebSocketTurnTimeoutPhase,
     };
 
     #[test]
@@ -830,7 +810,7 @@ mod tests {
         let outcome = provider_terminal_outcome("response.completed", &event);
         assert_eq!(
             outcome,
-            Some(CodexWebSocketTurnOutcome::ProviderTerminal {
+            Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
                 status_code: 200,
                 cancelled: false
             })
@@ -841,40 +821,9 @@ mod tests {
     }
 
     #[test]
-    fn websocket_rate_limit_chunk_is_kept_for_the_terminal_report() {
-        let mut context = Some(json!({"key_id": "codex-key"}));
-        attach_codex_websocket_rate_limits_to_report_context(
-            &mut context,
-            &json!({
-                "chunks": [{
-                    "type": "codex.rate_limits",
-                    "plan_type": "free",
-                    "rate_limits": {
-                        "allowed": true,
-                        "limit_reached": false,
-                        "primary": {
-                            "used_percent": 91,
-                            "window_minutes": 43200,
-                            "reset_after_seconds": 2590791
-                        }
-                    }
-                }]
-            }),
-            1_787_000_000,
-        );
-
-        assert_eq!(
-            context.as_ref().and_then(
-                |context| context.pointer("/codex_websocket_rate_limits/primary_used_percent")
-            ),
-            Some(&json!(91.0))
-        );
-    }
-
-    #[test]
     fn turn_timeouts_reuse_provider_first_byte_and_request_deadlines() {
         let (first_event, terminal) =
-            resolve_codex_websocket_turn_timeouts(Some(&ExecutionTimeouts {
+            resolve_responses_websocket_turn_timeouts(Some(&ExecutionTimeouts {
                 first_byte_ms: Some(12_345),
                 total_ms: Some(67_890),
                 ..ExecutionTimeouts::default()
@@ -889,15 +838,15 @@ mod tests {
         let started_at = Instant::now();
         let first_event = Duration::from_secs(30);
         let terminal = Duration::from_secs(10);
-        let deadline = CodexWebSocketTurnDeadline {
-            phase: CodexWebSocketTurnTimeoutPhase::AwaitingFirstEvent,
+        let deadline = ResponsesWebSocketTurnDeadline {
+            phase: ResponsesWebSocketTurnTimeoutPhase::AwaitingFirstEvent,
             deadline: started_at + first_event.min(terminal),
             timeout: first_event.min(terminal),
         };
 
         assert_eq!(
             deadline.phase,
-            CodexWebSocketTurnTimeoutPhase::AwaitingFirstEvent
+            ResponsesWebSocketTurnTimeoutPhase::AwaitingFirstEvent
         );
         assert_eq!(deadline.timeout, Duration::from_secs(10));
         assert_eq!(deadline.deadline, started_at + Duration::from_secs(10));

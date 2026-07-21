@@ -74,16 +74,17 @@ wss://<aether-gateway>/v1/responses
 ```
 
 It is disabled by default per provider. In **添加提供商** or **编辑提供商**,
-select a `Codex` provider and enable **Responses WebSocket 模式** under
-**功能开关**. The setting takes effect for new WebSocket connections without a
-gateway restart.
+enable **Responses WebSocket 模式** under **功能开关** only after the selected
+upstream has passed a compatible WebSocket probe. The setting takes effect for
+new WebSocket connections without a gateway restart. It is available to every
+provider type; candidate planning still requires a selected
+`openai:responses` endpoint.
 
 Authenticate the upgrade request with the normal Aether API key. The first
 client frame must be a text JSON `response.create` containing a non-empty
 `model`. Aether then applies its regular Responses candidate selection, but
-accepts only an eligible, WebSocket-enabled `provider_type=codex` endpoint
-using `openai:responses`. It opens an upstream WebSocket for the selected
-Codex key.
+accepts only an eligible, WebSocket-enabled endpoint using `openai:responses`.
+It opens an upstream WebSocket using the selected provider key.
 
 The selected provider's model mapping and request headers are applied to every
 turn. `stream` and `background` are removed because they are HTTP transport
@@ -113,7 +114,7 @@ ws = create_connection(
 )
 ws.send(json.dumps({
     "type": "response.create",
-    "model": "your-public-codex-model",
+    "model": "your-public-model",
     "store": False,
     "input": "Explain this repository.",
 }))
@@ -127,8 +128,8 @@ ws.send(json.dumps({
 - Each `response.create` must receive its first upstream event within the
   selected provider's `stream_first_byte_timeout` (30 seconds by default),
   and finish within its `request_timeout` (20 minutes by default). Aether
-  sends `codex_websocket_first_event_timeout` or
-  `codex_websocket_turn_timeout` and closes the bound socket when either
+  sends `responses_websocket_first_event_timeout` or
+  `responses_websocket_turn_timeout` and closes the bound socket when either
   deadline expires.
 - Responses are sequential; no multiplexing is supported on one socket.
 - Each `response.create` consumes the normal Aether user/API-key RPM budget.
@@ -140,9 +141,11 @@ ws.send(json.dumps({
 Usage and audit finalization now runs for every accepted `response.create`.
 Existing usage body-capture and header-redaction policies apply to the resulting
 records. Newly created WebSocket usage records expose `is_websocket=true`, and
-the usage-record type column renders them as `WS`. For diagnosis, enable debug logging for
-`aether_gateway::handlers::proxy::codex_ws`; event logs contain only the
-event type and frame size, never request or response contents. Every
-WebSocket-specific log carries `transport="websocket"` and `websocket=true`;
-keep `log_type` for its existing access/event/ops classification, and render
-the transport flag as a `WS` label in a log viewer if desired.
+the usage-record type column renders them as `WS`. For diagnosis, enable debug
+logging for `aether_gateway::handlers::proxy::responses_ws`; event logs contain
+only the event type and frame size, never request or response contents. Codex
+quota-extension logs remain under `aether_gateway::handlers::proxy::codex_ws`.
+Every WebSocket-specific log carries `transport="websocket"` and
+`websocket=true`; keep `log_type` for its existing access/event/ops
+classification, and render the transport flag as a `WS` label in a log viewer
+if desired.

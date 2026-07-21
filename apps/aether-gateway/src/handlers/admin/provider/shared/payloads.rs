@@ -151,7 +151,7 @@ pub(crate) struct AdminProviderCreateRequest {
     #[serde(default)]
     pub(crate) keep_priority_on_conversion: Option<bool>,
     #[serde(default)]
-    pub(crate) codex_responses_websocket_enabled: Option<bool>,
+    pub(crate) responses_websocket_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) is_active: Option<bool>,
     #[serde(default)]
@@ -212,7 +212,7 @@ pub(crate) struct AdminProviderUpdateRequest {
     #[serde(default)]
     pub(crate) keep_priority_on_conversion: Option<bool>,
     #[serde(default)]
-    pub(crate) codex_responses_websocket_enabled: Option<bool>,
+    pub(crate) responses_websocket_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) is_active: Option<bool>,
     #[serde(default)]

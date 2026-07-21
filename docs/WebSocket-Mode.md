@@ -144,8 +144,9 @@ ws.send(
 - A single WebSocket connection can receive multiple `response.create` messages, but it runs them sequentially (one in-flight response at a time).
 - No multiplexing support today. Use multiple connections if you need parallel runs.
 - Connection duration is limited to 60 minutes. Reconnect when the limit is reached.
-- Aether binds each upstream WebSocket to one Codex account. If that account reports exhausted quota, Aether lets the active response reach its terminal event, marks the account unavailable, emits `codex_account_quota_exhausted`, and closes the client connection with close code `1013`. Reconnect so the normal planner can select another eligible account.
-- Aether does not transparently move an existing response chain to another account. Connection-local `previous_response_id` state cannot be transferred safely, especially with `store=false`/ZDR.
+- Aether binds each upstream WebSocket to one selected provider key. A provider must explicitly enable the standard Responses WebSocket capability and expose an `openai:responses` endpoint before it is eligible for this bridge.
+- The Codex adapter additionally watches Codex quota events. If the bound account reports exhausted quota, Aether lets the active response reach its terminal event, marks the account unavailable, emits `codex_account_quota_exhausted`, and closes the client connection with close code `1013`. Reconnect so the normal planner can select another eligible account.
+- Aether does not transparently move an existing response chain to another provider key. Connection-local `previous_response_id` state cannot be transferred safely, especially with `store=false`/ZDR.
 
 ## Reconnect and recover
 

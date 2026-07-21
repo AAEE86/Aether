@@ -6,8 +6,8 @@ use crate::handlers::admin::provider::shared::support::{
 };
 use crate::handlers::admin::provider::write::normalize::{
     normalize_chat_pii_redaction_config, normalize_pool_advanced_config,
-    normalize_provider_type_input, remove_codex_responses_websocket_enabled,
-    set_codex_responses_websocket_enabled, validate_codex_responses_websocket_config,
+    normalize_provider_type_input, set_responses_websocket_enabled,
+    validate_responses_websocket_config,
 };
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::normalize_json_object;
@@ -313,15 +313,13 @@ pub(crate) async fn build_admin_update_provider_record(
         }
     }
 
-    if fields.contains("codex_responses_websocket_enabled") {
-        let Some(enabled) = payload.codex_responses_websocket_enabled else {
-            return Err("codex_responses_websocket_enabled 必须是布尔值".to_string());
-        };
-        set_codex_responses_websocket_enabled(&target_provider_type, &mut config_map, enabled)?;
-    } else if target_provider_type != "codex" {
-        remove_codex_responses_websocket_enabled(&mut config_map);
+    if fields.contains("responses_websocket_enabled") {
+        let enabled = payload
+            .responses_websocket_enabled
+            .ok_or_else(|| "responses_websocket_enabled 必须是布尔值".to_string())?;
+        set_responses_websocket_enabled(&mut config_map, enabled)?;
     }
-    validate_codex_responses_websocket_config(&target_provider_type, &config_map)?;
+    validate_responses_websocket_config(&config_map)?;
 
     updated.config = (!config_map.is_empty()).then_some(serde_json::Value::Object(config_map));
     crate::provider_transport::validate_anthropic_compatibility_profile_config(

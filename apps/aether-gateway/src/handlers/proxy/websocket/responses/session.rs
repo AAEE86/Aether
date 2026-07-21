@@ -1,7 +1,7 @@
-//! Codex-only bridge for the Responses WebSocket mode.
+//! Standard OpenAI Responses WebSocket session engine.
 //!
 //! An incoming client socket is authenticated at Upgrade time. Its first
-//! `response.create` selects a Codex key through the normal Responses planner.
+//! `response.create` selects a provider through the normal Responses planner.
 //! Later turns reuse that upstream while the requested model remains eligible
 //! on the selected key. A model change is planned again and keeps the current
 //! upstream when the planner resolves to the same target; otherwise the bridge
@@ -18,19 +18,21 @@ use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use wreq::ws::message::Message as WreqWsMessage;
 
-use super::codex_turn::{
-    begin_codex_websocket_turn, prepare_codex_websocket_turn_decision,
-    spawn_codex_websocket_turn_finalization, CodexWebSocketTurn, CodexWebSocketTurnDeadline,
-    CodexWebSocketTurnObservation, CodexWebSocketTurnOutcome,
+use super::adapter::{
+    resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective,
+    ResponsesWebSocketProtocolAdapter,
+};
+use super::turn::{
+    begin_responses_websocket_turn, prepare_responses_websocket_turn_decision,
+    spawn_responses_websocket_turn_finalization, ResponsesWebSocketTurn,
+    ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnObservation,
+    ResponsesWebSocketTurnOutcome,
 };
 
-use crate::ai_serving::{
-    maybe_build_responses_websocket_decision, AiExecutionDecision, ResponsesWebSocketDecision,
-};
+use crate::ai_serving::{maybe_build_responses_websocket_decision, AiExecutionDecision};
 use crate::control::{request_model_local_rejection, GatewayControlDecision};
 use crate::handlers::proxy::websocket::ingress::{
-    WebSocketConnectionLog, WebSocketConnectionLogSpec, WebSocketIngressSpec,
-    WebSocketRequestContext,
+    WebSocketConnectionLog, WebSocketConnectionLogSpec, WebSocketRequestContext,
 };
 use crate::handlers::proxy::websocket::session::{
     wait_for_optional_deadline, CLOSE_INTERNAL_ERROR, CLOSE_POLICY_VIOLATION, CLOSE_TRY_AGAIN,
@@ -38,84 +40,48 @@ use crate::handlers::proxy::websocket::session::{
 };
 use crate::handlers::proxy::websocket::transport::{
     client_close_to_upstream, close_client_socket, connect_upstream_websocket, send_gateway_error,
-    upstream_message_to_client, UpstreamWebSocketErrorCodes,
+    upstream_message_to_client,
 };
 use crate::headers::request_origin_from_headers_and_remote_addr;
-use crate::orchestration::{sync_codex_websocket_quota_metadata, ResponsesWebSocketAdapter};
 use crate::rate_limit::FrontdoorUserRpmOutcome;
 use crate::AppState;
 
-// Keep the pre-refactor target stable so existing deployments that enable
-// `aether_gateway::handlers::proxy::codex_ws=debug` retain their diagnostics.
-const CODEX_WEBSOCKET_LOG_TARGET: &str = "aether_gateway::handlers::proxy::codex_ws";
+const RESPONSES_WEBSOCKET_LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
 
-pub(super) const CODEX_RESPONSES_INGRESS_SPEC: WebSocketIngressSpec = WebSocketIngressSpec {
-    route_unavailable_message: "WebSocket route is unavailable",
-    ip_whitelist_failure_event_name: "codex_websocket_ip_whitelist_check_failed",
-};
-
-const CODEX_RESPONSES_CONNECTION_LOG_SPEC: WebSocketConnectionLogSpec =
-    WebSocketConnectionLogSpec {
-        opened_event_name: "codex_websocket_connection_opened",
-        closed_event_name: "codex_websocket_connection_closed",
-        opened_message: "gateway accepted Codex Responses WebSocket connection",
-        closed_message: "gateway closed Codex Responses WebSocket connection",
-        execution_path: "codex_websocket_bridge",
-        provider_type: "codex",
-    };
-
-const CODEX_UPSTREAM_WEBSOCKET_ERRORS: UpstreamWebSocketErrorCodes = UpstreamWebSocketErrorCodes {
-    upstream_url_missing: "codex_upstream_url_missing",
-    upstream_url_invalid: "codex_upstream_url_invalid",
-    headers_invalid: "codex_websocket_headers_invalid",
-    client_build_failed: "codex_websocket_client_build_failed",
-    proxy_invalid: "codex_websocket_proxy_invalid",
-    tunnel_proxy_unsupported: "codex_websocket_tunnel_proxy_unsupported",
-    handshake_failed: "codex_websocket_handshake_failed",
-    upgrade_rejected: "codex_websocket_upgrade_rejected",
-    upgrade_failed: "codex_websocket_upgrade_failed",
+const RESPONSES_CONNECTION_LOG_SPEC: WebSocketConnectionLogSpec = WebSocketConnectionLogSpec {
+    opened_event_name: "responses_websocket_connection_opened",
+    closed_event_name: "responses_websocket_connection_closed",
+    opened_message: "gateway accepted Responses WebSocket connection",
+    closed_message: "gateway closed Responses WebSocket connection",
+    execution_path: "responses_websocket_bridge",
+    provider_type: "responses",
 };
 
 macro_rules! debug {
     ($($arg:tt)*) => {
-        tracing::debug!(target: CODEX_WEBSOCKET_LOG_TARGET, $($arg)*)
-    };
-}
-
-macro_rules! info {
-    ($($arg:tt)*) => {
-        tracing::info!(target: CODEX_WEBSOCKET_LOG_TARGET, $($arg)*)
+        tracing::debug!(target: RESPONSES_WEBSOCKET_LOG_TARGET, $($arg)*)
     };
 }
 
 macro_rules! warn {
     ($($arg:tt)*) => {
-        tracing::warn!(target: CODEX_WEBSOCKET_LOG_TARGET, $($arg)*)
+        tracing::warn!(target: RESPONSES_WEBSOCKET_LOG_TARGET, $($arg)*)
     };
 }
 
-type CodexWebSocketRequestContext = WebSocketRequestContext;
+type ResponsesWebSocketRequestContext = WebSocketRequestContext;
 
-/// This adapter remains the only registered Responses WebSocket capability.
-/// Keeping the match explicit makes a future adapter addition require an
-/// intentional public-session dispatch path instead of silently using Codex
-/// lifecycle and quota behavior.
-fn codex_execution_decision(planned: ResponsesWebSocketDecision) -> AiExecutionDecision {
-    match planned.adapter {
-        ResponsesWebSocketAdapter::Codex => planned.execution,
-    }
-}
-
-struct BoundCodexConnection {
+struct BoundResponsesConnection {
     upstream: wreq::ws::WebSocket,
+    adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
     client_model: String,
     provider_model: String,
     response_in_flight: bool,
     decision_template: AiExecutionDecision,
-    active_turn: Option<CodexWebSocketTurn>,
+    active_turn: Option<ResponsesWebSocketTurn>,
     next_turn_index: u64,
     upstream_response_headers: BTreeMap<String, String>,
-    account_quota_exhausted: bool,
+    pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,12 +118,12 @@ impl InitialMessageError {
     }
 }
 
-pub(super) async fn run_codex_responses_websocket(
+pub(super) async fn run_responses_websocket(
     mut client_socket: WebSocket,
     state: AppState,
-    context: CodexWebSocketRequestContext,
+    context: ResponsesWebSocketRequestContext,
 ) {
-    let connection_log = WebSocketConnectionLog::new(&context, CODEX_RESPONSES_CONNECTION_LOG_SPEC);
+    let connection_log = WebSocketConnectionLog::new(&context, RESPONSES_CONNECTION_LOG_SPEC);
     connection_log.log_opened();
 
     let (first_text, first_event) = match receive_initial_response_create(&mut client_socket).await
@@ -198,7 +164,7 @@ pub(super) async fn run_codex_responses_websocket(
         }
         Err(()) => {
             warn!(
-                event_name = "codex_websocket_rate_limit_check_failed",
+                event_name = "responses_websocket_rate_limit_check_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
@@ -247,7 +213,7 @@ pub(super) async fn run_codex_responses_websocket(
         Ok(None) => {}
         Err(_) => {
             warn!(
-                event_name = "codex_websocket_model_access_check_failed",
+                event_name = "responses_websocket_model_access_check_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
@@ -283,70 +249,71 @@ pub(super) async fn run_codex_responses_websocket(
         Ok(None) => {
             send_gateway_error(
                 &mut client_socket,
-                "codex_provider_unavailable",
-                "No eligible WebSocket-enabled Codex Responses provider is available",
+                "responses_provider_unavailable",
+                "No eligible WebSocket-enabled Responses provider is available",
             )
             .await;
             close_client_socket(
                 &mut client_socket,
                 CLOSE_TRY_AGAIN,
-                "codex_provider_unavailable",
+                "responses_provider_unavailable",
             )
             .await;
             return;
         }
         Err(_) => {
             warn!(
-                event_name = "codex_websocket_planning_failed",
+                event_name = "responses_websocket_planning_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
                 trace_id = %context.trace_id,
-                "gateway failed to plan Codex WebSocket provider request"
+                "gateway failed to plan Responses WebSocket provider request"
             );
             send_gateway_error(
                 &mut client_socket,
-                "codex_provider_unavailable",
-                "Gateway could not prepare a Codex provider connection",
+                "responses_provider_unavailable",
+                "Gateway could not prepare a Provider connection",
             )
             .await;
             close_client_socket(
                 &mut client_socket,
                 CLOSE_INTERNAL_ERROR,
-                "codex_planning_failed",
+                "responses_planning_failed",
             )
             .await;
             return;
         }
     };
 
-    let decision = codex_execution_decision(planned);
+    let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let decision = planned.execution;
     let first_provider_event = match planned_response_create_event(&decision, &first_event)
         .and_then(|event| {
-            serde_json::from_str::<Value>(&event).map_err(|_| "codex_websocket_request_invalid")
+            serde_json::from_str::<Value>(&event).map_err(|_| "responses_websocket_request_invalid")
         }) {
         Ok(event) => event,
         Err(code) => {
             warn!(
-                event_name = "codex_websocket_initial_event_normalization_failed",
+                event_name = "responses_websocket_initial_event_normalization_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
                 trace_id = %context.trace_id,
                 error_code = code,
-                "gateway could not normalize the initial Codex WebSocket event"
+                "gateway could not normalize the initial Responses WebSocket event"
             );
             send_gateway_error(
                 &mut client_socket,
                 code,
-                "Gateway could not prepare the Codex response.create event",
+                "Gateway could not prepare the Responses response.create event",
             )
             .await;
             close_client_socket(&mut client_socket, CLOSE_POLICY_VIOLATION, code).await;
             return;
         }
     };
-    let first_turn_decision = prepare_codex_websocket_turn_decision(
+    let first_turn_decision = prepare_responses_websocket_turn_decision(
         &decision,
         context.trace_id.clone(),
         true,
@@ -355,7 +322,7 @@ pub(super) async fn run_codex_responses_websocket(
         &context.trace_id,
         1,
     );
-    let mut first_turn = match begin_codex_websocket_turn(
+    let mut first_turn = match begin_responses_websocket_turn(
         &state,
         &planning_parts,
         first_turn_decision,
@@ -366,17 +333,17 @@ pub(super) async fn run_codex_responses_websocket(
         Ok(turn) => turn,
         Err(error) => {
             warn!(
-                event_name = "codex_websocket_turn_lifecycle_start_failed",
+                event_name = "responses_websocket_turn_lifecycle_start_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
                 trace_id = %context.trace_id,
                 error = ?error,
-                "gateway could not start Codex WebSocket usage/audit lifecycle"
+                "gateway could not start Responses WebSocket usage/audit lifecycle"
             );
             send_gateway_error(
                 &mut client_socket,
-                "codex_websocket_reporting_unavailable",
+                "responses_websocket_reporting_unavailable",
                 "Gateway could not start usage and audit tracking for this response",
             )
             .await;
@@ -390,27 +357,27 @@ pub(super) async fn run_codex_responses_websocket(
         }
     };
 
-    let mut bound = match bind_codex_upstream(&decision, &first_event).await {
+    let mut bound = match bind_responses_upstream(&decision, &first_event, adapter).await {
         Ok(connection) => connection,
         Err(code) => {
-            spawn_codex_websocket_turn_finalization(
+            spawn_responses_websocket_turn_finalization(
                 state.clone(),
                 first_turn,
-                CodexWebSocketTurnOutcome::upstream_connect_failed(code),
+                ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
             );
             warn!(
-                event_name = "codex_websocket_upstream_connect_failed",
+                event_name = "responses_websocket_upstream_connect_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
                 trace_id = %context.trace_id,
                 error_code = code,
-                "gateway failed to establish Codex WebSocket upstream"
+                "gateway failed to establish Responses WebSocket upstream"
             );
             send_gateway_error(
                 &mut client_socket,
                 code,
-                "Gateway could not establish the Codex provider connection",
+                "Gateway could not establish the Provider connection",
             )
             .await;
             close_client_socket(&mut client_socket, CLOSE_TRY_AGAIN, code).await;
@@ -476,7 +443,7 @@ fn validate_initial_response_create(event: &Value) -> Result<(), InitialMessageE
     Ok(())
 }
 
-fn build_planning_parts(context: &CodexWebSocketRequestContext) -> http::request::Parts {
+fn build_planning_parts(context: &ResponsesWebSocketRequestContext) -> http::request::Parts {
     let mut request = http::Request::builder()
         .method(Method::POST)
         .uri(context.uri.clone())
@@ -507,14 +474,15 @@ fn build_planning_parts(context: &CodexWebSocketRequestContext) -> http::request
     request.into_parts().0
 }
 
-async fn bind_codex_upstream(
+async fn bind_responses_upstream(
     decision: &AiExecutionDecision,
     initial_event: &Value,
-) -> Result<BoundCodexConnection, &'static str> {
+    adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
+) -> Result<BoundResponsesConnection, &'static str> {
     let mut upstream = connect_upstream_websocket(
         decision,
         RESPONSES_WEBSOCKET_SESSION_LIMITS,
-        CODEX_UPSTREAM_WEBSOCKET_ERRORS,
+        adapter.upstream_errors(),
     )
     .await?;
     let first_event = planned_response_create_event(decision, initial_event)?;
@@ -522,14 +490,14 @@ async fn bind_codex_upstream(
         .socket
         .send(WreqWsMessage::text(first_event))
         .await
-        .map_err(|_| "codex_websocket_initial_send_failed")?;
+        .map_err(|_| "responses_websocket_initial_send_failed")?;
 
     let client_model = initial_event
         .get("model")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or("codex_websocket_model_missing")?
+        .ok_or("responses_websocket_model_missing")?
         .to_string();
     let provider_model = decision
         .provider_request_body
@@ -545,11 +513,12 @@ async fn bind_codex_upstream(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
         })
-        .ok_or("codex_websocket_mapped_model_missing")?
+        .ok_or("responses_websocket_mapped_model_missing")?
         .to_string();
 
-    Ok(BoundCodexConnection {
+    Ok(BoundResponsesConnection {
         upstream: upstream.socket,
+        adapter,
         client_model,
         provider_model,
         response_in_flight: true,
@@ -557,7 +526,7 @@ async fn bind_codex_upstream(
         active_turn: None,
         next_turn_index: 2,
         upstream_response_headers: upstream.response_headers,
-        account_quota_exhausted: false,
+        pending_adapter_drain: None,
     })
 }
 
@@ -571,33 +540,36 @@ fn planned_response_create_event(
         .unwrap_or_else(|| fallback.clone());
     let object = event
         .as_object_mut()
-        .ok_or("codex_websocket_request_invalid")?;
+        .ok_or("responses_websocket_request_invalid")?;
     object.insert(
         "type".to_string(),
         Value::String("response.create".to_string()),
     );
     object.remove("stream");
     object.remove("background");
-    serde_json::to_string(&event).map_err(|_| "codex_websocket_request_invalid")
+    serde_json::to_string(&event).map_err(|_| "responses_websocket_request_invalid")
 }
 
 async fn relay_bound_connection(
     client_socket: &mut WebSocket,
-    bound: &mut BoundCodexConnection,
+    bound: &mut BoundResponsesConnection,
     state: &AppState,
-    context: &CodexWebSocketRequestContext,
+    context: &ResponsesWebSocketRequestContext,
 ) {
     let connection_deadline = sleep(RESPONSES_WEBSOCKET_SESSION_LIMITS.max_connection_duration);
     tokio::pin!(connection_deadline);
 
     loop {
-        let active_turn_deadline = bound.active_turn.as_ref().map(CodexWebSocketTurn::deadline);
+        let active_turn_deadline = bound
+            .active_turn
+            .as_ref()
+            .map(ResponsesWebSocketTurn::deadline);
         tokio::select! {
             _ = &mut connection_deadline => {
                 finalize_active_turn(
                     bound,
                     state,
-                    CodexWebSocketTurnOutcome::connection_limit_reached(),
+                    ResponsesWebSocketTurnOutcome::connection_limit_reached(),
                 );
                 send_gateway_error(
                     client_socket,
@@ -613,14 +585,14 @@ async fn relay_bound_connection(
                     continue;
                 };
                 warn!(
-                    event_name = "codex_websocket_turn_timeout",
+                    event_name = "responses_websocket_turn_timeout",
                     log_type = "ops",
                     transport = WEBSOCKET_LOG_TRANSPORT,
                     websocket = true,
                     trace_id = %context.trace_id,
                     timeout_phase = ?turn_deadline.phase,
                     timeout_ms = turn_deadline.timeout.as_millis() as u64,
-                    "Codex WebSocket response did not reach its configured deadline"
+                    "Responses WebSocket response did not reach its configured deadline"
                 );
                 finalize_active_turn(bound, state, turn_deadline.phase.outcome());
                 send_gateway_error(
@@ -641,14 +613,14 @@ async fn relay_bound_connection(
                     finalize_active_turn(
                         bound,
                         state,
-                        CodexWebSocketTurnOutcome::client_disconnected(),
+                        ResponsesWebSocketTurnOutcome::client_disconnected(),
                     );
                     let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
                     break;
                 };
                 let Ok(client_message) = client_message else {
                     warn!(
-                        event_name = "codex_websocket_client_receive_failed",
+                        event_name = "responses_websocket_client_receive_failed",
                         log_type = "ops",
                         transport = WEBSOCKET_LOG_TRANSPORT,
                         websocket = true,
@@ -658,7 +630,7 @@ async fn relay_bound_connection(
                     finalize_active_turn(
                         bound,
                         state,
-                        CodexWebSocketTurnOutcome::client_disconnected(),
+                        ResponsesWebSocketTurnOutcome::client_disconnected(),
                     );
                     let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
                     break;
@@ -669,24 +641,24 @@ async fn relay_bound_connection(
                         finalize_active_turn(
                             bound,
                             state,
-                            CodexWebSocketTurnOutcome::client_disconnected(),
+                            ResponsesWebSocketTurnOutcome::client_disconnected(),
                         );
                         break;
                     }
                     RelayDisposition::UpstreamError(code) => {
                         warn!(
-                            event_name = "codex_websocket_upstream_send_failed",
+                            event_name = "responses_websocket_upstream_send_failed",
                             log_type = "ops",
                             transport = WEBSOCKET_LOG_TRANSPORT,
                             websocket = true,
                             trace_id = %context.trace_id,
                             error_code = code,
-                            "Codex upstream WebSocket send failed"
+                            "Upstream WebSocket send failed"
                         );
                         finalize_active_turn(
                             bound,
                             state,
-                            CodexWebSocketTurnOutcome::upstream_send_failed(),
+                            ResponsesWebSocketTurnOutcome::upstream_send_failed(),
                         );
                         send_gateway_error(
                             client_socket,
@@ -703,36 +675,36 @@ async fn relay_bound_connection(
                     finalize_active_turn(
                         bound,
                         state,
-                        CodexWebSocketTurnOutcome::upstream_closed(),
+                        ResponsesWebSocketTurnOutcome::upstream_closed(),
                     );
                     close_client_socket(client_socket, 1000, "upstream_closed").await;
                     break;
                 };
                 let Ok(upstream_message) = upstream_message else {
                     warn!(
-                        event_name = "codex_websocket_upstream_receive_failed",
+                        event_name = "responses_websocket_upstream_receive_failed",
                         log_type = "ops",
                         transport = WEBSOCKET_LOG_TRANSPORT,
                         websocket = true,
                         trace_id = %context.trace_id,
-                        "Codex upstream WebSocket receive failed"
+                        "Upstream WebSocket receive failed"
                     );
                     finalize_active_turn(
                         bound,
                         state,
-                        CodexWebSocketTurnOutcome::upstream_receive_failed(),
+                        ResponsesWebSocketTurnOutcome::upstream_receive_failed(),
                     );
                     send_gateway_error(
                         client_socket,
-                        "codex_websocket_receive_failed",
-                        "Codex provider connection closed unexpectedly",
+                        "responses_websocket_receive_failed",
+                        "Provider connection closed unexpectedly",
                     ).await;
                     close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, "upstream_receive_failed").await;
                     break;
                 };
                 if let WreqWsMessage::Text(text) = &upstream_message {
                     debug!(
-                        event_name = "codex_websocket_upstream_event",
+                        event_name = "responses_websocket_upstream_event",
                         log_type = "event",
                         transport = WEBSOCKET_LOG_TRANSPORT,
                         websocket = true,
@@ -740,66 +712,55 @@ async fn relay_bound_connection(
                         event_type = %websocket_event_type_for_log(text.as_str()),
                         frame_bytes = text.len(),
                         active_turn = bound.active_turn.is_some(),
-                        "gateway received Codex WebSocket event"
+                        "gateway received Responses WebSocket event"
                     );
                 }
-                if let Some(rate_limits) = codex_websocket_rate_limits_from_message(
-                    &upstream_message,
-                    crate::clock::current_unix_secs(),
-                ) {
-                    if aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&rate_limits)
-                        && !bound.account_quota_exhausted
+                if let WreqWsMessage::Text(text) = &upstream_message {
+                    if bound.pending_adapter_drain.is_none()
+                        && bound.adapter.observes_upstream_events()
                     {
-                        bound.account_quota_exhausted = true;
-                        if let Err(error) = sync_codex_websocket_quota_metadata(
-                            state,
-                            bound.decision_template.report_context.as_ref(),
-                            rate_limits,
-                        )
-                        .await
-                        {
-                            warn!(
-                                event_name = "codex_websocket_quota_exhausted_sync_failed",
-                                log_type = "ops",
-                                transport = WEBSOCKET_LOG_TRANSPORT,
-                                websocket = true,
-                                trace_id = %context.trace_id,
-                                error = ?error,
-                                "gateway failed to persist an exhausted Codex WebSocket account before draining the connection"
-                            );
+                        if let Ok(event) = serde_json::from_str::<Value>(text.as_str()) {
+                            let adapter = bound.adapter;
+                            let report_context = bound.decision_template.report_context.clone();
+                            if let Some(directive) = adapter
+                                .observe_upstream_event(
+                                    state,
+                                    &context.trace_id,
+                                    report_context.as_ref(),
+                                    &event,
+                                )
+                                .await
+                            {
+                                bound.pending_adapter_drain = Some(directive);
+                            }
                         }
-                        info!(
-                            event_name = "codex_websocket_account_quota_exhausted",
-                            log_type = "event",
-                            transport = WEBSOCKET_LOG_TRANSPORT,
-                            websocket = true,
-                            trace_id = %context.trace_id,
-                            "gateway will drain the Codex WebSocket after the active response"
-                        );
                     }
                 }
                 let observation = match &upstream_message {
-                    WreqWsMessage::Text(text) => bound
-                        .active_turn
-                        .as_mut()
-                        .and_then(|turn| turn.observe_upstream_text(text.as_str())),
+                    WreqWsMessage::Text(text) => {
+                        let adapter = bound.adapter;
+                        bound
+                            .active_turn
+                            .as_mut()
+                            .and_then(|turn| turn.observe_upstream_text(text.as_str(), adapter))
+                    }
                     _ => None,
                 };
                 update_response_in_flight(bound, &upstream_message);
                 if matches!(
                     observation,
-                    Some(CodexWebSocketTurnObservation::Started)
-                        | Some(CodexWebSocketTurnObservation::Terminal(_))
+                    Some(ResponsesWebSocketTurnObservation::Started)
+                        | Some(ResponsesWebSocketTurnObservation::Terminal(_))
                 ) {
                     if let Some(turn) = bound.active_turn.as_mut() {
                         turn.mark_stream_started(state).await;
                     }
                 }
-                if let Some(CodexWebSocketTurnObservation::Terminal(outcome)) = observation {
+                if let Some(ResponsesWebSocketTurnObservation::Terminal(outcome)) = observation {
                     finalize_active_turn(bound, state, outcome);
                 }
-                let drain_for_quota = quota_drain_ready(
-                    bound.account_quota_exhausted,
+                let drain_for_adapter = adapter_drain_ready(
+                    bound.pending_adapter_drain,
                     bound.response_in_flight,
                     observation,
                 );
@@ -808,7 +769,7 @@ async fn relay_bound_connection(
                     finalize_active_turn(
                         bound,
                         state,
-                        CodexWebSocketTurnOutcome::upstream_closed(),
+                        ResponsesWebSocketTurnOutcome::upstream_closed(),
                     );
                 }
                 if client_socket
@@ -819,23 +780,26 @@ async fn relay_bound_connection(
                     finalize_active_turn(
                         bound,
                         state,
-                        CodexWebSocketTurnOutcome::client_disconnected(),
+                        ResponsesWebSocketTurnOutcome::client_disconnected(),
                     );
                     let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
                     break;
                 }
-                if drain_for_quota {
+                if drain_for_adapter {
+                    let directive = bound
+                        .pending_adapter_drain
+                        .expect("adapter drain state should be present");
                     send_gateway_error(
                         client_socket,
-                        "codex_account_quota_exhausted",
-                        "The bound Codex account quota is exhausted; reconnect to select another account",
+                        directive.error_code,
+                        directive.client_message,
                     )
                     .await;
                     let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
                     close_client_socket(
                         client_socket,
                         CLOSE_TRY_AGAIN,
-                        "account_quota_exhausted",
+                        directive.close_reason,
                     )
                     .await;
                     break;
@@ -848,27 +812,13 @@ async fn relay_bound_connection(
     }
 }
 
-fn codex_websocket_rate_limits_from_message(
-    message: &WreqWsMessage,
-    updated_at_unix_secs: u64,
-) -> Option<Value> {
-    let WreqWsMessage::Text(text) = message else {
-        return None;
-    };
-    let event = serde_json::from_str::<Value>(text.as_str()).ok()?;
-    aether_admin::provider::quota::parse_codex_websocket_rate_limits_response(
-        &event,
-        updated_at_unix_secs,
-    )
-}
-
 fn finalize_active_turn(
-    bound: &mut BoundCodexConnection,
+    bound: &mut BoundResponsesConnection,
     state: &AppState,
-    outcome: CodexWebSocketTurnOutcome,
+    outcome: ResponsesWebSocketTurnOutcome,
 ) {
     if let Some(turn) = bound.active_turn.take() {
-        spawn_codex_websocket_turn_finalization(state.clone(), turn, outcome);
+        spawn_responses_websocket_turn_finalization(state.clone(), turn, outcome);
     }
 }
 
@@ -878,25 +828,25 @@ enum RelayDisposition {
     UpstreamError(&'static str),
 }
 
-fn quota_drain_ready(
-    account_quota_exhausted: bool,
+fn adapter_drain_ready(
+    pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
     response_in_flight: bool,
-    observation: Option<CodexWebSocketTurnObservation>,
+    observation: Option<ResponsesWebSocketTurnObservation>,
 ) -> bool {
-    account_quota_exhausted
+    pending_adapter_drain.is_some()
         && (!response_in_flight
             || matches!(
                 observation,
-                Some(CodexWebSocketTurnObservation::Terminal(_))
+                Some(ResponsesWebSocketTurnObservation::Terminal(_))
             ))
 }
 
 async fn forward_client_message(
     client_message: AxumWsMessage,
-    bound: &mut BoundCodexConnection,
+    bound: &mut BoundResponsesConnection,
     client_socket: &mut WebSocket,
     state: &AppState,
-    context: &CodexWebSocketRequestContext,
+    context: &ResponsesWebSocketRequestContext,
 ) -> RelayDisposition {
     match client_message {
         AxumWsMessage::Text(text) => {
@@ -914,7 +864,7 @@ async fn forward_client_message(
                     .await
                     .map(|_| RelayDisposition::Continue)
                     .unwrap_or(RelayDisposition::UpstreamError(
-                        "codex_websocket_send_failed",
+                        "responses_websocket_send_failed",
                     ));
             }
 
@@ -1019,7 +969,7 @@ async fn forward_client_message(
             };
             let turn_index = bound.next_turn_index;
             debug!(
-                event_name = "codex_websocket_response_create_forwarding",
+                event_name = "responses_websocket_response_create_forwarding",
                 log_type = "event",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
@@ -1031,9 +981,9 @@ async fn forward_client_message(
                 has_previous_response_id = client_event
                     .get("previous_response_id")
                     .is_some_and(|value| !value.is_null()),
-                "gateway is forwarding a Codex response.create"
+                "gateway is forwarding a Responses response.create"
             );
-            let turn_decision = prepare_codex_websocket_turn_decision(
+            let turn_decision = prepare_responses_websocket_turn_decision(
                 &bound.decision_template,
                 Uuid::new_v4().to_string(),
                 false,
@@ -1043,7 +993,7 @@ async fn forward_client_message(
                 turn_index,
             );
             let planning_parts = build_planning_parts(context);
-            let mut turn = match begin_codex_websocket_turn(
+            let mut turn = match begin_responses_websocket_turn(
                 state,
                 &planning_parts,
                 turn_decision,
@@ -1054,17 +1004,17 @@ async fn forward_client_message(
                 Ok(turn) => turn,
                 Err(error) => {
                     warn!(
-                        event_name = "codex_websocket_followup_turn_lifecycle_start_failed",
+                        event_name = "responses_websocket_followup_turn_lifecycle_start_failed",
                         log_type = "ops",
                         transport = WEBSOCKET_LOG_TRANSPORT,
                         websocket = true,
                         trace_id = %context.trace_id,
                         error = ?error,
-                        "gateway could not start Codex WebSocket follow-up usage/audit lifecycle"
+                        "gateway could not start Responses WebSocket follow-up usage/audit lifecycle"
                     );
                     send_gateway_error(
                         client_socket,
-                        "codex_websocket_reporting_unavailable",
+                        "responses_websocket_reporting_unavailable",
                         "Gateway could not start usage and audit tracking for this response",
                     )
                     .await;
@@ -1083,7 +1033,7 @@ async fn forward_client_message(
                     }
                     RelayDisposition::Continue
                 }
-                Err(_) => RelayDisposition::UpstreamError("codex_websocket_send_failed"),
+                Err(_) => RelayDisposition::UpstreamError("responses_websocket_send_failed"),
             }
         }
         AxumWsMessage::Binary(data) => bound
@@ -1092,7 +1042,7 @@ async fn forward_client_message(
             .await
             .map(|_| RelayDisposition::Continue)
             .unwrap_or(RelayDisposition::UpstreamError(
-                "codex_websocket_send_failed",
+                "responses_websocket_send_failed",
             )),
         AxumWsMessage::Ping(data) => bound
             .upstream
@@ -1100,7 +1050,7 @@ async fn forward_client_message(
             .await
             .map(|_| RelayDisposition::Continue)
             .unwrap_or(RelayDisposition::UpstreamError(
-                "codex_websocket_send_failed",
+                "responses_websocket_send_failed",
             )),
         AxumWsMessage::Pong(data) => bound
             .upstream
@@ -1108,7 +1058,7 @@ async fn forward_client_message(
             .await
             .map(|_| RelayDisposition::Continue)
             .unwrap_or(RelayDisposition::UpstreamError(
-                "codex_websocket_send_failed",
+                "responses_websocket_send_failed",
             )),
         AxumWsMessage::Close(frame) => {
             let _ = bound.upstream.send(client_close_to_upstream(frame)).await;
@@ -1118,10 +1068,10 @@ async fn forward_client_message(
 }
 
 async fn forward_replanned_response_create(
-    bound: &mut BoundCodexConnection,
+    bound: &mut BoundResponsesConnection,
     client_socket: &mut WebSocket,
     state: &AppState,
-    context: &CodexWebSocketRequestContext,
+    context: &ResponsesWebSocketRequestContext,
     client_event: Value,
     requested_model: String,
 ) -> RelayDisposition {
@@ -1159,7 +1109,7 @@ async fn forward_replanned_response_create(
         Ok(None) => {}
         Err(error) => {
             warn!(
-                event_name = "codex_websocket_followup_model_access_check_failed",
+                event_name = "responses_websocket_followup_model_access_check_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
@@ -1198,33 +1148,34 @@ async fn forward_replanned_response_create(
         Ok(None) => {
             send_gateway_error(
                 client_socket,
-                "codex_provider_unavailable",
-                "No eligible WebSocket-enabled Codex Responses provider is available for the requested model",
+                "responses_provider_unavailable",
+                "No eligible WebSocket-enabled Responses provider is available for the requested model",
             )
             .await;
             return RelayDisposition::Continue;
         }
         Err(error) => {
             warn!(
-                event_name = "codex_websocket_followup_model_planning_failed",
+                event_name = "responses_websocket_followup_model_planning_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
                 trace_id = %context.trace_id,
                 requested_model = %requested_model,
                 error = ?error,
-                "gateway failed to re-plan Codex WebSocket follow-up model"
+                "gateway failed to re-plan Responses WebSocket follow-up model"
             );
             send_gateway_error(
                 client_socket,
-                "codex_provider_unavailable",
-                "Gateway could not prepare the requested Codex model",
+                "responses_provider_unavailable",
+                "Gateway could not prepare the requested model",
             )
             .await;
             return RelayDisposition::Continue;
         }
     };
-    let decision = codex_execution_decision(planned);
+    let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let decision = planned.execution;
     let provider_event =
         match planned_response_create_event(&decision, &client_event).and_then(|event| {
             serde_json::from_str::<Value>(&event)
@@ -1235,14 +1186,14 @@ async fn forward_replanned_response_create(
                 send_gateway_error(
                     client_socket,
                     code,
-                    "Gateway could not prepare the requested Codex model",
+                    "Gateway could not prepare the requested model",
                 )
                 .await;
                 return RelayDisposition::Continue;
             }
         };
     let turn_index = bound.next_turn_index;
-    let turn_decision = prepare_codex_websocket_turn_decision(
+    let turn_decision = prepare_responses_websocket_turn_decision(
         &decision,
         turn_request_id,
         true,
@@ -1251,49 +1202,45 @@ async fn forward_replanned_response_create(
         &context.trace_id,
         turn_index,
     );
-    let mut turn = match begin_codex_websocket_turn(
-        state,
-        &planning_parts,
-        turn_decision,
-        &client_event,
-    )
-    .await
-    {
-        Ok(turn) => turn,
-        Err(error) => {
-            warn!(
-                event_name = "codex_websocket_replanned_turn_lifecycle_start_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                requested_model = %requested_model,
-                error = ?error,
-                "gateway could not start re-planned WebSocket usage/audit lifecycle"
-            );
-            send_gateway_error(
-                client_socket,
-                "codex_websocket_reporting_unavailable",
-                "Gateway could not start usage and audit tracking for this response",
-            )
-            .await;
-            return RelayDisposition::Continue;
-        }
-    };
+    let mut turn =
+        match begin_responses_websocket_turn(state, &planning_parts, turn_decision, &client_event)
+            .await
+        {
+            Ok(turn) => turn,
+            Err(error) => {
+                warn!(
+                    event_name = "responses_websocket_replanned_turn_lifecycle_start_failed",
+                    log_type = "ops",
+                    transport = WEBSOCKET_LOG_TRANSPORT,
+                    websocket = true,
+                    trace_id = %context.trace_id,
+                    requested_model = %requested_model,
+                    error = ?error,
+                    "gateway could not start re-planned WebSocket usage/audit lifecycle"
+                );
+                send_gateway_error(
+                    client_socket,
+                    "responses_websocket_reporting_unavailable",
+                    "Gateway could not start usage and audit tracking for this response",
+                )
+                .await;
+                return RelayDisposition::Continue;
+            }
+        };
 
-    if decision_reuses_bound_upstream(bound, &decision) {
+    if decision_reuses_bound_upstream(bound, adapter, &decision) {
         let outbound = match serde_json::to_string(&provider_event) {
             Ok(outbound) => outbound,
             Err(_) => {
-                spawn_codex_websocket_turn_finalization(
+                spawn_responses_websocket_turn_finalization(
                     state.clone(),
                     turn,
-                    CodexWebSocketTurnOutcome::upstream_send_failed(),
+                    ResponsesWebSocketTurnOutcome::upstream_send_failed(),
                 );
                 send_gateway_error(
                     client_socket,
                     "response_create_serialization_failed",
-                    "Gateway could not prepare the requested Codex model",
+                    "Gateway could not prepare the requested model",
                 )
                 .await;
                 return RelayDisposition::Continue;
@@ -1305,12 +1252,12 @@ async fn forward_replanned_response_create(
             .await
             .is_err()
         {
-            spawn_codex_websocket_turn_finalization(
+            spawn_responses_websocket_turn_finalization(
                 state.clone(),
                 turn,
-                CodexWebSocketTurnOutcome::upstream_send_failed(),
+                ResponsesWebSocketTurnOutcome::upstream_send_failed(),
             );
-            return RelayDisposition::UpstreamError("codex_websocket_send_failed");
+            return RelayDisposition::UpstreamError("responses_websocket_send_failed");
         }
 
         turn.mark_upstream_request_sent();
@@ -1324,7 +1271,7 @@ async fn forward_replanned_response_create(
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
         bound.response_in_flight = true;
         debug!(
-            event_name = "codex_websocket_followup_model_replanned",
+            event_name = "responses_websocket_followup_model_replanned",
             log_type = "event",
             transport = WEBSOCKET_LOG_TRANSPORT,
             websocket = true,
@@ -1336,33 +1283,33 @@ async fn forward_replanned_response_create(
             provider_model = %bound.provider_model,
             upstream_rebound = false,
             model_replanned = true,
-            "gateway re-planned a Codex WebSocket model on the existing upstream"
+            "gateway re-planned a Responses WebSocket model on the existing upstream"
         );
         return RelayDisposition::Continue;
     }
 
-    let mut replacement = match bind_codex_upstream(&decision, &client_event).await {
+    let mut replacement = match bind_responses_upstream(&decision, &client_event, adapter).await {
         Ok(connection) => connection,
         Err(code) => {
-            spawn_codex_websocket_turn_finalization(
+            spawn_responses_websocket_turn_finalization(
                 state.clone(),
                 turn,
-                CodexWebSocketTurnOutcome::upstream_connect_failed(code),
+                ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
             );
             warn!(
-                event_name = "codex_websocket_followup_model_rebind_failed",
+                event_name = "responses_websocket_followup_model_rebind_failed",
                 log_type = "ops",
                 transport = WEBSOCKET_LOG_TRANSPORT,
                 websocket = true,
                 trace_id = %context.trace_id,
                 requested_model = %requested_model,
                 error_code = code,
-                "gateway failed to rebind Codex WebSocket follow-up model"
+                "gateway failed to rebind Responses WebSocket follow-up model"
             );
             send_gateway_error(
                 client_socket,
                 code,
-                "Gateway could not establish the requested Codex model",
+                "Gateway could not establish the requested model",
             )
             .await;
             return RelayDisposition::Continue;
@@ -1375,6 +1322,7 @@ async fn forward_replanned_response_create(
     let previous_provider_model = bound.provider_model.clone();
     let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
     std::mem::swap(&mut bound.upstream, &mut replacement.upstream);
+    bound.adapter = replacement.adapter;
     bound.client_model = replacement.client_model;
     bound.provider_model = replacement.provider_model;
     bound.response_in_flight = replacement.response_in_flight;
@@ -1382,8 +1330,9 @@ async fn forward_replanned_response_create(
     bound.active_turn = Some(turn);
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
     bound.upstream_response_headers = replacement.upstream_response_headers;
+    bound.pending_adapter_drain = replacement.pending_adapter_drain;
     debug!(
-        event_name = "codex_websocket_followup_model_rebound",
+        event_name = "responses_websocket_followup_model_rebound",
         log_type = "event",
         transport = WEBSOCKET_LOG_TRANSPORT,
         websocket = true,
@@ -1395,7 +1344,7 @@ async fn forward_replanned_response_create(
         provider_model = %bound.provider_model,
         upstream_rebound = true,
         model_replanned = true,
-        "gateway rebound Codex WebSocket for a follow-up model"
+        "gateway rebound Responses WebSocket for a follow-up model"
     );
     RelayDisposition::Continue
 }
@@ -1444,10 +1393,12 @@ fn changed_followup_response_create_model(
 }
 
 fn decision_reuses_bound_upstream(
-    bound: &BoundCodexConnection,
+    bound: &BoundResponsesConnection,
+    adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
     decision: &AiExecutionDecision,
 ) -> bool {
-    decisions_reuse_upstream(&bound.decision_template, decision)
+    bound.adapter.kind() == adapter.kind()
+        && decisions_reuse_upstream(&bound.decision_template, decision)
 }
 
 fn decisions_reuse_upstream(current: &AiExecutionDecision, decision: &AiExecutionDecision) -> bool {
@@ -1490,7 +1441,7 @@ fn normalize_followup_response_create(
     serde_json::to_string(&event).map_err(|_| "response_create_serialization_failed")
 }
 
-fn update_response_in_flight(bound: &mut BoundCodexConnection, message: &WreqWsMessage) {
+fn update_response_in_flight(bound: &mut BoundResponsesConnection, message: &WreqWsMessage) {
     let WreqWsMessage::Text(text) = message else {
         return;
     };
@@ -1549,6 +1500,23 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use super::super::adapter::{
+        resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective,
+    };
+    use super::super::turn::{
+        ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnObservation,
+        ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
+    };
+    use super::{
+        adapter_drain_ready, bind_responses_upstream, changed_followup_response_create_model,
+        decisions_reuse_upstream, normalize_followup_response_create,
+        planned_response_create_event, websocket_event_type_for_log,
+    };
+    use crate::ai_serving::AiExecutionDecision;
+    use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;
+    use crate::handlers::proxy::websocket::transport::{
+        websocket_handshake_headers, websocket_timeouts, websocket_upstream_url,
+    };
     use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
     use axum::extract::State;
     use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -1559,22 +1527,6 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use tokio::sync::{oneshot, Mutex};
-    use wreq::ws::message::Message as WreqWsMessage;
-
-    use super::super::codex_turn::{
-        CodexWebSocketTurnObservation, CodexWebSocketTurnOutcome, CodexWebSocketTurnTimeoutPhase,
-    };
-    use super::{
-        bind_codex_upstream, changed_followup_response_create_model,
-        codex_websocket_rate_limits_from_message, decisions_reuse_upstream,
-        normalize_followup_response_create, planned_response_create_event,
-        websocket_event_type_for_log, CodexWebSocketTurnDeadline,
-    };
-    use crate::ai_serving::AiExecutionDecision;
-    use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;
-    use crate::handlers::proxy::websocket::transport::{
-        websocket_handshake_headers, websocket_timeouts, websocket_upstream_url,
-    };
 
     #[derive(Default)]
     struct MockState {
@@ -1588,58 +1540,39 @@ mod tests {
     }
 
     #[test]
-    fn websocket_message_exposes_exhausted_codex_rate_limits() {
-        let message = WreqWsMessage::text(
-            json!({
-                "chunks": [{
-                    "type": "codex.rate_limits",
-                    "rate_limits": {
-                        "allowed": false,
-                        "limit_reached": true
-                    }
-                }]
-            })
-            .to_string(),
-        );
-        let parsed = codex_websocket_rate_limits_from_message(&message, 1_787_000_000)
-            .expect("rate-limit message should parse");
-
-        assert!(aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&parsed));
-        assert_eq!(parsed.get("updated_at"), Some(&json!(1_787_000_000u64)));
-    }
-
-    #[test]
-    fn quota_drain_waits_for_an_active_turn_terminal_event() {
-        assert!(!super::quota_drain_ready(true, true, None));
-        assert!(super::quota_drain_ready(
+    fn adapter_drain_waits_for_an_active_turn_terminal_event() {
+        let directive = Some(ResponsesWebSocketDrainDirective {
+            error_code: "adapter_draining",
+            client_message: "adapter is draining",
+            close_reason: "adapter_draining",
+        });
+        assert!(!adapter_drain_ready(directive, true, None));
+        assert!(adapter_drain_ready(
+            directive,
             true,
-            true,
-            Some(CodexWebSocketTurnObservation::Terminal(
-                CodexWebSocketTurnOutcome::upstream_closed()
+            Some(ResponsesWebSocketTurnObservation::Terminal(
+                ResponsesWebSocketTurnOutcome::upstream_closed()
             ))
         ));
-        assert!(!super::quota_drain_ready(false, false, None));
-        assert!(super::quota_drain_ready(true, false, None));
+        assert!(!adapter_drain_ready(None, false, None));
+        assert!(adapter_drain_ready(directive, false, None));
     }
 
     #[test]
-    fn maps_http_codex_url_to_websocket_url_without_losing_path_or_query() {
+    fn maps_http_responses_url_to_websocket_url_without_losing_path_or_query() {
         let url = websocket_upstream_url(
-            "https://example.test/backend-api/codex/responses?x=1",
-            "codex_upstream_url_invalid",
+            "https://example.test/v1/responses?x=1",
+            "responses_upstream_url_invalid",
         )
         .expect("URL should convert");
-        assert_eq!(
-            url.as_str(),
-            "wss://example.test/backend-api/codex/responses?x=1"
-        );
+        assert_eq!(url.as_str(), "wss://example.test/v1/responses?x=1");
     }
 
     #[test]
     fn rejects_embedded_upstream_credentials() {
         assert!(websocket_upstream_url(
             "https://token@example.test/responses",
-            "codex_upstream_url_invalid",
+            "responses_upstream_url_invalid",
         )
         .is_err());
     }
@@ -1655,7 +1588,7 @@ mod tests {
                 ("chatgpt-account-id".to_string(), "account-id".to_string()),
                 ("content-type".to_string(), "application/json".to_string()),
             ]),
-            "codex_websocket_headers_invalid",
+            "responses_websocket_headers_invalid",
         )
         .expect("headers should build");
         assert!(headers.contains_key(AUTHORIZATION));
@@ -1788,8 +1721,8 @@ mod tests {
 
     #[tokio::test]
     async fn expired_turn_deadline_returns_without_waiting_for_socket_io() {
-        let deadline = CodexWebSocketTurnDeadline {
-            phase: CodexWebSocketTurnTimeoutPhase::AwaitingFirstEvent,
+        let deadline = ResponsesWebSocketTurnDeadline {
+            phase: ResponsesWebSocketTurnTimeoutPhase::AwaitingFirstEvent,
             deadline: Instant::now() - Duration::from_millis(1),
             timeout: Duration::from_secs(1),
         };
@@ -1822,13 +1755,16 @@ mod tests {
             "background": true,
         }));
 
-        let mut bound = bind_codex_upstream(
+        let mut bound = bind_responses_upstream(
             &decision,
             &json!({
                 "type": "response.create",
                 "model": "public-model",
                 "input": "hello",
             }),
+            resolve_responses_websocket_adapter(
+                crate::orchestration::ResponsesWebSocketAdapter::Standard,
+            ),
         )
         .await
         .expect("upstream binding should succeed");
@@ -1862,7 +1798,7 @@ mod tests {
             observed: Mutex::new(Some(observed_tx)),
         });
         let app = Router::new()
-            .route("/backend-api/codex/responses", get(mock_websocket))
+            .route("/v1/responses", get(mock_websocket))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1876,7 +1812,7 @@ mod tests {
                 .expect("mock server should run");
         });
         (
-            format!("http://{address}/backend-api/codex/responses"),
+            format!("http://{address}/v1/responses"),
             observed_rx,
             server,
         )
@@ -1938,12 +1874,12 @@ mod tests {
             request_id: None,
             candidate_id: None,
             provider_name: None,
-            provider_type: Some("codex".to_string()),
+            provider_type: Some("custom".to_string()),
             provider_id: None,
             endpoint_id: None,
             key_id: None,
             upstream_base_url: None,
-            upstream_url: Some("https://example.test/backend-api/codex/responses".to_string()),
+            upstream_url: Some("https://example.test/v1/responses".to_string()),
             provider_request_method: None,
             auth_header: None,
             auth_value: None,

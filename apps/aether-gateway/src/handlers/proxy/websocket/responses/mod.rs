@@ -1,12 +1,13 @@
-//! OpenAI Responses WebSocket protocol entry point and adapters.
+//! OpenAI Responses WebSocket protocol entry point, session engine, and adapters.
 //!
-//! The public route is protocol-oriented rather than provider-oriented.  The
-//! first adapter is Codex because it is the only validated upstream capability
-//! today; future compatible Responses adapters can be dispatched here without
-//! changing the public route or the shared WebSocket admission layer.
+//! The route is protocol-oriented. The session engine owns standard Responses
+//! WebSocket lifecycle behavior, while adapters contain only provider-specific
+//! connection and metadata behavior.
 
-mod codex;
-mod codex_turn;
+mod adapter;
+mod adapters;
+mod session;
+mod turn;
 
 use std::net::SocketAddr;
 
@@ -15,7 +16,9 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, Response, Uri};
 
-use crate::handlers::proxy::websocket::ingress::upgrade_authenticated_ai_websocket;
+use crate::handlers::proxy::websocket::ingress::{
+    upgrade_authenticated_ai_websocket, WebSocketIngressSpec,
+};
 use crate::handlers::proxy::websocket::session::RESPONSES_WEBSOCKET_SESSION_LIMITS;
 use crate::{AppState, GatewayError};
 
@@ -33,8 +36,13 @@ pub(crate) async fn responses_websocket(
         headers,
         uri,
         RESPONSES_WEBSOCKET_SESSION_LIMITS,
-        codex::CODEX_RESPONSES_INGRESS_SPEC,
-        codex::run_codex_responses_websocket,
+        RESPONSES_WEBSOCKET_INGRESS_SPEC,
+        session::run_responses_websocket,
     )
     .await
 }
+
+const RESPONSES_WEBSOCKET_INGRESS_SPEC: WebSocketIngressSpec = WebSocketIngressSpec {
+    route_unavailable_message: "WebSocket route is unavailable",
+    ip_whitelist_failure_event_name: "responses_websocket_ip_whitelist_check_failed",
+};

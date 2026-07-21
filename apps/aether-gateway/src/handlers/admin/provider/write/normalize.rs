@@ -184,58 +184,50 @@ pub(crate) fn normalize_chat_pii_redaction_config(
     }
 }
 
-pub(crate) fn set_codex_responses_websocket_enabled(
-    provider_type: &str,
+pub(crate) fn set_responses_websocket_enabled(
     config: &mut serde_json::Map<String, serde_json::Value>,
     enabled: bool,
 ) -> Result<(), String> {
-    if !provider_type.trim().eq_ignore_ascii_case("codex") {
-        return Err("codex_responses_websocket_enabled 仅适用于 provider_type=codex".to_string());
-    }
-
-    let mut codex = match config.remove("codex") {
+    let mut responses = match config.remove("responses_websocket") {
         None => serde_json::Map::new(),
         Some(serde_json::Value::Object(config)) => config,
-        Some(_) => return Err("config.codex 必须是 JSON 对象".to_string()),
+        Some(_) => return Err("config.responses_websocket 必须是 JSON 对象".to_string()),
     };
-    codex.insert(
-        "responses_websocket_enabled".to_string(),
-        serde_json::Value::Bool(enabled),
+    responses.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+    config.insert(
+        "responses_websocket".to_string(),
+        serde_json::Value::Object(responses),
     );
-    config.insert("codex".to_string(), serde_json::Value::Object(codex));
     Ok(())
 }
 
-pub(crate) fn remove_codex_responses_websocket_enabled(
+pub(crate) fn remove_responses_websocket_enabled(
     config: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    let Some(serde_json::Value::Object(codex)) = config.get_mut("codex") else {
+    let Some(serde_json::Value::Object(responses)) = config.get_mut("responses_websocket") else {
         return;
     };
-    codex.remove("responses_websocket_enabled");
-    if codex.is_empty() {
-        config.remove("codex");
+    responses.remove("enabled");
+    if responses.is_empty() {
+        config.remove("responses_websocket");
     }
 }
 
-pub(crate) fn validate_codex_responses_websocket_config(
-    provider_type: &str,
+pub(crate) fn validate_responses_websocket_config(
     config: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let Some(serde_json::Value::Object(codex)) = config.get("codex") else {
-        return Ok(());
-    };
-    let Some(value) = codex.get("responses_websocket_enabled") else {
-        return Ok(());
-    };
-    if !value.is_boolean() {
-        return Err("config.codex.responses_websocket_enabled 必须是布尔值".to_string());
+    if let Some(value) = config.get("responses_websocket") {
+        let responses = value
+            .as_object()
+            .ok_or_else(|| "config.responses_websocket 必须是 JSON 对象".to_string())?;
+        let enabled = responses
+            .get("enabled")
+            .ok_or_else(|| "config.responses_websocket.enabled 为必填布尔值".to_string())?;
+        if !enabled.is_boolean() {
+            return Err("config.responses_websocket.enabled 必须是布尔值".to_string());
+        }
     }
-    if !provider_type.trim().eq_ignore_ascii_case("codex") {
-        return Err(
-            "config.codex.responses_websocket_enabled 仅适用于 provider_type=codex".to_string(),
-        );
-    }
+
     Ok(())
 }
 
@@ -289,8 +281,8 @@ mod tests {
         normalize_api_format_list, normalize_auth_type, normalize_auth_type_by_format,
         normalize_chat_pii_redaction_config, normalize_pool_advanced_config,
         normalize_provider_type_input, normalize_rate_multipliers,
-        remove_codex_responses_websocket_enabled, set_codex_responses_websocket_enabled,
-        validate_codex_responses_websocket_config, validate_vertex_api_formats,
+        remove_responses_websocket_enabled, set_responses_websocket_enabled,
+        validate_responses_websocket_config, validate_vertex_api_formats,
     };
     use serde_json::json;
 
@@ -350,20 +342,18 @@ mod tests {
     }
 
     #[test]
-    fn codex_responses_websocket_setting_is_limited_to_codex_providers() {
+    fn responses_websocket_setting_is_available_to_explicitly_enabled_providers() {
         let mut config = serde_json::Map::new();
-        set_codex_responses_websocket_enabled("codex", &mut config, true)
-            .expect("Codex setting should be accepted");
+        set_responses_websocket_enabled(&mut config, true)
+            .expect("Responses setting should be accepted");
         assert_eq!(
-            config.get("codex"),
-            Some(&json!({"responses_websocket_enabled": true}))
+            config.get("responses_websocket"),
+            Some(&json!({"enabled": true}))
         );
-        validate_codex_responses_websocket_config("codex", &config)
-            .expect("Codex setting should validate");
-        assert!(set_codex_responses_websocket_enabled("custom", &mut config, true).is_err());
+        validate_responses_websocket_config(&config).expect("Responses setting should validate");
 
-        remove_codex_responses_websocket_enabled(&mut config);
-        assert!(config.get("codex").is_none());
+        remove_responses_websocket_enabled(&mut config);
+        assert!(config.get("responses_websocket").is_none());
     }
 
     #[test]
