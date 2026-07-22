@@ -13,7 +13,7 @@ use axum::http::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, UPGRADE};
 use axum::http::Method;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use wreq::ws::message::Message as WreqWsMessage;
@@ -72,16 +72,43 @@ macro_rules! warn {
 type ResponsesWebSocketRequestContext = WebSocketRequestContext;
 
 struct BoundResponsesConnection {
-    upstream: wreq::ws::WebSocket,
+    upstream: Option<wreq::ws::WebSocket>,
     adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
     client_model: String,
     provider_model: String,
     response_in_flight: bool,
     decision_template: AiExecutionDecision,
     active_turn: Option<ResponsesWebSocketTurn>,
+    active_response_create: Option<ActiveResponsesWebSocketRequest>,
     next_turn_index: u64,
     upstream_response_headers: BTreeMap<String, String>,
     pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
+    exhausted_key_ids: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveResponsesWebSocketRequest {
+    client_event: Value,
+    turn_index: u64,
+    retry_attempted: bool,
+    standard_response_started: bool,
+}
+
+impl ActiveResponsesWebSocketRequest {
+    fn new(client_event: Value, turn_index: u64) -> Self {
+        Self {
+            client_event,
+            turn_index,
+            retry_attempted: false,
+            standard_response_started: false,
+        }
+    }
+
+    fn can_retry_after_quota_exhaustion(&self) -> bool {
+        !self.retry_attempted
+            && !self.standard_response_started
+            && !response_create_has_previous_response_id(&self.client_event)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -242,6 +269,7 @@ pub(super) async fn run_responses_websocket(
         &context.trace_id,
         &context.decision,
         &first_event,
+        None,
     )
     .await
     {
@@ -387,6 +415,7 @@ pub(super) async fn run_responses_websocket(
     first_turn.mark_upstream_request_sent();
     first_turn.set_provider_response_headers(bound.upstream_response_headers.clone());
     bound.active_turn = Some(first_turn);
+    bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(first_event, 1));
 
     relay_bound_connection(&mut client_socket, &mut bound, &state, &context).await;
 }
@@ -517,16 +546,18 @@ async fn bind_responses_upstream(
         .to_string();
 
     Ok(BoundResponsesConnection {
-        upstream: upstream.socket,
+        upstream: Some(upstream.socket),
         adapter,
         client_model,
         provider_model,
         response_in_flight: true,
         decision_template: decision.clone(),
         active_turn: None,
+        active_response_create: None,
         next_turn_index: 2,
         upstream_response_headers: upstream.response_headers,
         pending_adapter_drain: None,
+        exhausted_key_ids: BTreeSet::new(),
     })
 }
 
@@ -564,6 +595,7 @@ async fn relay_bound_connection(
             .active_turn
             .as_ref()
             .map(ResponsesWebSocketTurn::deadline);
+        let upstream_available = bound.upstream.is_some();
         tokio::select! {
             _ = &mut connection_deadline => {
                 finalize_active_turn(
@@ -576,7 +608,8 @@ async fn relay_bound_connection(
                     "websocket_connection_limit_reached",
                     "WebSocket connection duration limit reached; reconnect to continue",
                 ).await;
-                let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
+                bound.active_response_create = None;
+                close_bound_upstream(bound).await;
                 close_client_socket(client_socket, CLOSE_TRY_AGAIN, "connection_limit_reached").await;
                 break;
             }
@@ -600,7 +633,8 @@ async fn relay_bound_connection(
                     turn_deadline.phase.error_code(),
                     turn_deadline.phase.client_message(),
                 ).await;
-                let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
+                bound.active_response_create = None;
+                close_bound_upstream(bound).await;
                 close_client_socket(
                     client_socket,
                     CLOSE_TRY_AGAIN,
@@ -615,7 +649,8 @@ async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::client_disconnected(),
                     );
-                    let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
+                    bound.active_response_create = None;
+                    close_bound_upstream(bound).await;
                     break;
                 };
                 let Ok(client_message) = client_message else {
@@ -632,7 +667,8 @@ async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::client_disconnected(),
                     );
-                    let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
+                    bound.active_response_create = None;
+                    close_bound_upstream(bound).await;
                     break;
                 };
                 match forward_client_message(client_message, bound, client_socket, state, context).await {
@@ -665,18 +701,22 @@ async fn relay_bound_connection(
                             code,
                             "Gateway could not forward the WebSocket event upstream",
                         ).await;
+                        bound.active_response_create = None;
+                        close_bound_upstream(bound).await;
                         close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, code).await;
                         break;
                     }
                 }
             }
-            upstream_message = bound.upstream.recv() => {
+            upstream_message = bound.upstream.as_mut().expect("upstream should be present while selected").recv(), if upstream_available => {
                 let Some(upstream_message) = upstream_message else {
                     finalize_active_turn(
                         bound,
                         state,
                         ResponsesWebSocketTurnOutcome::upstream_closed(),
                     );
+                    bound.active_response_create = None;
+                    bound.upstream = None;
                     close_client_socket(client_socket, 1000, "upstream_closed").await;
                     break;
                 };
@@ -699,6 +739,8 @@ async fn relay_bound_connection(
                         "responses_websocket_receive_failed",
                         "Provider connection closed unexpectedly",
                     ).await;
+                    bound.active_response_create = None;
+                    bound.upstream = None;
                     close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, "upstream_receive_failed").await;
                     break;
                 };
@@ -759,11 +801,6 @@ async fn relay_bound_connection(
                 if let Some(ResponsesWebSocketTurnObservation::Terminal(outcome)) = observation {
                     finalize_active_turn(bound, state, outcome);
                 }
-                let drain_for_adapter = adapter_drain_ready(
-                    bound.pending_adapter_drain,
-                    bound.response_in_flight,
-                    observation,
-                );
                 let is_close = matches!(upstream_message, WreqWsMessage::Close(_));
                 if is_close {
                     finalize_active_turn(
@@ -772,6 +809,36 @@ async fn relay_bound_connection(
                         ResponsesWebSocketTurnOutcome::upstream_closed(),
                     );
                 }
+                let drain_for_adapter = adapter_drain_ready(
+                    bound.pending_adapter_drain,
+                    bound.response_in_flight,
+                    observation,
+                    is_close,
+                );
+                let retry_current_turn = drain_for_adapter
+                    && bound
+                        .pending_adapter_drain
+                        .is_some_and(|directive| directive.retry_current_turn);
+                if retry_current_turn
+                    && retry_active_turn_after_quota_exhaustion(bound, state, context).await
+                {
+                    continue;
+                }
+                if is_close && drain_for_adapter {
+                    let directive = bound
+                        .pending_adapter_drain
+                        .expect("adapter drain state should be present");
+                    send_gateway_error(
+                        client_socket,
+                        directive.error_code,
+                        "Provider connection closed after reporting exhausted quota; send a new response.create to select another Provider connection",
+                    )
+                    .await;
+                    bound.active_response_create = None;
+                    detach_exhausted_upstream(bound, directive, &context.trace_id).await;
+                    continue;
+                }
+                mark_active_response_started(bound, &upstream_message);
                 if client_socket
                     .send(upstream_message_to_client(upstream_message))
                     .await
@@ -782,29 +849,23 @@ async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::client_disconnected(),
                     );
-                    let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
+                    bound.active_response_create = None;
+                    close_bound_upstream(bound).await;
                     break;
                 }
                 if drain_for_adapter {
                     let directive = bound
                         .pending_adapter_drain
                         .expect("adapter drain state should be present");
-                    send_gateway_error(
-                        client_socket,
-                        directive.error_code,
-                        directive.client_message,
-                    )
-                    .await;
-                    let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
-                    close_client_socket(
-                        client_socket,
-                        CLOSE_TRY_AGAIN,
-                        directive.close_reason,
-                    )
-                    .await;
-                    break;
+                    bound.active_response_create = None;
+                    detach_exhausted_upstream(bound, directive, &context.trace_id).await;
+                    continue;
+                }
+                if matches!(observation, Some(ResponsesWebSocketTurnObservation::Terminal(_))) {
+                    bound.active_response_create = None;
                 }
                 if is_close {
+                    bound.upstream = None;
                     break;
                 }
             }
@@ -822,6 +883,247 @@ fn finalize_active_turn(
     }
 }
 
+async fn close_bound_upstream(bound: &mut BoundResponsesConnection) {
+    if let Some(mut upstream) = bound.upstream.take() {
+        let _ = upstream.send(WreqWsMessage::Close(None)).await;
+    }
+}
+
+async fn detach_exhausted_upstream(
+    bound: &mut BoundResponsesConnection,
+    directive: ResponsesWebSocketDrainDirective,
+    trace_id: &str,
+) {
+    if let Some(key_id) = bound
+        .decision_template
+        .key_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|key_id| !key_id.is_empty())
+    {
+        bound.exhausted_key_ids.insert(key_id.to_string());
+    }
+    close_bound_upstream(bound).await;
+    bound.response_in_flight = false;
+    bound.pending_adapter_drain = None;
+    debug!(
+        event_name = "responses_websocket_upstream_detached",
+        log_type = "event",
+        transport = WEBSOCKET_LOG_TRANSPORT,
+        websocket = true,
+        trace_id = %trace_id,
+        reason = directive.error_code,
+        exhausted_key_count = bound.exhausted_key_ids.len(),
+        "gateway detached an exhausted Responses WebSocket upstream while preserving the client socket"
+    );
+}
+
+async fn retry_active_turn_after_quota_exhaustion(
+    bound: &mut BoundResponsesConnection,
+    state: &AppState,
+    context: &ResponsesWebSocketRequestContext,
+) -> bool {
+    let Some((client_event, turn_index)) =
+        bound.active_response_create.as_mut().and_then(|active| {
+            active.can_retry_after_quota_exhaustion().then(|| {
+                active.retry_attempted = true;
+                (active.client_event.clone(), active.turn_index)
+            })
+        })
+    else {
+        return false;
+    };
+
+    let exhausted_key_id = bound
+        .decision_template
+        .key_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|key_id| !key_id.is_empty())
+        .map(str::to_string);
+    if let Some(key_id) = exhausted_key_id.as_ref() {
+        bound.exhausted_key_ids.insert(key_id.clone());
+    }
+
+    let planning_parts = build_planning_parts(context);
+    let turn_request_id = Uuid::new_v4().to_string();
+    let planned = match maybe_build_responses_websocket_decision(
+        state,
+        &planning_parts,
+        &turn_request_id,
+        &context.decision,
+        &client_event,
+        Some(&bound.exhausted_key_ids),
+    )
+    .await
+    {
+        Ok(Some(decision)) => decision,
+        Ok(None) => {
+            warn!(
+                event_name = "responses_websocket_quota_retry_provider_unavailable",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                exhausted_key_id = ?exhausted_key_id,
+                "gateway could not find an alternate Responses WebSocket provider after quota exhaustion"
+            );
+            return false;
+        }
+        Err(error) => {
+            warn!(
+                event_name = "responses_websocket_quota_retry_planning_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                exhausted_key_id = ?exhausted_key_id,
+                error = ?error,
+                "gateway could not plan an alternate Responses WebSocket provider after quota exhaustion"
+            );
+            return false;
+        }
+    };
+    let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let decision = planned.execution;
+    if exhausted_key_id.as_deref() == decision.key_id.as_deref() {
+        warn!(
+            event_name = "responses_websocket_quota_retry_selected_exhausted_key",
+            log_type = "ops",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %context.trace_id,
+            key_id = ?decision.key_id,
+            "gateway rejected an alternate Responses WebSocket plan that reused the exhausted key"
+        );
+        return false;
+    }
+    let provider_event = match planned_response_create_event(&decision, &client_event).and_then(
+        |event| {
+            serde_json::from_str::<Value>(&event)
+                .map_err(|_| "response_create_serialization_failed")
+        },
+    ) {
+        Ok(event) => event,
+        Err(code) => {
+            warn!(
+                event_name = "responses_websocket_quota_retry_normalization_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                error_code = code,
+                "gateway could not rebuild a Responses response.create for transparent quota retry"
+            );
+            return false;
+        }
+    };
+    let turn_decision = prepare_responses_websocket_turn_decision(
+        &decision,
+        turn_request_id,
+        true,
+        &client_event,
+        &provider_event,
+        &context.trace_id,
+        turn_index,
+    );
+    let mut turn =
+        match begin_responses_websocket_turn(state, &planning_parts, turn_decision, &client_event)
+            .await
+        {
+            Ok(turn) => turn,
+            Err(error) => {
+                warn!(
+                    event_name = "responses_websocket_quota_retry_reporting_unavailable",
+                    log_type = "ops",
+                    transport = WEBSOCKET_LOG_TRANSPORT,
+                    websocket = true,
+                    trace_id = %context.trace_id,
+                    error = ?error,
+                    "gateway could not start usage and audit tracking for transparent quota retry"
+                );
+                return false;
+            }
+        };
+    let mut replacement = match bind_responses_upstream(&decision, &client_event, adapter).await {
+        Ok(connection) => connection,
+        Err(code) => {
+            spawn_responses_websocket_turn_finalization(
+                state.clone(),
+                turn,
+                ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
+            );
+            warn!(
+                event_name = "responses_websocket_quota_retry_rebind_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                error_code = code,
+                "gateway could not bind an alternate Responses WebSocket provider after quota exhaustion"
+            );
+            return false;
+        }
+    };
+
+    turn.mark_upstream_request_sent();
+    turn.set_provider_response_headers(replacement.upstream_response_headers.clone());
+    let replacement_upstream = replacement
+        .upstream
+        .take()
+        .expect("newly bound Responses upstream should be present");
+    if let Some(mut previous_upstream) = bound.upstream.replace(replacement_upstream) {
+        let _ = previous_upstream.send(WreqWsMessage::Close(None)).await;
+    }
+    let previous_key_id = bound.decision_template.key_id.clone();
+    bound.adapter = replacement.adapter;
+    bound.client_model = replacement.client_model;
+    bound.provider_model = replacement.provider_model;
+    bound.response_in_flight = true;
+    bound.decision_template = replacement.decision_template;
+    bound.active_turn = Some(turn);
+    bound.upstream_response_headers = replacement.upstream_response_headers;
+    bound.pending_adapter_drain = None;
+    debug!(
+        event_name = "responses_websocket_quota_retry_rebound",
+        log_type = "event",
+        transport = WEBSOCKET_LOG_TRANSPORT,
+        websocket = true,
+        trace_id = %context.trace_id,
+        turn_index,
+        previous_key_id = ?previous_key_id,
+        key_id = ?bound.decision_template.key_id,
+        "gateway transparently rebound a Responses WebSocket turn after quota exhaustion"
+    );
+    true
+}
+
+fn response_create_has_previous_response_id(event: &Value) -> bool {
+    event
+        .get("previous_response_id")
+        .is_some_and(|value| !value.is_null())
+}
+
+fn mark_active_response_started(bound: &mut BoundResponsesConnection, message: &WreqWsMessage) {
+    let WreqWsMessage::Text(text) = message else {
+        return;
+    };
+    let is_standard_response_event = serde_json::from_str::<Value>(text.as_str())
+        .ok()
+        .and_then(|event| {
+            event
+                .get("type")
+                .and_then(Value::as_str)
+                .map(|event_type| event_type.starts_with("response."))
+        })
+        .unwrap_or(false);
+    if is_standard_response_event {
+        if let Some(active) = bound.active_response_create.as_mut() {
+            active.standard_response_started = true;
+        }
+    }
+}
+
 enum RelayDisposition {
     Continue,
     Close,
@@ -832,9 +1134,11 @@ fn adapter_drain_ready(
     pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
     response_in_flight: bool,
     observation: Option<ResponsesWebSocketTurnObservation>,
+    upstream_closed: bool,
 ) -> bool {
     pending_adapter_drain.is_some()
-        && (!response_in_flight
+        && (upstream_closed
+            || !response_in_flight
             || matches!(
                 observation,
                 Some(ResponsesWebSocketTurnObservation::Terminal(_))
@@ -858,8 +1162,16 @@ async fn forward_client_message(
                 .and_then(Value::as_str)
                 == Some("response.create");
             if !is_response_create {
-                return bound
-                    .upstream
+                let Some(upstream) = bound.upstream.as_mut() else {
+                    send_gateway_error(
+                        client_socket,
+                        "responses_websocket_upstream_rebind_required",
+                        "Send a new response.create to select another Provider connection",
+                    )
+                    .await;
+                    return RelayDisposition::Continue;
+                };
+                return upstream
                     .send(WreqWsMessage::text(text))
                     .await
                     .map(|_| RelayDisposition::Continue)
@@ -917,6 +1229,42 @@ async fn forward_client_message(
                 .await;
                 return RelayDisposition::Continue;
             };
+            if bound.upstream.is_none() {
+                if response_create_has_previous_response_id(&client_event) {
+                    send_gateway_error(
+                        client_socket,
+                        "responses_websocket_continuation_unavailable",
+                        "The previous response belongs to an exhausted Provider account; send a new request with complete input",
+                    )
+                    .await;
+                    return RelayDisposition::Continue;
+                }
+                let mut client_event = client_event;
+                let requested_model = match response_create_model_or_current(
+                    &mut client_event,
+                    &bound.client_model,
+                ) {
+                    Ok(model) => model,
+                    Err(code) => {
+                        send_gateway_error(
+                            client_socket,
+                            code,
+                            "response.create.model must be a non-empty string",
+                        )
+                        .await;
+                        return RelayDisposition::Continue;
+                    }
+                };
+                return forward_replanned_response_create(
+                    bound,
+                    client_socket,
+                    state,
+                    context,
+                    client_event,
+                    requested_model,
+                )
+                .await;
+            }
             let changed_model =
                 match changed_followup_response_create_model(&client_event, &bound.client_model) {
                     Ok(model) => model,
@@ -978,9 +1326,7 @@ async fn forward_client_message(
                 client_model = %bound.client_model,
                 provider_model = %bound.provider_model,
                 model_replanned = false,
-                has_previous_response_id = client_event
-                    .get("previous_response_id")
-                    .is_some_and(|value| !value.is_null()),
+                has_previous_response_id = response_create_has_previous_response_id(&client_event),
                 "gateway is forwarding a Responses response.create"
             );
             let turn_decision = prepare_responses_websocket_turn_decision(
@@ -1023,10 +1369,17 @@ async fn forward_client_message(
             };
             turn.set_provider_response_headers(bound.upstream_response_headers.clone());
             bound.active_turn = Some(turn);
+            bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
+                client_event.clone(),
+                turn_index,
+            ));
             bound.next_turn_index = bound.next_turn_index.saturating_add(1);
             bound.response_in_flight = true;
 
-            match bound.upstream.send(WreqWsMessage::text(outbound)).await {
+            let Some(upstream) = bound.upstream.as_mut() else {
+                return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+            };
+            match upstream.send(WreqWsMessage::text(outbound)).await {
                 Ok(()) => {
                     if let Some(turn) = bound.active_turn.as_mut() {
                         turn.mark_upstream_request_sent();
@@ -1036,32 +1389,52 @@ async fn forward_client_message(
                 Err(_) => RelayDisposition::UpstreamError("responses_websocket_send_failed"),
             }
         }
-        AxumWsMessage::Binary(data) => bound
-            .upstream
-            .send(WreqWsMessage::Binary(data))
-            .await
-            .map(|_| RelayDisposition::Continue)
-            .unwrap_or(RelayDisposition::UpstreamError(
-                "responses_websocket_send_failed",
-            )),
-        AxumWsMessage::Ping(data) => bound
-            .upstream
-            .send(WreqWsMessage::Ping(data))
-            .await
-            .map(|_| RelayDisposition::Continue)
-            .unwrap_or(RelayDisposition::UpstreamError(
-                "responses_websocket_send_failed",
-            )),
-        AxumWsMessage::Pong(data) => bound
-            .upstream
-            .send(WreqWsMessage::Pong(data))
-            .await
-            .map(|_| RelayDisposition::Continue)
-            .unwrap_or(RelayDisposition::UpstreamError(
-                "responses_websocket_send_failed",
-            )),
+        AxumWsMessage::Binary(data) => match bound.upstream.as_mut() {
+            Some(upstream) => upstream
+                .send(WreqWsMessage::Binary(data))
+                .await
+                .map(|_| RelayDisposition::Continue)
+                .unwrap_or(RelayDisposition::UpstreamError(
+                    "responses_websocket_send_failed",
+                )),
+            None => {
+                send_gateway_error(
+                    client_socket,
+                    "responses_websocket_upstream_rebind_required",
+                    "Send a new response.create to select another Provider connection",
+                )
+                .await;
+                RelayDisposition::Continue
+            }
+        },
+        AxumWsMessage::Ping(data) => match bound.upstream.as_mut() {
+            Some(upstream) => upstream
+                .send(WreqWsMessage::Ping(data))
+                .await
+                .map(|_| RelayDisposition::Continue)
+                .unwrap_or(RelayDisposition::UpstreamError(
+                    "responses_websocket_send_failed",
+                )),
+            None => client_socket
+                .send(AxumWsMessage::Pong(data))
+                .await
+                .map(|_| RelayDisposition::Continue)
+                .unwrap_or(RelayDisposition::Close),
+        },
+        AxumWsMessage::Pong(data) => match bound.upstream.as_mut() {
+            Some(upstream) => upstream
+                .send(WreqWsMessage::Pong(data))
+                .await
+                .map(|_| RelayDisposition::Continue)
+                .unwrap_or(RelayDisposition::UpstreamError(
+                    "responses_websocket_send_failed",
+                )),
+            None => RelayDisposition::Continue,
+        },
         AxumWsMessage::Close(frame) => {
-            let _ = bound.upstream.send(client_close_to_upstream(frame)).await;
+            if let Some(upstream) = bound.upstream.as_mut() {
+                let _ = upstream.send(client_close_to_upstream(frame)).await;
+            }
             RelayDisposition::Close
         }
     }
@@ -1135,12 +1508,15 @@ async fn forward_replanned_response_create(
     }
 
     let turn_request_id = Uuid::new_v4().to_string();
+    let excluded_key_ids =
+        (!bound.exhausted_key_ids.is_empty()).then_some(&bound.exhausted_key_ids);
     let planned = match maybe_build_responses_websocket_decision(
         state,
         &planning_parts,
         &turn_request_id,
         &context.decision,
         &client_event,
+        excluded_key_ids,
     )
     .await
     {
@@ -1246,12 +1622,15 @@ async fn forward_replanned_response_create(
                 return RelayDisposition::Continue;
             }
         };
-        if bound
-            .upstream
-            .send(WreqWsMessage::text(outbound))
-            .await
-            .is_err()
-        {
+        let Some(upstream) = bound.upstream.as_mut() else {
+            spawn_responses_websocket_turn_finalization(
+                state.clone(),
+                turn,
+                ResponsesWebSocketTurnOutcome::upstream_send_failed(),
+            );
+            return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+        };
+        if upstream.send(WreqWsMessage::text(outbound)).await.is_err() {
             spawn_responses_websocket_turn_finalization(
                 state.clone(),
                 turn,
@@ -1268,6 +1647,10 @@ async fn forward_replanned_response_create(
         let previous_provider_model = std::mem::replace(&mut bound.provider_model, provider_model);
         bound.decision_template = decision;
         bound.active_turn = Some(turn);
+        bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
+            client_event.clone(),
+            turn_index,
+        ));
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
         bound.response_in_flight = true;
         debug!(
@@ -1320,14 +1703,23 @@ async fn forward_replanned_response_create(
     turn.set_provider_response_headers(replacement.upstream_response_headers.clone());
     let previous_client_model = bound.client_model.clone();
     let previous_provider_model = bound.provider_model.clone();
-    let _ = bound.upstream.send(WreqWsMessage::Close(None)).await;
-    std::mem::swap(&mut bound.upstream, &mut replacement.upstream);
+    let replacement_upstream = replacement
+        .upstream
+        .take()
+        .expect("newly bound Responses upstream should be present");
+    if let Some(mut previous_upstream) = bound.upstream.replace(replacement_upstream) {
+        let _ = previous_upstream.send(WreqWsMessage::Close(None)).await;
+    }
     bound.adapter = replacement.adapter;
     bound.client_model = replacement.client_model;
     bound.provider_model = replacement.provider_model;
-    bound.response_in_flight = replacement.response_in_flight;
+    bound.response_in_flight = true;
     bound.decision_template = replacement.decision_template;
     bound.active_turn = Some(turn);
+    bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
+        client_event,
+        turn_index,
+    ));
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
     bound.upstream_response_headers = replacement.upstream_response_headers;
     bound.pending_adapter_drain = replacement.pending_adapter_drain;
@@ -1392,12 +1784,37 @@ fn changed_followup_response_create_model(
     }
 }
 
+fn response_create_model_or_current(
+    event: &mut Value,
+    current_client_model: &str,
+) -> Result<String, &'static str> {
+    let Some(object) = event.as_object_mut() else {
+        return Err("invalid_response_create");
+    };
+    let Some(model) = object.get("model") else {
+        object.insert(
+            "model".to_string(),
+            Value::String(current_client_model.to_string()),
+        );
+        return Ok(current_client_model.to_string());
+    };
+    let Some(model) = model
+        .as_str()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return Err("invalid_response_create_model");
+    };
+    Ok(model.to_string())
+}
+
 fn decision_reuses_bound_upstream(
     bound: &BoundResponsesConnection,
     adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
     decision: &AiExecutionDecision,
 ) -> bool {
-    bound.adapter.kind() == adapter.kind()
+    bound.upstream.is_some()
+        && bound.adapter.kind() == adapter.kind()
         && decisions_reuse_upstream(&bound.decision_template, decision)
 }
 
@@ -1510,7 +1927,8 @@ mod tests {
     use super::{
         adapter_drain_ready, bind_responses_upstream, changed_followup_response_create_model,
         decisions_reuse_upstream, normalize_followup_response_create,
-        planned_response_create_event, websocket_event_type_for_log,
+        planned_response_create_event, response_create_model_or_current,
+        websocket_event_type_for_log, ActiveResponsesWebSocketRequest,
     };
     use crate::ai_serving::AiExecutionDecision;
     use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;
@@ -1543,19 +1961,20 @@ mod tests {
     fn adapter_drain_waits_for_an_active_turn_terminal_event() {
         let directive = Some(ResponsesWebSocketDrainDirective {
             error_code: "adapter_draining",
-            client_message: "adapter is draining",
-            close_reason: "adapter_draining",
+            retry_current_turn: false,
         });
-        assert!(!adapter_drain_ready(directive, true, None));
+        assert!(!adapter_drain_ready(directive, true, None, false));
         assert!(adapter_drain_ready(
             directive,
             true,
             Some(ResponsesWebSocketTurnObservation::Terminal(
                 ResponsesWebSocketTurnOutcome::upstream_closed()
-            ))
+            )),
+            false,
         ));
-        assert!(!adapter_drain_ready(None, false, None));
-        assert!(adapter_drain_ready(directive, false, None));
+        assert!(!adapter_drain_ready(None, false, None, false));
+        assert!(adapter_drain_ready(directive, false, None, false));
+        assert!(adapter_drain_ready(directive, true, None, true));
     }
 
     #[test]
@@ -1669,6 +2088,46 @@ mod tests {
     }
 
     #[test]
+    fn detached_followup_inherits_the_current_public_model() {
+        let mut event = json!({
+            "type": "response.create",
+            "input": "start over",
+        });
+
+        assert_eq!(
+            response_create_model_or_current(&mut event, "gpt-5.6-sol"),
+            Ok("gpt-5.6-sol".to_string())
+        );
+        assert_eq!(event["model"], "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn quota_retry_is_limited_to_an_unstarted_stateless_turn() {
+        let mut request = ActiveResponsesWebSocketRequest::new(
+            json!({"type": "response.create", "model": "gpt-5.6-sol"}),
+            2,
+        );
+        assert!(request.can_retry_after_quota_exhaustion());
+
+        request.standard_response_started = true;
+        assert!(!request.can_retry_after_quota_exhaustion());
+
+        request.standard_response_started = false;
+        request.retry_attempted = true;
+        assert!(!request.can_retry_after_quota_exhaustion());
+
+        let continuation = ActiveResponsesWebSocketRequest::new(
+            json!({
+                "type": "response.create",
+                "model": "gpt-5.6-sol",
+                "previous_response_id": "resp_previous",
+            }),
+            2,
+        );
+        assert!(!continuation.can_retry_after_quota_exhaustion());
+    }
+
+    #[test]
     fn replanned_model_reuses_only_the_same_upstream_target() {
         let mut current = sample_decision();
         current.provider_id = Some("provider-1".to_string());
@@ -1772,11 +2231,18 @@ mod tests {
             .await
             .expect("mock should observe first event")
             .expect("mock event channel should remain open");
-        let response = tokio::time::timeout(Duration::from_secs(2), bound.upstream.recv())
-            .await
-            .expect("mock should send a response event")
-            .expect("upstream should remain open")
-            .expect("upstream response should be valid");
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            bound
+                .upstream
+                .as_mut()
+                .expect("bound upstream should be present")
+                .recv(),
+        )
+        .await
+        .expect("mock should send a response event")
+        .expect("upstream should remain open")
+        .expect("upstream response should be valid");
         server.abort();
 
         assert!(observed.authorization_present);

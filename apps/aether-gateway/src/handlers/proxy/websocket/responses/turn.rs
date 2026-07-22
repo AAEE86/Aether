@@ -652,7 +652,8 @@ fn provider_terminal_outcome(
 
 fn websocket_event_status_code(event: &Value, default: u16) -> u16 {
     event
-        .get("status")
+        .get("status_code")
+        .or_else(|| event.get("status"))
         .or_else(|| {
             event
                 .get("response")
@@ -818,6 +819,22 @@ mod tests {
         let capture = String::from_utf8(websocket_event_as_sse_line(&event))
             .expect("capture should be UTF-8");
         assert_eq!(capture, format!("data: {event}\n\n"));
+    }
+
+    #[test]
+    fn error_event_uses_the_top_level_status_code() {
+        let event = json!({
+            "type": "error",
+            "status_code": 429,
+            "error": {"type": "usage_limit_reached"},
+        });
+        assert_eq!(
+            provider_terminal_outcome("error", &event),
+            Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
+                status_code: 429,
+                cancelled: false,
+            })
+        );
     }
 
     #[test]

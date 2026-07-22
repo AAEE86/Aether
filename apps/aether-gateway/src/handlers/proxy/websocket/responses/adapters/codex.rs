@@ -65,22 +65,24 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
         event: &Value,
     ) -> Option<ResponsesWebSocketDrainDirective> {
         let rate_limits = parse_codex_rate_limits(event)?;
-        if !aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&rate_limits) {
-            return None;
-        }
+        let exhausted =
+            aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&rate_limits);
         if let Err(error) =
             sync_codex_websocket_quota_metadata(state, report_context, rate_limits).await
         {
             tracing::warn!(
                 target: CODEX_WEBSOCKET_LOG_TARGET,
-                event_name = "codex_websocket_quota_exhausted_sync_failed",
+                event_name = "codex_websocket_quota_sync_failed",
                 log_type = "ops",
                 transport = "websocket",
                 websocket = true,
                 trace_id = %trace_id,
                 error = ?error,
-                "gateway failed to persist an exhausted Codex WebSocket account before draining the connection"
+                "gateway failed to persist Codex WebSocket quota metadata"
             );
+        }
+        if !exhausted {
+            return None;
         }
         tracing::info!(
             target: CODEX_WEBSOCKET_LOG_TARGET,
@@ -89,13 +91,11 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
             transport = "websocket",
             websocket = true,
             trace_id = %trace_id,
-            "gateway will drain the Codex WebSocket after the active response"
+            "gateway will detach the exhausted Codex upstream after the active response"
         );
         Some(ResponsesWebSocketDrainDirective {
             error_code: "codex_account_quota_exhausted",
-            client_message:
-                "The bound Codex account quota is exhausted; reconnect to select another account",
-            close_reason: "account_quota_exhausted",
+            retry_current_turn: true,
         })
     }
 }
@@ -142,6 +142,41 @@ mod tests {
                 |context| context.pointer("/codex_websocket_rate_limits/primary_used_percent")
             ),
             Some(&json!(91.0))
+        );
+    }
+
+    #[test]
+    fn usage_limit_error_is_kept_for_the_terminal_report() {
+        let adapter = CodexResponsesWebSocketAdapter;
+        let mut context = Some(json!({"key_id": "codex-key"}));
+        adapter.decorate_turn_report_context(
+            &mut context,
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "free",
+                    "resets_at": 1_787_274_385u64,
+                },
+                "status_code": 429,
+                "headers": {
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Reset-At": "1787274385",
+                },
+            }),
+        );
+
+        assert_eq!(
+            context
+                .as_ref()
+                .and_then(|context| context.pointer("/codex_websocket_rate_limits/allowed")),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            context.as_ref().and_then(|context| {
+                context.pointer("/codex_websocket_rate_limits/primary_used_percent")
+            }),
+            Some(&json!(100.0))
         );
     }
 }

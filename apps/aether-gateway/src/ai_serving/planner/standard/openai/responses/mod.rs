@@ -2,6 +2,7 @@ use crate::ai_serving::planner::plan_builders::{AiStreamAttempt, AiSyncAttempt};
 use crate::ai_serving::GatewayControlDecision;
 use crate::orchestration::{responses_websocket_adapter, ResponsesWebSocketAdapter};
 use crate::{AiExecutionDecision, AppState, GatewayError};
+use std::collections::BTreeSet;
 
 mod decision;
 mod plans;
@@ -186,6 +187,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     trace_id: &str,
     decision: &GatewayControlDecision,
     body_json: &serde_json::Value,
+    excluded_key_ids: Option<&BTreeSet<String>>,
 ) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
     let Some(spec) = resolve_stream_spec(aether_ai_formats::api::OPENAI_RESPONSES_STREAM_PLAN_KIND)
     else {
@@ -210,6 +212,11 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     .await?;
 
     while let Some(attempt) = source.next_attempt().await? {
+        if excluded_key_ids
+            .is_some_and(|key_ids| key_ids.contains(attempt.eligible.candidate.key_id.as_str()))
+        {
+            continue;
+        }
         let Some(adapter) = responses_websocket_adapter(
             &attempt.eligible.transport.provider.provider_type,
             attempt.eligible.transport.provider.config.as_ref(),

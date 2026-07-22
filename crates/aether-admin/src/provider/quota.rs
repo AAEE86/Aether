@@ -800,27 +800,36 @@ pub fn parse_codex_wham_usage_response(
     Some(serde_json::Value::Object(result))
 }
 
-/// Normalizes the quota event emitted by the Codex Responses WebSocket.
+/// Normalizes quota metadata emitted by the Codex Responses WebSocket.
 ///
-/// The upstream sends this as a `codex.rate_limits` item inside a `chunks`
-/// envelope. Keeping this parser next to the HTTP quota parsers makes the
-/// resulting metadata independent of the transport that supplied it.
+/// The upstream normally sends a `codex.rate_limits` item inside a `chunks`
+/// envelope. When the account is already exhausted it can instead send a
+/// terminal `usage_limit_reached` error whose embedded `X-Codex-*` headers
+/// contain the authoritative final quota snapshot.
 pub fn parse_codex_websocket_rate_limits_response(
     value: &serde_json::Value,
     updated_at_unix_secs: u64,
 ) -> Option<serde_json::Value> {
-    let mut latest = parse_codex_websocket_rate_limits_chunk(value, updated_at_unix_secs);
+    let mut latest = parse_codex_websocket_quota_event(value, updated_at_unix_secs);
     for chunk in value
         .get("chunks")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
     {
-        if let Some(parsed) = parse_codex_websocket_rate_limits_chunk(chunk, updated_at_unix_secs) {
+        if let Some(parsed) = parse_codex_websocket_quota_event(chunk, updated_at_unix_secs) {
             latest = Some(parsed);
         }
     }
     latest
+}
+
+fn parse_codex_websocket_quota_event(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    parse_codex_websocket_rate_limits_chunk(value, updated_at_unix_secs)
+        .or_else(|| parse_codex_websocket_usage_limit_error(value, updated_at_unix_secs))
 }
 
 /// Returns whether normalized Codex rate-limit metadata says that the account
@@ -885,6 +894,76 @@ fn parse_codex_websocket_rate_limits_chunk(
     if result.is_empty() {
         return None;
     }
+    result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
+    Some(serde_json::Value::Object(result))
+}
+
+fn parse_codex_websocket_usage_limit_error(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    let root = value.as_object()?;
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
+    }
+    let status_code = root
+        .get("status_code")
+        .or_else(|| root.get("status"))
+        .and_then(coerce_json_u64);
+    if status_code != Some(429) {
+        return None;
+    }
+    let error = root.get("error").and_then(serde_json::Value::as_object)?;
+    if error.get("type").and_then(serde_json::Value::as_str) != Some("usage_limit_reached") {
+        return None;
+    }
+
+    let headers = root
+        .get("headers")
+        .and_then(serde_json::Value::as_object)
+        .map(|headers| {
+            headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_string()))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut result = parse_codex_usage_headers(&headers, updated_at_unix_secs)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    if !result.contains_key("plan_type") {
+        if let Some(plan_type) = error
+            .get("plan_type")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| normalize_codex_plan_type(Some(value)))
+        {
+            result.insert("plan_type".to_string(), json!(plan_type));
+        }
+    }
+    if !result.contains_key("primary_reset_at") {
+        if let Some(reset_at) = error.get("resets_at").and_then(coerce_json_u64) {
+            result.insert("primary_reset_at".to_string(), json!(reset_at));
+        }
+    }
+    if !result.contains_key("primary_reset_after_seconds") {
+        if let Some(reset_after_seconds) = error.get("resets_in_seconds").and_then(coerce_json_u64)
+        {
+            result.insert(
+                "primary_reset_after_seconds".to_string(),
+                json!(reset_after_seconds),
+            );
+        }
+    }
+
+    // `usage_limit_reached` is a definitive, account-wide terminal signal.
+    // Preserve that fact even if an intermediary strips some Codex headers.
+    result.insert("allowed".to_string(), json!(false));
+    result.insert("limit_reached".to_string(), json!(true));
     result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
     Some(serde_json::Value::Object(result))
 }
@@ -2758,6 +2837,42 @@ mod tests {
             Some(&json!(2_590_791u64))
         );
         assert!(parsed.get("secondary_used_percent").is_none());
+    }
+
+    #[test]
+    fn parses_codex_websocket_usage_limit_error_headers() {
+        let parsed = parse_codex_websocket_rate_limits_response(
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "free",
+                    "resets_at": 1_787_274_385u64,
+                    "resets_in_seconds": 2_590_077u64,
+                },
+                "status_code": 429,
+                "headers": {
+                    "X-Codex-Plan-Type": "free",
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "43200",
+                    "X-Codex-Primary-Reset-After-Seconds": "2590078",
+                    "X-Codex-Primary-Reset-At": "1787274385",
+                    "X-Codex-Credits-Has-Credits": "False",
+                },
+            }),
+            1_787_000_000,
+        )
+        .expect("Codex usage-limit error should parse as quota metadata");
+
+        assert_eq!(parsed.get("allowed"), Some(&json!(false)));
+        assert_eq!(parsed.get("limit_reached"), Some(&json!(true)));
+        assert_eq!(parsed.get("plan_type"), Some(&json!("free")));
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(100.0)));
+        assert_eq!(
+            parsed.get("primary_reset_at"),
+            Some(&json!(1_787_274_385u64))
+        );
+        assert!(codex_rate_limit_metadata_exhausted(&parsed));
     }
 
     #[test]

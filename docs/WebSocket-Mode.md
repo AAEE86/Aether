@@ -145,8 +145,9 @@ ws.send(
 - No multiplexing support today. Use multiple connections if you need parallel runs.
 - Connection duration is limited to 60 minutes. Reconnect when the limit is reached.
 - Aether binds each upstream WebSocket to one selected provider key. A provider must explicitly enable the standard Responses WebSocket capability and expose an `openai:responses` endpoint before it is eligible for this bridge.
-- The Codex adapter additionally watches Codex quota events. If the bound account reports exhausted quota, Aether lets the active response reach its terminal event, marks the account unavailable, emits `codex_account_quota_exhausted`, and closes the client connection with close code `1013`. Reconnect so the normal planner can select another eligible account.
-- Aether does not transparently move an existing response chain to another provider key. Connection-local `previous_response_id` state cannot be transferred safely, especially with `store=false`/ZDR.
+- The Codex adapter additionally watches Codex quota events. A `usage_limit_reached` terminal error immediately marks the bound account unavailable. If the client has not received a standard `response.*` event and the request has no `previous_response_id`, Aether retries that one turn once on another eligible key without closing the public socket.
+- After a standard response event has reached the client, after a retry has already been attempted, or for a request using `previous_response_id`, Aether forwards the provider terminal error and detaches only the exhausted upstream. If the upstream closes immediately after the quota signal, Aether emits a recoverable gateway error instead. The public WebSocket stays open so a later independent `response.create` can select another key.
+- Aether does not transparently move an existing response chain to another provider key. Connection-local `previous_response_id` state cannot be transferred safely, especially with `store=false`/ZDR; send a new request with complete input after an exhausted continuation.
 
 ## Reconnect and recover
 

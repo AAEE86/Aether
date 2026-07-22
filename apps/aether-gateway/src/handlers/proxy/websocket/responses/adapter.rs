@@ -11,8 +11,9 @@ use crate::AppState;
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ResponsesWebSocketDrainDirective {
     pub(super) error_code: &'static str,
-    pub(super) client_message: &'static str,
-    pub(super) close_reason: &'static str,
+    /// The terminal upstream event may be replayed only when the session has
+    /// not exposed any standard Responses event to the client.
+    pub(super) retry_current_turn: bool,
 }
 
 /// Boundary between the standard Responses protocol engine and provider
