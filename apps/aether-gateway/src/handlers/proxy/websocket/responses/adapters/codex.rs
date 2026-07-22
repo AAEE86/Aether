@@ -3,10 +3,15 @@
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
-use super::super::adapter::{ResponsesWebSocketDrainDirective, ResponsesWebSocketProtocolAdapter};
+use super::super::adapter::{
+    is_standard_responses_event, ResponsesWebSocketDrainDirective,
+    ResponsesWebSocketProtocolAdapter, ResponsesWebSocketRebindSafety,
+};
 use crate::clock::current_unix_secs;
 use crate::handlers::proxy::websocket::transport::UpstreamWebSocketErrorCodes;
-use crate::orchestration::{sync_codex_websocket_quota_metadata, ResponsesWebSocketAdapter};
+use crate::orchestration::{
+    codex_quota_exhaustion_reset_at, sync_codex_websocket_quota_metadata, ResponsesWebSocketAdapter,
+};
 use crate::AppState;
 
 const CODEX_WEBSOCKET_LOG_TARGET: &str = "aether_gateway::handlers::proxy::codex_ws";
@@ -57,6 +62,22 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
         true
     }
 
+    fn rebind_safety_for_upstream_event(&self, event: &Value) -> ResponsesWebSocketRebindSafety {
+        if let Some(chunks) = event.get("chunks").and_then(Value::as_array) {
+            if chunks.is_empty() {
+                return ResponsesWebSocketRebindSafety::Unsafe {
+                    reason: "unrecognized_upstream_event",
+                };
+            }
+            return chunks
+                .iter()
+                .map(codex_direct_rebind_safety)
+                .find(|safety| matches!(safety, ResponsesWebSocketRebindSafety::Unsafe { .. }))
+                .unwrap_or(ResponsesWebSocketRebindSafety::Safe);
+        }
+        codex_direct_rebind_safety(event)
+    }
+
     async fn observe_upstream_event(
         &self,
         state: &AppState,
@@ -67,6 +88,8 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
         let rate_limits = parse_codex_rate_limits(event)?;
         let exhausted =
             aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&rate_limits);
+        let retry_exclusion_until_unix_secs =
+            codex_quota_exhaustion_reset_at(&rate_limits, current_unix_secs());
         if let Err(error) =
             sync_codex_websocket_quota_metadata(state, report_context, rate_limits).await
         {
@@ -96,8 +119,33 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
         Some(ResponsesWebSocketDrainDirective {
             error_code: "codex_account_quota_exhausted",
             retry_current_turn: true,
+            retry_exclusion_until_unix_secs,
         })
     }
+}
+
+fn codex_direct_rebind_safety(event: &Value) -> ResponsesWebSocketRebindSafety {
+    let event_type = event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if matches!(event_type, "codex.rate_limits" | "codex.response.metadata") {
+        // Codex emits these as pre-response advisory metadata. They do
+        // not create a public `response.*` object, so a replacement
+        // upstream can safely emit its own current snapshot.
+        return ResponsesWebSocketRebindSafety::Safe;
+    }
+    if event_type == "error" && parse_codex_rate_limits(event).is_some() {
+        // The quota error is withheld from the client when the shared
+        // session successfully rebinds, therefore it remains replay-safe.
+        return ResponsesWebSocketRebindSafety::Safe;
+    }
+    let reason = if is_standard_responses_event(event) {
+        "standard_response_event"
+    } else {
+        "unrecognized_upstream_event"
+    };
+    ResponsesWebSocketRebindSafety::Unsafe { reason }
 }
 
 fn parse_codex_rate_limits(event: &Value) -> Option<Value> {
@@ -111,7 +159,10 @@ fn parse_codex_rate_limits(event: &Value) -> Option<Value> {
 mod tests {
     use serde_json::json;
 
-    use super::{CodexResponsesWebSocketAdapter, ResponsesWebSocketProtocolAdapter};
+    use super::{
+        CodexResponsesWebSocketAdapter, ResponsesWebSocketProtocolAdapter,
+        ResponsesWebSocketRebindSafety,
+    };
 
     #[test]
     fn codex_rate_limit_chunk_is_kept_for_the_terminal_report() {
@@ -177,6 +228,50 @@ mod tests {
                 context.pointer("/codex_websocket_rate_limits/primary_used_percent")
             }),
             Some(&json!(100.0))
+        );
+    }
+
+    #[test]
+    fn only_known_codex_pre_response_metadata_is_safe_to_rebind() {
+        let adapter = CodexResponsesWebSocketAdapter;
+
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "codex.rate_limits",
+                "rate_limits": {"allowed": true}
+            })),
+            ResponsesWebSocketRebindSafety::Safe
+        );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "codex.response.metadata"
+            })),
+            ResponsesWebSocketRebindSafety::Safe
+        );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "chunks": [
+                    {"type": "codex.rate_limits", "rate_limits": {"allowed": true}},
+                    {"type": "codex.response.metadata"}
+                ]
+            })),
+            ResponsesWebSocketRebindSafety::Safe
+        );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "response.created"
+            })),
+            ResponsesWebSocketRebindSafety::Unsafe {
+                reason: "standard_response_event"
+            }
+        );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "codex.unknown"
+            })),
+            ResponsesWebSocketRebindSafety::Unsafe {
+                reason: "unrecognized_upstream_event"
+            }
         );
     }
 }

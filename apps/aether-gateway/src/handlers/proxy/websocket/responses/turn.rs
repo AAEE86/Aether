@@ -39,6 +39,8 @@ use crate::{AppState, GatewayError};
 
 const WEBSOCKET_CONNECTION_TRACE_REPORT_CONTEXT_FIELD: &str = "websocket_connection_trace_id";
 const WEBSOCKET_TURN_INDEX_REPORT_CONTEXT_FIELD: &str = "websocket_turn_index";
+const WEBSOCKET_LOGICAL_TURN_ID_REPORT_CONTEXT_FIELD: &str = "websocket_logical_turn_id";
+const WEBSOCKET_TURN_ATTEMPT_REPORT_CONTEXT_FIELD: &str = "websocket_turn_attempt";
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +212,8 @@ pub(super) fn prepare_responses_websocket_turn_decision(
     provider_event: &Value,
     connection_trace_id: &str,
     turn_index: u64,
+    logical_turn_id: &str,
+    turn_attempt: u32,
 ) -> AiExecutionDecision {
     let mut decision = template.clone();
     decision.request_id = Some(request_id.clone());
@@ -225,6 +229,8 @@ pub(super) fn prepare_responses_websocket_turn_decision(
         client_event,
         connection_trace_id,
         turn_index,
+        logical_turn_id,
+        turn_attempt,
     ));
     decision
 }
@@ -588,6 +594,8 @@ fn prepare_websocket_report_context(
     client_event: &Value,
     connection_trace_id: &str,
     turn_index: u64,
+    logical_turn_id: &str,
+    turn_attempt: u32,
 ) -> Value {
     let mut object = match report_context {
         Some(Value::Object(object)) => object,
@@ -615,6 +623,14 @@ fn prepare_websocket_report_context(
     object.insert(
         WEBSOCKET_TURN_INDEX_REPORT_CONTEXT_FIELD.to_string(),
         Value::Number(turn_index.into()),
+    );
+    object.insert(
+        WEBSOCKET_LOGICAL_TURN_ID_REPORT_CONTEXT_FIELD.to_string(),
+        Value::String(logical_turn_id.to_string()),
+    );
+    object.insert(
+        WEBSOCKET_TURN_ATTEMPT_REPORT_CONTEXT_FIELD.to_string(),
+        Value::Number(turn_attempt.into()),
     );
     object.insert(
         WEBSOCKET_TRANSPORT_METADATA_KEY.to_string(),
@@ -772,12 +788,16 @@ mod tests {
             &json!({"type":"response.create","model":"public"}),
             "connection",
             2,
+            "logical-turn-2",
+            1,
         );
         assert_eq!(context["request_id"], "turn-2");
         assert!(context.get("candidate_id").is_none());
         assert_eq!(context["original_request_body"]["type"], "response.create");
         assert_eq!(context["websocket_mode"], true);
         assert_eq!(context["websocket_transport"], "responses");
+        assert_eq!(context["websocket_logical_turn_id"], "logical-turn-2");
+        assert_eq!(context["websocket_turn_attempt"], 1);
     }
 
     #[test]
@@ -797,12 +817,16 @@ mod tests {
             }),
             "connection",
             2,
+            "logical-turn-2",
+            2,
         );
 
         assert_eq!(context["request_id"], "turn-2");
         assert_eq!(context["candidate_id"], "terra-candidate");
         assert_eq!(context["original_request_body"]["model"], "gpt-5.6-terra");
         assert_eq!(context["websocket_mode"], true);
+        assert_eq!(context["websocket_logical_turn_id"], "logical-turn-2");
+        assert_eq!(context["websocket_turn_attempt"], 2);
     }
 
     #[test]

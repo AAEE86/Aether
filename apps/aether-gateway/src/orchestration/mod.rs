@@ -7,6 +7,7 @@ use crate::AppState;
 mod adaptive;
 mod attempt;
 mod classifier;
+mod codex_quota_breaker;
 mod effects;
 mod health;
 mod oauth_error;
@@ -29,6 +30,11 @@ pub(crate) use self::classifier::{
     failure_disposition_from_local_classification, local_failover_error_message,
     FailureDisposition, FailureRetryAction, FailureScope, FailureTokenAction,
     LocalFailoverClassification, LocalFailoverInput,
+};
+pub(crate) use self::codex_quota_breaker::{
+    codex_quota_breaker_blocks_candidate, codex_quota_exhaustion_reset_at,
+    install_codex_quota_exhaustion_breaker, log_codex_quota_breaker_check_failure,
+    log_codex_quota_breaker_install_failure,
 };
 pub(crate) use self::effects::{
     apply_local_execution_effect, LocalAdaptiveRateLimitEffect, LocalAdaptiveSuccessEffect,

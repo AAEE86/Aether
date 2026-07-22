@@ -14,6 +14,19 @@ pub(super) struct ResponsesWebSocketDrainDirective {
     /// The terminal upstream event may be replayed only when the session has
     /// not exposed any standard Responses event to the client.
     pub(super) retry_current_turn: bool,
+    /// When present, the exhausted provider key remains excluded from later
+    /// turns on this client socket until the upstream's reported reset time.
+    pub(super) retry_exclusion_until_unix_secs: Option<u64>,
+}
+
+/// Whether receiving an upstream event still leaves the active client turn
+/// safe to replay on a freshly bound upstream.  The shared session keeps the
+/// conservative default; provider adapters may explicitly whitelist their
+/// documented, pre-response advisory events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResponsesWebSocketRebindSafety {
+    Safe,
+    Unsafe { reason: &'static str },
 }
 
 /// Boundary between the standard Responses protocol engine and provider
@@ -32,6 +45,12 @@ pub(super) trait ResponsesWebSocketProtocolAdapter: Send + Sync {
     /// Whether this adapter needs the shared session to parse each upstream
     /// text event before normal turn accounting runs.
     fn observes_upstream_events(&self) -> bool;
+
+    /// Classifies whether a received upstream event can be followed by a
+    /// transparent quota-driven rebind.  An adapter must return `Safe` only
+    /// for events that neither create public Responses state nor make a replay
+    /// observably ambiguous to the client.
+    fn rebind_safety_for_upstream_event(&self, event: &Value) -> ResponsesWebSocketRebindSafety;
 
     /// Lets an adapter react to provider-only events. Returning a directive
     /// asks the shared session to drain after the active standard response.
@@ -87,6 +106,15 @@ impl ResponsesWebSocketProtocolAdapter for StandardResponsesWebSocketAdapter {
         false
     }
 
+    fn rebind_safety_for_upstream_event(&self, event: &Value) -> ResponsesWebSocketRebindSafety {
+        let reason = if is_standard_responses_event(event) {
+            "standard_response_event"
+        } else {
+            "unrecognized_upstream_event"
+        };
+        ResponsesWebSocketRebindSafety::Unsafe { reason }
+    }
+
     async fn observe_upstream_event(
         &self,
         _state: &AppState,
@@ -96,6 +124,13 @@ impl ResponsesWebSocketProtocolAdapter for StandardResponsesWebSocketAdapter {
     ) -> Option<ResponsesWebSocketDrainDirective> {
         None
     }
+}
+
+pub(super) fn is_standard_responses_event(event: &Value) -> bool {
+    event
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|event_type| event_type.starts_with("response."))
 }
 
 #[cfg(test)]

@@ -1,6 +1,9 @@
 use crate::ai_serving::planner::plan_builders::{AiStreamAttempt, AiSyncAttempt};
 use crate::ai_serving::GatewayControlDecision;
-use crate::orchestration::{responses_websocket_adapter, ResponsesWebSocketAdapter};
+use crate::orchestration::{
+    codex_quota_breaker_blocks_candidate, log_codex_quota_breaker_check_failure,
+    responses_websocket_adapter, ResponsesWebSocketAdapter,
+};
 use crate::{AiExecutionDecision, AppState, GatewayError};
 use std::collections::BTreeSet;
 
@@ -230,6 +233,18 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         else {
             continue;
         };
+        match codex_quota_breaker_blocks_candidate(
+            state,
+            payload.provider_type.as_deref(),
+            payload.key_id.as_deref(),
+            &payload.provider_request_headers,
+        )
+        .await
+        {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => log_codex_quota_breaker_check_failure(&error),
+        }
         if payload
             .provider_type
             .as_deref()

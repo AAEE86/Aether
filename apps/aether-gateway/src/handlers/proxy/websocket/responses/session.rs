@@ -20,7 +20,7 @@ use wreq::ws::message::Message as WreqWsMessage;
 
 use super::adapter::{
     resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective,
-    ResponsesWebSocketProtocolAdapter,
+    ResponsesWebSocketProtocolAdapter, ResponsesWebSocketRebindSafety,
 };
 use super::turn::{
     begin_responses_websocket_turn, prepare_responses_websocket_turn_decision,
@@ -30,6 +30,7 @@ use super::turn::{
 };
 
 use crate::ai_serving::{maybe_build_responses_websocket_decision, AiExecutionDecision};
+use crate::clock::current_unix_secs;
 use crate::control::{request_model_local_rejection, GatewayControlDecision};
 use crate::handlers::proxy::websocket::ingress::{
     WebSocketConnectionLog, WebSocketConnectionLogSpec, WebSocketRequestContext,
@@ -47,6 +48,7 @@ use crate::rate_limit::FrontdoorUserRpmOutcome;
 use crate::AppState;
 
 const RESPONSES_WEBSOCKET_LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
+const EXHAUSTED_KEY_EXCLUSION_FALLBACK_SECONDS: u64 = 300;
 
 const RESPONSES_CONNECTION_LOG_SPEC: WebSocketConnectionLogSpec = WebSocketConnectionLogSpec {
     opened_event_name: "responses_websocket_connection_opened",
@@ -83,31 +85,91 @@ struct BoundResponsesConnection {
     next_turn_index: u64,
     upstream_response_headers: BTreeMap<String, String>,
     pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
-    exhausted_key_ids: BTreeSet<String>,
+    exhausted_key_exclusions: ExhaustedResponsesWebSocketKeyExclusions,
+}
+
+/// Connection-local fallback in addition to the distributed account breaker.
+/// A key is excluded only until the upstream's reset deadline (or a short
+/// fallback when the terminal payload lacks one), so an unusually long-lived
+/// client socket does not keep it unavailable after the quota has recovered.
+#[derive(Debug, Default)]
+struct ExhaustedResponsesWebSocketKeyExclusions {
+    expires_at_by_key: BTreeMap<String, u64>,
+}
+
+impl ExhaustedResponsesWebSocketKeyExclusions {
+    fn exclude(
+        &mut self,
+        key_id: String,
+        reset_at_unix_secs: Option<u64>,
+        now_unix_secs: u64,
+    ) -> u64 {
+        self.prune(now_unix_secs);
+        let requested_expiry = reset_at_unix_secs
+            .filter(|reset_at| *reset_at > now_unix_secs)
+            .unwrap_or_else(|| {
+                now_unix_secs.saturating_add(EXHAUSTED_KEY_EXCLUSION_FALLBACK_SECONDS)
+            });
+        let expiry = self
+            .expires_at_by_key
+            .entry(key_id)
+            .and_modify(|existing| *existing = (*existing).max(requested_expiry))
+            .or_insert(requested_expiry);
+        *expiry
+    }
+
+    fn key_ids(&mut self, now_unix_secs: u64) -> BTreeSet<String> {
+        self.prune(now_unix_secs);
+        self.expires_at_by_key.keys().cloned().collect()
+    }
+
+    fn len(&mut self, now_unix_secs: u64) -> usize {
+        self.prune(now_unix_secs);
+        self.expires_at_by_key.len()
+    }
+
+    fn prune(&mut self, now_unix_secs: u64) {
+        self.expires_at_by_key
+            .retain(|_, expires_at| *expires_at > now_unix_secs);
+    }
 }
 
 #[derive(Debug, Clone)]
 struct ActiveResponsesWebSocketRequest {
     client_event: Value,
     turn_index: u64,
+    logical_turn_id: String,
+    turn_attempt: u32,
     retry_attempted: bool,
-    standard_response_started: bool,
+    retry_unsafe_reason: Option<&'static str>,
 }
 
 impl ActiveResponsesWebSocketRequest {
-    fn new(client_event: Value, turn_index: u64) -> Self {
+    fn new(client_event: Value, turn_index: u64, logical_turn_id: String) -> Self {
         Self {
             client_event,
             turn_index,
+            logical_turn_id,
+            turn_attempt: 1,
             retry_attempted: false,
-            standard_response_started: false,
+            retry_unsafe_reason: None,
         }
     }
 
-    fn can_retry_after_quota_exhaustion(&self) -> bool {
-        !self.retry_attempted
-            && !self.standard_response_started
-            && !response_create_has_previous_response_id(&self.client_event)
+    fn quota_retry_block_reason(&self) -> Option<&'static str> {
+        if self.retry_attempted {
+            Some("quota_retry_already_attempted")
+        } else if let Some(reason) = self.retry_unsafe_reason {
+            Some(reason)
+        } else if response_create_has_previous_response_id(&self.client_event) {
+            Some("previous_response_id")
+        } else {
+            None
+        }
+    }
+
+    fn mark_retry_unsafe(&mut self, reason: &'static str) {
+        self.retry_unsafe_reason.get_or_insert(reason);
     }
 }
 
@@ -341,6 +403,7 @@ pub(super) async fn run_responses_websocket(
             return;
         }
     };
+    let first_logical_turn_id = Uuid::new_v4().to_string();
     let first_turn_decision = prepare_responses_websocket_turn_decision(
         &decision,
         context.trace_id.clone(),
@@ -348,6 +411,8 @@ pub(super) async fn run_responses_websocket(
         &first_event,
         &first_provider_event,
         &context.trace_id,
+        1,
+        &first_logical_turn_id,
         1,
     );
     let mut first_turn = match begin_responses_websocket_turn(
@@ -415,7 +480,11 @@ pub(super) async fn run_responses_websocket(
     first_turn.mark_upstream_request_sent();
     first_turn.set_provider_response_headers(bound.upstream_response_headers.clone());
     bound.active_turn = Some(first_turn);
-    bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(first_event, 1));
+    bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
+        first_event,
+        1,
+        first_logical_turn_id,
+    ));
 
     relay_bound_connection(&mut client_socket, &mut bound, &state, &context).await;
 }
@@ -557,7 +626,7 @@ async fn bind_responses_upstream(
         next_turn_index: 2,
         upstream_response_headers: upstream.response_headers,
         pending_adapter_drain: None,
-        exhausted_key_ids: BTreeSet::new(),
+        exhausted_key_exclusions: ExhaustedResponsesWebSocketKeyExclusions::default(),
     })
 }
 
@@ -757,24 +826,34 @@ async fn relay_bound_connection(
                         "gateway received Responses WebSocket event"
                     );
                 }
-                if let WreqWsMessage::Text(text) = &upstream_message {
+                let parsed_upstream_event = match &upstream_message {
+                    WreqWsMessage::Text(text) => serde_json::from_str::<Value>(text.as_str()).ok(),
+                    _ => None,
+                };
+                if matches!(&upstream_message, WreqWsMessage::Binary(_)) {
+                    mark_active_response_retry_unsafe(bound, "upstream_binary_frame");
+                } else if matches!(&upstream_message, WreqWsMessage::Text(_))
+                    && parsed_upstream_event.is_none()
+                {
+                    mark_active_response_retry_unsafe(bound, "invalid_upstream_event");
+                }
+                if let Some(event) = parsed_upstream_event.as_ref() {
+                    observe_active_response_rebind_safety(bound, event);
                     if bound.pending_adapter_drain.is_none()
                         && bound.adapter.observes_upstream_events()
                     {
-                        if let Ok(event) = serde_json::from_str::<Value>(text.as_str()) {
-                            let adapter = bound.adapter;
-                            let report_context = bound.decision_template.report_context.clone();
-                            if let Some(directive) = adapter
-                                .observe_upstream_event(
-                                    state,
-                                    &context.trace_id,
-                                    report_context.as_ref(),
-                                    &event,
-                                )
-                                .await
-                            {
-                                bound.pending_adapter_drain = Some(directive);
-                            }
+                        let adapter = bound.adapter;
+                        let report_context = bound.decision_template.report_context.clone();
+                        if let Some(directive) = adapter
+                            .observe_upstream_event(
+                                state,
+                                &context.trace_id,
+                                report_context.as_ref(),
+                                event,
+                            )
+                            .await
+                        {
+                            bound.pending_adapter_drain = Some(directive);
                         }
                     }
                 }
@@ -838,7 +917,6 @@ async fn relay_bound_connection(
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
-                mark_active_response_started(bound, &upstream_message);
                 if client_socket
                     .send(upstream_message_to_client(upstream_message))
                     .await
@@ -894,18 +972,11 @@ async fn detach_exhausted_upstream(
     directive: ResponsesWebSocketDrainDirective,
     trace_id: &str,
 ) {
-    if let Some(key_id) = bound
-        .decision_template
-        .key_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|key_id| !key_id.is_empty())
-    {
-        bound.exhausted_key_ids.insert(key_id.to_string());
-    }
+    let exclusion = record_exhausted_bound_key(bound, directive.retry_exclusion_until_unix_secs);
     close_bound_upstream(bound).await;
     bound.response_in_flight = false;
     bound.pending_adapter_drain = None;
+    let now_unix_secs = current_unix_secs();
     debug!(
         event_name = "responses_websocket_upstream_detached",
         log_type = "event",
@@ -913,9 +984,30 @@ async fn detach_exhausted_upstream(
         websocket = true,
         trace_id = %trace_id,
         reason = directive.error_code,
-        exhausted_key_count = bound.exhausted_key_ids.len(),
+        exhausted_key_id = ?exclusion.as_ref().map(|(key_id, _)| key_id),
+        retry_exclusion_until_unix_secs = ?exclusion.as_ref().map(|(_, until)| until),
+        exhausted_key_count = bound.exhausted_key_exclusions.len(now_unix_secs),
         "gateway detached an exhausted Responses WebSocket upstream while preserving the client socket"
     );
+}
+
+fn record_exhausted_bound_key(
+    bound: &mut BoundResponsesConnection,
+    reset_at_unix_secs: Option<u64>,
+) -> Option<(String, u64)> {
+    let key_id = bound
+        .decision_template
+        .key_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|key_id| !key_id.is_empty())?
+        .to_string();
+    let exclusion_until = bound.exhausted_key_exclusions.exclude(
+        key_id.clone(),
+        reset_at_unix_secs,
+        current_unix_secs(),
+    );
+    Some((key_id, exclusion_until))
 }
 
 async fn retry_active_turn_after_quota_exhaustion(
@@ -923,37 +1015,48 @@ async fn retry_active_turn_after_quota_exhaustion(
     state: &AppState,
     context: &ResponsesWebSocketRequestContext,
 ) -> bool {
-    let Some((client_event, turn_index)) =
-        bound.active_response_create.as_mut().and_then(|active| {
-            active.can_retry_after_quota_exhaustion().then(|| {
-                active.retry_attempted = true;
-                (active.client_event.clone(), active.turn_index)
-            })
-        })
-    else {
+    let Some(active) = bound.active_response_create.as_mut() else {
         return false;
     };
-
-    let exhausted_key_id = bound
-        .decision_template
-        .key_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|key_id| !key_id.is_empty())
-        .map(str::to_string);
-    if let Some(key_id) = exhausted_key_id.as_ref() {
-        bound.exhausted_key_ids.insert(key_id.clone());
+    if let Some(reason) = active.quota_retry_block_reason() {
+        debug!(
+            event_name = "responses_websocket_quota_retry_skipped",
+            log_type = "event",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %context.trace_id,
+            turn_index = active.turn_index,
+            logical_turn_id = %active.logical_turn_id,
+            turn_attempt = active.turn_attempt,
+            reason,
+            "gateway will not transparently replay an unsafe Responses WebSocket turn"
+        );
+        return false;
     }
+    active.retry_attempted = true;
+    active.turn_attempt = active.turn_attempt.saturating_add(1);
+    let client_event = active.client_event.clone();
+    let turn_index = active.turn_index;
+    let logical_turn_id = active.logical_turn_id.clone();
+    let turn_attempt = active.turn_attempt;
+
+    let retry_exclusion_until_unix_secs = bound
+        .pending_adapter_drain
+        .and_then(|directive| directive.retry_exclusion_until_unix_secs);
+    let exhausted_key = record_exhausted_bound_key(bound, retry_exclusion_until_unix_secs);
+    let exhausted_key_id = exhausted_key.as_ref().map(|(key_id, _)| key_id.clone());
 
     let planning_parts = build_planning_parts(context);
     let turn_request_id = Uuid::new_v4().to_string();
+    let excluded_key_ids = bound.exhausted_key_exclusions.key_ids(current_unix_secs());
+    let excluded_key_ids = (!excluded_key_ids.is_empty()).then_some(&excluded_key_ids);
     let planned = match maybe_build_responses_websocket_decision(
         state,
         &planning_parts,
         &turn_request_id,
         &context.decision,
         &client_event,
-        Some(&bound.exhausted_key_ids),
+        excluded_key_ids,
     )
     .await
     {
@@ -1026,6 +1129,8 @@ async fn retry_active_turn_after_quota_exhaustion(
         &provider_event,
         &context.trace_id,
         turn_index,
+        &logical_turn_id,
+        turn_attempt,
     );
     let mut turn =
         match begin_responses_websocket_turn(state, &planning_parts, turn_decision, &client_event)
@@ -1091,6 +1196,8 @@ async fn retry_active_turn_after_quota_exhaustion(
         websocket = true,
         trace_id = %context.trace_id,
         turn_index,
+        logical_turn_id = %logical_turn_id,
+        turn_attempt,
         previous_key_id = ?previous_key_id,
         key_id = ?bound.decision_template.key_id,
         "gateway transparently rebound a Responses WebSocket turn after quota exhaustion"
@@ -1104,23 +1211,20 @@ fn response_create_has_previous_response_id(event: &Value) -> bool {
         .is_some_and(|value| !value.is_null())
 }
 
-fn mark_active_response_started(bound: &mut BoundResponsesConnection, message: &WreqWsMessage) {
-    let WreqWsMessage::Text(text) = message else {
+fn observe_active_response_rebind_safety(bound: &mut BoundResponsesConnection, event: &Value) {
+    let ResponsesWebSocketRebindSafety::Unsafe { reason } =
+        bound.adapter.rebind_safety_for_upstream_event(event)
+    else {
         return;
     };
-    let is_standard_response_event = serde_json::from_str::<Value>(text.as_str())
-        .ok()
-        .and_then(|event| {
-            event
-                .get("type")
-                .and_then(Value::as_str)
-                .map(|event_type| event_type.starts_with("response."))
-        })
-        .unwrap_or(false);
-    if is_standard_response_event {
-        if let Some(active) = bound.active_response_create.as_mut() {
-            active.standard_response_started = true;
-        }
+    if let Some(active) = bound.active_response_create.as_mut() {
+        active.mark_retry_unsafe(reason);
+    }
+}
+
+fn mark_active_response_retry_unsafe(bound: &mut BoundResponsesConnection, reason: &'static str) {
+    if let Some(active) = bound.active_response_create.as_mut() {
+        active.mark_retry_unsafe(reason);
     }
 }
 
@@ -1162,7 +1266,7 @@ async fn forward_client_message(
                 .and_then(Value::as_str)
                 == Some("response.create");
             if !is_response_create {
-                let Some(upstream) = bound.upstream.as_mut() else {
+                if bound.upstream.is_none() {
                     send_gateway_error(
                         client_socket,
                         "responses_websocket_upstream_rebind_required",
@@ -1170,8 +1274,15 @@ async fn forward_client_message(
                     )
                     .await;
                     return RelayDisposition::Continue;
-                };
-                return upstream
+                }
+                // We cannot reconstruct arbitrary Responses control events on
+                // a replacement socket.  A concurrent quota error must be
+                // surfaced rather than replaying only the response.create.
+                mark_active_response_retry_unsafe(bound, "client_control_event");
+                return bound
+                    .upstream
+                    .as_mut()
+                    .expect("upstream presence was checked above")
                     .send(WreqWsMessage::text(text))
                     .await
                     .map(|_| RelayDisposition::Continue)
@@ -1316,6 +1427,8 @@ async fn forward_client_message(
                 }
             };
             let turn_index = bound.next_turn_index;
+            let turn_request_id = Uuid::new_v4().to_string();
+            let logical_turn_id = Uuid::new_v4().to_string();
             debug!(
                 event_name = "responses_websocket_response_create_forwarding",
                 log_type = "event",
@@ -1331,12 +1444,14 @@ async fn forward_client_message(
             );
             let turn_decision = prepare_responses_websocket_turn_decision(
                 &bound.decision_template,
-                Uuid::new_v4().to_string(),
+                turn_request_id,
                 false,
                 &client_event,
                 &provider_event,
                 &context.trace_id,
                 turn_index,
+                &logical_turn_id,
+                1,
             );
             let planning_parts = build_planning_parts(context);
             let mut turn = match begin_responses_websocket_turn(
@@ -1372,6 +1487,7 @@ async fn forward_client_message(
             bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
                 client_event.clone(),
                 turn_index,
+                logical_turn_id,
             ));
             bound.next_turn_index = bound.next_turn_index.saturating_add(1);
             bound.response_in_flight = true;
@@ -1389,15 +1505,20 @@ async fn forward_client_message(
                 Err(_) => RelayDisposition::UpstreamError("responses_websocket_send_failed"),
             }
         }
-        AxumWsMessage::Binary(data) => match bound.upstream.as_mut() {
-            Some(upstream) => upstream
-                .send(WreqWsMessage::Binary(data))
-                .await
-                .map(|_| RelayDisposition::Continue)
-                .unwrap_or(RelayDisposition::UpstreamError(
-                    "responses_websocket_send_failed",
-                )),
-            None => {
+        AxumWsMessage::Binary(data) => {
+            if bound.upstream.is_some() {
+                mark_active_response_retry_unsafe(bound, "client_binary_frame");
+                bound
+                    .upstream
+                    .as_mut()
+                    .expect("upstream presence was checked above")
+                    .send(WreqWsMessage::Binary(data))
+                    .await
+                    .map(|_| RelayDisposition::Continue)
+                    .unwrap_or(RelayDisposition::UpstreamError(
+                        "responses_websocket_send_failed",
+                    ))
+            } else {
                 send_gateway_error(
                     client_socket,
                     "responses_websocket_upstream_rebind_required",
@@ -1406,7 +1527,7 @@ async fn forward_client_message(
                 .await;
                 RelayDisposition::Continue
             }
-        },
+        }
         AxumWsMessage::Ping(data) => match bound.upstream.as_mut() {
             Some(upstream) => upstream
                 .send(WreqWsMessage::Ping(data))
@@ -1508,8 +1629,9 @@ async fn forward_replanned_response_create(
     }
 
     let turn_request_id = Uuid::new_v4().to_string();
-    let excluded_key_ids =
-        (!bound.exhausted_key_ids.is_empty()).then_some(&bound.exhausted_key_ids);
+    let logical_turn_id = Uuid::new_v4().to_string();
+    let excluded_key_ids = bound.exhausted_key_exclusions.key_ids(current_unix_secs());
+    let excluded_key_ids = (!excluded_key_ids.is_empty()).then_some(&excluded_key_ids);
     let planned = match maybe_build_responses_websocket_decision(
         state,
         &planning_parts,
@@ -1577,6 +1699,8 @@ async fn forward_replanned_response_create(
         &provider_event,
         &context.trace_id,
         turn_index,
+        &logical_turn_id,
+        1,
     );
     let mut turn =
         match begin_responses_websocket_turn(state, &planning_parts, turn_decision, &client_event)
@@ -1650,6 +1774,7 @@ async fn forward_replanned_response_create(
         bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
             client_event.clone(),
             turn_index,
+            logical_turn_id.clone(),
         ));
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
         bound.response_in_flight = true;
@@ -1719,6 +1844,7 @@ async fn forward_replanned_response_create(
     bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
         client_event,
         turn_index,
+        logical_turn_id,
     ));
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
     bound.upstream_response_headers = replacement.upstream_response_headers;
@@ -1927,8 +2053,10 @@ mod tests {
     use super::{
         adapter_drain_ready, bind_responses_upstream, changed_followup_response_create_model,
         decisions_reuse_upstream, normalize_followup_response_create,
-        planned_response_create_event, response_create_model_or_current,
-        websocket_event_type_for_log, ActiveResponsesWebSocketRequest,
+        observe_active_response_rebind_safety, planned_response_create_event,
+        response_create_model_or_current, websocket_event_type_for_log,
+        ActiveResponsesWebSocketRequest, BoundResponsesConnection,
+        ExhaustedResponsesWebSocketKeyExclusions,
     };
     use crate::ai_serving::AiExecutionDecision;
     use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;
@@ -1962,6 +2090,7 @@ mod tests {
         let directive = Some(ResponsesWebSocketDrainDirective {
             error_code: "adapter_draining",
             retry_current_turn: false,
+            retry_exclusion_until_unix_secs: None,
         });
         assert!(!adapter_drain_ready(directive, true, None, false));
         assert!(adapter_drain_ready(
@@ -1975,6 +2104,31 @@ mod tests {
         assert!(!adapter_drain_ready(None, false, None, false));
         assert!(adapter_drain_ready(directive, false, None, false));
         assert!(adapter_drain_ready(directive, true, None, true));
+    }
+
+    #[test]
+    fn exhausted_key_exclusions_expire_at_the_reported_reset_or_fallback() {
+        let mut exclusions = ExhaustedResponsesWebSocketKeyExclusions::default();
+
+        assert_eq!(
+            exclusions.exclude("key-1".to_string(), Some(1_050), 1_000),
+            1_050
+        );
+        assert!(exclusions.key_ids(1_049).contains("key-1"));
+        assert!(!exclusions.key_ids(1_050).contains("key-1"));
+
+        assert_eq!(exclusions.exclude("key-2".to_string(), None, 2_000), 2_300);
+        assert!(exclusions.key_ids(2_299).contains("key-2"));
+        assert!(!exclusions.key_ids(2_300).contains("key-2"));
+
+        assert_eq!(
+            exclusions.exclude("key-3".to_string(), Some(3_100), 3_000),
+            3_100
+        );
+        assert_eq!(
+            exclusions.exclude("key-3".to_string(), Some(3_050), 3_001),
+            3_100
+        );
     }
 
     #[test]
@@ -2102,19 +2256,41 @@ mod tests {
     }
 
     #[test]
-    fn quota_retry_is_limited_to_an_unstarted_stateless_turn() {
+    fn quota_retry_requires_an_explicitly_replay_safe_turn() {
         let mut request = ActiveResponsesWebSocketRequest::new(
             json!({"type": "response.create", "model": "gpt-5.6-sol"}),
             2,
+            "logical-turn".to_string(),
         );
-        assert!(request.can_retry_after_quota_exhaustion());
+        assert_eq!(request.quota_retry_block_reason(), None);
 
-        request.standard_response_started = true;
-        assert!(!request.can_retry_after_quota_exhaustion());
+        request.mark_retry_unsafe("standard_response_event");
+        assert_eq!(
+            request.quota_retry_block_reason(),
+            Some("standard_response_event")
+        );
 
-        request.standard_response_started = false;
-        request.retry_attempted = true;
-        assert!(!request.can_retry_after_quota_exhaustion());
+        let mut retried = ActiveResponsesWebSocketRequest::new(
+            json!({"type": "response.create", "model": "gpt-5.6-sol"}),
+            2,
+            "logical-turn".to_string(),
+        );
+        retried.retry_attempted = true;
+        assert_eq!(
+            retried.quota_retry_block_reason(),
+            Some("quota_retry_already_attempted")
+        );
+
+        let mut client_control = ActiveResponsesWebSocketRequest::new(
+            json!({"type": "response.create", "model": "gpt-5.6-sol"}),
+            2,
+            "logical-turn".to_string(),
+        );
+        client_control.mark_retry_unsafe("client_control_event");
+        assert_eq!(
+            client_control.quota_retry_block_reason(),
+            Some("client_control_event")
+        );
 
         let continuation = ActiveResponsesWebSocketRequest::new(
             json!({
@@ -2123,8 +2299,50 @@ mod tests {
                 "previous_response_id": "resp_previous",
             }),
             2,
+            "logical-turn".to_string(),
         );
-        assert!(!continuation.can_retry_after_quota_exhaustion());
+        assert_eq!(
+            continuation.quota_retry_block_reason(),
+            Some("previous_response_id")
+        );
+    }
+
+    #[test]
+    fn adapter_safety_contract_controls_transparent_rebind_eligibility() {
+        let mut bound = sample_bound_for_rebind_safety();
+        observe_active_response_rebind_safety(
+            &mut bound,
+            &json!({
+                "type": "codex.rate_limits",
+                "rate_limits": {"allowed": true}
+            }),
+        );
+        assert_eq!(
+            bound
+                .active_response_create
+                .as_ref()
+                .and_then(ActiveResponsesWebSocketRequest::quota_retry_block_reason),
+            None
+        );
+
+        observe_active_response_rebind_safety(&mut bound, &json!({"type": "response.created"}));
+        assert_eq!(
+            bound
+                .active_response_create
+                .as_ref()
+                .and_then(ActiveResponsesWebSocketRequest::quota_retry_block_reason),
+            Some("standard_response_event")
+        );
+
+        let mut unknown = sample_bound_for_rebind_safety();
+        observe_active_response_rebind_safety(&mut unknown, &json!({"type": "codex.unknown"}));
+        assert_eq!(
+            unknown
+                .active_response_create
+                .as_ref()
+                .and_then(ActiveResponsesWebSocketRequest::quota_retry_block_reason),
+            Some("unrecognized_upstream_event")
+        );
     }
 
     #[test]
@@ -2370,6 +2588,29 @@ mod tests {
             report_kind: None,
             report_context: None,
             auth_context: None,
+        }
+    }
+
+    fn sample_bound_for_rebind_safety() -> BoundResponsesConnection {
+        BoundResponsesConnection {
+            upstream: None,
+            adapter: resolve_responses_websocket_adapter(
+                crate::orchestration::ResponsesWebSocketAdapter::Codex,
+            ),
+            client_model: "gpt-5.6-sol".to_string(),
+            provider_model: "gpt-5.6-sol".to_string(),
+            response_in_flight: true,
+            decision_template: sample_decision(),
+            active_turn: None,
+            active_response_create: Some(ActiveResponsesWebSocketRequest::new(
+                json!({"type": "response.create", "model": "gpt-5.6-sol"}),
+                1,
+                "logical-turn".to_string(),
+            )),
+            next_turn_index: 2,
+            upstream_response_headers: BTreeMap::new(),
+            pending_adapter_drain: None,
+            exhausted_key_exclusions: ExhaustedResponsesWebSocketKeyExclusions::default(),
         }
     }
 }

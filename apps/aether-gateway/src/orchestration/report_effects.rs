@@ -16,6 +16,9 @@ use serde_json::{json, Value};
 use tracing::warn;
 use uuid::Uuid;
 
+use super::codex_quota_breaker::{
+    install_codex_quota_exhaustion_breaker, log_codex_quota_breaker_install_failure,
+};
 use crate::clock::current_unix_secs;
 use crate::handlers::shared::sync_provider_key_quota_status_snapshot;
 use crate::log_ids::short_request_id;
@@ -958,6 +961,14 @@ async fn sync_codex_quota_metadata(
     parsed: Value,
     source: &'static str,
 ) -> Result<bool, GatewayError> {
+    if aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&parsed) {
+        if let Err(error) =
+            install_codex_quota_exhaustion_breaker(state, report_context, &parsed, source).await
+        {
+            log_codex_quota_breaker_install_failure(&error);
+        }
+    }
+
     let key_id = match report_context_key_id(report_context) {
         Some(value) => value,
         None => return Ok(false),
