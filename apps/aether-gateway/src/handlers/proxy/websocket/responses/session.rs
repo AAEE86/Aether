@@ -4,8 +4,9 @@
 //! `response.create` selects a provider through the normal Responses planner.
 //! Later turns reuse that upstream while the requested model remains eligible
 //! on the selected key. A model change is planned again and keeps the current
-//! upstream when the planner resolves to the same target; otherwise the bridge
-//! transparently replaces the upstream between responses.
+//! upstream when the planner resolves to the same target; an independent
+//! request may replace it, but a continuation must stay on the original
+//! connection and account.
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
@@ -41,7 +42,7 @@ use crate::handlers::proxy::websocket::session::{
 };
 use crate::handlers::proxy::websocket::transport::{
     client_close_to_upstream, close_client_socket, connect_upstream_websocket, send_gateway_error,
-    upstream_message_to_client,
+    send_responses_websocket_error, upstream_message_to_client,
 };
 use crate::headers::request_origin_from_headers_and_remote_addr;
 use crate::rate_limit::FrontdoorUserRpmOutcome;
@@ -49,6 +50,8 @@ use crate::AppState;
 
 const RESPONSES_WEBSOCKET_LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
 const EXHAUSTED_KEY_EXCLUSION_FALLBACK_SECONDS: u64 = 300;
+const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
+    "Previous response was not found. Retrying the full request.";
 
 const RESPONSES_CONNECTION_LOG_SPEC: WebSocketConnectionLogSpec = WebSocketConnectionLogSpec {
     opened_event_name: "responses_websocket_connection_opened",
@@ -645,6 +648,18 @@ fn planned_response_create_event(
         "type".to_string(),
         Value::String("response.create".to_string()),
     );
+    // These fields are WebSocket protocol state, not ordinary HTTP body
+    // options. Provider request normalization may omit them, but moving or
+    // dropping either one changes the meaning of the client session.
+    for field in ["previous_response_id", "generate"] {
+        if let Some(value) = fallback.get(field) {
+            if value.is_null() {
+                object.remove(field);
+            } else {
+                object.insert(field.to_string(), value.clone());
+            }
+        }
+    }
     object.remove("stream");
     object.remove("background");
     serde_json::to_string(&event).map_err(|_| "responses_websocket_request_invalid")
@@ -901,6 +916,28 @@ async fn relay_bound_connection(
                 if retry_current_turn
                     && retry_active_turn_after_quota_exhaustion(bound, state, context).await
                 {
+                    continue;
+                }
+                if should_request_full_continuation_retry(
+                    bound,
+                    retry_current_turn,
+                    parsed_upstream_event.as_ref(),
+                ) {
+                    let directive = bound
+                        .pending_adapter_drain
+                        .expect("adapter drain state should be present");
+                    debug!(
+                        event_name = "responses_websocket_continuation_retry_required",
+                        log_type = "event",
+                        transport = WEBSOCKET_LOG_TRANSPORT,
+                        websocket = true,
+                        trace_id = %context.trace_id,
+                        error_code = "previous_response_not_found",
+                        "gateway will ask the client to retry the continuation with complete input"
+                    );
+                    send_previous_response_not_found(client_socket).await;
+                    bound.active_response_create = None;
+                    detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
                 if is_close && drain_for_adapter {
@@ -1211,6 +1248,43 @@ fn response_create_has_previous_response_id(event: &Value) -> bool {
         .is_some_and(|value| !value.is_null())
 }
 
+fn continuation_requires_same_upstream(event: &Value, reuses_bound_upstream: bool) -> bool {
+    response_create_has_previous_response_id(event) && !reuses_bound_upstream
+}
+
+fn active_continuation_can_retry_from_full_input(bound: &BoundResponsesConnection) -> bool {
+    bound.active_response_create.as_ref().is_some_and(|active| {
+        response_create_has_previous_response_id(&active.client_event)
+            && active.retry_unsafe_reason.is_none()
+    })
+}
+
+fn is_usage_limit_error_event(event: &Value) -> bool {
+    event.get("type").and_then(Value::as_str) == Some("error")
+        && event.pointer("/error/type").and_then(Value::as_str) == Some("usage_limit_reached")
+}
+
+fn should_request_full_continuation_retry(
+    bound: &BoundResponsesConnection,
+    retry_current_turn: bool,
+    upstream_event: Option<&Value>,
+) -> bool {
+    retry_current_turn
+        && active_continuation_can_retry_from_full_input(bound)
+        && upstream_event.is_some_and(is_usage_limit_error_event)
+}
+
+async fn send_previous_response_not_found(client_socket: &mut WebSocket) {
+    send_responses_websocket_error(
+        client_socket,
+        400,
+        "invalid_request_error",
+        "previous_response_not_found",
+        PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
+    )
+    .await;
+}
+
 fn observe_active_response_rebind_safety(bound: &mut BoundResponsesConnection, event: &Value) {
     let ResponsesWebSocketRebindSafety::Unsafe { reason } =
         bound.adapter.rebind_safety_for_upstream_event(event)
@@ -1342,12 +1416,7 @@ async fn forward_client_message(
             };
             if bound.upstream.is_none() {
                 if response_create_has_previous_response_id(&client_event) {
-                    send_gateway_error(
-                        client_socket,
-                        "responses_websocket_continuation_unavailable",
-                        "The previous response belongs to an exhausted Provider account; send a new request with complete input",
-                    )
-                    .await;
+                    send_previous_response_not_found(client_socket).await;
                     return RelayDisposition::Continue;
                 }
                 let mut client_event = client_event;
@@ -1674,6 +1743,23 @@ async fn forward_replanned_response_create(
     };
     let adapter = resolve_responses_websocket_adapter(planned.adapter);
     let decision = planned.execution;
+    let reuses_bound_upstream = decision_reuses_bound_upstream(bound, adapter, &decision);
+    if continuation_requires_same_upstream(&client_event, reuses_bound_upstream) {
+        debug!(
+            event_name = "responses_websocket_continuation_rebind_rejected",
+            log_type = "event",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %context.trace_id,
+            requested_model = %requested_model,
+            previous_key_id = ?bound.decision_template.key_id,
+            planned_key_id = ?decision.key_id,
+            error_code = "previous_response_not_found",
+            "gateway refused to move a Responses continuation to a different upstream account or connection"
+        );
+        send_previous_response_not_found(client_socket).await;
+        return RelayDisposition::Continue;
+    }
     let provider_event =
         match planned_response_create_event(&decision, &client_event).and_then(|event| {
             serde_json::from_str::<Value>(&event)
@@ -1728,7 +1814,7 @@ async fn forward_replanned_response_create(
             }
         };
 
-    if decision_reuses_bound_upstream(bound, adapter, &decision) {
+    if reuses_bound_upstream {
         let outbound = match serde_json::to_string(&provider_event) {
             Ok(outbound) => outbound,
             Err(_) => {
@@ -2051,10 +2137,12 @@ mod tests {
         ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
     };
     use super::{
-        adapter_drain_ready, bind_responses_upstream, changed_followup_response_create_model,
-        decisions_reuse_upstream, normalize_followup_response_create,
-        observe_active_response_rebind_safety, planned_response_create_event,
-        response_create_model_or_current, websocket_event_type_for_log,
+        active_continuation_can_retry_from_full_input, adapter_drain_ready,
+        bind_responses_upstream, changed_followup_response_create_model,
+        continuation_requires_same_upstream, decisions_reuse_upstream, is_usage_limit_error_event,
+        normalize_followup_response_create, observe_active_response_rebind_safety,
+        planned_response_create_event, response_create_model_or_current,
+        should_request_full_continuation_retry, websocket_event_type_for_log,
         ActiveResponsesWebSocketRequest, BoundResponsesConnection,
         ExhaustedResponsesWebSocketKeyExclusions,
     };
@@ -2179,14 +2267,112 @@ mod tests {
         }));
         let event = planned_response_create_event(
             &decision,
-            &json!({"type": "response.create", "model": "public-model"}),
+            &json!({
+                "type": "response.create",
+                "model": "public-model",
+                "previous_response_id": "resp-previous",
+                "generate": false,
+            }),
         )
         .expect("event should serialize");
         let event: serde_json::Value = serde_json::from_str(&event).expect("event JSON");
         assert_eq!(event["type"], "response.create");
         assert_eq!(event["model"], "provider-model");
+        assert_eq!(event["previous_response_id"], "resp-previous");
+        assert_eq!(event["generate"], false);
         assert!(event.get("stream").is_none());
         assert!(event.get("background").is_none());
+    }
+
+    #[test]
+    fn continuation_requires_the_existing_upstream_connection_and_account() {
+        let continuation = json!({
+            "type": "response.create",
+            "previous_response_id": "resp-previous",
+        });
+
+        assert!(!continuation_requires_same_upstream(&continuation, true));
+        assert!(continuation_requires_same_upstream(&continuation, false));
+        assert!(!continuation_requires_same_upstream(
+            &json!({"type": "response.create"}),
+            false,
+        ));
+    }
+
+    #[test]
+    fn quota_error_can_request_a_full_retry_only_before_public_response_state() {
+        let mut bound = sample_bound_for_rebind_safety();
+        bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
+            json!({
+                "type": "response.create",
+                "previous_response_id": "resp-previous",
+            }),
+            2,
+            "logical-turn".to_string(),
+        ));
+
+        assert!(active_continuation_can_retry_from_full_input(&bound));
+        bound
+            .active_response_create
+            .as_mut()
+            .expect("active request")
+            .mark_retry_unsafe("standard_response_event");
+        assert!(!active_continuation_can_retry_from_full_input(&bound));
+    }
+
+    #[test]
+    fn only_an_actual_usage_limit_error_requests_full_retry() {
+        assert!(is_usage_limit_error_event(&json!({
+            "type": "error",
+            "error": {"type": "usage_limit_reached"},
+            "status_code": 429,
+        })));
+        assert!(!is_usage_limit_error_event(&json!({
+            "type": "codex.rate_limits",
+            "rate_limits": {"limit_reached": true},
+        })));
+        assert!(!is_usage_limit_error_event(&json!({
+            "type": "response.completed",
+            "response": {"id": "resp-completed"},
+        })));
+    }
+
+    #[test]
+    fn full_continuation_retry_does_not_consume_a_successful_terminal_event() {
+        let mut bound = sample_bound_for_rebind_safety();
+        bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
+            json!({
+                "type": "response.create",
+                "previous_response_id": "resp-previous",
+            }),
+            2,
+            "logical-turn".to_string(),
+        ));
+
+        assert!(should_request_full_continuation_retry(
+            &bound,
+            true,
+            Some(&json!({
+                "type": "error",
+                "error": {"type": "usage_limit_reached"},
+            })),
+        ));
+        assert!(!should_request_full_continuation_retry(
+            &bound,
+            true,
+            Some(&json!({
+                "type": "response.completed",
+                "response": {"id": "resp-completed"},
+            })),
+        ));
+        assert!(!should_request_full_continuation_retry(
+            &bound,
+            false,
+            Some(&json!({
+                "type": "error",
+                "error": {"type": "usage_limit_reached"},
+            })),
+        ));
     }
 
     #[test]

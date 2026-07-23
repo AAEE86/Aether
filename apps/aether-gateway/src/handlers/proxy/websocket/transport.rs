@@ -199,18 +199,41 @@ pub(crate) fn client_close_to_upstream(frame: Option<AxumCloseFrame>) -> WreqWsM
     }))
 }
 
-pub(crate) async fn send_gateway_error(client_socket: &mut WebSocket, code: &str, message: &str) {
-    let event = json!({
+/// Builds a Responses WebSocket error event in the shape understood by the
+/// official client implementations.  The status is part of the event body,
+/// not the WebSocket handshake, because the connection is already upgraded.
+pub(crate) fn responses_websocket_error_event(
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+) -> serde_json::Value {
+    json!({
         "type": "error",
+        "status": status,
         "error": {
-            "type": "gateway_error",
+            "type": error_type,
             "code": code,
             "message": message,
         },
-    });
+    })
+}
+
+pub(crate) async fn send_responses_websocket_error(
+    client_socket: &mut WebSocket,
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+) {
+    let event = responses_websocket_error_event(status, error_type, code, message);
     let _ = client_socket
         .send(AxumWsMessage::Text(event.to_string().into()))
         .await;
+}
+
+pub(crate) async fn send_gateway_error(client_socket: &mut WebSocket, code: &str, message: &str) {
+    send_responses_websocket_error(client_socket, 400, "gateway_error", code, message).await;
 }
 
 pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16, reason: &str) {
@@ -224,7 +247,26 @@ pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16
 
 #[cfg(test)]
 mod tests {
-    use super::websocket_upstream_url;
+    use super::{responses_websocket_error_event, websocket_upstream_url};
+
+    #[test]
+    fn builds_a_client_compatible_responses_error_event() {
+        let event = responses_websocket_error_event(
+            400,
+            "invalid_request_error",
+            "previous_response_not_found",
+            "Previous response was not found.",
+        );
+
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["status"], 400);
+        assert_eq!(event["error"]["type"], "invalid_request_error");
+        assert_eq!(event["error"]["code"], "previous_response_not_found");
+        assert_eq!(
+            event["error"]["message"],
+            "Previous response was not found."
+        );
+    }
 
     #[test]
     fn maps_http_url_to_websocket_url_without_losing_path_or_query() {

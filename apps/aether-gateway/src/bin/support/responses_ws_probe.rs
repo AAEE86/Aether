@@ -236,11 +236,13 @@ async fn run_probe(config: &ProbeConfig, started_at: Instant) -> Result<ProbeRep
 
     send_warmup(&mut socket, &config.model, None).await?;
     let first_response_id =
-        receive_response_id(&mut socket, config.turn_timeout, &mut observed_event_types).await?;
+        receive_completed_response_id(&mut socket, config.turn_timeout, &mut observed_event_types)
+            .await?;
 
     send_warmup(&mut socket, &config.model, Some(&first_response_id)).await?;
     let _second_response_id =
-        receive_response_id(&mut socket, config.turn_timeout, &mut observed_event_types).await?;
+        receive_completed_response_id(&mut socket, config.turn_timeout, &mut observed_event_types)
+            .await?;
 
     Ok(ProbeReport {
         status: "passed",
@@ -284,11 +286,12 @@ async fn send_warmup(
         .map_err(|_| ProbeFailure::Send)
 }
 
-async fn receive_response_id(
+async fn receive_completed_response_id(
     socket: &mut wreq::ws::WebSocket,
     timeout: Duration,
     observed_event_types: &mut Vec<String>,
 ) -> Result<String, ProbeFailure> {
+    let mut response_id = None;
     for _ in 0..MAX_EVENTS_PER_TURN {
         let message = tokio::time::timeout(timeout, socket.recv())
             .await
@@ -305,17 +308,21 @@ async fn receive_response_id(
                     .map(safe_event_label)
                     .unwrap_or_else(|| "unknown".to_string());
                 let is_remote_error = event_type == "error";
+                let is_completed = event_type == "response.completed";
                 observed_event_types.push(event_type);
                 if is_remote_error {
                     return Err(ProbeFailure::RemoteError);
                 }
-                if let Some(response_id) = event
+                if let Some(observed_response_id) = event
                     .pointer("/response/id")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
-                    return Ok(response_id.to_string());
+                    response_id = Some(observed_response_id.to_string());
+                }
+                if is_completed {
+                    return response_id.ok_or(ProbeFailure::MissingResponseId);
                 }
             }
             WreqWsMessage::Ping(_) | WreqWsMessage::Pong(_) => continue,
@@ -372,6 +379,7 @@ mod tests {
     struct ObservedClientMessages {
         authorization_present: bool,
         profile_header_present: bool,
+        second_before_first_completion: bool,
         first: Value,
         second: Value,
     }
@@ -407,8 +415,12 @@ mod tests {
         assert!(report
             .observed_event_types
             .contains(&"response.created".to_string()));
+        assert!(report
+            .observed_event_types
+            .contains(&"response.completed".to_string()));
         assert!(client_messages.authorization_present);
         assert!(client_messages.profile_header_present);
+        assert!(!client_messages.second_before_first_completion);
         assert_eq!(client_messages.first["type"], "response.create");
         assert_eq!(client_messages.first["generate"], false);
         assert_eq!(client_messages.first["store"], false);
@@ -486,7 +498,30 @@ mod tests {
                 .into(),
             ))
             .await;
-        let second = receive_json(&mut receiver).await;
+        let early_second = tokio::select! {
+            message = receiver.next() => Some(message),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => None,
+        };
+        let second_before_first_completion = early_second.is_some();
+        let _ = sender
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": {"id": "resp-first", "status": "completed"}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await;
+        let second = match early_second {
+            Some(Some(Ok(Message::Text(text)))) => {
+                serde_json::from_str(text.as_str()).expect("early client message should be JSON")
+            }
+            Some(Some(Ok(_))) => panic!("expected text continuation message"),
+            Some(Some(Err(error))) => panic!("client message should be valid: {error}"),
+            Some(None) => panic!("client closed before continuation"),
+            None => receive_json(&mut receiver).await,
+        };
         let _ = sender
             .send(Message::Text(
                 serde_json::json!({
@@ -497,10 +532,21 @@ mod tests {
                 .into(),
             ))
             .await;
+        let _ = sender
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": {"id": "resp-second", "status": "completed"}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await;
         if let Some(observed) = state.observed.lock().await.take() {
             let _ = observed.send(ObservedClientMessages {
                 authorization_present,
                 profile_header_present,
+                second_before_first_completion,
                 first,
                 second,
             });
