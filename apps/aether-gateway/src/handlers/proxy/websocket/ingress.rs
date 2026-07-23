@@ -23,7 +23,6 @@ use crate::{AppState, GatewayError};
 
 /// Request facts that survive the HTTP Upgrade and are needed by a protocol
 /// adapter for planning, rate limiting, and connection-scoped audit logs.
-#[derive(Clone)]
 pub(crate) struct WebSocketRequestContext {
     pub(crate) trace_id: String,
     pub(crate) headers: HeaderMap,
@@ -31,6 +30,10 @@ pub(crate) struct WebSocketRequestContext {
     pub(crate) remote_addr: SocketAddr,
     pub(crate) decision: GatewayControlDecision,
     pub(crate) rpm_bypassed: bool,
+    /// Held for the lifetime of the upgraded socket. The Responses session
+    /// polls its health and closes the client when a distributed lease is
+    /// revoked or expires.
+    pub(crate) websocket_connection_permit: Option<aether_runtime::AdmissionPermit>,
 }
 
 /// Adapter-specific wording and event identifiers for generic upgrade checks.
@@ -40,9 +43,11 @@ pub(crate) struct WebSocketIngressSpec {
     pub(crate) ip_whitelist_failure_event_name: &'static str,
 }
 
-/// Performs the HTTP-only part of an AI WebSocket request.  The request
-/// admission permit intentionally remains owned by the upgrade task for the
-/// entire lifetime of the client socket.
+/// Performs the HTTP-only part of an AI WebSocket request.
+///
+/// The ordinary request permit covers only the HTTP Upgrade window. A
+/// dedicated WebSocket connection permit is held for the socket lifetime so
+/// idle clients cannot consume capacity reserved for normal HTTP requests.
 pub(crate) async fn upgrade_authenticated_ai_websocket<F, Fut>(
     state: AppState,
     remote_addr: SocketAddr,
@@ -129,26 +134,11 @@ where
     };
     let request_permit = match state.try_acquire_request_permit().await {
         Ok(permit) => permit,
-        Err(RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Saturated {
-            gate,
-            limit,
-        }))
-        | Err(RequestAdmissionError::Distributed(
-            aether_runtime_state::RuntimeSemaphoreError::Saturated { gate, limit },
-        ))
-        | Err(RequestAdmissionError::Distributed(
-            aether_runtime_state::RuntimeSemaphoreError::Unavailable { gate, limit, .. },
-        )) => {
-            return build_local_overloaded_response(&trace_id, Some(&decision), gate, limit);
-        }
-        Err(RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Closed { gate })) => {
-            return Err(GatewayError::Internal(format!(
-                "gateway request concurrency gate {gate} is closed"
-            )));
-        }
-        Err(RequestAdmissionError::Distributed(
-            aether_runtime_state::RuntimeSemaphoreError::InvalidConfiguration(message),
-        )) => return Err(GatewayError::Internal(message)),
+        Err(error) => return websocket_admission_error_response(&trace_id, &decision, error),
+    };
+    let websocket_connection_permit = match state.try_acquire_websocket_connection_permit().await {
+        Ok(permit) => permit,
+        Err(error) => return websocket_admission_error_response(&trace_id, &decision, error),
     };
 
     let context = WebSocketRequestContext {
@@ -158,14 +148,40 @@ where
         remote_addr,
         decision,
         rpm_bypassed: ip_whitelisted,
+        websocket_connection_permit,
     };
     Ok(ws
         .max_frame_size(limits.max_frame_size)
         .max_message_size(limits.max_message_size)
         .on_upgrade(move |socket| async move {
-            let _request_permit = request_permit;
+            drop(request_permit);
             run_session(socket, state, context).await;
         }))
+}
+
+fn websocket_admission_error_response(
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    error: RequestAdmissionError,
+) -> Result<Response<Body>, GatewayError> {
+    match error {
+        RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Saturated {
+            gate,
+            limit,
+        })
+        | RequestAdmissionError::Distributed(
+            aether_runtime_state::RuntimeSemaphoreError::Saturated { gate, limit },
+        )
+        | RequestAdmissionError::Distributed(
+            aether_runtime_state::RuntimeSemaphoreError::Unavailable { gate, limit, .. },
+        ) => build_local_overloaded_response(trace_id, Some(decision), gate, limit),
+        RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Closed { gate }) => Err(
+            GatewayError::Internal(format!("gateway concurrency gate {gate} is closed")),
+        ),
+        RequestAdmissionError::Distributed(
+            aether_runtime_state::RuntimeSemaphoreError::InvalidConfiguration(message),
+        ) => Err(GatewayError::Internal(message)),
+    }
 }
 
 /// Connection-level access log fields which are independent of a protocol's

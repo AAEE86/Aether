@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::adapters::CODEX_RESPONSES_WEBSOCKET_ADAPTER;
+use crate::ai_serving::AiExecutionDecision;
 use crate::handlers::proxy::websocket::transport::UpstreamWebSocketErrorCodes;
 use crate::orchestration::ResponsesWebSocketAdapter;
 use crate::AppState;
@@ -17,6 +18,22 @@ pub(super) struct ResponsesWebSocketDrainDirective {
     /// When present, the exhausted provider key remains excluded from later
     /// turns on this client socket until the upstream's reported reset time.
     pub(super) retry_exclusion_until_unix_secs: Option<u64>,
+}
+
+/// Provider-specific observation produced while relaying an upstream frame.
+/// The session can make the retry/drain decision synchronously, while the
+/// optional persistence sink runs outside the frame-forwarding path.
+#[derive(Debug, Clone)]
+pub(super) struct ResponsesWebSocketAdapterObservation {
+    pub(super) drain: Option<ResponsesWebSocketDrainDirective>,
+    pub(super) quota_metadata: Option<Value>,
+}
+
+/// Provider identity used by the shared session's temporary exclusion table.
+/// The session does not need to know how a provider derives its account id.
+#[derive(Debug, Clone, Default)]
+pub(super) struct ResponsesWebSocketExclusionIdentity {
+    pub(super) account_id: Option<String>,
 }
 
 /// Whether receiving an upstream event still leaves the active client turn
@@ -52,15 +69,26 @@ pub(super) trait ResponsesWebSocketProtocolAdapter: Send + Sync {
     /// observably ambiguous to the client.
     fn rebind_safety_for_upstream_event(&self, event: &Value) -> ResponsesWebSocketRebindSafety;
 
-    /// Lets an adapter react to provider-only events. Returning a directive
+    /// Lets an adapter classify provider-only events. Returning a directive
     /// asks the shared session to drain after the active standard response.
-    async fn observe_upstream_event(
+    fn observe_upstream_event(&self, event: &Value)
+        -> Option<ResponsesWebSocketAdapterObservation>;
+
+    fn exhaustion_exclusion_identity(
+        &self,
+        _decision: &AiExecutionDecision,
+    ) -> Option<ResponsesWebSocketExclusionIdentity> {
+        None
+    }
+
+    /// Persists an adapter observation outside the frame-forwarding path.
+    async fn persist_upstream_observation(
         &self,
         state: &AppState,
         trace_id: &str,
         report_context: Option<&Value>,
-        event: &Value,
-    ) -> Option<ResponsesWebSocketDrainDirective>;
+        observation: ResponsesWebSocketAdapterObservation,
+    );
 }
 
 pub(super) fn resolve_responses_websocket_adapter(
@@ -115,14 +143,20 @@ impl ResponsesWebSocketProtocolAdapter for StandardResponsesWebSocketAdapter {
         ResponsesWebSocketRebindSafety::Unsafe { reason }
     }
 
-    async fn observe_upstream_event(
+    fn observe_upstream_event(
+        &self,
+        _event: &Value,
+    ) -> Option<ResponsesWebSocketAdapterObservation> {
+        None
+    }
+
+    async fn persist_upstream_observation(
         &self,
         _state: &AppState,
         _trace_id: &str,
         _report_context: Option<&Value>,
-        _event: &Value,
-    ) -> Option<ResponsesWebSocketDrainDirective> {
-        None
+        _observation: ResponsesWebSocketAdapterObservation,
+    ) {
     }
 }
 

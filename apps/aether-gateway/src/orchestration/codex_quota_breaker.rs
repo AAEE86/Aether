@@ -77,7 +77,10 @@ pub(crate) async fn codex_quota_breaker_blocks_candidate(
         return Ok(false);
     }
 
-    for key in codex_quota_breaker_keys(key_id, account_id_from_headers(provider_request_headers)) {
+    for key in codex_quota_breaker_keys(
+        key_id,
+        codex_account_id_from_headers(provider_request_headers),
+    ) {
         if state.runtime_kv_exists(&key).await? {
             return Ok(true);
         }
@@ -128,7 +131,7 @@ fn normalize_identifier(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn account_id_from_headers(headers: &BTreeMap<String, String>) -> Option<&str> {
+pub(crate) fn codex_account_id_from_headers(headers: &BTreeMap<String, String>) -> Option<&str> {
     headers.iter().find_map(|(name, value)| {
         name.trim()
             .eq_ignore_ascii_case("chatgpt-account-id")

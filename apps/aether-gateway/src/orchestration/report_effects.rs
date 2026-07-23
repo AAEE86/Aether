@@ -165,6 +165,54 @@ fn fingerprint_codex_payload(value: &Value) -> Option<String> {
     serde_json::to_string(&Value::Object(normalized)).ok()
 }
 
+/// Reject an out-of-order WebSocket snapshot before the catalog CAS. The
+/// provider emits `used_percent=100` immediately before a terminal quota
+/// error; a delayed pre-terminal `99` frame must never roll that state back.
+fn codex_snapshot_regresses(current: &Value, incoming: &Value) -> bool {
+    let current_exhausted = admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(current);
+    let incoming_exhausted =
+        admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(incoming);
+    let current_reset = current
+        .get("primary_reset_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    let incoming_reset = incoming
+        .get("primary_reset_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+
+    if current_exhausted && !incoming_exhausted {
+        // A lower reset timestamp denotes a newly opened window; otherwise a
+        // non-exhausted snapshot is stale or incomplete.
+        if incoming_reset.is_none() || incoming_reset >= current_reset {
+            return true;
+        }
+    }
+
+    if current_reset == incoming_reset {
+        let current_used = current
+            .get("primary_used_percent")
+            .and_then(admin_provider_quota_pure::coerce_json_f64);
+        let incoming_used = incoming
+            .get("primary_used_percent")
+            .and_then(admin_provider_quota_pure::coerce_json_f64);
+        if current_used
+            .zip(incoming_used)
+            .is_some_and(|(current, incoming)| current > incoming + f64::EPSILON)
+        {
+            return true;
+        }
+    }
+
+    let current_updated = current
+        .get("updated_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    let incoming_updated = incoming
+        .get("updated_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    current_updated
+        .zip(incoming_updated)
+        .is_some_and(|(current, incoming)| current > incoming && current_reset == incoming_reset)
+}
+
 fn get_cached_codex_quota_fingerprint(key_id: &str, now: Instant) -> Option<String> {
     let mut cache = codex_quota_header_fingerprint_cache()
         .lock()
@@ -1026,6 +1074,10 @@ async fn sync_codex_quota_metadata(
         set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint, now);
         return Ok(false);
     }
+    if codex_snapshot_regresses(&current_codex, &parsed) {
+        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
+        return Ok(false);
+    }
 
     let updated_upstream_metadata =
         merge_metadata_object(key.upstream_metadata.as_ref(), "codex", parsed.clone());
@@ -1369,5 +1421,43 @@ mod tests {
             grok_wait_duration_seconds_from_text("no duration here"),
             None
         );
+    }
+
+    #[test]
+    fn codex_quota_snapshot_does_not_roll_back_exhaustion() {
+        let current = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 2_000,
+            "updated_at": 100
+        });
+        let delayed = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 2_000,
+            "updated_at": 101
+        });
+        assert!(codex_snapshot_regresses(&current, &delayed));
+    }
+
+    #[test]
+    fn codex_quota_snapshot_allows_a_new_reset_window() {
+        let current = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 2_000,
+            "updated_at": 100
+        });
+        let refreshed = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 1.0,
+            "primary_reset_at": 1_000,
+            "updated_at": 101
+        });
+        assert!(!codex_snapshot_regresses(&current, &refreshed));
     }
 }

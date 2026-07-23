@@ -4,13 +4,16 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 
 use super::super::adapter::{
-    is_standard_responses_event, ResponsesWebSocketDrainDirective,
+    is_standard_responses_event, ResponsesWebSocketAdapterObservation,
+    ResponsesWebSocketDrainDirective, ResponsesWebSocketExclusionIdentity,
     ResponsesWebSocketProtocolAdapter, ResponsesWebSocketRebindSafety,
 };
+use crate::ai_serving::AiExecutionDecision;
 use crate::clock::current_unix_secs;
 use crate::handlers::proxy::websocket::transport::UpstreamWebSocketErrorCodes;
 use crate::orchestration::{
-    codex_quota_exhaustion_reset_at, sync_codex_websocket_quota_metadata, ResponsesWebSocketAdapter,
+    codex_account_id_from_headers, codex_quota_exhaustion_reset_at,
+    sync_codex_websocket_quota_metadata, ResponsesWebSocketAdapter,
 };
 use crate::AppState;
 
@@ -78,18 +81,45 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
         codex_direct_rebind_safety(event)
     }
 
-    async fn observe_upstream_event(
+    fn observe_upstream_event(
         &self,
-        state: &AppState,
-        trace_id: &str,
-        report_context: Option<&Value>,
         event: &Value,
-    ) -> Option<ResponsesWebSocketDrainDirective> {
+    ) -> Option<ResponsesWebSocketAdapterObservation> {
         let rate_limits = parse_codex_rate_limits(event)?;
         let exhausted =
             aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&rate_limits);
         let retry_exclusion_until_unix_secs =
             codex_quota_exhaustion_reset_at(&rate_limits, current_unix_secs());
+        Some(ResponsesWebSocketAdapterObservation {
+            drain: exhausted.then_some(ResponsesWebSocketDrainDirective {
+                error_code: "codex_account_quota_exhausted",
+                retry_current_turn: true,
+                retry_exclusion_until_unix_secs,
+            }),
+            quota_metadata: Some(rate_limits),
+        })
+    }
+
+    fn exhaustion_exclusion_identity(
+        &self,
+        decision: &AiExecutionDecision,
+    ) -> Option<ResponsesWebSocketExclusionIdentity> {
+        Some(ResponsesWebSocketExclusionIdentity {
+            account_id: codex_account_id_from_headers(&decision.provider_request_headers)
+                .map(str::to_string),
+        })
+    }
+
+    async fn persist_upstream_observation(
+        &self,
+        state: &AppState,
+        trace_id: &str,
+        report_context: Option<&Value>,
+        observation: ResponsesWebSocketAdapterObservation,
+    ) {
+        let Some(rate_limits) = observation.quota_metadata else {
+            return;
+        };
         if let Err(error) =
             sync_codex_websocket_quota_metadata(state, report_context, rate_limits).await
         {
@@ -104,23 +134,6 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
                 "gateway failed to persist Codex WebSocket quota metadata"
             );
         }
-        if !exhausted {
-            return None;
-        }
-        tracing::info!(
-            target: CODEX_WEBSOCKET_LOG_TARGET,
-            event_name = "codex_websocket_account_quota_exhausted",
-            log_type = "event",
-            transport = "websocket",
-            websocket = true,
-            trace_id = %trace_id,
-            "gateway will detach the exhausted Codex upstream after the active response"
-        );
-        Some(ResponsesWebSocketDrainDirective {
-            error_code: "codex_account_quota_exhausted",
-            retry_current_turn: true,
-            retry_exclusion_until_unix_secs,
-        })
     }
 }
 

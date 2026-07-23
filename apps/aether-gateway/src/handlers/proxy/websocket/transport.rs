@@ -233,7 +233,16 @@ pub(crate) async fn send_responses_websocket_error(
 }
 
 pub(crate) async fn send_gateway_error(client_socket: &mut WebSocket, code: &str, message: &str) {
-    send_responses_websocket_error(client_socket, 400, "gateway_error", code, message).await;
+    send_gateway_error_with_status(client_socket, 400, code, message).await;
+}
+
+pub(crate) async fn send_gateway_error_with_status(
+    client_socket: &mut WebSocket,
+    status: u16,
+    code: &str,
+    message: &str,
+) {
+    send_responses_websocket_error(client_socket, status, "gateway_error", code, message).await;
 }
 
 pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16, reason: &str) {

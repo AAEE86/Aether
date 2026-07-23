@@ -5,6 +5,7 @@ use crate::orchestration::{
     responses_websocket_adapter, ResponsesWebSocketAdapter,
 };
 use crate::{AiExecutionDecision, AppState, GatewayError};
+use aether_runtime_state::RuntimeLockLease;
 use std::collections::BTreeSet;
 
 mod decision;
@@ -191,6 +192,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     decision: &GatewayControlDecision,
     body_json: &serde_json::Value,
     excluded_key_ids: Option<&BTreeSet<String>>,
+    excluded_codex_account_ids: Option<&BTreeSet<String>>,
 ) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
     let Some(spec) = resolve_stream_spec(aether_ai_formats::api::OPENAI_RESPONSES_STREAM_PLAN_KIND)
     else {
@@ -215,24 +217,50 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     .await?;
 
     while let Some(attempt) = source.next_attempt().await? {
+        let pool_key_lease = attempt.eligible.orchestration.pool_key_lease.clone();
         if excluded_key_ids
             .is_some_and(|key_ids| key_ids.contains(attempt.eligible.candidate.key_id.as_str()))
         {
+            release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
             continue;
         }
         let Some(adapter) = responses_websocket_adapter(
             &attempt.eligible.transport.provider.provider_type,
             attempt.eligible.transport.provider.config.as_ref(),
         ) else {
+            release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
             continue;
         };
-        let Some(payload) = maybe_build_local_openai_responses_decision_payload_for_candidate(
+        let payload = match maybe_build_local_openai_responses_decision_payload_for_candidate(
             state, parts, trace_id, body_json, &input, attempt, spec,
         )
-        .await?
-        else {
-            continue;
+        .await
+        {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+                continue;
+            }
+            Err(error) => {
+                release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+                return Err(error);
+            }
         };
+        if payload
+            .provider_type
+            .as_deref()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("codex"))
+            && crate::orchestration::codex_account_id_from_headers(
+                &payload.provider_request_headers,
+            )
+            .is_some_and(|account_id| {
+                excluded_codex_account_ids
+                    .is_some_and(|account_ids| account_ids.contains(account_id))
+            })
+        {
+            release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+            continue;
+        }
         match codex_quota_breaker_blocks_candidate(
             state,
             payload.provider_type.as_deref(),
@@ -241,7 +269,10 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         )
         .await
         {
-            Ok(true) => continue,
+            Ok(true) => {
+                release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+                continue;
+            }
             Ok(false) => {}
             Err(error) => log_codex_quota_breaker_check_failure(&error),
         }
@@ -258,7 +289,29 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
                 adapter,
             }));
         }
+        release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
     }
 
     Ok(None)
+}
+
+async fn release_responses_websocket_planning_lease(
+    state: &AppState,
+    lease: Option<&RuntimeLockLease>,
+) {
+    let Some(lease) = lease else {
+        return;
+    };
+    if let Err(error) =
+        crate::handlers::shared::provider_pool::release_admin_provider_pool_key_lease(
+            state.runtime_state.as_ref(),
+            lease,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = ?error,
+            "gateway Responses WebSocket planner failed to release an unused pool key lease"
+        );
+    }
 }

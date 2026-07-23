@@ -7,6 +7,7 @@
 //! normal HTTP/SSE execution runtime.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use aether_contracts::{
@@ -20,17 +21,30 @@ use aether_data_contracts::repository::usage::{
 use aether_scheduler_core::SchedulerRequestCandidateStatusUpdate;
 use aether_usage_runtime::{
     build_lifecycle_usage_seed, build_stream_terminal_usage_payload_seed,
-    build_terminal_usage_context_seed, DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
+    build_terminal_usage_context_seed, stream_report_represents_failure,
+    DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
 };
+use axum::http::StatusCode;
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
 use tracing::warn;
 
 use super::adapter::ResponsesWebSocketProtocolAdapter;
+use super::admission::ResponsesWebSocketTurnAdmission;
+use super::frame::ParsedResponsesWebSocketFrame;
 use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
 use crate::clock::current_unix_ms;
+use crate::control::{
+    execution_plan_balance_capacity_rejection, refresh_execution_runtime_auth_context,
+    request_model_local_rejection, GatewayControlDecision, GatewayLocalAuthRejection,
+};
 use crate::execution_runtime::attach_provider_response_headers_to_report_context;
+use crate::orchestration::{
+    apply_local_stream_failure_effects, apply_local_stream_success_effects,
+    release_local_pool_key_lease, release_pool_key_lease_from_report_context,
+    LocalExecutionEffectContext, LocalStreamFailureEffect,
+};
 use crate::request_candidate_runtime::{
     ensure_execution_request_candidate_slot, record_local_request_candidate_status,
 };
@@ -42,6 +56,7 @@ const WEBSOCKET_TURN_INDEX_REPORT_CONTEXT_FIELD: &str = "websocket_turn_index";
 const WEBSOCKET_LOGICAL_TURN_ID_REPORT_CONTEXT_FIELD: &str = "websocket_logical_turn_id";
 const WEBSOCKET_TURN_ATTEMPT_REPORT_CONTEXT_FIELD: &str = "websocket_turn_attempt";
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
+const RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResponsesWebSocketTurnObservation {
@@ -117,6 +132,12 @@ impl ResponsesWebSocketTurnOutcome {
         }
     }
 
+    pub(super) const fn connection_admission_lost() -> Self {
+        Self::Cancelled {
+            reason: "gateway WebSocket connection admission became unhealthy",
+        }
+    }
+
     pub(super) const fn upstream_closed() -> Self {
         Self::Failure {
             status_code: 502,
@@ -142,6 +163,13 @@ impl ResponsesWebSocketTurnOutcome {
         Self::Failure {
             status_code: 502,
             reason,
+        }
+    }
+
+    pub(super) const fn provider_quota_exhausted() -> Self {
+        Self::Failure {
+            status_code: 429,
+            reason: "provider reported exhausted quota before closing the WebSocket",
         }
     }
 
@@ -184,6 +212,16 @@ impl ResponsesWebSocketTurnOutcome {
             Self::ProviderTerminal { .. } | Self::Cancelled { .. } => None,
         }
     }
+
+    const fn stream_timeout(self) -> bool {
+        matches!(
+            self,
+            Self::Failure {
+                status_code: 504,
+                ..
+            }
+        )
+    }
 }
 
 pub(super) struct ResponsesWebSocketTurn {
@@ -198,10 +236,14 @@ pub(super) struct ResponsesWebSocketTurn {
     observer: StreamingStandardTerminalObserver,
     provider_capture: Vec<u8>,
     provider_capture_truncated: bool,
+    client_capture: Vec<u8>,
+    client_capture_truncated: bool,
     upstream_bytes: u64,
     first_event_elapsed_ms: Option<u64>,
     first_event_timeout: Duration,
     terminal_timeout: Duration,
+    admission: Option<ResponsesWebSocketTurnAdmission>,
+    terminal_error_body: Option<String>,
 }
 
 pub(super) fn prepare_responses_websocket_turn_decision(
@@ -227,6 +269,7 @@ pub(super) fn prepare_responses_websocket_turn_decision(
         request_id.as_str(),
         reuse_selected_candidate,
         client_event,
+        provider_event,
         connection_trace_id,
         turn_index,
         logical_turn_id,
@@ -238,27 +281,117 @@ pub(super) fn prepare_responses_websocket_turn_decision(
 pub(super) async fn begin_responses_websocket_turn(
     state: &AppState,
     parts: &http::request::Parts,
+    control_decision: &GatewayControlDecision,
     decision: AiExecutionDecision,
     client_event: &Value,
 ) -> Result<ResponsesWebSocketTurn, GatewayError> {
-    let attempt =
-        build_openai_responses_stream_plan_from_decision(parts, client_event, decision, false)?
-            .ok_or_else(|| {
-                GatewayError::Internal(
-                    "Responses WebSocket request could not build a usage/audit stream plan"
-                        .to_string(),
-                )
-            })?;
+    let planned_report_context = decision.report_context.clone();
+    let effective_control_decision =
+        match refresh_websocket_turn_auth_context(state, control_decision, parts, client_event)
+            .await
+        {
+            Ok(decision) => decision,
+            Err(error) => {
+                release_pool_key_lease_from_report_context(state, planned_report_context.as_ref())
+                    .await;
+                return Err(error);
+            }
+        };
+    let attempt = match build_openai_responses_stream_plan_from_decision(
+        parts,
+        client_event,
+        decision,
+        false,
+    ) {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
+            release_pool_key_lease_from_report_context(state, planned_report_context.as_ref())
+                .await;
+            return Err(GatewayError::Internal(
+                "Responses WebSocket request could not build a usage/audit stream plan".to_string(),
+            ));
+        }
+        Err(error) => {
+            release_pool_key_lease_from_report_context(state, planned_report_context.as_ref())
+                .await;
+            return Err(error);
+        }
+    };
     let mut plan = attempt.plan;
     let (first_event_timeout, terminal_timeout) =
         resolve_responses_websocket_turn_timeouts(plan.timeouts.as_ref());
-    let report_kind = attempt.report_kind.ok_or_else(|| {
-        GatewayError::Internal(
-            "Responses WebSocket request is missing an execution report kind".to_string(),
-        )
-    })?;
+    let report_kind = match attempt.report_kind {
+        Some(report_kind) => report_kind,
+        None => {
+            release_local_pool_key_lease(
+                state,
+                LocalExecutionEffectContext {
+                    plan: &plan,
+                    report_context: attempt.report_context.as_ref(),
+                },
+            )
+            .await;
+            return Err(GatewayError::Internal(
+                "Responses WebSocket request is missing an execution report kind".to_string(),
+            ));
+        }
+    };
     let mut report_context = attempt.report_context;
+
+    let balance_rejection = execution_plan_balance_capacity_rejection(
+        state,
+        &effective_control_decision,
+        &plan,
+        report_context.as_ref(),
+    )
+    .await;
+    let balance_rejection = match balance_rejection {
+        Ok(rejection) => rejection,
+        Err(error) => {
+            release_local_pool_key_lease(
+                state,
+                LocalExecutionEffectContext {
+                    plan: &plan,
+                    report_context: report_context.as_ref(),
+                },
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if let Some(rejection) = balance_rejection {
+        release_local_pool_key_lease(
+            state,
+            LocalExecutionEffectContext {
+                plan: &plan,
+                report_context: report_context.as_ref(),
+            },
+        )
+        .await;
+        return Err(websocket_auth_rejection_error(rejection));
+    }
+
     ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
+    let admission = match ResponsesWebSocketTurnAdmission::acquire(
+        state,
+        &plan,
+        plan.request_id.as_str(),
+    )
+    .await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            release_local_pool_key_lease(
+                state,
+                LocalExecutionEffectContext {
+                    plan: &plan,
+                    report_context: report_context.as_ref(),
+                },
+            )
+            .await;
+            return Err(error);
+        }
+    };
 
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
     // Keep WebSocket turns on the same lifecycle data path as HTTP streams.
@@ -300,14 +433,111 @@ pub(super) async fn begin_responses_websocket_turn(
         observer: StreamingStandardTerminalObserver::default(),
         provider_capture: Vec::new(),
         provider_capture_truncated: false,
+        client_capture: Vec::new(),
+        client_capture_truncated: false,
         upstream_bytes: 0,
         first_event_elapsed_ms: None,
         first_event_timeout,
         terminal_timeout,
+        admission: Some(admission),
+        terminal_error_body: None,
     })
 }
 
+async fn refresh_websocket_turn_auth_context(
+    state: &AppState,
+    control_decision: &GatewayControlDecision,
+    parts: &http::request::Parts,
+    client_event: &Value,
+) -> Result<GatewayControlDecision, GatewayError> {
+    let mut effective = control_decision.clone();
+    if let Some(auth_context) = effective.auth_context.take() {
+        let refreshed = refresh_execution_runtime_auth_context(
+            state,
+            auth_context,
+            effective.auth_endpoint_signature.as_deref(),
+        )
+        .await?;
+        effective.local_auth_rejection = refreshed.local_rejection.clone();
+        effective.auth_context = Some(refreshed);
+    }
+    if let Some(rejection) = effective.local_auth_rejection.clone() {
+        return Err(websocket_auth_rejection_error(rejection));
+    }
+
+    let body = serde_json::to_vec(client_event)
+        .map(axum::body::Bytes::from)
+        .map_err(|error| GatewayError::Internal(error.to_string()))?;
+    if let Some(rejection) =
+        request_model_local_rejection(state, Some(&effective), &parts.uri, &parts.headers, &body)
+            .await?
+    {
+        return Err(websocket_auth_rejection_error(rejection));
+    }
+    Ok(effective)
+}
+
+fn websocket_auth_rejection_error(rejection: GatewayLocalAuthRejection) -> GatewayError {
+    let (status, message) = match rejection {
+        GatewayLocalAuthRejection::InvalidApiKey => {
+            (StatusCode::UNAUTHORIZED, "The API key is invalid")
+        }
+        GatewayLocalAuthRejection::LockedApiKey => (
+            StatusCode::FORBIDDEN,
+            "The API key is locked and cannot be used",
+        ),
+        GatewayLocalAuthRejection::WalletUnavailable => {
+            (StatusCode::FORBIDDEN, "The account wallet is unavailable")
+        }
+        GatewayLocalAuthRejection::BalanceDenied { remaining } => {
+            let message = match remaining {
+                Some(remaining) => format!("Insufficient balance (remaining: ${remaining:.2})"),
+                None => "Insufficient balance".to_string(),
+            };
+            return GatewayError::Client {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message,
+            };
+        }
+        GatewayLocalAuthRejection::ProviderNotAllowed { .. } => (
+            StatusCode::FORBIDDEN,
+            "The provider is not allowed for this API key",
+        ),
+        GatewayLocalAuthRejection::ApiFormatNotAllowed { .. } => (
+            StatusCode::FORBIDDEN,
+            "The API format is not allowed for this API key",
+        ),
+        GatewayLocalAuthRejection::ModelNotAllowed { .. } => (
+            StatusCode::FORBIDDEN,
+            "The requested model is not allowed for this API key",
+        ),
+        GatewayLocalAuthRejection::IpNotAllowed { .. } => (
+            StatusCode::UNAUTHORIZED,
+            "The current IP is not allowed for this API key",
+        ),
+    };
+    GatewayError::Client {
+        status,
+        message: message.to_string(),
+    }
+}
+
 impl ResponsesWebSocketTurn {
+    /// Releases all per-turn capacity before terminal persistence starts.
+    /// Provider-pool runtime tokens normally use an awaited removal. The
+    /// bounded wait prevents a broken runtime backend from stalling the relay;
+    /// the guard's `Drop` path remains the timeout fallback.
+    pub(super) async fn release_admission(&mut self) {
+        if let Some(admission) = self.admission.take() {
+            let _ = await_websocket_lifecycle_stage(
+                &self.trace_id,
+                "turn_admission_release",
+                admission.release(),
+            )
+            .await;
+        }
+    }
+
     pub(super) fn set_provider_response_headers(&mut self, headers: BTreeMap<String, String>) {
         self.report_context = attach_provider_response_headers_to_report_context(
             self.report_context.take(),
@@ -342,34 +572,21 @@ impl ResponsesWebSocketTurn {
         }
     }
 
-    pub(super) fn observe_upstream_text(
+    pub(super) fn observe_upstream_frame(
         &mut self,
-        text: &str,
+        frame: &ParsedResponsesWebSocketFrame<'_>,
         adapter: &dyn ResponsesWebSocketProtocolAdapter,
     ) -> Option<ResponsesWebSocketTurnObservation> {
-        self.upstream_bytes = self.upstream_bytes.saturating_add(text.len() as u64);
+        self.upstream_bytes = self
+            .upstream_bytes
+            .saturating_add(frame.raw_text().len() as u64);
         if self.first_event_elapsed_ms.is_none() {
             self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
         }
 
-        let event = match serde_json::from_str::<Value>(text) {
-            Ok(event) => event,
-            Err(_) => {
-                self.capture_sse_event(&json!({
-                        "type": "error",
-                        "error": {
-                            "type": "gateway_protocol_error",
-                        "message": "upstream Responses WebSocket event was not valid JSON"
-                    }
-                }));
-                self.observer
-                    .disable_with_error("upstream Responses WebSocket event was not valid JSON");
-                return None;
-            }
-        };
-
-        self.capture_sse_event(&event);
-        adapter.decorate_turn_report_context(&mut self.report_context, &event);
+        let event = frame.event();
+        self.capture_sse_event(event);
+        adapter.decorate_turn_report_context(&mut self.report_context, event);
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
@@ -377,25 +594,55 @@ impl ResponsesWebSocketTurn {
         let report_context = self.report_context.as_ref().unwrap_or(&fallback_context);
         if let Err(error) = self
             .observer
-            .push_line(report_context, websocket_event_as_sse_line(&event))
+            .push_line(report_context, websocket_event_as_sse_line(event))
         {
             self.observer.disable_with_error(error.to_string());
         }
 
-        let event_type = event
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if let Some(outcome) = provider_terminal_outcome(event_type, &event) {
+        let event_type = frame.event_type().unwrap_or_default();
+        if matches!(event_type, "error" | "response.failed") {
+            self.terminal_error_body = serde_json::to_string(event).ok();
+        }
+        if let Some(outcome) = provider_terminal_outcome(frame) {
             return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));
         }
-        if matches!(
-            event_type,
-            "response.created" | "response.in_progress" | "response.queued"
-        ) {
+        if frame.is_started() {
             return Some(ResponsesWebSocketTurnObservation::Started);
         }
         None
+    }
+
+    pub(super) fn observe_invalid_upstream_text(
+        &mut self,
+        text: &str,
+    ) -> Option<ResponsesWebSocketTurnObservation> {
+        self.upstream_bytes = self.upstream_bytes.saturating_add(text.len() as u64);
+        if self.first_event_elapsed_ms.is_none() {
+            self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
+        }
+        self.capture_sse_event(&json!({
+            "type": "error",
+            "error": {
+                "type": "gateway_protocol_error",
+                "message": "upstream Responses WebSocket event was not valid JSON"
+            }
+        }));
+        self.observer
+            .disable_with_error("upstream Responses WebSocket event was not valid JSON");
+        Some(ResponsesWebSocketTurnObservation::Terminal(
+            ResponsesWebSocketTurnOutcome::Failure {
+                status_code: 502,
+                reason: "upstream Responses WebSocket event was not valid JSON",
+            },
+        ))
+    }
+
+    pub(super) fn capture_client_frame(&mut self, event: &Value) {
+        append_capture(
+            &mut self.client_capture,
+            &websocket_event_as_sse_line(event),
+            &mut self.client_capture_truncated,
+        );
     }
 
     pub(super) async fn mark_stream_started(&mut self, state: &AppState) {
@@ -411,19 +658,24 @@ impl ResponsesWebSocketTurn {
             200,
             Some(&telemetry),
         );
-        record_local_request_candidate_status(
-            state,
-            &self.plan,
-            self.report_context.as_ref(),
-            SchedulerRequestCandidateStatusUpdate {
-                status: RequestCandidateStatus::Streaming,
-                status_code: Some(200),
-                error_type: None,
-                error_message: None,
-                latency_ms: None,
-                started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
-                finished_at_unix_ms: None,
-            },
+        let trace_id = self.trace_id.clone();
+        let _ = await_websocket_lifecycle_stage(
+            &trace_id,
+            "candidate_stream_started",
+            record_local_request_candidate_status(
+                state,
+                &self.plan,
+                self.report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Streaming,
+                    status_code: Some(200),
+                    error_type: None,
+                    error_message: None,
+                    latency_ms: None,
+                    started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
+                    finished_at_unix_ms: None,
+                },
+            ),
         )
         .await;
     }
@@ -433,42 +685,58 @@ impl ResponsesWebSocketTurn {
         let cancelled = outcome.cancelled();
         let status_code = outcome.status_code();
         let missing_terminal = !cancelled && !summary.observed_finish;
-        let failed = !cancelled
-            && (status_code >= 400 || summary.parser_error.is_some() || missing_terminal);
+        let terminal_error_body = self.terminal_error_body.take();
+        let outcome_reason = outcome_reason(outcome);
         let telemetry = Some(self.telemetry());
-        let (body_base64, body_state) =
+        let (provider_body_base64, provider_body_state) =
             encode_stream_capture(&self.provider_capture, self.provider_capture_truncated);
+        let (client_body_base64, client_body_state) =
+            encode_stream_capture(&self.client_capture, self.client_capture_truncated);
         let payload = GatewayStreamReportRequest {
             trace_id: self.trace_id.clone(),
             report_kind: self.report_kind,
             report_context: self.report_context,
             status_code,
             headers: self.provider_headers,
-            provider_body_base64: body_base64.clone(),
-            provider_body_state: body_state,
-            client_body_base64: body_base64,
-            client_body_state: body_state,
+            provider_body_base64,
+            provider_body_state,
+            client_body_base64,
+            client_body_state,
             terminal_summary: Some(summary.clone()),
             telemetry,
         };
+        let failed = !cancelled && stream_report_represents_failure(&payload);
+
+        // Do not hold gateway/provider capacity while usage and audit writes
+        // run. The turn has a complete terminal payload at this point.
+        if let Some(admission) = self.admission.take() {
+            let _ = await_websocket_lifecycle_stage(
+                &self.trace_id,
+                "turn_admission_release",
+                admission.release(),
+            )
+            .await;
+        }
 
         let context_seed =
             build_terminal_usage_context_seed(&self.plan, payload.report_context.as_ref());
         let payload_seed = build_stream_terminal_usage_payload_seed(&payload);
-        state
-            .usage_runtime
-            .record_stream_terminal(
+        let _ = await_websocket_lifecycle_stage(
+            &self.trace_id,
+            "usage_terminal",
+            state.usage_runtime.record_stream_terminal(
                 state.usage_lifecycle_data_state().as_ref(),
                 context_seed,
                 payload_seed,
                 cancelled,
-            )
-            .await;
+            ),
+        )
+        .await;
 
         let (error_type, error_message) = if cancelled {
             (
                 Some("websocket_cancelled".to_string()),
-                Some(outcome_reason(outcome).to_string()),
+                Some(outcome_reason.clone()),
             )
         } else if missing_terminal {
             (
@@ -484,50 +752,107 @@ impl ResponsesWebSocketTurn {
                 summary
                     .parser_error
                     .clone()
-                    .or_else(|| Some(outcome_reason(outcome).to_string())),
+                    .or_else(|| Some(outcome_reason.clone())),
             )
         } else {
             (None, None)
         };
-        record_local_request_candidate_status(
-            state,
-            &self.plan,
-            payload.report_context.as_ref(),
-            SchedulerRequestCandidateStatusUpdate {
-                status: if cancelled {
-                    RequestCandidateStatus::Cancelled
-                } else if failed {
-                    RequestCandidateStatus::Failed
-                } else {
-                    RequestCandidateStatus::Success
+        let _ = await_websocket_lifecycle_stage(
+            &self.trace_id,
+            "candidate_terminal",
+            record_local_request_candidate_status(
+                state,
+                &self.plan,
+                payload.report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    status: if cancelled {
+                        RequestCandidateStatus::Cancelled
+                    } else if failed {
+                        RequestCandidateStatus::Failed
+                    } else {
+                        RequestCandidateStatus::Success
+                    },
+                    status_code: Some(status_code),
+                    error_type,
+                    error_message,
+                    latency_ms: payload
+                        .telemetry
+                        .as_ref()
+                        .and_then(|value| value.elapsed_ms),
+                    started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
+                    finished_at_unix_ms: Some(current_unix_ms()),
                 },
-                status_code: Some(status_code),
-                error_type,
-                error_message,
-                latency_ms: payload
-                    .telemetry
-                    .as_ref()
-                    .and_then(|value| value.elapsed_ms),
-                started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
-                finished_at_unix_ms: Some(current_unix_ms()),
-            },
+            ),
         )
         .await;
+
+        // Health, adaptive, and pool feedback are secondary to the terminal
+        // usage/candidate record. A slow dependency must not leave a turn in
+        // Pending or Streaming indefinitely.
+        let effect_context = LocalExecutionEffectContext {
+            plan: &self.plan,
+            report_context: payload.report_context.as_ref(),
+        };
+        let projects_provider_failure = !cancelled
+            && (status_code >= 400
+                || outcome.forced_error().is_some()
+                || summary.parser_error.is_some()
+                || missing_terminal);
+        let effects_completed =
+            await_websocket_lifecycle_stage(&self.trace_id, "provider_effects", async {
+                if cancelled {
+                    release_local_pool_key_lease(state, effect_context).await;
+                } else if projects_provider_failure {
+                    let response_text = terminal_error_body
+                        .as_deref()
+                        .or(summary.parser_error.as_deref())
+                        .unwrap_or(outcome_reason.as_str());
+                    let mut effect = LocalStreamFailureEffect::new(
+                        status_code,
+                        &payload.headers,
+                        Some(response_text),
+                    );
+                    if outcome.stream_timeout() {
+                        effect = effect.with_stream_timeout();
+                    }
+                    apply_local_stream_failure_effects(state, effect_context, effect).await;
+                } else if !failed {
+                    apply_local_stream_success_effects(state, effect_context, &payload).await;
+                }
+            })
+            .await
+            .is_some();
+        if !effects_completed {
+            let _ = await_websocket_lifecycle_stage(
+                &self.trace_id,
+                "pool_lease_release_after_effect_timeout",
+                release_local_pool_key_lease(state, effect_context),
+            )
+            .await;
+        }
 
         // The normal execution runtime does not submit a stream report after a
         // downstream disconnect either. The terminal usage record above still
         // captures cancellation without applying provider-success side effects.
         if !cancelled {
-            if let Err(error) = submit_stream_report(state, payload).await {
-                warn!(
-                    event_name = "responses_websocket_execution_report_submit_failed",
-                    log_type = "ops",
-                    transport = "websocket",
-                    websocket = true,
-                    trace_id = %self.trace_id,
-                    error = ?error,
-                    "gateway failed to submit Responses WebSocket terminal report"
-                );
+            if let Some(result) = await_websocket_lifecycle_stage(
+                &self.trace_id,
+                "execution_report",
+                submit_stream_report(state, payload),
+            )
+            .await
+            {
+                if let Err(error) = result {
+                    warn!(
+                        event_name = "responses_websocket_execution_report_submit_failed",
+                        log_type = "ops",
+                        transport = "websocket",
+                        websocket = true,
+                        trace_id = %self.trace_id,
+                        error = ?error,
+                        "gateway failed to submit Responses WebSocket terminal report"
+                    );
+                }
             }
         }
     }
@@ -584,14 +909,15 @@ impl ResponsesWebSocketTurn {
     }
 }
 
-pub(super) fn spawn_responses_websocket_turn_finalization(
+pub(super) async fn spawn_responses_websocket_turn_finalization(
     state: AppState,
-    turn: ResponsesWebSocketTurn,
+    mut turn: ResponsesWebSocketTurn,
     outcome: ResponsesWebSocketTurnOutcome,
-) {
+) -> tokio::task::JoinHandle<()> {
+    turn.release_admission().await;
     tokio::spawn(async move {
         turn.finalize(&state, outcome).await;
-    });
+    })
 }
 
 fn prepare_websocket_report_context(
@@ -599,6 +925,7 @@ fn prepare_websocket_report_context(
     request_id: &str,
     reuse_selected_candidate: bool,
     client_event: &Value,
+    provider_event: &Value,
     connection_trace_id: &str,
     turn_index: u64,
     logical_turn_id: &str,
@@ -614,13 +941,41 @@ fn prepare_websocket_report_context(
         Value::String(request_id.to_string()),
     );
     if !reuse_selected_candidate {
-        object.remove("candidate_id");
+        for field in [
+            "candidate_id",
+            "candidate_index",
+            "retry_index",
+            "pool_key_index",
+            "candidate_group_id",
+            "pool_key_lease_key",
+            "pool_key_lease_owner",
+            "pool_key_lease_token",
+            "pool_key_lease_fencing_token",
+            "pool_key_lease_ttl_ms",
+            "scheduler_affinity_epoch",
+        ] {
+            object.remove(field);
+        }
     }
-    if !object
-        .get("original_request_body")
-        .is_some_and(Value::is_null)
+    object.insert("original_request_body".to_string(), client_event.clone());
+    if let Some(model) = client_event
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
     {
-        object.insert("original_request_body".to_string(), client_event.clone());
+        object.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    if let Some(mapped_model) = provider_event
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        object.insert(
+            "mapped_model".to_string(),
+            Value::String(mapped_model.to_string()),
+        );
     }
     object.insert(WEBSOCKET_MODE_METADATA_KEY.to_string(), Value::Bool(true));
     object.insert(
@@ -647,45 +1002,14 @@ fn prepare_websocket_report_context(
 }
 
 fn provider_terminal_outcome(
-    event_type: &str,
-    event: &Value,
+    frame: &ParsedResponsesWebSocketFrame<'_>,
 ) -> Option<ResponsesWebSocketTurnOutcome> {
-    match event_type {
-        "response.completed" | "response.incomplete" => {
-            Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
-                status_code: websocket_event_status_code(event, 200),
-                cancelled: false,
-            })
-        }
-        "response.cancelled" => Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
-            status_code: 499,
-            cancelled: true,
-        }),
-        "response.failed" => Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
-            status_code: websocket_event_status_code(event, 200),
-            cancelled: false,
-        }),
-        "error" => Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
-            status_code: websocket_event_status_code(event, 502),
-            cancelled: false,
-        }),
-        _ => None,
-    }
-}
-
-fn websocket_event_status_code(event: &Value, default: u16) -> u16 {
-    event
-        .get("status_code")
-        .or_else(|| event.get("status"))
-        .or_else(|| {
-            event
-                .get("response")
-                .and_then(|response| response.get("status_code"))
+    frame
+        .terminal()
+        .map(|terminal| ResponsesWebSocketTurnOutcome::ProviderTerminal {
+            status_code: terminal.status_code,
+            cancelled: terminal.cancelled,
         })
-        .and_then(Value::as_u64)
-        .and_then(|value| u16::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
 }
 
 fn resolve_responses_websocket_turn_timeouts(
@@ -770,6 +1094,29 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+async fn await_websocket_lifecycle_stage<T>(
+    trace_id: &str,
+    stage: &'static str,
+    future: impl Future<Output = T>,
+) -> Option<T> {
+    match tokio::time::timeout(RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT, future).await {
+        Ok(value) => Some(value),
+        Err(_) => {
+            warn!(
+                event_name = "responses_websocket_lifecycle_stage_timeout",
+                log_type = "ops",
+                transport = "websocket",
+                websocket = true,
+                trace_id,
+                stage,
+                timeout_ms = RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT.as_millis() as u64,
+                "gateway stopped waiting for a Responses WebSocket lifecycle stage"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -779,6 +1126,7 @@ mod tests {
 
     use crate::ai_serving::api::StreamingStandardTerminalObserver;
 
+    use super::super::frame::ParsedResponsesWebSocketFrame;
     use super::{
         prepare_websocket_report_context, provider_terminal_outcome,
         resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
@@ -789,12 +1137,17 @@ mod tests {
     #[test]
     fn followup_context_uses_a_fresh_request_and_candidate() {
         let context = prepare_websocket_report_context(
-            Some(
-                json!({"request_id":"connection","candidate_id":"candidate","original_request_body":{"model":"public"}}),
-            ),
+            Some(json!({
+                "request_id":"connection",
+                "candidate_id":"candidate",
+                "candidate_index": 0,
+                "pool_key_lease_key": "lease",
+                "original_request_body":{"model":"public"}
+            })),
             "turn-2",
             false,
             &json!({"type":"response.create","model":"public"}),
+            &json!({"type":"response.create","model":"provider-public"}),
             "connection",
             2,
             "logical-turn-2",
@@ -802,7 +1155,11 @@ mod tests {
         );
         assert_eq!(context["request_id"], "turn-2");
         assert!(context.get("candidate_id").is_none());
+        assert!(context.get("candidate_index").is_none());
+        assert!(context.get("pool_key_lease_key").is_none());
         assert_eq!(context["original_request_body"]["type"], "response.create");
+        assert_eq!(context["model"], "public");
+        assert_eq!(context["mapped_model"], "provider-public");
         assert_eq!(context["websocket_mode"], true);
         assert_eq!(context["websocket_transport"], "responses");
         assert_eq!(context["websocket_logical_turn_id"], "logical-turn-2");
@@ -824,6 +1181,11 @@ mod tests {
                 "model": "gpt-5.6-terra",
                 "input": "hello"
             }),
+            &json!({
+                "type": "response.create",
+                "model": "gpt-5.6-terra-provider",
+                "input": "hello"
+            }),
             "connection",
             2,
             "logical-turn-2",
@@ -833,6 +1195,8 @@ mod tests {
         assert_eq!(context["request_id"], "turn-2");
         assert_eq!(context["candidate_id"], "terra-candidate");
         assert_eq!(context["original_request_body"]["model"], "gpt-5.6-terra");
+        assert_eq!(context["model"], "gpt-5.6-terra");
+        assert_eq!(context["mapped_model"], "gpt-5.6-terra-provider");
         assert_eq!(context["websocket_mode"], true);
         assert_eq!(context["websocket_logical_turn_id"], "logical-turn-2");
         assert_eq!(context["websocket_turn_attempt"], 2);
@@ -852,7 +1216,9 @@ mod tests {
                 }
             }
         });
-        let outcome = provider_terminal_outcome("response.completed", &event);
+        let raw = serde_json::to_string(&event).expect("event should serialize");
+        let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("event should parse");
+        let outcome = provider_terminal_outcome(&frame);
         assert_eq!(
             outcome,
             Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
@@ -891,13 +1257,28 @@ mod tests {
             "status_code": 429,
             "error": {"type": "usage_limit_reached"},
         });
+        let raw = serde_json::to_string(&event).expect("event should serialize");
+        let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("event should parse");
         assert_eq!(
-            provider_terminal_outcome("error", &event),
+            provider_terminal_outcome(&frame),
             Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
                 status_code: 429,
                 cancelled: false,
             })
         );
+    }
+
+    #[test]
+    fn quota_close_fallback_preserves_the_client_visible_status() {
+        let outcome = ResponsesWebSocketTurnOutcome::provider_quota_exhausted();
+        assert_eq!(outcome.status_code(), 429);
+        assert!(matches!(
+            outcome,
+            ResponsesWebSocketTurnOutcome::Failure {
+                status_code: 429,
+                ..
+            }
+        ));
     }
 
     #[test]

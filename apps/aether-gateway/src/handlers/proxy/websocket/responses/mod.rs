@@ -1,13 +1,26 @@
 //! OpenAI Responses WebSocket protocol entry point, session engine, and adapters.
 //!
-//! The route is protocol-oriented. The session engine owns standard Responses
-//! WebSocket lifecycle behavior, while adapters contain only provider-specific
+//! The route is protocol-oriented. `session` bootstraps the authenticated
+//! connection, `connection` owns the socket FSM, `client` and `quota` own
+//! protocol/retry policy, and `lifecycle`/`turn` bridge each turn into the
+//! existing usage and audit runtime. Adapters contain only provider-specific
 //! connection and metadata behavior.
 
 mod adapter;
 mod adapters;
+mod admission;
+mod binding;
+mod client;
+mod connection;
+mod frame;
+mod lifecycle;
+mod quota;
+mod relay_policy;
+mod request;
 mod session;
+mod state;
 mod turn;
+mod upstream;
 
 use std::net::SocketAddr;
 
