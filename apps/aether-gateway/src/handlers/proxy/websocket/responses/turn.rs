@@ -261,7 +261,11 @@ pub(super) async fn begin_responses_websocket_turn(
     ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
 
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
-    let usage_data = state.data.as_ref().clone();
+    // Keep WebSocket turns on the same lifecycle data path as HTTP streams.
+    // `AppState` can dedicate an isolated background database pool to usage
+    // writes; using the foreground state here bypasses that path and leaves
+    // this transport with a different persistence lifecycle.
+    let usage_data = state.usage_lifecycle_data_state().as_ref().clone();
     state
         .usage_runtime
         .record_pending_direct(&usage_data, lifecycle_seed)
@@ -402,7 +406,7 @@ impl ResponsesWebSocketTurn {
         let lifecycle_seed = build_lifecycle_usage_seed(&self.plan, self.report_context.as_ref());
         let telemetry = self.telemetry();
         state.usage_runtime.record_stream_started(
-            state.data.as_ref(),
+            state.usage_lifecycle_data_state().as_ref(),
             &lifecycle_seed,
             200,
             Some(&telemetry),
@@ -451,12 +455,15 @@ impl ResponsesWebSocketTurn {
         let context_seed =
             build_terminal_usage_context_seed(&self.plan, payload.report_context.as_ref());
         let payload_seed = build_stream_terminal_usage_payload_seed(&payload);
-        state.usage_runtime.record_stream_terminal(
-            state.data.as_ref(),
-            context_seed,
-            payload_seed,
-            cancelled,
-        );
+        state
+            .usage_runtime
+            .record_stream_terminal(
+                state.usage_lifecycle_data_state().as_ref(),
+                context_seed,
+                payload_seed,
+                cancelled,
+            )
+            .await;
 
         let (error_type, error_message) = if cancelled {
             (
@@ -770,6 +777,8 @@ mod tests {
     use aether_contracts::ExecutionTimeouts;
     use serde_json::json;
 
+    use crate::ai_serving::api::StreamingStandardTerminalObserver;
+
     use super::{
         prepare_websocket_report_context, provider_terminal_outcome,
         resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
@@ -831,7 +840,18 @@ mod tests {
 
     #[test]
     fn completed_event_is_captured_as_a_responses_sse_terminal_event() {
-        let event = json!({"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}});
+        let event = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_ws_usage_123",
+                "model": "gpt-5.6",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 5,
+                    "total_tokens": 8
+                }
+            }
+        });
         let outcome = provider_terminal_outcome("response.completed", &event);
         assert_eq!(
             outcome,
@@ -843,6 +863,25 @@ mod tests {
         let capture = String::from_utf8(websocket_event_as_sse_line(&event))
             .expect("capture should be UTF-8");
         assert_eq!(capture, format!("data: {event}\n\n"));
+
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+        });
+        let mut observer = StreamingStandardTerminalObserver::default();
+        observer
+            .push_line(&report_context, capture.into_bytes())
+            .expect("WebSocket terminal event should be accepted by the usage observer");
+        let summary = observer
+            .finish(&report_context)
+            .expect("WebSocket terminal observer should finish")
+            .expect("WebSocket terminal observer should produce a summary");
+        let usage = summary
+            .standardized_usage
+            .expect("response.completed usage must reach the terminal summary");
+        assert_eq!(usage.input_tokens, 3);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.dimensions.get("total_tokens"), Some(&json!(8)));
     }
 
     #[test]
