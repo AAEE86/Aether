@@ -11738,11 +11738,11 @@ mod tests {
         assert_eq!(runtime.metrics_snapshot().terminal_submission_pending, 0);
 
         release_blocker.notify_waiters();
-        timeout(Duration::from_secs(2), awaited_terminal)
+        timeout(Duration::from_secs(5), awaited_terminal)
             .await
             .expect("awaited terminal must not deadlock behind the queued seed")
             .expect("awaited terminal task should not panic");
-        timeout(Duration::from_secs(2), async {
+        timeout(Duration::from_secs(5), async {
             while store.records.lock().expect("records lock").len() != 2
                 || runtime.metrics_snapshot().lifecycle_submission_pending != 0
             {

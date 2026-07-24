@@ -10,7 +10,7 @@ use crate::ai_serving::planner::antigravity::{
 };
 use crate::ai_serving::planner::candidate_preparation::{
     prepare_header_authenticated_candidate, prepare_header_authenticated_candidate_from_auth,
-    OauthPreparationContext,
+    resolve_candidate_mapped_model, OauthPreparationContext, PreparedHeaderAuthenticatedCandidate,
 };
 use crate::ai_serving::planner::candidate_resolution::EligibleLocalExecutionCandidate;
 use crate::ai_serving::planner::common::{
@@ -730,6 +730,28 @@ pub(crate) async fn resolve_local_openai_chat_candidate_payload_parts(
                 .await;
                 return Ok(None);
             }
+        }
+    } else if is_antigravity || is_gemini_cli {
+        let mapped_model = match resolve_candidate_mapped_model(candidate) {
+            Ok(model) => model,
+            Err(skip_reason) => {
+                mark_skipped_local_openai_chat_candidate(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    skip_reason,
+                )
+                .await;
+                return Ok(None);
+            }
+        };
+        PreparedHeaderAuthenticatedCandidate {
+            auth_header: String::new(),
+            auth_value: String::new(),
+            mapped_model,
         }
     } else {
         match prepare_header_authenticated_candidate(
