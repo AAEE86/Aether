@@ -555,6 +555,9 @@ fn apply_service_tier_override(
             "service_tier",
             tier.as_openai_value(),
         ),
+        // Search 的 `-fast` 仅参与路由选择，不能透传 `service_tier`；
+        // 仍返回成功，避免回滚同一模型别名中的 reasoning 指令。
+        "openai:search" => Some(()),
         _ => None,
     }
 }
@@ -1251,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_fast_suffix_to_openai_service_tier() {
+    fn applies_fast_suffix_to_openai_service_tier_and_keeps_search_routing_only() {
         let mut openai_chat = json!({"model": "gpt-5-upstream"});
         apply_model_directive_overrides_from_model(
             &mut openai_chat,
@@ -1274,13 +1277,13 @@ mod tests {
 
         let mut search = json!({"model": "gpt-5-upstream"});
         let original = search.clone();
-        assert!(apply_model_directive_overrides_from_model(
+        apply_model_directive_overrides_from_model(
             &mut search,
             "openai:search",
             "gpt-5-upstream",
             "gpt-5.4-fast",
         )
-        .is_none());
+        .expect("Search fast suffix should remain a routing-only directive");
         assert_eq!(search, original);
     }
 

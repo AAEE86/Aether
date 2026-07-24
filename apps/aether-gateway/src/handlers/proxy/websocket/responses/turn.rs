@@ -835,24 +835,22 @@ impl ResponsesWebSocketTurn {
         // downstream disconnect either. The terminal usage record above still
         // captures cancellation without applying provider-success side effects.
         if !cancelled {
-            if let Some(result) = await_websocket_lifecycle_stage(
+            if let Some(Err(error)) = await_websocket_lifecycle_stage(
                 &self.trace_id,
                 "execution_report",
                 submit_stream_report(state, payload),
             )
             .await
             {
-                if let Err(error) = result {
-                    warn!(
-                        event_name = "responses_websocket_execution_report_submit_failed",
-                        log_type = "ops",
-                        transport = "websocket",
-                        websocket = true,
-                        trace_id = %self.trace_id,
-                        error = ?error,
-                        "gateway failed to submit Responses WebSocket terminal report"
-                    );
-                }
+                warn!(
+                    event_name = "responses_websocket_execution_report_submit_failed",
+                    log_type = "ops",
+                    transport = "websocket",
+                    websocket = true,
+                    trace_id = %self.trace_id,
+                    error = ?error,
+                    "gateway failed to submit Responses WebSocket terminal report"
+                );
             }
         }
     }
