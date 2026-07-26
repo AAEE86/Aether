@@ -87,8 +87,15 @@ accepts only an eligible, WebSocket-enabled endpoint using `openai:responses`.
 It opens an upstream WebSocket using the selected provider key.
 
 The selected provider's model mapping and request headers are applied to every
-turn. `stream` and `background` are removed because they are HTTP transport
-fields, not WebSocket-mode fields. If a later `response.create` changes the
+turn, along with the rest of that candidate's provider-body normalization:
+model-directive patches, endpoint body rules, and the Codex body contract
+(unsupported-field stripping, `store: false`, `tool_choice` defaulting). A
+continuation turn is normalized against the binding it is pinned to rather than
+being re-planned, so it can never move to another provider key.
+`previous_response_id` and `generate` are re-applied after normalization
+because they are WebSocket protocol state that the provider body contract
+otherwise strips. `stream` and `background` are removed because they are HTTP
+transport fields, not WebSocket-mode fields. If a later `response.create` changes the
 public model, Aether runs access checks and candidate planning again. It keeps
 the existing upstream when the same target remains eligible, or transparently
 replaces the upstream between responses when the selected target changes.

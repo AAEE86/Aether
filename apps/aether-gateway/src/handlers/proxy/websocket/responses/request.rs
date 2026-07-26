@@ -8,7 +8,7 @@ use axum::http::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, UPGRADE};
 use axum::http::Method;
 use serde_json::Value;
 
-use crate::ai_serving::AiExecutionDecision;
+use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::headers::request_origin_from_headers_and_remote_addr;
 
@@ -47,10 +47,25 @@ pub(super) fn planned_response_create_event(
     decision: &AiExecutionDecision,
     fallback: &Value,
 ) -> Result<String, &'static str> {
-    let mut event = decision
+    let event = decision
         .provider_request_body
         .clone()
         .unwrap_or_else(|| fallback.clone());
+    finish_response_create_event(event, fallback)
+}
+
+/// Restores the WebSocket protocol framing that provider-body normalization is
+/// not aware of.
+///
+/// `previous_response_id` is on the Codex unsupported-field list and `generate`
+/// is not an HTTP body option at all, so normalization strips both — yet they
+/// are the entire point of WebSocket mode. They must be re-grafted from the
+/// client event afterwards. `stream`/`background` go the other way: the
+/// normalizer inserts `stream`, and the WebSocket protocol has no use for it.
+fn finish_response_create_event(
+    mut event: Value,
+    client_event: &Value,
+) -> Result<String, &'static str> {
     let object = event
         .as_object_mut()
         .ok_or("responses_websocket_request_invalid")?;
@@ -58,11 +73,8 @@ pub(super) fn planned_response_create_event(
         "type".to_string(),
         Value::String("response.create".to_string()),
     );
-    // These fields are WebSocket protocol state, not ordinary HTTP body
-    // options. Provider request normalization may omit them, but moving or
-    // dropping either one changes the meaning of the client session.
     for field in ["previous_response_id", "generate"] {
-        if let Some(value) = fallback.get(field) {
+        if let Some(value) = client_event.get(field) {
             if value.is_null() {
                 object.remove(field);
             } else {
@@ -148,31 +160,184 @@ pub(super) fn provider_model_from_decision(decision: &AiExecutionDecision) -> Op
         .map(str::to_string)
 }
 
+/// Prepares a continuation `response.create` for the already-bound upstream.
+///
+/// The turn cannot be re-planned without risking a different provider key, so
+/// the binding's retained normalizer is replayed instead. That keeps model
+/// directives, endpoint body rules and the Codex body contract applied on every
+/// turn rather than only on the one that bound the socket.
 pub(super) fn normalize_followup_response_create(
     event: &Value,
     provider_model: &str,
+    normalization: &ResponsesWebSocketBodyNormalization,
 ) -> Result<String, &'static str> {
-    let mut event = event.clone();
-    let Some(object) = event.as_object_mut() else {
-        return Err("invalid_response_create");
-    };
-    if object.get("type").and_then(Value::as_str) != Some("response.create") {
+    if event.as_object().is_none() {
         return Err("invalid_response_create");
     }
+    if event.get("type").and_then(Value::as_str) != Some("response.create") {
+        return Err("invalid_response_create");
+    }
+    // Normalization is best-effort here: a continuation cannot fall back to
+    // another candidate, so a body the contract rejects is still better sent
+    // than dropped.
+    let mut normalized = normalization
+        .normalize_response_create(event)
+        .unwrap_or_else(|| event.clone());
+    let Some(object) = normalized.as_object_mut() else {
+        return Err("invalid_response_create");
+    };
+    // A continuation must never switch models mid-socket, and normalization is
+    // allowed to rewrite `model` (the Codex image-tool path does).
     object.insert(
         "model".to_string(),
         Value::String(provider_model.to_string()),
     );
-    object.remove("stream");
-    object.remove("background");
-    serde_json::to_string(&event).map_err(|_| "response_create_serialization_failed")
+    finish_response_create_event(normalized, event)
+        .map_err(|_| "response_create_serialization_failed")
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::response_create_has_previous_response_id;
+    use super::{normalize_followup_response_create, response_create_has_previous_response_id};
+    use crate::ai_serving::ResponsesWebSocketBodyNormalization;
+
+    fn normalized_continuation(
+        event: &serde_json::Value,
+        normalization: &ResponsesWebSocketBodyNormalization,
+    ) -> serde_json::Value {
+        let outbound = normalize_followup_response_create(event, "provider-model", normalization)
+            .expect("continuation should normalize");
+        serde_json::from_str(&outbound).expect("normalized event should be JSON")
+    }
+
+    #[test]
+    fn continuation_keeps_protocol_state_that_provider_normalization_strips() {
+        // `previous_response_id` is on the Codex unsupported-field list, so
+        // normalization removes it — yet it is what continues the chain. If
+        // this regresses, every continuation turn silently starts a new one.
+        let event = json!({
+            "type": "response.create",
+            "model": "public-model",
+            "previous_response_id": "resp_123",
+            "input": [],
+            "stream": true,
+            "background": true,
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model")
+                .with_provider_type_for_tests("codex"),
+        );
+
+        assert_eq!(normalized["type"], "response.create");
+        assert_eq!(normalized["previous_response_id"], "resp_123");
+        assert_eq!(normalized["model"], "provider-model");
+        assert!(normalized.get("stream").is_none());
+        assert!(normalized.get("background").is_none());
+    }
+
+    #[test]
+    fn continuation_strips_fields_the_codex_backend_rejects() {
+        // The point of the fix: before it, turns 2..N reached Codex with the
+        // client's raw body, so a `temperature` that turn 1 had stripped would
+        // be rejected upstream. This also proves normalization really runs
+        // rather than silently falling back to the unmodified event.
+        let event = json!({
+            "type": "response.create",
+            "model": "public-model",
+            "previous_response_id": "resp_123",
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "input": [],
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model")
+                .with_provider_type_for_tests("codex"),
+        );
+
+        assert!(normalized.get("temperature").is_none());
+        assert!(normalized.get("top_p").is_none());
+        assert_eq!(normalized["store"], false);
+        // ...and the protocol state survives the same pass.
+        assert_eq!(normalized["previous_response_id"], "resp_123");
+    }
+
+    #[test]
+    fn continuation_keeps_a_warmup_generate_flag() {
+        let event = json!({
+            "type": "response.create",
+            "model": "public-model",
+            "previous_response_id": "resp_123",
+            "generate": false,
+            "input": [],
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model")
+                .with_provider_type_for_tests("codex"),
+        );
+
+        assert_eq!(normalized["generate"], false);
+    }
+
+    #[test]
+    fn continuation_applies_the_model_directive_patch_the_binding_turn_received() {
+        let event = json!({
+            "type": "response.create",
+            "model": "public-model",
+            "previous_response_id": "resp_123",
+            "input": [],
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model")
+                .with_model_directive_patch_for_tests(json!({"reasoning": {"effort": "high"}})),
+        );
+
+        assert_eq!(normalized["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn continuation_still_forces_the_bound_provider_model() {
+        let event = json!({
+            "type": "response.create",
+            "model": "some-other-model",
+            "previous_response_id": "resp_123",
+            "input": [],
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model"),
+        );
+
+        assert_eq!(normalized["model"], "provider-model");
+    }
+
+    #[test]
+    fn a_continuation_that_is_not_a_response_create_is_rejected() {
+        let normalization = ResponsesWebSocketBodyNormalization::for_tests("provider-model");
+
+        assert!(normalize_followup_response_create(
+            &json!({"type": "response.cancel"}),
+            "provider-model",
+            &normalization,
+        )
+        .is_err());
+        assert!(normalize_followup_response_create(
+            &json!("not an object"),
+            "provider-model",
+            &normalization,
+        )
+        .is_err());
+    }
 
     #[test]
     fn previous_response_id_is_protocol_state_even_when_not_a_string() {

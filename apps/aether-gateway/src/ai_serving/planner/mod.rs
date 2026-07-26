@@ -82,7 +82,7 @@ pub(crate) use self::standard::{
     build_local_sync_plan_and_reports as build_standard_family_sync_plan_and_reports,
     codex_model_capabilities_for_transport, maybe_build_responses_websocket_decision,
     set_local_openai_chat_execution_exhausted_diagnostic, validate_final_openai_provider_request,
-    ResponsesWebSocketDecision,
+    ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
 };
 pub(crate) use self::state::{
     GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalResolvedOAuthRequestAuth,

@@ -61,7 +61,8 @@ pub(crate) use self::planner::{
     CandidateFailureDiagnostic, CandidateFailureDiagnosticKind, EligibleLocalExecutionCandidate,
     GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalExecutionAttemptSource,
     LocalExecutionCandidateKind, LocalResolvedOAuthRequestAuth, PlannerAppState,
-    ResponsesWebSocketDecision, SkippedLocalExecutionCandidate,
+    ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
+    SkippedLocalExecutionCandidate,
 };
 pub(crate) use self::pure::*;
 pub(crate) use self::transport::{

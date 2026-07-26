@@ -24,7 +24,9 @@ use crate::ai_serving::maybe_build_responses_websocket_decision;
 use crate::clock::current_unix_secs;
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::handlers::proxy::websocket::session::WEBSOCKET_LOG_TRANSPORT;
-use crate::handlers::proxy::websocket::transport::send_responses_websocket_error;
+use crate::handlers::proxy::websocket::transport::{
+    close_upstream_socket, send_responses_websocket_error,
+};
 use crate::orchestration::release_pool_key_lease_from_report_context;
 use crate::AppState;
 
@@ -175,6 +177,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
         }
     };
     let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let normalization = planned.normalization;
     let decision = planned.execution;
     if exhausted_key_id.as_deref() == decision.key_id.as_deref() {
         release_pool_key_lease_from_report_context(state, decision.report_context.as_ref()).await;
@@ -245,7 +248,14 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
             return false;
         }
     };
-    let mut replacement = match bind_responses_upstream(&decision, &client_event, adapter).await {
+    let mut replacement = match bind_responses_upstream(
+        &decision,
+        normalization,
+        &client_event,
+        adapter,
+    )
+    .await
+    {
         Ok(connection) => connection,
         Err(code) => {
             queue_turn_finalization(
@@ -275,7 +285,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
         .take()
         .expect("newly bound Responses upstream should be present");
     if let Some(mut previous_upstream) = bound.upstream.replace(replacement_upstream) {
-        let _ = previous_upstream.send(WreqWsMessage::Close(None)).await;
+        close_upstream_socket(&mut previous_upstream, None).await;
     }
     let previous_key_id = bound.decision_template.key_id.clone();
     bound.adapter = replacement.adapter;
@@ -283,6 +293,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     bound.provider_model = replacement.provider_model;
     bound.response_in_flight = true;
     bound.decision_template = replacement.decision_template;
+    bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
     bound.active_turn = Some(turn);
     bound.upstream_response_headers = replacement.upstream_response_headers;

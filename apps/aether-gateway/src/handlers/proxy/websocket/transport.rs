@@ -13,7 +13,7 @@ use axum::http::header::{
     TRANSFER_ENCODING, UPGRADE,
 };
 use axum::http::HeaderMap;
-use futures_util::SinkExt;
+use futures_util::{SinkExt, TryFutureExt};
 use serde_json::json;
 use url::Url;
 use wreq::ws::message::{CloseFrame as WreqCloseFrame, Message as WreqWsMessage};
@@ -22,7 +22,9 @@ use crate::ai_serving::AiExecutionDecision;
 use crate::execution_runtime::transport::{
     build_browser_wreq_client, build_request_headers, ExecutionTransportControls,
 };
-use crate::handlers::proxy::websocket::session::WebSocketSessionLimits;
+use crate::handlers::proxy::websocket::session::{
+    WebSocketSessionLimits, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct UpstreamWebSocketErrorCodes {
@@ -179,6 +181,73 @@ pub(crate) fn websocket_timeouts(
     Some(timeouts)
 }
 
+/// Why a frame did not reach its peer.  A timeout is reported separately from
+/// a socket error because the two describe different peers: one has gone away,
+/// the other is still connected but has stopped reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WebSocketWriteError {
+    Failed,
+    TimedOut,
+}
+
+impl WebSocketWriteError {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Failed => "write_failed",
+            Self::TimedOut => "write_timeout",
+        }
+    }
+}
+
+/// Relays one frame to the client under [`RELAY_WRITE_TIMEOUT`].
+pub(crate) async fn send_client_message(
+    client_socket: &mut WebSocket,
+    message: AxumWsMessage,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send(
+        RELAY_WRITE_TIMEOUT,
+        client_socket.send(message).map_err(|_| ()),
+    )
+    .await
+}
+
+/// Sends one frame to the upstream under [`RELAY_WRITE_TIMEOUT`].
+pub(crate) async fn send_upstream_message(
+    upstream: &mut wreq::ws::WebSocket,
+    message: WreqWsMessage,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send(RELAY_WRITE_TIMEOUT, upstream.send(message).map_err(|_| ())).await
+}
+
+/// Best-effort teardown write.  The caller is already ending the session, so
+/// the outcome only matters for keeping the wait bounded.
+async fn send_teardown_message<F>(write: F)
+where
+    F: std::future::Future<Output = Result<(), ()>>,
+{
+    let _ = bounded_send(TEARDOWN_WRITE_TIMEOUT, write).await;
+}
+
+async fn bounded_send<F>(budget: Duration, write: F) -> Result<(), WebSocketWriteError>
+where
+    F: std::future::Future<Output = Result<(), ()>>,
+{
+    match tokio::time::timeout(budget, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(())) => Err(WebSocketWriteError::Failed),
+        Err(_) => Err(WebSocketWriteError::TimedOut),
+    }
+}
+
+/// Sends a WebSocket Close frame upstream without waiting on an unresponsive
+/// provider.  The socket is dropped by the caller either way.
+pub(crate) async fn close_upstream_socket(
+    upstream: &mut wreq::ws::WebSocket,
+    frame: Option<WreqCloseFrame>,
+) {
+    send_teardown_message(upstream.send(WreqWsMessage::Close(frame)).map_err(|_| ())).await;
+}
+
 pub(crate) fn upstream_message_to_client(message: WreqWsMessage) -> AxumWsMessage {
     match message {
         WreqWsMessage::Text(text) => AxumWsMessage::Text(text.to_string().into()),
@@ -192,11 +261,11 @@ pub(crate) fn upstream_message_to_client(message: WreqWsMessage) -> AxumWsMessag
     }
 }
 
-pub(crate) fn client_close_to_upstream(frame: Option<AxumCloseFrame>) -> WreqWsMessage {
-    WreqWsMessage::Close(frame.map(|frame| WreqCloseFrame {
+pub(crate) fn client_close_to_upstream(frame: Option<AxumCloseFrame>) -> Option<WreqCloseFrame> {
+    frame.map(|frame| WreqCloseFrame {
         code: frame.code.into(),
         reason: frame.reason.to_string().into(),
-    }))
+    })
 }
 
 /// Builds a Responses WebSocket error event in the shape understood by the
@@ -227,9 +296,12 @@ pub(crate) async fn send_responses_websocket_error(
     message: &str,
 ) {
     let event = responses_websocket_error_event(status, error_type, code, message);
-    let _ = client_socket
-        .send(AxumWsMessage::Text(event.to_string().into()))
-        .await;
+    send_teardown_message(
+        client_socket
+            .send(AxumWsMessage::Text(event.to_string().into()))
+            .map_err(|_| ()),
+    )
+    .await;
 }
 
 pub(crate) async fn send_gateway_error(client_socket: &mut WebSocket, code: &str, message: &str) {
@@ -246,17 +318,54 @@ pub(crate) async fn send_gateway_error_with_status(
 }
 
 pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16, reason: &str) {
-    let _ = client_socket
-        .send(AxumWsMessage::Close(Some(AxumCloseFrame {
-            code,
-            reason: reason.to_string().into(),
-        })))
-        .await;
+    send_teardown_message(
+        client_socket
+            .send(AxumWsMessage::Close(Some(AxumCloseFrame {
+                code,
+                reason: reason.to_string().into(),
+            })))
+            .map_err(|_| ()),
+    )
+    .await;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{responses_websocket_error_event, websocket_upstream_url};
+    use super::{
+        bounded_send, responses_websocket_error_event, websocket_upstream_url, WebSocketWriteError,
+        RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+    };
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_peer_that_never_drains_its_window_times_out_instead_of_pinning_the_relay() {
+        let stalled = std::future::pending::<Result<(), ()>>();
+
+        let outcome = bounded_send(Duration::from_millis(1), stalled).await;
+
+        assert_eq!(outcome, Err(WebSocketWriteError::TimedOut));
+    }
+
+    #[tokio::test]
+    async fn a_socket_error_is_reported_separately_from_a_stalled_peer() {
+        let outcome = bounded_send(RELAY_WRITE_TIMEOUT, std::future::ready(Err(()))).await;
+
+        assert_eq!(outcome, Err(WebSocketWriteError::Failed));
+        assert_eq!(WebSocketWriteError::Failed.as_str(), "write_failed");
+        assert_eq!(WebSocketWriteError::TimedOut.as_str(), "write_timeout");
+    }
+
+    #[tokio::test]
+    async fn a_write_that_completes_within_its_budget_succeeds() {
+        let outcome = bounded_send(RELAY_WRITE_TIMEOUT, std::future::ready(Ok::<(), ()>(()))).await;
+
+        assert_eq!(outcome, Ok(()));
+    }
+
+    #[test]
+    fn teardown_writes_are_given_a_shorter_budget_than_relayed_frames() {
+        assert!(TEARDOWN_WRITE_TIMEOUT < RELAY_WRITE_TIMEOUT);
+    }
 
     #[test]
     fn builds_a_client_compatible_responses_error_event() {

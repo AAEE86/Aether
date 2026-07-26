@@ -34,8 +34,8 @@ use crate::handlers::proxy::websocket::session::{
     RESPONSES_WEBSOCKET_SESSION_LIMITS, WEBSOCKET_LOG_TRANSPORT,
 };
 use crate::handlers::proxy::websocket::transport::{
-    close_client_socket, send_gateway_error_with_status, send_responses_websocket_error,
-    upstream_message_to_client,
+    close_client_socket, send_client_message, send_gateway_error_with_status,
+    send_responses_websocket_error, upstream_message_to_client,
 };
 use crate::AppState;
 
@@ -267,6 +267,9 @@ pub(super) async fn relay_bound_connection(
                             .map(ParsedResponsesWebSocketFrame::event_type_for_log)
                             .unwrap_or_else(|| "invalid_json".to_string()),
                         frame_bytes = text.len(),
+                        chunked = parsed_upstream_frame
+                            .as_ref()
+                            .is_some_and(ParsedResponsesWebSocketFrame::is_chunked),
                         active_turn = bound.active_turn.is_some(),
                         "gateway received Responses WebSocket event"
                     );
@@ -478,11 +481,19 @@ pub(super) async fn relay_bound_connection(
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
-                if client_socket
-                    .send(upstream_message_to_client(upstream_message.clone()))
-                    .await
-                    .is_err()
-                {
+                if let Err(error) = send_client_message(
+                    client_socket,
+                    upstream_message_to_client(upstream_message.clone()),
+                ).await {
+                    warn!(
+                        event_name = "responses_websocket_client_send_failed",
+                        log_type = "ops",
+                        transport = WEBSOCKET_LOG_TRANSPORT,
+                        websocket = true,
+                        trace_id = %context.trace_id,
+                        error_code = error.as_str(),
+                        "gateway could not relay a provider event to the client"
+                    );
                     finalize_active_turn(
                         bound,
                         state,

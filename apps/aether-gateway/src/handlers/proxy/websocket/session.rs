@@ -20,6 +20,18 @@ pub(crate) const RESPONSES_WEBSOCKET_SESSION_LIMITS: WebSocketSessionLimits =
         max_connection_duration: Duration::from_secs(60 * 60),
     };
 
+/// A peer that stops draining its receive window must not be able to pin the
+/// relay loop.  Session loops await socket writes inside a `tokio::select!`,
+/// so an unbounded write also suspends the connection and per-turn deadlines
+/// that would otherwise reclaim the upstream socket and the shared upstream
+/// admission permits.
+pub(crate) const RELAY_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Frames the gateway emits while tearing a session down are best-effort: the
+/// session is ending either way, so an unresponsive peer must not delay
+/// releasing the upstream.
+pub(crate) const TEARDOWN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) const CLOSE_POLICY_VIOLATION: u16 = 1008;
 pub(crate) const CLOSE_INTERNAL_ERROR: u16 = 1011;
 pub(crate) const CLOSE_TRY_AGAIN: u16 = 1013;

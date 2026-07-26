@@ -31,8 +31,8 @@ use crate::control::{request_model_local_rejection, GatewayControlDecision};
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::handlers::proxy::websocket::session::{CLOSE_INTERNAL_ERROR, WEBSOCKET_LOG_TRANSPORT};
 use crate::handlers::proxy::websocket::transport::{
-    client_close_to_upstream, close_client_socket, send_gateway_error,
-    send_gateway_error_with_status,
+    client_close_to_upstream, close_client_socket, close_upstream_socket, send_client_message,
+    send_gateway_error, send_gateway_error_with_status, send_upstream_message,
 };
 use crate::orchestration::release_pool_key_lease_from_report_context;
 use crate::rate_limit::FrontdoorUserRpmOutcome;
@@ -103,16 +103,18 @@ pub(super) async fn forward_client_message(
                 // a replacement socket.  A concurrent quota error must be
                 // surfaced rather than replaying only the response.create.
                 mark_active_response_retry_unsafe(bound, "client_control_event");
-                return bound
-                    .upstream
-                    .as_mut()
-                    .expect("upstream presence was checked above")
-                    .send(WreqWsMessage::text(text))
-                    .await
-                    .map(|_| RelayDisposition::Continue)
-                    .unwrap_or(RelayDisposition::UpstreamError(
-                        "responses_websocket_send_failed",
-                    ));
+                return send_upstream_message(
+                    bound
+                        .upstream
+                        .as_mut()
+                        .expect("upstream presence was checked above"),
+                    WreqWsMessage::text(text),
+                )
+                .await
+                .map(|()| RelayDisposition::Continue)
+                .unwrap_or(RelayDisposition::UpstreamError(
+                    "responses_websocket_send_failed",
+                ));
             }
 
             if bound.response_in_flight {
@@ -238,19 +240,22 @@ pub(super) async fn forward_client_message(
                 .await;
             }
 
-            let outbound =
-                match normalize_followup_response_create(&client_event, &bound.provider_model) {
-                    Ok(value) => value,
-                    Err(code) => {
-                        send_gateway_error(
-                            client_socket,
-                            code,
-                            "Gateway could not prepare the response.create event",
-                        )
-                        .await;
-                        return RelayDisposition::Continue;
-                    }
-                };
+            let outbound = match normalize_followup_response_create(
+                &client_event,
+                &bound.provider_model,
+                &bound.body_normalization,
+            ) {
+                Ok(value) => value,
+                Err(code) => {
+                    send_gateway_error(
+                        client_socket,
+                        code,
+                        "Gateway could not prepare the response.create event",
+                    )
+                    .await;
+                    return RelayDisposition::Continue;
+                }
+            };
             let provider_event = match serde_json::from_str::<Value>(&outbound) {
                 Ok(event) => event,
                 Err(_) => {
@@ -328,7 +333,7 @@ pub(super) async fn forward_client_message(
             let Some(upstream) = bound.upstream.as_mut() else {
                 return RelayDisposition::UpstreamError("responses_websocket_send_failed");
             };
-            match upstream.send(WreqWsMessage::text(outbound)).await {
+            match send_upstream_message(upstream, WreqWsMessage::text(outbound)).await {
                 Ok(()) => {
                     if let Some(turn) = bound.active_turn.as_mut() {
                         turn.mark_upstream_request_sent();
@@ -341,16 +346,18 @@ pub(super) async fn forward_client_message(
         AxumWsMessage::Binary(data) => {
             if bound.upstream.is_some() {
                 mark_active_response_retry_unsafe(bound, "client_binary_frame");
-                bound
-                    .upstream
-                    .as_mut()
-                    .expect("upstream presence was checked above")
-                    .send(WreqWsMessage::Binary(data))
-                    .await
-                    .map(|_| RelayDisposition::Continue)
-                    .unwrap_or(RelayDisposition::UpstreamError(
-                        "responses_websocket_send_failed",
-                    ))
+                send_upstream_message(
+                    bound
+                        .upstream
+                        .as_mut()
+                        .expect("upstream presence was checked above"),
+                    WreqWsMessage::Binary(data),
+                )
+                .await
+                .map(|()| RelayDisposition::Continue)
+                .unwrap_or(RelayDisposition::UpstreamError(
+                    "responses_websocket_send_failed",
+                ))
             } else {
                 send_gateway_error(
                     client_socket,
@@ -362,24 +369,21 @@ pub(super) async fn forward_client_message(
             }
         }
         AxumWsMessage::Ping(data) => match bound.upstream.as_mut() {
-            Some(upstream) => upstream
-                .send(WreqWsMessage::Ping(data))
+            Some(upstream) => send_upstream_message(upstream, WreqWsMessage::Ping(data))
                 .await
-                .map(|_| RelayDisposition::Continue)
+                .map(|()| RelayDisposition::Continue)
                 .unwrap_or(RelayDisposition::UpstreamError(
                     "responses_websocket_send_failed",
                 )),
-            None => client_socket
-                .send(AxumWsMessage::Pong(data))
+            None => send_client_message(client_socket, AxumWsMessage::Pong(data))
                 .await
-                .map(|_| RelayDisposition::Continue)
+                .map(|()| RelayDisposition::Continue)
                 .unwrap_or(RelayDisposition::Close),
         },
         AxumWsMessage::Pong(data) => match bound.upstream.as_mut() {
-            Some(upstream) => upstream
-                .send(WreqWsMessage::Pong(data))
+            Some(upstream) => send_upstream_message(upstream, WreqWsMessage::Pong(data))
                 .await
-                .map(|_| RelayDisposition::Continue)
+                .map(|()| RelayDisposition::Continue)
                 .unwrap_or(RelayDisposition::UpstreamError(
                     "responses_websocket_send_failed",
                 )),
@@ -387,7 +391,7 @@ pub(super) async fn forward_client_message(
         },
         AxumWsMessage::Close(frame) => {
             if let Some(upstream) = bound.upstream.as_mut() {
-                let _ = upstream.send(client_close_to_upstream(frame)).await;
+                close_upstream_socket(upstream, client_close_to_upstream(frame)).await;
             }
             RelayDisposition::Close
         }
@@ -513,6 +517,7 @@ async fn forward_replanned_response_create(
         }
     };
     let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let normalization = planned.normalization;
     let decision = planned.execution;
     let reuses_bound_upstream = decision_reuses_bound_upstream(bound, adapter, &decision);
     if continuation_requires_same_upstream(&client_event, reuses_bound_upstream) {
@@ -618,7 +623,10 @@ async fn forward_replanned_response_create(
             .await;
             return RelayDisposition::UpstreamError("responses_websocket_send_failed");
         };
-        if upstream.send(WreqWsMessage::text(outbound)).await.is_err() {
+        if send_upstream_message(upstream, WreqWsMessage::text(outbound))
+            .await
+            .is_err()
+        {
             queue_turn_finalization(
                 bound,
                 state,
@@ -636,6 +644,9 @@ async fn forward_replanned_response_create(
         let previous_client_model = std::mem::replace(&mut bound.client_model, requested_model);
         let previous_provider_model = std::mem::replace(&mut bound.provider_model, provider_model);
         bound.decision_template = decision;
+        // The re-plan keeps this upstream but resolved a new model, so later
+        // continuations must normalize against the new plan, not the old one.
+        bound.body_normalization = normalization;
         bound.active_turn = Some(turn);
         bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
             client_event.clone(),
@@ -662,36 +673,37 @@ async fn forward_replanned_response_create(
         return RelayDisposition::Continue;
     }
 
-    let mut replacement = match bind_responses_upstream(&decision, &client_event, adapter).await {
-        Ok(connection) => connection,
-        Err(code) => {
-            queue_turn_finalization(
-                bound,
-                state,
-                turn,
-                ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
-            )
-            .await;
-            warn!(
-                event_name = "responses_websocket_followup_model_rebind_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                requested_model = %requested_model,
-                error_code = code,
-                "gateway failed to rebind Responses WebSocket follow-up model"
-            );
-            send_gateway_error_with_status(
-                client_socket,
-                502,
-                code,
-                "Gateway could not establish the requested model",
-            )
-            .await;
-            return RelayDisposition::Continue;
-        }
-    };
+    let mut replacement =
+        match bind_responses_upstream(&decision, normalization, &client_event, adapter).await {
+            Ok(connection) => connection,
+            Err(code) => {
+                queue_turn_finalization(
+                    bound,
+                    state,
+                    turn,
+                    ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
+                )
+                .await;
+                warn!(
+                    event_name = "responses_websocket_followup_model_rebind_failed",
+                    log_type = "ops",
+                    transport = WEBSOCKET_LOG_TRANSPORT,
+                    websocket = true,
+                    trace_id = %context.trace_id,
+                    requested_model = %requested_model,
+                    error_code = code,
+                    "gateway failed to rebind Responses WebSocket follow-up model"
+                );
+                send_gateway_error_with_status(
+                    client_socket,
+                    502,
+                    code,
+                    "Gateway could not establish the requested model",
+                )
+                .await;
+                return RelayDisposition::Continue;
+            }
+        };
 
     turn.mark_upstream_request_sent();
     turn.set_provider_response_headers(replacement.upstream_response_headers.clone());
@@ -702,13 +714,14 @@ async fn forward_replanned_response_create(
         .take()
         .expect("newly bound Responses upstream should be present");
     if let Some(mut previous_upstream) = bound.upstream.replace(replacement_upstream) {
-        let _ = previous_upstream.send(WreqWsMessage::Close(None)).await;
+        close_upstream_socket(&mut previous_upstream, None).await;
     }
     bound.adapter = replacement.adapter;
     bound.client_model = replacement.client_model;
     bound.provider_model = replacement.provider_model;
     bound.response_in_flight = true;
     bound.decision_template = replacement.decision_template;
+    bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
     bound.active_turn = Some(turn);
     bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(

@@ -12,7 +12,7 @@ use super::adapter::{ResponsesWebSocketDrainDirective, ResponsesWebSocketProtoco
 use super::binding::UpstreamBindingIdentity;
 use super::request::response_create_has_previous_response_id;
 use super::turn::ResponsesWebSocketTurn;
-use crate::ai_serving::AiExecutionDecision;
+use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 
 const EXHAUSTED_KEY_EXCLUSION_FALLBACK_SECONDS: u64 = 300;
 
@@ -24,6 +24,10 @@ pub(super) struct BoundResponsesConnection {
     pub(super) provider_model: String,
     pub(super) response_in_flight: bool,
     pub(super) decision_template: AiExecutionDecision,
+    /// Reproduces this binding's provider-body normalization for continuation
+    /// turns, which must not re-enter the planner. Replaced whenever the
+    /// binding or its decision is replaced.
+    pub(super) body_normalization: ResponsesWebSocketBodyNormalization,
     pub(super) binding_identity: UpstreamBindingIdentity,
     pub(super) active_turn: Option<ResponsesWebSocketTurn>,
     pub(super) active_response_create: Option<ActiveResponsesWebSocketRequest>,

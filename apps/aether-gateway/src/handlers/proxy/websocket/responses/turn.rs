@@ -584,24 +584,34 @@ impl ResponsesWebSocketTurn {
             self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
         }
 
-        let event = frame.event();
-        self.capture_sse_event(event);
-        adapter.decorate_turn_report_context(&mut self.report_context, event);
+        // A batched frame carries several events; the usage observer parses one
+        // Responses event per SSE line, so the batch must be unwrapped or its
+        // token usage is lost.
+        let events = frame.protocol_events();
+        for event in &events {
+            self.capture_sse_event(event);
+            adapter.decorate_turn_report_context(&mut self.report_context, event);
+        }
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
         let report_context = self.report_context.as_ref().unwrap_or(&fallback_context);
-        if let Err(error) = self
-            .observer
-            .push_line(report_context, websocket_event_as_sse_line(event))
-        {
-            self.observer.disable_with_error(error.to_string());
+        for event in &events {
+            if let Err(error) = self
+                .observer
+                .push_line(report_context, websocket_event_as_sse_line(event))
+            {
+                self.observer.disable_with_error(error.to_string());
+                break;
+            }
         }
 
         let event_type = frame.event_type().unwrap_or_default();
         if matches!(event_type, "error" | "response.failed") {
-            self.terminal_error_body = serde_json::to_string(event).ok();
+            self.terminal_error_body = frame
+                .terminal_event()
+                .and_then(|event| serde_json::to_string(event).ok());
         }
         if let Some(outcome) = provider_terminal_outcome(frame) {
             return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));

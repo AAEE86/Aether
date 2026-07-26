@@ -1,6 +1,5 @@
 //! Physical upstream WebSocket binding and transport helpers.
 
-use futures_util::SinkExt;
 use serde_json::Value;
 use wreq::ws::message::Message as WreqWsMessage;
 
@@ -8,12 +7,15 @@ use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::binding::{UpstreamBindingIdentity, UpstreamBindingIdentityError};
 use super::request::planned_response_create_event;
 use super::state::{BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions};
-use crate::ai_serving::AiExecutionDecision;
+use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 use crate::handlers::proxy::websocket::session::RESPONSES_WEBSOCKET_SESSION_LIMITS;
-use crate::handlers::proxy::websocket::transport::connect_upstream_websocket;
+use crate::handlers::proxy::websocket::transport::{
+    close_upstream_socket, connect_upstream_websocket, send_upstream_message,
+};
 
 pub(super) async fn bind_responses_upstream(
     decision: &AiExecutionDecision,
+    normalization: ResponsesWebSocketBodyNormalization,
     initial_event: &Value,
     adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
 ) -> Result<BoundResponsesConnection, &'static str> {
@@ -36,9 +38,7 @@ pub(super) async fn bind_responses_upstream(
     )
     .await?;
     let first_event = planned_response_create_event(decision, initial_event)?;
-    upstream
-        .socket
-        .send(WreqWsMessage::text(first_event))
+    send_upstream_message(&mut upstream.socket, WreqWsMessage::text(first_event))
         .await
         .map_err(|_| "responses_websocket_initial_send_failed")?;
 
@@ -73,6 +73,7 @@ pub(super) async fn bind_responses_upstream(
         provider_model,
         response_in_flight: true,
         decision_template: decision.clone(),
+        body_normalization: normalization,
         binding_identity,
         active_turn: None,
         active_response_create: None,
@@ -96,7 +97,7 @@ pub(super) async fn receive_optional_upstream(
 
 pub(super) async fn close_bound_upstream(bound: &mut BoundResponsesConnection) {
     if let Some(mut upstream) = bound.upstream.take() {
-        let _ = upstream.send(WreqWsMessage::Close(None)).await;
+        close_upstream_socket(&mut upstream, None).await;
     }
 }
 

@@ -41,7 +41,7 @@ use crate::handlers::proxy::websocket::session::{
     RESPONSES_WEBSOCKET_SESSION_LIMITS, WEBSOCKET_LOG_TRANSPORT,
 };
 use crate::handlers::proxy::websocket::transport::{
-    close_client_socket, send_gateway_error, send_gateway_error_with_status,
+    close_client_socket, send_client_message, send_gateway_error, send_gateway_error_with_status,
 };
 use crate::orchestration::release_pool_key_lease_from_report_context;
 use crate::AppState;
@@ -272,6 +272,7 @@ pub(super) async fn run_responses_websocket(
     };
 
     let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let normalization = planned.normalization;
     let decision = planned.execution;
     let first_provider_event = match planned_response_create_event(&decision, &first_event)
         .and_then(|event| {
@@ -339,36 +340,37 @@ pub(super) async fn run_responses_websocket(
         }
     };
 
-    let mut bound = match bind_responses_upstream(&decision, &first_event, adapter).await {
-        Ok(connection) => connection,
-        Err(code) => {
-            let finalizer = finalize_unbound_turn(
-                state.clone(),
-                first_turn,
-                ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
-            )
-            .await;
-            warn!(
-                event_name = "responses_websocket_upstream_connect_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                error_code = code,
-                "gateway failed to establish Responses WebSocket upstream"
-            );
-            send_gateway_error_with_status(
-                &mut client_socket,
-                502,
-                code,
-                "Gateway could not establish the Provider connection",
-            )
-            .await;
-            close_client_socket(&mut client_socket, CLOSE_TRY_AGAIN, code).await;
-            await_turn_finalization_handle(finalizer).await;
-            return;
-        }
-    };
+    let mut bound =
+        match bind_responses_upstream(&decision, normalization, &first_event, adapter).await {
+            Ok(connection) => connection,
+            Err(code) => {
+                let finalizer = finalize_unbound_turn(
+                    state.clone(),
+                    first_turn,
+                    ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
+                )
+                .await;
+                warn!(
+                    event_name = "responses_websocket_upstream_connect_failed",
+                    log_type = "ops",
+                    transport = WEBSOCKET_LOG_TRANSPORT,
+                    websocket = true,
+                    trace_id = %context.trace_id,
+                    error_code = code,
+                    "gateway failed to establish Responses WebSocket upstream"
+                );
+                send_gateway_error_with_status(
+                    &mut client_socket,
+                    502,
+                    code,
+                    "Gateway could not establish the Provider connection",
+                )
+                .await;
+                close_client_socket(&mut client_socket, CLOSE_TRY_AGAIN, code).await;
+                await_turn_finalization_handle(finalizer).await;
+                return;
+            }
+        };
     first_turn.mark_upstream_request_sent();
     first_turn.set_provider_response_headers(bound.upstream_response_headers.clone());
     bound.active_turn = Some(first_turn);
@@ -406,8 +408,7 @@ async fn receive_initial_response_create(
         let message = message.map_err(|_| InitialMessageError::ClientRead)?;
         match message {
             AxumWsMessage::Ping(payload) => {
-                client_socket
-                    .send(AxumWsMessage::Pong(payload))
+                send_client_message(client_socket, AxumWsMessage::Pong(payload))
                     .await
                     .map_err(|_| InitialMessageError::ClientRead)?;
             }
@@ -472,7 +473,7 @@ mod tests {
         ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
     };
     use super::super::upstream::bind_responses_upstream;
-    use crate::ai_serving::AiExecutionDecision;
+    use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
     use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;
     use crate::handlers::proxy::websocket::transport::{
         websocket_handshake_headers, websocket_timeouts, websocket_upstream_url,
@@ -565,13 +566,21 @@ mod tests {
             "account-codex".to_string(),
         );
 
+        // The exclusion deadline is evaluated against the wall clock, so a
+        // provider reset time only survives if it is still in the future.
+        let reset_at = crate::clock::current_unix_secs() + 600;
+
         assert_eq!(
-            record_exhausted_bound_key(&mut bound, Some(1_050)),
-            Some(("key-codex".to_string(), 1_050))
+            record_exhausted_bound_key(&mut bound, Some(reset_at)),
+            Some(("key-codex".to_string(), reset_at))
         );
         assert!(bound
             .exhausted_exclusions
-            .codex_account_ids(1_049)
+            .codex_account_ids(reset_at - 1)
+            .contains("account-codex"));
+        assert!(!bound
+            .exhausted_exclusions
+            .codex_account_ids(reset_at)
             .contains("account-codex"));
     }
 
@@ -739,8 +748,12 @@ mod tests {
             "stream": true,
             "background": true,
         });
-        let normalized = normalize_followup_response_create(&event, "provider-model")
-            .expect("response.create should be normalized");
+        let normalized = normalize_followup_response_create(
+            &event,
+            "provider-model",
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model"),
+        )
+        .expect("response.create should be normalized");
         let event: serde_json::Value = serde_json::from_str(&normalized).expect("event JSON");
         assert_eq!(event["model"], "provider-model");
         assert!(event.get("stream").is_none());
@@ -943,6 +956,7 @@ mod tests {
 
         let mut bound = bind_responses_upstream(
             &decision,
+            ResponsesWebSocketBodyNormalization::for_tests("provider-model"),
             &json!({
                 "type": "response.create",
                 "model": "public-model",
@@ -1113,6 +1127,7 @@ mod tests {
             provider_model: "gpt-5.6-sol".to_string(),
             response_in_flight: true,
             decision_template: decision,
+            body_normalization: ResponsesWebSocketBodyNormalization::for_tests("gpt-5.6-sol"),
             binding_identity,
             active_turn: None,
             active_response_create: Some(ActiveResponsesWebSocketRequest::new(
