@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 
 use super::adapter::{ResponsesWebSocketDrainDirective, ResponsesWebSocketProtocolAdapter};
 use super::binding::UpstreamBindingIdentity;
+use super::lifecycle::ActiveResponsesWebSocketTurn;
 use super::request::response_create_has_previous_response_id;
-use super::turn::ResponsesWebSocketTurn;
 use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 
 const EXHAUSTED_KEY_EXCLUSION_FALLBACK_SECONDS: u64 = 300;
@@ -29,7 +29,7 @@ pub(super) struct BoundResponsesConnection {
     /// binding or its decision is replaced.
     pub(super) body_normalization: ResponsesWebSocketBodyNormalization,
     pub(super) binding_identity: UpstreamBindingIdentity,
-    pub(super) active_turn: Option<ResponsesWebSocketTurn>,
+    pub(super) active_turn: Option<ActiveResponsesWebSocketTurn>,
     pub(super) active_response_create: Option<ActiveResponsesWebSocketRequest>,
     pub(super) next_turn_index: u64,
     pub(super) upstream_response_headers: BTreeMap<String, String>,

@@ -10,7 +10,7 @@ use wreq::ws::message::Message as WreqWsMessage;
 use super::adapter::{resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective};
 use super::lifecycle::{
     await_pending_turn_finalization, queue_turn_finalization,
-    send_responses_websocket_turn_start_error,
+    send_responses_websocket_turn_start_error, ActiveResponsesWebSocketTurn,
 };
 use super::quota::{mark_active_response_retry_unsafe, send_previous_response_not_found};
 use super::request::{
@@ -321,7 +321,7 @@ pub(super) async fn forward_client_message(
                 }
             };
             turn.set_provider_response_headers(bound.upstream_response_headers.clone());
-            bound.active_turn = Some(turn);
+            bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
             bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
                 client_event.clone(),
                 turn_index,
@@ -647,7 +647,7 @@ async fn forward_replanned_response_create(
         // The re-plan keeps this upstream but resolved a new model, so later
         // continuations must normalize against the new plan, not the old one.
         bound.body_normalization = normalization;
-        bound.active_turn = Some(turn);
+        bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
         bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
             client_event.clone(),
             turn_index,
@@ -723,7 +723,7 @@ async fn forward_replanned_response_create(
     bound.decision_template = replacement.decision_template;
     bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
-    bound.active_turn = Some(turn);
+    bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
     bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
         client_event,
         turn_index,

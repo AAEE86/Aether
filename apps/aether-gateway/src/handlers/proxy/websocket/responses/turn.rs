@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aether_contracts::{
@@ -184,6 +185,13 @@ impl ResponsesWebSocketTurnOutcome {
         Self::Failure {
             status_code: 504,
             reason: "upstream WebSocket did not finish the response before timeout",
+        }
+    }
+
+    pub(super) const fn relay_task_abandoned() -> Self {
+        Self::Failure {
+            status_code: 500,
+            reason: "gateway relay task went away before the response finished",
         }
     }
 
@@ -731,16 +739,16 @@ impl ResponsesWebSocketTurn {
         let context_seed =
             build_terminal_usage_context_seed(&self.plan, payload.report_context.as_ref());
         let payload_seed = build_stream_terminal_usage_payload_seed(&payload);
-        let _ = await_websocket_lifecycle_stage(
-            &self.trace_id,
-            "usage_terminal",
-            state.usage_runtime.record_stream_terminal(
-                state.usage_lifecycle_data_state().as_ref(),
-                context_seed,
-                payload_seed,
-                cancelled,
-            ),
-        )
+        // This write is the turn's billing record, so it must not be abandoned
+        // when the usage runtime is slow: the row was created as Pending and
+        // nothing else reconciles it.
+        let usage_runtime = Arc::clone(&state.usage_runtime);
+        let usage_data = Arc::clone(state.usage_lifecycle_data_state());
+        await_detachable_lifecycle_stage(&self.trace_id, "usage_terminal", async move {
+            usage_runtime
+                .record_stream_terminal(usage_data.as_ref(), context_seed, payload_seed, cancelled)
+                .await;
+        })
         .await;
 
         let (error_type, error_message) = if cancelled {
@@ -914,6 +922,21 @@ impl ResponsesWebSocketTurn {
             elapsed_ms: Some(elapsed_ms(self.started_at)),
             upstream_bytes: Some(self.upstream_bytes),
         }
+    }
+}
+
+impl ResponsesWebSocketTurn {
+    /// Finalizes a turn whose owner is already gone, releasing admission first.
+    ///
+    /// The normal path releases admission before spawning the finalizer; a
+    /// turn reclaimed from a lost relay task has to do both itself.
+    pub(super) async fn finalize_detached(
+        mut self,
+        state: &AppState,
+        outcome: ResponsesWebSocketTurnOutcome,
+    ) {
+        self.release_admission().await;
+        self.finalize(state, outcome).await;
     }
 }
 
@@ -1102,6 +1125,21 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+/// Runs a lifecycle write that must not be lost, while still bounding how long
+/// the caller waits for it.
+///
+/// [`await_websocket_lifecycle_stage`] drops the future it is waiting on. That
+/// is the right trade for secondary effects, but it would silently discard a
+/// write the rest of the system depends on. Spawning first makes the deadline
+/// bound only the wait: dropping the `JoinHandle` detaches the task, which runs
+/// to completion in the background.
+async fn await_detachable_lifecycle_stage<F>(trace_id: &str, stage: &'static str, write: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let _ = await_websocket_lifecycle_stage(trace_id, stage, tokio::spawn(write)).await;
+}
+
 async fn await_websocket_lifecycle_stage<T>(
     trace_id: &str,
     stage: &'static str,
@@ -1287,6 +1325,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn an_abandoned_turn_is_recorded_as_a_gateway_failure_not_a_cancellation() {
+        // A turn reclaimed by the Drop guard must not look like a client
+        // cancellation: cancelled turns skip the stream report entirely, which
+        // would defeat the point of reclaiming it.
+        let outcome = ResponsesWebSocketTurnOutcome::relay_task_abandoned();
+
+        assert_eq!(outcome.status_code(), 500);
+        assert!(!outcome.cancelled());
+        assert!(outcome.forced_error().is_some());
     }
 
     #[test]

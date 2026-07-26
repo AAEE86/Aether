@@ -21,7 +21,7 @@ use super::connection::relay_bound_connection;
 use super::lifecycle::{
     await_pending_adapter_observation, await_pending_turn_finalization,
     await_turn_finalization_handle, finalize_unbound_turn, responses_websocket_turn_start_close,
-    send_responses_websocket_turn_start_error,
+    send_responses_websocket_turn_start_error, ActiveResponsesWebSocketTurn,
 };
 use super::request::{build_planning_parts, planned_response_create_event};
 use super::state::ActiveResponsesWebSocketRequest;
@@ -373,7 +373,7 @@ pub(super) async fn run_responses_websocket(
         };
     first_turn.mark_upstream_request_sent();
     first_turn.set_provider_response_headers(bound.upstream_response_headers.clone());
-    bound.active_turn = Some(first_turn);
+    bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(&state, first_turn));
     bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
         first_event,
         1,

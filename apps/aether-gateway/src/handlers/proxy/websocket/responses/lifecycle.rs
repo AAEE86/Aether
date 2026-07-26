@@ -29,13 +29,87 @@ macro_rules! warn {
     };
 }
 
+/// Owns the in-flight turn so that losing the relay task still finalizes it.
+///
+/// Every ordinary exit path takes the turn out of here and finalizes it
+/// explicitly. This guard only covers the paths that are not exit paths at all
+/// — a panic in the relay loop, or the task being dropped — where the turn
+/// would otherwise be discarded with its usage row left `Pending`, its
+/// candidate row left `Streaming`, and its distributed pool key lease leaked
+/// until the lease expires. Mirrors the HTTP path's `DirectPassthroughFinalizer`.
+pub(super) struct ActiveResponsesWebSocketTurn {
+    turn: Option<ResponsesWebSocketTurn>,
+    state: AppState,
+}
+
+impl ActiveResponsesWebSocketTurn {
+    pub(super) fn new(state: &AppState, turn: ResponsesWebSocketTurn) -> Self {
+        Self {
+            turn: Some(turn),
+            state: state.clone(),
+        }
+    }
+
+    /// Hands the turn back to a caller that will finalize it explicitly.
+    pub(super) fn disarm(mut self) -> ResponsesWebSocketTurn {
+        self.turn
+            .take()
+            .expect("an armed active turn always holds its turn")
+    }
+}
+
+impl std::ops::Deref for ActiveResponsesWebSocketTurn {
+    type Target = ResponsesWebSocketTurn;
+
+    fn deref(&self) -> &Self::Target {
+        self.turn
+            .as_ref()
+            .expect("an armed active turn always holds its turn")
+    }
+}
+
+impl std::ops::DerefMut for ActiveResponsesWebSocketTurn {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.turn
+            .as_mut()
+            .expect("an armed active turn always holds its turn")
+    }
+}
+
+impl Drop for ActiveResponsesWebSocketTurn {
+    fn drop(&mut self) {
+        let Some(turn) = self.turn.take() else {
+            return;
+        };
+        let state = self.state.clone();
+        // No runtime means the process is going down; the spawn could not
+        // complete anyway.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            warn!(
+                event_name = "responses_websocket_turn_abandoned",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                "gateway finalized a Responses WebSocket turn whose relay task went away"
+            );
+            handle.spawn(async move {
+                turn.finalize_detached(
+                    &state,
+                    ResponsesWebSocketTurnOutcome::relay_task_abandoned(),
+                )
+                .await;
+            });
+        }
+    }
+}
+
 pub(super) async fn finalize_active_turn(
     bound: &mut BoundResponsesConnection,
     state: &AppState,
     outcome: ResponsesWebSocketTurnOutcome,
 ) {
     if let Some(turn) = bound.active_turn.take() {
-        queue_turn_finalization(bound, state, turn, outcome).await;
+        queue_turn_finalization(bound, state, turn.disarm(), outcome).await;
     }
 }
 

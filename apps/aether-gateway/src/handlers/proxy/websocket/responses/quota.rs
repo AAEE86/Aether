@@ -10,7 +10,7 @@ use super::adapter::{
     resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective,
     ResponsesWebSocketRebindSafety,
 };
-use super::lifecycle::queue_turn_finalization;
+use super::lifecycle::{queue_turn_finalization, ActiveResponsesWebSocketTurn};
 use super::request::{
     build_planning_parts, planned_response_create_event, response_create_has_previous_response_id,
 };
@@ -295,7 +295,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     bound.decision_template = replacement.decision_template;
     bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
-    bound.active_turn = Some(turn);
+    bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
     bound.upstream_response_headers = replacement.upstream_response_headers;
     bound.pending_adapter_drain = None;
     debug!(

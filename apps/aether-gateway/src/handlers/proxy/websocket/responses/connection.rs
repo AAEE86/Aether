@@ -12,6 +12,7 @@ use super::client::{adapter_drain_ready, forward_client_message, RelayDispositio
 use super::frame::ParsedResponsesWebSocketFrame;
 use super::lifecycle::{
     await_pending_adapter_observation, finalize_active_turn, queue_turn_finalization,
+    ActiveResponsesWebSocketTurn,
 };
 use super::quota::{
     active_continuation_can_retry_from_full_input, detach_exhausted_upstream,
@@ -64,10 +65,7 @@ pub(super) async fn relay_bound_connection(
     tokio::pin!(connection_deadline);
 
     loop {
-        let active_turn_deadline = bound
-            .active_turn
-            .as_ref()
-            .map(ResponsesWebSocketTurn::deadline);
+        let active_turn_deadline = bound.active_turn.as_ref().map(|turn| turn.deadline());
         tokio::select! {
             _ = &mut connection_deadline => {
                 finalize_active_turn(
@@ -398,7 +396,7 @@ pub(super) async fn relay_bound_connection(
                 };
                 let mut quota_relay_action = classify_quota_relay(quota_facts);
                 if matches!(quota_relay_action, QuotaRelayAction::AttemptTransparentRetry) {
-                    let mut retry_turn = bound.active_turn.take();
+                    let mut retry_turn = bound.active_turn.take().map(ActiveResponsesWebSocketTurn::disarm);
                     if let Some(turn) = retry_turn.as_mut() {
                         turn.release_admission().await;
                     }
@@ -416,7 +414,7 @@ pub(super) async fn relay_bound_connection(
                         }
                         continue;
                     }
-                    bound.active_turn = retry_turn;
+                    bound.active_turn = retry_turn.map(|turn| ActiveResponsesWebSocketTurn::new(state, turn));
                     quota_relay_action = classify_quota_relay(QuotaRelayFacts {
                         retry_current_turn: false,
                         transparent_retry_failed: true,
@@ -439,7 +437,7 @@ pub(super) async fn relay_bound_connection(
                         error_code = "previous_response_not_found",
                         "gateway will ask the client to retry the continuation with complete input"
                     );
-                    let mut turn = bound.active_turn.take();
+                    let mut turn = bound.active_turn.take().map(ActiveResponsesWebSocketTurn::disarm);
                     if let Some(active_turn) = turn.as_mut() {
                         active_turn.release_admission().await;
                     }
