@@ -490,18 +490,22 @@ function syncGlobalModelSelection() {
   initialGlobalModelIds.value = new Set(globalIds)
 }
 
-// 监听打开状态
-watch(() => props.open, async (isOpen) => {
-  if (isOpen && props.providerId) {
-    await loadData()
-  } else {
-    searchQuery.value = ''
-    selectedGlobalModelIds.value = new Set()
-    initialGlobalModelIds.value = new Set()
-    providerKeys.value = []
-    fetchingAutoMatchedModels.value = false
-  }
-})
+// 组件由父级 v-if 在打开时创建；立即执行确保初始 open=true 时也会加载数据。
+watch(
+  () => props.open,
+  async (isOpen) => {
+    if (isOpen && props.providerId) {
+      await loadData()
+    } else {
+      searchQuery.value = ''
+      selectedGlobalModelIds.value = new Set()
+      initialGlobalModelIds.value = new Set()
+      providerKeys.value = []
+      fetchingAutoMatchedModels.value = false
+    }
+  },
+  { immediate: true },
+)
 
 // 加载数据
 async function loadData() {
