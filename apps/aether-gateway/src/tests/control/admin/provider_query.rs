@@ -3267,7 +3267,7 @@ async fn gateway_handles_admin_provider_query_test_model_for_kiro_locally_impl()
         )
         .expect("endpoint should build")
         .with_transport_fields(
-            "https://q.{region}.amazonaws.com".to_string(),
+            "https://runtime.{region}.kiro.dev".to_string(),
             None,
             None,
             None,
@@ -3403,7 +3403,7 @@ async fn gateway_uses_kiro_mapped_model_name_for_explicit_model_mapping_test_imp
         )
         .expect("endpoint should build")
         .with_transport_fields(
-            "https://q.{region}.amazonaws.com".to_string(),
+            "https://runtime.{region}.kiro.dev".to_string(),
             None,
             None,
             None,
@@ -3610,7 +3610,7 @@ async fn gateway_handles_admin_provider_query_test_model_failover_for_kiro_local
         )
         .expect("endpoint should build")
         .with_transport_fields(
-            "https://q.{region}.amazonaws.com".to_string(),
+            "https://runtime.{region}.kiro.dev".to_string(),
             None,
             None,
             None,
@@ -3772,7 +3772,7 @@ async fn gateway_retries_kiro_failover_after_http_error_without_message_impl() {
         )
         .expect("endpoint should build")
         .with_transport_fields(
-            "https://q.{region}.amazonaws.com".to_string(),
+            "https://runtime.{region}.kiro.dev".to_string(),
             None,
             None,
             None,

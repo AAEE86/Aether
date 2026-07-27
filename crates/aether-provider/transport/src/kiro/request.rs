@@ -27,7 +27,9 @@ pub fn build_kiro_provider_request_body(
 ) -> Option<Value> {
     let conversation_state =
         convert_claude_messages_to_conversation_state(body_json, mapped_model)?;
+    // Kiro 已固定为新版 Runtime，请求体始终携带 AWS JSON-RPC 所需的 agentMode。
     let mut provider_request_body = json!({
+        "agentMode": "vibe",
         "conversationState": conversation_state
     });
 
@@ -64,6 +66,13 @@ pub fn build_kiro_provider_request_body(
         );
     }
 
+    if let Some(fields) = kiro_additional_model_request_fields(body_json, mapped_model) {
+        // 新版 Kiro 会按模型校验附加字段；推理强度必须置于这里，不能作为顶层字段透传。
+        provider_request_body
+            .as_object_mut()?
+            .insert("additionalModelRequestFields".to_string(), fields);
+    }
+
     if let Some(profile_arn) = auth_config.profile_arn_for_payload() {
         provider_request_body.as_object_mut()?.insert(
             "profileArn".to_string(),
@@ -81,6 +90,24 @@ pub fn build_kiro_provider_request_body(
     }
 
     Some(provider_request_body)
+}
+
+fn kiro_additional_model_request_fields(body_json: &Value, mapped_model: &str) -> Option<Value> {
+    let effort = body_json
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| matches!(*value, "none" | "low" | "medium" | "high" | "xhigh" | "max"))?;
+    let model = mapped_model.trim().to_ascii_lowercase();
+
+    // HAR 仅验证 GPT 5.6 三个模型使用 reasoning.effort；其他模型不猜测映射。
+    if matches!(
+        model.as_str(),
+        "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+    ) {
+        return Some(json!({"reasoning": {"effort": effort}}));
+    }
+    None
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -214,6 +241,7 @@ mod tests {
         .expect("payload should build");
 
         assert!(payload.get("conversationState").is_some());
+        assert_eq!(payload.get("agentMode"), Some(&json!("vibe")));
         assert_eq!(
             payload
                 .get("inferenceConfig")
@@ -225,6 +253,75 @@ mod tests {
             Some(&json!("arn:aws:bedrock:demo"))
         );
         assert_eq!(payload.get("debugTag"), Some(&json!("kiro-local")));
+    }
+
+    #[test]
+    fn maps_gpt_5_6_reasoning_effort_into_runtime_model_fields() {
+        let auth_config = KiroAuthConfig {
+            auth_method: None,
+            refresh_token: None,
+            expires_at: None,
+            profile_arn: None,
+            region: None,
+            auth_region: None,
+            api_region: Some("us-east-1".to_string()),
+            client_id: None,
+            client_secret: None,
+            machine_id: None,
+            kiro_version: None,
+            system_version: None,
+            node_version: None,
+            access_token: Some("cached-token".to_string()),
+        };
+        let payload = build_kiro_provider_request_body(
+            &json!({
+                "messages": [{"role":"user","content":"hello"}],
+                "reasoning_effort": "max"
+            }),
+            "gpt-5.6-luna",
+            &auth_config,
+            None,
+            None,
+        )
+        .expect("payload should build");
+
+        assert_eq!(
+            payload.get("additionalModelRequestFields"),
+            Some(&json!({"reasoning": {"effort": "max"}}))
+        );
+    }
+
+    #[test]
+    fn does_not_inject_reasoning_fields_for_non_gpt_model() {
+        let auth_config = KiroAuthConfig {
+            auth_method: None,
+            refresh_token: None,
+            expires_at: None,
+            profile_arn: None,
+            region: None,
+            auth_region: None,
+            api_region: Some("us-east-1".to_string()),
+            client_id: None,
+            client_secret: None,
+            machine_id: None,
+            kiro_version: None,
+            system_version: None,
+            node_version: None,
+            access_token: Some("cached-token".to_string()),
+        };
+        let payload = build_kiro_provider_request_body(
+            &json!({
+                "messages": [{"role":"user","content":"hello"}],
+                "reasoning_effort": "xhigh"
+            }),
+            "claude-sonnet-5",
+            &auth_config,
+            None,
+            None,
+        )
+        .expect("payload should build");
+
+        assert!(payload.get("additionalModelRequestFields").is_none());
     }
 
     #[test]
