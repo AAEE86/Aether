@@ -1,9 +1,9 @@
-use serde_json::{json, Value};
+use serde_json::{Map, Value, json};
 
 use crate::provider_compat::kiro_stream::{
-    calculate_kiro_context_input_tokens, encode_kiro_sse_events, estimate_kiro_tokens,
-    find_kiro_real_thinking_end_tag, find_kiro_real_thinking_end_tag_at_buffer_end,
-    find_kiro_real_thinking_start_tag, KIRO_MAX_THINKING_BUFFER,
+    KIRO_MAX_THINKING_BUFFER, calculate_kiro_context_input_tokens, encode_kiro_sse_events,
+    estimate_kiro_tokens, find_kiro_real_thinking_end_tag,
+    find_kiro_real_thinking_end_tag_at_buffer_end, find_kiro_real_thinking_start_tag,
 };
 
 use crate::formats::shared::AiSurfaceFinalizeError;
@@ -81,13 +81,7 @@ impl KiroClaudeStreamState {
                         .or_else(|| payload_object.get("tool_use_id"))
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    let input_json = match payload_object.get("input") {
-                        None | Some(Value::Null) => String::new(),
-                        Some(Value::String(text)) => text.clone(),
-                        Some(other) => {
-                            serde_json::to_string(other).map_err(AiSurfaceFinalizeError::from)?
-                        }
-                    };
+                    let input_json = tool_use_input_json(payload_object)?;
                     let stop = payload_object
                         .get("stop")
                         .and_then(Value::as_bool)
@@ -328,4 +322,43 @@ impl KiroClaudeStreamState {
 
         events
     }
+}
+
+fn tool_use_input_json(payload: &Map<String, Value>) -> Result<String, AiSurfaceFinalizeError> {
+    // Runtime 事件规范使用 input；兼容旧事件和中间代理使用的 arguments/嵌套 toolUse。
+    // Kiro 有时会先写入占位 input: {}，再将实际参数放在 arguments；空对象不能
+    // 抢占后者，否则 Read 等工具会收到缺少必填字段的空参数。
+    let input = payload
+        .get("input")
+        .filter(|value| tool_use_input_has_value(value))
+        .or_else(|| {
+            payload
+                .get("arguments")
+                .filter(|value| tool_use_input_has_value(value))
+        })
+        .or_else(|| {
+            payload
+                .get("toolUse")
+                .and_then(Value::as_object)
+                .and_then(|tool_use| {
+                    tool_use
+                        .get("input")
+                        .filter(|value| tool_use_input_has_value(value))
+                        .or_else(|| {
+                            tool_use
+                                .get("arguments")
+                                .filter(|value| tool_use_input_has_value(value))
+                        })
+                })
+        });
+
+    match input {
+        None => Ok(String::new()),
+        Some(Value::String(text)) => Ok(text.clone()),
+        Some(value) => serde_json::to_string(value).map_err(AiSurfaceFinalizeError::from),
+    }
+}
+
+fn tool_use_input_has_value(value: &&Value) -> bool {
+    !value.is_null() && !value.as_object().is_some_and(Map::is_empty)
 }

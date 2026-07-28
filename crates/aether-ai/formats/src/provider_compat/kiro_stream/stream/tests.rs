@@ -1,5 +1,5 @@
 use crate::provider_compat::kiro_stream::kiro_crc32 as crc32;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::KiroToClaudeCliStreamState;
 
@@ -225,6 +225,69 @@ fn kiro_stream_rewriter_converts_tool_use_to_claude_events() {
     assert!(text.contains("\"name\":\"get_weather\""));
     assert!(text.contains("\"partial_json\":\"{\\\"city\\\":\\\"SF\\\"}\""));
     assert!(text.contains("\"stop_reason\":\"tool_use\""));
+}
+
+#[test]
+fn kiro_stream_rewriter_preserves_todowrite_arguments_alias() {
+    let report_context = kiro_report_context(false);
+    let mut rewriter = KiroToClaudeCliStreamState::new(&report_context);
+    let chunk = encode_event_frame(
+        "event",
+        Some("toolUseEvent"),
+        &json!({
+            "name": "todowrite",
+            "toolUseId": "tool_todos_123",
+            "arguments": {
+                "todos": [{
+                    "content": "Implement Kiro compatibility",
+                    "status": "in_progress",
+                    "priority": "high"
+                }]
+            },
+            "stop": true
+        }),
+    );
+
+    let first = rewriter
+        .push_chunk(&report_context, &chunk)
+        .expect("rewrite should succeed");
+    let rest = rewriter
+        .finish(&report_context)
+        .expect("finish should succeed");
+    let text = String::from_utf8([first, rest].concat()).expect("utf8 should decode");
+
+    assert!(text.contains("\"name\":\"todowrite\""));
+    assert!(text.contains(
+        "\"partial_json\":\"{\\\"todos\\\":[{\\\"content\\\":\\\"Implement Kiro compatibility\\\""
+    ));
+}
+
+#[test]
+fn kiro_stream_rewriter_prefers_arguments_over_empty_input_placeholder() {
+    let report_context = kiro_report_context(false);
+    let mut rewriter = KiroToClaudeCliStreamState::new(&report_context);
+    let chunk = encode_event_frame(
+        "event",
+        Some("toolUseEvent"),
+        &json!({
+            "name": "read",
+            "toolUseId": "tool_read_123",
+            "input": {},
+            "arguments": {"filePath": "/workspace/Cargo.toml"},
+            "stop": true
+        }),
+    );
+
+    let first = rewriter
+        .push_chunk(&report_context, &chunk)
+        .expect("rewrite should succeed");
+    let rest = rewriter
+        .finish(&report_context)
+        .expect("finish should succeed");
+    let text = String::from_utf8([first, rest].concat()).expect("utf8 should decode");
+
+    assert!(text.contains("\"name\":\"read\""));
+    assert!(text.contains("\"partial_json\":\"{\\\"filePath\\\":\\\"/workspace/Cargo.toml\\\"}\""));
 }
 
 #[test]

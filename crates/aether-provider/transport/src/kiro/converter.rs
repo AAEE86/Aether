@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -505,6 +505,60 @@ fn clean_tool_schema(value: &Value) -> Value {
     }
 }
 
+fn normalize_kiro_tool_input_schema(name: &str, schema: Value) -> Value {
+    // Kiro IDE 的 Read 工具契约使用 camelCase 的 filePath；上游 Claude/Codex
+    // 客户端常用 file_path。注册时统一 Schema，令模型不会生成 Kiro 无法校验的字段。
+    if !is_kiro_read_tool(name) {
+        return schema;
+    }
+
+    let Some(schema) = schema.as_object() else {
+        return schema;
+    };
+    let mut schema = schema.clone();
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        if !properties.contains_key("filePath") {
+            if let Some(file_path) = properties.remove("file_path") {
+                properties.insert("filePath".to_string(), file_path);
+            }
+        } else {
+            properties.remove("file_path");
+        }
+    }
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        for field in required {
+            if field.as_str() == Some("file_path") {
+                *field = Value::String("filePath".to_string());
+            }
+        }
+    }
+    Value::Object(schema)
+}
+
+fn normalize_kiro_tool_input(name: &str, input: Value) -> Value {
+    // 历史 tool_use 也必须满足同一契约，否则续聊仍会被 Kiro Runtime 拒绝。
+    if !is_kiro_read_tool(name) {
+        return input;
+    }
+
+    let Some(input) = input.as_object() else {
+        return input;
+    };
+    let mut input = input.clone();
+    if !input.contains_key("filePath") {
+        if let Some(file_path) = input.remove("file_path") {
+            input.insert("filePath".to_string(), file_path);
+        }
+    } else {
+        input.remove("file_path");
+    }
+    Value::Object(input)
+}
+
+fn is_kiro_read_tool(name: &str) -> bool {
+    matches!(name, "Read" | "read" | "read_file" | "readFile")
+}
+
 fn convert_tools(tools: Option<&Value>) -> Vec<Value> {
     let Some(tools) = tools.and_then(Value::as_array) else {
         return Vec::new();
@@ -545,6 +599,7 @@ fn convert_tools(tools: Option<&Value>) -> Vec<Value> {
                 .filter(|value| value.is_object())
                 .map(clean_tool_schema)
                 .unwrap_or_else(|| json!({}));
+            let input_schema = normalize_kiro_tool_input_schema(name, input_schema);
 
             Some(json!({
                 "toolSpecification": {
@@ -630,6 +685,7 @@ fn convert_assistant_message(message: &Map<String, Value>) -> Option<Value> {
                             .filter(|value| value.is_object())
                             .cloned()
                             .unwrap_or_else(|| json!({}));
+                        let input = normalize_kiro_tool_input(name, input);
                         tool_uses.push(json!({
                             "toolUseId": tool_use_id,
                             "name": name,
@@ -710,5 +766,61 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
+    }
+
+    #[test]
+    fn normalizes_read_tool_file_path_for_kiro() {
+        let conversation_state = convert_claude_messages_to_conversation_state(
+            &json!({
+                "messages": [
+                    {"role": "user", "content": "Read the file"},
+                    {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "tool_read_123",
+                            "name": "read",
+                            "input": {"file_path": "/tmp/a.txt", "offset": 3}
+                        }]
+                    },
+                    {
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": "tool_read_123",
+                            "content": "file contents"
+                        }]
+                    }
+                ],
+                "tools": [{
+                    "name": "read",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string"},
+                            "offset": {"type": "integer"}
+                        },
+                        "required": ["file_path"]
+                    }
+                }]
+            }),
+            "gpt-5.6-sol",
+        )
+        .expect("conversation state should build");
+
+        let context =
+            &conversation_state["currentMessage"]["userInputMessage"]["userInputMessageContext"];
+        let schema = &context["tools"][0]["toolSpecification"]["inputSchema"]["json"];
+        assert_eq!(schema["required"], json!(["filePath"]));
+        assert_eq!(schema["properties"]["filePath"]["type"], "string");
+        assert!(schema["properties"].get("file_path").is_none());
+
+        let tool_use = &conversation_state["history"][1]["assistantResponseMessage"]["toolUses"][0];
+        assert_eq!(
+            tool_use["input"]["filePath"], "/tmp/a.txt",
+            "conversation state: {conversation_state}"
+        );
+        assert_eq!(tool_use["input"]["offset"], 3);
+        assert!(tool_use["input"].get("file_path").is_none());
     }
 }
