@@ -1,9 +1,9 @@
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::provider_compat::kiro_stream::{
-    KIRO_MAX_THINKING_BUFFER, KiroStreamMetering, calculate_kiro_context_input_tokens,
-    encode_kiro_sse_events, estimate_kiro_tokens, find_kiro_real_thinking_end_tag,
-    find_kiro_real_thinking_end_tag_at_buffer_end, find_kiro_real_thinking_start_tag,
+    calculate_kiro_context_input_tokens, encode_kiro_sse_events, estimate_kiro_tokens,
+    find_kiro_real_thinking_end_tag, find_kiro_real_thinking_end_tag_at_buffer_end,
+    find_kiro_real_thinking_start_tag, KiroStreamMetering, KIRO_MAX_THINKING_BUFFER,
 };
 
 use crate::formats::shared::AiSurfaceFinalizeError;

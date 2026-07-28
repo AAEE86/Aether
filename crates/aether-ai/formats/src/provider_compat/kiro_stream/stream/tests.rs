@@ -1,5 +1,5 @@
 use crate::provider_compat::kiro_stream::kiro_crc32 as crc32;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::KiroToClaudeCliStreamState;
 
@@ -609,9 +609,7 @@ fn kiro_stream_rewriter_prefers_arguments_over_empty_input_placeholder() {
     let text = String::from_utf8([first, rest].concat()).expect("utf8 should decode");
 
     assert!(text.contains("\"name\":\"read\""));
-    assert!(
-        text.contains("\"partial_json\":\"{\\\"file_path\\\":\\\"/workspace/Cargo.toml\\\"}\"")
-    );
+    assert!(text.contains("\"partial_json\":\"{\\\"file_path\\\":\\\"/workspace/Cargo.toml\\\"}\""));
 }
 
 #[test]
@@ -641,9 +639,7 @@ fn kiro_stream_rewriter_reads_nested_tool_use_identity_and_arguments() {
 
     assert!(text.contains("\"id\":\"tool_nested_read\""));
     assert!(text.contains("\"name\":\"Read\""));
-    assert!(
-        text.contains("\"partial_json\":\"{\\\"file_path\\\":\\\"/workspace/Cargo.toml\\\"}\"")
-    );
+    assert!(text.contains("\"partial_json\":\"{\\\"file_path\\\":\\\"/workspace/Cargo.toml\\\"}\""));
 }
 
 #[test]
