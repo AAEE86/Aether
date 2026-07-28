@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -523,7 +523,61 @@ fn clean_tool_schema(value: &Value) -> Value {
     }
 }
 
+fn normalize_kiro_tool_schema_root(schema: Value) -> Value {
+    let Value::Object(mut schema) = schema else {
+        return json!({"type": "object", "properties": {}});
+    };
+
+    // Kiro Runtime 仅接受 object 根 schema；$schema 与根组合关键字会触发 TOOL_SCHEMA_INVALID。
+    schema.remove("$schema");
+    if !schema.get("properties").is_some_and(Value::is_object) {
+        schema.remove("properties");
+    }
+    recover_kiro_tool_schema_from_top_level_combinators(&mut schema);
+    schema.insert("type".to_string(), Value::String("object".to_string()));
+
+    // 组合分支没有可恢复的 object 参数时，使用空对象保证请求仍符合 Runtime 的 schema 约束。
+    if !schema.get("properties").is_some_and(Value::is_object) {
+        schema.insert("properties".to_string(), Value::Object(Map::new()));
+    }
+
+    Value::Object(schema)
+}
+
+fn recover_kiro_tool_schema_from_top_level_combinators(schema: &mut Map<String, Value>) {
+    let had_properties = schema.get("properties").is_some_and(Value::is_object);
+
+    for combinator in ["oneOf", "anyOf", "allOf"] {
+        let Some(Value::Array(variants)) = schema.remove(combinator) else {
+            continue;
+        };
+
+        if had_properties || schema.get("properties").is_some_and(Value::is_object) {
+            continue;
+        }
+
+        // 只处理根组合关键字；嵌套 property schema 的组合语义必须原样保留。
+        let Some(variant) = variants.into_iter().find_map(|variant| {
+            let Value::Object(variant) = variant else {
+                return None;
+            };
+            (variant.get("type").and_then(Value::as_str) == Some("object")).then_some(variant)
+        }) else {
+            continue;
+        };
+
+        for key in ["properties", "required", "description"] {
+            if let Some(value) = variant.get(key) {
+                schema
+                    .entry(key.to_string())
+                    .or_insert_with(|| value.clone());
+            }
+        }
+    }
+}
+
 fn normalize_kiro_tool_input_schema(name: &str, schema: Value) -> Value {
+    let schema = normalize_kiro_tool_schema_root(schema);
     let Some(path_key) = kiro_read_tool_path_key(name) else {
         return schema;
     };
@@ -770,7 +824,17 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::convert_claude_messages_to_conversation_state;
+    use super::{convert_claude_messages_to_conversation_state, convert_tools};
+
+    fn convert_tool_schema(name: &str, input_schema: serde_json::Value) -> serde_json::Value {
+        let tools = json!([{
+            "name": name,
+            "description": "test tool",
+            "input_schema": input_schema,
+        }]);
+        let converted = convert_tools(Some(&tools));
+        converted[0]["toolSpecification"]["inputSchema"]["json"].clone()
+    }
 
     #[test]
     fn converts_simple_claude_request_into_conversation_state() {
@@ -808,6 +872,103 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
+    }
+
+    #[test]
+    fn normalizes_array_top_level_tool_schema_to_empty_object() {
+        let schema = convert_tool_schema(
+            "list_items",
+            json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "array",
+                "items": {"type": "string"}
+            }),
+        );
+
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"], json!({}));
+        assert!(schema.get("$schema").is_none());
+    }
+
+    #[test]
+    fn strips_top_level_combinators_and_recovers_object_branch() {
+        let schema = convert_tool_schema(
+            "parallel_workflow",
+            json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "oneOf": [
+                    {"type": "string"},
+                    {
+                        "type": "object",
+                        "description": "执行并行工作流",
+                        "properties": {
+                            "locations": {
+                                "oneOf": [
+                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "string"}
+                                ],
+                                "anyOf": [
+                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "string"}
+                                ],
+                                "allOf": [
+                                    {"description": "保留嵌套组合语义"}
+                                ]
+                            }
+                        },
+                        "required": ["locations"]
+                    }
+                ],
+                "anyOf": [{"type": "object", "properties": {"ignored": {"type": "string"}}}],
+                "allOf": [{"type": "object", "properties": {"also_ignored": {"type": "string"}}}]
+            }),
+        );
+
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["description"], "执行并行工作流");
+        assert_eq!(schema["required"], json!(["locations"]));
+        assert!(schema["properties"].get("locations").is_some());
+        assert!(schema["properties"]["locations"].get("oneOf").is_some());
+        assert!(schema["properties"]["locations"].get("anyOf").is_some());
+        assert!(schema["properties"]["locations"].get("allOf").is_some());
+        assert!(schema.get("$schema").is_none());
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("anyOf").is_none());
+        assert!(schema.get("allOf").is_none());
+    }
+
+    #[test]
+    fn falls_back_to_empty_object_without_object_combinator_branch() {
+        let schema = convert_tool_schema(
+            "scalar_choice",
+            json!({
+                "type": "array",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "number"}
+                ]
+            }),
+        );
+
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"], json!({}));
+        assert!(schema.get("anyOf").is_none());
+    }
+
+    #[test]
+    fn normalizes_title_case_read_tool_schema_for_kiro() {
+        let schema = convert_tool_schema(
+            "Read",
+            json!({
+                "type": "object",
+                "properties": {"file_path": {"type": "string"}},
+                "required": ["file_path"]
+            }),
+        );
+
+        assert_eq!(schema["required"], json!(["filePath"]));
+        assert_eq!(schema["properties"]["filePath"]["type"], "string");
+        assert!(schema["properties"].get("file_path").is_none());
     }
 
     #[test]
