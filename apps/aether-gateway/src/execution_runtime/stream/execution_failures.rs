@@ -148,7 +148,7 @@ pub(super) fn build_stream_failure_from_execution_error(
     error: &ExecutionError,
 ) -> StreamFailureReport {
     let transport_error = execution_error_is_transport(error);
-    let status_code = error.upstream_status.unwrap_or_else(|| {
+    let status_code = error.upstream_status.unwrap_or({
         if matches!(
             error.kind,
             ExecutionErrorKind::ConnectTimeout
