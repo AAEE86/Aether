@@ -57,8 +57,8 @@ const RETRY_THREE: RetryPolicy = RetryPolicy { max_attempts: 3 };
 const BACKGROUND_TASK_RUN_ID_MAX_BYTES: usize = 64;
 const WORKER_BOOT_RUN_ID_HASH_HEX_BYTES: usize = 20;
 
-fn build_worker_boot_run_id(task_key: &str, instance_id: &str) -> String {
-    let full_run_id = format!("boot:{task_key}:{instance_id}");
+fn build_worker_boot_run_id(task_key: &str) -> String {
+    let full_run_id = format!("boot:{task_key}");
     if full_run_id.len() <= BACKGROUND_TASK_RUN_ID_MAX_BYTES {
         return full_run_id;
     }
@@ -510,7 +510,7 @@ pub(crate) fn spawn_record_worker_boot(
 ) -> JoinHandle<()> {
     spawn_named("task-runtime-record-worker-boot", async move {
         let now = now_unix_secs();
-        let run_id = build_worker_boot_run_id(task_key, app.tunnel.local_instance_id());
+        let run_id = build_worker_boot_run_id(task_key);
         let run = UpsertBackgroundTaskRun {
             id: run_id.clone(),
             task_key: task_key.to_string(),
@@ -787,50 +787,49 @@ mod worker_boot_run_id_tests {
     use super::{build_worker_boot_run_id, BACKGROUND_TASK_RUN_ID_MAX_BYTES};
 
     #[test]
-    fn worker_boot_run_id_preserves_short_legacy_format() {
+    fn worker_boot_run_id_is_keyed_only_by_task() {
         assert_eq!(
-            build_worker_boot_run_id("usage.queue.worker", "gateway-1"),
-            "boot:usage.queue.worker:gateway-1"
+            build_worker_boot_run_id("usage.queue.worker"),
+            "boot:usage.queue.worker"
         );
     }
 
     #[test]
     fn worker_boot_run_id_preserves_exact_database_limit() {
-        let task_key = "task";
-        let instance_id = "i".repeat(BACKGROUND_TASK_RUN_ID_MAX_BYTES - "boot:task:".len());
-        let run_id = build_worker_boot_run_id(task_key, &instance_id);
+        let task_key = "t".repeat(BACKGROUND_TASK_RUN_ID_MAX_BYTES - "boot:".len());
+        let run_id = build_worker_boot_run_id(&task_key);
 
         assert_eq!(run_id.len(), BACKGROUND_TASK_RUN_ID_MAX_BYTES);
-        assert_eq!(run_id, format!("boot:{task_key}:{instance_id}"));
+        assert_eq!(run_id, format!("boot:{task_key}"));
     }
 
     #[test]
     fn worker_boot_run_id_compacts_oversized_values_deterministically() {
-        let instance_id = "gateway-instance-".repeat(8);
-        let first = build_worker_boot_run_id("usage.queue.worker", &instance_id);
-        let second = build_worker_boot_run_id("usage.queue.worker", &instance_id);
+        let task_key = "worker-task-".repeat(8);
+        let first = build_worker_boot_run_id(&task_key);
+        let second = build_worker_boot_run_id(&task_key);
 
         assert!(first.len() <= BACKGROUND_TASK_RUN_ID_MAX_BYTES);
         assert_eq!(first, second);
-        assert!(first.starts_with("boot:usage.queue.worker:"));
+        assert!(first.starts_with("boot:worker-task-"));
         assert!(first.contains('~'));
     }
 
     #[test]
     fn worker_boot_run_id_hash_distinguishes_shared_long_prefixes() {
-        let shared_prefix = "gateway-instance-with-a-very-long-shared-prefix-".repeat(2);
-        let first = build_worker_boot_run_id("usage.queue.worker", &format!("{shared_prefix}a"));
-        let second = build_worker_boot_run_id("usage.queue.worker", &format!("{shared_prefix}b"));
+        let shared_prefix = "worker-task-with-a-very-long-shared-prefix-".repeat(2);
+        let first = build_worker_boot_run_id(&format!("{shared_prefix}a"));
+        let second = build_worker_boot_run_id(&format!("{shared_prefix}b"));
 
         assert_ne!(first, second);
     }
 
     #[test]
     fn worker_boot_run_id_handles_unicode_at_truncation_boundary() {
-        let run_id = build_worker_boot_run_id("usage.queue.worker", &"网关实例".repeat(16));
+        let run_id = build_worker_boot_run_id(&"后台任务".repeat(16));
 
         assert!(run_id.len() <= BACKGROUND_TASK_RUN_ID_MAX_BYTES);
         assert!(run_id.is_char_boundary(run_id.len()));
-        assert!(run_id.starts_with("boot:usage.queue.worker:"));
+        assert!(run_id.starts_with("boot:后台任务"));
     }
 }
