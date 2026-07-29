@@ -13980,20 +13980,6 @@ mod tests {
     #[tokio::test]
     async fn execute_execution_runtime_stream_returns_client_error_with_local_tunnel_message_before_first_data(
     ) {
-        let state = AppState::new().expect("app state should build");
-        let tunnel_app = state.tunnel.app_state();
-        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
-        let (proxy_close_tx, _) = watch::channel(false);
-        tunnel_app.hub.register_proxy(Arc::new(TunnelProxyConn::new(
-            901,
-            "node-1".to_string(),
-            "Node 1".to_string(),
-            proxy_tx,
-            proxy_close_tx,
-            16,
-            2,
-        )));
-
         let plan = ExecutionPlan {
             request_id: "req-client-stream-error-1".into(),
             candidate_id: Some("cand-client-stream-error-1".into()),
@@ -14019,6 +14005,33 @@ mod tests {
                 ..ExecutionTimeouts::default()
             }),
         };
+        let provider_catalog = provider_catalog_for_plan(
+            &plan,
+            Some(json!({
+                "failover_rules": {
+                    "stop_on_transport_errors": true,
+                },
+            })),
+        );
+        let data_state = crate::data::GatewayDataState::with_provider_transport_reader_for_tests(
+            Arc::new(provider_catalog),
+            "development-key",
+        );
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(data_state);
+        let tunnel_app = state.tunnel.app_state();
+        let (proxy_tx, mut proxy_rx) = aether_runtime::bounded_queue(8);
+        let (proxy_close_tx, _) = watch::channel(false);
+        tunnel_app.hub.register_proxy(Arc::new(TunnelProxyConn::new(
+            901,
+            "node-1".to_string(),
+            "Node 1".to_string(),
+            proxy_tx,
+            proxy_close_tx,
+            16,
+            2,
+        )));
         let decision = test_decision();
 
         let state_for_task = state.clone();
