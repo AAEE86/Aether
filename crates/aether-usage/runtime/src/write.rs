@@ -2093,6 +2093,11 @@ fn build_runtime_request_metadata_seed_from_parts(
     if let Some(user_agent) = context_string(context, "user_agent") {
         metadata.insert("user_agent".to_string(), Value::String(user_agent));
     }
+    for key in ["end_to_end_time_ms", "end_to_end_first_byte_time_ms"] {
+        if let Some(value) = context_u64(context, key) {
+            metadata.insert(key.to_string(), Value::from(value));
+        }
+    }
     if let Some(client_requested_stream) = context_bool(context, "client_requested_stream") {
         metadata.insert(
             "client_requested_stream".to_string(),
@@ -6710,7 +6715,9 @@ mod tests {
                 },
                 "original_request_body": {
                     "payload": "x".repeat(MAX_USAGE_CAPTURE_BYTES + 1)
-                }
+                },
+                "end_to_end_time_ms": 125,
+                "end_to_end_first_byte_time_ms": 47
             })),
         );
 
@@ -6726,6 +6733,18 @@ mod tests {
             Some(json!({
                 "payload": "x".repeat(MAX_USAGE_CAPTURE_BYTES + 1)
             }))
+        );
+        assert_eq!(
+            data.request_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("end_to_end_time_ms")),
+            Some(&json!(125))
+        );
+        assert_eq!(
+            data.request_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("end_to_end_first_byte_time_ms")),
+            Some(&json!(47))
         );
     }
 
