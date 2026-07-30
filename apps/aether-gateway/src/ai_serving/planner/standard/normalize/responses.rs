@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::ai_serving::transport::apply_standard_provider_request_body_rules_with_request_headers;
 use crate::ai_serving::{
     apply_openai_responses_compact_special_body_edits,
-    build_cross_format_openai_responses_request_body_with_model_directives as surface_build_cross_format_openai_responses_request_body,
+    build_cross_format_openai_responses_request_body_with_model_directives_and_history_scope as surface_build_cross_format_openai_responses_request_body,
     build_local_openai_responses_request_body_with_model_directives as surface_build_local_openai_responses_request_body,
     GatewayProviderTransportSnapshot,
 };
@@ -105,7 +105,7 @@ pub(crate) fn build_cross_format_openai_responses_request_body(
     force_body_stream_field: bool,
     provider_type: &str,
     body_rules: Option<&Value>,
-    _user_api_key_id: Option<&str>,
+    user_api_key_id: Option<&str>,
     request_headers: &http::HeaderMap,
     enable_model_directives: bool,
 ) -> Option<Value> {
@@ -119,6 +119,7 @@ pub(crate) fn build_cross_format_openai_responses_request_body(
         provider_type,
         body_rules,
         request_headers,
+        user_api_key_id,
         None,
         enable_model_directives,
     )
@@ -134,6 +135,7 @@ pub(crate) fn build_cross_format_openai_responses_request_body_with_codex_model_
     provider_type: &str,
     body_rules: Option<&Value>,
     request_headers: &http::HeaderMap,
+    history_scope: Option<&str>,
     model_capabilities: Option<&crate::ai_serving::CodexResponsesModelCapabilities>,
     enable_model_directives: bool,
 ) -> Option<Value> {
@@ -144,6 +146,7 @@ pub(crate) fn build_cross_format_openai_responses_request_body_with_codex_model_
         provider_api_format,
         upstream_is_stream,
         enable_model_directives,
+        history_scope,
     )?;
     let mut provider_request_body =
         apply_standard_provider_request_body_rules_with_request_headers(

@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use aether_ai_formats::api::ResponseHistoryRecord;
+
 use crate::ai_serving::{
     maybe_build_ai_surface_stream_rewriter, AiSurfaceFinalizeError, AiSurfaceStreamRewriter,
 };
@@ -23,6 +25,10 @@ impl LocalStreamRewriter<'_> {
 
     pub(crate) fn finish(&mut self) -> Result<Vec<u8>, GatewayError> {
         self.inner.finish().map_err(map_surface_error)
+    }
+
+    pub(crate) fn take_response_history_record(&mut self) -> Option<ResponseHistoryRecord> {
+        self.inner.take_response_history_record()
     }
 }
 

@@ -17,6 +17,7 @@ pub(crate) use aether_ai_formats::api::{
     build_cross_format_openai_chat_request_body_with_model_directives,
     build_cross_format_openai_responses_request_body,
     build_cross_format_openai_responses_request_body_with_model_directives,
+    build_cross_format_openai_responses_request_body_with_model_directives_and_history_scope,
     build_gemini_image_request_body_from_openai_image_request,
     build_gemini_image_response_from_openai_image_response,
     build_gemini_image_response_from_openai_responses_image_response, build_generated_tool_call_id,

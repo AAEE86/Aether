@@ -5,7 +5,7 @@ use std::{
 
 use serde_json::{json, Map, Value};
 
-use super::encode_tool_result_error;
+use super::{encode_tool_result_error, history::record_converted_response_history};
 
 use crate::{
     formats::context::FormatContext,
@@ -28,7 +28,10 @@ pub fn from(body: &Value, _ctx: &FormatContext) -> Option<CanonicalResponse> {
 }
 
 pub fn to(response: &CanonicalResponse, ctx: &FormatContext) -> Option<Value> {
-    Some(to_raw(response, &ctx.report_context_value(), false))
+    let report_context = ctx.report_context_value();
+    let response = to_raw(response, &report_context, false);
+    record_converted_response_history(&report_context, &response);
+    Some(response)
 }
 
 pub fn to_compact(response: &CanonicalResponse, ctx: &FormatContext) -> Option<Value> {
