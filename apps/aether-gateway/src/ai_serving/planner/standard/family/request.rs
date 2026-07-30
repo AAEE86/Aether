@@ -585,6 +585,14 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             return Ok(None);
         }
     };
+    crate::ai_serving::hydrate_openai_response_history(
+        state.runtime_state(),
+        body_json,
+        spec_metadata.api_format,
+        provider_api_format,
+        input.auth_context.api_key_id.as_str(),
+    )
+    .await?;
     let redaction = resolve_provider_chat_pii_redaction(
         state,
         parts,
