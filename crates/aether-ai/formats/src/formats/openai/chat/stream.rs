@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Map, Value};
 
-use crate::formats::openai::responses::response::{
-    ensure_modern_openai_responses_response_fields, openai_responses_current_timestamp,
+use crate::formats::openai::responses::{
+    openai_responses_synthetic_reasoning_item_id,
+    response::{
+        ensure_modern_openai_responses_response_fields, openai_responses_current_timestamp,
+    },
 };
 use crate::formats::shared::response::build_generated_tool_call_id;
 use crate::formats::shared::sse::{encode_done_sse, encode_json_sse};
@@ -2223,7 +2226,7 @@ impl OpenAIResponsesClientEmitter {
     fn reasoning_item_id(&self) -> String {
         self.reasoning_item_id
             .clone()
-            .unwrap_or_else(|| format!("{}_rs_0", self.response_id()))
+            .unwrap_or_else(|| openai_responses_synthetic_reasoning_item_id(&self.response_id(), 0))
     }
 
     fn ensure_message_item_id(&mut self) -> String {
@@ -2235,7 +2238,10 @@ impl OpenAIResponsesClientEmitter {
 
     fn ensure_reasoning_item_id(&mut self) -> String {
         if self.reasoning_item_id.is_none() {
-            self.reasoning_item_id = Some(format!("{}_rs_0", self.response_id()));
+            self.reasoning_item_id = Some(openai_responses_synthetic_reasoning_item_id(
+                &self.response_id(),
+                0,
+            ));
         }
         self.reasoning_item_id()
     }
@@ -5216,7 +5222,8 @@ mod tests {
         assert!(sse.contains("event: response.reasoning_summary_text.delta\n"));
         assert!(sse.contains("event: response.reasoning_summary_text.done\n"));
         assert!(sse.contains("event: response.reasoning_summary_part.done\n"));
-        assert!(sse.contains("\"item_id\":\"resp_456_rs_0\""));
+        let reasoning_item_id = openai_responses_synthetic_reasoning_item_id("resp_456", 0);
+        assert!(sse.contains(&format!("\"item_id\":\"{reasoning_item_id}\"")));
         assert!(sse.contains("\"type\":\"reasoning\""));
         assert_eq!(response_sequence_numbers(&sse), (1..=9).collect::<Vec<_>>());
     }
