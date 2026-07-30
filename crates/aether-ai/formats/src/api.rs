@@ -75,6 +75,10 @@ pub use crate::formats::openai::{
         validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
         OpenAiProviderRequestFinalization,
     },
+    responses::{
+        openai_responses_synthetic_reasoning_item_id,
+        strip_incompatible_openai_responses_reasoning_items,
+    },
 };
 pub use crate::formats::shared::error_body::{
     build_core_error_body_for_client_format, is_core_error_finalize_kind, LocalCoreSyncErrorKind,

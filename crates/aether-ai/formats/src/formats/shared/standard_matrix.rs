@@ -153,6 +153,10 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
         &mut provider_request_body,
         provider_api_format,
     );
+    crate::formats::openai::responses::strip_incompatible_openai_responses_reasoning_items(
+        &mut provider_request_body,
+        provider_api_format,
+    );
     strip_openai_responses_input_content_cache_control(
         &mut provider_request_body,
         provider_api_format,

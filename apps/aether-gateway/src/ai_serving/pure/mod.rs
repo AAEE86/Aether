@@ -172,7 +172,9 @@ pub(crate) use aether_ai_formats::api::{
 pub(crate) use aether_ai_formats::{
     api_format_defaults_to_client_error_failover, api_format_defaults_to_non_stream,
     api_format_permission_covers, intersect_api_format_allowed_lists, is_embedding_api_format,
-    is_rerank_api_format, openai_responses_request_operation, ApiOperation, ClientSurface,
+    is_rerank_api_format, openai_responses_request_operation,
+    openai_responses_synthetic_reasoning_item_id,
+    strip_incompatible_openai_responses_reasoning_items, ApiOperation, ClientSurface,
 };
 
 pub(crate) fn plan_kind_matches_api_operation(

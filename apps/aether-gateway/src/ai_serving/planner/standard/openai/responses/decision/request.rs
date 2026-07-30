@@ -32,7 +32,8 @@ use crate::ai_serving::planner::standard::{
     build_cross_format_openai_responses_upstream_url,
     build_local_openai_responses_request_body_with_codex_model_capabilities,
     build_local_openai_responses_upstream_url, codex_model_capabilities_for_transport,
-    request_body_build_failure_extra_data, request_conversion_failure_extra_data,
+    openai_provider_request_contract_failure_extra_data, request_body_build_failure_extra_data,
+    request_conversion_failure_extra_data,
 };
 use crate::ai_serving::transport::antigravity::is_antigravity_provider_transport;
 use crate::ai_serving::transport::auth::{
@@ -530,24 +531,24 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
         provider_api_format,
         Some(body_json),
     );
-    if crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
-        &mut base_provider_request_body,
-        crate::ai_serving::OpenAiProviderRequestFinalization {
-            source_api_format: spec_metadata.api_format,
-            provider_api_format,
-            provider_type: transport.provider.provider_type.as_str(),
-            provider_model: mapped_model.as_str(),
-            source_model,
-            body_rules: transport.endpoint.body_rules.as_ref(),
-            upstream_is_stream,
-            require_body_stream_field: request_requires_body_stream_field(
-                body_json,
-                force_body_stream_field,
-            ),
-        },
-        codex_model_capabilities.as_ref(),
-    )
-    .is_err()
+    if let Err(violation) =
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
+            &mut base_provider_request_body,
+            crate::ai_serving::OpenAiProviderRequestFinalization {
+                source_api_format: spec_metadata.api_format,
+                provider_api_format,
+                provider_type: transport.provider.provider_type.as_str(),
+                provider_model: mapped_model.as_str(),
+                source_model,
+                body_rules: transport.endpoint.body_rules.as_ref(),
+                upstream_is_stream,
+                require_body_stream_field: request_requires_body_stream_field(
+                    body_json,
+                    force_body_stream_field,
+                ),
+            },
+            codex_model_capabilities.as_ref(),
+        )
     {
         mark_skipped_local_openai_responses_candidate_with_extra_data(
             state,
@@ -557,15 +558,12 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
             candidate_index,
             candidate_id,
             "provider_request_body_build_failed",
-            request_conversion_failure_extra_data(
-                body_json,
+            Some(openai_provider_request_contract_failure_extra_data(
+                &violation,
                 spec_metadata.api_format,
                 provider_api_format,
-                Some(mapped_model.as_str()),
-                Some(parts.uri.path()),
-                upstream_is_stream,
-                "openai_responses_request_conversion",
-            ),
+                "openai_responses_request_finalization",
+            )),
         )
         .await;
         return Ok(None);

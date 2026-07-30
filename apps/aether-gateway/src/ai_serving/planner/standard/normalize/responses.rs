@@ -81,6 +81,10 @@ pub(crate) fn build_local_openai_responses_request_body_with_codex_model_capabil
         &mut provider_request_body,
         provider_api_format,
     );
+    crate::ai_serving::strip_incompatible_openai_responses_reasoning_items(
+        &mut provider_request_body,
+        provider_api_format,
+    );
     enforce_provider_body_stream_policy(
         &mut provider_request_body,
         provider_api_format,
@@ -169,6 +173,10 @@ pub(crate) fn build_cross_format_openai_responses_request_body_with_codex_model_
         body_rules,
     );
     apply_openai_responses_compact_special_body_edits(
+        &mut provider_request_body,
+        provider_api_format,
+    );
+    crate::ai_serving::strip_incompatible_openai_responses_reasoning_items(
         &mut provider_request_body,
         provider_api_format,
     );
