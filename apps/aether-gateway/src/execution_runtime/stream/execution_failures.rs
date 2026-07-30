@@ -148,18 +148,17 @@ pub(super) fn build_stream_failure_from_execution_error(
     error: &ExecutionError,
 ) -> StreamFailureReport {
     let transport_error = execution_error_is_transport(error);
-    let status_code = error.upstream_status.unwrap_or_else(|| {
-        if matches!(
-            error.kind,
-            ExecutionErrorKind::ConnectTimeout
-                | ExecutionErrorKind::FirstByteTimeout
-                | ExecutionErrorKind::ReadTimeout
-        ) {
-            504
-        } else {
-            502
-        }
-    });
+    let fallback_status_code = if matches!(
+        error.kind,
+        ExecutionErrorKind::ConnectTimeout
+            | ExecutionErrorKind::FirstByteTimeout
+            | ExecutionErrorKind::ReadTimeout
+    ) {
+        504
+    } else {
+        502
+    };
+    let status_code = error.upstream_status.unwrap_or(fallback_status_code);
     let error_type = serde_json::to_value(&error.kind)
         .ok()
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
@@ -639,6 +638,7 @@ pub(super) async fn handle_prefetch_stream_failure(
         )
         .await;
     }
+    let honor_local_failover = honor_http_failover && retry_scope_out.is_some();
     let failure_analysis = record_stream_sync_failure(
         state,
         plan,
@@ -646,14 +646,14 @@ pub(super) async fn handle_prefetch_stream_failure(
         &payload,
         candidate_status_code,
         None,
-        if honor_http_failover {
+        if honor_local_failover {
             StreamFailureHandling::HonorLocalFailover
         } else {
             StreamFailureHandling::Terminal
         },
     )
     .await;
-    if honor_http_failover
+    if honor_local_failover
         && matches!(
             failure_analysis.decision,
             LocalFailoverDecision::RetryNextCandidate
@@ -722,8 +722,8 @@ async fn handle_prefetch_transport_stream_failure(
         payload.report_context.as_ref(),
     )
     .await;
-    let retrying_next_candidate =
-        matches!(analysis.decision, LocalFailoverDecision::RetryNextCandidate);
+    let retrying_next_candidate = retry_scope_out.is_some()
+        && matches!(analysis.decision, LocalFailoverDecision::RetryNextCandidate);
     if !retrying_next_candidate {
         crate::execution_runtime::mark_stream_candidate_watchdog_terminal_started();
         let report_context_with_diagnostics =

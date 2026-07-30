@@ -1577,6 +1577,8 @@ mod tests {
 
     const TEST_OPENAI_IMAGE_SYNC_PLAN_KIND: &str = "openai_image_sync";
     const TEST_STANDARD_TEXT_SYNC_PLAN_KIND: &str = "openai_responses_compact_sync";
+    const HEARTBEAT_USAGE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+    const HEARTBEAT_USAGE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 
     struct TestSyncAttemptSource {
         attempts: VecDeque<AiSyncAttempt>,
@@ -1733,11 +1735,32 @@ mod tests {
         usage_repository: &InMemoryUsageReadRepository,
         request_id: &str,
     ) {
-        let usage = usage_repository
-            .find_by_request_id(request_id)
-            .await
-            .expect("usage should read")
-            .expect("terminal usage should be recorded");
+        let deadline = Instant::now() + HEARTBEAT_USAGE_SETTLE_TIMEOUT;
+        let usage = loop {
+            let usage = usage_repository
+                .find_by_request_id(request_id)
+                .await
+                .expect("usage should read");
+            if usage.as_ref().is_some_and(|usage| {
+                matches!(usage.status.as_str(), "completed" | "failed" | "cancelled")
+            }) {
+                break usage.expect("terminal usage should be recorded");
+            }
+
+            let now = Instant::now();
+            let last_status = usage.as_ref().map(|usage| usage.status.as_str());
+            assert!(
+                now < deadline,
+                "terminal usage should be recorded within {HEARTBEAT_USAGE_SETTLE_TIMEOUT:?}; \
+                 last status: {}",
+                last_status.unwrap_or("<missing>")
+            );
+            tokio::time::sleep(HEARTBEAT_USAGE_POLL_INTERVAL.min(deadline - now)).await;
+        };
+        assert_eq!(
+            usage.status, "completed",
+            "heartbeat usage should complete successfully"
+        );
         let request_metadata = usage
             .request_metadata
             .as_ref()
