@@ -1,9 +1,8 @@
 use serde_json::Value;
 
-use aether_ai_formats::api::ResponseHistoryRecord;
-
 use crate::ai_serving::{
     maybe_build_ai_surface_stream_rewriter, AiSurfaceFinalizeError, AiSurfaceStreamRewriter,
+    ResponseHistoryRecord,
 };
 use crate::GatewayError;
 
