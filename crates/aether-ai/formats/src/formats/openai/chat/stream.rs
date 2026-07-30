@@ -2226,7 +2226,7 @@ impl OpenAIResponsesClientEmitter {
     fn reasoning_item_id(&self) -> String {
         self.reasoning_item_id
             .clone()
-            .unwrap_or_else(|| openai_responses_synthetic_reasoning_item_id(&self.response_id(), 0))
+            .unwrap_or_else(|| openai_responses_synthetic_reasoning_item_id(self.response_id(), 0))
     }
 
     fn ensure_message_item_id(&mut self) -> String {
@@ -2239,7 +2239,7 @@ impl OpenAIResponsesClientEmitter {
     fn ensure_reasoning_item_id(&mut self) -> String {
         if self.reasoning_item_id.is_none() {
             self.reasoning_item_id = Some(openai_responses_synthetic_reasoning_item_id(
-                &self.response_id(),
+                self.response_id(),
                 0,
             ));
         }
