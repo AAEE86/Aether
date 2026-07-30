@@ -329,17 +329,12 @@ pub fn record_converted_response_history(
     {
         return None;
     }
-    let Some(response_id) = response
+    let response_id = response
         .get("id")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return None;
-    };
-    let Some(request) = report_context.get("original_request_body") else {
-        return None;
-    };
+        .filter(|value| !value.is_empty())?;
+    let request = report_context.get("original_request_body")?;
     let history_scope = report_context
         .get("api_key_id")
         .and_then(Value::as_str)
