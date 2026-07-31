@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 use super::state::BoundResponsesConnection;
 use super::turn::{
-    spawn_responses_websocket_turn_finalization, ResponsesWebSocketTurn,
+    spawn_responses_websocket_turn_finalization, ResponsesProviderAttempt,
     ResponsesWebSocketTurnOutcome,
 };
 use crate::handlers::proxy::websocket::session::{
@@ -37,13 +37,13 @@ macro_rules! warn {
 /// would otherwise be discarded with its usage row left `Pending`, its
 /// candidate row left `Streaming`, and its distributed pool key lease leaked
 /// until the lease expires. Mirrors the HTTP path's `DirectPassthroughFinalizer`.
-pub(super) struct ActiveResponsesWebSocketTurn {
-    turn: Option<ResponsesWebSocketTurn>,
+pub(super) struct ActiveProviderAttempt {
+    turn: Option<ResponsesProviderAttempt>,
     state: AppState,
 }
 
-impl ActiveResponsesWebSocketTurn {
-    pub(super) fn new(state: &AppState, turn: ResponsesWebSocketTurn) -> Self {
+impl ActiveProviderAttempt {
+    pub(super) fn new(state: &AppState, turn: ResponsesProviderAttempt) -> Self {
         Self {
             turn: Some(turn),
             state: state.clone(),
@@ -51,15 +51,15 @@ impl ActiveResponsesWebSocketTurn {
     }
 
     /// Hands the turn back to a caller that will finalize it explicitly.
-    pub(super) fn disarm(mut self) -> ResponsesWebSocketTurn {
+    pub(super) fn disarm(mut self) -> ResponsesProviderAttempt {
         self.turn
             .take()
             .expect("an armed active turn always holds its turn")
     }
 }
 
-impl std::ops::Deref for ActiveResponsesWebSocketTurn {
-    type Target = ResponsesWebSocketTurn;
+impl std::ops::Deref for ActiveProviderAttempt {
+    type Target = ResponsesProviderAttempt;
 
     fn deref(&self) -> &Self::Target {
         self.turn
@@ -68,7 +68,7 @@ impl std::ops::Deref for ActiveResponsesWebSocketTurn {
     }
 }
 
-impl std::ops::DerefMut for ActiveResponsesWebSocketTurn {
+impl std::ops::DerefMut for ActiveProviderAttempt {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.turn
             .as_mut()
@@ -76,7 +76,7 @@ impl std::ops::DerefMut for ActiveResponsesWebSocketTurn {
     }
 }
 
-impl Drop for ActiveResponsesWebSocketTurn {
+impl Drop for ActiveProviderAttempt {
     fn drop(&mut self) {
         let Some(turn) = self.turn.take() else {
             return;
@@ -120,7 +120,7 @@ pub(super) async fn finalize_active_turn(
 pub(super) async fn queue_turn_finalization(
     bound: &mut BoundResponsesConnection,
     state: &AppState,
-    turn: ResponsesWebSocketTurn,
+    turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) {
     await_pending_adapter_observation(bound).await;
@@ -161,7 +161,7 @@ pub(super) async fn await_pending_adapter_observation(bound: &mut BoundResponses
 
 pub(super) async fn finalize_unbound_turn(
     state: AppState,
-    turn: ResponsesWebSocketTurn,
+    turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) -> JoinHandle<()> {
     spawn_responses_websocket_turn_finalization(state, turn, outcome).await

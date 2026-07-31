@@ -12,7 +12,7 @@ use super::client::{adapter_drain_ready, forward_client_message, RelayDispositio
 use super::frame::ParsedResponsesWebSocketFrame;
 use super::lifecycle::{
     await_pending_adapter_observation, finalize_active_turn, queue_turn_finalization,
-    ActiveResponsesWebSocketTurn,
+    ActiveProviderAttempt,
 };
 use super::quota::{
     active_continuation_can_retry_from_full_input, detach_exhausted_upstream,
@@ -25,7 +25,7 @@ use super::relay_policy::{
 };
 use super::state::BoundResponsesConnection;
 use super::turn::{
-    ResponsesWebSocketTurn, ResponsesWebSocketTurnObservation, ResponsesWebSocketTurnOutcome,
+    ResponsesProviderAttempt, ResponsesWebSocketTurnObservation, ResponsesWebSocketTurnOutcome,
 };
 use super::upstream::{close_bound_upstream, receive_optional_upstream};
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
@@ -383,7 +383,7 @@ pub(super) async fn relay_bound_connection(
                 let mut quota_relay_action = classify_quota_relay(quota_facts);
                 if matches!(quota_relay_action, QuotaRelayAction::AttemptTransparentRetry) {
                     // detach_attempt 保留 logical turn：重试是同一轮请求的下一个 attempt。
-                    let mut retry_turn = bound.turn_state.detach_attempt().map(ActiveResponsesWebSocketTurn::disarm);
+                    let mut retry_turn = bound.turn_state.detach_attempt().map(ActiveProviderAttempt::disarm);
                     if let Some(turn) = retry_turn.as_mut() {
                         turn.release_admission().await;
                     }
@@ -404,7 +404,7 @@ pub(super) async fn relay_bound_connection(
                     if let Some(turn) = retry_turn {
                         let restored = bound
                             .turn_state
-                            .resume(ActiveResponsesWebSocketTurn::new(state, turn));
+                            .resume(ActiveProviderAttempt::new(state, turn));
                         debug_assert!(
                             restored.is_ok(),
                             "a failed transparent retry must be able to restore its attempt"
@@ -433,7 +433,7 @@ pub(super) async fn relay_bound_connection(
                         error_code = "previous_response_not_found",
                         "gateway will ask the client to retry the continuation with complete input"
                     );
-                    let mut turn = bound.turn_state.end().map(ActiveResponsesWebSocketTurn::disarm);
+                    let mut turn = bound.turn_state.end().map(ActiveProviderAttempt::disarm);
                     if let Some(active_turn) = turn.as_mut() {
                         active_turn.release_admission().await;
                     }

@@ -33,6 +33,11 @@ use tracing::warn;
 use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::admission::ResponsesWebSocketTurnAdmission;
 use super::frame::ParsedResponsesWebSocketFrame;
+use super::settlement::{
+    attempt_facts_for_outcome, attempt_status_code, classify_attempt_settlement,
+    AttemptCandidateError, AttemptCandidateStatus, AttemptProviderOutcome, AttemptSettlementInputs,
+    AttemptTerminalFacts, ResponsesWebSocketTurnEffect,
+};
 use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
 use crate::clock::current_unix_ms;
@@ -203,82 +208,13 @@ impl ResponsesWebSocketTurnOutcome {
             Self::Cancelled { .. } => 499,
         }
     }
-
-    const fn cancelled(self) -> bool {
-        matches!(
-            self,
-            Self::ProviderTerminal {
-                cancelled: true,
-                ..
-            } | Self::Cancelled { .. }
-        )
-    }
-
-    const fn forced_error(self) -> Option<&'static str> {
-        match self {
-            Self::Failure { reason, .. } => Some(reason),
-            Self::ProviderTerminal { .. } | Self::Cancelled { .. } => None,
-        }
-    }
-
-    const fn stream_timeout(self) -> bool {
-        matches!(
-            self,
-            Self::Failure {
-                status_code: 504,
-                ..
-            }
-        )
-    }
 }
 
-/// 一轮 turn 结束后要投射给供应商/密钥池的效果。
+/// 一次 provider attempt：一条上游执行，也是一条独立的 usage/candidate 记录。
 ///
-/// 每个分支都会释放 pool key lease：`ProviderFailure` 由 `PoolError` 释放，
-/// `ProviderSuccess` 由 `PoolSuccessStream` 释放，其余情况直接释放。少一条
-/// 分支就会把 lease 挂到 TTL 过期，等于短时间占死一把 key。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResponsesWebSocketTurnEffect {
-    /// 既不投射成功也不投射失败，只把 lease 还回去。
-    ReleasePoolKeyLease,
-    ProviderFailure,
-    ProviderSuccess,
-}
-
-#[cfg(test)]
-impl ResponsesWebSocketTurnEffect {
-    /// 把「每个分支都必须释放 lease」这条不变量显式化，便于测试锁住
-    /// 「没进任何分支导致 lease 泄漏」这类回归。
-    const fn releases_pool_key_lease(self) -> bool {
-        match self {
-            Self::ReleasePoolKeyLease | Self::ProviderFailure | Self::ProviderSuccess => true,
-        }
-    }
-}
-
-/// 判定一轮 turn 结束后要投射的效果。
-///
-/// 关键分支是「记账层判成 failed，但这一轮没有投射供应商失败」：例如合法的
-/// `response.incomplete`（写满 max_output_tokens）。共享 usage 判定目前仍会
-/// 把这类终态记成失败，但供应商本身工作正常，既不该扣健康分，也不能因为落
-/// 不到任何分支而漏掉 lease 释放。
-const fn classify_responses_websocket_turn_effect(
-    cancelled: bool,
-    projects_provider_failure: bool,
-    failed: bool,
-) -> ResponsesWebSocketTurnEffect {
-    if cancelled {
-        ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
-    } else if projects_provider_failure {
-        ResponsesWebSocketTurnEffect::ProviderFailure
-    } else if failed {
-        ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
-    } else {
-        ResponsesWebSocketTurnEffect::ProviderSuccess
-    }
-}
-
-pub(super) struct ResponsesWebSocketTurn {
+/// 与 [`super::turn_state::LogicalTurn`] 分工明确：logical turn 是客户端看到的
+/// 一轮请求（可能包含多个 attempt），attempt 只负责这一次上游执行的记账事实。
+pub(super) struct ResponsesProviderAttempt {
     plan: ExecutionPlan,
     trace_id: String,
     report_kind: String,
@@ -298,6 +234,9 @@ pub(super) struct ResponsesWebSocketTurn {
     terminal_timeout: Duration,
     admission: Option<ResponsesWebSocketTurnAdmission>,
     terminal_error_body: Option<String>,
+    /// 观察到的 provider 终态事实，与「为什么现在结算」这个信号分开保存。
+    /// 客户端投递失败不会把它擦掉。
+    provider_outcome: Option<AttemptProviderOutcome>,
 }
 
 /// 组装一轮 turn 的 decision。
@@ -345,7 +284,7 @@ pub(super) async fn begin_responses_websocket_turn(
     control_decision: &GatewayControlDecision,
     decision: AiExecutionDecision,
     client_event: &Value,
-) -> Result<ResponsesWebSocketTurn, GatewayError> {
+) -> Result<ResponsesProviderAttempt, GatewayError> {
     let planned_report_context = decision.report_context.clone();
     let effective_control_decision =
         match refresh_websocket_turn_auth_context(state, control_decision, parts, client_event)
@@ -482,7 +421,7 @@ pub(super) async fn begin_responses_websocket_turn(
     )
     .await;
 
-    Ok(ResponsesWebSocketTurn {
+    Ok(ResponsesProviderAttempt {
         trace_id: plan.request_id.clone(),
         plan,
         report_kind,
@@ -502,6 +441,7 @@ pub(super) async fn begin_responses_websocket_turn(
         terminal_timeout,
         admission: Some(admission),
         terminal_error_body: None,
+        provider_outcome: None,
     })
 }
 
@@ -583,7 +523,7 @@ fn websocket_auth_rejection_error(rejection: GatewayLocalAuthRejection) -> Gatew
     }
 }
 
-impl ResponsesWebSocketTurn {
+impl ResponsesProviderAttempt {
     /// Releases all per-turn capacity before terminal persistence starts.
     /// Provider-pool runtime tokens normally use an awaited removal. The
     /// bounded wait prevents a broken runtime backend from stalling the relay;
@@ -675,6 +615,10 @@ impl ResponsesWebSocketTurn {
                 .and_then(|event| serde_json::to_string(event).ok());
         }
         if let Some(outcome) = provider_terminal_outcome(frame) {
+            // provider 的终态是独立事实：先记下来，之后即使客户端投递失败、
+            // 结算信号变成 Cancelled，这条事实也不会被擦掉。
+            self.provider_outcome
+                .get_or_insert(attempt_facts_for_outcome(None, outcome).provider);
             return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));
         }
         if frame.is_started() {
@@ -751,13 +695,17 @@ impl ResponsesWebSocketTurn {
         .await;
     }
 
-    async fn finalize(mut self, state: &AppState, outcome: ResponsesWebSocketTurnOutcome) {
-        let summary = self.finish_summary(outcome);
-        let cancelled = outcome.cancelled();
-        let status_code = outcome.status_code();
-        let missing_terminal = !cancelled && !summary.observed_finish;
+    /// 结算这一个 attempt。
+    ///
+    /// `outcome` 是「为什么现在结算」的信号，不是供应商事实本身：
+    /// [`attempt_facts_for_outcome`] 把它和已观察到的 provider 终态一起，
+    /// 拆成 provider outcome 与 client delivery 两个正交事实，再由
+    /// [`classify_attempt_settlement`] 一张表推出账单、candidate 状态和效果。
+    async fn settle(mut self, state: &AppState, outcome: ResponsesWebSocketTurnOutcome) {
+        let facts = attempt_facts_for_outcome(self.provider_outcome, outcome);
+        let summary = self.finish_summary(facts);
         let terminal_error_body = self.terminal_error_body.take();
-        let outcome_reason = outcome_reason(outcome);
+        let outcome_reason = facts.reason().to_string();
         let telemetry = Some(self.telemetry());
         let (provider_body_base64, provider_body_state) =
             encode_stream_capture(&self.provider_capture, self.provider_capture_truncated);
@@ -767,7 +715,7 @@ impl ResponsesWebSocketTurn {
             trace_id: self.trace_id.clone(),
             report_kind: self.report_kind,
             report_context: self.report_context,
-            status_code,
+            status_code: attempt_status_code(facts),
             headers: self.provider_headers,
             provider_body_base64,
             provider_body_state,
@@ -776,7 +724,13 @@ impl ResponsesWebSocketTurn {
             terminal_summary: Some(summary.clone()),
             telemetry,
         };
-        let failed = !cancelled && stream_report_represents_failure(&payload);
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: stream_report_represents_failure(&payload),
+            observed_finish: summary.observed_finish,
+            has_parser_error: summary.parser_error.is_some(),
+        });
+        let billing_void = settlement.billing.is_void();
 
         // Do not hold gateway/provider capacity while usage and audit writes
         // run. The turn has a complete terminal payload at this point.
@@ -799,34 +753,31 @@ impl ResponsesWebSocketTurn {
         let usage_data = Arc::clone(state.usage_lifecycle_data_state());
         await_detachable_lifecycle_stage(&self.trace_id, "usage_terminal", async move {
             usage_runtime
-                .record_stream_terminal(usage_data.as_ref(), context_seed, payload_seed, cancelled)
+                .record_stream_terminal(usage_data.as_ref(), context_seed, payload_seed, billing_void)
                 .await;
         })
         .await;
 
-        let (error_type, error_message) = if cancelled {
-            (
+        let (error_type, error_message) = match settlement.candidate_error {
+            AttemptCandidateError::Cancelled => (
                 Some("websocket_cancelled".to_string()),
                 Some(outcome_reason.clone()),
-            )
-        } else if missing_terminal {
-            (
+            ),
+            AttemptCandidateError::MissingTerminal => (
                 Some("stream_missing_terminal_event".to_string()),
                 Some(summary.parser_error.clone().unwrap_or_else(|| {
                     "upstream Responses WebSocket ended before a provider terminal event"
                         .to_string()
                 })),
-            )
-        } else if failed {
-            (
+            ),
+            AttemptCandidateError::TerminalError => (
                 Some("stream_terminal_error".to_string()),
                 summary
                     .parser_error
                     .clone()
                     .or_else(|| Some(outcome_reason.clone())),
-            )
-        } else {
-            (None, None)
+            ),
+            AttemptCandidateError::None => (None, None),
         };
         let _ = await_websocket_lifecycle_stage(
             &self.trace_id,
@@ -836,14 +787,12 @@ impl ResponsesWebSocketTurn {
                 &self.plan,
                 payload.report_context.as_ref(),
                 SchedulerRequestCandidateStatusUpdate {
-                    status: if cancelled {
-                        RequestCandidateStatus::Cancelled
-                    } else if failed {
-                        RequestCandidateStatus::Failed
-                    } else {
-                        RequestCandidateStatus::Success
+                    status: match settlement.candidate_status {
+                        AttemptCandidateStatus::Cancelled => RequestCandidateStatus::Cancelled,
+                        AttemptCandidateStatus::Failed => RequestCandidateStatus::Failed,
+                        AttemptCandidateStatus::Success => RequestCandidateStatus::Success,
                     },
-                    status_code: Some(status_code),
+                    status_code: Some(settlement.status_code),
                     error_type,
                     error_message,
                     latency_ms: payload
@@ -864,16 +813,9 @@ impl ResponsesWebSocketTurn {
             plan: &self.plan,
             report_context: payload.report_context.as_ref(),
         };
-        let projects_provider_failure = !cancelled
-            && (status_code >= 400
-                || outcome.forced_error().is_some()
-                || summary.parser_error.is_some()
-                || missing_terminal);
-        let provider_effect =
-            classify_responses_websocket_turn_effect(cancelled, projects_provider_failure, failed);
         let effects_completed =
             await_websocket_lifecycle_stage(&self.trace_id, "provider_effects", async {
-                match provider_effect {
+                match settlement.provider_effect {
                     ResponsesWebSocketTurnEffect::ReleasePoolKeyLease => {
                         release_local_pool_key_lease(state, effect_context).await;
                     }
@@ -883,11 +825,11 @@ impl ResponsesWebSocketTurn {
                             .or(summary.parser_error.as_deref())
                             .unwrap_or(outcome_reason.as_str());
                         let mut effect = LocalStreamFailureEffect::new(
-                            status_code,
+                            settlement.status_code,
                             &payload.headers,
                             Some(response_text),
                         );
-                        if outcome.stream_timeout() {
+                        if facts.provider.stream_timeout() {
                             effect = effect.with_stream_timeout();
                         }
                         apply_local_stream_failure_effects(state, effect_context, effect).await;
@@ -911,7 +853,7 @@ impl ResponsesWebSocketTurn {
         // The normal execution runtime does not submit a stream report after a
         // downstream disconnect either. The terminal usage record above still
         // captures cancellation without applying provider-success side effects.
-        if !cancelled {
+        if settlement.submit_execution_report {
             if let Some(Err(error)) = await_websocket_lifecycle_stage(
                 &self.trace_id,
                 "execution_report",
@@ -940,10 +882,13 @@ impl ResponsesWebSocketTurn {
         );
     }
 
-    fn finish_summary(
-        &mut self,
-        outcome: ResponsesWebSocketTurnOutcome,
-    ) -> ExecutionStreamTerminalSummary {
+    /// 终态摘要。
+    ///
+    /// 只消费两个正交事实：`forced_error` 只在「供应商没给出终态且内容已完整
+    /// 交付」时补 parser_error，`cancelled` 覆盖供应商声明取消与客户端投递失败
+    /// 两种情形——与拆分前 `outcome.forced_error()` / `outcome.cancelled()` 的
+    /// 取值逐一对应。
+    fn finish_summary(&mut self, facts: AttemptTerminalFacts) -> ExecutionStreamTerminalSummary {
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
@@ -957,12 +902,12 @@ impl ResponsesWebSocketTurn {
                 self.observer.latest_summary().cloned().unwrap_or_default()
             }
         };
-        if let Some(reason) = outcome.forced_error() {
+        if let Some(reason) = facts.forced_error() {
             if summary.parser_error.is_none() {
                 summary.parser_error = Some(reason.to_string());
             }
         }
-        if outcome.cancelled() {
+        if facts.provider.cancelled_by_provider() || facts.delivery.is_aborted() {
             summary.observed_finish = true;
             if summary.finish_reason.is_none() {
                 summary.finish_reason = Some("cancelled".to_string());
@@ -984,7 +929,7 @@ impl ResponsesWebSocketTurn {
     }
 }
 
-impl ResponsesWebSocketTurn {
+impl ResponsesProviderAttempt {
     /// Finalizes a turn whose owner is already gone, releasing admission first.
     ///
     /// The normal path releases admission before spawning the finalizer; a
@@ -995,18 +940,18 @@ impl ResponsesWebSocketTurn {
         outcome: ResponsesWebSocketTurnOutcome,
     ) {
         self.release_admission().await;
-        self.finalize(state, outcome).await;
+        self.settle(state, outcome).await;
     }
 }
 
 pub(super) async fn spawn_responses_websocket_turn_finalization(
     state: AppState,
-    mut turn: ResponsesWebSocketTurn,
+    mut turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) -> tokio::task::JoinHandle<()> {
     turn.release_admission().await;
     tokio::spawn(async move {
-        turn.finalize(&state, outcome).await;
+        turn.settle(&state, outcome).await;
     })
 }
 
@@ -1130,19 +1075,6 @@ fn resolve_responses_websocket_turn_timeouts(
     )
 }
 
-fn outcome_reason(outcome: ResponsesWebSocketTurnOutcome) -> String {
-    match outcome {
-        ResponsesWebSocketTurnOutcome::ProviderTerminal {
-            cancelled: true, ..
-        } => "provider cancelled the response".to_string(),
-        ResponsesWebSocketTurnOutcome::ProviderTerminal {
-            cancelled: false, ..
-        } => "provider returned a terminal response event".to_string(),
-        ResponsesWebSocketTurnOutcome::Cancelled { reason }
-        | ResponsesWebSocketTurnOutcome::Failure { reason, .. } => reason.to_string(),
-    }
-}
-
 fn websocket_event_as_sse_line(event: &Value) -> Vec<u8> {
     let payload = serde_json::to_string(event).unwrap_or_else(|_| {
         json!({
@@ -1241,11 +1173,15 @@ mod tests {
     use crate::ai_serving::api::StreamingStandardTerminalObserver;
 
     use super::super::frame::ParsedResponsesWebSocketFrame;
+    use super::super::settlement::{
+        attempt_facts_for_outcome, classify_attempt_settlement, AttemptBilling,
+        AttemptSettlementInputs, ResponsesWebSocketTurnEffect,
+    };
     use super::{
-        classify_responses_websocket_turn_effect, prepare_websocket_report_context,
-        provider_terminal_outcome, resolve_responses_websocket_turn_timeouts,
-        websocket_event_as_sse_line, ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnEffect,
-        ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
+        prepare_websocket_report_context, provider_terminal_outcome,
+        resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
+        ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
+        ResponsesWebSocketTurnTimeoutPhase,
     };
 
     #[test]
@@ -1394,9 +1330,11 @@ mod tests {
             })
         );
         let outcome = outcome.expect("incomplete should end the turn");
-        assert!(!outcome.cancelled());
-        assert!(outcome.forced_error().is_none());
-        assert!(!outcome.stream_timeout());
+        let facts = attempt_facts_for_outcome(None, outcome);
+        assert!(!facts.provider.cancelled_by_provider());
+        assert!(facts.forced_error().is_none());
+        assert!(!facts.provider.stream_timeout());
+        assert!(facts.provider.is_terminal());
 
         let report_context = json!({
             "provider_api_format": "openai:responses",
@@ -1419,16 +1357,21 @@ mod tests {
         assert_eq!(usage.input_tokens, 4);
         assert_eq!(usage.output_tokens, 7);
 
-        // finalize() 用这些事实决定是否投射供应商失败：合法 incomplete 必须
-        // 全部落在“非失败”一侧。
-        let missing_terminal = !outcome.cancelled() && !summary.observed_finish;
-        let projects_provider_failure = !outcome.cancelled()
-            && (outcome.status_code() >= 400
-                || outcome.forced_error().is_some()
-                || summary.parser_error.is_some()
-                || missing_terminal);
-        assert!(!missing_terminal);
-        assert!(!projects_provider_failure);
+        // 结算表用这些事实决定是否投射供应商失败：合法 incomplete 即使被记账层
+        // 判成失败，也必须落在「不扣健康分、只释放 lease」一侧，且账单照记。
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: true,
+            observed_finish: summary.observed_finish,
+            has_parser_error: summary.parser_error.is_some(),
+        });
+        assert_eq!(settlement.status_code, 200);
+        assert_eq!(settlement.billing, AttemptBilling::Billed);
+        assert_eq!(
+            settlement.provider_effect,
+            ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
+        );
+        assert!(settlement.submit_execution_report);
     }
 
     #[test]
@@ -1443,67 +1386,6 @@ mod tests {
                 cancelled: false
             })
         );
-    }
-
-    #[test]
-    fn a_legitimate_incomplete_still_releases_the_pool_key_lease() {
-        // 共享 usage 判定目前仍把 response.incomplete 记成终态失败，于是会出现
-        // failed=true 而 projects_provider_failure=false 的组合。这种组合必须
-        // 明确落到“只释放 lease”的分支，否则 lease 会挂到 TTL 过期。
-        let effect = classify_responses_websocket_turn_effect(false, false, true);
-
-        assert_eq!(effect, ResponsesWebSocketTurnEffect::ReleasePoolKeyLease);
-        assert!(effect.releases_pool_key_lease());
-    }
-
-    #[test]
-    fn every_turn_effect_releases_the_pool_key_lease() {
-        for (cancelled, projects_provider_failure, failed, expected) in [
-            (
-                true,
-                false,
-                false,
-                ResponsesWebSocketTurnEffect::ReleasePoolKeyLease,
-            ),
-            (
-                true,
-                true,
-                true,
-                ResponsesWebSocketTurnEffect::ReleasePoolKeyLease,
-            ),
-            (
-                false,
-                true,
-                true,
-                ResponsesWebSocketTurnEffect::ProviderFailure,
-            ),
-            (
-                false,
-                false,
-                true,
-                ResponsesWebSocketTurnEffect::ReleasePoolKeyLease,
-            ),
-            (
-                false,
-                false,
-                false,
-                ResponsesWebSocketTurnEffect::ProviderSuccess,
-            ),
-        ] {
-            let effect = classify_responses_websocket_turn_effect(
-                cancelled,
-                projects_provider_failure,
-                failed,
-            );
-            assert_eq!(
-                effect, expected,
-                "cancelled={cancelled} projects_provider_failure={projects_provider_failure} failed={failed}"
-            );
-            assert!(
-                effect.releases_pool_key_lease(),
-                "every effect branch must release the pool key lease"
-            );
-        }
     }
 
     #[test]
@@ -1543,10 +1425,19 @@ mod tests {
         // cancellation: cancelled turns skip the stream report entirely, which
         // would defeat the point of reclaiming it.
         let outcome = ResponsesWebSocketTurnOutcome::relay_task_abandoned();
+        let facts = attempt_facts_for_outcome(None, outcome);
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: true,
+            observed_finish: false,
+            has_parser_error: false,
+        });
 
-        assert_eq!(outcome.status_code(), 500);
-        assert!(!outcome.cancelled());
-        assert!(outcome.forced_error().is_some());
+        assert_eq!(settlement.status_code, 500);
+        assert_eq!(settlement.billing, AttemptBilling::Billed);
+        assert!(!facts.provider.cancelled_by_provider());
+        assert!(facts.forced_error().is_some());
+        assert!(settlement.submit_execution_report);
     }
 
     #[test]

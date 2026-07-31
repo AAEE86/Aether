@@ -10,7 +10,7 @@ use super::adapter::{
     resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective,
     ResponsesWebSocketRebindSafety,
 };
-use super::lifecycle::{queue_turn_finalization, ActiveResponsesWebSocketTurn};
+use super::lifecycle::{queue_turn_finalization, ActiveProviderAttempt};
 use super::request::{
     build_planning_parts, planned_response_create_event, response_create_has_previous_response_id,
 };
@@ -304,7 +304,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     // pending usage 行、占着 candidate 和 pool key lease 的 attempt。
     if let Err(orphan) = bound
         .turn_state
-        .resume(ActiveResponsesWebSocketTurn::new(state, turn))
+        .resume(ActiveProviderAttempt::new(state, turn))
     {
         drop(orphan);
         return false;
