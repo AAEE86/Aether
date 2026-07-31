@@ -12,7 +12,7 @@ use super::client::{adapter_drain_ready, forward_client_message, RelayDispositio
 use super::frame::ParsedResponsesWebSocketFrame;
 use super::lifecycle::{
     await_pending_adapter_observation, finalize_active_turn, queue_turn_finalization,
-    ActiveProviderAttempt,
+    settle_turn_finalization, ActiveProviderAttempt, PreviousAttemptSettled,
 };
 use super::quota::{
     active_continuation_can_retry_from_full_input, detach_exhausted_upstream,
@@ -389,13 +389,23 @@ pub(super) async fn relay_bound_connection(
                 let mut quota_relay_action = classify_quota_relay(quota_facts);
                 if matches!(quota_relay_action, QuotaRelayAction::AttemptTransparentRetry) {
                     // detach_attempt 保留 logical turn：重试是同一轮请求的下一个 attempt。
-                    let mut retry_turn = bound.turn_state.detach_attempt().map(ActiveProviderAttempt::disarm);
-                    if let Some(turn) = retry_turn.as_mut() {
-                        turn.release_admission().await;
-                    }
-                    if retry_active_turn_after_quota_exhaustion(bound, state, context).await {
-                        if let Some(turn) = retry_turn {
-                            queue_turn_finalization(
+                    let retry_turn = bound
+                        .turn_state
+                        .detach_attempt()
+                        .map(ActiveProviderAttempt::disarm);
+                    // 先结算旧 attempt 并等它落地，再规划下一个 attempt。两个理由：
+                    //
+                    // 1. 规划要读 health / adaptive / pool 状态，而这些正是旧
+                    //    attempt 结算时才投射的。普通的新 turn 早就在 client.rs 里
+                    //    用 await_pending_turn_finalization 挡住了「基于陈旧状态
+                    //    规划」，透明重试这条路径原先漏了这一步。
+                    // 2. 旧 attempt 还占着自己的 pool key lease。不先释放，重试就
+                    //    可能因为「这把 key 仍被占用」而挑不到本该可用的替代 key，
+                    //    或者干脆判成无可用供应商。
+                    let settled = match retry_turn {
+                        Some(mut turn) => {
+                            turn.release_admission().await;
+                            settle_turn_finalization(
                                 bound,
                                 state,
                                 turn,
@@ -403,20 +413,17 @@ pub(super) async fn relay_bound_connection(
                                     ResponsesWebSocketTurnOutcome::upstream_closed,
                                 ),
                             )
-                            .await;
+                            .await
                         }
+                        None => PreviousAttemptSettled::nothing_to_settle(),
+                    };
+                    if retry_active_turn_after_quota_exhaustion(bound, state, context, settled).await
+                    {
                         continue;
                     }
-                    if let Some(turn) = retry_turn {
-                        let restored = bound
-                            .turn_state
-                            .resume(ActiveProviderAttempt::new(state, turn));
-                        debug_assert!(
-                            restored.is_ok(),
-                            "a failed transparent retry must be able to restore its attempt"
-                        );
-                        drop(restored);
-                    }
+                    // 重试失败。旧 attempt 已经结算，logical turn 仍停在
+                    // Replanning，所以后面分支里的 end() / finalize_active_turn
+                    // 只会清掉 logical turn 而不会交出 attempt——不存在重复结算。
                     quota_relay_action = classify_quota_relay(QuotaRelayFacts {
                         retry_current_turn: false,
                         transparent_retry_failed: true,

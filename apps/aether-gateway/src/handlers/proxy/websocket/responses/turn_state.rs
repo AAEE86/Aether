@@ -199,6 +199,26 @@ mod tests {
         )
     }
 
+    /// 透明重试失败之后：旧 attempt 已经被 detach 并结算过，logical turn 仍停在
+    /// `Replanning`。此时 `end()` 不能再交出 attempt，否则同一个 attempt 会被
+    /// 结算两次（两条 usage terminal、两次 pool lease 释放）。
+    #[test]
+    fn ending_a_replanning_turn_does_not_hand_out_a_second_attempt() {
+        let mut state = ResponsesTurnState::Idle;
+        state.begin(logical(), FakeAttempt(1));
+
+        let detached = state.detach_attempt();
+        assert_eq!(detached, Some(FakeAttempt(1)), "the attempt is settled once");
+        assert!(matches!(state, ResponsesTurnState::Replanning { .. }));
+
+        // 结算已经发生，没有第二个 attempt 可交。
+        assert!(
+            state.end().is_none(),
+            "a replanning turn must not yield a second attempt to settle"
+        );
+        assert!(state.accepts_new_response_create());
+    }
+
     #[test]
     fn idle_has_no_turn_and_accepts_a_new_response_create() {
         let state = ResponsesTurnState::<FakeAttempt>::Idle;
