@@ -148,14 +148,69 @@ fn event_is_started(event: &Value) -> bool {
     )
 }
 
+/// `response.incomplete` 的合法终态 reason 白名单。
+///
+/// 这些 reason 表示上游按规则正常结束了本轮响应（写满 `max_output_tokens`、
+/// 命中内容过滤、按工具调用截断），标准流解析里它们会变成 `length` /
+/// `content_filter` / `tool_calls` 这类正常 finish，和
+/// `openai_responses_incomplete_finish_reason` 的既有映射保持一致，因此不能
+/// 当成 provider failure 记账。
+const LEGITIMATE_RESPONSES_INCOMPLETE_REASONS: [&str; 5] = [
+    "max_output_tokens",
+    "max_tokens",
+    "content_filter",
+    "tool_calls",
+    "function_call",
+];
+
+/// 读取 `response.incomplete` 携带的 `incomplete_details.reason`。
+///
+/// 标准位置是 `response.incomplete_details.reason`；批量封装偶尔把
+/// `incomplete_details` 直接放在事件顶层，两处都要看，否则合法终态会被漏判。
+fn responses_incomplete_reason(event: &Value) -> Option<&str> {
+    [
+        event.pointer("/response/incomplete_details/reason"),
+        event.pointer("/incomplete_details/reason"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .map(str::trim)
+    .find(|reason| !reason.is_empty())
+}
+
+/// 判断一个 `response.incomplete` 是否是合法终态。
+///
+/// reason 缺失或不在白名单内（例如 `error`、`server_error`）时继续按
+/// provider failure 处理：这类 incomplete 说明上游确实没能正常收尾，仍应扣
+/// 供应商健康分。
+fn responses_incomplete_is_legitimate_terminal(event: &Value) -> bool {
+    responses_incomplete_reason(event).is_some_and(|reason| {
+        LEGITIMATE_RESPONSES_INCOMPLETE_REASONS
+            .iter()
+            .any(|candidate| reason.eq_ignore_ascii_case(candidate))
+    })
+}
+
 fn terminal_for_event(event: &Value) -> Option<ResponsesWebSocketFrameTerminal> {
     match event_type_of(event).unwrap_or_default() {
         "response.completed" => Some(ResponsesWebSocketFrameTerminal {
             status_code: websocket_event_status_code(event, 200),
             cancelled: false,
         }),
+        // 合法 incomplete（例如写满 max_output_tokens）是正常终态，默认按 200
+        // 记账，不再一律当 502 provider failure；reason 缺失或未知时保留原来的
+        // 502 默认值。显式 `status_code` 和 error code 映射仍然优先于默认值，
+        // 所以带 `rate_limit_exceeded` 的 incomplete 依旧是 429。
         "response.incomplete" => Some(ResponsesWebSocketFrameTerminal {
-            status_code: websocket_event_status_code(event, 502),
+            status_code: websocket_event_status_code(
+                event,
+                if responses_incomplete_is_legitimate_terminal(event) {
+                    200
+                } else {
+                    502
+                },
+            ),
             cancelled: false,
         }),
         "response.cancelled" => Some(ResponsesWebSocketFrameTerminal {
@@ -279,6 +334,95 @@ mod tests {
         )
         .expect("valid frame");
         assert_eq!(failed.status(), Some(429));
+    }
+
+    #[test]
+    fn a_legitimate_incomplete_is_a_terminal_but_not_a_provider_failure() {
+        for reason in [
+            "max_output_tokens",
+            "max_tokens",
+            "content_filter",
+            "tool_calls",
+            "function_call",
+            "MAX_OUTPUT_TOKENS",
+        ] {
+            let raw = format!(
+                r#"{{"type":"response.incomplete","response":{{"status":"incomplete","incomplete_details":{{"reason":"{reason}"}}}}}}"#
+            );
+            let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("valid frame");
+
+            assert!(frame.is_terminal(), "{reason} should end the turn");
+            assert_eq!(
+                frame
+                    .terminal()
+                    .map(|terminal| (terminal.status_code, terminal.cancelled)),
+                Some((200, false)),
+                "{reason} is a legitimate terminal result, not a 502 provider failure"
+            );
+        }
+    }
+
+    #[test]
+    fn a_top_level_incomplete_details_reason_is_also_honored() {
+        let frame = ParsedResponsesWebSocketFrame::parse(
+            r#"{"type":"response.incomplete","incomplete_details":{"reason":"max_output_tokens"}}"#,
+        )
+        .expect("valid frame");
+
+        assert_eq!(frame.status(), Some(200));
+    }
+
+    #[test]
+    fn an_incomplete_without_a_legitimate_reason_stays_a_provider_failure() {
+        for raw in [
+            r#"{"type":"response.incomplete"}"#,
+            r#"{"type":"response.incomplete","response":{"incomplete_details":null}}"#,
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":""}}}"#,
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"error"}}}"#,
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"server_error"}}}"#,
+        ] {
+            let frame = ParsedResponsesWebSocketFrame::parse(raw).expect("valid frame");
+
+            assert_eq!(
+                frame.status(),
+                Some(502),
+                "an incomplete without a known-good reason must stay a provider failure: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legitimate_incomplete_still_respects_an_explicit_provider_status() {
+        let explicit = ParsedResponsesWebSocketFrame::parse(
+            r#"{"type":"response.incomplete","status_code":503,"response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        )
+        .expect("valid frame");
+        assert_eq!(explicit.status(), Some(503));
+
+        let quota = ParsedResponsesWebSocketFrame::parse(
+            r#"{"type":"response.incomplete","response":{"error":{"code":"rate_limit_exceeded"},"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        )
+        .expect("valid frame");
+        assert_eq!(quota.status(), Some(429));
+    }
+
+    #[test]
+    fn a_legitimate_incomplete_batched_inside_a_chunks_envelope_is_not_a_failure() {
+        let frame = ParsedResponsesWebSocketFrame::parse(
+            r#"{"chunks":[{"type":"response.output_text.delta","delta":"hi"},{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"usage":{"total_tokens":9}}}]}"#,
+        )
+        .expect("valid frame");
+
+        assert!(frame.is_chunked());
+        assert!(frame.is_terminal());
+        assert_eq!(frame.status(), Some(200));
+        assert_eq!(frame.event_type(), Some("response.incomplete"));
+        assert_eq!(
+            frame.terminal_event().and_then(|event| event
+                .pointer("/response/usage/total_tokens")
+                .and_then(serde_json::Value::as_u64)),
+            Some(9)
+        );
     }
 
     #[test]
