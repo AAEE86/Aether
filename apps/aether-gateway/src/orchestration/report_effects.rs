@@ -16,6 +16,9 @@ use serde_json::{json, Value};
 use tracing::warn;
 use uuid::Uuid;
 
+use super::codex_quota_breaker::{
+    install_codex_quota_exhaustion_breaker, log_codex_quota_breaker_install_failure,
+};
 use crate::clock::current_unix_secs;
 use crate::handlers::shared::sync_provider_key_quota_status_snapshot;
 use crate::log_ids::short_request_id;
@@ -24,6 +27,7 @@ use crate::{AppState, GatewayError};
 const CODEX_QUOTA_CACHE_TTL_SECONDS: u64 = 30;
 const CODEX_QUOTA_CACHE_MAX_ENTRIES: usize = 4096;
 const RUNTIME_METADATA_CAS_MAX_ATTEMPTS: usize = 16;
+const CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD: &str = "codex_websocket_rate_limits";
 
 type HeaderFingerprintCache = Mutex<HashMap<String, (String, Instant)>>;
 
@@ -91,6 +95,41 @@ fn report_context_provider_response_headers(
     (!out.is_empty()).then_some(out)
 }
 
+fn codex_websocket_quota_from_report_context(report_context: Option<&Value>) -> Option<Value> {
+    report_context
+        .and_then(|context| context.get(CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD))
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+        .cloned()
+}
+
+fn codex_quota_snapshot_matches_metadata(status_snapshot: Option<&Value>, parsed: &Value) -> bool {
+    let expected_allowed = parsed
+        .get("allowed")
+        .and_then(admin_provider_quota_pure::coerce_json_bool);
+    let expected_limit_reached = parsed
+        .get("limit_reached")
+        .and_then(admin_provider_quota_pure::coerce_json_bool);
+    if expected_allowed.is_none() && expected_limit_reached.is_none() {
+        return true;
+    }
+    let Some(quota) = status_snapshot
+        .and_then(|snapshot| snapshot.get("quota"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    let expected_exhausted = admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(parsed);
+    quota.get("exhausted").and_then(Value::as_bool) == Some(expected_exhausted)
+        && quota
+            .get("allowed")
+            .and_then(admin_provider_quota_pure::coerce_json_bool)
+            == expected_allowed
+        && quota
+            .get("limit_reached")
+            .and_then(admin_provider_quota_pure::coerce_json_bool)
+            == expected_limit_reached
+}
+
 fn is_volatile_compare_field(key: &str) -> bool {
     key == "updated_at" || key.ends_with("_reset_seconds") || key.ends_with("_reset_after_seconds")
 }
@@ -124,6 +163,54 @@ fn fingerprint_codex_payload(value: &Value) -> Option<String> {
         normalized.insert(key.clone(), canonicalize_value(value));
     }
     serde_json::to_string(&Value::Object(normalized)).ok()
+}
+
+/// Reject an out-of-order WebSocket snapshot before the catalog CAS. The
+/// provider emits `used_percent=100` immediately before a terminal quota
+/// error; a delayed pre-terminal `99` frame must never roll that state back.
+fn codex_snapshot_regresses(current: &Value, incoming: &Value) -> bool {
+    let current_exhausted = admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(current);
+    let incoming_exhausted =
+        admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(incoming);
+    let current_reset = current
+        .get("primary_reset_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    let incoming_reset = incoming
+        .get("primary_reset_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+
+    if current_exhausted && !incoming_exhausted {
+        // A lower reset timestamp denotes a newly opened window; otherwise a
+        // non-exhausted snapshot is stale or incomplete.
+        if incoming_reset.is_none() || incoming_reset >= current_reset {
+            return true;
+        }
+    }
+
+    if current_reset == incoming_reset {
+        let current_used = current
+            .get("primary_used_percent")
+            .and_then(admin_provider_quota_pure::coerce_json_f64);
+        let incoming_used = incoming
+            .get("primary_used_percent")
+            .and_then(admin_provider_quota_pure::coerce_json_f64);
+        if current_used
+            .zip(incoming_used)
+            .is_some_and(|(current, incoming)| current > incoming + f64::EPSILON)
+        {
+            return true;
+        }
+    }
+
+    let current_updated = current
+        .get("updated_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    let incoming_updated = incoming
+        .get("updated_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    current_updated
+        .zip(incoming_updated)
+        .is_some_and(|(current, incoming)| current > incoming && current_reset == incoming_reset)
 }
 
 fn get_cached_codex_quota_fingerprint(key_id: &str, now: Instant) -> Option<String> {
@@ -328,6 +415,35 @@ fn gemini_cli_credits_from_stream_payload(
             )
         {
             latest = Some(credits);
+        }
+    }
+    latest
+}
+
+fn codex_websocket_quota_from_stream_payload(
+    payload: &GatewayStreamReportRequest,
+    now_unix_secs: u64,
+) -> Option<Value> {
+    let body_base64 = payload.provider_body_base64.as_deref()?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(body_base64)
+        .ok()?;
+    let text = std::str::from_utf8(&body).ok()?;
+    let mut latest = None::<Value>;
+    for raw_line in text.lines() {
+        let line = raw_line.trim_matches('\r').trim();
+        let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+        if data.is_empty() || data == "[DONE]" || data.starts_with(':') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if let Some(quota) = admin_provider_quota_pure::parse_codex_websocket_rate_limits_response(
+            &value,
+            now_unix_secs,
+        ) {
+            latest = Some(quota);
         }
     }
     latest
@@ -646,21 +762,40 @@ async fn apply_local_sync_report_effect(state: &AppState, payload: &GatewaySyncR
 }
 
 async fn apply_local_stream_report_effect(state: &AppState, payload: &GatewayStreamReportRequest) {
-    if let Err(err) = sync_codex_quota_from_response_headers(
-        state,
-        payload.report_context.as_ref(),
-        &payload.headers,
-    )
-    .await
+    let websocket_quota_seen = match sync_codex_websocket_quota_from_stream_payload(state, payload)
+        .await
     {
-        warn!(
-            event_name = "codex_realtime_quota_sync_failed",
-            log_type = "ops",
-            report_kind = %payload.report_kind,
-            report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
-            error = ?err,
-            "gateway failed to persist codex realtime quota from stream response headers"
-        );
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist Codex realtime quota from WebSocket response body"
+            );
+            false
+        }
+    };
+    if !websocket_quota_seen {
+        if let Err(err) = sync_codex_quota_from_response_headers(
+            state,
+            payload.report_context.as_ref(),
+            &payload.headers,
+        )
+        .await
+        {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist codex realtime quota from stream response headers"
+            );
+        }
     }
     if let Err(err) = sync_grok_quota_from_report_context(
         state,
@@ -834,11 +969,6 @@ async fn sync_codex_quota_from_response_headers(
     report_context: Option<&Value>,
     headers: &BTreeMap<String, String>,
 ) -> Result<bool, GatewayError> {
-    let key_id = match report_context_key_id(report_context) {
-        Some(value) => value,
-        None => return Ok(false),
-    };
-
     let now_unix_secs = current_unix_secs();
     let provider_headers = report_context_provider_response_headers(report_context);
     let parsed_from_provider_headers = provider_headers.as_ref().and_then(|headers| {
@@ -849,11 +979,54 @@ async fn sync_codex_quota_from_response_headers(
     else {
         return Ok(false);
     };
+    sync_codex_quota_metadata(state, report_context, parsed, "response_headers").await
+}
+
+async fn sync_codex_websocket_quota_from_stream_payload(
+    state: &AppState,
+    payload: &GatewayStreamReportRequest,
+) -> Result<Option<bool>, GatewayError> {
+    let now_unix_secs = current_unix_secs();
+    let parsed = codex_websocket_quota_from_report_context(payload.report_context.as_ref())
+        .or_else(|| codex_websocket_quota_from_stream_payload(payload, now_unix_secs));
+    let Some(parsed) = parsed else {
+        return Ok(None);
+    };
+    Ok(Some(
+        sync_codex_quota_metadata(
+            state,
+            payload.report_context.as_ref(),
+            parsed,
+            "websocket_response_body",
+        )
+        .await?,
+    ))
+}
+
+async fn sync_codex_quota_metadata(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+    source: &'static str,
+) -> Result<bool, GatewayError> {
+    if aether_admin::provider::quota::codex_rate_limit_metadata_exhausted(&parsed) {
+        if let Err(error) =
+            install_codex_quota_exhaustion_breaker(state, report_context, &parsed, source).await
+        {
+            log_codex_quota_breaker_install_failure(&error);
+        }
+    }
+
+    let key_id = match report_context_key_id(report_context) {
+        Some(value) => value,
+        None => return Ok(false),
+    };
     let Some(incoming_fingerprint) = fingerprint_codex_payload(&parsed) else {
         return Ok(false);
     };
 
     let now = Instant::now();
+    let now_unix_secs = current_unix_secs();
     if get_cached_codex_quota_fingerprint(&key_id, now).as_deref()
         == Some(incoming_fingerprint.as_str())
     {
@@ -895,7 +1068,13 @@ async fn sync_codex_quota_from_response_headers(
         set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
         return Ok(false);
     };
-    if current_fingerprint == incoming_fingerprint {
+    if current_fingerprint == incoming_fingerprint
+        && codex_quota_snapshot_matches_metadata(key.status_snapshot.as_ref(), &parsed)
+    {
+        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint, now);
+        return Ok(false);
+    }
+    if codex_snapshot_regresses(&current_codex, &parsed) {
         set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
         return Ok(false);
     }
@@ -906,7 +1085,7 @@ async fn sync_codex_quota_from_response_headers(
         key.status_snapshot.as_ref(),
         provider.provider_type.as_str(),
         updated_upstream_metadata.as_ref(),
-        "response_headers",
+        source,
     );
     let updated = state
         .update_provider_catalog_key_runtime_metadata(&ProviderCatalogKeyRuntimeMetadataUpdate {
@@ -926,6 +1105,14 @@ async fn sync_codex_quota_from_response_headers(
     // conflict means a newer snapshot/delta won, so avoid replaying stale
     // data over it.
     Ok(false)
+}
+
+pub(crate) async fn sync_codex_websocket_quota_metadata(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+) -> Result<bool, GatewayError> {
+    sync_codex_quota_metadata(state, report_context, parsed, "websocket_response_body").await
 }
 
 #[cfg(test)]
@@ -1020,6 +1207,33 @@ mod tests {
         assert_eq!(status["learning_confidence"], json!(0.7));
         assert_eq!(status["oauth"], json!({"invalid":false}));
         assert_eq!(status["quota"]["provider_type"], json!("gemini_cli"));
+    }
+
+    #[test]
+    fn codex_quota_snapshot_match_requires_explicit_signal_projection() {
+        let parsed = json!({
+            "allowed": false,
+            "limit_reached": true,
+        });
+
+        assert!(!codex_quota_snapshot_matches_metadata(
+            Some(&json!({
+                "quota": {
+                    "exhausted": true
+                }
+            })),
+            &parsed,
+        ));
+        assert!(codex_quota_snapshot_matches_metadata(
+            Some(&json!({
+                "quota": {
+                    "exhausted": true,
+                    "allowed": false,
+                    "limit_reached": true
+                }
+            })),
+            &parsed,
+        ));
     }
 
     #[test]
@@ -1207,5 +1421,43 @@ mod tests {
             grok_wait_duration_seconds_from_text("no duration here"),
             None
         );
+    }
+
+    #[test]
+    fn codex_quota_snapshot_does_not_roll_back_exhaustion() {
+        let current = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 2_000,
+            "updated_at": 100
+        });
+        let delayed = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 2_000,
+            "updated_at": 101
+        });
+        assert!(codex_snapshot_regresses(&current, &delayed));
+    }
+
+    #[test]
+    fn codex_quota_snapshot_allows_a_new_reset_window() {
+        let current = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 2_000,
+            "updated_at": 100
+        });
+        let refreshed = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 1.0,
+            "primary_reset_at": 1_000,
+            "updated_at": 101
+        });
+        assert!(!codex_snapshot_regresses(&current, &refreshed));
     }
 }

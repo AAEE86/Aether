@@ -151,6 +151,8 @@ pub(crate) struct AdminProviderCreateRequest {
     #[serde(default)]
     pub(crate) keep_priority_on_conversion: Option<bool>,
     #[serde(default)]
+    pub(crate) responses_websocket_enabled: Option<bool>,
+    #[serde(default)]
     pub(crate) is_active: Option<bool>,
     #[serde(default)]
     pub(crate) concurrent_limit: Option<i32>,
@@ -209,6 +211,8 @@ pub(crate) struct AdminProviderUpdateRequest {
     pub(crate) provider_priority: Option<i32>,
     #[serde(default)]
     pub(crate) keep_priority_on_conversion: Option<bool>,
+    #[serde(default)]
+    pub(crate) responses_websocket_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) is_active: Option<bool>,
     #[serde(default)]
