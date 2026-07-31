@@ -23,6 +23,7 @@ use super::quota::{
 use super::relay_policy::{
     classify_quota_relay, fatal_relay_policy, FatalRelaySignal, QuotaRelayAction, QuotaRelayFacts,
 };
+use super::settlement::settle_signal_for_client_delivery_failure;
 use super::state::BoundResponsesConnection;
 use super::turn::{
     ResponsesProviderAttempt, ResponsesWebSocketTurnObservation, ResponsesWebSocketTurnOutcome,
@@ -40,6 +41,11 @@ use crate::handlers::proxy::websocket::transport::{
 use crate::AppState;
 
 const LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
+
+/// 写客户端 socket 失败时记录的投递失败原因。刻意不说「客户端在终态前断开」：
+/// 供应商的终态可能已经到达，只是最后一跳没送出去。
+const CLIENT_DELIVERY_FAILED_REASON: &str =
+    "gateway could not relay the provider event to the client";
 
 macro_rules! debug {
     ($($arg:tt)*) => {
@@ -484,12 +490,18 @@ pub(super) async fn relay_bound_connection(
                         websocket = true,
                         trace_id = %context.trace_id,
                         error_code = error.as_str(),
+                        provider_terminal_reached = terminal_outcome.is_some(),
                         "gateway could not relay a provider event to the client"
                     );
+                    // 投递失败是独立事实，不能覆盖已经到达的 provider 终态：
+                    // 供应商已经完成推理并消耗 token，账单按它的终态计。
+                    bound
+                        .turn_state
+                        .record_client_delivery_aborted(CLIENT_DELIVERY_FAILED_REASON);
                     finalize_active_turn(
                         bound,
                         state,
-                        ResponsesWebSocketTurnOutcome::client_disconnected(),
+                        settle_signal_for_client_delivery_failure(terminal_outcome),
                     ).await;
                     close_bound_upstream(bound).await;
                     break;
