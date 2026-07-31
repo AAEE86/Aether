@@ -232,6 +232,52 @@ impl ResponsesWebSocketTurnOutcome {
     }
 }
 
+/// 一轮 turn 结束后要投射给供应商/密钥池的效果。
+///
+/// 每个分支都会释放 pool key lease：`ProviderFailure` 由 `PoolError` 释放，
+/// `ProviderSuccess` 由 `PoolSuccessStream` 释放，其余情况直接释放。少一条
+/// 分支就会把 lease 挂到 TTL 过期，等于短时间占死一把 key。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesWebSocketTurnEffect {
+    /// 既不投射成功也不投射失败，只把 lease 还回去。
+    ReleasePoolKeyLease,
+    ProviderFailure,
+    ProviderSuccess,
+}
+
+#[cfg(test)]
+impl ResponsesWebSocketTurnEffect {
+    /// 把「每个分支都必须释放 lease」这条不变量显式化，便于测试锁住
+    /// 「没进任何分支导致 lease 泄漏」这类回归。
+    const fn releases_pool_key_lease(self) -> bool {
+        match self {
+            Self::ReleasePoolKeyLease | Self::ProviderFailure | Self::ProviderSuccess => true,
+        }
+    }
+}
+
+/// 判定一轮 turn 结束后要投射的效果。
+///
+/// 关键分支是「记账层判成 failed，但这一轮没有投射供应商失败」：例如合法的
+/// `response.incomplete`（写满 max_output_tokens）。共享 usage 判定目前仍会
+/// 把这类终态记成失败，但供应商本身工作正常，既不该扣健康分，也不能因为落
+/// 不到任何分支而漏掉 lease 释放。
+const fn classify_responses_websocket_turn_effect(
+    cancelled: bool,
+    projects_provider_failure: bool,
+    failed: bool,
+) -> ResponsesWebSocketTurnEffect {
+    if cancelled {
+        ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
+    } else if projects_provider_failure {
+        ResponsesWebSocketTurnEffect::ProviderFailure
+    } else if failed {
+        ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
+    } else {
+        ResponsesWebSocketTurnEffect::ProviderSuccess
+    }
+}
+
 pub(super) struct ResponsesWebSocketTurn {
     plan: ExecutionPlan,
     trace_id: String,
@@ -816,26 +862,32 @@ impl ResponsesWebSocketTurn {
                 || outcome.forced_error().is_some()
                 || summary.parser_error.is_some()
                 || missing_terminal);
+        let provider_effect =
+            classify_responses_websocket_turn_effect(cancelled, projects_provider_failure, failed);
         let effects_completed =
             await_websocket_lifecycle_stage(&self.trace_id, "provider_effects", async {
-                if cancelled {
-                    release_local_pool_key_lease(state, effect_context).await;
-                } else if projects_provider_failure {
-                    let response_text = terminal_error_body
-                        .as_deref()
-                        .or(summary.parser_error.as_deref())
-                        .unwrap_or(outcome_reason.as_str());
-                    let mut effect = LocalStreamFailureEffect::new(
-                        status_code,
-                        &payload.headers,
-                        Some(response_text),
-                    );
-                    if outcome.stream_timeout() {
-                        effect = effect.with_stream_timeout();
+                match provider_effect {
+                    ResponsesWebSocketTurnEffect::ReleasePoolKeyLease => {
+                        release_local_pool_key_lease(state, effect_context).await;
                     }
-                    apply_local_stream_failure_effects(state, effect_context, effect).await;
-                } else if !failed {
-                    apply_local_stream_success_effects(state, effect_context, &payload).await;
+                    ResponsesWebSocketTurnEffect::ProviderFailure => {
+                        let response_text = terminal_error_body
+                            .as_deref()
+                            .or(summary.parser_error.as_deref())
+                            .unwrap_or(outcome_reason.as_str());
+                        let mut effect = LocalStreamFailureEffect::new(
+                            status_code,
+                            &payload.headers,
+                            Some(response_text),
+                        );
+                        if outcome.stream_timeout() {
+                            effect = effect.with_stream_timeout();
+                        }
+                        apply_local_stream_failure_effects(state, effect_context, effect).await;
+                    }
+                    ResponsesWebSocketTurnEffect::ProviderSuccess => {
+                        apply_local_stream_success_effects(state, effect_context, &payload).await;
+                    }
                 }
             })
             .await
@@ -1174,10 +1226,10 @@ mod tests {
 
     use super::super::frame::ParsedResponsesWebSocketFrame;
     use super::{
-        prepare_websocket_report_context, provider_terminal_outcome,
-        resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
-        ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
-        ResponsesWebSocketTurnTimeoutPhase,
+        classify_responses_websocket_turn_effect, prepare_websocket_report_context,
+        provider_terminal_outcome, resolve_responses_websocket_turn_timeouts,
+        websocket_event_as_sse_line, ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnEffect,
+        ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
     };
 
     #[test]
@@ -1294,6 +1346,148 @@ mod tests {
         assert_eq!(usage.input_tokens, 3);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.dimensions.get("total_tokens"), Some(&json!(8)));
+    }
+
+    #[test]
+    fn a_legitimate_incomplete_is_a_successful_provider_terminal_that_keeps_its_usage() {
+        // 写满 max_output_tokens 的 incomplete 是合法终态：状态码不再是 502，
+        // usage 观测器照样能看到 finish 和 token，记账层不该把它当解析失败。
+        let event = json!({
+            "type": "response.incomplete",
+            "response": {
+                "id": "resp_ws_incomplete_123",
+                "model": "gpt-5.6",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [],
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 7,
+                    "total_tokens": 11
+                }
+            }
+        });
+        let raw = serde_json::to_string(&event).expect("event should serialize");
+        let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("event should parse");
+        let outcome = provider_terminal_outcome(&frame);
+        assert_eq!(
+            outcome,
+            Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
+                status_code: 200,
+                cancelled: false
+            })
+        );
+        let outcome = outcome.expect("incomplete should end the turn");
+        assert!(!outcome.cancelled());
+        assert!(outcome.forced_error().is_none());
+        assert!(!outcome.stream_timeout());
+
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+        });
+        let mut observer = StreamingStandardTerminalObserver::default();
+        observer
+            .push_line(&report_context, websocket_event_as_sse_line(&event))
+            .expect("a legitimate incomplete must be accepted by the usage observer");
+        let summary = observer
+            .finish(&report_context)
+            .expect("terminal observer should finish")
+            .expect("terminal observer should produce a summary");
+        assert!(summary.observed_finish);
+        assert_eq!(summary.finish_reason.as_deref(), Some("length"));
+        assert!(summary.parser_error.is_none());
+        let usage = summary
+            .standardized_usage
+            .expect("incomplete usage must reach the terminal summary");
+        assert_eq!(usage.input_tokens, 4);
+        assert_eq!(usage.output_tokens, 7);
+
+        // finalize() 用这些事实决定是否投射供应商失败：合法 incomplete 必须
+        // 全部落在“非失败”一侧。
+        let missing_terminal = !outcome.cancelled() && !summary.observed_finish;
+        let projects_provider_failure = !outcome.cancelled()
+            && (outcome.status_code() >= 400
+                || outcome.forced_error().is_some()
+                || summary.parser_error.is_some()
+                || missing_terminal);
+        assert!(!missing_terminal);
+        assert!(!projects_provider_failure);
+    }
+
+    #[test]
+    fn an_incomplete_without_a_legitimate_reason_still_projects_a_provider_failure() {
+        let raw = r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"error"}}}"#;
+        let frame = ParsedResponsesWebSocketFrame::parse(raw).expect("event should parse");
+
+        assert_eq!(
+            provider_terminal_outcome(&frame),
+            Some(ResponsesWebSocketTurnOutcome::ProviderTerminal {
+                status_code: 502,
+                cancelled: false
+            })
+        );
+    }
+
+    #[test]
+    fn a_legitimate_incomplete_still_releases_the_pool_key_lease() {
+        // 共享 usage 判定目前仍把 response.incomplete 记成终态失败，于是会出现
+        // failed=true 而 projects_provider_failure=false 的组合。这种组合必须
+        // 明确落到“只释放 lease”的分支，否则 lease 会挂到 TTL 过期。
+        let effect = classify_responses_websocket_turn_effect(false, false, true);
+
+        assert_eq!(effect, ResponsesWebSocketTurnEffect::ReleasePoolKeyLease);
+        assert!(effect.releases_pool_key_lease());
+    }
+
+    #[test]
+    fn every_turn_effect_releases_the_pool_key_lease() {
+        for (cancelled, projects_provider_failure, failed, expected) in [
+            (
+                true,
+                false,
+                false,
+                ResponsesWebSocketTurnEffect::ReleasePoolKeyLease,
+            ),
+            (
+                true,
+                true,
+                true,
+                ResponsesWebSocketTurnEffect::ReleasePoolKeyLease,
+            ),
+            (
+                false,
+                true,
+                true,
+                ResponsesWebSocketTurnEffect::ProviderFailure,
+            ),
+            (
+                false,
+                false,
+                true,
+                ResponsesWebSocketTurnEffect::ReleasePoolKeyLease,
+            ),
+            (
+                false,
+                false,
+                false,
+                ResponsesWebSocketTurnEffect::ProviderSuccess,
+            ),
+        ] {
+            let effect = classify_responses_websocket_turn_effect(
+                cancelled,
+                projects_provider_failure,
+                failed,
+            );
+            assert_eq!(
+                effect, expected,
+                "cancelled={cancelled} projects_provider_failure={projects_provider_failure} failed={failed}"
+            );
+            assert!(
+                effect.releases_pool_key_lease(),
+                "every effect branch must release the pool key lease"
+            );
+        }
     }
 
     #[test]
