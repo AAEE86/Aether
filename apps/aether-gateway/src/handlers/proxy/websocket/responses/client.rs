@@ -10,7 +10,7 @@ use wreq::ws::message::Message as WreqWsMessage;
 use super::adapter::{resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective};
 use super::lifecycle::{
     await_pending_turn_finalization, queue_turn_finalization,
-    send_responses_websocket_turn_start_error, ActiveResponsesWebSocketTurn,
+    send_responses_websocket_turn_start_error, ActiveProviderAttempt,
 };
 use super::quota::{mark_active_response_retry_unsafe, send_previous_response_not_found};
 use super::redaction::redact_responses_websocket_client_event;
@@ -369,7 +369,7 @@ pub(super) async fn forward_client_message(
             turn.set_provider_response_headers(bound.upstream_response_headers.clone());
             bound.turn_state.begin(
                 LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id),
-                ActiveResponsesWebSocketTurn::new(state, turn),
+                ActiveProviderAttempt::new(state, turn),
             );
             bound.next_turn_index = bound.next_turn_index.saturating_add(1);
 
@@ -697,7 +697,7 @@ async fn forward_replanned_response_create(
         bound.body_normalization = normalization;
         bound.turn_state.begin(
             LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id.clone()),
-            ActiveResponsesWebSocketTurn::new(state, turn),
+            ActiveProviderAttempt::new(state, turn),
         );
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
         debug!(
@@ -769,7 +769,7 @@ async fn forward_replanned_response_create(
     bound.binding_identity = replacement.binding_identity;
     bound.turn_state.begin(
         LogicalTurn::new(client_event, turn_index, logical_turn_id),
-        ActiveResponsesWebSocketTurn::new(state, turn),
+        ActiveProviderAttempt::new(state, turn),
     );
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
     bound.upstream_response_headers = replacement.upstream_response_headers;

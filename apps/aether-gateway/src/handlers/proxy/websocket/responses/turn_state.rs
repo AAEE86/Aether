@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 
-use super::lifecycle::ActiveResponsesWebSocketTurn;
+use super::lifecycle::ActiveProviderAttempt;
 use super::request::response_create_has_previous_response_id;
 
 /// 客户端一次 `response.create` 对应的 logical turn。
@@ -58,9 +58,9 @@ impl LogicalTurn {
 /// 连接上「有没有正在进行的 logical turn」这一唯一事实。
 ///
 /// 类型参数只为测试留出注入点：生产代码一律用默认的
-/// [`ActiveResponsesWebSocketTurn`]，测试用轻量替身驱动同一套转换逻辑，
+/// [`ActiveProviderAttempt`]，测试用轻量替身驱动同一套转换逻辑，
 /// 不必构造 `AppState` 和真实 socket。
-pub(super) enum ResponsesTurnState<A = ActiveResponsesWebSocketTurn> {
+pub(super) enum ResponsesTurnState<A = ActiveProviderAttempt> {
     /// 没有进行中的 logical turn。上游可能仍绑定，也可能已被 detach。
     Idle,
     /// 一个 logical turn 正在等待 provider 终态：logical 与当前 attempt 同时存在。

@@ -19,6 +19,7 @@ mod redaction;
 mod relay_policy;
 mod request;
 mod session;
+mod settlement;
 mod state;
 mod turn;
 mod turn_state;
