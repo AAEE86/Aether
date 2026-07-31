@@ -180,8 +180,13 @@ export interface ChatPiiRedactionProviderConfig {
   enabled: boolean
 }
 
+export interface ResponsesWebSocketProviderConfig {
+  enabled: boolean
+}
+
 export interface ProviderConfig {
   chat_pii_redaction?: ChatPiiRedactionProviderConfig
+  responses_websocket?: ResponsesWebSocketProviderConfig
   pool_advanced?: PoolAdvancedConfig
   failover_rules?: FailoverRulesConfig
   claude_code_advanced?: ClaudeCodeAdvancedConfig
@@ -901,6 +906,7 @@ export interface ProviderWithEndpointsSummary {
   ops_configured: boolean  // 是否配置了扩展操作（余额监控等）
   ops_architecture_id?: string  // 扩展操作使用的架构 ID（如 cubence, anyrouter）
   kiro_simulated_cache_enabled?: boolean
+  responses_websocket_enabled?: boolean
   ops_quota_alert_enabled?: boolean
   created_at: string
   updated_at: string

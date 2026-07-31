@@ -333,6 +333,19 @@
           />
         </div>
 
+        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
+          <div class="space-y-0.5">
+            <span class="text-sm font-medium">{{ legacyT('Responses WebSocket 模式') }}</span>
+            <p class="text-xs text-muted-foreground leading-relaxed">
+              {{ legacyT('允许此提供商处理标准 Responses API WebSocket 请求。仅在已验证兼容性后启用。') }}
+            </p>
+          </div>
+          <Switch
+            :model-value="form.responses_websocket_enabled"
+            @update:model-value="(v: boolean) => form.responses_websocket_enabled = v"
+          />
+        </div>
+
         <div class="flex items-center justify-between gap-4 p-3 border rounded-lg bg-muted/50">
           <div class="space-y-0.5">
             <span class="text-sm font-medium">{{ legacyT('敏感信息保护') }}</span>
@@ -455,6 +468,8 @@ const form = ref({
   pool_mode_enabled: false,
   // Kiro 专属配置
   kiro_simulated_cache_enabled: false,
+  // Responses WebSocket 配置
+  responses_websocket_enabled: false,
 })
 
 // 重置表单
@@ -485,6 +500,8 @@ function resetForm() {
     pool_mode_enabled: false,
     // Kiro 专属配置
     kiro_simulated_cache_enabled: false,
+    // Responses WebSocket 配置
+    responses_websocket_enabled: false,
   }
 }
 
@@ -519,6 +536,8 @@ function loadProviderData() {
     pool_mode_enabled: poolAdvanced !== null,
     // Kiro 专属配置
     kiro_simulated_cache_enabled: props.provider.kiro_simulated_cache_enabled ?? false,
+    // Responses WebSocket 配置
+    responses_websocket_enabled: props.provider.responses_websocket_enabled ?? false,
   }
 }
 
@@ -575,6 +594,7 @@ const handleSubmit = async () => {
       quota_last_reset_at: quotaLastResetAt,
       quota_expires_at: quotaExpiresAt,
       keep_priority_on_conversion: form.value.keep_priority_on_conversion,
+      responses_websocket_enabled: form.value.responses_websocket_enabled,
       is_active: form.value.is_active,
       // 请求配置
       max_retries: form.value.max_retries ?? undefined,
