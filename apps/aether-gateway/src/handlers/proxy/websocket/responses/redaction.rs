@@ -78,7 +78,7 @@ mod tests {
     use super::super::request::{
         build_planning_parts, normalize_followup_response_create, planned_response_create_event,
     };
-    use super::super::state::ActiveResponsesWebSocketRequest;
+    use super::super::turn_state::LogicalTurn;
     use super::super::turn::prepare_responses_websocket_turn_decision;
     use super::redact_responses_websocket_client_event;
     use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
@@ -435,9 +435,9 @@ mod tests {
         let state = redaction_enabled_state();
         let decision = control_decision();
         let effective_event = redacted_client_event(&state, &decision).await;
-        // 配额透明重试重放 active_response_create 里保存的事件，所以保存的必须
+        // 配额透明重试重放 LogicalTurn 里保存的事件，所以保存的必须
         // 已经是脱敏版，否则重试会把原文发给新的上游账号。
-        let active = ActiveResponsesWebSocketRequest::new(
+        let active = LogicalTurn::new(
             effective_event.clone(),
             2,
             "logical-turn-2".to_string(),

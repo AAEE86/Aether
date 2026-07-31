@@ -9,6 +9,7 @@ use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::binding::{UpstreamBindingIdentity, UpstreamBindingIdentityError};
 use super::request::planned_response_create_event;
 use super::state::{BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions};
+use super::turn_state::ResponsesTurnState;
 use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 use crate::handlers::proxy::websocket::session::RESPONSES_WEBSOCKET_SESSION_LIMITS;
 use crate::handlers::proxy::websocket::transport::{
@@ -115,12 +116,12 @@ async fn bind_responses_upstream_inner(
         adapter,
         client_model,
         provider_model,
-        response_in_flight: true,
         decision_template: decision.clone(),
         body_normalization: normalization,
         binding_identity,
-        active_turn: None,
-        active_response_create: None,
+        // 首条 response.create 已经发出，但这一轮的 logical turn 和 attempt 由调用方
+        // 通过 `ResponsesTurnState::begin` 装上：绑定本身不持有记账状态。
+        turn_state: ResponsesTurnState::Idle,
         next_turn_index: 2,
         upstream_response_headers: upstream.response_headers,
         pending_adapter_drain: None,

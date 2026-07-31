@@ -24,11 +24,11 @@ use super::lifecycle::{
 };
 use super::redaction::redact_responses_websocket_client_event;
 use super::request::{build_planning_parts, planned_response_create_event};
-use super::state::ActiveResponsesWebSocketRequest;
 use super::turn::{
     begin_responses_websocket_turn, prepare_responses_websocket_turn_decision,
     ResponsesWebSocketTurnOutcome,
 };
+use super::turn_state::LogicalTurn;
 use super::upstream::bind_responses_upstream;
 
 use crate::ai_serving::maybe_build_responses_websocket_decision;
@@ -413,12 +413,10 @@ pub(super) async fn run_responses_websocket(
         };
     first_turn.mark_upstream_request_sent();
     first_turn.set_provider_response_headers(bound.upstream_response_headers.clone());
-    bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(&state, first_turn));
-    bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
-        first_event,
-        1,
-        first_logical_turn_id,
-    ));
+    bound.turn_state.begin(
+        LogicalTurn::new(first_event, 1, first_logical_turn_id),
+        ActiveResponsesWebSocketTurn::new(&state, first_turn),
+    );
 
     relay_bound_connection(
         &mut client_socket,
@@ -532,9 +530,9 @@ mod tests {
         response_create_model_or_current,
     };
     use super::super::state::{
-        ActiveResponsesWebSocketRequest, BoundResponsesConnection,
-        ExhaustedResponsesWebSocketExclusions,
+        BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions,
     };
+    use super::super::turn_state::{LogicalTurn, ResponsesTurnState};
     use super::super::turn::{
         ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnObservation,
         ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
@@ -734,19 +732,21 @@ mod tests {
     #[test]
     fn quota_error_can_request_a_full_retry_only_before_public_response_state() {
         let mut bound = sample_bound_for_rebind_safety();
-        bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
-            json!({
-                "type": "response.create",
-                "previous_response_id": "resp-previous",
-            }),
-            2,
-            "logical-turn".to_string(),
-        ));
+        bound.turn_state = ResponsesTurnState::Replanning {
+            logical: LogicalTurn::new(
+                json!({
+                    "type": "response.create",
+                    "previous_response_id": "resp-previous",
+                }),
+                2,
+                "logical-turn".to_string(),
+            ),
+        };
 
         assert!(active_continuation_can_retry_from_full_input(&bound));
         bound
-            .active_response_create
-            .as_mut()
+            .turn_state
+            .logical_mut()
             .expect("active request")
             .mark_retry_unsafe("standard_response_event");
         assert!(!active_continuation_can_retry_from_full_input(&bound));
@@ -772,14 +772,16 @@ mod tests {
     #[test]
     fn full_continuation_retry_does_not_consume_a_successful_terminal_event() {
         let mut bound = sample_bound_for_rebind_safety();
-        bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
-            json!({
-                "type": "response.create",
-                "previous_response_id": "resp-previous",
-            }),
-            2,
-            "logical-turn".to_string(),
-        ));
+        bound.turn_state = ResponsesTurnState::Replanning {
+            logical: LogicalTurn::new(
+                json!({
+                    "type": "response.create",
+                    "previous_response_id": "resp-previous",
+                }),
+                2,
+                "logical-turn".to_string(),
+            ),
+        };
 
         assert!(should_request_full_continuation_retry(
             &bound,
@@ -879,7 +881,7 @@ mod tests {
 
     #[test]
     fn quota_retry_requires_an_explicitly_replay_safe_turn() {
-        let mut request = ActiveResponsesWebSocketRequest::new(
+        let mut request = LogicalTurn::new(
             json!({"type": "response.create", "model": "gpt-5.6-sol"}),
             2,
             "logical-turn".to_string(),
@@ -892,7 +894,7 @@ mod tests {
             Some("standard_response_event")
         );
 
-        let mut retried = ActiveResponsesWebSocketRequest::new(
+        let mut retried = LogicalTurn::new(
             json!({"type": "response.create", "model": "gpt-5.6-sol"}),
             2,
             "logical-turn".to_string(),
@@ -903,7 +905,7 @@ mod tests {
             Some("quota_retry_already_attempted")
         );
 
-        let mut client_control = ActiveResponsesWebSocketRequest::new(
+        let mut client_control = LogicalTurn::new(
             json!({"type": "response.create", "model": "gpt-5.6-sol"}),
             2,
             "logical-turn".to_string(),
@@ -914,7 +916,7 @@ mod tests {
             Some("client_control_event")
         );
 
-        let continuation = ActiveResponsesWebSocketRequest::new(
+        let continuation = LogicalTurn::new(
             json!({
                 "type": "response.create",
                 "model": "gpt-5.6-sol",
@@ -941,18 +943,18 @@ mod tests {
         );
         assert_eq!(
             bound
-                .active_response_create
-                .as_ref()
-                .and_then(ActiveResponsesWebSocketRequest::quota_retry_block_reason),
+                .turn_state
+                .logical()
+                .and_then(LogicalTurn::quota_retry_block_reason),
             None
         );
 
         observe_active_response_rebind_safety(&mut bound, &json!({"type": "response.created"}));
         assert_eq!(
             bound
-                .active_response_create
-                .as_ref()
-                .and_then(ActiveResponsesWebSocketRequest::quota_retry_block_reason),
+                .turn_state
+                .logical()
+                .and_then(LogicalTurn::quota_retry_block_reason),
             Some("standard_response_event")
         );
 
@@ -960,9 +962,9 @@ mod tests {
         observe_active_response_rebind_safety(&mut unknown, &json!({"type": "codex.unknown"}));
         assert_eq!(
             unknown
-                .active_response_create
-                .as_ref()
-                .and_then(ActiveResponsesWebSocketRequest::quota_retry_block_reason),
+                .turn_state
+                .logical()
+                .and_then(LogicalTurn::quota_retry_block_reason),
             Some("unrecognized_upstream_event")
         );
     }
@@ -1192,16 +1194,18 @@ mod tests {
             adapter,
             client_model: "gpt-5.6-sol".to_string(),
             provider_model: "gpt-5.6-sol".to_string(),
-            response_in_flight: true,
             decision_template: decision,
             body_normalization: ResponsesWebSocketBodyNormalization::for_tests("gpt-5.6-sol"),
             binding_identity,
-            active_turn: None,
-            active_response_create: Some(ActiveResponsesWebSocketRequest::new(
-                json!({"type": "response.create", "model": "gpt-5.6-sol"}),
-                1,
-                "logical-turn".to_string(),
-            )),
+            // Replanning：logical turn 在、attempt 不在。重放安全与配额排除都只看
+            // logical turn，所以这些用例不需要真实 socket 或真实 attempt。
+            turn_state: ResponsesTurnState::Replanning {
+                logical: LogicalTurn::new(
+                    json!({"type": "response.create", "model": "gpt-5.6-sol"}),
+                    1,
+                    "logical-turn".to_string(),
+                ),
+            },
             next_turn_index: 2,
             upstream_response_headers: BTreeMap::new(),
             pending_adapter_drain: None,

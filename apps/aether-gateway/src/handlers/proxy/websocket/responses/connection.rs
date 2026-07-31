@@ -21,8 +21,7 @@ use super::quota::{
     send_previous_response_not_found, should_request_full_continuation_retry,
 };
 use super::relay_policy::{
-    classify_quota_relay, classify_upstream_frame, fatal_relay_policy, FatalRelaySignal,
-    QuotaRelayAction, QuotaRelayFacts, UpstreamFrameAction, UpstreamFrameKind,
+    classify_quota_relay, fatal_relay_policy, FatalRelaySignal, QuotaRelayAction, QuotaRelayFacts,
 };
 use super::state::BoundResponsesConnection;
 use super::turn::{
@@ -65,7 +64,7 @@ pub(super) async fn relay_bound_connection(
     tokio::pin!(connection_deadline);
 
     loop {
-        let active_turn_deadline = bound.active_turn.as_ref().map(|turn| turn.deadline());
+        let active_turn_deadline = bound.turn_state.attempt().map(|turn| turn.deadline());
         tokio::select! {
             _ = &mut connection_deadline => {
                 finalize_active_turn(
@@ -79,7 +78,6 @@ pub(super) async fn relay_bound_connection(
                     "websocket_connection_limit_reached",
                     "WebSocket connection duration limit reached; reconnect to continue",
                 ).await;
-                bound.active_response_create = None;
                 close_bound_upstream(bound).await;
                 close_client_socket(client_socket, CLOSE_TRY_AGAIN, "connection_limit_reached").await;
                 break;
@@ -105,7 +103,6 @@ pub(super) async fn relay_bound_connection(
                     turn_deadline.phase.error_code(),
                     turn_deadline.phase.client_message(),
                 ).await;
-                bound.active_response_create = None;
                 close_bound_upstream(bound).await;
                 close_client_socket(
                     client_socket,
@@ -129,7 +126,6 @@ pub(super) async fn relay_bound_connection(
                     state,
                     ResponsesWebSocketTurnOutcome::connection_admission_lost(),
                 ).await;
-                bound.active_response_create = None;
                 close_bound_upstream(bound).await;
                 send_gateway_error_with_status(
                     client_socket,
@@ -147,7 +143,6 @@ pub(super) async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::client_disconnected(),
                     ).await;
-                    bound.active_response_create = None;
                     close_bound_upstream(bound).await;
                     break;
                 };
@@ -165,7 +160,6 @@ pub(super) async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::client_disconnected(),
                     ).await;
-                    bound.active_response_create = None;
                     close_bound_upstream(bound).await;
                     break;
                 };
@@ -200,7 +194,6 @@ pub(super) async fn relay_bound_connection(
                             code,
                             "Gateway could not forward the WebSocket event upstream",
                         ).await;
-                        bound.active_response_create = None;
                         close_bound_upstream(bound).await;
                         close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, code).await;
                         break;
@@ -214,7 +207,6 @@ pub(super) async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::upstream_closed(),
                     ).await;
-                    bound.active_response_create = None;
                     bound.upstream = None;
                     close_client_socket(client_socket, 1000, "upstream_closed").await;
                     break;
@@ -239,7 +231,6 @@ pub(super) async fn relay_bound_connection(
                         "responses_websocket_receive_failed",
                         "Provider connection closed unexpectedly",
                     ).await;
-                    bound.active_response_create = None;
                     bound.upstream = None;
                     close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, "upstream_receive_failed").await;
                     break;
@@ -268,7 +259,7 @@ pub(super) async fn relay_bound_connection(
                         chunked = parsed_upstream_frame
                             .as_ref()
                             .is_some_and(ParsedResponsesWebSocketFrame::is_chunked),
-                        active_turn = bound.active_turn.is_some(),
+                        active_turn = bound.turn_state.response_in_flight(),
                         "gateway received Responses WebSocket event"
                     );
                 }
@@ -315,11 +306,11 @@ pub(super) async fn relay_bound_connection(
                         let adapter = bound.adapter;
                         match parsed_upstream_frame.as_ref() {
                             Some(frame) => bound
-                                .active_turn
-                                .as_mut()
+                                .turn_state
+                                .attempt_mut()
                                 .and_then(|turn| turn.observe_upstream_frame(frame, adapter)),
                             None => {
-                                if let Some(turn) = bound.active_turn.as_mut() {
+                                if let Some(turn) = bound.turn_state.attempt_mut() {
                                     turn.observe_invalid_upstream_text(text.as_str())
                                 }
                                 else {
@@ -330,13 +321,12 @@ pub(super) async fn relay_bound_connection(
                     }
                     _ => None,
                 };
-                update_response_in_flight(bound, parsed_upstream_frame.as_ref());
                 if matches!(
                     observation,
                     Some(ResponsesWebSocketTurnObservation::Started)
                         | Some(ResponsesWebSocketTurnObservation::Terminal(_))
                 ) {
-                    if let Some(turn) = bound.active_turn.as_mut() {
+                    if let Some(turn) = bound.turn_state.attempt_mut() {
                         turn.mark_stream_started(state).await;
                     }
                 }
@@ -344,9 +334,6 @@ pub(super) async fn relay_bound_connection(
                     Some(ResponsesWebSocketTurnObservation::Terminal(outcome)) => Some(outcome),
                     _ => None,
                 };
-                if terminal_outcome.is_some() {
-                    bound.response_in_flight = false;
-                }
                 if matches!(&upstream_message, WreqWsMessage::Text(_))
                     && parsed_upstream_frame.is_none()
                 {
@@ -359,7 +346,6 @@ pub(super) async fn relay_bound_connection(
                         ),
                     )
                     .await;
-                    bound.active_response_create = None;
                     send_responses_websocket_error(
                         client_socket,
                         policy.status_code,
@@ -380,7 +366,7 @@ pub(super) async fn relay_bound_connection(
                 let is_close = matches!(upstream_message, WreqWsMessage::Close(_));
                 let drain_for_adapter = adapter_drain_ready(
                     bound.pending_adapter_drain,
-                    bound.response_in_flight,
+                    bound.turn_state.response_in_flight(),
                     observation,
                     is_close,
                 );
@@ -396,7 +382,8 @@ pub(super) async fn relay_bound_connection(
                 };
                 let mut quota_relay_action = classify_quota_relay(quota_facts);
                 if matches!(quota_relay_action, QuotaRelayAction::AttemptTransparentRetry) {
-                    let mut retry_turn = bound.active_turn.take().map(ActiveResponsesWebSocketTurn::disarm);
+                    // detach_attempt 保留 logical turn：重试是同一轮请求的下一个 attempt。
+                    let mut retry_turn = bound.turn_state.detach_attempt().map(ActiveResponsesWebSocketTurn::disarm);
                     if let Some(turn) = retry_turn.as_mut() {
                         turn.release_admission().await;
                     }
@@ -414,7 +401,16 @@ pub(super) async fn relay_bound_connection(
                         }
                         continue;
                     }
-                    bound.active_turn = retry_turn.map(|turn| ActiveResponsesWebSocketTurn::new(state, turn));
+                    if let Some(turn) = retry_turn {
+                        let restored = bound
+                            .turn_state
+                            .resume(ActiveResponsesWebSocketTurn::new(state, turn));
+                        debug_assert!(
+                            restored.is_ok(),
+                            "a failed transparent retry must be able to restore its attempt"
+                        );
+                        drop(restored);
+                    }
                     quota_relay_action = classify_quota_relay(QuotaRelayFacts {
                         retry_current_turn: false,
                         transparent_retry_failed: true,
@@ -437,7 +433,7 @@ pub(super) async fn relay_bound_connection(
                         error_code = "previous_response_not_found",
                         "gateway will ask the client to retry the continuation with complete input"
                     );
-                    let mut turn = bound.active_turn.take().map(ActiveResponsesWebSocketTurn::disarm);
+                    let mut turn = bound.turn_state.end().map(ActiveResponsesWebSocketTurn::disarm);
                     if let Some(active_turn) = turn.as_mut() {
                         active_turn.release_admission().await;
                     }
@@ -453,7 +449,6 @@ pub(super) async fn relay_bound_connection(
                         )
                         .await;
                     }
-                    bound.active_response_create = None;
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
@@ -475,7 +470,6 @@ pub(super) async fn relay_bound_connection(
                         "Provider connection closed after reporting exhausted quota; send a new response.create to select another Provider connection",
                     )
                     .await;
-                    bound.active_response_create = None;
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
@@ -497,18 +491,16 @@ pub(super) async fn relay_bound_connection(
                         state,
                         ResponsesWebSocketTurnOutcome::client_disconnected(),
                     ).await;
-                    bound.active_response_create = None;
                     close_bound_upstream(bound).await;
                     break;
                 }
                 if let (Some(turn), Some(frame)) =
-                    (bound.active_turn.as_mut(), parsed_upstream_frame.as_ref())
+                    (bound.turn_state.attempt_mut(), parsed_upstream_frame.as_ref())
                 {
                     turn.capture_client_frame(frame.event());
                 }
                 if let Some(outcome) = terminal_outcome {
                     finalize_active_turn(bound, state, outcome).await;
-                    bound.active_response_create = None;
                 } else if is_close {
                     finalize_active_turn(
                         bound,
@@ -521,7 +513,6 @@ pub(super) async fn relay_bound_connection(
                     let directive = bound
                         .pending_adapter_drain
                         .expect("adapter drain state should be present");
-                    bound.active_response_create = None;
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
@@ -549,27 +540,3 @@ async fn wait_for_connection_permit_loss(permit: Option<&aether_runtime::Admissi
     }
 }
 
-fn update_response_in_flight(
-    bound: &mut BoundResponsesConnection,
-    frame: Option<&ParsedResponsesWebSocketFrame<'_>>,
-) {
-    let Some(frame) = frame else {
-        return;
-    };
-    let frame_kind = if frame.is_terminal() {
-        UpstreamFrameKind::Terminal
-    } else if frame.is_started() {
-        UpstreamFrameKind::Started
-    } else {
-        UpstreamFrameKind::Other
-    };
-    match classify_upstream_frame(frame_kind) {
-        UpstreamFrameAction::Continue if frame.is_started() => {
-            bound.response_in_flight = true;
-        }
-        UpstreamFrameAction::FinalizeTurn => {
-            bound.response_in_flight = false;
-        }
-        UpstreamFrameAction::Continue | UpstreamFrameAction::FinalizeAndClose => {}
-    }
-}

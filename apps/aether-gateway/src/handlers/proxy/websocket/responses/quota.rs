@@ -53,7 +53,12 @@ pub(super) async fn detach_exhausted_upstream(
 ) {
     let exclusion = record_exhausted_bound_key(bound, directive.retry_exclusion_until_unix_secs);
     close_bound_upstream(bound).await;
-    bound.response_in_flight = false;
+    // 调用方必须先结束当前 logical turn 再 detach：拆掉上游后 attempt 已经不可能
+    // 收到终态，留着它只会等 deadline 或 drop guard 兜底。
+    debug_assert!(
+        !bound.turn_state.response_in_flight(),
+        "an exhausted upstream must be detached after its logical turn ended"
+    );
     bound.pending_adapter_drain = None;
     let now_unix_secs = current_unix_secs();
     debug!(
@@ -99,7 +104,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     state: &AppState,
     context: &WebSocketRequestContext,
 ) -> bool {
-    let Some(active) = bound.active_response_create.as_mut() else {
+    let Some(active) = bound.turn_state.logical_mut() else {
         return false;
     };
     if let Some(reason) = active.quota_retry_block_reason() {
@@ -291,11 +296,19 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     bound.adapter = replacement.adapter;
     bound.client_model = replacement.client_model;
     bound.provider_model = replacement.provider_model;
-    bound.response_in_flight = true;
     bound.decision_template = replacement.decision_template;
     bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
-    bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
+    // 同一个 logical turn 的下一个 attempt 就位。状态不符时把 attempt 交回
+    // drop guard 结算并让调用方走「透明重试失败」分支，不静默丢弃一条已经写了
+    // pending usage 行、占着 candidate 和 pool key lease 的 attempt。
+    if let Err(orphan) = bound
+        .turn_state
+        .resume(ActiveResponsesWebSocketTurn::new(state, turn))
+    {
+        drop(orphan);
+        return false;
+    }
     bound.upstream_response_headers = replacement.upstream_response_headers;
     bound.pending_adapter_drain = None;
     debug!(
@@ -317,7 +330,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
 pub(super) fn active_continuation_can_retry_from_full_input(
     bound: &BoundResponsesConnection,
 ) -> bool {
-    bound.active_response_create.as_ref().is_some_and(|active| {
+    bound.turn_state.logical().is_some_and(|active| {
         response_create_has_previous_response_id(&active.client_event)
             && active.retry_unsafe_reason.is_none()
     })
@@ -365,7 +378,7 @@ pub(super) fn observe_active_response_rebind_safety(
     else {
         return;
     };
-    if let Some(active) = bound.active_response_create.as_mut() {
+    if let Some(active) = bound.turn_state.logical_mut() {
         active.mark_retry_unsafe(reason);
     }
 }
@@ -374,7 +387,7 @@ pub(super) fn mark_active_response_retry_unsafe(
     bound: &mut BoundResponsesConnection,
     reason: &'static str,
 ) {
-    if let Some(active) = bound.active_response_create.as_mut() {
+    if let Some(active) = bound.turn_state.logical_mut() {
         active.mark_retry_unsafe(reason);
     }
 }
