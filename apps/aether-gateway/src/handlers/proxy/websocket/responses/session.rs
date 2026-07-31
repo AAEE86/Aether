@@ -12,7 +12,6 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::adapter::resolve_responses_websocket_adapter;
@@ -41,7 +40,7 @@ use crate::handlers::proxy::websocket::session::{
     RESPONSES_WEBSOCKET_SESSION_LIMITS, WEBSOCKET_LOG_TRANSPORT,
 };
 use crate::handlers::proxy::websocket::transport::{
-    close_client_socket, send_client_message, send_gateway_error, send_gateway_error_with_status,
+    close_client_socket, send_gateway_error, send_gateway_error_with_status,
 };
 use crate::orchestration::release_pool_key_lease_from_report_context;
 use crate::AppState;
@@ -392,23 +391,50 @@ pub(super) async fn run_responses_websocket(
     await_pending_adapter_observation(&mut bound).await;
 }
 
+/// 等待客户端发送第一条 response.create 事件。
+/// 使用绝对 deadline：从函数入口起计算一次截止时间，Ping/Pong 只会被正常回复，
+/// 但不会重置计时器。防止客户端通过周期性 Ping 无限占用 connection permit。
 async fn receive_initial_response_create(
     client_socket: &mut WebSocket,
 ) -> Result<(String, Value), InitialMessageError> {
+    receive_initial_response_create_with_deadline(
+        client_socket,
+        RESPONSES_WEBSOCKET_SESSION_LIMITS.initial_message_timeout,
+    )
+    .await
+}
+
+/// 核心循环：在绝对 deadline 内等待客户端发送 response.create。
+/// 泛型约束允许测试注入 fake socket，驱动真实逻辑。
+///
+/// - `deadline_budget`：从调用时刻起的最长等待时间，全循环共享同一截止时刻。
+/// - Ping 帧被回复 Pong 但不重置计时器。
+/// - Pong / 非法帧 / Close 按协议处理。
+async fn receive_initial_response_create_with_deadline<S>(
+    socket: &mut S,
+    deadline_budget: std::time::Duration,
+) -> Result<(String, Value), InitialMessageError>
+where
+    S: futures_util::Stream<Item = Result<AxumWsMessage, axum::Error>>
+        + futures_util::Sink<AxumWsMessage, Error = axum::Error>
+        + Unpin,
+{
+    use futures_util::{SinkExt as _, StreamExt as _};
+
+    // 绝对 deadline：入口计算一次，后续所有迭代共享，Ping/Pong 不会重启
+    let deadline = tokio::time::Instant::now() + deadline_budget;
     loop {
-        let message = timeout(
-            RESPONSES_WEBSOCKET_SESSION_LIMITS.initial_message_timeout,
-            client_socket.next(),
-        )
-        .await
-        .map_err(|_| InitialMessageError::TimedOut)?;
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .map_err(|_| InitialMessageError::TimedOut)?;
         let Some(message) = message else {
             return Err(InitialMessageError::ClientClosed);
         };
         let message = message.map_err(|_| InitialMessageError::ClientRead)?;
         match message {
             AxumWsMessage::Ping(payload) => {
-                send_client_message(client_socket, AxumWsMessage::Pong(payload))
+                socket
+                    .send(AxumWsMessage::Pong(payload))
                     .await
                     .map_err(|_| InitialMessageError::ClientRead)?;
             }
@@ -1142,5 +1168,161 @@ mod tests {
             exhausted_exclusions: ExhaustedResponsesWebSocketExclusions::default(),
             pending_turn_finalization: None,
         }
+    }
+
+    /// 用 mpsc 驱动的 FakeSocket，实现 Stream + Sink 两个 trait。
+    /// 测试侧通过 tx 注入消息，通过 pong_rx 观察 Pong 回包。
+    struct FakeSocket {
+        rx: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
+        pong_tx: tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>,
+    }
+
+    struct FakeSocketPair {
+        tx: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+        pong_rx: tokio::sync::mpsc::UnboundedReceiver<axum::extract::ws::Message>,
+    }
+
+    fn fake_socket() -> (FakeSocket, FakeSocketPair) {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let (pong_tx, pong_rx) = tokio::sync::mpsc::unbounded_channel();
+        (FakeSocket { rx, pong_tx }, FakeSocketPair { tx, pong_rx })
+    }
+
+    impl futures_util::Stream for FakeSocket {
+        type Item = Result<axum::extract::ws::Message, axum::Error>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.rx.poll_recv(cx).map(|opt| opt.map(Ok))
+        }
+    }
+
+    impl futures_util::Sink<axum::extract::ws::Message> for FakeSocket {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(
+            self: std::pin::Pin<&mut Self>,
+            item: axum::extract::ws::Message,
+        ) -> Result<(), Self::Error> {
+            let _ = self.pong_tx.send(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// 验证 receive_initial_response_create_with_deadline 的绝对 deadline：
+    /// 客户端周期性发送 Ping 帧不会重置计时器，deadline 到期后返回 TimedOut。
+    /// 这直接驱动真实的循环逻辑，如果改回每次迭代 timeout(budget, ...) 则会变红。
+    ///
+    /// 设计思路：deadline_budget = 80ms，Ping 每 30ms 发一次且永不停止。
+    /// - 绝对 deadline：~80ms 后函数返回 TimedOut（即使 Ping 仍在到来）。
+    /// - 每次迭代 timeout(80ms, ...)：每个 Ping 在 30ms 内到达 < 80ms，函数
+    ///   永不超时，500ms 后外层 timeout 判定测试失败。
+    #[tokio::test]
+    async fn initial_message_times_out_despite_periodic_pings() {
+        use super::{receive_initial_response_create_with_deadline, InitialMessageError};
+
+        let (mut fake, pair) = fake_socket();
+
+        let handle = tokio::spawn(async move {
+            receive_initial_response_create_with_deadline(&mut fake, Duration::from_millis(80))
+                .await
+        });
+
+        // 持续发送 Ping，间隔 30ms，永不停止（直到被测函数返回导致 rx drop）
+        let ping_task = tokio::spawn(async move {
+            let mut i = 0u8;
+            loop {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if pair
+                    .tx
+                    .send(axum::extract::ws::Message::Ping(vec![i].into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                i = i.wrapping_add(1);
+            }
+        });
+
+        // 绝对 deadline 应在 ~80ms 后触发；给 500ms 宽限等待结果。
+        let result = tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("function should return within 500ms (absolute deadline = 80ms)")
+            .expect("task should not panic");
+
+        ping_task.abort();
+
+        assert!(
+            matches!(result, Err(InitialMessageError::TimedOut)),
+            "expected TimedOut after absolute deadline, got: {result:?}"
+        );
+    }
+
+    /// 验证 deadline 内收到合法 response.create 时正常返回，Ping 被正确回复 Pong。
+    #[tokio::test]
+    async fn initial_message_succeeds_within_deadline() {
+        use super::{receive_initial_response_create_with_deadline, InitialMessageError};
+
+        let (mut fake, mut pair) = fake_socket();
+
+        let handle = tokio::spawn(async move {
+            receive_initial_response_create_with_deadline(&mut fake, Duration::from_secs(5)).await
+        });
+
+        // 先发一个 Ping，验证 Pong 回包且不影响后续解析
+        pair.tx
+            .send(axum::extract::ws::Message::Ping(vec![42].into()))
+            .await
+            .unwrap();
+        let pong = tokio::time::timeout(Duration::from_secs(1), pair.pong_rx.recv())
+            .await
+            .expect("should receive pong within 1s")
+            .expect("pong channel should not close");
+        assert!(
+            matches!(pong, axum::extract::ws::Message::Pong(ref data) if data.as_ref() == [42]),
+            "expected Pong([42]), got: {pong:?}"
+        );
+
+        // 发送合法的 response.create
+        let event_text = r#"{"type":"response.create","model":"gpt-4o"}"#;
+        pair.tx
+            .send(axum::extract::ws::Message::Text(
+                event_text.to_string().into(),
+            ))
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("handle should finish within 2s")
+            .expect("task should not panic");
+        let (text, event) = result.expect("should return Ok");
+        assert_eq!(text, event_text);
+        assert_eq!(event["type"], "response.create");
+        assert_eq!(event["model"], "gpt-4o");
     }
 }
