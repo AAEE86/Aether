@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use axum::extract::ws::WebSocket;
+use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::time::sleep;
@@ -486,10 +486,22 @@ pub(super) async fn relay_bound_connection(
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
-                if let Err(error) = send_client_message(
-                    client_socket,
-                    upstream_message_to_client(upstream_message.clone()),
-                ).await {
+                // 响应侧还原：HTTP 在把响应体交给客户端之前会把占位符换回真实值
+                // （`privacy::restore_sync_response_body` /
+                // `privacy::StreamingResponseRestorer`），这里是 WS 的同一个位置
+                // ——最后一跳之前，并且在 `capture_client_frame` 之前，所以审计与
+                // 终态观测继续消费脱敏态的事件。没有命中还原时保持上游原字节。
+                let restored_client_frame = parsed_upstream_frame
+                    .as_ref()
+                    .map(ParsedResponsesWebSocketFrame::event)
+                    .and_then(|event| {
+                        bound.redaction_restorer.restore_provider_frame_text(event)
+                    });
+                let client_frame = match restored_client_frame {
+                    Some(restored) => AxumWsMessage::Text(restored.into()),
+                    None => upstream_message_to_client(upstream_message.clone()),
+                };
+                if let Err(error) = send_client_message(client_socket, client_frame).await {
                     warn!(
                         event_name = "responses_websocket_client_send_failed",
                         log_type = "ops",

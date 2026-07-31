@@ -227,9 +227,11 @@ pub(super) async fn run_responses_websocket(
         &first_event,
     )
     .await;
-    let first_event = match redacted_first_event {
-        Ok(Some(redacted)) => redacted,
-        Ok(None) => first_event,
+    // 首轮的 mask session 要活到响应帧还原，但连接此刻还没绑定，只能先接住，
+    // 等 `bind_responses_upstream` 之后登记到连接上。
+    let (first_event, first_turn_redaction_session) = match redacted_first_event {
+        Ok(Some(redaction)) => (redaction.client_event, Some(redaction.session)),
+        Ok(None) => (first_event, None),
         Err(error) => {
             warn!(
                 event_name = "responses_websocket_redaction_failed",
@@ -413,6 +415,9 @@ pub(super) async fn run_responses_websocket(
         };
     first_turn.mark_upstream_request_sent();
     first_turn.set_provider_response_headers(bound.upstream_response_headers.clone());
+    if let Some(session) = first_turn_redaction_session {
+        bound.redaction_restorer.register(session);
+    }
     bound.turn_state.begin(
         LogicalTurn::new(first_event, 1, first_logical_turn_id),
         ActiveProviderAttempt::new(&state, first_turn),
@@ -524,6 +529,7 @@ mod tests {
         observe_active_response_rebind_safety, record_exhausted_bound_key,
         should_request_full_continuation_retry,
     };
+    use super::super::redaction::ResponsesWebSocketRedactionRestorer;
     use super::super::request::{
         changed_followup_response_create_model, continuation_requires_same_upstream,
         normalize_followup_response_create, planned_response_create_event,
@@ -1212,6 +1218,7 @@ mod tests {
             pending_adapter_observation: None,
             exhausted_exclusions: ExhaustedResponsesWebSocketExclusions::default(),
             pending_turn_finalization: None,
+            redaction_restorer: ResponsesWebSocketRedactionRestorer::default(),
         }
     }
 

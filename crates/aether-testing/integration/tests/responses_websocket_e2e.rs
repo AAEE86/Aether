@@ -336,6 +336,73 @@ async fn provider_quota_exhaustion_transparently_retries_onto_another_key() -> R
     Ok(())
 }
 
+/// 脱敏的另一半：请求侧把真实 PII 换成占位符发给上游，响应侧必须在推给客户端之前
+/// 换回真实值。
+///
+/// 上游把收到的 `input` 原样回显，所以它回来的就是占位符——这一条同时钉住了两个
+/// 方向：上游不能看到原文，客户端不能看到占位符。
+#[tokio::test]
+async fn redacted_pii_is_restored_before_the_client_sees_a_provider_frame() -> Result<(), BoxError>
+{
+    const CLIENT_EMAIL: &str = "responses.ws.pii@example.com";
+
+    let harness = Harness::start_with_pii_redaction(UpstreamBehavior::EchoInputBack).await?;
+    let mut client = harness.connect().await?;
+
+    client
+        .send(response_create(
+            json!({"input": format!("my mail is {CLIENT_EMAIL}")}),
+        ))
+        .await?;
+
+    let delta = receive_event(&mut client, "response.output_text.delta").await?;
+    let delta_text = delta
+        .get("delta")
+        .and_then(Value::as_str)
+        .ok_or("the provider delta must carry text")?;
+    assert!(
+        delta_text.contains(CLIENT_EMAIL),
+        "the client must receive the restored value: {delta_text}"
+    );
+    assert!(
+        !delta_text.contains("<AETHER:"),
+        "no redaction placeholder may reach the client: {delta_text}"
+    );
+
+    // 请求侧仍然成立：上游只看到占位符，看不到原文。
+    let upstream_events = harness.upstream.observed_events().await;
+    assert_eq!(upstream_events.len(), 1);
+    let upstream_input = upstream_events[0]
+        .get("input")
+        .and_then(Value::as_str)
+        .ok_or("the upstream request must carry input")?;
+    assert!(
+        !upstream_input.contains(CLIENT_EMAIL),
+        "the upstream must never see the raw PII: {upstream_input}"
+    );
+    assert!(
+        upstream_input.contains("<AETHER:EMAIL:"),
+        "the upstream must see the placeholder: {upstream_input}"
+    );
+
+    // 还原只发生在最后一跳：终态照常到达，计费不受影响。
+    let completed = receive_event(&mut client, "response.completed").await?;
+    assert_eq!(
+        completed
+            .pointer("/response/status")
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    let audits = harness
+        .usage_audits_where(1, "the billed redacted turn", is_billed)
+        .await?;
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].total_tokens, INPUT_TOKENS + OUTPUT_TOKENS);
+
+    client.close(None).await?;
+    Ok(())
+}
+
 fn is_pending(audit: &StoredRequestUsageAudit) -> bool {
     audit.status.eq_ignore_ascii_case("pending")
 }
@@ -384,21 +451,65 @@ impl ProviderFixture {
     }
 }
 
+/// 这条用例要不要打开 chat PII 脱敏模块。
+///
+/// 默认关闭：其余用例都靠原文 body 断言上游看到了什么，打开脱敏会把断言目标换成
+/// 占位符。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiiRedaction {
+    Disabled,
+    Enabled,
+}
+
+impl PiiRedaction {
+    const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 impl Harness {
     async fn start(behavior: UpstreamBehavior) -> Result<Self, BoxError> {
-        Self::start_with_fixture(behavior, ProviderFixture::SingleOpenAiKey).await
+        Self::start_with(
+            behavior,
+            ProviderFixture::SingleOpenAiKey,
+            PiiRedaction::Disabled,
+        )
+        .await
     }
 
     async fn start_with_fixture(
         behavior: UpstreamBehavior,
         fixture: ProviderFixture,
     ) -> Result<Self, BoxError> {
+        Self::start_with(behavior, fixture, PiiRedaction::Disabled).await
+    }
+
+    async fn start_with_pii_redaction(behavior: UpstreamBehavior) -> Result<Self, BoxError> {
+        Self::start_with(
+            behavior,
+            ProviderFixture::SingleOpenAiKey,
+            PiiRedaction::Enabled,
+        )
+        .await
+    }
+
+    async fn start_with(
+        behavior: UpstreamBehavior,
+        fixture: ProviderFixture,
+        redaction: PiiRedaction,
+    ) -> Result<Self, BoxError> {
         let upstream = Arc::new(MockUpstreamState::new(behavior));
         let upstream_server =
             SpawnedServer::start(mock_upstream_router(Arc::clone(&upstream))).await?;
 
         let database = TemporarySqlite::new();
-        prepare_and_seed_database(&database.config, upstream_server.base_url(), fixture).await?;
+        prepare_and_seed_database(
+            &database.config,
+            upstream_server.base_url(),
+            fixture,
+            redaction,
+        )
+        .await?;
 
         let data_config = GatewayDataConfig::from_database_config(database.config.clone())
             .with_encryption_key(DEVELOPMENT_ENCRYPTION_KEY);
@@ -618,6 +729,11 @@ enum UpstreamBehavior {
     /// 第一轮刻意不发 `response.created`：任何标准 `response.*` 事件都会让
     /// codex adapter 把这一轮判成 replay-unsafe，透明重试就不会发生。
     QuotaExhaustedThenComplete,
+    /// 把收到的 `input` 原样回显成一个 delta，再正常完成。
+    ///
+    /// 上游看到的是脱敏后的 body，所以回显出来的就是占位符——正是响应侧还原要处理
+    /// 的形状。
+    EchoInputBack,
 }
 
 #[derive(Debug)]
@@ -688,6 +804,11 @@ async fn run_mock_upstream(
                 if event.get("type").and_then(Value::as_str) != Some("response.create") {
                     continue;
                 }
+                let echoed_input = event
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 let turn = {
                     let mut events = state.events.lock().await;
                     events.push(event);
@@ -716,6 +837,14 @@ async fn run_mock_upstream(
                             break;
                         }
                         if send_mock_turn(&mut socket, &response_id).await.is_err() {
+                            break;
+                        }
+                    }
+                    UpstreamBehavior::EchoInputBack => {
+                        if send_mock_turn_with_delta(&mut socket, &response_id, &echoed_input)
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -766,13 +895,21 @@ async fn send_mock_created(socket: &mut WebSocket, response_id: &str) -> Result<
 }
 
 async fn send_mock_turn(socket: &mut WebSocket, response_id: &str) -> Result<(), axum::Error> {
+    send_mock_turn_with_delta(socket, response_id, "hello").await
+}
+
+async fn send_mock_turn_with_delta(
+    socket: &mut WebSocket,
+    response_id: &str,
+    delta: &str,
+) -> Result<(), axum::Error> {
     send_mock_created(socket, response_id).await?;
     send_mock_event(
         socket,
         json!({
             "type": "response.output_text.delta",
             "response_id": response_id,
-            "delta": "hello"
+            "delta": delta
         }),
     )
     .await?;
@@ -848,6 +985,7 @@ async fn prepare_and_seed_database(
     database: &SqlDatabaseConfig,
     upstream_base_url: &str,
     fixture: ProviderFixture,
+    redaction: PiiRedaction,
 ) -> Result<(), BoxError> {
     let backends = DataBackends::from_config(DataLayerConfig::from_database(database.clone()))?;
     let pending = backends
@@ -862,6 +1000,9 @@ async fn prepare_and_seed_database(
     seed_models(&backends).await?;
     let user_id = seed_user(&backends).await?;
     seed_client_api_key(&backends, &user_id).await?;
+    if redaction.is_enabled() {
+        seed_chat_pii_redaction(&backends).await?;
+    }
 
     let candidates = backends
         .read()
@@ -1111,6 +1252,27 @@ async fn seed_client_api_key(backends: &DataBackends, user_id: &str) -> Result<(
     {
         return Err("failed to initialize E2E API key wallet".into());
     }
+    Ok(())
+}
+
+/// 打开 chat PII 脱敏：系统模块开关 + 这把 client key 的 feature 开关。
+///
+/// 规则集刻意不写：缺省即内置规则（含 email 规则），和生产上「只打开开关」的最小
+/// 配置一致。
+async fn seed_chat_pii_redaction(backends: &DataBackends) -> Result<(), BoxError> {
+    backends
+        .upsert_system_config_entry("module.chat_pii_redaction.enabled", &json!(true), None)
+        .await?;
+    backends
+        .write()
+        .auth_api_keys()
+        .ok_or("auth API key writer unavailable")?
+        .set_standalone_api_key_feature_settings(
+            API_KEY_ID,
+            Some(json!({"chat_pii_redaction": {"enabled": true}})),
+        )
+        .await?
+        .ok_or("failed to enable chat PII redaction on the E2E API key")?;
     Ok(())
 }
 

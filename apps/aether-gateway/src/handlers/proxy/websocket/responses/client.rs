@@ -189,7 +189,11 @@ pub(super) async fn forward_client_message(
             )
             .await;
             let client_event = match redacted_client_event {
-                Ok(Some(redacted)) => redacted,
+                Ok(Some(redaction)) => {
+                    // 这一轮的映射登记到连接上，响应帧才能在最后一跳还原回真实值。
+                    bound.redaction_restorer.register(redaction.session);
+                    redaction.client_event
+                }
                 Ok(None) => client_event,
                 Err(error) => {
                     warn!(

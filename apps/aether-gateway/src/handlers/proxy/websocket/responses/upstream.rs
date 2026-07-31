@@ -7,6 +7,7 @@ use wreq::ws::message::Message as WreqWsMessage;
 
 use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::binding::{UpstreamBindingIdentity, UpstreamBindingIdentityError};
+use super::redaction::ResponsesWebSocketRedactionRestorer;
 use super::request::planned_response_create_event;
 use super::state::{BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions};
 use super::turn_state::ResponsesTurnState;
@@ -122,6 +123,8 @@ async fn bind_responses_upstream_inner(
         // 首条 response.create 已经发出，但这一轮的 logical turn 和 attempt 由调用方
         // 通过 `ResponsesTurnState::begin` 装上：绑定本身不持有记账状态。
         turn_state: ResponsesTurnState::Idle,
+        // 同理，这一轮的 mask session 也由调用方登记：绑定看不到脱敏链路。
+        redaction_restorer: ResponsesWebSocketRedactionRestorer::default(),
         next_turn_index: 2,
         upstream_response_headers: upstream.response_headers,
         pending_adapter_drain: None,

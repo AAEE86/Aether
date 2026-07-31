@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 
 use super::adapter::{ResponsesWebSocketDrainDirective, ResponsesWebSocketProtocolAdapter};
 use super::binding::UpstreamBindingIdentity;
+use super::redaction::ResponsesWebSocketRedactionRestorer;
 use super::turn_state::ResponsesTurnState;
 use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 
@@ -28,6 +29,12 @@ pub(super) struct BoundResponsesConnection {
     pub(super) binding_identity: UpstreamBindingIdentity,
     /// 这条连接上「有没有正在进行的 logical turn」的唯一事实来源。
     pub(super) turn_state: ResponsesTurnState,
+    /// 这条连接迄今 mask 出来的映射，用于把 provider 事件里的占位符换回真实值。
+    ///
+    /// 刻意按连接持有而不是按 turn 持有：WS 的会话历史留在上游，continuation 只发
+    /// 增量输入，所以后面几轮的响应可能回显更早那几轮的占位符（理由详见
+    /// [`super::redaction`]）。上游重绑时不重置。
+    pub(super) redaction_restorer: ResponsesWebSocketRedactionRestorer,
     pub(super) next_turn_index: u64,
     pub(super) upstream_response_headers: BTreeMap<String, String>,
     pub(super) pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
