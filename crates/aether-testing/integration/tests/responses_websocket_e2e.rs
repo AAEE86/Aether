@@ -52,11 +52,17 @@ const PROVIDER_API_KEY: &str = "sk-upstream-responses-ws-e2e";
 const PROVIDER_ID: &str = "provider-responses-ws-e2e";
 const ENDPOINT_ID: &str = "endpoint-responses-ws-e2e";
 const PROVIDER_KEY_ID: &str = "provider-key-responses-ws-e2e";
+/// 透明重试的替代 key。只有配额重试用例会 seed 它。
+const ALTERNATE_PROVIDER_KEY_ID: &str = "provider-key-responses-ws-e2e-alt";
+const ALTERNATE_PROVIDER_API_KEY: &str = "sk-upstream-responses-ws-e2e-alt";
 const GLOBAL_MODEL_ID: &str = "global-model-responses-ws-e2e";
 const PROVIDER_MODEL_ID: &str = "provider-model-responses-ws-e2e";
 const API_KEY_ID: &str = "api-key-responses-ws-e2e";
 const PUBLIC_MODEL: &str = "gpt-responses-ws-e2e";
 const UPSTREAM_MODEL: &str = "gpt-responses-ws-upstream";
+
+/// 2100-01-01，保证 oauth 凭证在测试期间不会被判为过期。
+const FAR_FUTURE_UNIX_SECS: u64 = 4_102_444_800;
 
 const INPUT_TOKENS: u64 = 4;
 const OUTPUT_TOKENS: u64 = 2;
@@ -235,6 +241,101 @@ async fn upstream_drop_mid_turn_reports_an_error_and_settles_the_usage_row() -> 
     Ok(())
 }
 
+/// 供应商配额耗尽后的透明重试：客户端不该看到 429，两个 attempt 都要结算。
+///
+/// 第一个 attempt 拿到 Codex 的 `usage_limit_reached`，网关换到第二把 key 重开一条
+/// 上游连接重放同一个 `response.create`。C6 之前，重试的规划发生在旧 attempt 结算
+/// 之前：规划读到的是旧 attempt 还没投射的 health / adaptive / pool 状态，而且旧
+/// attempt 的 pool key lease 还被它自己占着。
+///
+/// 顺序本身在这里无法确定性断言（结算与规划都在同一个任务里、DB 里看不到先后），
+/// 由 lifecycle 的单测确定性覆盖；这个用例保证整条路径真的能跑通，并且两个
+/// attempt 都留下了终态记账行。
+#[tokio::test]
+async fn provider_quota_exhaustion_transparently_retries_onto_another_key() -> Result<(), BoxError>
+{
+    let harness = Harness::start_with_fixture(
+        UpstreamBehavior::QuotaExhaustedThenComplete,
+        ProviderFixture::CodexKeyPair,
+    )
+    .await?;
+    let mut client = harness.connect().await?;
+
+    client
+        .send(response_create(json!({"input": "retry after quota"})))
+        .await?;
+
+    // 客户端只应该看到重试之后那次成功的响应，看不到 429。
+    let completed = receive_event(&mut client, "response.completed").await?;
+    assert_eq!(
+        completed.pointer("/response/status").and_then(Value::as_str),
+        Some("completed")
+    );
+
+    // 上游被连了两次：配额耗尽的那条 + 重试用的那条。
+    assert_eq!(
+        harness.upstream.connections(),
+        2,
+        "the transparent retry must open a second upstream connection"
+    );
+    let observed = harness.upstream.observed_events().await;
+    assert_eq!(
+        observed.len(),
+        2,
+        "the same response.create must be replayed once"
+    );
+
+    // 两把不同的 key 被用过：重试不能落回那把已经耗尽的 key。
+    let authorizations = harness.upstream.authorization_headers().await;
+    assert_eq!(authorizations.len(), 2);
+    assert_ne!(
+        authorizations[0], authorizations[1],
+        "the retry must not reuse the exhausted key: {authorizations:?}"
+    );
+
+    // 两个 attempt 各自留下一条终态行：配额失败的那条 + 成功计费的那条。
+    let audits = harness
+        .usage_audits_where(2, "settled attempts", |audit| !is_pending(audit))
+        .await?;
+    let settled = audits
+        .iter()
+        .filter(|audit| !is_pending(audit))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        settled.len(),
+        2,
+        "both attempts must reach a terminal accounting row: {:?}",
+        audits
+            .iter()
+            .map(|audit| (audit.status.clone(), audit.status_code, audit.total_tokens))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        settled.iter().any(|audit| audit.status_code == Some(429)),
+        "the exhausted attempt keeps its own 429 row: {:?}",
+        settled
+            .iter()
+            .map(|audit| (audit.status.clone(), audit.status_code))
+            .collect::<Vec<_>>()
+    );
+
+    let billed = harness
+        .usage_audits_where(1, "the billed retry attempt", is_billed)
+        .await?;
+    let retry = billed
+        .iter()
+        .find(|audit| is_billed(audit))
+        .ok_or("the successful retry attempt must be billed")?;
+    assert_eq!(
+        retry.total_tokens,
+        INPUT_TOKENS + OUTPUT_TOKENS,
+        "the retry attempt is billed for what it actually consumed"
+    );
+
+    client.close(None).await?;
+    Ok(())
+}
+
 fn is_pending(audit: &StoredRequestUsageAudit) -> bool {
     audit.status.eq_ignore_ascii_case("pending")
 }
@@ -258,14 +359,46 @@ struct Harness {
     _gateway_server: SpawnedServer,
 }
 
+/// 供应商夹具形态。
+///
+/// 透明配额重试只有 Codex adapter 会开启（`retry_current_turn: true` 只从
+/// codex.rs 出），而且重试要有第二把 key 可挑，否则规划直接判无可用供应商。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderFixture {
+    /// 单个 openai 类型供应商、单把 key。
+    SingleOpenAiKey,
+    /// codex 类型供应商 + 两把 key：第一把配额耗尽后重试落到第二把。
+    CodexKeyPair,
+}
+
+impl ProviderFixture {
+    const fn provider_type(self) -> &'static str {
+        match self {
+            Self::SingleOpenAiKey => "openai",
+            Self::CodexKeyPair => "codex",
+        }
+    }
+
+    const fn has_alternate_key(self) -> bool {
+        matches!(self, Self::CodexKeyPair)
+    }
+}
+
 impl Harness {
     async fn start(behavior: UpstreamBehavior) -> Result<Self, BoxError> {
+        Self::start_with_fixture(behavior, ProviderFixture::SingleOpenAiKey).await
+    }
+
+    async fn start_with_fixture(
+        behavior: UpstreamBehavior,
+        fixture: ProviderFixture,
+    ) -> Result<Self, BoxError> {
         let upstream = Arc::new(MockUpstreamState::new(behavior));
         let upstream_server =
             SpawnedServer::start(mock_upstream_router(Arc::clone(&upstream))).await?;
 
         let database = TemporarySqlite::new();
-        prepare_and_seed_database(&database.config, upstream_server.base_url()).await?;
+        prepare_and_seed_database(&database.config, upstream_server.base_url(), fixture).await?;
 
         let data_config = GatewayDataConfig::from_database_config(database.config.clone())
             .with_encryption_key(DEVELOPMENT_ENCRYPTION_KEY);
@@ -480,6 +613,11 @@ enum UpstreamBehavior {
     StallAfterCreated,
     /// Announce the response and then hang up mid-turn.
     CloseAfterCreated,
+    /// 第一轮只回一个 Codex 配额耗尽错误，之后的每一轮正常完成。
+    ///
+    /// 第一轮刻意不发 `response.created`：任何标准 `response.*` 事件都会让
+    /// codex adapter 把这一轮判成 replay-unsafe，透明重试就不会发生。
+    QuotaExhaustedThenComplete,
 }
 
 #[derive(Debug)]
@@ -571,6 +709,16 @@ async fn run_mock_upstream(
                         let _ = send_mock_created(&mut socket, &response_id).await;
                         break;
                     }
+                    UpstreamBehavior::QuotaExhaustedThenComplete => {
+                        if turn == 1 {
+                            let _ = send_mock_event(&mut socket, codex_quota_exhausted_error())
+                                .await;
+                            break;
+                        }
+                        if send_mock_turn(&mut socket, &response_id).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
             AxumWsMessage::Ping(payload) => {
@@ -582,6 +730,24 @@ async fn run_mock_upstream(
             _ => {}
         }
     }
+}
+
+/// Codex 的账户级配额耗尽信号。
+///
+/// `status_code: 429` + `error.type: usage_limit_reached` 是 adapter 识别
+/// 「配额耗尽、可透明重试」的最小载荷：解析出的元数据被强制标上
+/// `limit_reached: true`，于是 drain 指令带着 `retry_current_turn: true` 下来。
+fn codex_quota_exhausted_error() -> Value {
+    json!({
+        "type": "error",
+        "status_code": 429,
+        "error": {
+            "type": "usage_limit_reached",
+            "message": "You have hit your usage limit",
+            "plan_type": "plus",
+            "resets_in_seconds": 3_600
+        }
+    })
 }
 
 async fn send_mock_created(socket: &mut WebSocket, response_id: &str) -> Result<(), axum::Error> {
@@ -681,6 +847,7 @@ impl Drop for TemporarySqlite {
 async fn prepare_and_seed_database(
     database: &SqlDatabaseConfig,
     upstream_base_url: &str,
+    fixture: ProviderFixture,
 ) -> Result<(), BoxError> {
     let backends = DataBackends::from_config(DataLayerConfig::from_database(database.clone()))?;
     let pending = backends
@@ -691,7 +858,7 @@ async fn prepare_and_seed_database(
         backends.run_database_migrations().await?;
     }
 
-    seed_provider_catalog(&backends, upstream_base_url).await?;
+    seed_provider_catalog(&backends, upstream_base_url, fixture).await?;
     seed_models(&backends).await?;
     let user_id = seed_user(&backends).await?;
     seed_client_api_key(&backends, &user_id).await?;
@@ -716,6 +883,7 @@ async fn prepare_and_seed_database(
 async fn seed_provider_catalog(
     backends: &DataBackends,
     upstream_base_url: &str,
+    fixture: ProviderFixture,
 ) -> Result<(), BoxError> {
     let writer = backends
         .write()
@@ -727,7 +895,7 @@ async fn seed_provider_catalog(
                 PROVIDER_ID.to_string(),
                 "Responses WebSocket E2E".to_string(),
                 None,
-                "openai".to_string(),
+                fixture.provider_type().to_string(),
             )?
             .with_transport_fields(
                 true,
@@ -766,33 +934,69 @@ async fn seed_provider_catalog(
         )
         .await?;
     writer
-        .create_key(
-            &StoredProviderCatalogKey::new(
-                PROVIDER_KEY_ID.to_string(),
-                PROVIDER_ID.to_string(),
-                "Responses WebSocket E2E".to_string(),
-                "api_key".to_string(),
-                Some(json!({"streaming": true})),
-                true,
-            )?
-            .with_transport_fields(
-                Some(json!(["openai:responses"])),
-                encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, PROVIDER_API_KEY)?,
-                None,
-                None,
-                Some(json!({"openai:responses": 1})),
-                Some(json!([PUBLIC_MODEL, UPSTREAM_MODEL])),
-                None,
-                None,
-                None,
-            )?
-            .with_health_fields(
-                Some(json!({"openai:responses": {"status": "healthy"}})),
-                Some(json!({"openai:responses": {"state": "closed"}})),
-            ),
-        )
+        .create_key(&catalog_key(PROVIDER_KEY_ID, PROVIDER_API_KEY, fixture)?)
         .await?;
+    if fixture.has_alternate_key() {
+        writer
+            .create_key(&catalog_key(
+                ALTERNATE_PROVIDER_KEY_ID,
+                ALTERNATE_PROVIDER_API_KEY,
+                fixture,
+            )?)
+            .await?;
+    }
     Ok(())
+}
+
+/// 一把健康、可服务本用例模型的 key。
+///
+/// codex 类型的候选要求 `auth_type = oauth`（见 candidate_selection 的
+/// provider_type 约束），所以配额重试夹具走 oauth，凭证是一份未过期的
+/// access_token。
+fn catalog_key(
+    key_id: &str,
+    secret: &str,
+    fixture: ProviderFixture,
+) -> Result<StoredProviderCatalogKey, BoxError> {
+    let oauth = fixture.has_alternate_key();
+    let auth_type = if oauth { "oauth" } else { "api_key" };
+    let auth_config = if oauth {
+        Some(encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            &json!({
+                "access_token": secret,
+                "refresh_token": format!("{secret}-refresh"),
+                "account_id": format!("{key_id}-account"),
+                "expires_at": FAR_FUTURE_UNIX_SECS,
+            })
+            .to_string(),
+        )?)
+    } else {
+        None
+    };
+    Ok(StoredProviderCatalogKey::new(
+        key_id.to_string(),
+        PROVIDER_ID.to_string(),
+        "Responses WebSocket E2E".to_string(),
+        auth_type.to_string(),
+        Some(json!({"streaming": true})),
+        true,
+    )?
+    .with_transport_fields(
+        Some(json!(["openai:responses"])),
+        encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, secret)?,
+        auth_config,
+        None,
+        Some(json!({"openai:responses": 1})),
+        Some(json!([PUBLIC_MODEL, UPSTREAM_MODEL])),
+        None,
+        None,
+        None,
+    )?
+    .with_health_fields(
+        Some(json!({"openai:responses": {"status": "healthy"}})),
+        Some(json!({"openai:responses": {"state": "closed"}})),
+    ))
 }
 
 async fn seed_models(backends: &DataBackends) -> Result<(), BoxError> {
