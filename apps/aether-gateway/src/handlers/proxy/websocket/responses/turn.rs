@@ -33,11 +33,11 @@ use tracing::warn;
 use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::admission::ResponsesWebSocketTurnAdmission;
 use super::frame::ParsedResponsesWebSocketFrame;
-use super::settlement::{
-    attempt_billing_is_void, attempt_facts_for_outcome, attempt_status_code,
-    classify_attempt_settlement, AttemptCandidateError, AttemptCandidateStatus,
-    AttemptClientDelivery, AttemptProviderOutcome, AttemptSettlementInputs, AttemptTerminalFacts,
-    ResponsesWebSocketTurnEffect,
+use super::settlement::attempt_facts_for_outcome;
+use crate::execution_runtime::attempt_lifecycle::{
+    attempt_billing_is_void, AttemptBodyCapture, AttemptClientDelivery, AttemptLifecycleSeed,
+    AttemptProviderOutcome, AttemptStageGuard, AttemptTerminalFacts, AttemptTerminalFactsInput,
+    ExecutionAttemptLifecycle,
 };
 use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
@@ -66,6 +66,9 @@ const WEBSOCKET_CLIENT_DELIVERY_REPORT_CONTEXT_FIELD: &str = "websocket_client_d
 const WEBSOCKET_CLIENT_DELIVERY_ABORTED: &str = "aborted";
 const WEBSOCKET_CLIENT_DELIVERY_REASON_REPORT_CONTEXT_FIELD: &str =
     "websocket_client_delivery_reason";
+/// 首个可计费事件到达时记在 usage/candidate 上的状态码。WS 的首事件本身不带
+/// HTTP 状态，沿用 HTTP 流式「已开始流」的 200。
+const STREAM_STARTED_STATUS_CODE: u16 = 200;
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
 const RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -220,19 +223,13 @@ impl ResponsesWebSocketTurnOutcome {
 /// 与 [`super::turn_state::LogicalTurn`] 分工明确：logical turn 是客户端看到的
 /// 一轮请求（可能包含多个 attempt），attempt 只负责这一次上游执行的记账事实。
 pub(super) struct ResponsesProviderAttempt {
-    plan: ExecutionPlan,
-    trace_id: String,
-    report_kind: String,
-    report_context: Option<Value>,
+    /// 记账三段（pending / started / terminal）由共享的 transport 中立生命周期负责。
+    lifecycle: ExecutionAttemptLifecycle,
     started_at: Instant,
-    candidate_started_at_unix_ms: u64,
     provider_headers: BTreeMap<String, String>,
-    stream_started: bool,
     observer: StreamingStandardTerminalObserver,
-    provider_capture: Vec<u8>,
-    provider_capture_truncated: bool,
-    client_capture: Vec<u8>,
-    client_capture_truncated: bool,
+    provider_capture: AttemptBodyCapture,
+    client_capture: AttemptBodyCapture,
     upstream_bytes: u64,
     first_event_elapsed_ms: Option<u64>,
     first_event_timeout: Duration,
@@ -400,48 +397,26 @@ pub(super) async fn begin_responses_websocket_turn(
         }
     };
 
-    let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
-    // Keep WebSocket turns on the same lifecycle data path as HTTP streams.
-    // `AppState` can dedicate an isolated background database pool to usage
-    // writes; using the foreground state here bypasses that path and leaves
-    // this transport with a different persistence lifecycle.
-    let usage_data = state.usage_lifecycle_data_state().as_ref().clone();
-    state
-        .usage_runtime
-        .record_pending_direct(&usage_data, lifecycle_seed)
-        .await;
-
-    let candidate_started_at_unix_ms = current_unix_ms();
-    record_local_request_candidate_status(
+    let lifecycle = ExecutionAttemptLifecycle::begin(
         state,
-        &plan,
-        report_context.as_ref(),
-        SchedulerRequestCandidateStatusUpdate {
-            status: RequestCandidateStatus::Pending,
-            status_code: None,
-            error_type: None,
-            error_message: None,
-            latency_ms: None,
-            started_at_unix_ms: Some(candidate_started_at_unix_ms),
-            finished_at_unix_ms: None,
+        AttemptLifecycleSeed {
+            plan,
+            report_kind,
+            report_context,
+            // relay loop 是单任务：一段慢依赖会拖住整条连接的收发，所以每段
+            // 记账 I/O 都要有等待上界。
+            stage_guard: AttemptStageGuard::Bounded(RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT),
         },
     )
     .await;
 
     Ok(ResponsesProviderAttempt {
-        trace_id: plan.request_id.clone(),
-        plan,
-        report_kind,
-        report_context,
+        lifecycle,
         started_at: Instant::now(),
-        candidate_started_at_unix_ms,
         provider_headers: BTreeMap::new(),
-        stream_started: false,
         observer: StreamingStandardTerminalObserver::default(),
-        provider_capture: Vec::new(),
-        provider_capture_truncated: false,
-        client_capture: Vec::new(),
-        client_capture_truncated: false,
+        provider_capture: AttemptBodyCapture::default(),
+        client_capture: AttemptBodyCapture::default(),
         upstream_bytes: 0,
         first_event_elapsed_ms: None,
         first_event_timeout,
@@ -538,20 +513,24 @@ impl ResponsesProviderAttempt {
     /// the guard's `Drop` path remains the timeout fallback.
     pub(super) async fn release_admission(&mut self) {
         if let Some(admission) = self.admission.take() {
-            let _ = await_websocket_lifecycle_stage(
-                &self.trace_id,
-                "turn_admission_release",
-                admission.release(),
-            )
-            .await;
+            let _ = self
+                .lifecycle
+                .stage_guard()
+                .await_stage(
+                    self.lifecycle.trace_id(),
+                    "turn_admission_release",
+                    admission.release(),
+                )
+                .await;
         }
     }
 
     pub(super) fn set_provider_response_headers(&mut self, headers: BTreeMap<String, String>) {
-        self.report_context = attach_provider_response_headers_to_report_context(
-            self.report_context.take(),
+        let report_context = attach_provider_response_headers_to_report_context(
+            self.lifecycle.take_report_context(),
             &headers,
         );
+        self.lifecycle.set_report_context(report_context);
         self.provider_headers = headers;
     }
 
@@ -597,15 +576,17 @@ impl ResponsesProviderAttempt {
         // Responses event per SSE line, so the batch must be unwrapped or its
         // token usage is lost.
         let events = frame.protocol_events();
+        let mut report_context = self.lifecycle.take_report_context();
         for event in &events {
             self.capture_sse_event(event);
-            adapter.decorate_turn_report_context(&mut self.report_context, event);
+            adapter.decorate_turn_report_context(&mut report_context, event);
         }
+        self.lifecycle.set_report_context(report_context);
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
-        let report_context = self.report_context.as_ref().unwrap_or(&fallback_context);
+        let report_context = self.lifecycle.report_context().unwrap_or(&fallback_context);
         for event in &events {
             if let Err(error) = self
                 .observer
@@ -674,242 +655,72 @@ impl ResponsesProviderAttempt {
     }
 
     pub(super) fn capture_client_frame(&mut self, event: &Value) {
-        append_capture(
-            &mut self.client_capture,
-            &websocket_event_as_sse_line(event),
-            &mut self.client_capture_truncated,
-        );
+        self.client_capture
+            .append(&websocket_event_as_sse_line(event));
     }
 
     pub(super) async fn mark_stream_started(&mut self, state: &AppState) {
-        if self.stream_started {
-            return;
-        }
-        self.stream_started = true;
-        let lifecycle_seed = build_lifecycle_usage_seed(&self.plan, self.report_context.as_ref());
         let telemetry = self.telemetry();
-        state.usage_runtime.record_stream_started(
-            state.usage_lifecycle_data_state().as_ref(),
-            &lifecycle_seed,
-            200,
-            Some(&telemetry),
-        );
-        let trace_id = self.trace_id.clone();
-        let _ = await_websocket_lifecycle_stage(
-            &trace_id,
-            "candidate_stream_started",
-            record_local_request_candidate_status(
-                state,
-                &self.plan,
-                self.report_context.as_ref(),
-                SchedulerRequestCandidateStatusUpdate {
-                    status: RequestCandidateStatus::Streaming,
-                    status_code: Some(200),
-                    error_type: None,
-                    error_message: None,
-                    latency_ms: None,
-                    started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
-                    finished_at_unix_ms: None,
-                },
-            ),
-        )
-        .await;
+        self.lifecycle
+            .mark_started(state, STREAM_STARTED_STATUS_CODE, &telemetry)
+            .await;
     }
 
     /// 结算这一个 attempt。
     ///
     /// `outcome` 是「为什么现在结算」的信号，不是供应商事实本身：
-    /// [`attempt_facts_for_outcome`] 把它和已观察到的 provider 终态一起，
-    /// 拆成 provider outcome 与 client delivery 两个正交事实，再由
-    /// [`classify_attempt_settlement`] 一张表推出账单、candidate 状态和效果。
+    /// [`attempt_facts_for_outcome`] 把它和已观察到的 provider 终态、已记录的
+    /// 投递结果一起，拆成 provider outcome 与 client delivery 两个正交事实。
+    /// 之后的四段记账（usage terminal → candidate terminal → provider 效果 →
+    /// execution report）由共享的 [`ExecutionAttemptLifecycle::settle`] 负责，
+    /// 这里只提供 WS 观察到的终态事实。
     async fn settle(mut self, state: &AppState, outcome: ResponsesWebSocketTurnOutcome) {
         let facts =
             attempt_facts_for_outcome(self.provider_outcome, self.client_delivery, outcome);
         if let Some(reason) = facts.delivery.aborted_reason() {
-            self.report_context =
-                attach_client_delivery_to_report_context(self.report_context.take(), reason);
+            let report_context = attach_client_delivery_to_report_context(
+                self.lifecycle.take_report_context(),
+                reason,
+            );
+            self.lifecycle.set_report_context(report_context);
         }
         let summary = self.finish_summary(facts);
+        let telemetry = self.telemetry();
         let terminal_error_body = self.terminal_error_body.take();
-        let outcome_reason = facts.reason().to_string();
-        let telemetry = Some(self.telemetry());
-        let (provider_body_base64, provider_body_state) =
-            encode_stream_capture(&self.provider_capture, self.provider_capture_truncated);
-        let (client_body_base64, client_body_state) =
-            encode_stream_capture(&self.client_capture, self.client_capture_truncated);
-        let payload = GatewayStreamReportRequest {
-            trace_id: self.trace_id.clone(),
-            report_kind: self.report_kind,
-            report_context: self.report_context,
-            status_code: attempt_status_code(facts),
-            headers: self.provider_headers,
-            provider_body_base64,
-            provider_body_state,
-            client_body_base64,
-            client_body_state,
-            terminal_summary: Some(summary.clone()),
-            telemetry,
-        };
-        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
-            facts,
-            report_represents_failure: stream_report_represents_failure(&payload),
-            observed_finish: summary.observed_finish,
-            has_parser_error: summary.parser_error.is_some(),
-        });
-        let billing_void = settlement.billing.is_void();
 
-        // Do not hold gateway/provider capacity while usage and audit writes
-        // run. The turn has a complete terminal payload at this point.
+        // 终态载荷完整了才释放准入：usage/审计写入期间不再占着 gateway/供应商容量。
         if let Some(admission) = self.admission.take() {
-            let _ = await_websocket_lifecycle_stage(
-                &self.trace_id,
-                "turn_admission_release",
-                admission.release(),
-            )
-            .await;
-        }
-
-        let context_seed =
-            build_terminal_usage_context_seed(&self.plan, payload.report_context.as_ref());
-        let payload_seed = build_stream_terminal_usage_payload_seed(&payload);
-        // This write is the turn's billing record, so it must not be abandoned
-        // when the usage runtime is slow: the row was created as Pending and
-        // nothing else reconciles it.
-        let usage_runtime = Arc::clone(&state.usage_runtime);
-        let usage_data = Arc::clone(state.usage_lifecycle_data_state());
-        await_detachable_lifecycle_stage(&self.trace_id, "usage_terminal", async move {
-            usage_runtime
-                .record_stream_terminal(usage_data.as_ref(), context_seed, payload_seed, billing_void)
+            let _ = self
+                .lifecycle
+                .stage_guard()
+                .await_stage(
+                    self.lifecycle.trace_id(),
+                    "turn_admission_release",
+                    admission.release(),
+                )
                 .await;
-        })
-        .await;
+        }
 
-        let (error_type, error_message) = match settlement.candidate_error {
-            AttemptCandidateError::Cancelled => (
-                Some("websocket_cancelled".to_string()),
-                Some(outcome_reason.clone()),
-            ),
-            AttemptCandidateError::ClientDeliveryFailed => (
-                Some("client_delivery_failed".to_string()),
-                Some(outcome_reason.clone()),
-            ),
-            AttemptCandidateError::MissingTerminal => (
-                Some("stream_missing_terminal_event".to_string()),
-                Some(summary.parser_error.clone().unwrap_or_else(|| {
-                    "upstream Responses WebSocket ended before a provider terminal event"
-                        .to_string()
-                })),
-            ),
-            AttemptCandidateError::TerminalError => (
-                Some("stream_terminal_error".to_string()),
-                summary
-                    .parser_error
-                    .clone()
-                    .or_else(|| Some(outcome_reason.clone())),
-            ),
-            AttemptCandidateError::None => (None, None),
-        };
-        let _ = await_websocket_lifecycle_stage(
-            &self.trace_id,
-            "candidate_terminal",
-            record_local_request_candidate_status(
+        self.lifecycle
+            .settle(
                 state,
-                &self.plan,
-                payload.report_context.as_ref(),
-                SchedulerRequestCandidateStatusUpdate {
-                    status: match settlement.candidate_status {
-                        AttemptCandidateStatus::Cancelled => RequestCandidateStatus::Cancelled,
-                        AttemptCandidateStatus::Failed => RequestCandidateStatus::Failed,
-                        AttemptCandidateStatus::Success => RequestCandidateStatus::Success,
-                    },
-                    status_code: Some(settlement.status_code),
-                    error_type,
-                    error_message,
-                    latency_ms: payload
-                        .telemetry
-                        .as_ref()
-                        .and_then(|value| value.elapsed_ms),
-                    started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
-                    finished_at_unix_ms: Some(current_unix_ms()),
+                AttemptTerminalFactsInput {
+                    facts,
+                    terminal_summary: summary,
+                    telemetry,
+                    provider_headers: std::mem::take(&mut self.provider_headers),
+                    provider_body: &self.provider_capture,
+                    client_body: &self.client_capture,
+                    provider_error_body: terminal_error_body.as_deref(),
+                    reason: facts.reason(),
                 },
-            ),
-        )
-        .await;
-
-        // Health, adaptive, and pool feedback are secondary to the terminal
-        // usage/candidate record. A slow dependency must not leave a turn in
-        // Pending or Streaming indefinitely.
-        let effect_context = LocalExecutionEffectContext {
-            plan: &self.plan,
-            report_context: payload.report_context.as_ref(),
-        };
-        let effects_completed =
-            await_websocket_lifecycle_stage(&self.trace_id, "provider_effects", async {
-                match settlement.provider_effect {
-                    ResponsesWebSocketTurnEffect::ReleasePoolKeyLease => {
-                        release_local_pool_key_lease(state, effect_context).await;
-                    }
-                    ResponsesWebSocketTurnEffect::ProviderFailure => {
-                        let response_text = terminal_error_body
-                            .as_deref()
-                            .or(summary.parser_error.as_deref())
-                            .unwrap_or(outcome_reason.as_str());
-                        let mut effect = LocalStreamFailureEffect::new(
-                            settlement.status_code,
-                            &payload.headers,
-                            Some(response_text),
-                        );
-                        if facts.provider.stream_timeout() {
-                            effect = effect.with_stream_timeout();
-                        }
-                        apply_local_stream_failure_effects(state, effect_context, effect).await;
-                    }
-                    ResponsesWebSocketTurnEffect::ProviderSuccess => {
-                        apply_local_stream_success_effects(state, effect_context, &payload).await;
-                    }
-                }
-            })
-            .await
-            .is_some();
-        if !effects_completed {
-            let _ = await_websocket_lifecycle_stage(
-                &self.trace_id,
-                "pool_lease_release_after_effect_timeout",
-                release_local_pool_key_lease(state, effect_context),
             )
             .await;
-        }
-
-        // The normal execution runtime does not submit a stream report after a
-        // downstream disconnect either. The terminal usage record above still
-        // captures cancellation without applying provider-success side effects.
-        if settlement.submit_execution_report {
-            if let Some(Err(error)) = await_websocket_lifecycle_stage(
-                &self.trace_id,
-                "execution_report",
-                submit_stream_report(state, payload),
-            )
-            .await
-            {
-                warn!(
-                    event_name = "responses_websocket_execution_report_submit_failed",
-                    log_type = "ops",
-                    transport = "websocket",
-                    websocket = true,
-                    trace_id = %self.trace_id,
-                    error = ?error,
-                    "gateway failed to submit Responses WebSocket terminal report"
-                );
-            }
-        }
     }
 
     fn capture_sse_event(&mut self, event: &Value) {
-        append_capture(
-            &mut self.provider_capture,
-            &websocket_event_as_sse_line(event),
-            &mut self.provider_capture_truncated,
-        );
+        self.provider_capture
+            .append(&websocket_event_as_sse_line(event));
     }
 
     /// 终态摘要。
@@ -923,7 +734,7 @@ impl ResponsesProviderAttempt {
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
-        let report_context = self.report_context.as_ref().unwrap_or(&fallback_context);
+        let report_context = self.lifecycle.report_context().unwrap_or(&fallback_context);
         let mut summary = match self.observer.finish(report_context) {
             Ok(Some(summary)) => summary,
             Ok(None) => ExecutionStreamTerminalSummary::default(),
@@ -1145,78 +956,8 @@ fn websocket_event_as_sse_line(event: &Value) -> Vec<u8> {
     format!("data: {payload}\n\n").into_bytes()
 }
 
-fn append_capture(buffer: &mut Vec<u8>, bytes: &[u8], truncated: &mut bool) {
-    if bytes.is_empty() || *truncated {
-        return;
-    }
-    let max_bytes = DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES;
-    if buffer.len() >= max_bytes {
-        *truncated = true;
-        return;
-    }
-    let remaining = max_bytes - buffer.len();
-    let copied = bytes.len().min(remaining);
-    buffer.extend_from_slice(&bytes[..copied]);
-    if copied < bytes.len() {
-        *truncated = true;
-    }
-}
-
-fn encode_stream_capture(
-    bytes: &[u8],
-    truncated: bool,
-) -> (Option<String>, Option<UsageBodyCaptureState>) {
-    let body = (!bytes.is_empty()).then(|| base64::engine::general_purpose::STANDARD.encode(bytes));
-    let state = if truncated {
-        UsageBodyCaptureState::Truncated
-    } else if bytes.is_empty() {
-        UsageBodyCaptureState::None
-    } else {
-        UsageBodyCaptureState::Inline
-    };
-    (body, Some(state))
-}
-
 fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-}
-
-/// Runs a lifecycle write that must not be lost, while still bounding how long
-/// the caller waits for it.
-///
-/// [`await_websocket_lifecycle_stage`] drops the future it is waiting on. That
-/// is the right trade for secondary effects, but it would silently discard a
-/// write the rest of the system depends on. Spawning first makes the deadline
-/// bound only the wait: dropping the `JoinHandle` detaches the task, which runs
-/// to completion in the background.
-async fn await_detachable_lifecycle_stage<F>(trace_id: &str, stage: &'static str, write: F)
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    let _ = await_websocket_lifecycle_stage(trace_id, stage, tokio::spawn(write)).await;
-}
-
-async fn await_websocket_lifecycle_stage<T>(
-    trace_id: &str,
-    stage: &'static str,
-    future: impl Future<Output = T>,
-) -> Option<T> {
-    match tokio::time::timeout(RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT, future).await {
-        Ok(value) => Some(value),
-        Err(_) => {
-            warn!(
-                event_name = "responses_websocket_lifecycle_stage_timeout",
-                log_type = "ops",
-                transport = "websocket",
-                websocket = true,
-                trace_id,
-                stage,
-                timeout_ms = RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT.as_millis() as u64,
-                "gateway stopped waiting for a Responses WebSocket lifecycle stage"
-            );
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1230,10 +971,11 @@ mod tests {
 
     use super::super::frame::ParsedResponsesWebSocketFrame;
     use super::super::settlement::{
-        attempt_facts_for_outcome, classify_attempt_settlement,
-        settle_signal_for_client_delivery_failure, AttemptBilling, AttemptCandidateError,
-        AttemptCandidateStatus, AttemptClientDelivery, AttemptSettlementInputs,
-        ResponsesWebSocketTurnEffect,
+        attempt_facts_for_outcome, settle_signal_for_client_delivery_failure,
+    };
+    use crate::execution_runtime::attempt_lifecycle::{
+        classify_attempt_settlement, AttemptBilling, AttemptCandidateError, AttemptCandidateStatus,
+        AttemptClientDelivery, AttemptProviderEffect, AttemptSettlementInputs,
     };
     use super::{
         attach_client_delivery_to_report_context, prepare_websocket_report_context,
@@ -1428,7 +1170,7 @@ mod tests {
         assert_eq!(settlement.billing, AttemptBilling::Billed);
         assert_eq!(
             settlement.provider_effect,
-            ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
+            AttemptProviderEffect::ReleasePoolKeyLease
         );
         assert!(settlement.submit_execution_report);
     }
@@ -1516,7 +1258,7 @@ mod tests {
         );
         assert_eq!(
             settlement.provider_effect,
-            ResponsesWebSocketTurnEffect::ProviderSuccess
+            AttemptProviderEffect::ProviderSuccess
         );
         assert!(settlement.submit_execution_report);
         // 投递失败仍然留痕。
@@ -1552,7 +1294,7 @@ mod tests {
         );
         assert_eq!(
             settlement.provider_effect,
-            ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
+            AttemptProviderEffect::ReleasePoolKeyLease
         );
         assert!(!settlement.submit_execution_report);
     }
