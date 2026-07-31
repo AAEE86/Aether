@@ -15,6 +15,7 @@ mod connection;
 mod frame;
 mod lifecycle;
 mod quota;
+mod redaction;
 mod relay_policy;
 mod request;
 mod session;

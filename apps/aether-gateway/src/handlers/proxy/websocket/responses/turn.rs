@@ -300,11 +300,18 @@ pub(super) struct ResponsesWebSocketTurn {
     terminal_error_body: Option<String>,
 }
 
+/// 组装一轮 turn 的 decision。
+///
+/// `effective_client_event` 必须是**已经过请求侧脱敏**的客户端事件（见
+/// `super::redaction`），`provider_event` 由它派生。审计里的 `original_request_body`
+/// 直接用它覆盖 seed：continuation 的 seed 来自绑定那一轮的 report_context，不覆盖
+/// 会记成上一轮的 body；但覆盖成 raw 事件又会把已脱敏的审计内容换回原文，等于
+/// 脱敏在审计侧失效。
 pub(super) fn prepare_responses_websocket_turn_decision(
     template: &AiExecutionDecision,
     request_id: String,
     reuse_selected_candidate: bool,
-    client_event: &Value,
+    effective_client_event: &Value,
     provider_event: &Value,
     connection_trace_id: &str,
     turn_index: u64,
@@ -322,7 +329,7 @@ pub(super) fn prepare_responses_websocket_turn_decision(
         decision.report_context.take(),
         request_id.as_str(),
         reuse_selected_candidate,
-        client_event,
+        effective_client_event,
         provider_event,
         connection_trace_id,
         turn_index,
@@ -1003,11 +1010,17 @@ pub(super) async fn spawn_responses_websocket_turn_finalization(
     })
 }
 
+/// 把一轮 turn 的事实写进审计/用量 report context。
+///
+/// `effective_client_event` 是脱敏后的客户端事件（未启用脱敏时就是原事件）。
+/// HTTP 路径的约定是「脱敏生效时审计记录脱敏后的 body」
+/// （`ai_serving/planner/standard/openai/responses/decision/payload.rs`），
+/// WS 这里必须保持一致，否则上游收到的是脱敏内容、审计里却留着原始 PII。
 fn prepare_websocket_report_context(
     report_context: Option<Value>,
     request_id: &str,
     reuse_selected_candidate: bool,
-    client_event: &Value,
+    effective_client_event: &Value,
     provider_event: &Value,
     connection_trace_id: &str,
     turn_index: u64,
@@ -1040,8 +1053,11 @@ fn prepare_websocket_report_context(
             object.remove(field);
         }
     }
-    object.insert("original_request_body".to_string(), client_event.clone());
-    if let Some(model) = client_event
+    object.insert(
+        "original_request_body".to_string(),
+        effective_client_event.clone(),
+    );
+    if let Some(model) = effective_client_event
         .get("model")
         .and_then(Value::as_str)
         .map(str::trim)

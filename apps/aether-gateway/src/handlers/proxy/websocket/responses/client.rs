@@ -13,6 +13,7 @@ use super::lifecycle::{
     send_responses_websocket_turn_start_error, ActiveResponsesWebSocketTurn,
 };
 use super::quota::{mark_active_response_retry_unsafe, send_previous_response_not_found};
+use super::redaction::redact_responses_websocket_client_event;
 use super::request::{
     build_planning_parts, changed_followup_response_create_model,
     continuation_requires_same_upstream, normalize_followup_response_create,
@@ -173,6 +174,48 @@ pub(super) async fn forward_client_message(
                 .await;
                 return RelayDisposition::Continue;
             };
+            // 这一轮的 planning Parts 只构造一次（它携带 per-turn 的
+            // RedactionSessionSlot），并且客户端事件也只在这里脱敏一次：
+            // 复用已绑定 upstream 的 continuation 根本不进 planner，只靠 planner
+            // 内部脱敏拦不住它。之后 re-plan / continuation / 配额重试都只看脱敏
+            // 后的事件，上游请求体与审计 original_request_body 因此一致。
+            let planning_parts = build_planning_parts(context);
+            let redacted_client_event = redact_responses_websocket_client_event(
+                state,
+                &planning_parts,
+                &context.decision,
+                &client_event,
+            )
+            .await;
+            let client_event = match redacted_client_event {
+                Ok(Some(redacted)) => redacted,
+                Ok(None) => client_event,
+                Err(error) => {
+                    warn!(
+                        event_name = "responses_websocket_followup_redaction_failed",
+                        log_type = "ops",
+                        transport = WEBSOCKET_LOG_TRANSPORT,
+                        websocket = true,
+                        trace_id = %context.trace_id,
+                        error = ?error,
+                        "gateway could not apply chat PII redaction to a Responses WebSocket turn"
+                    );
+                    send_gateway_error_with_status(
+                        client_socket,
+                        500,
+                        "responses_websocket_redaction_unavailable",
+                        "Gateway could not apply the configured PII redaction",
+                    )
+                    .await;
+                    close_client_socket(
+                        client_socket,
+                        CLOSE_INTERNAL_ERROR,
+                        "responses_websocket_redaction_unavailable",
+                    )
+                    .await;
+                    return RelayDisposition::Close;
+                }
+            };
             if bound.upstream.is_none() {
                 if response_create_has_previous_response_id(&client_event) {
                     send_previous_response_not_found(client_socket).await;
@@ -199,6 +242,7 @@ pub(super) async fn forward_client_message(
                     client_socket,
                     state,
                     context,
+                    &planning_parts,
                     client_event,
                     requested_model,
                 )
@@ -223,6 +267,7 @@ pub(super) async fn forward_client_message(
                     client_socket,
                     state,
                     context,
+                    &planning_parts,
                     client_event,
                     requested_model,
                 )
@@ -234,6 +279,7 @@ pub(super) async fn forward_client_message(
                     client_socket,
                     state,
                     context,
+                    &planning_parts,
                     client_event,
                     bound.client_model.clone(),
                 )
@@ -295,7 +341,6 @@ pub(super) async fn forward_client_message(
                 &logical_turn_id,
                 1,
             );
-            let planning_parts = build_planning_parts(context);
             let mut turn = match begin_responses_websocket_turn(
                 state,
                 &planning_parts,
@@ -398,15 +443,20 @@ pub(super) async fn forward_client_message(
     }
 }
 
+/// 重新规划一轮 `response.create`（换模型或独立轮）。
+///
+/// `planning_parts` 与 `client_event` 都由调用方准备：事件已经过请求侧脱敏，
+/// Parts 携带这一轮的 `RedactionSessionSlot`，所以 planner 里的候选级脱敏对
+/// 已脱敏内容是幂等的 no-op，上游请求体与审计 body 都保持脱敏态。
 async fn forward_replanned_response_create(
     bound: &mut BoundResponsesConnection,
     client_socket: &mut WebSocket,
     state: &AppState,
     context: &WebSocketRequestContext,
+    planning_parts: &http::request::Parts,
     client_event: Value,
     requested_model: String,
 ) -> RelayDisposition {
-    let planning_parts = build_planning_parts(context);
     let client_event_text = match serde_json::to_vec(&client_event) {
         Ok(value) => Bytes::from(value),
         Err(_) => {
@@ -475,7 +525,7 @@ async fn forward_replanned_response_create(
         (!excluded_codex_account_ids.is_empty()).then_some(&excluded_codex_account_ids);
     let planned = match maybe_build_responses_websocket_decision(
         state,
-        &planning_parts,
+        planning_parts,
         &turn_request_id,
         &context.decision,
         &client_event,
@@ -569,7 +619,7 @@ async fn forward_replanned_response_create(
     );
     let mut turn = match begin_responses_websocket_turn(
         state,
-        &planning_parts,
+        planning_parts,
         &context.decision,
         turn_decision,
         &client_event,
