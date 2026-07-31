@@ -34,9 +34,10 @@ use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::admission::ResponsesWebSocketTurnAdmission;
 use super::frame::ParsedResponsesWebSocketFrame;
 use super::settlement::{
-    attempt_facts_for_outcome, attempt_status_code, classify_attempt_settlement,
-    AttemptCandidateError, AttemptCandidateStatus, AttemptProviderOutcome, AttemptSettlementInputs,
-    AttemptTerminalFacts, ResponsesWebSocketTurnEffect,
+    attempt_billing_is_void, attempt_facts_for_outcome, attempt_status_code,
+    classify_attempt_settlement, AttemptCandidateError, AttemptCandidateStatus,
+    AttemptClientDelivery, AttemptProviderOutcome, AttemptSettlementInputs, AttemptTerminalFacts,
+    ResponsesWebSocketTurnEffect,
 };
 use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
@@ -61,6 +62,10 @@ const WEBSOCKET_CONNECTION_TRACE_REPORT_CONTEXT_FIELD: &str = "websocket_connect
 const WEBSOCKET_TURN_INDEX_REPORT_CONTEXT_FIELD: &str = "websocket_turn_index";
 const WEBSOCKET_LOGICAL_TURN_ID_REPORT_CONTEXT_FIELD: &str = "websocket_logical_turn_id";
 const WEBSOCKET_TURN_ATTEMPT_REPORT_CONTEXT_FIELD: &str = "websocket_turn_attempt";
+const WEBSOCKET_CLIENT_DELIVERY_REPORT_CONTEXT_FIELD: &str = "websocket_client_delivery";
+const WEBSOCKET_CLIENT_DELIVERY_ABORTED: &str = "aborted";
+const WEBSOCKET_CLIENT_DELIVERY_REASON_REPORT_CONTEXT_FIELD: &str =
+    "websocket_client_delivery_reason";
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
 const RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -237,6 +242,8 @@ pub(super) struct ResponsesProviderAttempt {
     /// 观察到的 provider 终态事实，与「为什么现在结算」这个信号分开保存。
     /// 客户端投递失败不会把它擦掉。
     provider_outcome: Option<AttemptProviderOutcome>,
+    /// 这一个 attempt 的内容是否完整交付给了客户端。与 provider 终态正交。
+    client_delivery: AttemptClientDelivery,
 }
 
 /// 组装一轮 turn 的 decision。
@@ -442,6 +449,7 @@ pub(super) async fn begin_responses_websocket_turn(
         admission: Some(admission),
         terminal_error_body: None,
         provider_outcome: None,
+        client_delivery: AttemptClientDelivery::Complete,
     })
 }
 
@@ -618,7 +626,10 @@ impl ResponsesProviderAttempt {
             // provider 的终态是独立事实：先记下来，之后即使客户端投递失败、
             // 结算信号变成 Cancelled，这条事实也不会被擦掉。
             self.provider_outcome
-                .get_or_insert(attempt_facts_for_outcome(None, outcome).provider);
+                .get_or_insert(
+                    attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome)
+                        .provider,
+                );
             return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));
         }
         if frame.is_started() {
@@ -650,6 +661,16 @@ impl ResponsesProviderAttempt {
                 reason: "upstream Responses WebSocket event was not valid JSON",
             },
         ))
+    }
+
+    /// 记录「这一个 attempt 的内容没能完整交付给客户端」。
+    ///
+    /// 与 provider 终态分开记录：供应商已经给出终态时，这条事实只影响
+    /// candidate 的错误分类和审计里的投递标记，不作废账单。
+    pub(super) fn record_client_delivery_aborted(&mut self, reason: &'static str) {
+        if matches!(self.client_delivery, AttemptClientDelivery::Complete) {
+            self.client_delivery = AttemptClientDelivery::Aborted { reason };
+        }
     }
 
     pub(super) fn capture_client_frame(&mut self, event: &Value) {
@@ -702,7 +723,12 @@ impl ResponsesProviderAttempt {
     /// 拆成 provider outcome 与 client delivery 两个正交事实，再由
     /// [`classify_attempt_settlement`] 一张表推出账单、candidate 状态和效果。
     async fn settle(mut self, state: &AppState, outcome: ResponsesWebSocketTurnOutcome) {
-        let facts = attempt_facts_for_outcome(self.provider_outcome, outcome);
+        let facts =
+            attempt_facts_for_outcome(self.provider_outcome, self.client_delivery, outcome);
+        if let Some(reason) = facts.delivery.aborted_reason() {
+            self.report_context =
+                attach_client_delivery_to_report_context(self.report_context.take(), reason);
+        }
         let summary = self.finish_summary(facts);
         let terminal_error_body = self.terminal_error_body.take();
         let outcome_reason = facts.reason().to_string();
@@ -761,6 +787,10 @@ impl ResponsesProviderAttempt {
         let (error_type, error_message) = match settlement.candidate_error {
             AttemptCandidateError::Cancelled => (
                 Some("websocket_cancelled".to_string()),
+                Some(outcome_reason.clone()),
+            ),
+            AttemptCandidateError::ClientDeliveryFailed => (
+                Some("client_delivery_failed".to_string()),
                 Some(outcome_reason.clone()),
             ),
             AttemptCandidateError::MissingTerminal => (
@@ -907,7 +937,9 @@ impl ResponsesProviderAttempt {
                 summary.parser_error = Some(reason.to_string());
             }
         }
-        if facts.provider.cancelled_by_provider() || facts.delivery.is_aborted() {
+        // 只有作废账单的那一侧才把摘要改写成 cancelled。provider 终态已到达时
+        // 摘要必须保留真实的 finish_reason 和 usage，否则计费记录会被写坏。
+        if attempt_billing_is_void(facts) {
             summary.observed_finish = true;
             if summary.finish_reason.is_none() {
                 summary.finish_reason = Some("cancelled".to_string());
@@ -1045,6 +1077,30 @@ fn prepare_websocket_report_context(
     Value::Object(object)
 }
 
+/// 在审计/用量 report context 上标记这一 attempt 的内容没能交付给客户端。
+///
+/// 只增字段，不改既有字段：账单本身按 provider 终态计，投递失败作为独立事实
+/// 留在记录里，便于事后区分「客户端拿到了」和「客户端没拿到但已计费」。
+fn attach_client_delivery_to_report_context(
+    report_context: Option<Value>,
+    reason: &str,
+) -> Option<Value> {
+    let mut object = match report_context {
+        Some(Value::Object(object)) => object,
+        Some(other) => Map::from_iter([("seed".to_string(), other)]),
+        None => Map::new(),
+    };
+    object.insert(
+        WEBSOCKET_CLIENT_DELIVERY_REPORT_CONTEXT_FIELD.to_string(),
+        Value::String(WEBSOCKET_CLIENT_DELIVERY_ABORTED.to_string()),
+    );
+    object.insert(
+        WEBSOCKET_CLIENT_DELIVERY_REASON_REPORT_CONTEXT_FIELD.to_string(),
+        Value::String(reason.to_string()),
+    );
+    Some(Value::Object(object))
+}
+
 fn provider_terminal_outcome(
     frame: &ParsedResponsesWebSocketFrame<'_>,
 ) -> Option<ResponsesWebSocketTurnOutcome> {
@@ -1174,11 +1230,14 @@ mod tests {
 
     use super::super::frame::ParsedResponsesWebSocketFrame;
     use super::super::settlement::{
-        attempt_facts_for_outcome, classify_attempt_settlement, AttemptBilling,
-        AttemptSettlementInputs, ResponsesWebSocketTurnEffect,
+        attempt_facts_for_outcome, classify_attempt_settlement,
+        settle_signal_for_client_delivery_failure, AttemptBilling, AttemptCandidateError,
+        AttemptCandidateStatus, AttemptClientDelivery, AttemptSettlementInputs,
+        ResponsesWebSocketTurnEffect,
     };
     use super::{
-        prepare_websocket_report_context, provider_terminal_outcome,
+        attach_client_delivery_to_report_context, prepare_websocket_report_context,
+        provider_terminal_outcome,
         resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
         ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
         ResponsesWebSocketTurnTimeoutPhase,
@@ -1330,7 +1389,7 @@ mod tests {
             })
         );
         let outcome = outcome.expect("incomplete should end the turn");
-        let facts = attempt_facts_for_outcome(None, outcome);
+        let facts = attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome);
         assert!(!facts.provider.cancelled_by_provider());
         assert!(facts.forced_error().is_none());
         assert!(!facts.provider.stream_timeout());
@@ -1388,6 +1447,139 @@ mod tests {
         );
     }
 
+    /// relay 级：provider 终态帧已经到达，但客户端 socket 已经关闭。
+    ///
+    /// 走的是 relay loop 写客户端失败时的完整决策链——真实帧解析 →
+    /// 记录 provider 事实 → 记录投递失败 → 选结算信号 → 结算表。旧实现在这里
+    /// 用 client_disconnected() 覆盖 outcome，于是一条已经产出 token 的响应被
+    /// 记成 void billing、不投射供应商效果、也不提交 execution report。
+    #[test]
+    fn a_provider_terminal_that_reaches_a_closed_client_socket_is_still_billed() {
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_ws_delivery_failed",
+                "model": "gpt-5.6",
+                "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8}
+            }
+        });
+        let raw = serde_json::to_string(&completed).expect("event should serialize");
+        let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("event should parse");
+
+        // relay loop 观察到终态帧：attempt 记下 provider 事实。
+        let observed = provider_terminal_outcome(&frame).expect("completed ends the turn");
+        let recorded_provider =
+            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, observed).provider;
+
+        // 随后写客户端失败：记录投递失败，并按 provider 终态选结算信号。
+        let delivery = AttemptClientDelivery::Aborted {
+            reason: "gateway could not relay the provider event to the client",
+        };
+        let signal = settle_signal_for_client_delivery_failure(Some(observed));
+        assert_eq!(signal, observed, "a reached terminal must remain the signal");
+
+        let facts = attempt_facts_for_outcome(Some(recorded_provider), delivery, signal);
+
+        // 终态摘要保留真实 usage 与 finish_reason，不被改写成 cancelled。
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+        });
+        let mut observer = StreamingStandardTerminalObserver::default();
+        observer
+            .push_line(&report_context, websocket_event_as_sse_line(&completed))
+            .expect("the terminal event must be accepted by the usage observer");
+        let summary = observer
+            .finish(&report_context)
+            .expect("terminal observer should finish")
+            .expect("terminal observer should produce a summary");
+        assert!(summary.observed_finish);
+        assert!(summary.parser_error.is_none());
+        let usage = summary
+            .standardized_usage
+            .clone()
+            .expect("usage must survive a delivery failure");
+        assert_eq!(usage.input_tokens, 3);
+        assert_eq!(usage.output_tokens, 5);
+
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: false,
+            observed_finish: summary.observed_finish,
+            has_parser_error: summary.parser_error.is_some(),
+        });
+        assert_eq!(settlement.billing, AttemptBilling::Billed);
+        assert_eq!(settlement.status_code, 200);
+        assert_eq!(
+            settlement.candidate_status,
+            AttemptCandidateStatus::Success
+        );
+        assert_eq!(
+            settlement.provider_effect,
+            ResponsesWebSocketTurnEffect::ProviderSuccess
+        );
+        assert!(settlement.submit_execution_report);
+        // 投递失败仍然留痕。
+        assert_eq!(
+            settlement.candidate_error,
+            AttemptCandidateError::ClientDeliveryFailed
+        );
+    }
+
+    /// 同一条链路，但供应商还没给出终态：仍然作废账单、不提交 report。
+    #[test]
+    fn a_closed_client_socket_before_any_terminal_still_voids_the_bill() {
+        let signal = settle_signal_for_client_delivery_failure(None);
+        let facts = attempt_facts_for_outcome(
+            None,
+            AttemptClientDelivery::Aborted {
+                reason: "gateway could not relay the provider event to the client",
+            },
+            signal,
+        );
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: false,
+            observed_finish: false,
+            has_parser_error: false,
+        });
+
+        assert_eq!(settlement.billing, AttemptBilling::Void);
+        assert_eq!(settlement.status_code, 499);
+        assert_eq!(
+            settlement.candidate_status,
+            AttemptCandidateStatus::Cancelled
+        );
+        assert_eq!(
+            settlement.provider_effect,
+            ResponsesWebSocketTurnEffect::ReleasePoolKeyLease
+        );
+        assert!(!settlement.submit_execution_report);
+    }
+
+    /// 投递失败只往 report context 里加字段，不改既有字段。
+    #[test]
+    fn the_client_delivery_marker_only_adds_report_context_fields() {
+        let context = attach_client_delivery_to_report_context(
+            Some(json!({
+                "request_id": "turn-2",
+                "websocket_mode": true,
+                "original_request_body": {"model": "public"},
+            })),
+            "gateway could not relay the provider event to the client",
+        )
+        .expect("marker should produce a report context");
+
+        assert_eq!(context["websocket_client_delivery"], "aborted");
+        assert_eq!(
+            context["websocket_client_delivery_reason"],
+            "gateway could not relay the provider event to the client"
+        );
+        assert_eq!(context["request_id"], "turn-2");
+        assert_eq!(context["websocket_mode"], true);
+        assert_eq!(context["original_request_body"]["model"], "public");
+    }
+
     #[test]
     fn error_event_uses_the_top_level_status_code() {
         let event = json!({
@@ -1425,7 +1617,7 @@ mod tests {
         // cancellation: cancelled turns skip the stream report entirely, which
         // would defeat the point of reclaiming it.
         let outcome = ResponsesWebSocketTurnOutcome::relay_task_abandoned();
-        let facts = attempt_facts_for_outcome(None, outcome);
+        let facts = attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome);
         let settlement = classify_attempt_settlement(AttemptSettlementInputs {
             facts,
             report_represents_failure: true,

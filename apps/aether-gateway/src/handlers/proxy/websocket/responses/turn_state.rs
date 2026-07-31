@@ -168,6 +168,19 @@ impl<A> ResponsesTurnState<A> {
     }
 }
 
+impl ResponsesTurnState {
+    /// 记录「当前 attempt 的内容没能完整交付给客户端」。
+    ///
+    /// 这条事实写在 attempt 上而不是 logical turn 上：结算是按 attempt 进行的，
+    /// 而每个 attempt 的投递结果各自独立（配额透明重试时旧 attempt 可能已经把
+    /// 部分事件交付出去，新 attempt 从零开始）。
+    pub(super) fn record_client_delivery_aborted(&mut self, reason: &'static str) {
+        if let Some(attempt) = self.attempt_mut() {
+            attempt.record_client_delivery_aborted(reason);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

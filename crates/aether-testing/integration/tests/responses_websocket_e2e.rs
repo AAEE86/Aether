@@ -156,12 +156,21 @@ async fn continuation_reuses_one_upstream_connection_and_bills_both_turns() -> R
     Ok(())
 }
 
-/// A client that walks away mid-turn must still be billed for what it started.
+/// A client that walks away before the provider produced anything must settle
+/// as a void row: nothing was produced, so nothing is billed.
 ///
 /// This is the path with no protocol event to announce it: the relay loop owns
 /// the turn, and losing the client is an exit the upstream never reports.
+///
+/// The mirror case — the provider *did* reach a terminal event and only the last
+/// hop to the client failed — is billed instead. That one cannot be pinned here:
+/// it depends on the relay loop's `select!` observing the upstream terminal frame
+/// before it observes the closed client socket, which is a race by construction.
+/// It is covered deterministically by the relay-level unit tests
+/// `a_provider_terminal_that_reaches_a_closed_client_socket_is_still_billed` and
+/// `a_closed_client_socket_before_any_terminal_still_voids_the_bill`.
 #[tokio::test]
-async fn client_disconnect_mid_turn_still_settles_the_usage_row() -> Result<(), BoxError> {
+async fn client_disconnect_before_any_provider_output_settles_a_void_row() -> Result<(), BoxError> {
     let harness = Harness::start(UpstreamBehavior::StallAfterCreated).await?;
     let mut client = harness.connect().await?;
 
@@ -183,6 +192,17 @@ async fn client_disconnect_mid_turn_still_settles_the_usage_row() -> Result<(), 
         !is_pending(audit),
         "an abandoned turn must not be left pending: {audit:?}"
     );
+    // The provider never emitted a terminal event, so this row stays void.
+    // Only a reached provider terminal survives a client delivery failure.
+    assert!(
+        !is_billed(audit),
+        "a turn with no provider output must not be billed: {audit:?}"
+    );
+    assert_eq!(
+        audit.status, "cancelled",
+        "a client that left before any provider output settles as cancelled: {audit:?}"
+    );
+    assert_eq!(audit.status_code, Some(499));
 
     Ok(())
 }
