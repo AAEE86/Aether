@@ -33,13 +33,13 @@ use tracing::warn;
 use super::adapter::ResponsesWebSocketProtocolAdapter;
 use super::admission::ResponsesWebSocketTurnAdmission;
 use super::frame::ParsedResponsesWebSocketFrame;
+use super::observation::ResponsesStructuredTerminalObserver;
 use super::settlement::attempt_facts_for_outcome;
 use crate::execution_runtime::attempt_lifecycle::{
     attempt_billing_is_void, AttemptBodyCapture, AttemptClientDelivery, AttemptLifecycleSeed,
     AttemptProviderOutcome, AttemptStageGuard, AttemptTerminalFacts, AttemptTerminalFactsInput,
     ExecutionAttemptLifecycle,
 };
-use crate::ai_serving::api::StreamingStandardTerminalObserver;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
 use crate::clock::current_unix_ms;
 use crate::control::{
@@ -227,7 +227,7 @@ pub(super) struct ResponsesProviderAttempt {
     lifecycle: ExecutionAttemptLifecycle,
     started_at: Instant,
     provider_headers: BTreeMap<String, String>,
-    observer: StreamingStandardTerminalObserver,
+    observer: ResponsesStructuredTerminalObserver,
     provider_capture: AttemptBodyCapture,
     client_capture: AttemptBodyCapture,
     upstream_bytes: u64,
@@ -414,7 +414,7 @@ pub(super) async fn begin_responses_websocket_turn(
         lifecycle,
         started_at: Instant::now(),
         provider_headers: BTreeMap::new(),
-        observer: StreamingStandardTerminalObserver::default(),
+        observer: ResponsesStructuredTerminalObserver::default(),
         provider_capture: AttemptBodyCapture::default(),
         client_capture: AttemptBodyCapture::default(),
         upstream_bytes: 0,
@@ -572,12 +572,13 @@ impl ResponsesProviderAttempt {
             self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
         }
 
-        // A batched frame carries several events; the usage observer parses one
-        // Responses event per SSE line, so the batch must be unwrapped or its
-        // token usage is lost.
+        // 一帧可以带多个协议事件（批量帧），必须拆开：观测器按事件推进状态机，
+        // 整帧当一个事件喂会丢掉批量里最后那个 completed 的 usage。
         let events = frame.protocol_events();
         let mut report_context = self.lifecycle.take_report_context();
         for event in &events {
+            // 观测已经走结构化入口，但捕获仍然必须是 SSE 形状：usage runtime 按
+            // `data:` 行解析被捕获的 body 判定终态。
             self.capture_sse_event(event);
             adapter.decorate_turn_report_context(&mut report_context, event);
         }
@@ -587,15 +588,7 @@ impl ResponsesProviderAttempt {
             "client_api_format": "openai:responses",
         });
         let report_context = self.lifecycle.report_context().unwrap_or(&fallback_context);
-        for event in &events {
-            if let Err(error) = self
-                .observer
-                .push_line(report_context, websocket_event_as_sse_line(event))
-            {
-                self.observer.disable_with_error(error.to_string());
-                break;
-            }
-        }
+        self.observer.observe_events(report_context, &events);
 
         let event_type = frame.event_type().unwrap_or_default();
         if matches!(event_type, "error" | "response.failed") {
@@ -735,14 +728,7 @@ impl ResponsesProviderAttempt {
             "client_api_format": "openai:responses",
         });
         let report_context = self.lifecycle.report_context().unwrap_or(&fallback_context);
-        let mut summary = match self.observer.finish(report_context) {
-            Ok(Some(summary)) => summary,
-            Ok(None) => ExecutionStreamTerminalSummary::default(),
-            Err(error) => {
-                self.observer.disable_with_error(error.to_string());
-                self.observer.latest_summary().cloned().unwrap_or_default()
-            }
-        };
+        let mut summary = self.observer.finish(report_context);
         if let Some(reason) = facts.forced_error() {
             if summary.parser_error.is_none() {
                 summary.parser_error = Some(reason.to_string());
@@ -967,7 +953,7 @@ mod tests {
     use aether_contracts::ExecutionTimeouts;
     use serde_json::json;
 
-    use crate::ai_serving::api::StreamingStandardTerminalObserver;
+    use super::super::observation::ResponsesStructuredTerminalObserver;
 
     use super::super::frame::ParsedResponsesWebSocketFrame;
     use super::super::settlement::{
@@ -1085,14 +1071,9 @@ mod tests {
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
-        let mut observer = StreamingStandardTerminalObserver::default();
-        observer
-            .push_line(&report_context, capture.into_bytes())
-            .expect("WebSocket terminal event should be accepted by the usage observer");
-        let summary = observer
-            .finish(&report_context)
-            .expect("WebSocket terminal observer should finish")
-            .expect("WebSocket terminal observer should produce a summary");
+        let mut observer = ResponsesStructuredTerminalObserver::default();
+        observer.observe_events(&report_context, &[&event]);
+        let summary = observer.finish(&report_context);
         let usage = summary
             .standardized_usage
             .expect("response.completed usage must reach the terminal summary");
@@ -1141,14 +1122,9 @@ mod tests {
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
-        let mut observer = StreamingStandardTerminalObserver::default();
-        observer
-            .push_line(&report_context, websocket_event_as_sse_line(&event))
-            .expect("a legitimate incomplete must be accepted by the usage observer");
-        let summary = observer
-            .finish(&report_context)
-            .expect("terminal observer should finish")
-            .expect("terminal observer should produce a summary");
+        let mut observer = ResponsesStructuredTerminalObserver::default();
+        observer.observe_events(&report_context, &[&event]);
+        let summary = observer.finish(&report_context);
         assert!(summary.observed_finish);
         assert_eq!(summary.finish_reason.as_deref(), Some("length"));
         assert!(summary.parser_error.is_none());
@@ -1227,14 +1203,9 @@ mod tests {
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
-        let mut observer = StreamingStandardTerminalObserver::default();
-        observer
-            .push_line(&report_context, websocket_event_as_sse_line(&completed))
-            .expect("the terminal event must be accepted by the usage observer");
-        let summary = observer
-            .finish(&report_context)
-            .expect("terminal observer should finish")
-            .expect("terminal observer should produce a summary");
+        let mut observer = ResponsesStructuredTerminalObserver::default();
+        observer.observe_events(&report_context, &[&completed]);
+        let summary = observer.finish(&report_context);
         assert!(summary.observed_finish);
         assert!(summary.parser_error.is_none());
         let usage = summary
