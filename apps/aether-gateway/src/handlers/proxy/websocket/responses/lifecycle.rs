@@ -103,12 +103,16 @@ impl Drop for ActiveResponsesWebSocketTurn {
     }
 }
 
+/// 结束当前 logical turn 并结算它的 attempt。
+///
+/// `end()` 同时清掉 logical turn 和 attempt，取代原来「take active_turn +
+/// 在每个出口手写 `active_response_create = None`」的两步组合。
 pub(super) async fn finalize_active_turn(
     bound: &mut BoundResponsesConnection,
     state: &AppState,
     outcome: ResponsesWebSocketTurnOutcome,
 ) {
-    if let Some(turn) = bound.active_turn.take() {
+    if let Some(turn) = bound.turn_state.end() {
         queue_turn_finalization(bound, state, turn.disarm(), outcome).await;
     }
 }

@@ -20,11 +20,12 @@ use super::request::{
     planned_response_create_event, provider_model_from_decision,
     response_create_has_previous_response_id, response_create_model_or_current,
 };
-use super::state::{ActiveResponsesWebSocketRequest, BoundResponsesConnection};
+use super::state::BoundResponsesConnection;
 use super::turn::{
     begin_responses_websocket_turn, prepare_responses_websocket_turn_decision,
     ResponsesWebSocketTurnObservation, ResponsesWebSocketTurnOutcome,
 };
+use super::turn_state::LogicalTurn;
 use super::upstream::{bind_responses_upstream, decision_reuses_bound_upstream};
 use crate::ai_serving::maybe_build_responses_websocket_decision;
 use crate::clock::current_unix_secs;
@@ -118,7 +119,7 @@ pub(super) async fn forward_client_message(
                 ));
             }
 
-            if bound.response_in_flight {
+            if !bound.turn_state.accepts_new_response_create() {
                 send_gateway_error(
                     client_socket,
                     "response_already_in_progress",
@@ -366,21 +367,18 @@ pub(super) async fn forward_client_message(
                 }
             };
             turn.set_provider_response_headers(bound.upstream_response_headers.clone());
-            bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
-            bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
-                client_event.clone(),
-                turn_index,
-                logical_turn_id,
-            ));
+            bound.turn_state.begin(
+                LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id),
+                ActiveResponsesWebSocketTurn::new(state, turn),
+            );
             bound.next_turn_index = bound.next_turn_index.saturating_add(1);
-            bound.response_in_flight = true;
 
             let Some(upstream) = bound.upstream.as_mut() else {
                 return RelayDisposition::UpstreamError("responses_websocket_send_failed");
             };
             match send_upstream_message(upstream, WreqWsMessage::text(outbound)).await {
                 Ok(()) => {
-                    if let Some(turn) = bound.active_turn.as_mut() {
+                    if let Some(turn) = bound.turn_state.attempt_mut() {
                         turn.mark_upstream_request_sent();
                     }
                     RelayDisposition::Continue
@@ -697,14 +695,11 @@ async fn forward_replanned_response_create(
         // The re-plan keeps this upstream but resolved a new model, so later
         // continuations must normalize against the new plan, not the old one.
         bound.body_normalization = normalization;
-        bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
-        bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
-            client_event.clone(),
-            turn_index,
-            logical_turn_id.clone(),
-        ));
+        bound.turn_state.begin(
+            LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id.clone()),
+            ActiveResponsesWebSocketTurn::new(state, turn),
+        );
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
-        bound.response_in_flight = true;
         debug!(
             event_name = "responses_websocket_followup_model_replanned",
             log_type = "event",
@@ -769,16 +764,13 @@ async fn forward_replanned_response_create(
     bound.adapter = replacement.adapter;
     bound.client_model = replacement.client_model;
     bound.provider_model = replacement.provider_model;
-    bound.response_in_flight = true;
     bound.decision_template = replacement.decision_template;
     bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
-    bound.active_turn = Some(ActiveResponsesWebSocketTurn::new(state, turn));
-    bound.active_response_create = Some(ActiveResponsesWebSocketRequest::new(
-        client_event,
-        turn_index,
-        logical_turn_id,
-    ));
+    bound.turn_state.begin(
+        LogicalTurn::new(client_event, turn_index, logical_turn_id),
+        ActiveResponsesWebSocketTurn::new(state, turn),
+    );
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
     bound.upstream_response_headers = replacement.upstream_response_headers;
     bound.pending_adapter_drain = replacement.pending_adapter_drain;

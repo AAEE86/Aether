@@ -4,14 +4,12 @@
 //! connection may survive many `response.create` turns, while the turn
 //! lifecycle and upstream binding are replaced independently.
 
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::task::JoinHandle;
 
 use super::adapter::{ResponsesWebSocketDrainDirective, ResponsesWebSocketProtocolAdapter};
 use super::binding::UpstreamBindingIdentity;
-use super::lifecycle::ActiveResponsesWebSocketTurn;
-use super::request::response_create_has_previous_response_id;
+use super::turn_state::ResponsesTurnState;
 use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 
 const EXHAUSTED_KEY_EXCLUSION_FALLBACK_SECONDS: u64 = 300;
@@ -22,15 +20,14 @@ pub(super) struct BoundResponsesConnection {
     pub(super) adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
     pub(super) client_model: String,
     pub(super) provider_model: String,
-    pub(super) response_in_flight: bool,
     pub(super) decision_template: AiExecutionDecision,
     /// Reproduces this binding's provider-body normalization for continuation
     /// turns, which must not re-enter the planner. Replaced whenever the
     /// binding or its decision is replaced.
     pub(super) body_normalization: ResponsesWebSocketBodyNormalization,
     pub(super) binding_identity: UpstreamBindingIdentity,
-    pub(super) active_turn: Option<ActiveResponsesWebSocketTurn>,
-    pub(super) active_response_create: Option<ActiveResponsesWebSocketRequest>,
+    /// 这条连接上「有没有正在进行的 logical turn」的唯一事实来源。
+    pub(super) turn_state: ResponsesTurnState,
     pub(super) next_turn_index: u64,
     pub(super) upstream_response_headers: BTreeMap<String, String>,
     pub(super) pending_adapter_drain: Option<ResponsesWebSocketDrainDirective>,
@@ -101,41 +98,3 @@ impl ExhaustedResponsesWebSocketExclusions {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct ActiveResponsesWebSocketRequest {
-    pub(super) client_event: Value,
-    pub(super) turn_index: u64,
-    pub(super) logical_turn_id: String,
-    pub(super) turn_attempt: u32,
-    pub(super) retry_attempted: bool,
-    pub(super) retry_unsafe_reason: Option<&'static str>,
-}
-
-impl ActiveResponsesWebSocketRequest {
-    pub(super) fn new(client_event: Value, turn_index: u64, logical_turn_id: String) -> Self {
-        Self {
-            client_event,
-            turn_index,
-            logical_turn_id,
-            turn_attempt: 1,
-            retry_attempted: false,
-            retry_unsafe_reason: None,
-        }
-    }
-
-    pub(super) fn quota_retry_block_reason(&self) -> Option<&'static str> {
-        if self.retry_attempted {
-            Some("quota_retry_already_attempted")
-        } else if let Some(reason) = self.retry_unsafe_reason {
-            Some(reason)
-        } else if response_create_has_previous_response_id(&self.client_event) {
-            Some("previous_response_id")
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn mark_retry_unsafe(&mut self, reason: &'static str) {
-        self.retry_unsafe_reason.get_or_insert(reason);
-    }
-}
