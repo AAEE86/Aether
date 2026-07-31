@@ -22,6 +22,7 @@ use super::lifecycle::{
     await_turn_finalization_handle, finalize_unbound_turn, responses_websocket_turn_start_close,
     send_responses_websocket_turn_start_error, ActiveResponsesWebSocketTurn,
 };
+use super::redaction::redact_responses_websocket_client_event;
 use super::request::{build_planning_parts, planned_response_create_event};
 use super::state::ActiveResponsesWebSocketRequest;
 use super::turn::{
@@ -215,6 +216,46 @@ pub(super) async fn run_responses_websocket(
             return;
         }
     }
+
+    // 请求侧脱敏必须在规划之前完成，而且这一轮只在这里做一次：planner 会把这份
+    // body 写进 upstream 请求体和审计 original_request_body，绑定上游的首条
+    // response.create 也从它派生。脱敏失败时直接断开，绝不退回原文发上游。
+    let redacted_first_event = redact_responses_websocket_client_event(
+        &state,
+        &planning_parts,
+        &context.decision,
+        &first_event,
+    )
+    .await;
+    let first_event = match redacted_first_event {
+        Ok(Some(redacted)) => redacted,
+        Ok(None) => first_event,
+        Err(error) => {
+            warn!(
+                event_name = "responses_websocket_redaction_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                error = ?error,
+                "gateway could not apply chat PII redaction to the initial Responses WebSocket event"
+            );
+            send_gateway_error_with_status(
+                &mut client_socket,
+                500,
+                "responses_websocket_redaction_unavailable",
+                "Gateway could not apply the configured PII redaction",
+            )
+            .await;
+            close_client_socket(
+                &mut client_socket,
+                CLOSE_INTERNAL_ERROR,
+                "responses_websocket_redaction_unavailable",
+            )
+            .await;
+            return;
+        }
+    };
 
     let planned = match maybe_build_responses_websocket_decision(
         &state,

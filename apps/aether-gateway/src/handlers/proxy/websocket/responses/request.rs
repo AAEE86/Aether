@@ -11,7 +11,14 @@ use serde_json::Value;
 use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::headers::request_origin_from_headers_and_remote_addr;
+use crate::privacy::RedactionSessionSlot;
 
+/// 把一条 WebSocket turn 还原成 planner 需要的 HTTP 形状请求头部。
+///
+/// 这里必须和 HTTP 前门（`handlers/proxy/mod.rs`）保持同一份 extension 契约：
+/// planner 只在 `parts.extensions` 里拿到 `RedactionSessionSlot` 时才做请求脱敏
+/// （`ai_serving/planner/redaction.rs`），少插这一项等于整条 WS 链路静默绕过
+/// 已启用的 PII 脱敏。
 pub(super) fn build_planning_parts(context: &WebSocketRequestContext) -> http::request::Parts {
     let mut request = http::Request::builder()
         .method(Method::POST)
@@ -40,6 +47,15 @@ pub(super) fn build_planning_parts(context: &WebSocketRequestContext) -> http::r
             &context.headers,
             &context.remote_addr,
         ));
+    // slot 必须每个 turn 新建，不能按连接复用：planner 侧的请求脱敏缓存键是
+    // `{format:?}:{body_json 指针地址}`（`ai_serving/planner/redaction.rs:169`），
+    // 连接级复用同一个 slot 时，上一轮 client_event 释放后这一轮的 `Value` 很可能
+    // 落在同一地址，会命中上一轮缓存，把上一轮的脱敏 body 当成这一轮的发出去。
+    // 每个 `response.create` 本身就是独立计费/审计请求，per-turn 也正好对应
+    // HTTP 前门「一个请求一个 slot」的语义。
+    request
+        .extensions_mut()
+        .insert(RedactionSessionSlot::default());
     request.into_parts().0
 }
 
@@ -198,10 +214,66 @@ pub(super) fn normalize_followup_response_create(
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
+    use axum::http::{HeaderMap, Uri};
     use serde_json::json;
 
-    use super::{normalize_followup_response_create, response_create_has_previous_response_id};
+    use super::{
+        build_planning_parts, normalize_followup_response_create,
+        response_create_has_previous_response_id,
+    };
     use crate::ai_serving::ResponsesWebSocketBodyNormalization;
+    use crate::control::GatewayControlDecision;
+    use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
+    use crate::privacy::RedactionSessionSlot;
+
+    fn websocket_context() -> WebSocketRequestContext {
+        WebSocketRequestContext {
+            trace_id: "trace-planning-parts".to_string(),
+            headers: HeaderMap::new(),
+            uri: Uri::from_static("/v1/responses"),
+            remote_addr: "127.0.0.1:65001"
+                .parse::<SocketAddr>()
+                .expect("remote address should parse"),
+            decision: GatewayControlDecision::synthetic(
+                "/v1/responses".to_string(),
+                Some("ai_public".to_string()),
+                Some("openai".to_string()),
+                Some("responses_websocket".to_string()),
+                Some("openai:responses".to_string()),
+            ),
+            rpm_bypassed: false,
+            websocket_connection_permit: None,
+        }
+    }
+
+    #[test]
+    fn planning_parts_carry_a_fresh_redaction_session_slot_per_turn() {
+        // 没有这个 extension，planner 会静默跳过已启用的 PII 脱敏
+        // （ai_serving/planner/redaction.rs），整条 WS 链路都按原文发上游。
+        let context = websocket_context();
+        let first = build_planning_parts(&context);
+        let second = build_planning_parts(&context);
+
+        let first_slot = first
+            .extensions
+            .get::<RedactionSessionSlot>()
+            .expect("planning parts must carry a redaction session slot");
+        let second_slot = second
+            .extensions
+            .get::<RedactionSessionSlot>()
+            .expect("planning parts must carry a redaction session slot");
+
+        // 每轮必须是独立 slot：slot 内的请求缓存以 body 指针地址为键，跨轮共享会
+        // 命中上一轮缓存。用缓存条目相互不可见来证明两者不是同一个 slot。
+        first_slot.put_cached_request_redaction(
+            "turn-1",
+            crate::privacy::CachedRequestRedaction::unredacted(),
+        );
+        assert!(first_slot.cached_request_redaction("turn-1").is_some());
+        assert!(second_slot.cached_request_redaction("turn-1").is_none());
+    }
 
     fn normalized_continuation(
         event: &serde_json::Value,

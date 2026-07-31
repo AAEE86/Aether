@@ -49,6 +49,7 @@ pub(crate) use self::plan_builders::{
 pub(crate) use self::pool_scores::{
     build_provider_key_pool_score_upsert, provider_key_pool_score_id, provider_key_pool_score_scope,
 };
+pub(crate) use self::redaction::resolve_provider_chat_pii_redaction;
 pub(crate) use self::request_gzip::resolve_transport_request_encoding_policy;
 pub(crate) use self::route::is_matching_stream_request as planner_is_matching_stream_request;
 pub(crate) use self::runtime_miss::{
