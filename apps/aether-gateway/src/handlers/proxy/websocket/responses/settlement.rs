@@ -144,7 +144,11 @@ mod tests {
             }
         );
         assert_eq!(
-            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, ResponsesWebSocketTurnOutcome::upstream_closed()),
+            attempt_facts_for_outcome(
+                None,
+                AttemptClientDelivery::Complete,
+                ResponsesWebSocketTurnOutcome::upstream_closed()
+            ),
             AttemptTerminalFacts {
                 provider: aborted(
                     502,
@@ -154,7 +158,11 @@ mod tests {
             }
         );
         assert_eq!(
-            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, ResponsesWebSocketTurnOutcome::client_disconnected()),
+            attempt_facts_for_outcome(
+                None,
+                AttemptClientDelivery::Complete,
+                ResponsesWebSocketTurnOutcome::client_disconnected()
+            ),
             AttemptTerminalFacts {
                 provider: aborted(499, "client disconnected before provider terminal event"),
                 delivery: AttemptClientDelivery::Aborted {
@@ -164,11 +172,17 @@ mod tests {
         );
 
         // 超时一族必须保留 stream_timeout 标记，否则 pool stream timeout 效果丢失。
-        let first_event_timeout =
-            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, ResponsesWebSocketTurnOutcome::first_event_timeout());
+        let first_event_timeout = attempt_facts_for_outcome(
+            None,
+            AttemptClientDelivery::Complete,
+            ResponsesWebSocketTurnOutcome::first_event_timeout(),
+        );
         assert!(first_event_timeout.provider.stream_timeout());
-        let terminal_timeout =
-            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, ResponsesWebSocketTurnOutcome::terminal_timeout());
+        let terminal_timeout = attempt_facts_for_outcome(
+            None,
+            AttemptClientDelivery::Complete,
+            ResponsesWebSocketTurnOutcome::terminal_timeout(),
+        );
         assert!(terminal_timeout.provider.stream_timeout());
         // 非 504 的失败不得被当成流式超时。
         assert!(!attempt_facts_for_outcome(
@@ -191,7 +205,6 @@ mod tests {
         .provider
         .stream_timeout());
     }
-
 
     /// `Cancelled` 不携带 provider 信息，已观察到的终态不能被它覆盖；
     /// `ProviderTerminal` / `Failure` 本身就是权威的 provider 事实。
@@ -220,11 +233,13 @@ mod tests {
         );
         assert_eq!(
             facts.provider,
-            aborted(502, "upstream WebSocket closed before provider terminal event")
+            aborted(
+                502,
+                "upstream WebSocket closed before provider terminal event"
+            )
         );
         assert_eq!(facts.delivery, AttemptClientDelivery::Complete);
     }
-
 
     /// 结算信号的选择：provider 终态已到达就用它，否则才是 client 断开。
     /// 这是修正的核心——旧实现无条件用 client_disconnected() 覆盖，
@@ -245,14 +260,13 @@ mod tests {
         );
     }
 
-
     /// 明确记录的投递失败不会被结算信号推出的「投递成功」覆盖。
     #[test]
     fn a_recorded_delivery_failure_survives_a_provider_terminal_settle_signal() {
         let facts = attempt_facts_for_outcome(
             Some(terminal(200)),
             AttemptClientDelivery::Aborted {
-                reason: "write failed"
+                reason: "write failed",
             },
             ResponsesWebSocketTurnOutcome::ProviderTerminal {
                 status_code: 200,

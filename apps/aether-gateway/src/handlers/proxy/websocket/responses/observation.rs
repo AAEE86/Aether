@@ -77,8 +77,7 @@ mod tests {
     #[test]
     fn structured_events_reach_the_terminal_summary_without_sse_text() {
         let context = report_context();
-        let created =
-            json!({"type": "response.created", "response": {"id": "resp_ws", "model": "gpt-5-codex"}});
+        let created = json!({"type": "response.created", "response": {"id": "resp_ws", "model": "gpt-5-codex"}});
         let completed = json!({
             "type": "response.completed",
             "response": {

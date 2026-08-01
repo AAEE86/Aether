@@ -2728,7 +2728,10 @@ mod structured_entry_tests {
         assert_entries_agree("unknown events", &events);
         let summary = summary_via_push_event(&events);
         assert!(summary.observed_finish);
-        assert!(summary.unknown_event_count > 0, "unknown events are counted");
+        assert!(
+            summary.unknown_event_count > 0,
+            "unknown events are counted"
+        );
     }
 
     /// 供应商声明的 service tier 通过两条入口都要落到摘要上。

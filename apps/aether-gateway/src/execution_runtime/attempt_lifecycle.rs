@@ -97,10 +97,13 @@ impl AttemptProviderOutcome {
     }
 
     pub(crate) const fn stream_timeout(self) -> bool {
-        matches!(self, Self::Aborted {
-            stream_timeout: true,
-            ..
-        })
+        matches!(
+            self,
+            Self::Aborted {
+                stream_timeout: true,
+                ..
+            }
+        )
     }
 
     pub(crate) const fn is_terminal(self) -> bool {
@@ -161,10 +164,9 @@ impl AttemptTerminalFacts {
     /// `None` 一致。
     pub(crate) const fn forced_error(self) -> Option<&'static str> {
         match (self.provider, self.delivery) {
-            (
-                AttemptProviderOutcome::Aborted { reason, .. },
-                AttemptClientDelivery::Complete,
-            ) => Some(reason),
+            (AttemptProviderOutcome::Aborted { reason, .. }, AttemptClientDelivery::Complete) => {
+                Some(reason)
+            }
             _ => None,
         }
     }
@@ -352,15 +354,10 @@ pub(crate) const fn classify_attempt_settlement(
         },
         candidate_status,
         candidate_error,
-        provider_effect: classify_attempt_provider_effect(
-            void,
-            projects_provider_failure,
-            failed,
-        ),
+        provider_effect: classify_attempt_provider_effect(void, projects_provider_failure, failed),
         submit_execution_report: !void,
     }
 }
-
 
 /// 每一段记账 I/O 的等待上界。
 ///
@@ -895,7 +892,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn the_recorded_reason_prefers_the_client_delivery_failure() {
         assert_eq!(
@@ -934,7 +930,6 @@ mod tests {
         );
     }
 
-
     /// §1.6 结算表，逐行。
     #[test]
     fn settlement_table_row_provider_cancelled_is_void_regardless_of_delivery() {
@@ -943,8 +938,13 @@ mod tests {
             AttemptClientDelivery::Aborted { reason: "gone" },
         ] {
             for report_represents_failure in [false, true] {
-                let settlement =
-                    settle(provider_cancelled(), delivery, report_represents_failure, true, false);
+                let settlement = settle(
+                    provider_cancelled(),
+                    delivery,
+                    report_represents_failure,
+                    true,
+                    false,
+                );
                 assert_eq!(
                     settlement,
                     AttemptSettlement {
@@ -960,7 +960,6 @@ mod tests {
             }
         }
     }
-
 
     #[test]
     fn settlement_table_row_aborted_provider_with_aborted_delivery_is_void() {
@@ -986,10 +985,15 @@ mod tests {
         );
     }
 
-
     #[test]
     fn settlement_table_row_clean_provider_terminal_is_a_billed_success() {
-        let settlement = settle(terminal(200), AttemptClientDelivery::Complete, false, true, false);
+        let settlement = settle(
+            terminal(200),
+            AttemptClientDelivery::Complete,
+            false,
+            true,
+            false,
+        );
         assert_eq!(
             settlement,
             AttemptSettlement {
@@ -1003,12 +1007,17 @@ mod tests {
         );
     }
 
-
     /// 合法 `response.incomplete`：记账层判失败，但供应商工作正常，
     /// 不扣健康分、只释放 lease，并且账单照记。
     #[test]
     fn settlement_table_row_legitimate_incomplete_is_billed_without_provider_failure() {
-        let settlement = settle(terminal(200), AttemptClientDelivery::Complete, true, true, false);
+        let settlement = settle(
+            terminal(200),
+            AttemptClientDelivery::Complete,
+            true,
+            true,
+            false,
+        );
         assert_eq!(
             settlement,
             AttemptSettlement {
@@ -1022,11 +1031,13 @@ mod tests {
         );
     }
 
-
     #[test]
     fn settlement_table_row_provider_abort_projects_a_provider_failure() {
         let settlement = settle(
-            aborted(502, "upstream WebSocket closed before provider terminal event"),
+            aborted(
+                502,
+                "upstream WebSocket closed before provider terminal event",
+            ),
             AttemptClientDelivery::Complete,
             true,
             false,
@@ -1044,7 +1055,6 @@ mod tests {
             }
         );
     }
-
 
     /// ✱ 修正后的那一行：provider 终态已到达，客户端投递失败不再作废账单。
     ///
@@ -1075,7 +1085,13 @@ mod tests {
         );
 
         // 除了 candidate 的错误分类，其余判定与「投递成功」完全一致。
-        let delivered = settle(terminal(200), AttemptClientDelivery::Complete, false, true, false);
+        let delivered = settle(
+            terminal(200),
+            AttemptClientDelivery::Complete,
+            false,
+            true,
+            false,
+        );
         assert_eq!(settlement.status_code, delivered.status_code);
         assert_eq!(settlement.billing, delivered.billing);
         assert_eq!(settlement.candidate_status, delivered.candidate_status);
@@ -1086,7 +1102,6 @@ mod tests {
         );
         assert_ne!(settlement.candidate_error, delivered.candidate_error);
     }
-
 
     /// 供应商还没给出终态时，客户端投递失败仍然作废账单：这一轮确实没有产出。
     #[test]
@@ -1110,23 +1125,32 @@ mod tests {
         assert!(!settlement.submit_execution_report);
     }
 
-
     /// 供应商自己声明取消时，即使内容送到了客户端也不计费。
     #[test]
     fn a_provider_declared_cancellation_is_void_even_when_delivered() {
-        let settlement =
-            settle(provider_cancelled(), AttemptClientDelivery::Complete, false, true, false);
+        let settlement = settle(
+            provider_cancelled(),
+            AttemptClientDelivery::Complete,
+            false,
+            true,
+            false,
+        );
         assert_eq!(settlement.billing, AttemptBilling::Void);
         assert_eq!(settlement.candidate_error, AttemptCandidateError::Cancelled);
     }
-
 
     /// 记账层判 Success，但摘要没观察到 finish：现状会写出
     /// 「candidate=Success + error_type=stream_missing_terminal_event」，
     /// 所以状态与错误分类必须各自独立。
     #[test]
     fn a_missing_terminal_can_coexist_with_a_successful_candidate_status() {
-        let settlement = settle(terminal(200), AttemptClientDelivery::Complete, false, false, false);
+        let settlement = settle(
+            terminal(200),
+            AttemptClientDelivery::Complete,
+            false,
+            false,
+            false,
+        );
         assert_eq!(settlement.candidate_status, AttemptCandidateStatus::Success);
         assert_eq!(
             settlement.candidate_error,
@@ -1139,17 +1163,21 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_parser_error_projects_a_provider_failure_even_on_a_clean_status_code() {
-        let settlement = settle(terminal(200), AttemptClientDelivery::Complete, true, true, true);
+        let settlement = settle(
+            terminal(200),
+            AttemptClientDelivery::Complete,
+            true,
+            true,
+            true,
+        );
         assert_eq!(
             settlement.provider_effect,
             AttemptProviderEffect::ProviderFailure
         );
         assert_eq!(settlement.billing, AttemptBilling::Billed);
     }
-
 
     #[test]
     fn a_legitimate_incomplete_still_releases_the_pool_key_lease() {
@@ -1162,7 +1190,6 @@ mod tests {
         assert!(effect.releases_pool_key_lease());
     }
 
-
     #[test]
     fn every_provider_effect_releases_the_pool_key_lease() {
         for (cancelled, projects_provider_failure, failed, expected) in [
@@ -1172,36 +1199,18 @@ mod tests {
                 false,
                 AttemptProviderEffect::ReleasePoolKeyLease,
             ),
-            (
-                true,
-                true,
-                true,
-                AttemptProviderEffect::ReleasePoolKeyLease,
-            ),
-            (
-                false,
-                true,
-                true,
-                AttemptProviderEffect::ProviderFailure,
-            ),
+            (true, true, true, AttemptProviderEffect::ReleasePoolKeyLease),
+            (false, true, true, AttemptProviderEffect::ProviderFailure),
             (
                 false,
                 false,
                 true,
                 AttemptProviderEffect::ReleasePoolKeyLease,
             ),
-            (
-                false,
-                false,
-                false,
-                AttemptProviderEffect::ProviderSuccess,
-            ),
+            (false, false, false, AttemptProviderEffect::ProviderSuccess),
         ] {
-            let effect = classify_attempt_provider_effect(
-                cancelled,
-                projects_provider_failure,
-                failed,
-            );
+            let effect =
+                classify_attempt_provider_effect(cancelled, projects_provider_failure, failed);
             assert_eq!(
                 effect, expected,
                 "cancelled={cancelled} projects_provider_failure={projects_provider_failure} failed={failed}"
@@ -1212,7 +1221,6 @@ mod tests {
             );
         }
     }
-
 
     /// 每一个结算分支都必须释放 lease：这条不变量跨越整张结算表。
     #[test]
@@ -1291,9 +1299,13 @@ mod stage_tests {
         if !effects_completed {
             let released = Arc::clone(&lease_released);
             let _ = guard
-                .await_stage("trace", "pool_lease_release_after_effect_timeout", async move {
-                    released.store(true, Ordering::SeqCst);
-                })
+                .await_stage(
+                    "trace",
+                    "pool_lease_release_after_effect_timeout",
+                    async move {
+                        released.store(true, Ordering::SeqCst);
+                    },
+                )
                 .await;
         }
         assert!(
@@ -1423,14 +1435,22 @@ mod stage_tests {
             Some("websocket_cancelled".to_string())
         );
         assert_eq!(
-            candidate_error_fields(AttemptCandidateError::ClientDeliveryFailed, None, "write failed"),
+            candidate_error_fields(
+                AttemptCandidateError::ClientDeliveryFailed,
+                None,
+                "write failed"
+            ),
             (
                 Some("client_delivery_failed".to_string()),
                 Some("write failed".to_string())
             )
         );
         assert_eq!(
-            candidate_error_fields(AttemptCandidateError::TerminalError, Some("parser"), "reason"),
+            candidate_error_fields(
+                AttemptCandidateError::TerminalError,
+                Some("parser"),
+                "reason"
+            ),
             (
                 Some("stream_terminal_error".to_string()),
                 Some("parser".to_string())

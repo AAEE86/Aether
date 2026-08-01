@@ -570,4 +570,3 @@ async fn wait_for_connection_permit_loss(permit: Option<&aether_runtime::Admissi
         }
     }
 }
-

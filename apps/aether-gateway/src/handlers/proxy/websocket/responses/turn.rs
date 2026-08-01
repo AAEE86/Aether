@@ -35,11 +35,6 @@ use super::admission::ResponsesWebSocketTurnAdmission;
 use super::frame::ParsedResponsesWebSocketFrame;
 use super::observation::ResponsesStructuredTerminalObserver;
 use super::settlement::attempt_facts_for_outcome;
-use crate::execution_runtime::attempt_lifecycle::{
-    attempt_billing_is_void, AttemptBodyCapture, AttemptClientDelivery, AttemptLifecycleSeed,
-    AttemptProviderOutcome, AttemptStageGuard, AttemptTerminalFacts, AttemptTerminalFactsInput,
-    ExecutionAttemptLifecycle,
-};
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
 use crate::clock::current_unix_ms;
 use crate::control::{
@@ -47,6 +42,11 @@ use crate::control::{
     request_model_local_rejection, GatewayControlDecision, GatewayLocalAuthRejection,
 };
 use crate::execution_runtime::attach_provider_response_headers_to_report_context;
+use crate::execution_runtime::attempt_lifecycle::{
+    attempt_billing_is_void, AttemptBodyCapture, AttemptClientDelivery, AttemptLifecycleSeed,
+    AttemptProviderOutcome, AttemptStageGuard, AttemptTerminalFacts, AttemptTerminalFactsInput,
+    ExecutionAttemptLifecycle,
+};
 use crate::orchestration::{
     apply_local_stream_failure_effects, apply_local_stream_success_effects,
     release_local_pool_key_lease, release_pool_key_lease_from_report_context,
@@ -599,11 +599,9 @@ impl ResponsesProviderAttempt {
         if let Some(outcome) = provider_terminal_outcome(frame) {
             // provider 的终态是独立事实：先记下来，之后即使客户端投递失败、
             // 结算信号变成 Cancelled，这条事实也不会被擦掉。
-            self.provider_outcome
-                .get_or_insert(
-                    attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome)
-                        .provider,
-                );
+            self.provider_outcome.get_or_insert(
+                attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome).provider,
+            );
             return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));
         }
         if frame.is_started() {
@@ -668,8 +666,7 @@ impl ResponsesProviderAttempt {
     /// execution report）由共享的 [`ExecutionAttemptLifecycle::settle`] 负责，
     /// 这里只提供 WS 观察到的终态事实。
     async fn settle(mut self, state: &AppState, outcome: ResponsesWebSocketTurnOutcome) {
-        let facts =
-            attempt_facts_for_outcome(self.provider_outcome, self.client_delivery, outcome);
+        let facts = attempt_facts_for_outcome(self.provider_outcome, self.client_delivery, outcome);
         if let Some(reason) = facts.delivery.aborted_reason() {
             let report_context = attach_client_delivery_to_report_context(
                 self.lifecycle.take_report_context(),
@@ -959,16 +956,15 @@ mod tests {
     use super::super::settlement::{
         attempt_facts_for_outcome, settle_signal_for_client_delivery_failure,
     };
+    use super::{
+        attach_client_delivery_to_report_context, prepare_websocket_report_context,
+        provider_terminal_outcome, resolve_responses_websocket_turn_timeouts,
+        websocket_event_as_sse_line, ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
+        ResponsesWebSocketTurnTimeoutPhase,
+    };
     use crate::execution_runtime::attempt_lifecycle::{
         classify_attempt_settlement, AttemptBilling, AttemptCandidateError, AttemptCandidateStatus,
         AttemptClientDelivery, AttemptProviderEffect, AttemptSettlementInputs,
-    };
-    use super::{
-        attach_client_delivery_to_report_context, prepare_websocket_report_context,
-        provider_terminal_outcome,
-        resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
-        ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
-        ResponsesWebSocketTurnTimeoutPhase,
     };
 
     #[test]
@@ -1194,7 +1190,10 @@ mod tests {
             reason: "gateway could not relay the provider event to the client",
         };
         let signal = settle_signal_for_client_delivery_failure(Some(observed));
-        assert_eq!(signal, observed, "a reached terminal must remain the signal");
+        assert_eq!(
+            signal, observed,
+            "a reached terminal must remain the signal"
+        );
 
         let facts = attempt_facts_for_outcome(Some(recorded_provider), delivery, signal);
 
@@ -1223,10 +1222,7 @@ mod tests {
         });
         assert_eq!(settlement.billing, AttemptBilling::Billed);
         assert_eq!(settlement.status_code, 200);
-        assert_eq!(
-            settlement.candidate_status,
-            AttemptCandidateStatus::Success
-        );
+        assert_eq!(settlement.candidate_status, AttemptCandidateStatus::Success);
         assert_eq!(
             settlement.provider_effect,
             AttemptProviderEffect::ProviderSuccess
