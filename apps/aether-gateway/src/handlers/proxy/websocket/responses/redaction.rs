@@ -191,8 +191,8 @@ mod tests {
     use super::super::request::{
         build_planning_parts, normalize_followup_response_create, planned_response_create_event,
     };
-    use super::super::turn_state::LogicalTurn;
     use super::super::turn::prepare_responses_websocket_turn_decision;
+    use super::super::turn_state::LogicalTurn;
     use super::{
         redact_responses_websocket_client_event, ResponsesWebSocketRedactionRestorer,
         ResponsesWebSocketTurnRedaction, MAX_RETAINED_TURN_REDACTION_SESSIONS,
@@ -595,11 +595,7 @@ mod tests {
         let effective_event = redacted_client_event(&state, &decision).await;
         // 配额透明重试重放 LogicalTurn 里保存的事件，所以保存的必须
         // 已经是脱敏版，否则重试会把原文发给新的上游账号。
-        let active = LogicalTurn::new(
-            effective_event.clone(),
-            2,
-            "logical-turn-2".to_string(),
-        );
+        let active = LogicalTurn::new(effective_event.clone(), 2, "logical-turn-2".to_string());
         assert_redacted_json(&active.client_event, "quota retry replay event");
 
         let template = decision_template(

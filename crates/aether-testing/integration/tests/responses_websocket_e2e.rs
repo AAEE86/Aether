@@ -268,7 +268,9 @@ async fn provider_quota_exhaustion_transparently_retries_onto_another_key() -> R
     // 客户端只应该看到重试之后那次成功的响应，看不到 429。
     let completed = receive_event(&mut client, "response.completed").await?;
     assert_eq!(
-        completed.pointer("/response/status").and_then(Value::as_str),
+        completed
+            .pointer("/response/status")
+            .and_then(Value::as_str),
         Some("completed")
     );
 
@@ -832,8 +834,8 @@ async fn run_mock_upstream(
                     }
                     UpstreamBehavior::QuotaExhaustedThenComplete => {
                         if turn == 1 {
-                            let _ = send_mock_event(&mut socket, codex_quota_exhausted_error())
-                                .await;
+                            let _ =
+                                send_mock_event(&mut socket, codex_quota_exhausted_error()).await;
                             break;
                         }
                         if send_mock_turn(&mut socket, &response_id).await.is_err() {

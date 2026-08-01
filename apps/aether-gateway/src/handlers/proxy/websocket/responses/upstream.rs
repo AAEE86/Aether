@@ -24,9 +24,7 @@ const DEFAULT_UPSTREAM_HANDSHAKE_DEADLINE_MS: u64 = 30_000;
 
 /// 从 decision.timeouts 推导实际 handshake 绝对 deadline。
 /// 取 first_byte_ms / total_ms / DEFAULT 三者中的最小正值。
-pub(super) fn resolve_upstream_handshake_deadline(
-    decision: &AiExecutionDecision,
-) -> Duration {
+pub(super) fn resolve_upstream_handshake_deadline(decision: &AiExecutionDecision) -> Duration {
     let mut deadline_ms = DEFAULT_UPSTREAM_HANDSHAKE_DEADLINE_MS;
     if let Some(timeouts) = decision.timeouts.as_ref() {
         if let Some(first_byte_ms) = timeouts.first_byte_ms.filter(|v| *v > 0) {
@@ -48,12 +46,10 @@ pub(super) async fn bind_responses_upstream(
     // 绝对 deadline：从此刻起必须在限定时间内完成握手 + 首条事件发送，
     // 防止慢 TLS / 慢 HTTP Upgrade 无限占用 connection permit。
     let handshake_deadline = resolve_upstream_handshake_deadline(decision);
-    tokio::time::timeout(handshake_deadline, bind_responses_upstream_inner(
-        decision,
-        normalization,
-        initial_event,
-        adapter,
-    ))
+    tokio::time::timeout(
+        handshake_deadline,
+        bind_responses_upstream_inner(decision, normalization, initial_event, adapter),
+    )
     .await
     .map_err(|_| "responses_websocket_upstream_handshake_timeout")?
 }

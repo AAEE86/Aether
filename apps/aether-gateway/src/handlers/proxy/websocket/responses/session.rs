@@ -535,14 +535,12 @@ mod tests {
         normalize_followup_response_create, planned_response_create_event,
         response_create_model_or_current,
     };
-    use super::super::state::{
-        BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions,
-    };
-    use super::super::turn_state::{LogicalTurn, ResponsesTurnState};
+    use super::super::state::{BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions};
     use super::super::turn::{
         ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnObservation,
         ResponsesWebSocketTurnOutcome, ResponsesWebSocketTurnTimeoutPhase,
     };
+    use super::super::turn_state::{LogicalTurn, ResponsesTurnState};
     use super::super::upstream::bind_responses_upstream;
     use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
     use crate::handlers::proxy::websocket::session::wait_for_optional_deadline;

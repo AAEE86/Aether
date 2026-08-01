@@ -208,7 +208,11 @@ mod tests {
         state.begin(logical(), FakeAttempt(1));
 
         let detached = state.detach_attempt();
-        assert_eq!(detached, Some(FakeAttempt(1)), "the attempt is settled once");
+        assert_eq!(
+            detached,
+            Some(FakeAttempt(1)),
+            "the attempt is settled once"
+        );
         assert!(matches!(state, ResponsesTurnState::Replanning { .. }));
 
         // 结算已经发生，没有第二个 attempt 可交。
@@ -250,7 +254,9 @@ mod tests {
         assert!(!state.accepts_new_response_create());
         assert!(state.attempt().is_none());
         assert_eq!(
-            state.logical().map(|logical| logical.logical_turn_id.clone()),
+            state
+                .logical()
+                .map(|logical| logical.logical_turn_id.clone()),
             Some("logical-turn".to_string())
         );
         // 幂等：已经没有 attempt 了，再取一次不会伪造一个出来。
