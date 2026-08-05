@@ -735,8 +735,7 @@ mod tests {
 
     #[test]
     fn claude_code_messages_transport_supports_openai_conversions() {
-        let transport =
-            transport_snapshot("claude_code", "claude:messages", "oauth", true, None);
+        let transport = transport_snapshot("claude_code", "claude:messages", "oauth", true, None);
 
         for client_api_format in ["openai:chat", "openai:responses"] {
             assert!(request_pair_allowed_for_transport(

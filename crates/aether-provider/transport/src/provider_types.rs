@@ -640,8 +640,8 @@ mod tests {
 
     #[test]
     fn claude_code_fixed_provider_uses_messages_api_root_and_conversion_default() {
-        let template = fixed_provider_template("claude_code")
-            .expect("claude code template should exist");
+        let template =
+            fixed_provider_template("claude_code").expect("claude code template should exist");
 
         assert_eq!(template.base_url, "https://api.anthropic.com/v1");
         assert_eq!(template.version, 2);
