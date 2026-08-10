@@ -543,6 +543,20 @@ pub fn build_openai_image_api_provider_request_body(
     mapped_model: Option<&str>,
     upstream_is_stream: bool,
 ) -> Option<Value> {
+    build_openai_image_api_provider_request_body_with_edit_images(
+        request,
+        mapped_model,
+        upstream_is_stream,
+        true,
+    )
+}
+
+fn build_openai_image_api_provider_request_body_with_edit_images(
+    request: &NormalizedOpenAiImageRequest,
+    mapped_model: Option<&str>,
+    upstream_is_stream: bool,
+    use_plural_edit_images: bool,
+) -> Option<Value> {
     let model = mapped_model
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -578,12 +592,16 @@ pub fn build_openai_image_api_provider_request_body(
             .or_insert_with(|| response_format.clone());
     }
     insert_standard_openai_image_inputs(&mut body, request.images.clone());
-    project_openai_image_api_request_body(
+    let mut body = project_openai_image_api_request_body(
         &Value::Object(body),
         model,
         request.operation,
         request.max_generation_count,
-    )
+    )?;
+    if use_plural_edit_images && request.operation == OpenAiImageOperation::Edit {
+        insert_standard_openai_images_edit_inputs(body.as_object_mut()?, request.images.clone())?;
+    }
+    Some(body)
 }
 
 pub fn build_codex_openai_image_api_provider_request_body(
@@ -591,8 +609,12 @@ pub fn build_codex_openai_image_api_provider_request_body(
     mapped_model: Option<&str>,
     upstream_is_stream: bool,
 ) -> Option<Value> {
-    let body =
-        build_openai_image_api_provider_request_body(request, mapped_model, upstream_is_stream)?;
+    let body = build_openai_image_api_provider_request_body_with_edit_images(
+        request,
+        mapped_model,
+        upstream_is_stream,
+        false,
+    )?;
     project_codex_openai_image_api_request_body(&body, request.operation)
 }
 
@@ -896,6 +918,31 @@ pub(crate) fn insert_standard_openai_image_inputs(
         Value::Array(images)
     };
     object.insert("image".to_string(), image);
+}
+
+fn insert_standard_openai_images_edit_inputs(
+    object: &mut Map<String, Value>,
+    images: Vec<Value>,
+) -> Option<()> {
+    let images = images
+        .into_iter()
+        .map(|image| {
+            let image = image.as_object()?;
+            image
+                .get("image_url")
+                .cloned()
+                .map(|image_url| json!({ "image_url": image_url }))
+                .or_else(|| {
+                    image
+                        .get("file_id")
+                        .cloned()
+                        .map(|file_id| json!({ "file_id": file_id }))
+                })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    object.remove("image");
+    object.insert("images".to_string(), Value::Array(images));
+    Some(())
 }
 
 fn openai_image_api_inputs(object: &Map<String, Value>) -> Option<Vec<&Value>> {
@@ -2316,9 +2363,10 @@ mod tests {
         assert_eq!(provider_request_body["response_format"], "url");
         assert_eq!(provider_request_body["user"], "user-123");
         assert_eq!(
-            provider_request_body["image"]["image_url"],
-            "data:image/png;base64,aW1hZ2U="
+            provider_request_body["images"],
+            json!([{"image_url": "data:image/png;base64,aW1hZ2U="}])
         );
+        assert!(provider_request_body.get("image").is_none());
         assert_eq!(
             provider_request_body["mask"]["image_url"],
             "data:image/png;base64,bWFzaw=="
@@ -2329,7 +2377,7 @@ mod tests {
     }
 
     #[test]
-    fn build_image_api_provider_edit_request_uses_one_standard_image_field() {
+    fn build_image_api_provider_edit_request_uses_plural_images_field() {
         let parts = request_parts("/v1/images/edits", Some("application/json"));
         let request = normalize_openai_image_request(
             &parts,
@@ -2350,10 +2398,13 @@ mod tests {
                 .expect("standard Images edit body should project");
 
         assert_eq!(
-            provider_request_body["image"].as_array().map(Vec::len),
-            Some(2)
+            provider_request_body["images"],
+            json!([
+                {"image_url": "data:image/png;base64,Zm9v"},
+                {"image_url": "https://example.test/reference.png"}
+            ])
         );
-        assert!(provider_request_body.get("images").is_none());
+        assert!(provider_request_body.get("image").is_none());
     }
 
     #[test]
