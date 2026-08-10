@@ -422,6 +422,7 @@ fn append_seed_extra_data_from_report_context(
         "client_contract",
         "provider_contract",
         "transport_diagnostics",
+        "parent_request_id",
     ];
 
     let mut object = extra_data
@@ -474,10 +475,15 @@ pub fn build_local_request_candidate_status_record(
     let extra_data = build_local_request_candidate_extra_data(plan, metadata.as_ref());
     let extra_data = mark_request_candidate_stream_completed_if_success(status, extra_data);
     let created_at_unix_ms = started_at_unix_ms.or(finished_at_unix_ms);
+    let request_id = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.request_id.clone())
+        .filter(|request_id| !request_id.trim().is_empty())
+        .unwrap_or_else(|| plan.request_id.clone());
 
     Some(UpsertRequestCandidateRecord {
         id: candidate_id.to_string(),
-        request_id: plan.request_id.clone(),
+        request_id,
         user_id: metadata
             .as_ref()
             .and_then(|metadata| metadata.user_id.clone()),
@@ -1151,7 +1157,8 @@ mod tests {
                 "retry_index": 2,
                 "user_id": "user-1",
                 "api_key_id": "api-key-1",
-                "client_api_format": "openai:chat"
+                "client_api_format": "openai:chat",
+                "parent_request_id": "req-parent"
             })),
             123,
             "generated-1".to_string(),
@@ -1162,6 +1169,14 @@ mod tests {
         assert_eq!(seed.upsert_record.candidate_index, 3);
         assert_eq!(seed.upsert_record.retry_index, 2);
         assert_eq!(seed.upsert_record.user_id.as_deref(), Some("user-1"));
+        assert_eq!(
+            seed.upsert_record
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("parent_request_id"))
+                .and_then(Value::as_str),
+            Some("req-parent")
+        );
         assert_eq!(
             seed.report_context
                 .get("provider_id")
@@ -1180,12 +1195,14 @@ mod tests {
     #[test]
     fn builds_local_request_candidate_status_record() {
         let mut plan = sample_plan();
+        plan.request_id = "attempt-2".to_string();
         plan.candidate_id = Some("cand-1".to_string());
 
         let record =
             build_local_request_candidate_status_record(LocalRequestCandidateStatusRecordInput {
                 plan: &plan,
                 report_context: Some(&json!({
+                    "request_id": "req-1",
                     "candidate_index": 1,
                     "retry_index": 2,
                     "user_id": "user-1",
@@ -1225,6 +1242,7 @@ mod tests {
             .expect("record should build");
 
         assert_eq!(record.id, "cand-1");
+        assert_eq!(record.request_id, "req-1");
         assert_eq!(record.candidate_index, 1);
         assert_eq!(record.retry_index, 2);
         assert_eq!(record.user_id.as_deref(), Some("user-1"));

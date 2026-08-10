@@ -28,6 +28,8 @@ impl From<GatewayError> for CancelVideoTaskError {
 pub(crate) async fn cancel_video_task_record(
     state: &AppState,
     task_id: &str,
+    trace_id: &str,
+    execution_request_id: &str,
 ) -> Result<StoredVideoTask, CancelVideoTaskError> {
     let Some(task) = read_video_task_detail(state, task_id).await? else {
         return Err(CancelVideoTaskError::NotFound);
@@ -44,7 +46,6 @@ pub(crate) async fn cancel_video_task_record(
         return Err(CancelVideoTaskError::InvalidStatus(task.status));
     }
 
-    let trace_id = format!("async-task-admin-cancel-{task_id}");
     if let Some(cancel_plan) = build_video_task_cancel_plan(&task) {
         state
             .hydrate_video_task_for_route(Some(cancel_plan.route_family), &cancel_plan.request_path)
@@ -56,11 +57,16 @@ pub(crate) async fn cancel_video_task_record(
             &cancel_plan.request_path,
             Some(&body_json),
             None,
-            &trace_id,
+            execution_request_id,
         );
 
         if let Some(follow_up) = follow_up {
-            execute_video_task_cancel_plan(state, &trace_id, follow_up.plan)
+            let crate::video_tasks::LocalVideoTaskFollowUpPlan {
+                plan,
+                report_context,
+                ..
+            } = follow_up;
+            execute_video_task_cancel_plan(state, trace_id, plan, report_context.as_ref())
                 .await
                 .map_err(CancelVideoTaskError::Response)?;
         }
@@ -127,17 +133,22 @@ async fn execute_video_task_cancel_plan(
     state: &AppState,
     trace_id: &str,
     plan: aether_contracts::ExecutionPlan,
+    report_context: Option<&Value>,
 ) -> Result<(), axum::response::Response> {
-    let result =
-        crate::execution_runtime::execute_execution_runtime_sync_plan(state, Some(trace_id), &plan)
-            .await
-            .map_err(|err| {
-                GatewayError::UpstreamUnavailable {
-                    trace_id: trace_id.to_string(),
-                    message: format!("{err:?}"),
-                }
-                .into_response()
-            })?;
+    let result = crate::execution_runtime::execute_execution_runtime_sync_plan_with_report_context(
+        state,
+        Some(trace_id),
+        &plan,
+        report_context,
+    )
+    .await
+    .map_err(|err| {
+        GatewayError::UpstreamUnavailable {
+            trace_id: trace_id.to_string(),
+            message: format!("{err:?}"),
+        }
+        .into_response()
+    })?;
 
     if result.status_code >= 400 {
         let status = axum::http::StatusCode::from_u16(result.status_code)

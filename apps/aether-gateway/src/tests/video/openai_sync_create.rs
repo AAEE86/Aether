@@ -510,6 +510,7 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
 ) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
+        request_id: String,
         method: String,
         url: String,
         authorization: String,
@@ -600,6 +601,11 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
                 *seen_execution_runtime_inner
                     .lock()
                     .expect("mutex should lock") = Some(SeenExecutionRuntimeSyncRequest {
+                    request_id: payload
+                        .get("request_id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
                     method: payload
                         .get("method")
                         .and_then(|value| value.as_str())
@@ -786,11 +792,20 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
     assert_eq!(seen_execution_runtime_request.prompt, "remix this");
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("request-openai-video-remix-local-123")
+        .list_by_request_id(&seen_execution_runtime_request.request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);
     assert_eq!(stored_candidates[0].status, RequestCandidateStatus::Success);
+    assert_ne!(
+        seen_execution_runtime_request.request_id,
+        "trace-openai-video-remix-local-123"
+    );
+    assert!(request_candidate_repository
+        .list_by_request_id("request-openai-video-remix-local-123")
+        .await
+        .expect("parent request candidate trace should read")
+        .is_empty());
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(*report_hits.lock().expect("mutex should lock"), 0);

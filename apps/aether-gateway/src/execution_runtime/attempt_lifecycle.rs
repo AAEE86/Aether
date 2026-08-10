@@ -18,9 +18,9 @@
 //! |---|---|
 //! | `record_stream_pending_lifecycle` | [`ExecutionAttemptLifecycle::begin`] |
 //! | `maybe_record_first_stream_event_started` | [`ExecutionAttemptLifecycle::mark_started`] |
-//! | `record_stream_terminal_usage` | `settle` 第 1 段：usage terminal |
-//! | `enqueue_stream_candidate_status_update` | `settle` 第 2 段：candidate terminal |
-//! | `apply_local_stream_{success,failure}_effects` | `settle` 第 3 段：provider effects |
+//! | `enqueue_stream_candidate_status_update` | `settle` 第 1 段：candidate terminal |
+//! | `apply_local_stream_{success,failure}_effects` | `settle` 第 2 段：provider effects |
+//! | `record_stream_terminal_usage` | `settle` 第 3 段：usage terminal |
 //! | `submit_stream_report` | `settle` 第 4 段：execution report |
 //! | `append_stream_capture_bytes` / `build_stream_body_capture` | [`AttemptBodyCapture`] |
 //!
@@ -51,7 +51,7 @@ use crate::orchestration::{
     release_local_pool_key_lease, LocalExecutionEffectContext, LocalStreamFailureEffect,
 };
 use crate::request_candidate_runtime::record_local_request_candidate_status;
-use crate::usage::{submit_stream_report, GatewayStreamReportRequest};
+use crate::usage::{submit_stream_report_effects_only, GatewayStreamReportRequest};
 use crate::AppState;
 
 /// 客户端取消/断开时对外记录的状态码。
@@ -370,10 +370,11 @@ pub(crate) enum AttemptStageGuard {
 }
 
 impl AttemptStageGuard {
-    /// 等一段记账 I/O，超时就放弃等待。
+    /// 等一段可取消的记账 I/O，超时就放弃等待并 drop 这段 future。
     ///
     /// 返回 `None` 表示这一段没有在上界内完成；调用方据此决定兜底动作
-    /// （例如效果段超时后仍然要释放 pool key lease）。
+    /// （例如效果段超时后仍然要释放 pool key lease）。不能丢的终态写入和
+    /// lease 释放必须改用 [`Self::await_detachable_stage`]。
     pub(crate) async fn await_stage<T>(
         self,
         trace_id: &str,
@@ -495,11 +496,10 @@ pub(crate) struct ExecutionAttemptLifecycle {
 }
 
 impl ExecutionAttemptLifecycle {
-    /// 写 Pending usage 行 + Pending candidate slot。
-    ///
-    /// 两个写入都不设上界：此时还没有任何东西可以兜底，行没写成功就等于这次
-    /// attempt 不存在。
-    pub(crate) async fn begin(state: &AppState, seed: AttemptLifecycleSeed) -> Self {
+    /// Creates the lifecycle owner and dispatches the lightweight Pending usage
+    /// record synchronously. Callers can now put the owner behind a
+    /// cancellation guard before awaiting candidate persistence.
+    pub(crate) fn begin(state: &AppState, seed: AttemptLifecycleSeed) -> Self {
         let AttemptLifecycleSeed {
             plan,
             report_kind,
@@ -515,26 +515,9 @@ impl ExecutionAttemptLifecycle {
         let usage_data = state.usage_lifecycle_data_state().as_ref().clone();
         state
             .usage_runtime
-            .record_pending_direct(&usage_data, lifecycle_seed)
-            .await;
+            .record_pending(&usage_data, lifecycle_seed);
 
         let candidate_started_at_unix_ms = current_unix_ms();
-        record_local_request_candidate_status(
-            state,
-            &plan,
-            report_context.as_ref(),
-            SchedulerRequestCandidateStatusUpdate {
-                status: RequestCandidateStatus::Pending,
-                status_code: None,
-                error_type: None,
-                error_message: None,
-                latency_ms: None,
-                started_at_unix_ms: Some(candidate_started_at_unix_ms),
-                finished_at_unix_ms: None,
-            },
-        )
-        .await;
-
         Self {
             trace_id: plan.request_id.clone(),
             plan,
@@ -544,6 +527,30 @@ impl ExecutionAttemptLifecycle {
             stage_guard,
             started_recorded: false,
         }
+    }
+
+    pub(crate) async fn initialize_pending_candidate(&self, state: &AppState) {
+        let _ = self
+            .stage_guard
+            .await_stage(
+                self.trace_id.as_str(),
+                "candidate_pending",
+                record_local_request_candidate_status(
+                    state,
+                    &self.plan,
+                    self.report_context.as_ref(),
+                    SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Pending,
+                        status_code: None,
+                        error_type: None,
+                        error_message: None,
+                        latency_ms: None,
+                        started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
+                        finished_at_unix_ms: None,
+                    },
+                ),
+            )
+            .await;
     }
 
     pub(crate) fn plan(&self) -> &ExecutionPlan {
@@ -613,13 +620,14 @@ impl ExecutionAttemptLifecycle {
 
     /// 终态四段，顺序不可重排：
     ///
-    /// 1. usage terminal —— 这次 attempt 的账单记录。行是以 Pending 建立的，
-    ///    没有别的东西会去对账，所以用 detachable 保证不丢。
-    /// 2. candidate terminal —— 调度侧的终态，慢依赖不能让它停在 Streaming。
-    /// 3. provider 效果 —— health / adaptive / pool 反馈，次于前两段；超时后
-    ///    仍然兜底释放 pool key lease，否则要等 lease TTL 过期才放出这把 key。
+    /// 1. candidate terminal —— 先固定调度侧观察到的 attempt 终态，慢依赖不能
+    ///    让它停在 Streaming。
+    /// 2. provider 效果 —— health / adaptive / pool 反馈和 pool key lease 释放；
+    ///    超时后仍然兜底释放 pool key lease，否则要等 lease TTL 过期才放出这把 key。
+    /// 3. usage terminal —— 最后提交这次 attempt 的账单记录。行是以 Pending
+    ///    建立的，没有别的东西会去对账，所以用 detachable 保证不丢。
     /// 4. execution report —— 作废账单的分支不提交（与 HTTP 在下游断开后
-    ///    同样不提交一致）。
+    ///    同样不提交一致）；这里只执行 observer effects，不再写 candidate。
     pub(crate) async fn settle(
         mut self,
         state: &AppState,
@@ -658,62 +666,44 @@ impl ExecutionAttemptLifecycle {
             has_parser_error: terminal_summary.parser_error.is_some(),
         });
 
-        // 1. usage terminal
-        let context_seed =
-            build_terminal_usage_context_seed(&self.plan, payload.report_context.as_ref());
-        let payload_seed = build_stream_terminal_usage_payload_seed(&payload);
-        let billing_void = settlement.billing.is_void();
-        let usage_runtime = Arc::clone(&state.usage_runtime);
-        let usage_data = Arc::clone(state.usage_lifecycle_data_state());
-        self.stage_guard
-            .await_detachable_stage(self.trace_id.as_str(), "usage_terminal", async move {
-                usage_runtime
-                    .record_stream_terminal(
-                        usage_data.as_ref(),
-                        context_seed,
-                        payload_seed,
-                        billing_void,
-                    )
-                    .await;
-            })
-            .await;
-
-        // 2. candidate terminal
+        // 1. candidate terminal
         let (error_type, error_message) = candidate_error_fields(
             settlement.candidate_error,
             terminal_summary.parser_error.as_deref(),
             reason,
         );
-        let _ = self
-            .stage_guard
-            .await_stage(
-                self.trace_id.as_str(),
-                "candidate_terminal",
+        let candidate_state = state.clone();
+        let candidate_plan = self.plan.clone();
+        let candidate_report_context = payload.report_context.clone();
+        let candidate_status_update = SchedulerRequestCandidateStatusUpdate {
+            status: match settlement.candidate_status {
+                AttemptCandidateStatus::Cancelled => RequestCandidateStatus::Cancelled,
+                AttemptCandidateStatus::Failed => RequestCandidateStatus::Failed,
+                AttemptCandidateStatus::Success => RequestCandidateStatus::Success,
+            },
+            status_code: Some(settlement.status_code),
+            error_type,
+            error_message,
+            latency_ms: payload
+                .telemetry
+                .as_ref()
+                .and_then(|value| value.elapsed_ms),
+            started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
+            finished_at_unix_ms: Some(current_unix_ms()),
+        };
+        self.stage_guard
+            .await_detachable_stage(self.trace_id.as_str(), "candidate_terminal", async move {
                 record_local_request_candidate_status(
-                    state,
-                    &self.plan,
-                    payload.report_context.as_ref(),
-                    SchedulerRequestCandidateStatusUpdate {
-                        status: match settlement.candidate_status {
-                            AttemptCandidateStatus::Cancelled => RequestCandidateStatus::Cancelled,
-                            AttemptCandidateStatus::Failed => RequestCandidateStatus::Failed,
-                            AttemptCandidateStatus::Success => RequestCandidateStatus::Success,
-                        },
-                        status_code: Some(settlement.status_code),
-                        error_type,
-                        error_message,
-                        latency_ms: payload
-                            .telemetry
-                            .as_ref()
-                            .and_then(|value| value.elapsed_ms),
-                        started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
-                        finished_at_unix_ms: Some(current_unix_ms()),
-                    },
-                ),
-            )
+                    &candidate_state,
+                    &candidate_plan,
+                    candidate_report_context.as_ref(),
+                    candidate_status_update,
+                )
+                .await;
+            })
             .await;
 
-        // 3. provider 效果
+        // 2. provider 效果 / lease release
         let effect_context = LocalExecutionEffectContext {
             plan: &self.plan,
             report_context: payload.report_context.as_ref(),
@@ -747,15 +737,46 @@ impl ExecutionAttemptLifecycle {
             .await
             .is_some();
         if !effects_completed {
-            let _ = self
-                .stage_guard
-                .await_stage(
+            let fallback_state = state.clone();
+            let fallback_plan = self.plan.clone();
+            let fallback_report_context = payload.report_context.clone();
+            self.stage_guard
+                .await_detachable_stage(
                     self.trace_id.as_str(),
                     "pool_lease_release_after_effect_timeout",
-                    release_local_pool_key_lease(state, effect_context),
+                    async move {
+                        release_local_pool_key_lease(
+                            &fallback_state,
+                            LocalExecutionEffectContext {
+                                plan: &fallback_plan,
+                                report_context: fallback_report_context.as_ref(),
+                            },
+                        )
+                        .await;
+                    },
                 )
                 .await;
         }
+
+        // 3. usage terminal
+        let context_seed =
+            build_terminal_usage_context_seed(&self.plan, payload.report_context.as_ref());
+        let payload_seed = build_stream_terminal_usage_payload_seed(&payload);
+        let billing_void = settlement.billing.is_void();
+        let usage_runtime = Arc::clone(&state.usage_runtime);
+        let usage_data = Arc::clone(state.usage_lifecycle_data_state());
+        self.stage_guard
+            .await_detachable_stage(self.trace_id.as_str(), "usage_terminal", async move {
+                usage_runtime
+                    .record_stream_terminal(
+                        usage_data.as_ref(),
+                        context_seed,
+                        payload_seed,
+                        billing_void,
+                    )
+                    .await;
+            })
+            .await;
 
         // 4. execution report
         if settlement.submit_execution_report {
@@ -764,7 +785,7 @@ impl ExecutionAttemptLifecycle {
                 .await_stage(
                     self.trace_id.as_str(),
                     "execution_report",
-                    submit_stream_report(state, payload),
+                    submit_stream_report_effects_only(state, payload),
                 )
                 .await
             {
@@ -1278,10 +1299,10 @@ mod stage_tests {
         candidate_error_fields, AttemptBodyCapture, AttemptCandidateError, AttemptStageGuard,
     };
 
-    /// 效果段超时后仍然必须释放 pool key lease，否则那把 key 要等 lease TTL
-    /// 过期才放出来。这里用 `await_stage` 返回 `None` 驱动兜底分支。
+    /// 效果段超时后仍然必须释放 pool key lease，而且 fallback 自己超过等待
+    /// 上界时也不能被取消，否则那把 key 要等 lease TTL 过期才放出来。
     #[tokio::test]
-    async fn a_timed_out_effect_stage_still_reaches_the_lease_release_fallback() {
+    async fn a_timed_out_lease_release_fallback_still_runs_to_completion() {
         let guard = AttemptStageGuard::Bounded(Duration::from_millis(20));
         let lease_released = Arc::new(AtomicBool::new(false));
 
@@ -1298,19 +1319,26 @@ mod stage_tests {
         // 生产代码据此走兜底释放。
         if !effects_completed {
             let released = Arc::clone(&lease_released);
-            let _ = guard
-                .await_stage(
+            guard
+                .await_detachable_stage(
                     "trace",
                     "pool_lease_release_after_effect_timeout",
                     async move {
+                        tokio::time::sleep(Duration::from_millis(120)).await;
                         released.store(true, Ordering::SeqCst);
                     },
                 )
                 .await;
         }
         assert!(
+            !lease_released.load(Ordering::SeqCst),
+            "the caller must stop waiting for the slow fallback at its bound"
+        );
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
             lease_released.load(Ordering::SeqCst),
-            "the lease must still be released after an effect-stage timeout"
+            "the detached fallback must eventually release the lease"
         );
     }
 
@@ -1327,16 +1355,17 @@ mod stage_tests {
         assert_eq!(value, Some(7));
     }
 
-    /// 不能丢的写入即使调用方停止等待也要跑完：`await_detachable_stage` 先 spawn
-    /// 再等，上界只约束「等多久」。
+    /// Candidate 终态即使调用方停止等待也要跑完，否则 candidate 会永久停在
+    /// Pending/Streaming。`await_detachable_stage` 先 spawn 再等，上界只约束
+    /// 「等多久」。
     #[tokio::test]
-    async fn a_detachable_stage_completes_even_after_the_caller_stops_waiting() {
+    async fn a_candidate_terminal_stage_completes_after_the_caller_stops_waiting() {
         let guard = AttemptStageGuard::Bounded(Duration::from_millis(20));
         let written = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&written);
 
         guard
-            .await_detachable_stage("trace", "usage_terminal", async move {
+            .await_detachable_stage("trace", "candidate_terminal", async move {
                 tokio::time::sleep(Duration::from_millis(120)).await;
                 flag.store(true, Ordering::SeqCst);
             })
@@ -1353,17 +1382,18 @@ mod stage_tests {
         );
     }
 
-    /// settle 的四段顺序不可重排：账单先落地，然后 candidate 终态，然后次要的
-    /// 供应商效果，最后才是 execution report。用计数器替身记录实际顺序。
+    /// settle 的四段顺序不可重排：先固定 candidate 终态，再投射 provider 效果并
+    /// 释放 lease，然后提交 usage，最后才由 execution report 执行 observer effects。
+    /// 用计数器替身记录实际顺序。
     #[tokio::test]
     async fn the_settle_stages_run_in_a_fixed_order() {
         let guard = AttemptStageGuard::Bounded(Duration::from_millis(500));
         let order = Arc::new(Mutex::new(Vec::new()));
 
         for stage in [
-            "usage_terminal",
             "candidate_terminal",
             "provider_effects",
+            "usage_terminal",
             "execution_report",
         ] {
             let recorder = Arc::clone(&order);
@@ -1377,9 +1407,9 @@ mod stage_tests {
         assert_eq!(
             order.lock().expect("order lock").as_slice(),
             [
-                "usage_terminal",
                 "candidate_terminal",
                 "provider_effects",
+                "usage_terminal",
                 "execution_report",
             ]
         );

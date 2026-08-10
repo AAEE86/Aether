@@ -84,7 +84,16 @@ Authenticate the upgrade request with the normal Aether API key. The first
 client frame must be a text JSON `response.create` containing a non-empty
 `model`. Aether then applies its regular Responses candidate selection, but
 accepts only an eligible, WebSocket-enabled endpoint using `openai:responses`.
-It opens an upstream WebSocket using the selected provider key.
+It opens an upstream WebSocket using the selected provider key. The public
+socket always speaks the standard OpenAI Responses WebSocket protocol: Codex
+quota/account extensions are consumed by an internal observer and are never a
+second public protocol. Provider frames pass through a standard public codec
+that removes private envelopes and fields before delivery.
+
+The currently implemented backend is native Responses WebSocket. Future
+HTTP/SSE or cross-format execution must be added as another backend behind the
+same public codec; it must not change the client protocol or expose provider
+transport details.
 
 The selected provider's model mapping and request headers are applied to every
 turn, along with the rest of that candidate's provider-body normalization:
@@ -140,8 +149,9 @@ ws.send(json.dumps({
   deadline expires.
 - Responses are sequential; no multiplexing is supported on one socket.
 - Each `response.create` consumes the normal Aether user/API-key RPM budget.
-- Same-model turns stay on the bound provider key. A model change is planned
-  again and can rebind the upstream between completed turns when necessary.
+- A continuation with `previous_response_id` stays on the bound provider key.
+  An independent turn without `previous_response_id`, or a model change, is
+  planned again and can rebind the upstream between completed turns.
 - Direct provider proxy settings are honored through the selected transport
   profile. Tunnel-mode proxy nodes are not supported for this bridge yet.
 

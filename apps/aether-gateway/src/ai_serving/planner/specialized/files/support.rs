@@ -75,6 +75,7 @@ pub(super) async fn resolve_local_gemini_files_decision_input(
     let mut input = build_local_requested_model_decision_input(
         resolved_input,
         GEMINI_FILES_ROUTING_MODEL.to_string(),
+        crate::execution_identity::execution_request_id_from_parts(parts, trace_id).to_string(),
     );
     input.request_auth_channel = decision.request_auth_channel.clone();
     input.client_session_affinity = client_session_affinity_from_parts(parts, body_json);
@@ -113,6 +114,7 @@ pub(super) async fn materialize_local_gemini_files_candidate_attempts(
     let outcome = materialize_local_execution_candidates_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         GEMINI_FILES_CLIENT_API_FORMAT,
         None,
         Some(&input.auth_snapshot),
@@ -186,6 +188,7 @@ pub(super) async fn build_local_gemini_files_candidate_attempt_source<'a>(
     Ok(build_local_execution_candidate_attempt_source_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         GEMINI_FILES_CLIENT_API_FORMAT,
         None,
         Some(&input.auth_snapshot),
@@ -250,6 +253,7 @@ pub(super) async fn mark_skipped_local_gemini_files_candidate(
     mark_skipped_local_execution_candidate(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,
@@ -277,6 +281,7 @@ pub(super) async fn mark_skipped_local_gemini_files_candidate_with_failure_diagn
     mark_skipped_local_execution_candidate_with_failure_diagnostic(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,

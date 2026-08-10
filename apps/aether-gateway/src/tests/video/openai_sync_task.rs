@@ -32,6 +32,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenExecutionRuntimeSyncRequest {
+        request_id: String,
         method: String,
         url: String,
         authorization: String,
@@ -202,6 +203,11 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
                 *seen_execution_runtime_inner
                     .lock()
                     .expect("mutex should lock") = Some(SeenExecutionRuntimeSyncRequest {
+                    request_id: payload
+                        .get("request_id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
                     method: payload
                         .get("method")
                         .and_then(|value| value.as_str())
@@ -342,11 +348,20 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("request-openai-video-delete-local-123")
+        .list_by_request_id(&seen_execution_runtime_request.request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);
     assert_eq!(stored_candidates[0].status, RequestCandidateStatus::Success);
+    assert_ne!(
+        seen_execution_runtime_request.request_id,
+        "trace-openai-video-delete-local-123"
+    );
+    assert!(request_candidate_repository
+        .list_by_request_id("request-openai-video-delete-local-123")
+        .await
+        .expect("parent request candidate trace should read")
+        .is_empty());
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(*decision_hits.lock().expect("mutex should lock"), 0);

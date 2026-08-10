@@ -18,7 +18,9 @@ use crate::ai_serving::planner::common::OPENAI_CHAT_STREAM_PLAN_KIND;
 use crate::ai_serving::planner::plan_builders::{
     build_openai_chat_stream_plan_from_decision, AiStreamAttempt,
 };
-use crate::ai_serving::planner::runtime_miss::apply_local_runtime_candidate_terminal_reason;
+use crate::ai_serving::planner::runtime_miss::{
+    apply_local_runtime_candidate_terminal_reason, runtime_miss_diagnostic_key_from_parts,
+};
 use crate::ai_serving::planner::standard::build_local_openai_chat_upstream_url;
 use crate::ai_serving::transport::{
     is_windsurf_provider_transport, local_openai_chat_transport_unsupported_reason,
@@ -41,6 +43,7 @@ pub(crate) struct LocalOpenAiChatStreamAttemptSource<'a> {
     state: &'a AppState,
     parts: &'a http::request::Parts,
     trace_id: &'a str,
+    runtime_miss_key: &'a str,
     body_json: serde_json::Value,
     input: LocalOpenAiChatDecisionInput,
     candidates: LocalOpenAiChatCandidateAttemptSource<'a>,
@@ -59,6 +62,7 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
     if plan_kind != OPENAI_CHAT_STREAM_PLAN_KIND {
         return Ok(None);
     }
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
 
     let attempt_source_started_at = std::time::Instant::now();
     let Some(input) = resolve_local_openai_chat_decision_input(
@@ -81,7 +85,7 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
     if candidate_count == 0 {
         set_local_openai_chat_candidate_evaluation_diagnostic(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             Some(input.requested_model.as_str()),
@@ -91,7 +95,7 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
     }
     set_local_openai_chat_candidate_evaluation_diagnostic(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         plan_kind,
         Some(input.requested_model.as_str()),
@@ -107,6 +111,7 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
             state,
             parts,
             trace_id,
+            runtime_miss_key,
             body_json: effective_body_json,
             input,
             candidates,
@@ -169,7 +174,7 @@ impl LocalOpenAiChatStreamAttemptSource<'_> {
             let Some(attempt) = self.next_raw_attempt_with_target_select().await? else {
                 apply_local_runtime_candidate_terminal_reason(
                     self.state,
-                    self.trace_id,
+                    self.runtime_miss_key,
                     "no_local_stream_plans",
                 );
                 return Ok(None);
@@ -450,6 +455,7 @@ pub(crate) async fn build_local_openai_chat_stream_plan_and_reports(
     if plan_kind != OPENAI_CHAT_STREAM_PLAN_KIND {
         return Ok(Vec::new());
     }
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
 
     let Some(input) = resolve_local_openai_chat_decision_input(
         state, parts, trace_id, decision, body_json, plan_kind, true,
@@ -467,7 +473,7 @@ pub(crate) async fn build_local_openai_chat_stream_plan_and_reports(
     else {
         set_local_openai_chat_candidate_evaluation_diagnostic(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             Some(input.requested_model.as_str()),
@@ -484,7 +490,7 @@ pub(crate) async fn build_local_openai_chat_stream_plan_and_reports(
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_stream_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_stream_plans");
 
     Ok(plans)
 }

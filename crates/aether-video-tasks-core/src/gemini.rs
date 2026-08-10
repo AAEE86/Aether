@@ -127,7 +127,7 @@ impl GeminiVideoTaskSeed {
             .unwrap_or_else(|| json!({}));
     }
 
-    pub fn build_get_follow_up_plan(&self, trace_id: &str) -> Option<ExecutionPlan> {
+    pub fn build_get_follow_up_plan(&self, request_id: &str) -> Option<ExecutionPlan> {
         if !matches!(
             self.status,
             LocalVideoTaskStatus::Submitted
@@ -143,7 +143,7 @@ impl GeminiVideoTaskSeed {
         headers.remove("content-length");
 
         Some(ExecutionPlan {
-            request_id: trace_id.to_string(),
+            request_id: request_id.to_string(),
             candidate_id: None,
             provider_name: self.transport.provider_name.clone(),
             provider_id: self.transport.provider_id.clone(),
@@ -177,7 +177,7 @@ impl GeminiVideoTaskSeed {
         &self,
         fallback_user_id: Option<&str>,
         fallback_api_key_id: Option<&str>,
-        trace_id: &str,
+        request_id: &str,
     ) -> Option<LocalVideoTaskFollowUpPlan> {
         if !matches!(
             self.status,
@@ -207,7 +207,7 @@ impl GeminiVideoTaskSeed {
 
         Some(LocalVideoTaskFollowUpPlan {
             plan: ExecutionPlan {
-                request_id: trace_id.to_string(),
+                request_id: request_id.to_string(),
                 candidate_id: None,
                 provider_name: self.transport.provider_name.clone(),
                 provider_id: self.transport.provider_id.clone(),
@@ -234,7 +234,8 @@ impl GeminiVideoTaskSeed {
             report_kind: Some("gemini_video_cancel_sync_finalize".to_string()),
             report_context: Some(build_video_follow_up_report_context(
                 VideoFollowUpReportContextInput {
-                    request_id: &self.persistence.request_id,
+                    request_id,
+                    parent_request_id: Some(&self.persistence.request_id),
                     user_id: &user_id,
                     api_key_id: &api_key_id,
                     task_id: &self.local_short_id,

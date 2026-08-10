@@ -103,6 +103,33 @@ impl RequestCandidateReadRepository for MysqlRequestCandidateRepository {
         rows.iter().map(map_candidate_row).collect()
     }
 
+    async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, DataLayerError> {
+        if provider_ids.is_empty() && key_ids.is_empty() && api_key_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut builder = QueryBuilder::<MySql>::new(CANDIDATE_COLUMNS);
+        builder
+            .push(
+                " WHERE status IN ('pending', 'streaming', 'success', 'failed', 'cancelled') \
+                 AND (started_at >= ",
+            )
+            .push_bind(unix_secs_to_ms_i64(since_unix_secs)?)
+            .push(" OR (started_at IS NULL AND created_at >= ")
+            .push_bind(unix_secs_to_ms_i64(since_unix_secs)?)
+            .push(")) AND (");
+        push_runtime_scope_predicates(&mut builder, provider_ids, key_ids, api_key_ids);
+        builder.push(") ORDER BY created_at DESC, id ASC");
+        let rows = builder.build().fetch_all(&self.pool).await.map_sql_err()?;
+        rows.iter().map(map_candidate_row).collect()
+    }
+
     async fn list_by_provider_id(
         &self,
         provider_id: &str,
@@ -828,6 +855,34 @@ fn status_to_database(status: RequestCandidateStatus) -> &'static str {
         RequestCandidateStatus::Failed => "failed",
         RequestCandidateStatus::Cancelled => "cancelled",
         RequestCandidateStatus::Skipped => "skipped",
+    }
+}
+
+fn push_runtime_scope_predicates<'args>(
+    builder: &mut QueryBuilder<'args, MySql>,
+    provider_ids: &[String],
+    key_ids: &[String],
+    api_key_ids: &[String],
+) {
+    let mut has_predicate = false;
+    for (column, ids) in [
+        ("provider_id", provider_ids),
+        ("key_id", key_ids),
+        ("api_key_id", api_key_ids),
+    ] {
+        if ids.is_empty() {
+            continue;
+        }
+        if has_predicate {
+            builder.push(" OR ");
+        }
+        has_predicate = true;
+        builder.push(column).push(" IN (");
+        let mut values = builder.separated(", ");
+        for id in ids {
+            values.push_bind(id.clone());
+        }
+        values.push_unseparated(")");
     }
 }
 

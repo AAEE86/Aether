@@ -303,7 +303,7 @@ pub(crate) struct LocalSkippedCandidatePersistenceContext<'a> {
 #[derive(Clone)]
 struct PoolGroupExhaustionPersistenceContext {
     app: AppState,
-    trace_id: String,
+    request_id: String,
     user_id: String,
     api_key_id: String,
     required_capabilities: Option<Value>,
@@ -315,14 +315,14 @@ struct PoolGroupExhaustionPersistenceContext {
 impl PoolGroupExhaustionPersistenceContext {
     fn new(
         app: AppState,
-        trace_id: &str,
+        request_id: &str,
         context: LocalSkippedCandidatePersistenceContext<'_>,
         client_api_format: &str,
         routing_policy: Option<&ResolvedRoutingPolicy>,
     ) -> Self {
         Self {
             app,
-            trace_id: trace_id.to_string(),
+            request_id: request_id.to_string(),
             user_id: context.user_id.to_string(),
             api_key_id: context.api_key_id.to_string(),
             required_capabilities: context.required_capabilities.cloned(),
@@ -337,7 +337,7 @@ pub(crate) use aether_ai_serving::AiCandidateResolutionMode as LocalCandidateRes
 
 struct GatewayLocalCandidateMaterializationPort<'a, F, G> {
     state: PlannerAppState<'a>,
-    trace_id: &'a str,
+    request_id: &'a str,
     client_api_format: &'a str,
     requested_model: Option<&'a str>,
     auth_snapshot: Option<&'a GatewayAuthApiKeySnapshot>,
@@ -355,7 +355,7 @@ struct GatewayLocalCandidateMaterializationPort<'a, F, G> {
 
 struct GatewayAvailableCandidatePersistencePort<'a, F> {
     state: PlannerAppState<'a>,
-    trace_id: &'a str,
+    request_id: &'a str,
     user_id: &'a str,
     api_key_id: &'a str,
     required_capabilities: Option<&'a Value>,
@@ -366,7 +366,7 @@ struct GatewayAvailableCandidatePersistencePort<'a, F> {
 
 struct GatewaySkippedCandidatePersistencePort<'a> {
     state: &'a AppState,
-    trace_id: &'a str,
+    request_id: &'a str,
     user_id: &'a str,
     api_key_id: &'a str,
     required_capabilities: Option<&'a Value>,
@@ -432,7 +432,8 @@ where
     ) -> Result<Vec<Self::Attempt>, Self::Error> {
         Ok(materialize_logical_local_execution_candidate_attempts(
             self.state,
-            self.trace_id,
+            self.request_id,
+            self.request_id,
             self.persistence_policy.available,
             self.persistence_policy
                 .skipped
@@ -461,7 +462,8 @@ where
         );
         persist_skipped_local_execution_candidates_with_context(
             self.state.app(),
-            self.trace_id,
+            self.request_id,
+            self.request_id,
             self.persistence_policy.skipped,
             starting_candidate_index,
             skipped_candidates,
@@ -508,7 +510,7 @@ where
         Ok(self
             .state
             .persist_available_local_candidate(
-                self.trace_id,
+                self.request_id,
                 self.user_id,
                 self.api_key_id,
                 &candidate.candidate,
@@ -571,7 +573,8 @@ impl AiSkippedCandidatePersistencePort for GatewaySkippedCandidatePersistencePor
     ) -> Result<(), Self::Error> {
         persist_skipped_local_execution_candidate(
             self.state,
-            self.trace_id,
+            self.request_id,
+            self.request_id,
             self.user_id,
             self.api_key_id,
             &candidate.candidate,
@@ -591,7 +594,8 @@ impl AiSkippedCandidatePersistencePort for GatewaySkippedCandidatePersistencePor
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn materialize_local_execution_candidates_with_serving<F, G>(
     state: PlannerAppState<'_>,
-    trace_id: &str,
+    _trace_id: &str,
+    request_id: &str,
     client_api_format: &str,
     requested_model: Option<&str>,
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
@@ -615,7 +619,7 @@ where
         scheduler_cache_affinity_enabled(state, routing_policy).await;
     let port = GatewayLocalCandidateMaterializationPort {
         state,
-        trace_id,
+        request_id,
         client_api_format,
         requested_model,
         auth_snapshot,
@@ -640,7 +644,8 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_local_execution_candidate_attempt_source_with_serving<'a, F, G>(
     state: PlannerAppState<'a>,
-    trace_id: &str,
+    _trace_id: &str,
+    request_id: &str,
     client_api_format: &str,
     requested_model: Option<&str>,
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
@@ -696,15 +701,17 @@ where
             &candidates,
         );
     }
+    let skipped_starting_candidate_index = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
     persist_skipped_local_execution_candidates_with_context(
         state.app(),
-        trace_id,
+        request_id,
+        request_id,
         persistence_policy.skipped,
-        u32::try_from(candidates.len()).unwrap_or(u32::MAX),
+        skipped_starting_candidate_index,
         attach_routing_trace_to_skipped_candidates(
             routing_policy,
             client_api_format,
-            u32::try_from(candidates.len()).unwrap_or(u32::MAX),
+            skipped_starting_candidate_index,
             skipped_candidates,
         ),
     )
@@ -714,7 +721,7 @@ where
         state,
         candidates,
         0,
-        Some(trace_id),
+        Some(request_id),
         persistence_policy.skipped.record_runtime_miss_diagnostic,
         sticky_session_token,
         requested_model,
@@ -722,7 +729,7 @@ where
         routing_policy,
         Some(PoolGroupExhaustionPersistenceContext::new(
             state.app().clone(),
-            trace_id,
+            request_id,
             persistence_policy.skipped,
             client_api_format,
             routing_policy,
@@ -803,7 +810,8 @@ pub(crate) async fn build_lazy_requested_model_execution_candidate_attempt_sourc
 >(
     state: PlannerAppState<'a>,
     model_directive_policy: &crate::system_features::ModelDirectivePolicySnapshot,
-    trace_id: &str,
+    _trace_id: &str,
+    request_id: &str,
     client_api_format: &str,
     requested_model: &str,
     request_operation: Option<&str>,
@@ -845,12 +853,13 @@ where
         use_api_format_alias_match,
         key_mode,
         sticky_session_token.is_none(),
-        Some(trace_id),
+        Some(request_id),
     )
     .await;
     let mut cursor = RequestedModelAttemptPageCursor {
         state,
-        trace_id: trace_id.to_string(),
+        diagnostic_request_id: request_id.to_string(),
+        request_id: request_id.to_string(),
         client_api_format: client_api_format.to_string(),
         requested_model: requested_model.to_string(),
         auth_snapshot: auth_snapshot.clone(),
@@ -903,7 +912,8 @@ where
 
 struct RequestedModelAttemptPageCursor<'a> {
     state: PlannerAppState<'a>,
-    trace_id: String,
+    diagnostic_request_id: String,
+    request_id: String,
     client_api_format: String,
     requested_model: String,
     auth_snapshot: GatewayAuthApiKeySnapshot,
@@ -1038,7 +1048,7 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 self.state,
                 candidates,
                 self.next_candidate_index,
-                Some(&self.trace_id),
+                Some(&self.diagnostic_request_id),
                 self.record_runtime_miss_diagnostic,
                 self.sticky_session_token.as_deref(),
                 Some(&self.requested_model),
@@ -1046,7 +1056,7 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 self.routing_policy.as_ref(),
                 Some(PoolGroupExhaustionPersistenceContext {
                     app: self.state.app().clone(),
-                    trace_id: self.trace_id.clone(),
+                    request_id: self.request_id.clone(),
                     user_id: self.skipped_user_id.clone(),
                     api_key_id: self.skipped_api_key_id.clone(),
                     required_capabilities: self.skipped_required_capabilities.clone(),
@@ -1071,7 +1081,8 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
             };
             persist_skipped_local_execution_candidates_with_context(
                 self.state.app(),
-                &self.trace_id,
+                &self.diagnostic_request_id,
+                &self.request_id,
                 skipped_persistence,
                 skipped_starting_candidate_index,
                 attach_routing_trace_to_skipped_candidates(
@@ -1120,7 +1131,8 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
         };
         persist_skipped_local_execution_candidates_with_context(
             self.state.app(),
-            &self.trace_id,
+            &self.diagnostic_request_id,
+            &self.request_id,
             skipped_persistence,
             self.next_candidate_index,
             attach_routing_trace_to_skipped_candidates(
@@ -1459,7 +1471,7 @@ fn should_persist_skipped_local_candidate(candidate: &SkippedLocalExecutionCandi
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_available_local_execution_candidates<F>(
     state: PlannerAppState<'_>,
-    trace_id: &str,
+    request_id: &str,
     user_id: &str,
     api_key_id: &str,
     required_capabilities: Option<&Value>,
@@ -1472,7 +1484,7 @@ where
 {
     let port = GatewayAvailableCandidatePersistencePort {
         state,
-        trace_id,
+        request_id,
         user_id,
         api_key_id,
         required_capabilities,
@@ -1489,7 +1501,7 @@ where
 
 pub(crate) async fn persist_available_local_execution_candidates_with_context<F>(
     state: PlannerAppState<'_>,
-    trace_id: &str,
+    request_id: &str,
     context: LocalAvailableCandidatePersistenceContext<'_>,
     candidates: Vec<EligibleLocalExecutionCandidate>,
     build_extra_data: F,
@@ -1499,7 +1511,7 @@ where
 {
     persist_available_local_execution_candidates(
         state,
-        trace_id,
+        request_id,
         context.user_id,
         context.api_key_id,
         context.required_capabilities,
@@ -1513,7 +1525,8 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn materialize_logical_local_execution_candidate_attempts<F>(
     state: PlannerAppState<'_>,
-    trace_id: &str,
+    diagnostic_request_id: &str,
+    request_id: &str,
     context: LocalAvailableCandidatePersistenceContext<'_>,
     record_runtime_miss_diagnostic: bool,
     candidates: Vec<EligibleLocalExecutionCandidate>,
@@ -1529,14 +1542,14 @@ where
 {
     let mut attempts = Vec::new();
 
-    for (candidate_index, candidate) in candidates.into_iter().enumerate() {
-        let candidate_index = u32::try_from(candidate_index).unwrap_or(u32::MAX);
+    for (candidate_offset, candidate) in candidates.into_iter().enumerate() {
+        let candidate_index = u32::try_from(candidate_offset).unwrap_or(u32::MAX);
         match candidate.kind {
             LocalExecutionCandidateKind::SingleKey => {
                 attempts.extend(
                     persist_available_local_execution_candidate_at_index(
                         state,
-                        trace_id,
+                        request_id,
                         context,
                         candidate,
                         candidate_index,
@@ -1556,7 +1569,10 @@ where
                     request_auth_channel,
                     routing_policy,
                 )
-                .with_runtime_miss_diagnostic(trace_id, record_runtime_miss_diagnostic);
+                .with_runtime_miss_diagnostic(
+                    diagnostic_request_id,
+                    record_runtime_miss_diagnostic,
+                );
                 let attempt_count_before_pool = attempts.len();
                 while let Some(candidate) = cursor.next_key().await {
                     attempts.extend(build_unpersisted_local_execution_candidate_attempts(
@@ -1571,7 +1587,7 @@ where
                     if let Some(skipped) = skipped {
                         let pool_exhaustion_context = PoolGroupExhaustionPersistenceContext::new(
                             state.app().clone(),
-                            trace_id,
+                            request_id,
                             LocalSkippedCandidatePersistenceContext {
                                 user_id: context.user_id,
                                 api_key_id: context.api_key_id,
@@ -1599,7 +1615,7 @@ where
 
 async fn persist_available_local_execution_candidate_at_index<F>(
     state: PlannerAppState<'_>,
-    trace_id: &str,
+    request_id: &str,
     context: LocalAvailableCandidatePersistenceContext<'_>,
     candidate: EligibleLocalExecutionCandidate,
     candidate_index: u32,
@@ -1637,7 +1653,7 @@ where
         let candidate_id = if should_persist {
             state
                 .persist_available_local_candidate(
-                    trace_id,
+                    request_id,
                     context.user_id,
                     context.api_key_id,
                     &candidate_ref.candidate,
@@ -1970,7 +1986,8 @@ async fn persist_pool_group_exhaustion_skipped_candidate(
     let candidate_id = Uuid::new_v4().to_string();
     persist_skipped_local_execution_candidate(
         &context.app,
-        &context.trace_id,
+        &context.request_id,
+        &context.request_id,
         &context.user_id,
         &context.api_key_id,
         &skipped.candidate,
@@ -1988,7 +2005,8 @@ async fn persist_pool_group_exhaustion_skipped_candidate(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_skipped_local_execution_candidate(
     state: &AppState,
-    trace_id: &str,
+    _trace_id: &str,
+    request_id: &str,
     user_id: &str,
     api_key_id: &str,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
@@ -2001,12 +2019,12 @@ pub(crate) async fn persist_skipped_local_execution_candidate(
     record_runtime_miss_diagnostic: bool,
 ) {
     if record_runtime_miss_diagnostic {
-        record_local_runtime_candidate_skip_reason(state, trace_id, skip_reason);
+        record_local_runtime_candidate_skip_reason(state, request_id, skip_reason);
     }
 
     PlannerAppState::new(state)
         .persist_skipped_local_candidate(
-            trace_id,
+            request_id,
             user_id,
             api_key_id,
             candidate,
@@ -2025,6 +2043,7 @@ pub(crate) async fn persist_skipped_local_execution_candidate(
 pub(crate) async fn mark_skipped_local_execution_candidate(
     state: &AppState,
     trace_id: &str,
+    request_id: &str,
     context: LocalSkippedCandidatePersistenceContext<'_>,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
     candidate_index: u32,
@@ -2034,6 +2053,7 @@ pub(crate) async fn mark_skipped_local_execution_candidate(
     persist_skipped_local_execution_candidate(
         state,
         trace_id,
+        request_id,
         context.user_id,
         context.api_key_id,
         candidate,
@@ -2051,6 +2071,7 @@ pub(crate) async fn mark_skipped_local_execution_candidate(
 pub(crate) async fn mark_skipped_local_execution_candidate_with_extra_data(
     state: &AppState,
     trace_id: &str,
+    request_id: &str,
     context: LocalSkippedCandidatePersistenceContext<'_>,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
     candidate_index: u32,
@@ -2061,6 +2082,7 @@ pub(crate) async fn mark_skipped_local_execution_candidate_with_extra_data(
     persist_skipped_local_execution_candidate(
         state,
         trace_id,
+        request_id,
         context.user_id,
         context.api_key_id,
         candidate,
@@ -2078,6 +2100,7 @@ pub(crate) async fn mark_skipped_local_execution_candidate_with_extra_data(
 pub(crate) async fn mark_skipped_local_execution_candidate_with_failure_diagnostic(
     state: &AppState,
     trace_id: &str,
+    request_id: &str,
     context: LocalSkippedCandidatePersistenceContext<'_>,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
     candidate_index: u32,
@@ -2088,6 +2111,7 @@ pub(crate) async fn mark_skipped_local_execution_candidate_with_failure_diagnost
     mark_skipped_local_execution_candidate_with_extra_data(
         state,
         trace_id,
+        request_id,
         context,
         candidate,
         candidate_index,
@@ -2101,7 +2125,8 @@ pub(crate) async fn mark_skipped_local_execution_candidate_with_failure_diagnost
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_skipped_local_execution_candidates(
     state: &AppState,
-    trace_id: &str,
+    _trace_id: &str,
+    request_id: &str,
     user_id: &str,
     api_key_id: &str,
     required_capabilities: Option<&Value>,
@@ -2112,7 +2137,7 @@ pub(crate) async fn persist_skipped_local_execution_candidates(
 ) {
     let port = GatewaySkippedCandidatePersistencePort {
         state,
-        trace_id,
+        request_id,
         user_id,
         api_key_id,
         required_capabilities,
@@ -2131,6 +2156,7 @@ pub(crate) async fn persist_skipped_local_execution_candidates(
 pub(crate) async fn persist_skipped_local_execution_candidates_with_context(
     state: &AppState,
     trace_id: &str,
+    request_id: &str,
     context: LocalSkippedCandidatePersistenceContext<'_>,
     starting_candidate_index: u32,
     skipped_candidates: Vec<SkippedLocalExecutionCandidate>,
@@ -2138,6 +2164,7 @@ pub(crate) async fn persist_skipped_local_execution_candidates_with_context(
     persist_skipped_local_execution_candidates(
         state,
         trace_id,
+        request_id,
         context.user_id,
         context.api_key_id,
         context.required_capabilities,
@@ -2375,7 +2402,7 @@ mod tests {
         let auth_snapshot = sample_auth_snapshot();
         let port = GatewayLocalCandidateMaterializationPort {
             state: PlannerAppState::new(&app),
-            trace_id: "trace-affinity-disabled",
+            request_id: "request-affinity-disabled",
             client_api_format: "openai:chat",
             requested_model: Some("gpt-5"),
             auth_snapshot: Some(&auth_snapshot),
@@ -2446,7 +2473,8 @@ mod tests {
         page_cursor.mark_priority_page_emitted_for_tests();
         let cursor = RequestedModelAttemptPageCursor {
             state: PlannerAppState::new(&app),
-            trace_id: "trace-no-session-affinity".to_string(),
+            diagnostic_request_id: "request-no-session-affinity".to_string(),
+            request_id: "request-no-session-affinity".to_string(),
             client_api_format: "openai:chat".to_string(),
             requested_model: "gpt-5".to_string(),
             auth_snapshot: auth_snapshot.clone(),
@@ -2543,7 +2571,8 @@ mod tests {
         page_cursor.mark_priority_page_emitted_for_tests();
         let cursor = RequestedModelAttemptPageCursor {
             state: PlannerAppState::new(&fixed_order_app),
-            trace_id: "trace-fixed-order".to_string(),
+            diagnostic_request_id: "request-fixed-order".to_string(),
+            request_id: "request-fixed-order".to_string(),
             client_api_format: "openai:chat".to_string(),
             requested_model: "gpt-5".to_string(),
             auth_snapshot,
@@ -2604,6 +2633,7 @@ mod tests {
         let attempts = materialize_logical_local_execution_candidate_attempts(
             PlannerAppState::new(&app),
             "trace-logical-pool",
+            "request-logical-pool",
             LocalAvailableCandidatePersistenceContext {
                 user_id: "user-1",
                 api_key_id: "api-key-1",
@@ -2626,7 +2656,7 @@ mod tests {
         assert_eq!(attempts[0].eligible.candidate.key_id, "normal-key");
 
         let stored = app
-            .read_request_candidates_by_request_id("trace-logical-pool")
+            .read_request_candidates_by_request_id("request-logical-pool")
             .await
             .expect("request candidates should read");
         assert_eq!(stored.len(), 2);
@@ -3035,6 +3065,7 @@ mod tests {
 
         persist_skipped_local_execution_candidates(
             &app,
+            "trace-pool-skipped",
             "trace-pool-skipped",
             "user-1",
             "api-key-1",

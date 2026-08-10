@@ -9,6 +9,22 @@ use std::sync::Arc;
 use super::{DataLayerError, GatewayDataState};
 
 impl GatewayDataState {
+    /// Returns the underlying routing repository without the gateway's
+    /// read-through cache. Long-lived continuation authorization uses this so
+    /// a routing-group or binding revocation is visible on the next turn.
+    pub(crate) fn routing_group_read_repository_strong(
+        &self,
+    ) -> Result<Option<Arc<dyn RoutingGroupReadRepository>>, DataLayerError> {
+        let Some(backends) = self.backends.as_ref() else {
+            return Ok(self.routing_group_reader.clone());
+        };
+        backends.read().routing_groups().map(Some).ok_or_else(|| {
+            DataLayerError::InvalidConfiguration(
+                "strong routing read repository is unavailable".to_string(),
+            )
+        })
+    }
+
     pub(crate) fn routing_group_read_repository(
         &self,
     ) -> Option<Arc<dyn RoutingGroupReadRepository>> {

@@ -1,12 +1,11 @@
+use std::future::Future;
+
 use aether_ai_serving::AiAttemptRetryScope;
 use aether_contracts::{
     ExecutionError, ExecutionErrorKind, ExecutionPhase, ExecutionPlan, ExecutionTelemetry,
 };
 use aether_data_contracts::repository::candidates::RequestCandidateStatus;
 use aether_scheduler_core::SchedulerRequestCandidateStatusUpdate;
-use aether_usage_runtime::{
-    build_sync_terminal_usage_payload_seed, build_terminal_usage_context_seed,
-};
 use axum::body::Body;
 use axum::http::Response;
 use base64::Engine as _;
@@ -19,7 +18,8 @@ use crate::clock::current_unix_ms as current_request_candidate_unix_ms;
 use crate::control::GatewayControlDecision;
 use crate::execution_runtime::ai_attempt_retry_scope_from_failure_disposition;
 use crate::execution_runtime::submission::{
-    resolve_core_error_background_report_kind, submit_local_core_error_or_sync_finalize,
+    resolve_core_error_background_report_kind,
+    submit_local_core_error_or_sync_finalize_effects_only,
 };
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
@@ -27,12 +27,12 @@ use crate::orchestration::{
     resolve_local_failover_analysis_for_attempt,
     resolve_local_transport_failover_analysis_for_attempt, with_upstream_response_report_context,
     LocalAdaptiveRateLimitEffect, LocalAttemptFailureEffect, LocalExecutionEffect,
-    LocalExecutionEffectContext, LocalFailoverAnalysis, LocalFailoverDecision,
-    LocalHealthFailureEffect, LocalOAuthInvalidationEffect, LocalPoolErrorEffect,
+    LocalExecutionEffectContext, LocalFailoverAnalysis, LocalFailoverClassification,
+    LocalFailoverDecision, LocalHealthFailureEffect, LocalOAuthInvalidationEffect,
+    LocalPoolErrorEffect,
 };
 use crate::request_candidate_runtime::record_report_request_candidate_status;
 use crate::request_diagnostics::attach_current_request_diagnostics_and_candidate_timing_to_report_context;
-use crate::usage::submit_sync_report;
 use crate::{usage::GatewaySyncReportRequest, AppState, GatewayError};
 
 #[derive(Debug, Clone)]
@@ -40,9 +40,11 @@ pub(super) struct StreamFailureReport {
     pub(super) status_code: u16,
     pub(super) error_type: String,
     pub(super) error_message: String,
+    candidate_status_code: Option<u16>,
     upstream_status_code: Option<u16>,
     transport_error: bool,
     honor_http_failover: bool,
+    gateway_failure: bool,
     extra_error_fields: Map<String, Value>,
     provider_body_json: Option<Value>,
 }
@@ -66,6 +68,7 @@ struct StreamFailureBodyFields<'a> {
 enum StreamFailureHandling {
     Terminal,
     HonorLocalFailover,
+    GatewayTerminal,
 }
 
 impl StreamFailureReport {
@@ -74,9 +77,11 @@ impl StreamFailureReport {
             status_code,
             error_type,
             error_message,
+            candidate_status_code: _,
             upstream_status_code: _,
             transport_error: _,
             honor_http_failover: _,
+            gateway_failure: _,
             mut extra_error_fields,
             provider_body_json,
         } = self;
@@ -119,9 +124,11 @@ pub(super) fn build_stream_failure_report(
         status_code,
         error_type,
         error_message,
+        candidate_status_code: Some(status_code),
         upstream_status_code: Some(status_code),
         transport_error: false,
         honor_http_failover: false,
+        gateway_failure: false,
         extra_error_fields: Map::new(),
         provider_body_json: None,
     }
@@ -136,9 +143,30 @@ pub(super) fn build_stream_transport_failure_report(
         status_code,
         error_type: error_type.into(),
         error_message: error_message.into(),
+        candidate_status_code: None,
         upstream_status_code: None,
         transport_error: true,
         honor_http_failover: false,
+        gateway_failure: false,
+        extra_error_fields: Map::new(),
+        provider_body_json: None,
+    }
+}
+
+pub(super) fn build_gateway_stream_failure_report(
+    error_type: impl Into<String>,
+    error_message: impl Into<String>,
+    status_code: u16,
+) -> StreamFailureReport {
+    StreamFailureReport {
+        status_code,
+        error_type: error_type.into(),
+        error_message: error_message.into(),
+        candidate_status_code: Some(status_code),
+        upstream_status_code: None,
+        transport_error: false,
+        honor_http_failover: false,
+        gateway_failure: true,
         extra_error_fields: Map::new(),
         provider_body_json: None,
     }
@@ -181,9 +209,11 @@ pub(super) fn build_stream_failure_from_execution_error(
         status_code,
         error_type,
         error_message,
+        candidate_status_code: error.upstream_status,
         upstream_status_code: error.upstream_status,
         transport_error,
         honor_http_failover: error.upstream_status.is_some(),
+        gateway_failure: false,
         extra_error_fields: error_object,
         provider_body_json: None,
     }
@@ -211,9 +241,11 @@ pub(super) fn build_stream_failure_from_provider_error_body(
         status_code,
         error_type,
         error_message,
+        candidate_status_code: Some(status_code),
         upstream_status_code: Some(status_code),
         transport_error: false,
         honor_http_failover: true,
+        gateway_failure: false,
         extra_error_fields: Map::new(),
         provider_body_json: Some(body_json.clone()),
     }
@@ -342,6 +374,267 @@ fn stream_failure_body_field<'a>(
         .and_then(Value::as_str)
 }
 
+async fn apply_stream_failure_provider_effects(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+    payload: &GatewaySyncReportRequest,
+    error_type: &str,
+    error_body: Option<&str>,
+    classification: LocalFailoverClassification,
+) {
+    let context = || LocalExecutionEffectContext {
+        plan,
+        report_context,
+    };
+    if matches!(error_type, "first_byte_timeout" | "read_timeout") {
+        apply_local_execution_effect(state, context(), LocalExecutionEffect::PoolStreamTimeout)
+            .await;
+    }
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::AttemptFailure(LocalAttemptFailureEffect {
+            status_code: payload.status_code,
+            classification,
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::AdaptiveRateLimit(LocalAdaptiveRateLimitEffect {
+            status_code: payload.status_code,
+            classification,
+            headers: Some(&payload.headers),
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::HealthFailure(LocalHealthFailureEffect {
+            status_code: payload.status_code,
+            classification,
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::OauthInvalidation(LocalOAuthInvalidationEffect {
+            status_code: payload.status_code,
+            response_text: error_body,
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::PoolError(LocalPoolErrorEffect {
+            status_code: payload.status_code,
+            classification,
+            headers: &payload.headers,
+            error_body,
+        }),
+    )
+    .await;
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StreamFailureAnalysisKind {
+    Gateway,
+    Http,
+    Transport { allow_retry: bool },
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn settle_stream_failure_attempt(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+    payload: &GatewaySyncReportRequest,
+    candidate_status_code: Option<u16>,
+    started_at_unix_ms: Option<u64>,
+    fallback_elapsed_ms: Option<u64>,
+    error_type: String,
+    error_message: String,
+    analysis_kind: StreamFailureAnalysisKind,
+) -> LocalFailoverAnalysis {
+    settle_stream_failure_attempt_after_spawn(
+        state,
+        plan,
+        report_context,
+        payload,
+        candidate_status_code,
+        started_at_unix_ms,
+        fallback_elapsed_ms,
+        error_type,
+        error_message,
+        analysis_kind,
+        std::future::ready(()),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn settle_stream_failure_attempt_after_spawn<F>(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+    payload: &GatewaySyncReportRequest,
+    candidate_status_code: Option<u16>,
+    started_at_unix_ms: Option<u64>,
+    fallback_elapsed_ms: Option<u64>,
+    error_type: String,
+    error_message: String,
+    analysis_kind: StreamFailureAnalysisKind,
+    before_analysis: F,
+) -> LocalFailoverAnalysis
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let report_context_with_diagnostics =
+        attach_current_request_diagnostics_and_candidate_timing_to_report_context(
+            report_context,
+            payload
+                .telemetry
+                .as_ref()
+                .and_then(|telemetry| telemetry.elapsed_ms)
+                .or(fallback_elapsed_ms),
+            payload
+                .telemetry
+                .as_ref()
+                .and_then(|telemetry| telemetry.ttfb_ms),
+        );
+    // Capture all task-local diagnostics and usage inputs before spawning: Tokio
+    // task-local state does not propagate into the detached settlement owner.
+    let (usage_context_seed, usage_payload_seed) = super::build_sync_terminal_usage_seeds(
+        plan,
+        report_context_with_diagnostics.as_ref().or(report_context),
+        payload,
+    );
+    let state = state.clone();
+    let plan = plan.clone();
+    let report_context = report_context.cloned();
+    let payload = payload.clone();
+    let error_body = payload
+        .body_json
+        .as_ref()
+        .and_then(|body_json| serde_json::to_string(body_json).ok());
+    let terminal_unix_ms = current_request_candidate_unix_ms();
+    let candidate_update = SchedulerRequestCandidateStatusUpdate {
+        status: RequestCandidateStatus::Failed,
+        status_code: candidate_status_code,
+        error_type: Some(error_type.clone()),
+        error_message: Some(error_message),
+        latency_ms: payload
+            .telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.elapsed_ms)
+            .or(fallback_elapsed_ms),
+        started_at_unix_ms: started_at_unix_ms.or(Some(terminal_unix_ms)),
+        finished_at_unix_ms: Some(terminal_unix_ms),
+    };
+    let watchdog_progress = crate::execution_runtime::current_stream_candidate_watchdog_progress();
+    let task = tokio::spawn(async move {
+        before_analysis.await;
+        let (failure_analysis, release_only) = match analysis_kind {
+            StreamFailureAnalysisKind::Gateway => (LocalFailoverAnalysis::use_default(), true),
+            StreamFailureAnalysisKind::Http => (
+                resolve_local_failover_analysis_for_attempt(
+                    &state,
+                    &plan,
+                    report_context.as_ref(),
+                    payload.status_code,
+                    error_body.as_deref(),
+                )
+                .await,
+                false,
+            ),
+            StreamFailureAnalysisKind::Transport { allow_retry } => {
+                let transport_analysis = resolve_local_transport_failover_analysis_for_attempt(
+                    &state,
+                    &plan,
+                    report_context.as_ref(),
+                )
+                .await;
+                let retrying = allow_retry
+                    && matches!(
+                        transport_analysis.decision,
+                        LocalFailoverDecision::RetryNextCandidate
+                    );
+                (
+                    LocalFailoverAnalysis {
+                        classification: if retrying {
+                            LocalFailoverClassification::RetryUpstreamFailure
+                        } else {
+                            LocalFailoverClassification::StopExecutionError
+                        },
+                        decision: if retrying {
+                            LocalFailoverDecision::RetryNextCandidate
+                        } else {
+                            LocalFailoverDecision::StopLocalFailover
+                        },
+                    },
+                    false,
+                )
+            }
+        };
+        // One detached owner completes the entire attempt in a fixed order. A
+        // cancelled request may stop waiting for this task, but cannot cancel
+        // failover analysis or candidate/effect/usage settlement halfway through.
+        record_report_request_candidate_status(&state, report_context.as_ref(), candidate_update)
+            .await;
+        if release_only {
+            crate::orchestration::release_local_pool_key_lease(
+                &state,
+                LocalExecutionEffectContext {
+                    plan: &plan,
+                    report_context: report_context.as_ref(),
+                },
+            )
+            .await;
+        } else {
+            apply_stream_failure_provider_effects(
+                &state,
+                &plan,
+                report_context.as_ref(),
+                &payload,
+                error_type.as_str(),
+                error_body.as_deref(),
+                failure_analysis.classification,
+            )
+            .await;
+        }
+        state
+            .usage_runtime
+            .record_sync_terminal(
+                state.usage_lifecycle_data_state().as_ref(),
+                usage_context_seed,
+                usage_payload_seed,
+            )
+            .await;
+        if let Some(progress) = watchdog_progress {
+            progress.mark_terminal_completed();
+        }
+        failure_analysis
+    });
+    crate::execution_runtime::mark_stream_candidate_watchdog_terminal_started();
+    match task.await {
+        Ok(failure_analysis) => failure_analysis,
+        Err(err) => {
+            warn!(
+                event_name = "stream_failure_attempt_settlement_handoff_failed",
+                log_type = "ops",
+                error = %err,
+                "gateway stream failure attempt settlement task failed"
+            );
+            LocalFailoverAnalysis::use_default()
+        }
+    }
+}
+
 async fn record_stream_sync_failure(
     state: &AppState,
     plan: &ExecutionPlan,
@@ -351,145 +644,32 @@ async fn record_stream_sync_failure(
     started_at_unix_ms: Option<u64>,
     handling: StreamFailureHandling,
 ) -> LocalFailoverAnalysis {
-    let error_type = stream_failure_body_field(payload, "type").unwrap_or("internal");
-    let error_message = stream_failure_body_field(payload, "message").unwrap_or_default();
-    let error_body = payload
-        .body_json
-        .as_ref()
-        .and_then(|body_json| serde_json::to_string(body_json).ok());
-    let failure_analysis = resolve_local_failover_analysis_for_attempt(
+    let error_type = stream_failure_body_field(payload, "type")
+        .unwrap_or("internal")
+        .to_string();
+    let error_message = stream_failure_body_field(payload, "message")
+        .unwrap_or_default()
+        .to_string();
+    // A retry ends this provider attempt just as definitively as a response
+    // returned to the client. Each attempt has its own execution identity, so
+    // deferring usage until the candidate loop stops would lose retry usage.
+    settle_stream_failure_attempt(
         state,
         plan,
         report_context,
-        payload.status_code,
-        error_body.as_deref(),
-    )
-    .await;
-    if matches!(error_type, "first_byte_timeout" | "read_timeout") {
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan,
-                report_context,
-            },
-            LocalExecutionEffect::PoolStreamTimeout,
-        )
-        .await;
-    }
-    apply_local_execution_effect(
-        state,
-        LocalExecutionEffectContext {
-            plan,
-            report_context,
-        },
-        LocalExecutionEffect::AttemptFailure(LocalAttemptFailureEffect {
-            status_code: payload.status_code,
-            classification: failure_analysis.classification,
-        }),
-    )
-    .await;
-    apply_local_execution_effect(
-        state,
-        LocalExecutionEffectContext {
-            plan,
-            report_context,
-        },
-        LocalExecutionEffect::AdaptiveRateLimit(LocalAdaptiveRateLimitEffect {
-            status_code: payload.status_code,
-            classification: failure_analysis.classification,
-            headers: Some(&payload.headers),
-        }),
-    )
-    .await;
-    apply_local_execution_effect(
-        state,
-        LocalExecutionEffectContext {
-            plan,
-            report_context,
-        },
-        LocalExecutionEffect::HealthFailure(LocalHealthFailureEffect {
-            status_code: payload.status_code,
-            classification: failure_analysis.classification,
-        }),
-    )
-    .await;
-    apply_local_execution_effect(
-        state,
-        LocalExecutionEffectContext {
-            plan,
-            report_context,
-        },
-        LocalExecutionEffect::OauthInvalidation(LocalOAuthInvalidationEffect {
-            status_code: payload.status_code,
-            response_text: error_body.as_deref(),
-        }),
-    )
-    .await;
-    apply_local_execution_effect(
-        state,
-        LocalExecutionEffectContext {
-            plan,
-            report_context,
-        },
-        LocalExecutionEffect::PoolError(LocalPoolErrorEffect {
-            status_code: payload.status_code,
-            classification: failure_analysis.classification,
-            headers: &payload.headers,
-            error_body: error_body.as_deref(),
-        }),
-    )
-    .await;
-    let retrying_next_candidate = matches!(
-        failure_analysis.decision,
-        LocalFailoverDecision::RetryNextCandidate
-    );
-    if !matches!(handling, StreamFailureHandling::HonorLocalFailover) || !retrying_next_candidate {
-        crate::execution_runtime::mark_stream_candidate_watchdog_terminal_started();
-        let report_context_with_diagnostics =
-            attach_current_request_diagnostics_and_candidate_timing_to_report_context(
-                report_context,
-                payload
-                    .telemetry
-                    .as_ref()
-                    .and_then(|telemetry| telemetry.elapsed_ms),
-                payload
-                    .telemetry
-                    .as_ref()
-                    .and_then(|telemetry| telemetry.ttfb_ms),
-            );
-        let context_seed = build_terminal_usage_context_seed(
-            plan,
-            report_context_with_diagnostics.as_ref().or(report_context),
-        );
-        let payload_seed = build_sync_terminal_usage_payload_seed(payload);
-        state
-            .usage_runtime
-            .record_sync_terminal(
-                state.usage_lifecycle_data_state().as_ref(),
-                context_seed,
-                payload_seed,
-            )
-            .await;
-    }
-    let terminal_unix_secs = current_request_candidate_unix_ms();
-    record_report_request_candidate_status(
-        state,
-        report_context,
-        SchedulerRequestCandidateStatusUpdate {
-            status: RequestCandidateStatus::Failed,
-            status_code: candidate_status_code,
-            error_type: Some(error_type.to_string()),
-            error_message: Some(error_message.to_string()),
-            latency_ms: payload
-                .telemetry
-                .as_ref()
-                .and_then(|telemetry| telemetry.elapsed_ms),
-            started_at_unix_ms: started_at_unix_ms.or(Some(terminal_unix_secs)),
-            finished_at_unix_ms: Some(terminal_unix_secs),
+        payload,
+        candidate_status_code,
+        started_at_unix_ms,
+        None,
+        error_type,
+        error_message,
+        if matches!(handling, StreamFailureHandling::GatewayTerminal) {
+            StreamFailureAnalysisKind::Gateway
+        } else {
+            StreamFailureAnalysisKind::Http
         },
     )
-    .await;
-    failure_analysis
+    .await
 }
 
 #[allow(clippy::too_many_arguments)] // internal helper for prefetch error handling
@@ -579,7 +759,8 @@ pub(super) async fn handle_prefetch_provider_private_stream_error(
     }
 
     let response =
-        submit_local_core_error_or_sync_finalize(state, trace_id, decision, payload).await?;
+        submit_local_core_error_or_sync_finalize_effects_only(state, trace_id, decision, payload)
+            .await?;
     Ok(Some(attach_control_metadata_headers(
         response,
         Some(request_id),
@@ -606,8 +787,9 @@ pub(super) async fn handle_prefetch_stream_failure(
     retry_scope_out: Option<&mut AiAttemptRetryScope>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let transport_error = failure.transport_error;
-    let candidate_status_code = failure.upstream_status_code;
+    let candidate_status_code = failure.candidate_status_code;
     let honor_http_failover = failure.honor_http_failover;
+    let gateway_failure = failure.gateway_failure;
     let mut payload = build_stream_failure_sync_payload(
         trace_id,
         report_kind.to_string(),
@@ -646,7 +828,9 @@ pub(super) async fn handle_prefetch_stream_failure(
         &payload,
         candidate_status_code,
         None,
-        if honor_local_failover {
+        if gateway_failure {
+            StreamFailureHandling::GatewayTerminal
+        } else if honor_local_failover {
             StreamFailureHandling::HonorLocalFailover
         } else {
             StreamFailureHandling::Terminal
@@ -681,7 +865,8 @@ pub(super) async fn handle_prefetch_stream_failure(
     }
 
     let response =
-        submit_local_core_error_or_sync_finalize(state, trace_id, decision, payload).await?;
+        submit_local_core_error_or_sync_finalize_effects_only(state, trace_id, decision, payload)
+            .await?;
     Ok(Some(attach_control_metadata_headers(
         response,
         Some(request_id),
@@ -702,79 +887,30 @@ async fn handle_prefetch_transport_stream_failure(
     candidate_elapsed_ms: u64,
     retry_scope_out: Option<&mut AiAttemptRetryScope>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
-    let error_type = stream_failure_body_field(&payload, "type").unwrap_or("internal");
-    let error_message = stream_failure_body_field(&payload, "message").unwrap_or_default();
-    if matches!(error_type, "first_byte_timeout" | "read_timeout") {
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan,
-                report_context: payload.report_context.as_ref(),
-            },
-            LocalExecutionEffect::PoolStreamTimeout,
-        )
-        .await;
-    }
-
-    let analysis = resolve_local_transport_failover_analysis_for_attempt(
+    let error_type = stream_failure_body_field(&payload, "type")
+        .unwrap_or("internal")
+        .to_string();
+    let error_message = stream_failure_body_field(&payload, "message")
+        .unwrap_or_default()
+        .to_string();
+    let allow_retry = retry_scope_out.is_some();
+    let failure_analysis = settle_stream_failure_attempt(
         state,
         plan,
         payload.report_context.as_ref(),
+        &payload,
+        None,
+        Some(candidate_started_unix_ms),
+        Some(candidate_elapsed_ms),
+        error_type,
+        error_message,
+        StreamFailureAnalysisKind::Transport { allow_retry },
     )
     .await;
-    let retrying_next_candidate = retry_scope_out.is_some()
-        && matches!(analysis.decision, LocalFailoverDecision::RetryNextCandidate);
-    if !retrying_next_candidate {
-        crate::execution_runtime::mark_stream_candidate_watchdog_terminal_started();
-        let report_context_with_diagnostics =
-            attach_current_request_diagnostics_and_candidate_timing_to_report_context(
-                payload.report_context.as_ref(),
-                payload
-                    .telemetry
-                    .as_ref()
-                    .and_then(|telemetry| telemetry.elapsed_ms)
-                    .or(Some(candidate_elapsed_ms)),
-                payload
-                    .telemetry
-                    .as_ref()
-                    .and_then(|telemetry| telemetry.ttfb_ms),
-            );
-        let context_seed = build_terminal_usage_context_seed(
-            plan,
-            report_context_with_diagnostics
-                .as_ref()
-                .or(payload.report_context.as_ref()),
-        );
-        let payload_seed = build_sync_terminal_usage_payload_seed(&payload);
-        state
-            .usage_runtime
-            .record_sync_terminal(
-                state.usage_lifecycle_data_state().as_ref(),
-                context_seed,
-                payload_seed,
-            )
-            .await;
-    }
-
-    let terminal_unix_ms = current_request_candidate_unix_ms();
-    record_report_request_candidate_status(
-        state,
-        payload.report_context.as_ref(),
-        SchedulerRequestCandidateStatusUpdate {
-            status: RequestCandidateStatus::Failed,
-            status_code: None,
-            error_type: Some(error_type.to_string()),
-            error_message: Some(error_message.to_string()),
-            latency_ms: payload
-                .telemetry
-                .as_ref()
-                .and_then(|telemetry| telemetry.elapsed_ms)
-                .or(Some(candidate_elapsed_ms)),
-            started_at_unix_ms: Some(candidate_started_unix_ms),
-            finished_at_unix_ms: Some(terminal_unix_ms),
-        },
-    )
-    .await;
+    let retrying_next_candidate = matches!(
+        failure_analysis.decision,
+        LocalFailoverDecision::RetryNextCandidate
+    );
 
     if retrying_next_candidate {
         if let Some(retry_scope) = retry_scope_out {
@@ -786,14 +922,15 @@ async fn handle_prefetch_transport_stream_failure(
             trace_id = %trace_id,
             request_id = %request_id,
             candidate_id = ?candidate_id,
-            transport_classification = analysis.classification.as_str(),
+            failover_classification = failure_analysis.classification.as_str(),
             "gateway retrying next candidate after precommit transport failure"
         );
         return Ok(None);
     }
 
     let response =
-        submit_local_core_error_or_sync_finalize(state, trace_id, decision, payload).await?;
+        submit_local_core_error_or_sync_finalize_effects_only(state, trace_id, decision, payload)
+            .await?;
     Ok(Some(attach_control_metadata_headers(
         response,
         Some(request_id),
@@ -813,13 +950,19 @@ pub(super) async fn submit_midstream_stream_failure(
     started_at_unix_ms: u64,
     failure: StreamFailureReport,
 ) {
-    let Some(report_kind) =
-        direct_stream_finalize_kind.and_then(resolve_core_error_background_report_kind)
-    else {
-        return;
+    let candidate_status_code = failure.candidate_status_code;
+    let handling = if failure.gateway_failure {
+        StreamFailureHandling::GatewayTerminal
+    } else {
+        StreamFailureHandling::Terminal
     };
-
-    let candidate_status_code = failure.upstream_status_code;
+    // Report submission is optional for transports without a mapped finalize
+    // route. Attempt settlement is not: candidate, provider effects/lease, and
+    // terminal usage must still be completed exactly once.
+    let report_kind = direct_stream_finalize_kind
+        .and_then(resolve_core_error_background_report_kind)
+        .unwrap_or_default();
+    let submit_execution_report = !report_kind.is_empty();
     let payload = build_stream_failure_sync_payload(
         trace_id,
         report_kind,
@@ -836,10 +979,13 @@ pub(super) async fn submit_midstream_stream_failure(
         &payload,
         candidate_status_code,
         Some(started_at_unix_ms),
-        StreamFailureHandling::Terminal,
+        handling,
     )
     .await;
-    if let Err(err) = submit_sync_report(state, payload).await {
+    if !submit_execution_report {
+        return;
+    }
+    if let Err(err) = crate::usage::submit_sync_report_effects_only(state, payload).await {
         let request_id = short_request_id(plan.request_id.as_str());
         warn!(
             event_name = "execution_report_submit_failed",
@@ -857,15 +1003,187 @@ pub(super) async fn submit_midstream_stream_failure(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::time::Duration;
 
-    use aether_contracts::{ExecutionError, ExecutionErrorKind, ExecutionPhase};
+    use aether_contracts::{
+        ExecutionError, ExecutionErrorKind, ExecutionPhase, ExecutionPlan, RequestBody,
+    };
+    use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
+    use aether_data::repository::usage::InMemoryUsageReadRepository;
+    use aether_data_contracts::repository::candidates::{
+        RequestCandidateReadRepository, RequestCandidateStatus,
+    };
+    use aether_data_contracts::repository::usage::UsageReadRepository;
     use base64::Engine as _;
     use serde_json::json;
+    use tokio::sync::Notify;
 
     use super::{
         build_stream_failure_from_execution_error, build_stream_failure_from_provider_error_body,
         build_stream_failure_sync_payload, build_stream_transport_failure_report,
+        settle_stream_failure_attempt_after_spawn, StreamFailureAnalysisKind,
     };
+    use crate::execution_runtime::StreamCandidateWatchdogProgress;
+    use crate::usage::{GatewaySyncReportRequest, UsageRuntimeConfig};
+    use crate::AppState;
+
+    fn cancellation_test_plan(request_id: &str, candidate_id: &str) -> ExecutionPlan {
+        ExecutionPlan {
+            request_id: request_id.to_string(),
+            candidate_id: Some(candidate_id.to_string()),
+            provider_name: Some("test-provider".to_string()),
+            provider_id: "provider-analysis-cancel".to_string(),
+            endpoint_id: "endpoint-analysis-cancel".to_string(),
+            key_id: "key-analysis-cancel".to_string(),
+            method: "POST".to_string(),
+            url: "https://provider.example/v1/chat/completions".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"model": "test-model", "stream": true})),
+            stream: true,
+            client_api_format: "openai:chat".to_string(),
+            provider_api_format: "openai:chat".to_string(),
+            model_name: Some("test-model".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn failure_analysis_owner_survives_caller_cancellation() {
+        let request_id = "req-stream-failure-analysis-cancel";
+        let candidate_id = "cand-stream-failure-analysis-cancel";
+        let candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                    Arc::clone(&candidate_repository),
+                    Arc::clone(&usage_repository),
+                ),
+            )
+            .with_usage_runtime_for_tests(UsageRuntimeConfig {
+                enabled: true,
+                ..UsageRuntimeConfig::default()
+            });
+        let plan = cancellation_test_plan(request_id, candidate_id);
+        let report_context = json!({
+            "request_id": request_id,
+            "candidate_id": candidate_id,
+            "candidate_index": 0,
+            "retry_index": 0,
+            "provider_id": plan.provider_id,
+            "endpoint_id": plan.endpoint_id,
+            "key_id": plan.key_id,
+            "provider_api_format": plan.provider_api_format,
+            "client_api_format": plan.client_api_format,
+        });
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-stream-failure-analysis-cancel".to_string(),
+            report_kind: "openai_chat_sync_error".to_string(),
+            report_context: Some(report_context.clone()),
+            status_code: 503,
+            headers: BTreeMap::from([("content-type".to_string(), "application/json".to_string())]),
+            body_json: Some(json!({
+                "error": {
+                    "type": "upstream_unavailable",
+                    "message": "provider unavailable",
+                    "code": 503
+                }
+            })),
+            client_body_json: None,
+            body_base64: None,
+            telemetry: Some(aether_contracts::ExecutionTelemetry {
+                ttfb_ms: None,
+                elapsed_ms: Some(17),
+                upstream_bytes: None,
+            }),
+        };
+        let analysis_started = Arc::new(Notify::new());
+        let release_analysis = Arc::new(Notify::new());
+        let watchdog_progress = StreamCandidateWatchdogProgress::shared();
+        let caller = {
+            let state = state.clone();
+            let plan = plan.clone();
+            let analysis_started = Arc::clone(&analysis_started);
+            let release_analysis = Arc::clone(&release_analysis);
+            let watchdog_progress = Arc::clone(&watchdog_progress);
+            tokio::spawn(watchdog_progress.scope(async move {
+                settle_stream_failure_attempt_after_spawn(
+                    &state,
+                    &plan,
+                    Some(&report_context),
+                    &payload,
+                    Some(503),
+                    Some(crate::clock::current_unix_ms()),
+                    None,
+                    "upstream_unavailable".to_string(),
+                    "provider unavailable".to_string(),
+                    StreamFailureAnalysisKind::Http,
+                    async move {
+                        analysis_started.notify_one();
+                        release_analysis.notified().await;
+                    },
+                )
+                .await
+            }))
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), analysis_started.notified())
+            .await
+            .expect("detached owner should start before analysis");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !watchdog_progress.terminal_started() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("caller should publish detached terminal ownership");
+        caller.abort();
+        assert!(caller
+            .await
+            .expect_err("caller should be cancelled")
+            .is_cancelled());
+        release_analysis.notify_one();
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            watchdog_progress.wait_for_terminal_completion(),
+        )
+        .await
+        .expect("detached owner should complete after caller cancellation");
+        let candidates = candidate_repository
+            .list_by_request_id(request_id)
+            .await
+            .expect("candidate should read");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].status, RequestCandidateStatus::Failed);
+        assert_eq!(candidates[0].status_code, Some(503));
+        assert_eq!(
+            candidates[0].error_type.as_deref(),
+            Some("upstream_unavailable")
+        );
+        let usage = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(usage) = usage_repository
+                    .find_by_request_id(request_id)
+                    .await
+                    .expect("usage should read")
+                {
+                    break usage;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("terminal usage should be persisted asynchronously");
+        assert_eq!(usage.status, "failed");
+        assert_eq!(usage.status_code, Some(503));
+    }
 
     #[test]
     fn committed_transport_failure_has_no_upstream_status() {

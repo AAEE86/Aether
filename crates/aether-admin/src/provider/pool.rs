@@ -257,6 +257,52 @@ pub fn admin_pool_is_oauth_invalid(key: &StoredProviderCatalogKey, now_unix_secs
         .is_some_and(|value| value > 0 && value <= now_unix_secs)
 }
 
+/// Returns whether a pool member must be withheld until its OAuth credentials
+/// are repaired. Recoverable observation failures and provider-managed expiry
+/// markers remain usable until the scheduler has evidence the credential is
+/// actually invalid.
+pub fn admin_pool_key_requires_reauth_for_scheduling(
+    key: &StoredProviderCatalogKey,
+    now_unix_secs: u64,
+) -> bool {
+    if !key.auth_type.trim().eq_ignore_ascii_case("oauth") {
+        return false;
+    }
+
+    let invalid_reason = key
+        .oauth_invalid_reason
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    if !invalid_reason.is_empty() {
+        let account_state = provider_status::resolve_pool_account_state(
+            None,
+            key.upstream_metadata.as_ref(),
+            Some(invalid_reason),
+        );
+        if account_state.blocked && !account_state.recoverable {
+            return true;
+        }
+        if admin_pool_reason_has_tag(invalid_reason, "[ACCOUNT_BLOCK]") {
+            return true;
+        }
+        if admin_pool_reason_has_tag(invalid_reason, "[REQUEST_FAILED]") {
+            return false;
+        }
+        if admin_pool_reason_has_tag(invalid_reason, "[REFRESH_FAILED]") {
+            return key
+                .expires_at_unix_secs
+                .is_none_or(|expires_at| expires_at == 0 || expires_at <= now_unix_secs);
+        }
+        if admin_pool_reason_has_tag(invalid_reason, "[OAUTH_EXPIRED]") {
+            return false;
+        }
+        return true;
+    }
+
+    key.oauth_invalid_at_unix_secs.is_some()
+}
+
 fn admin_pool_reason_has_tag(reason: &str, tag: &str) -> bool {
     reason
         .lines()
@@ -653,10 +699,11 @@ pub fn build_admin_pool_selection_payload(keys: &[StoredProviderCatalogKey]) -> 
 mod tests {
     use super::{
         admin_pool_key_account_quota_exhausted, admin_pool_key_is_known_banned,
-        apply_admin_pool_key_settings, build_admin_pool_batch_action_plan,
-        build_admin_pool_batch_import_key_record, build_admin_pool_key_payload,
-        resolve_admin_pool_key_settings, validate_admin_pool_key_settings_payload,
-        AdminPoolBatchActionKind, AdminPoolBatchActionRequest, AdminPoolKeyPayloadContext,
+        admin_pool_key_requires_reauth_for_scheduling, apply_admin_pool_key_settings,
+        build_admin_pool_batch_action_plan, build_admin_pool_batch_import_key_record,
+        build_admin_pool_key_payload, resolve_admin_pool_key_settings,
+        validate_admin_pool_key_settings_payload, AdminPoolBatchActionKind,
+        AdminPoolBatchActionRequest, AdminPoolKeyPayloadContext,
     };
     use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
     use serde_json::json;
@@ -838,6 +885,39 @@ mod tests {
         })));
 
         assert!(admin_pool_key_is_known_banned(&key));
+    }
+
+    #[test]
+    fn scheduling_reauth_keeps_recoverable_markers_usable_until_credentials_expire() {
+        let mut key = sample_key(None);
+        key.expires_at_unix_secs = Some(200);
+        key.oauth_invalid_reason = Some("[REFRESH_FAILED] refresh token rotated".to_string());
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 200));
+
+        key.oauth_invalid_reason = Some("[REQUEST_FAILED] status check failed".to_string());
+        key.oauth_invalid_at_unix_secs = Some(100);
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 300));
+
+        key.oauth_invalid_reason = Some("[OAUTH_EXPIRED] session expired".to_string());
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 300));
+    }
+
+    #[test]
+    fn scheduling_reauth_blocks_terminal_markers_but_not_non_oauth_keys() {
+        let mut key = sample_key(None);
+        key.oauth_invalid_reason = Some("[ACCOUNT_BLOCK] account deactivated".to_string());
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
+
+        key.oauth_invalid_reason = Some("provider token invalid".to_string());
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
+
+        key.oauth_invalid_reason = None;
+        key.oauth_invalid_at_unix_secs = Some(100);
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
+
+        key.auth_type = "api_key".to_string();
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 100));
     }
 
     #[test]

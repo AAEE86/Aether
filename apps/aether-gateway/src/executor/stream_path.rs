@@ -493,6 +493,7 @@ async fn maybe_execute_local_video_task_content_stream(
     let _ = state
         .hydrate_video_task_for_route(decision.route_family.as_deref(), parts.uri.path())
         .await?;
+    let request_id = crate::execution_identity::execution_request_id_from_parts(parts, trace_id);
 
     if let Some(task_id) =
         crate::video_tasks::extract_openai_task_id_from_content_path(parts.uri.path())
@@ -501,7 +502,7 @@ async fn maybe_execute_local_video_task_content_stream(
         if let Some(refresh_plan) = state.video_tasks.prepare_read_refresh_sync_plan(
             Some("openai"),
             &refresh_path,
-            trace_id,
+            request_id,
         ) {
             state.execute_video_task_refresh_plan(&refresh_plan).await?;
         }
@@ -510,7 +511,7 @@ async fn maybe_execute_local_video_task_content_stream(
     let Some(action) = state.video_tasks.prepare_openai_content_stream_action(
         parts.uri.path(),
         parts.uri.query(),
-        trace_id,
+        request_id,
     ) else {
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };

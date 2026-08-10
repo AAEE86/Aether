@@ -26,6 +26,7 @@ use super::super::rate_limit::FrontdoorUserRpmLimiter;
 use super::super::request_candidate_queue::RequestCandidateQueueRuntime;
 use super::super::task_runtime::TaskSupervisorMetrics;
 use super::super::{provider_transport, usage};
+use super::runtime::RequestCandidateRuntimeOverlay;
 use super::{
     AdminBillingCollectorRecord, AdminBillingRuleRecord, AdminPaymentCallbackRecord,
     AdminWalletPaymentOrderRecord, AdminWalletRefundRecord, AdminWalletTransactionRecord,
@@ -429,6 +430,7 @@ pub struct AppState {
     pub(crate) usage_counter_exact_health_metric_last_attempt: Arc<StdMutex<Option<Instant>>>,
     pub(crate) usage_counter_exact_health_metric_refresh: Arc<TokioMutex<()>>,
     pub(crate) request_candidate_queue: Option<Arc<RequestCandidateQueueRuntime>>,
+    pub(crate) request_candidate_runtime_overlay: Arc<RequestCandidateRuntimeOverlay>,
     pub(crate) frontdoor_cors: Option<Arc<FrontdoorCorsConfig>>,
     pub(crate) frontdoor_user_rpm: Arc<FrontdoorUserRpmLimiter>,
     pub(crate) tunnel: crate::tunnel::EmbeddedTunnelState,

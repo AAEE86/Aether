@@ -77,11 +77,12 @@ async fn poll_video_tasks_once(state: &AppState, batch_size: usize) -> Result<us
         )
         .await?;
     let mut refreshed = 0usize;
-    for (index, task) in tasks.into_iter().enumerate() {
-        let trace_id = format!("video-task-poller-{index}");
+    for task in tasks {
+        let execution_request_id =
+            crate::execution_identity::ExecutionRequestId::generate().into_string();
         let Some(refresh_plan) = state
             .video_tasks
-            .prepare_poll_refresh_plan_for_stored_task(&task, &trace_id)
+            .prepare_poll_refresh_plan_for_stored_task(&task, &execution_request_id)
         else {
             continue;
         };

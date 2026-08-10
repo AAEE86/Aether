@@ -20,11 +20,12 @@ use crate::ai_serving::LocalExecutionAttemptSource;
 use crate::clock::current_unix_ms;
 use crate::control::GatewayControlDecision;
 use crate::execution_runtime::{
-    acquire_upstream_execution_gate, build_transport_error_stop_response,
-    execute_execution_runtime_stream_with_retry_scope,
+    acquire_upstream_execution_gate, build_transport_error_response,
+    build_transport_error_stop_response, execute_execution_runtime_stream_with_retry_scope,
     execute_execution_runtime_sync_with_retry_scope,
     mark_stream_candidate_watchdog_terminal_started, StreamCandidateWatchdogProgress,
-    UpstreamExecutionGateProvider, UPSTREAM_EXECUTION_GATE_NAME,
+    UpstreamExecutionGateProvider, STREAM_CANDIDATE_WATCHDOG_TIMEOUT_ERROR_TYPE,
+    STREAM_CANDIDATE_WATCHDOG_TIMEOUT_MESSAGE, UPSTREAM_EXECUTION_GATE_NAME,
 };
 use crate::executor::{
     build_local_execution_exhaustion, mark_deferred_upstream_response, LocalExecutionRequestOutcome,
@@ -33,9 +34,9 @@ use crate::handlers::shared::provider_pool::release_admin_provider_pool_key_leas
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
     local_execution_candidate_metadata_from_report_context,
-    local_failover_policy_from_report_context, resolve_local_failover_policy,
-    resolve_local_transport_failover_analysis_for_attempt, LocalFailoverDecision,
-    LocalFailoverPolicy,
+    local_failover_policy_from_report_context, release_local_pool_key_lease,
+    resolve_local_failover_policy, resolve_local_transport_failover_analysis_for_attempt,
+    LocalExecutionEffectContext, LocalFailoverDecision, LocalFailoverPolicy,
 };
 use crate::privacy::RedactionExecutionCandidateId;
 use crate::request_candidate_runtime::{
@@ -50,6 +51,35 @@ const UPSTREAM_EXECUTION_GATE_HOLD_STREAM_RESPONSE_ENV: &str =
     "AETHER_GATEWAY_UPSTREAM_EXECUTION_GATE_HOLD_STREAM_RESPONSE";
 const UPSTREAM_EXECUTION_GATE_STREAM_HOLD_MODE_ENV: &str =
     "AETHER_GATEWAY_UPSTREAM_EXECUTION_GATE_STREAM_HOLD_MODE";
+
+#[async_trait]
+trait StreamCandidateTerminalRuntime:
+    RequestCandidateRuntimeWriter + UpstreamExecutionGateProvider + Clone + Send + Sync + 'static
+{
+    async fn release_candidate_pool_key_lease(
+        &self,
+        plan: &aether_contracts::ExecutionPlan,
+        report_context: Option<&serde_json::Value>,
+    );
+}
+
+#[async_trait]
+impl StreamCandidateTerminalRuntime for AppState {
+    async fn release_candidate_pool_key_lease(
+        &self,
+        plan: &aether_contracts::ExecutionPlan,
+        report_context: Option<&serde_json::Value>,
+    ) {
+        release_local_pool_key_lease(
+            self,
+            LocalExecutionEffectContext {
+                plan,
+                report_context,
+            },
+        )
+        .await;
+    }
+}
 
 fn attach_redaction_execution_candidate(response: &mut Response<Body>, candidate_id: Option<&str>) {
     if let Some(candidate_id) = candidate_id
@@ -247,7 +277,10 @@ where
         .await)
     }
 
-    async fn record_attempt_started(&self, attempt: &T) -> Result<(), Self::Error> {
+    async fn record_attempt_started(&self, attempt: &mut T) -> Result<(), Self::Error> {
+        self.transfer_tracker
+            .materialize_attempt_execution_identity(attempt)
+            .await;
         record_provider_transfer_attempt_started(self.transfer_tracker, attempt).await;
         Ok(())
     }
@@ -526,6 +559,57 @@ struct ProviderTransferStateTracker {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ProviderTransferTracker {
     state: std::sync::Arc<tokio::sync::Mutex<ProviderTransferStateTracker>>,
+    execution_identity: std::sync::Arc<tokio::sync::Mutex<AttemptExecutionIdentityState>>,
+}
+
+#[derive(Debug, Default)]
+struct AttemptExecutionIdentityState {
+    root_request_id: Option<String>,
+}
+
+impl ProviderTransferTracker {
+    async fn materialize_attempt_execution_identity<Attempt>(&self, attempt: &mut Attempt)
+    where
+        Attempt: AiExecutionAttempt,
+    {
+        let mut state = self.execution_identity.lock().await;
+        let logical_request_id = attempt
+            .report_context_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|context| context.get("request_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|request_id| !request_id.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| attempt.execution_plan().request_id.clone());
+
+        match state.root_request_id.as_ref() {
+            None => {
+                state.root_request_id = Some(attempt.execution_plan().request_id.clone());
+            }
+            Some(root_request_id) => {
+                let request_id =
+                    crate::execution_identity::ExecutionRequestId::generate().into_string();
+                attempt
+                    .execution_plan_mut()
+                    .request_id
+                    .clone_from(&request_id);
+                let mut context = attempt
+                    .report_context()
+                    .and_then(|value| value.as_object().cloned())
+                    .unwrap_or_default();
+                context.insert(
+                    "request_id".to_string(),
+                    serde_json::Value::String(logical_request_id),
+                );
+                context.insert(
+                    "parent_request_id".to_string(),
+                    serde_json::Value::String(root_request_id.clone()),
+                );
+                attempt.replace_report_context(Some(serde_json::Value::Object(context)));
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -798,7 +882,7 @@ where
             "stream_candidate_next",
             next_started_at.elapsed().as_millis() as u64,
         );
-        let Some(attempt) = next_attempt else {
+        let Some(mut attempt) = next_attempt else {
             break;
         };
         if port.should_skip_attempt(&attempt).await? {
@@ -807,7 +891,7 @@ where
             source.skip_provider(provider_id.as_str()).await?;
             continue;
         }
-        port.record_attempt_started(&attempt).await?;
+        port.record_attempt_started(&mut attempt).await?;
         let execute_started_at = std::time::Instant::now();
         let execution = match port.execute_attempt(&attempt).await {
             Ok(execution) => execution,
@@ -947,7 +1031,10 @@ where
         .await)
     }
 
-    async fn record_attempt_started(&self, attempt: &T) -> Result<(), Self::Error> {
+    async fn record_attempt_started(&self, attempt: &mut T) -> Result<(), Self::Error> {
+        self.transfer_tracker
+            .materialize_attempt_execution_identity(attempt)
+            .await;
         record_provider_transfer_attempt_started(self.transfer_tracker, attempt).await;
         Ok(())
     }
@@ -1050,8 +1137,15 @@ where
         )
         .await?;
         let mut execution = match execution {
-            StreamCandidateWatchdogOutcome::TransportTimeout => {
-                AiAttemptExecutionOutcome::Responded(
+            StreamCandidateWatchdogOutcome::TransportTimeout { terminal_recorded } => {
+                let response = if terminal_recorded {
+                    build_transport_error_response(
+                        plan,
+                        self.trace_id,
+                        self.decision,
+                        http::StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                    )?
+                } else {
                     build_transport_error_stop_response(
                         self.state,
                         plan,
@@ -1063,8 +1157,9 @@ where
                         stream_candidate_watchdog_timeout_message(),
                         watchdog_started_at.elapsed().as_millis() as u64,
                     )
-                    .await?,
-                )
+                    .await?
+                };
+                AiAttemptExecutionOutcome::Responded(response)
             }
             StreamCandidateWatchdogOutcome::Executed(execution) => execution,
         };
@@ -1231,7 +1326,7 @@ fn resolve_stream_candidate_watchdog_timeout(
 }
 
 fn stream_candidate_watchdog_timeout_message() -> &'static str {
-    "Stream first byte timeout"
+    STREAM_CANDIDATE_WATCHDOG_TIMEOUT_MESSAGE
 }
 
 fn admission_timeout_gate(error: &GatewayError) -> Option<&'static str> {
@@ -1261,36 +1356,50 @@ fn is_candidate_level_admission_timeout(error: &GatewayError) -> bool {
     )
 }
 
-fn should_record_candidate_admission_timeout(error: &GatewayError) -> bool {
-    matches!(
-        admission_timeout_gate(error),
-        Some(UPSTREAM_EXECUTION_GATE_NAME)
-    )
-}
-
-async fn record_stream_candidate_admission_timeout(
-    state: &(impl RequestCandidateRuntimeWriter + ?Sized),
+async fn finalize_stream_candidate_admission_timeout(
+    state: &(impl StreamCandidateTerminalRuntime + ?Sized),
     plan: &aether_contracts::ExecutionPlan,
     report_context: Option<&serde_json::Value>,
     candidate_started_unix_ms: u64,
     error: &GatewayError,
 ) {
     let terminal_unix_ms = current_unix_ms();
-    record_local_request_candidate_status(
-        state,
-        plan,
-        report_context,
-        SchedulerRequestCandidateStatusUpdate {
-            status: RequestCandidateStatus::Failed,
-            status_code: Some(http::StatusCode::TOO_MANY_REQUESTS.as_u16()),
-            error_type: Some("gateway_admission_timeout".to_string()),
-            error_message: Some(admission_timeout_message(error)),
-            latency_ms: Some(terminal_unix_ms.saturating_sub(candidate_started_unix_ms)),
-            started_at_unix_ms: Some(candidate_started_unix_ms),
-            finished_at_unix_ms: Some(terminal_unix_ms),
-        },
-    )
-    .await;
+    let state = state.clone();
+    let plan = plan.clone();
+    let report_context = report_context.cloned();
+    let error_message = admission_timeout_message(error);
+    let request_id_for_log = short_request_id(plan.request_id.as_str());
+    let candidate_id_for_log = plan.candidate_id.clone();
+    let task = tokio::spawn(async move {
+        record_local_request_candidate_status(
+            &state,
+            &plan,
+            report_context.as_ref(),
+            SchedulerRequestCandidateStatusUpdate {
+                status: RequestCandidateStatus::Failed,
+                status_code: Some(http::StatusCode::TOO_MANY_REQUESTS.as_u16()),
+                error_type: Some("gateway_admission_timeout".to_string()),
+                error_message: Some(error_message),
+                latency_ms: Some(terminal_unix_ms.saturating_sub(candidate_started_unix_ms)),
+                started_at_unix_ms: Some(candidate_started_unix_ms),
+                finished_at_unix_ms: Some(terminal_unix_ms),
+            },
+        )
+        .await;
+        state
+            .release_candidate_pool_key_lease(&plan, report_context.as_ref())
+            .await;
+    });
+    if let Err(error) = task.await {
+        warn!(
+            event_name = "local_stream_admission_terminal_handoff_failed",
+            log_type = "ops",
+            request_id = %request_id_for_log,
+            candidate_id = ?candidate_id_for_log,
+            error = %error,
+            "gateway stream admission terminal handoff task failed"
+        );
+    }
 }
 
 fn log_stream_candidate_admission_timeout(
@@ -1335,11 +1444,11 @@ fn log_stream_candidate_admission_timeout(
 #[derive(Debug)]
 enum StreamCandidateWatchdogOutcome {
     Executed(AiAttemptExecutionOutcome<Response<Body>>),
-    TransportTimeout,
+    TransportTimeout { terminal_recorded: bool },
 }
 
 async fn execute_stream_candidate_with_watchdog<Fut>(
-    state: &(impl RequestCandidateRuntimeWriter + UpstreamExecutionGateProvider + ?Sized),
+    state: &(impl StreamCandidateTerminalRuntime + ?Sized),
     trace_id: &str,
     plan_kind: &str,
     plan: &aether_contracts::ExecutionPlan,
@@ -1358,7 +1467,7 @@ where
     let permit = match acquire_upstream_execution_gate(state, trace_id).await {
         Ok(permit) => permit,
         Err(err) if is_candidate_level_admission_timeout(&err) => {
-            record_stream_candidate_admission_timeout(
+            finalize_stream_candidate_admission_timeout(
                 state,
                 plan,
                 report_context,
@@ -1376,21 +1485,31 @@ where
     let permit_hold = permit.map(UpstreamExecutionPermitHold::new);
     let watchdog_started_at = std::time::Instant::now();
     let watchdog_progress = StreamCandidateWatchdogProgress::shared();
-    let execution = watchdog_progress.clone().scope(execute());
-    tokio::pin!(execution);
-    let deadline = tokio::time::sleep(timeout_duration);
-    tokio::pin!(deadline);
+    let mut execution = Box::pin(watchdog_progress.clone().scope(execute()));
+    let mut deadline = Box::pin(tokio::time::sleep(timeout_duration));
     let execution_result = tokio::select! {
         biased;
-        result = &mut execution => Some(result),
-        () = &mut deadline => {
+        result = execution.as_mut() => Some(result),
+        () = deadline.as_mut() => {
             if watchdog_progress.terminal_started() {
-                Some(execution.await)
+                Some(execution.as_mut().await)
             } else {
+                if watchdog_progress.attempt_guard_armed() {
+                    watchdog_progress.mark_watchdog_timeout();
+                }
                 None
             }
         }
     };
+    let watchdog_timed_out = execution_result.is_none();
+    // Dropping the owned future synchronously runs the attempt guard. It
+    // claims and spawns the one terminal finalizer before the watchdog decides
+    // whether its legacy candidate-only fallback is still needed.
+    drop(execution);
+    let watchdog_terminal_owned = watchdog_timed_out && watchdog_progress.terminal_owner_claimed();
+    if watchdog_terminal_owned {
+        watchdog_progress.wait_for_terminal_completion().await;
+    }
     let outcome = match execution_result {
         Some(result) => result.map(StreamCandidateWatchdogOutcome::Executed),
         None => {
@@ -1403,21 +1522,25 @@ where
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string());
             let timeout_ms = u64::try_from(timeout_duration.as_millis()).unwrap_or(u64::MAX);
-            record_local_request_candidate_status(
-                state,
-                plan,
-                report_context,
-                SchedulerRequestCandidateStatusUpdate {
-                    status: RequestCandidateStatus::Failed,
-                    status_code: None,
-                    error_type: Some("local_stream_candidate_watchdog_timeout".to_string()),
-                    error_message: Some(stream_candidate_watchdog_timeout_message().to_string()),
-                    latency_ms: Some(candidate_started_at.elapsed().as_millis() as u64),
-                    started_at_unix_ms: Some(candidate_started_unix_ms),
-                    finished_at_unix_ms: Some(finished_at_unix_ms),
-                },
-            )
-            .await;
+            if !watchdog_terminal_owned {
+                record_local_request_candidate_status(
+                    state,
+                    plan,
+                    report_context,
+                    SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Failed,
+                        status_code: Some(http::StatusCode::GATEWAY_TIMEOUT.as_u16()),
+                        error_type: Some(STREAM_CANDIDATE_WATCHDOG_TIMEOUT_ERROR_TYPE.to_string()),
+                        error_message: Some(
+                            stream_candidate_watchdog_timeout_message().to_string(),
+                        ),
+                        latency_ms: Some(candidate_started_at.elapsed().as_millis() as u64),
+                        started_at_unix_ms: Some(candidate_started_unix_ms),
+                        finished_at_unix_ms: Some(finished_at_unix_ms),
+                    },
+                )
+                .await;
+            }
             warn!(
                 event_name = "local_stream_candidate_watchdog_timed_out",
                 log_type = "event",
@@ -1434,7 +1557,9 @@ where
                 "gateway local stream candidate watchdog timed out"
             );
             if stop_on_transport_errors {
-                Ok(StreamCandidateWatchdogOutcome::TransportTimeout)
+                Ok(StreamCandidateWatchdogOutcome::TransportTimeout {
+                    terminal_recorded: watchdog_terminal_owned,
+                })
             } else {
                 Ok(StreamCandidateWatchdogOutcome::Executed(
                     AiAttemptExecutionOutcome::retry(AiAttemptRetryScope::Candidate),
@@ -1468,22 +1593,17 @@ where
                 },
             ))
         }
-        Ok(StreamCandidateWatchdogOutcome::TransportTimeout) => {
+        Ok(StreamCandidateWatchdogOutcome::TransportTimeout { terminal_recorded }) => {
             drop(permit_hold);
-            Ok(StreamCandidateWatchdogOutcome::TransportTimeout)
+            Ok(StreamCandidateWatchdogOutcome::TransportTimeout { terminal_recorded })
         }
         Err(err) if is_candidate_level_admission_timeout(&err) => {
             drop(permit_hold);
-            if should_record_candidate_admission_timeout(&err) {
-                record_stream_candidate_admission_timeout(
-                    state,
-                    plan,
-                    report_context,
-                    candidate_started_unix_ms,
-                    &err,
-                )
-                .await;
-            }
+            // This branch runs after the execution future was entered. Its
+            // attempt/startup guard owns candidate, usage, effects, and the
+            // pool-key lease; recording another terminal here would race that
+            // detached owner. Only the pre-execution gate timeout above needs
+            // the candidate-loop fallback finalizer.
             log_stream_candidate_admission_timeout(trace_id, plan_kind, plan, report_context, &err);
             Ok(StreamCandidateWatchdogOutcome::Executed(
                 AiAttemptExecutionOutcome::retry(AiAttemptRetryScope::Candidate),
@@ -1659,18 +1779,21 @@ mod tests {
 
     use super::*;
 
+    #[derive(Clone)]
     struct TestRequestCandidateWriter {
-        records: Mutex<Vec<UpsertRequestCandidateRecord>>,
-        upstream_gate: Option<aether_runtime::ConcurrencyGate>,
+        records: Arc<Mutex<Vec<UpsertRequestCandidateRecord>>>,
+        upstream_gate: Option<Arc<aether_runtime::ConcurrencyGate>>,
         upstream_queue_budget: Duration,
+        released_pool_key_leases: Arc<Mutex<usize>>,
     }
 
     impl Default for TestRequestCandidateWriter {
         fn default() -> Self {
             Self {
-                records: Mutex::new(Vec::new()),
+                records: Arc::new(Mutex::new(Vec::new())),
                 upstream_gate: None,
                 upstream_queue_budget: Duration::from_millis(250),
+                released_pool_key_leases: Arc::new(Mutex::new(0)),
             }
         }
     }
@@ -1678,12 +1801,13 @@ mod tests {
     impl TestRequestCandidateWriter {
         fn with_upstream_gate(limit: usize, queue_budget: Duration) -> Self {
             Self {
-                records: Mutex::new(Vec::new()),
-                upstream_gate: Some(aether_runtime::ConcurrencyGate::new(
+                records: Arc::new(Mutex::new(Vec::new())),
+                upstream_gate: Some(Arc::new(aether_runtime::ConcurrencyGate::new(
                     UPSTREAM_EXECUTION_GATE_NAME,
                     limit,
-                )),
+                ))),
                 upstream_queue_budget: queue_budget,
+                released_pool_key_leases: Arc::new(Mutex::new(0)),
             }
         }
     }
@@ -1708,11 +1832,22 @@ mod tests {
 
     impl UpstreamExecutionGateProvider for TestRequestCandidateWriter {
         fn upstream_execution_gate(&self) -> Option<&aether_runtime::ConcurrencyGate> {
-            self.upstream_gate.as_ref()
+            self.upstream_gate.as_deref()
         }
 
         fn upstream_execution_gate_queue_budget(&self) -> Duration {
             self.upstream_queue_budget
+        }
+    }
+
+    #[async_trait]
+    impl StreamCandidateTerminalRuntime for TestRequestCandidateWriter {
+        async fn release_candidate_pool_key_lease(
+            &self,
+            _plan: &aether_contracts::ExecutionPlan,
+            _report_context: Option<&serde_json::Value>,
+        ) {
+            *self.released_pool_key_leases.lock().await += 1;
         }
     }
 
@@ -1752,6 +1887,14 @@ mod tests {
     impl AiExecutionAttempt for TransferTestAttempt {
         fn execution_plan(&self) -> &ExecutionPlan {
             &self.plan
+        }
+
+        fn execution_plan_mut(&mut self) -> &mut ExecutionPlan {
+            &mut self.plan
+        }
+
+        fn replace_report_context(&mut self, report_context: Option<serde_json::Value>) {
+            self.report_context = report_context.unwrap_or(serde_json::Value::Null);
         }
 
         fn report_kind(&self) -> Option<String> {
@@ -1822,7 +1965,7 @@ mod tests {
 
         async fn record_attempt_started(
             &self,
-            attempt: &TransferTestAttempt,
+            attempt: &mut TransferTestAttempt,
         ) -> Result<(), Self::Error> {
             record_provider_transfer_attempt_started(&self.tracker, attempt).await;
             Ok(())
@@ -1943,6 +2086,106 @@ mod tests {
             attempt("a-key3-retry0", "provider-a", "key-3"),
             attempt("b-key1-retry0", "provider-b", "key-b"),
         ]
+    }
+
+    #[tokio::test]
+    async fn failover_attempts_get_distinct_execution_ids_and_keep_root_candidate_grouping() {
+        let tracker = ProviderTransferTracker::default();
+        let mut first = transfer_test_attempts().remove(0);
+        first.plan.request_id = "request-root".to_string();
+        first.report_context = json!({
+            "request_id": "request-root",
+            "candidate_id": "candidate-1",
+            "candidate_index": 0,
+            "retry_index": 0,
+        });
+        let mut second = transfer_test_attempts().remove(1);
+        second.plan.request_id = "request-root".to_string();
+        second.report_context = json!({
+            "request_id": "request-root",
+            "candidate_id": "candidate-2",
+            "candidate_index": 1,
+            "retry_index": 0,
+        });
+
+        tracker
+            .materialize_attempt_execution_identity(&mut first)
+            .await;
+        tracker
+            .materialize_attempt_execution_identity(&mut second)
+            .await;
+
+        assert_eq!(first.plan.request_id, "request-root");
+        assert_ne!(second.plan.request_id, first.plan.request_id);
+        assert_eq!(second.report_context["request_id"], "request-root");
+        assert_eq!(second.report_context["parent_request_id"], "request-root");
+        assert_eq!(second.report_context["candidate_id"], "candidate-2");
+        assert_eq!(second.report_context["candidate_index"], 1);
+
+        let candidate_record = aether_scheduler_core::build_local_request_candidate_status_record(
+            aether_scheduler_core::LocalRequestCandidateStatusRecordInput {
+                plan: &second.plan,
+                report_context: Some(&second.report_context),
+                status_update: SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Failed,
+                    status_code: Some(503),
+                    error_type: Some("upstream_error".to_string()),
+                    error_message: Some("retry".to_string()),
+                    latency_ms: Some(10),
+                    started_at_unix_ms: Some(100),
+                    finished_at_unix_ms: Some(110),
+                },
+            },
+        )
+        .expect("candidate record should build");
+        assert_eq!(candidate_record.request_id, "request-root");
+
+        let usage_seed = aether_usage_runtime::build_lifecycle_usage_seed(
+            &second.plan,
+            Some(&second.report_context),
+        );
+        assert_eq!(usage_seed.request_id, second.plan.request_id);
+        assert_eq!(
+            usage_seed
+                .request_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("parent_request_id"))
+                .and_then(serde_json::Value::as_str),
+            Some("request-root")
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_identity_keeps_one_root_across_cloned_trackers() {
+        let tracker = ProviderTransferTracker::default();
+        let mut first = transfer_test_attempts().remove(0);
+        first.plan.request_id = "request-root".to_string();
+        first.report_context = json!({"request_id": "request-root"});
+        tracker
+            .materialize_attempt_execution_identity(&mut first)
+            .await;
+
+        let mut second = transfer_test_attempts().remove(1);
+        second.plan.request_id = "request-root".to_string();
+        second.report_context = json!({"request_id": "request-root"});
+        tracker
+            .clone()
+            .materialize_attempt_execution_identity(&mut second)
+            .await;
+
+        let mut third = transfer_test_attempts().remove(2);
+        third.plan.request_id = "request-root".to_string();
+        third.report_context = json!({"request_id": "request-root"});
+        tracker
+            .materialize_attempt_execution_identity(&mut third)
+            .await;
+
+        assert_ne!(second.plan.request_id, "request-root");
+        assert_ne!(third.plan.request_id, "request-root");
+        assert_ne!(second.plan.request_id, third.plan.request_id);
+        assert_eq!(third.report_context["request_id"], "request-root");
+        assert_eq!(second.report_context["parent_request_id"], "request-root");
+        assert_eq!(third.report_context["parent_request_id"], "request-root");
     }
 
     #[tokio::test]
@@ -2387,7 +2630,10 @@ mod tests {
         assert_eq!(records.len(), 1);
         let record = &records[0];
         assert_eq!(record.status, RequestCandidateStatus::Failed);
-        assert_eq!(record.status_code, None);
+        assert_eq!(
+            record.status_code,
+            Some(http::StatusCode::GATEWAY_TIMEOUT.as_u16())
+        );
         assert_eq!(
             record.error_type.as_deref(),
             Some("local_stream_candidate_watchdog_timeout")
@@ -2425,11 +2671,16 @@ mod tests {
 
         assert!(matches!(
             result,
-            Ok(StreamCandidateWatchdogOutcome::TransportTimeout)
+            Ok(StreamCandidateWatchdogOutcome::TransportTimeout {
+                terminal_recorded: false
+            })
         ));
         let records = writer.records.lock().await;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].status_code, None);
+        assert_eq!(
+            records[0].status_code,
+            Some(http::StatusCode::GATEWAY_TIMEOUT.as_u16())
+        );
         assert_eq!(
             records[0].error_type.as_deref(),
             Some("local_stream_candidate_watchdog_timeout")
@@ -2555,6 +2806,8 @@ mod tests {
             .as_deref()
             .is_some_and(|message| message.contains(UPSTREAM_EXECUTION_GATE_NAME)));
         assert_eq!(record.candidate_index, 2);
+        drop(records);
+        assert_eq!(*writer.released_pool_key_leases.lock().await, 1);
     }
 
     #[tokio::test]
@@ -2590,5 +2843,6 @@ mod tests {
             ))
         ));
         assert!(writer.records.lock().await.is_empty());
+        assert_eq!(*writer.released_pool_key_leases.lock().await, 0);
     }
 }

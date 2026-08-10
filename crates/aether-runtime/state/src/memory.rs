@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use crate::{DataLayerError, RuntimeQueueEntry, RuntimeQueueReclaimConfig, RuntimeQueueStats};
+use crate::{
+    execution_reservation_runtime_key, DataLayerError, ExecutionReservationInput,
+    ExecutionReservationScope, RuntimeQueueEntry, RuntimeQueueReclaimConfig, RuntimeQueueStats,
+};
 
 const MEMORY_RATE_LIMIT_COUNTER_SHARD_COUNT: usize = 64;
 const MEMORY_RATE_LIMIT_COUNTER_PRUNE_INTERVAL: u64 = 256;
@@ -49,6 +52,14 @@ pub(crate) struct MemoryRuntimeBackend {
     locks: Mutex<HashMap<String, MemoryLockEntry>>,
     lock_fencing_seq: AtomicU64,
     semaphores: Mutex<HashMap<String, BTreeMap<String, u64>>>,
+    execution_reservations: Mutex<MemoryExecutionReservations>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryExecutionReservations {
+    concurrency: HashMap<String, BTreeMap<String, u64>>,
+    rpm: HashMap<String, BTreeMap<String, u64>>,
+    rpm_reset_generations: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1011,6 +1022,183 @@ impl MemoryRuntimeBackend {
         holders.retain(|_, expires| *expires > now_ms);
         holders.len()
     }
+
+    pub(crate) async fn execution_reservation_try_acquire(
+        &self,
+        input: &ExecutionReservationInput,
+        lease_ttl_ms: u64,
+        rpm_window_secs: u64,
+    ) -> Option<(ExecutionReservationScope, usize)> {
+        let now_ms = unix_time_ms();
+        let now_unix_secs = now_ms / 1_000;
+        let expires_at_ms = now_ms.saturating_add(lease_ttl_ms);
+        let mut state = self.execution_reservations.lock().await;
+        prune_execution_concurrency(&mut state.concurrency, now_ms);
+
+        for (scope, reservation) in input.concurrency_scopes() {
+            let runtime_key = execution_reservation_runtime_key(scope, &reservation.key);
+            let mut candidates = reservation
+                .observed_candidate_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            if let Some(live) = state.concurrency.get(&runtime_key) {
+                candidates.extend(live.keys().map(String::as_str));
+            }
+            candidates.insert(input.candidate_id.as_str());
+            if candidates.len() > reservation.limit {
+                return Some((scope, reservation.limit));
+            }
+        }
+
+        if let Some(reservation) = &input.provider_key_rpm {
+            let runtime_key = execution_reservation_runtime_key(
+                ExecutionReservationScope::ProviderKeyRpm,
+                &reservation.key,
+            );
+            let pending_reset = pending_execution_rpm_reset(
+                &state.rpm_reset_generations,
+                &runtime_key,
+                reservation.reset_after_unix_secs,
+            );
+            let mut candidates = reservation
+                .observed_candidate_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            if let Some(live) = state.rpm.get(&runtime_key) {
+                candidates.extend(live.iter().filter_map(|(candidate_id, observed_at)| {
+                    execution_rpm_observation_is_live(
+                        *observed_at,
+                        now_unix_secs,
+                        rpm_window_secs,
+                        pending_reset,
+                    )
+                    .then_some(candidate_id.as_str())
+                }));
+            }
+            let candidate_already_counted = candidates.contains(input.candidate_id.as_str());
+            let usage = candidates
+                .len()
+                .max(reservation.observed_count_floor)
+                .saturating_add(usize::from(!candidate_already_counted));
+            if usage > reservation.limit {
+                return Some((ExecutionReservationScope::ProviderKeyRpm, reservation.limit));
+            }
+        }
+
+        for (scope, reservation) in input.concurrency_scopes() {
+            state
+                .concurrency
+                .entry(execution_reservation_runtime_key(scope, &reservation.key))
+                .or_default()
+                .insert(input.candidate_id.clone(), expires_at_ms);
+        }
+        if let Some(reservation) = &input.provider_key_rpm {
+            let runtime_key = execution_reservation_runtime_key(
+                ExecutionReservationScope::ProviderKeyRpm,
+                &reservation.key,
+            );
+            let pending_reset = pending_execution_rpm_reset(
+                &state.rpm_reset_generations,
+                &runtime_key,
+                reservation.reset_after_unix_secs,
+            );
+            let candidates = state.rpm.entry(runtime_key.clone()).or_default();
+            candidates.retain(|_, observed_at| {
+                execution_rpm_observation_is_live(
+                    *observed_at,
+                    now_unix_secs,
+                    rpm_window_secs,
+                    pending_reset,
+                )
+            });
+            candidates.insert(input.candidate_id.clone(), now_unix_secs);
+            if let Some(reset_after) = pending_reset {
+                state.rpm_reset_generations.insert(runtime_key, reset_after);
+            }
+        }
+        None
+    }
+
+    pub(crate) async fn execution_reservation_renew(
+        &self,
+        concurrency_keys: &[String],
+        candidate_id: &str,
+        lease_ttl_ms: u64,
+    ) -> bool {
+        let now_ms = unix_time_ms();
+        let expires_at_ms = now_ms.saturating_add(lease_ttl_ms);
+        let mut state = self.execution_reservations.lock().await;
+        prune_execution_concurrency(&mut state.concurrency, now_ms);
+        if concurrency_keys.iter().any(|key| {
+            !state
+                .concurrency
+                .get(key)
+                .is_some_and(|holders| holders.contains_key(candidate_id))
+        }) {
+            return false;
+        }
+        for key in concurrency_keys {
+            if let Some(expires_at) = state
+                .concurrency
+                .get_mut(key)
+                .and_then(|holders| holders.get_mut(candidate_id))
+            {
+                *expires_at = expires_at_ms;
+            }
+        }
+        true
+    }
+
+    pub(crate) async fn execution_reservation_release(
+        &self,
+        concurrency_keys: &[String],
+        candidate_id: &str,
+    ) {
+        let mut state = self.execution_reservations.lock().await;
+        for key in concurrency_keys {
+            let remove_key = state.concurrency.get_mut(key).is_some_and(|holders| {
+                holders.remove(candidate_id);
+                holders.is_empty()
+            });
+            if remove_key {
+                state.concurrency.remove(key);
+            }
+        }
+    }
+}
+
+fn prune_execution_concurrency(
+    concurrency: &mut HashMap<String, BTreeMap<String, u64>>,
+    now_ms: u64,
+) {
+    concurrency.retain(|_, holders| {
+        holders.retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        !holders.is_empty()
+    });
+}
+
+fn pending_execution_rpm_reset(
+    reset_generations: &HashMap<String, u64>,
+    runtime_key: &str,
+    requested_reset: Option<u64>,
+) -> Option<u64> {
+    requested_reset.filter(|requested| {
+        reset_generations
+            .get(runtime_key)
+            .is_none_or(|applied| requested > applied)
+    })
+}
+
+fn execution_rpm_observation_is_live(
+    observed_at: u64,
+    now_unix_secs: u64,
+    window_secs: u64,
+    pending_reset: Option<u64>,
+) -> bool {
+    now_unix_secs.saturating_sub(observed_at) <= window_secs
+        && pending_reset.is_none_or(|reset_after| observed_at > reset_after)
 }
 
 fn get_fresh_locked(

@@ -73,7 +73,13 @@ pub(crate) fn build_admin_update_provider_key_record_with_existing_keys(
         .map(str::trim)
         .map(ToOwned::to_owned);
     let auth_config_present = fields.contains("auth_config");
-    let auth_config = normalize_json_object(payload.auth_config, "auth_config")?;
+    let mut auth_config = normalize_json_object(payload.auth_config, "auth_config")?;
+    if let Some(auth_config) = auth_config
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        aether_provider_transport::strip_server_owned_credential_generation(auth_config);
+    }
     let auth_config_object = auth_config
         .as_ref()
         .and_then(serde_json::Value::as_object)
@@ -387,4 +393,166 @@ fn raw_secret_auth_type(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "api_key" | "bearer"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_admin_update_provider_key_record_with_existing_keys;
+    use crate::handlers::admin::provider::shared::payloads::AdminProviderKeyUpdatePatch;
+    use crate::handlers::admin::request::AdminAppState;
+    use aether_crypto::{
+        decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext,
+        DEVELOPMENT_ENCRYPTION_KEY,
+    };
+    use aether_data_contracts::repository::provider_catalog::{
+        StoredProviderCatalogKey, StoredProviderCatalogProvider,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn generic_update_cannot_carry_old_generation_into_replacement_credential() {
+        let provider = StoredProviderCatalogProvider::new(
+            "provider-1".to_string(),
+            "Provider".to_string(),
+            None,
+            "custom".to_string(),
+        )
+        .expect("provider should build");
+        let old_auth_config = encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            &json!({
+                "refresh_token": "old-refresh",
+                "aether_credential_generation": "old-generation"
+            })
+            .to_string(),
+        )
+        .expect("old auth config should encrypt");
+        let existing = StoredProviderCatalogKey::new(
+            "key-1".to_string(),
+            provider.id.clone(),
+            "OAuth key".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+        .with_transport_fields(
+            Some(json!(["openai:responses"])),
+            None::<String>,
+            Some(old_auth_config),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("transport fields should build");
+        let patch = AdminProviderKeyUpdatePatch::from_object(
+            json!({
+                "auth_config": {
+                    "refresh_token": "replacement-refresh",
+                    "aether_credential_generation": "old-generation"
+                }
+            })
+            .as_object()
+            .cloned()
+            .expect("patch should be an object"),
+        )
+        .expect("patch should deserialize");
+        let app = crate::AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+
+        let updated = build_admin_update_provider_key_record_with_existing_keys(
+            &AdminAppState::new(&app),
+            &provider,
+            &existing,
+            std::slice::from_ref(&existing),
+            patch,
+        )
+        .expect("record should update");
+        let plaintext = decrypt_python_fernet_ciphertext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            updated
+                .encrypted_auth_config
+                .as_deref()
+                .expect("auth config should remain encrypted"),
+        )
+        .expect("auth config should decrypt");
+        let stored: serde_json::Value =
+            serde_json::from_str(&plaintext).expect("auth config should parse");
+
+        assert_eq!(
+            stored.get("refresh_token"),
+            Some(&json!("replacement-refresh"))
+        );
+        assert!(stored.get("aether_credential_generation").is_none());
+    }
+
+    #[test]
+    fn generic_metadata_patch_preserves_refresh_owned_generation() {
+        let provider = StoredProviderCatalogProvider::new(
+            "provider-1".to_string(),
+            "Provider".to_string(),
+            None,
+            "custom".to_string(),
+        )
+        .expect("provider should build");
+        let encrypted_auth_config = encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            &json!({
+                "refresh_token": "rotated-refresh",
+                "aether_credential_generation": "refresh-owned-generation"
+            })
+            .to_string(),
+        )
+        .expect("auth config should encrypt");
+        let existing = StoredProviderCatalogKey::new(
+            "key-1".to_string(),
+            provider.id.clone(),
+            "OAuth key".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+        .with_transport_fields(
+            Some(json!(["openai:responses"])),
+            None::<String>,
+            Some(encrypted_auth_config.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("transport fields should build");
+        let patch = AdminProviderKeyUpdatePatch::from_object(
+            json!({"note": "metadata only"})
+                .as_object()
+                .cloned()
+                .expect("patch should be an object"),
+        )
+        .expect("patch should deserialize");
+        let app = crate::AppState::new().expect("app state should build");
+
+        let updated = build_admin_update_provider_key_record_with_existing_keys(
+            &AdminAppState::new(&app),
+            &provider,
+            &existing,
+            std::slice::from_ref(&existing),
+            patch,
+        )
+        .expect("record should update");
+
+        assert_eq!(
+            updated.encrypted_auth_config.as_deref(),
+            Some(encrypted_auth_config.as_str())
+        );
+    }
 }

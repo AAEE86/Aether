@@ -2179,6 +2179,7 @@ mod tests {
 
     fn sample_input() -> LocalOpenAiChatDecisionInput {
         LocalOpenAiChatDecisionInput {
+            request_id: "request-1".to_string(),
             auth_context: crate::ai_serving::ExecutionRuntimeAuthContext {
                 user_id: "user-1".to_string(),
                 api_key_id: "api-key-1".to_string(),

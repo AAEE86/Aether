@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use axum::body::Body;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Response, StatusCode, Uri};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::api::response::{
     build_local_auth_rejection_response, build_local_http_error_response,
@@ -17,6 +17,7 @@ use crate::control::{
 };
 use crate::handlers::proxy::websocket::session::{WebSocketSessionLimits, WEBSOCKET_LOG_TRANSPORT};
 use crate::handlers::shared::ip_rules_allow;
+use crate::handlers::shared::strip_query_param;
 use crate::headers::{effective_client_ip, extract_or_generate_trace_id};
 use crate::router::RequestAdmissionError;
 use crate::{AppState, GatewayError};
@@ -26,10 +27,12 @@ use crate::{AppState, GatewayError};
 pub(crate) struct WebSocketRequestContext {
     pub(crate) trace_id: String,
     pub(crate) headers: HeaderMap,
+    /// Credential-free URI retained after authentication for planning and
+    /// connection logs. In particular, the public `?key=` credential must not
+    /// survive into a provider URL.
     pub(crate) uri: Uri,
     pub(crate) remote_addr: SocketAddr,
     pub(crate) decision: GatewayControlDecision,
-    pub(crate) rpm_bypassed: bool,
     /// Held for the lifetime of the upgraded socket. The Responses session
     /// polls its health and closes the client when a distributed lease is
     /// revoked or expires.
@@ -40,7 +43,6 @@ pub(crate) struct WebSocketRequestContext {
 #[derive(Clone, Copy)]
 pub(crate) struct WebSocketIngressSpec {
     pub(crate) route_unavailable_message: &'static str,
-    pub(crate) ip_whitelist_failure_event_name: &'static str,
 }
 
 /// Performs the HTTP-only part of an AI WebSocket request.
@@ -63,6 +65,14 @@ where
     Fut: Future<Output = ()> + Send + 'static,
 {
     let trace_id = extract_or_generate_trace_id(&headers);
+    // Match the ordinary HTTP front door: admission must cover blacklist and
+    // authentication lookups, not start only after those expensive stages.
+    let request_permit = match state.try_acquire_request_permit().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            return websocket_admission_error_response(&trace_id, None, Some(uri.path()), error)
+        }
+    };
     let client_ip = effective_client_ip(&headers, &remote_addr);
     if state.admin_security_ip_blacklisted(client_ip).await? {
         return build_local_http_error_response(
@@ -116,39 +126,16 @@ where
         );
     }
 
-    let ip_whitelisted = match state.admin_security_ip_whitelisted(client_ip).await {
-        Ok(value) => value,
-        Err(error) => {
-            warn!(
-                event_name = spec.ip_whitelist_failure_event_name,
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %trace_id,
-                client_ip = %client_ip,
-                error = ?error,
-                "gateway continued with WebSocket rate limiting after IP whitelist check error"
-            );
-            false
-        }
-    };
-    let request_permit = match state.try_acquire_request_permit().await {
-        Ok(permit) => permit,
-        Err(error) => {
-            return websocket_admission_error_response(
-                &trace_id,
-                &decision,
-                Some(uri.path()),
-                error,
-            )
-        }
-    };
+    // Authentication is the final consumer of public credentials. Everything
+    // retained by the upgraded session is safe to pass into request planning.
+    let planning_uri = credential_free_websocket_planning_uri(&uri);
+
     let websocket_connection_permit = match state.try_acquire_websocket_connection_permit().await {
         Ok(permit) => permit,
         Err(error) => {
             return websocket_admission_error_response(
                 &trace_id,
-                &decision,
+                Some(&decision),
                 Some(uri.path()),
                 error,
             )
@@ -158,10 +145,9 @@ where
     let context = WebSocketRequestContext {
         trace_id,
         headers,
-        uri,
+        uri: planning_uri,
         remote_addr,
         decision,
-        rpm_bypassed: ip_whitelisted,
         websocket_connection_permit,
     };
     Ok(ws
@@ -175,7 +161,7 @@ where
 
 fn websocket_admission_error_response(
     trace_id: &str,
-    decision: &GatewayControlDecision,
+    decision: Option<&GatewayControlDecision>,
     request_path: Option<&str>,
     error: RequestAdmissionError,
 ) -> Result<Response<Body>, GatewayError> {
@@ -189,7 +175,7 @@ fn websocket_admission_error_response(
         )
         | RequestAdmissionError::Distributed(
             aether_runtime_state::RuntimeSemaphoreError::Unavailable { gate, limit, .. },
-        ) => build_local_overloaded_response(trace_id, Some(decision), request_path, gate, limit),
+        ) => build_local_overloaded_response(trace_id, decision, request_path, gate, limit),
         RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Closed { gate }) => Err(
             GatewayError::Internal(format!("gateway concurrency gate {gate} is closed")),
         ),
@@ -197,6 +183,30 @@ fn websocket_admission_error_response(
             aether_runtime_state::RuntimeSemaphoreError::InvalidConfiguration(message),
         ) => Err(GatewayError::Internal(message)),
     }
+}
+
+/// Removes credentials accepted by the public WebSocket front door before the
+/// URI becomes reusable planning input. The original URI is used for auth and
+/// is deliberately not retained in [`WebSocketRequestContext`].
+pub(crate) fn credential_free_websocket_planning_uri(uri: &Uri) -> Uri {
+    let Some(path_and_query) = uri.path_and_query() else {
+        return uri.clone();
+    };
+    let Some(query) = path_and_query.query() else {
+        return uri.clone();
+    };
+    if !url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "key") {
+        return uri.clone();
+    }
+
+    let sanitized = strip_query_param(path_and_query.as_str(), "key");
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(
+        sanitized
+            .parse()
+            .expect("a sanitized valid WebSocket URI must have a valid path and query"),
+    );
+    Uri::from_parts(parts).expect("sanitizing a WebSocket URI must preserve valid URI parts")
 }
 
 /// Connection-level access log fields which are independent of a protocol's
@@ -289,5 +299,33 @@ impl Drop for WebSocketConnectionLog {
             elapsed_ms = self.started_at.elapsed().as_millis() as u64,
             message = self.spec.closed_message,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Uri;
+
+    use super::credential_free_websocket_planning_uri;
+
+    #[test]
+    fn public_query_credentials_do_not_survive_the_upgrade_context() {
+        let original = Uri::from_static(
+            "https://gateway.example/v1/responses?key=aether-secret&mode=debug&key=rotated",
+        );
+
+        let sanitized = credential_free_websocket_planning_uri(&original);
+
+        assert_eq!(
+            sanitized,
+            Uri::from_static("https://gateway.example/v1/responses?mode=debug")
+        );
+    }
+
+    #[test]
+    fn credential_free_query_is_left_unchanged() {
+        let original = Uri::from_static("/v1/responses?monkey=value&mode=debug");
+
+        assert_eq!(credential_free_websocket_planning_uri(&original), original);
     }
 }

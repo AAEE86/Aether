@@ -25,6 +25,18 @@ use aether_usage_runtime::{
 };
 pub(crate) use aether_usage_runtime::{GatewayStreamReportRequest, GatewaySyncReportRequest};
 
+/// Submit-time policy for request-candidate terminal ownership.
+///
+/// Legacy/internal report producers still delegate terminal candidate state to
+/// the reporting layer. Execution paths with an explicit attempt lifecycle
+/// use `EffectsOnly`, so the report remains an observer for quota/file
+/// metadata without racing the lifecycle's candidate terminal writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportCandidateOwnership {
+    Report,
+    AttemptLifecycle,
+}
+
 fn log_local_report_handled(
     trace_id: &str,
     report_kind: &str,
@@ -84,7 +96,28 @@ fn log_dropped_report(
 
 pub(crate) async fn submit_sync_report(
     state: &AppState,
+    payload: GatewaySyncReportRequest,
+) -> Result<(), GatewayError> {
+    submit_sync_report_with_candidate_ownership(state, payload, ReportCandidateOwnership::Report)
+        .await
+}
+
+pub(crate) async fn submit_sync_report_effects_only(
+    state: &AppState,
+    payload: GatewaySyncReportRequest,
+) -> Result<(), GatewayError> {
+    submit_sync_report_with_candidate_ownership(
+        state,
+        payload,
+        ReportCandidateOwnership::AttemptLifecycle,
+    )
+    .await
+}
+
+async fn submit_sync_report_with_candidate_ownership(
+    state: &AppState,
     mut payload: GatewaySyncReportRequest,
+    candidate_ownership: ReportCandidateOwnership,
 ) -> Result<(), GatewayError> {
     let original_report_context = payload.report_context.take();
     if let Some(report_context) =
@@ -95,7 +128,7 @@ pub(crate) async fn submit_sync_report(
             payload.report_context.as_ref(),
             payload.report_kind.as_str(),
         ) {
-            handle_local_sync_report(state, &payload).await;
+            handle_local_sync_report(state, &payload, candidate_ownership).await;
             log_local_report_handled(
                 payload.trace_id.as_str(),
                 &payload.report_kind,
@@ -111,7 +144,7 @@ pub(crate) async fn submit_sync_report(
         payload.report_context.as_ref(),
         payload.report_kind.as_str(),
     ) {
-        handle_local_sync_report(state, &payload).await;
+        handle_local_sync_report(state, &payload, candidate_ownership).await;
         log_local_report_handled(
             payload.trace_id.as_str(),
             &payload.report_kind,
@@ -124,7 +157,7 @@ pub(crate) async fn submit_sync_report(
     if payload.report_context.is_some()
         && is_local_ai_sync_report_kind(payload.report_kind.as_str())
     {
-        handle_local_sync_report(state, &payload).await;
+        handle_local_sync_report(state, &payload, candidate_ownership).await;
         log_local_report_effect_only(
             payload.trace_id.as_str(),
             &payload.report_kind,
@@ -162,9 +195,49 @@ pub(crate) fn spawn_sync_report(state: AppState, payload: GatewaySyncReportReque
     });
 }
 
+pub(crate) fn spawn_sync_report_effects_only(state: AppState, payload: GatewaySyncReportRequest) {
+    let report_request_id_for_log =
+        short_request_id(report_request_id(payload.report_context.as_ref()));
+    spawn_fire_and_forget(TASK_KEY_USAGE_SYNC_REPORT, async move {
+        let trace_id = payload.trace_id.clone();
+        if let Err(err) = submit_sync_report_effects_only(&state, payload).await {
+            warn!(
+                event_name = "execution_report_submit_failed",
+                log_type = "ops",
+                trace_id = %trace_id,
+                report_scope = "sync_effects_only",
+                report_request_id = %report_request_id_for_log,
+                error = ?err,
+                "gateway failed to submit sync execution report effects"
+            );
+        }
+    });
+}
+
 pub(crate) async fn submit_stream_report(
     state: &AppState,
+    payload: GatewayStreamReportRequest,
+) -> Result<(), GatewayError> {
+    submit_stream_report_with_candidate_ownership(state, payload, ReportCandidateOwnership::Report)
+        .await
+}
+
+pub(crate) async fn submit_stream_report_effects_only(
+    state: &AppState,
+    payload: GatewayStreamReportRequest,
+) -> Result<(), GatewayError> {
+    submit_stream_report_with_candidate_ownership(
+        state,
+        payload,
+        ReportCandidateOwnership::AttemptLifecycle,
+    )
+    .await
+}
+
+async fn submit_stream_report_with_candidate_ownership(
+    state: &AppState,
     mut payload: GatewayStreamReportRequest,
+    candidate_ownership: ReportCandidateOwnership,
 ) -> Result<(), GatewayError> {
     let original_report_context = payload.report_context.take();
     if let Some(report_context) =
@@ -175,7 +248,7 @@ pub(crate) async fn submit_stream_report(
             payload.report_context.as_ref(),
             payload.report_kind.as_str(),
         ) {
-            handle_local_stream_report(state, &payload).await;
+            handle_local_stream_report(state, &payload, candidate_ownership).await;
             log_local_report_handled(
                 payload.trace_id.as_str(),
                 &payload.report_kind,
@@ -191,7 +264,7 @@ pub(crate) async fn submit_stream_report(
         payload.report_context.as_ref(),
         payload.report_kind.as_str(),
     ) {
-        handle_local_stream_report(state, &payload).await;
+        handle_local_stream_report(state, &payload, candidate_ownership).await;
         log_local_report_handled(
             payload.trace_id.as_str(),
             &payload.report_kind,
@@ -204,7 +277,7 @@ pub(crate) async fn submit_stream_report(
     if payload.report_context.is_some()
         && is_local_ai_stream_report_kind(payload.report_kind.as_str())
     {
-        handle_local_stream_report(state, &payload).await;
+        handle_local_stream_report(state, &payload, candidate_ownership).await;
         log_local_report_effect_only(
             payload.trace_id.as_str(),
             &payload.report_kind,
@@ -223,7 +296,11 @@ pub(crate) async fn submit_stream_report(
     Ok(())
 }
 
-async fn handle_local_sync_report(state: &AppState, payload: &GatewaySyncReportRequest) {
+async fn handle_local_sync_report(
+    state: &AppState,
+    payload: &GatewaySyncReportRequest,
+    candidate_ownership: ReportCandidateOwnership,
+) {
     let terminal_unix_ms = current_unix_ms();
     let (error_type, error_message) =
         execution_error_details(None::<&ExecutionError>, payload.body_json.as_ref());
@@ -236,24 +313,30 @@ async fn handle_local_sync_report(state: &AppState, payload: &GatewaySyncReportR
         .telemetry
         .as_ref()
         .and_then(|telemetry| telemetry.elapsed_ms);
-    record_report_request_candidate_status(
-        state,
-        payload.report_context.as_ref(),
-        SchedulerRequestCandidateStatusUpdate {
-            status,
-            status_code: Some(payload.status_code),
-            error_type,
-            error_message,
-            latency_ms,
-            started_at_unix_ms: None,
-            finished_at_unix_ms: Some(terminal_unix_ms),
-        },
-    )
-    .await;
+    if matches!(candidate_ownership, ReportCandidateOwnership::Report) {
+        record_report_request_candidate_status(
+            state,
+            payload.report_context.as_ref(),
+            SchedulerRequestCandidateStatusUpdate {
+                status,
+                status_code: Some(payload.status_code),
+                error_type,
+                error_message,
+                latency_ms,
+                started_at_unix_ms: None,
+                finished_at_unix_ms: Some(terminal_unix_ms),
+            },
+        )
+        .await;
+    }
     apply_local_report_effect(state, LocalReportEffect::Sync { payload }).await;
 }
 
-async fn handle_local_stream_report(state: &AppState, payload: &GatewayStreamReportRequest) {
+async fn handle_local_stream_report(
+    state: &AppState,
+    payload: &GatewayStreamReportRequest,
+    candidate_ownership: ReportCandidateOwnership,
+) {
     let terminal_unix_ms = current_unix_ms();
     let latency_ms = payload
         .telemetry
@@ -261,44 +344,46 @@ async fn handle_local_stream_report(state: &AppState, payload: &GatewayStreamRep
         .and_then(|telemetry| telemetry.elapsed_ms);
     let failed = stream_report_represents_failure(payload);
     let missing_terminal_event = stream_report_missing_terminal_event(payload);
-    record_report_request_candidate_status(
-        state,
-        payload.report_context.as_ref(),
-        SchedulerRequestCandidateStatusUpdate {
-            status: if failed {
-                RequestCandidateStatus::Failed
-            } else {
-                RequestCandidateStatus::Success
-            },
-            status_code: Some(payload.status_code),
-            error_type: failed.then(|| {
-                if payload.status_code >= 400 {
-                    "stream_http_error".to_string()
-                } else if missing_terminal_event {
-                    STREAM_MISSING_TERMINAL_EVENT_CATEGORY.to_string()
+    if matches!(candidate_ownership, ReportCandidateOwnership::Report) {
+        record_report_request_candidate_status(
+            state,
+            payload.report_context.as_ref(),
+            SchedulerRequestCandidateStatusUpdate {
+                status: if failed {
+                    RequestCandidateStatus::Failed
                 } else {
-                    STREAM_TERMINAL_ERROR_CATEGORY.to_string()
-                }
-            }),
-            error_message: failed.then(|| {
-                payload
-                    .terminal_summary
-                    .as_ref()
-                    .and_then(|summary| summary.parser_error.clone())
-                    .unwrap_or_else(|| {
-                        if missing_terminal_event {
-                            STREAM_MISSING_TERMINAL_EVENT_MESSAGE.to_string()
-                        } else {
-                            STREAM_TERMINAL_ERROR_MESSAGE.to_string()
-                        }
-                    })
-            }),
-            latency_ms,
-            started_at_unix_ms: None,
-            finished_at_unix_ms: Some(terminal_unix_ms),
-        },
-    )
-    .await;
+                    RequestCandidateStatus::Success
+                },
+                status_code: Some(payload.status_code),
+                error_type: failed.then(|| {
+                    if payload.status_code >= 400 {
+                        "stream_http_error".to_string()
+                    } else if missing_terminal_event {
+                        STREAM_MISSING_TERMINAL_EVENT_CATEGORY.to_string()
+                    } else {
+                        STREAM_TERMINAL_ERROR_CATEGORY.to_string()
+                    }
+                }),
+                error_message: failed.then(|| {
+                    payload
+                        .terminal_summary
+                        .as_ref()
+                        .and_then(|summary| summary.parser_error.clone())
+                        .unwrap_or_else(|| {
+                            if missing_terminal_event {
+                                STREAM_MISSING_TERMINAL_EVENT_MESSAGE.to_string()
+                            } else {
+                                STREAM_TERMINAL_ERROR_MESSAGE.to_string()
+                            }
+                        })
+                }),
+                latency_ms,
+                started_at_unix_ms: None,
+                finished_at_unix_ms: Some(terminal_unix_ms),
+            },
+        )
+        .await;
+    }
     apply_local_report_effect(state, LocalReportEffect::Stream { payload }).await;
 }
 
@@ -324,14 +409,17 @@ mod tests {
     use aether_data_contracts::repository::video_tasks::{
         UpsertVideoTask, VideoTaskStatus, VideoTaskWriteRepository,
     };
+    use aether_scheduler_core::SchedulerRequestCandidateStatusUpdate;
     use base64::Engine as _;
     use serde_json::json;
 
     use super::{
-        resolve_locally_actionable_report_context, submit_stream_report, submit_sync_report,
+        resolve_locally_actionable_report_context, submit_stream_report,
+        submit_stream_report_effects_only, submit_sync_report, submit_sync_report_effects_only,
         GatewayStreamReportRequest, GatewaySyncReportRequest,
     };
     use crate::data::GatewayDataState;
+    use crate::request_candidate_runtime::record_report_request_candidate_status;
     use crate::AppState;
 
     fn sample_request_candidate(id: &str, request_id: &str) -> StoredRequestCandidate {
@@ -640,6 +728,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn effects_only_sync_report_preserves_attempt_owned_candidate_terminal() {
+        let repository = Arc::new(InMemoryRequestCandidateRepository::seed(vec![
+            sample_request_candidate(
+                "cand-reporting-effects-only-123",
+                "req-reporting-effects-only-123",
+            ),
+        ]));
+        let state = build_test_state(Arc::clone(&repository));
+
+        record_report_request_candidate_status(
+            &state,
+            Some(&json!({
+                "request_id": "req-reporting-effects-only-123",
+                "candidate_id": "cand-reporting-effects-only-123",
+            })),
+            SchedulerRequestCandidateStatusUpdate {
+                status: RequestCandidateStatus::Failed,
+                status_code: Some(502),
+                error_type: Some("attempt_owned_failure".to_string()),
+                error_message: Some("attempt owner committed this terminal".to_string()),
+                latency_ms: Some(10),
+                started_at_unix_ms: None,
+                finished_at_unix_ms: Some(crate::clock::current_unix_ms()),
+            },
+        )
+        .await;
+
+        submit_sync_report_effects_only(
+            &state,
+            GatewaySyncReportRequest {
+                trace_id: "trace-reporting-effects-only-123".to_string(),
+                report_kind: "openai_video_delete_sync_success".to_string(),
+                report_context: Some(json!({
+                    "request_id": "req-reporting-effects-only-123",
+                    "candidate_id": "cand-reporting-effects-only-123",
+                    "client_api_format": "openai:video",
+                })),
+                status_code: 404,
+                headers: BTreeMap::new(),
+                body_json: None,
+                client_body_json: None,
+                body_base64: None,
+                telemetry: None,
+            },
+        )
+        .await
+        .expect("effects-only report should stay local");
+
+        let stored = repository
+            .list_by_request_id("req-reporting-effects-only-123")
+            .await
+            .expect("request candidates should list");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, RequestCandidateStatus::Failed);
+        assert_eq!(stored[0].status_code, Some(502));
+        assert_eq!(
+            stored[0].error_type.as_deref(),
+            Some("attempt_owned_failure")
+        );
+    }
+
+    #[tokio::test]
     async fn submit_sync_report_handles_openai_image_success_locally_when_unique_candidate_exists()
     {
         let repository = Arc::new(InMemoryRequestCandidateRepository::seed(vec![
@@ -766,6 +916,68 @@ mod tests {
         assert_eq!(
             stored[0].endpoint_id.as_deref(),
             Some("endpoint-reporting-tests-123")
+        );
+    }
+
+    #[tokio::test]
+    async fn effects_only_stream_report_preserves_attempt_owned_candidate_terminal() {
+        let repository = Arc::new(InMemoryRequestCandidateRepository::seed(vec![
+            sample_request_candidate(
+                "cand-reporting-stream-effects-only-123",
+                "req-reporting-stream-effects-only-123",
+            ),
+        ]));
+        let state = build_test_state(Arc::clone(&repository));
+        let context = json!({
+            "request_id": "req-reporting-stream-effects-only-123",
+            "candidate_id": "cand-reporting-stream-effects-only-123",
+            "client_api_format": "openai:responses",
+            "provider_api_format": "openai:responses",
+        });
+        record_report_request_candidate_status(
+            &state,
+            Some(&context),
+            SchedulerRequestCandidateStatusUpdate {
+                status: RequestCandidateStatus::Failed,
+                status_code: Some(502),
+                error_type: Some("attempt_owned_stream_failure".to_string()),
+                error_message: Some("attempt owner committed this terminal".to_string()),
+                latency_ms: Some(10),
+                started_at_unix_ms: None,
+                finished_at_unix_ms: Some(crate::clock::current_unix_ms()),
+            },
+        )
+        .await;
+
+        submit_stream_report_effects_only(
+            &state,
+            GatewayStreamReportRequest {
+                trace_id: "trace-reporting-stream-effects-only-123".to_string(),
+                report_kind: "openai_responses_stream_success".to_string(),
+                report_context: Some(context),
+                status_code: 200,
+                headers: BTreeMap::new(),
+                provider_body_base64: None,
+                provider_body_state: None,
+                client_body_base64: None,
+                client_body_state: None,
+                terminal_summary: None,
+                telemetry: None,
+            },
+        )
+        .await
+        .expect("effects-only stream report should stay local");
+
+        let stored = repository
+            .list_by_request_id("req-reporting-stream-effects-only-123")
+            .await
+            .expect("request candidates should list");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, RequestCandidateStatus::Failed);
+        assert_eq!(stored[0].status_code, Some(502));
+        assert_eq!(
+            stored[0].error_type.as_deref(),
+            Some("attempt_owned_stream_failure")
         );
     }
 

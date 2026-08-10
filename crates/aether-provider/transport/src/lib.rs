@@ -6,6 +6,7 @@ mod auth_config;
 mod cache;
 pub mod claude_code;
 pub mod conversion;
+mod credential_binding;
 mod diagnostics;
 pub mod gemini_cli;
 mod gemini_files;
@@ -61,6 +62,9 @@ pub use conversion::{
     request_conversion_transport_supported, request_conversion_transport_unsupported_reason,
     request_pair_allowed_for_transport, request_pair_direct_auth,
     request_pair_transport_unsupported_reason, CandidateTransportPolicyFacts,
+};
+pub use credential_binding::{
+    provider_transport_credential_binding_fingerprint, strip_server_owned_credential_generation,
 };
 pub use diagnostics::{
     append_transport_diagnostics_to_value, build_request_trace_proxy_value,

@@ -7,7 +7,7 @@ the first response ID with `previous_response_id`.
 
 It shares its protocol-driving core with the Codex probe, but it does **not**
 send Codex account headers or require Codex quota events. This makes it the
-compatibility gate for Aether's standard Responses WebSocket adapter, rather
+compatibility gate for Aether's native Responses WebSocket backend, rather
 than a replacement for the Codex probe.
 
 ## Prerequisites

@@ -90,6 +90,65 @@ impl RequestCandidateReadRepository for InMemoryRequestCandidateRepository {
         Ok(rows)
     }
 
+    async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, DataLayerError> {
+        if provider_ids.is_empty() && key_ids.is_empty() && api_key_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let provider_ids = provider_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let key_ids = key_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let api_key_ids = api_key_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let mut rows = self
+            .by_id
+            .read()
+            .expect("request candidate repository lock")
+            .values()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    RequestCandidateStatus::Pending
+                        | RequestCandidateStatus::Streaming
+                        | RequestCandidateStatus::Success
+                        | RequestCandidateStatus::Failed
+                        | RequestCandidateStatus::Cancelled
+                )
+            })
+            .filter(|row| {
+                row.started_at_unix_ms.unwrap_or(row.created_at_unix_ms) / 1000 >= since_unix_secs
+            })
+            .filter(|row| {
+                row.provider_id
+                    .as_deref()
+                    .is_some_and(|id| provider_ids.contains(id))
+                    || row.key_id.as_deref().is_some_and(|id| key_ids.contains(id))
+                    || row
+                        .api_key_id
+                        .as_deref()
+                        .is_some_and(|id| api_key_ids.contains(id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            right
+                .created_at_unix_ms
+                .cmp(&left.created_at_unix_ms)
+                .then(left.id.cmp(&right.id))
+        });
+        Ok(rows)
+    }
+
     async fn list_by_provider_id(
         &self,
         provider_id: &str,
@@ -529,6 +588,47 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "cand-2");
         assert_eq!(rows[1].id, "cand-1");
+    }
+
+    #[tokio::test]
+    async fn runtime_scoped_read_is_not_displaced_by_unrelated_newer_rows() {
+        let mut matching = sample_candidate("matching", "req-matching", 100_000);
+        matching.status = RequestCandidateStatus::Streaming;
+        matching.finished_at_unix_ms = None;
+        let mut rows = (0..129)
+            .map(|index| {
+                let mut row = sample_candidate(
+                    format!("unrelated-{index}").as_str(),
+                    format!("req-unrelated-{index}").as_str(),
+                    200_000 + index,
+                );
+                row.provider_id = Some("provider-other".to_string());
+                row.key_id = Some("key-other".to_string());
+                row.api_key_id = Some("api-key-other".to_string());
+                row
+            })
+            .collect::<Vec<_>>();
+        rows.push(matching);
+        let repository = InMemoryRequestCandidateRepository::seed(rows);
+
+        assert!(repository
+            .list_recent(128)
+            .await
+            .expect("global recent read should succeed")
+            .iter()
+            .all(|row| row.id != "matching"));
+
+        let scoped = repository
+            .list_runtime_scoped_since(
+                &["provider-1".to_string()],
+                &["key-1".to_string()],
+                &["api-key-1".to_string()],
+                90,
+            )
+            .await
+            .expect("runtime scoped read should succeed");
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, "matching");
     }
 
     #[tokio::test]

@@ -146,9 +146,15 @@ pub(crate) async fn maybe_execute_sync_via_local_decision(
                         .await?;
                     match outcome {
                         LocalExecutionRequestOutcome::Exhausted(exhaustion) => {
+                            let runtime_miss_key =
+                                crate::ai_serving::runtime_miss_diagnostic_key_from_parts(
+                                    &parts,
+                                    trace_id.as_str(),
+                                );
                             set_local_openai_chat_execution_exhausted_diagnostic(
                                 &state,
                                 trace_id.as_str(),
+                                runtime_miss_key,
                                 &decision,
                                 plan_kind.as_str(),
                                 &body_json_for_task,
@@ -181,9 +187,12 @@ pub(crate) async fn maybe_execute_sync_via_local_decision(
     .await?;
 
     if let LocalExecutionRequestOutcome::Exhausted(_) = &outcome {
+        let runtime_miss_key =
+            crate::ai_serving::runtime_miss_diagnostic_key_from_parts(parts, trace_id);
         set_local_openai_chat_execution_exhausted_diagnostic(
             state,
             trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             body_json,
@@ -233,9 +242,12 @@ pub(crate) async fn maybe_execute_stream_via_local_decision(
     let outcome = outcome?;
 
     if let LocalExecutionRequestOutcome::Exhausted(_) = &outcome {
+        let runtime_miss_key =
+            crate::ai_serving::runtime_miss_diagnostic_key_from_parts(parts, trace_id);
         set_local_openai_chat_execution_exhausted_diagnostic(
             state,
             trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             body_json,
@@ -833,7 +845,10 @@ where
         + Send
         + 'static,
 {
-    let request_id = (!trace_id.trim().is_empty()).then(|| trace_id.clone());
+    let execution_request_id =
+        crate::execution_identity::execution_request_id_from_parts(&parts, &trace_id);
+    let request_id =
+        (!execution_request_id.trim().is_empty()).then(|| execution_request_id.to_string());
     let client_api_format =
         standard_text_sync_heartbeat_client_api_format_for_plan_kind(plan_kind.as_str())
             .to_string();
@@ -846,8 +861,12 @@ where
     let started_at = Instant::now();
     let (tx, rx) = mpsc::channel::<Result<Bytes, IoError>>(1);
     let request_diagnostics = current_request_diagnostics();
+    let runtime_miss_key =
+        crate::ai_serving::runtime_miss_diagnostic_key_from_parts(&parts, &trace_id).to_string();
 
     tokio::spawn(async move {
+        let _runtime_miss_cleanup =
+            crate::ai_serving::RuntimeMissDiagnosticCleanupGuard::new(&state, runtime_miss_key);
         scope_request_diagnostics_with(request_diagnostics, async move {
             let bytes = standard_text_sync_heartbeat_final_bytes(
                 client_api_format.as_str(),
@@ -1359,9 +1378,12 @@ pub(crate) async fn maybe_execute_sync_via_local_image_decision(
     .await?;
 
     if let LocalExecutionRequestOutcome::Exhausted(_) = &outcome {
+        let runtime_miss_key =
+            crate::ai_serving::runtime_miss_diagnostic_key_from_parts(parts, trace_id);
         set_local_openai_image_execution_exhausted_diagnostic(
             state,
             trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             body_json,
@@ -1435,9 +1457,12 @@ pub(crate) async fn maybe_execute_stream_via_local_image_decision(
     .await?;
 
     if let LocalExecutionRequestOutcome::Exhausted(_) = &outcome {
+        let runtime_miss_key =
+            crate::ai_serving::runtime_miss_diagnostic_key_from_parts(parts, trace_id);
         set_local_openai_image_execution_exhausted_diagnostic(
             state,
             trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             body_json,
@@ -1567,7 +1592,11 @@ pub(crate) fn decision_payload_is_direct_execution(payload: &AiExecutionDecision
 mod tests {
     use super::*;
     use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
+    use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data::repository::usage::InMemoryUsageReadRepository;
+    use aether_data_contracts::repository::provider_catalog::{
+        StoredProviderCatalogKey, StoredProviderCatalogProvider,
+    };
     use aether_data_contracts::repository::usage::UsageReadRepository;
     use aether_usage_runtime::UsageRuntimeConfig;
     use futures_util::StreamExt;
@@ -1579,6 +1608,47 @@ mod tests {
     const TEST_STANDARD_TEXT_SYNC_PLAN_KIND: &str = "openai_responses_compact_sync";
     const HEARTBEAT_USAGE_POLL_INTERVAL: Duration = Duration::from_millis(10);
     const HEARTBEAT_USAGE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    fn heartbeat_provider_catalog() -> Arc<InMemoryProviderCatalogReadRepository> {
+        let providers = ["provider-openai", "provider-fallback"]
+            .into_iter()
+            .map(|provider_id| {
+                StoredProviderCatalogProvider::new(
+                    provider_id.to_string(),
+                    provider_id.to_string(),
+                    None,
+                    "openai".to_string(),
+                )
+                .expect("provider should build")
+            })
+            .collect();
+        let keys = [
+            ("key-openai", "provider-openai"),
+            ("key-1", "provider-openai"),
+            ("key-2", "provider-openai"),
+            ("key-3", "provider-openai"),
+            ("key-fallback", "provider-fallback"),
+        ]
+        .into_iter()
+        .map(|(key_id, provider_id)| {
+            StoredProviderCatalogKey::new(
+                key_id.to_string(),
+                provider_id.to_string(),
+                key_id.to_string(),
+                "api_key".to_string(),
+                None,
+                true,
+            )
+            .expect("provider key should build")
+        })
+        .collect();
+
+        Arc::new(InMemoryProviderCatalogReadRepository::seed(
+            providers,
+            Vec::new(),
+            keys,
+        ))
+    }
 
     struct TestSyncAttemptSource {
         attempts: VecDeque<AiSyncAttempt>,
@@ -1711,7 +1781,8 @@ mod tests {
                 crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
                     request_candidate_repository,
                     Arc::clone(&usage_repository),
-                ),
+                )
+                .with_provider_catalog_reader(heartbeat_provider_catalog()),
             )
             .with_usage_runtime_for_tests(UsageRuntimeConfig {
                 enabled: true,
@@ -1937,6 +2008,11 @@ mod tests {
         let call_count_for_override = Arc::clone(&call_count);
         let state = AppState::new()
             .expect("state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_provider_catalog_reader_for_tests(
+                    heartbeat_provider_catalog(),
+                ),
+            )
             .with_execution_runtime_sync_override_for_tests(move |plan| {
                 call_count_for_override.fetch_add(1, Ordering::SeqCst);
                 if plan.endpoint_id == "endpoint-retry" {
@@ -1985,6 +2061,11 @@ mod tests {
         let call_count_for_override = Arc::clone(&call_count);
         let state = AppState::new()
             .expect("state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_provider_catalog_reader_for_tests(
+                    heartbeat_provider_catalog(),
+                ),
+            )
             .with_execution_runtime_sync_override_for_tests(move |plan| {
                 call_count_for_override.fetch_add(1, Ordering::SeqCst);
                 if plan.provider_id == "provider-fallback" {
@@ -2161,12 +2242,17 @@ mod tests {
     #[tokio::test]
     async fn standard_text_sync_heartbeat_shell_sends_whitespace_before_background_finishes() {
         let state = AppState::new().expect("state should build");
-        let (parts, _) = http::Request::builder()
+        let (mut parts, _) = http::Request::builder()
             .method(http::Method::POST)
             .uri("/v1/responses")
             .body(())
             .expect("request should build")
             .into_parts();
+        parts
+            .extensions
+            .insert(crate::execution_identity::ExecutionRequestId::server_owned(
+                "execution-standard-text-heartbeat-shell",
+            ));
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
 
         let response = build_standard_text_sync_heartbeat_shell_response(
@@ -2186,6 +2272,20 @@ mod tests {
             },
         )
         .expect("heartbeat shell should build");
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::constants::TRACE_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("trace-standard-text-heartbeat-shell")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::constants::CONTROL_REQUEST_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("execution-standard-text-heartbeat-shell")
+        );
         let mut body_stream = response.into_body().into_data_stream();
 
         let first = body_stream
@@ -2274,6 +2374,11 @@ mod tests {
         let call_count_for_override = Arc::clone(&call_count);
         let state = AppState::new()
             .expect("state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_provider_catalog_reader_for_tests(
+                    heartbeat_provider_catalog(),
+                ),
+            )
             .with_execution_runtime_sync_override_for_tests(move |plan| {
                 call_count_for_override.fetch_add(1, Ordering::SeqCst);
                 if plan.endpoint_id == "endpoint-retry" {

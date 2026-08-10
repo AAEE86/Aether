@@ -898,6 +898,23 @@ impl AppState {
             .map_err(|err| GatewayError::Internal(err.to_string()))
     }
 
+    /// Reads the transport identity through the underlying repositories,
+    /// bypassing both the long-lived transport cache and the short catalog
+    /// cache. Persistent continuation authorization must observe revocation
+    /// immediately instead of serving a previously valid credential.
+    pub(crate) async fn read_provider_transport_snapshot_strong(
+        &self,
+        provider_id: &str,
+        endpoint_id: &str,
+        key_id: &str,
+    ) -> Result<Option<crate::provider_transport::GatewayProviderTransportSnapshot>, GatewayError>
+    {
+        self.data
+            .read_provider_transport_snapshot_strong(provider_id, endpoint_id, key_id)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     async fn apply_global_format_conversion_override(
         &self,
         mut snapshot: crate::provider_transport::GatewayProviderTransportSnapshot,
@@ -1763,10 +1780,8 @@ impl AppState {
     ) -> Result<Option<ProviderTransportCredentialFence>, GatewayError> {
         let key_id = transport.key.id.trim();
         let stored = self
-            .data
-            .list_provider_catalog_keys_by_ids(&[key_id.to_string()])
-            .await
-            .map_err(|err| GatewayError::Internal(err.to_string()))?
+            .read_provider_catalog_keys_by_ids_strong(&[key_id.to_string()])
+            .await?
             .into_iter()
             .next();
         let Some(stored) = stored else {
@@ -1778,10 +1793,10 @@ impl AppState {
             return Ok(None);
         }
         let provider = self
-            .data
-            .list_provider_catalog_providers_by_ids(std::slice::from_ref(&stored.provider_id))
-            .await
-            .map_err(|err| GatewayError::Internal(err.to_string()))?
+            .read_provider_catalog_providers_by_ids_strong(std::slice::from_ref(
+                &stored.provider_id,
+            ))
+            .await?
             .into_iter()
             .next();
         let Some(provider) = provider else {
@@ -2943,7 +2958,7 @@ mod tests {
         ProviderTransportSnapshotInflightRegistration, PROVIDER_TRANSPORT_SNAPSHOT_CACHE_STALE_TTL,
         PROVIDER_TRANSPORT_SNAPSHOT_CACHE_TTL,
     };
-    use crate::data::GatewayDataState;
+    use crate::data::{GatewayDataConfig, GatewayDataState};
 
     fn sample_provider() -> StoredProviderCatalogProvider {
         StoredProviderCatalogProvider::new(
@@ -3048,6 +3063,152 @@ mod tests {
                     .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
             );
         (state, repository, encrypted_auth_config)
+    }
+
+    #[tokio::test]
+    async fn credential_fence_bypasses_another_nodes_stale_catalog_cache() {
+        let database_path = std::env::temp_dir().join(format!(
+            "aether-oauth-credential-fence-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let database_url = format!("sqlite://{}", database_path.display());
+        let database = aether_data::SqlDatabaseConfig::new(
+            aether_data::DatabaseDriver::Sqlite,
+            database_url,
+            aether_data::SqlPoolConfig {
+                min_connections: 0,
+                max_connections: 2,
+                ..aether_data::SqlPoolConfig::default()
+            },
+        )
+        .expect("SQLite database config should build");
+        let config = GatewayDataConfig::from_database_config(database)
+            .with_encryption_key(DEVELOPMENT_ENCRYPTION_KEY);
+        let node_a = AppState::new()
+            .expect("node A should build")
+            .with_data_config_and_background_isolation(config.clone(), false)
+            .expect("node A data state should build");
+        node_a
+            .run_database_migrations()
+            .await
+            .expect("SQLite migrations should run");
+        let node_b = AppState::new()
+            .expect("node B should build")
+            .with_data_config_and_background_isolation(config, false)
+            .expect("node B data state should build");
+
+        let mut provider = sample_provider();
+        provider.provider_type = "codex".to_string();
+        node_a
+            .create_provider_catalog_provider(&provider, None)
+            .await
+            .expect("provider create should succeed")
+            .expect("provider should be created");
+        node_a
+            .create_provider_catalog_endpoint(&sample_endpoint())
+            .await
+            .expect("endpoint create should succeed")
+            .expect("endpoint should be created");
+
+        let initial_auth_config = json!({
+            "provider_type": "codex",
+            "refresh_token": "refresh-old",
+            "expires_at": 4_102_444_800_u64
+        });
+        let initial_encrypted_auth_config = encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            &initial_auth_config.to_string(),
+        )
+        .expect("initial auth config should encrypt");
+        let encrypted_api_key =
+            encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "access-old")
+                .expect("initial access token should encrypt");
+        let key = StoredProviderCatalogKey::new(
+            "key-1".to_string(),
+            "provider-1".to_string(),
+            "Codex OAuth".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+        .with_transport_fields(
+            Some(json!(["openai:chat"])),
+            encrypted_api_key,
+            Some(initial_encrypted_auth_config.clone()),
+            None,
+            Some(json!({"openai:chat": 1})),
+            None,
+            Some(4_102_444_800),
+            None,
+            None,
+        )
+        .expect("key transport should build");
+        node_a
+            .create_provider_catalog_key(&key)
+            .await
+            .expect("key create should succeed")
+            .expect("key should be created");
+
+        let stale_transport = node_a
+            .read_provider_transport_snapshot("provider-1", "endpoint-1", "key-1")
+            .await
+            .expect("node A transport read should succeed")
+            .expect("node A should cache the original transport");
+        node_a
+            .read_provider_catalog_providers_by_ids(&["provider-1".to_string()])
+            .await
+            .expect("node A provider cache should warm");
+        node_a
+            .read_provider_catalog_keys_by_ids(&["key-1".to_string()])
+            .await
+            .expect("node A key cache should warm");
+
+        let replacement_auth_config = json!({
+            "provider_type": "codex",
+            "refresh_token": "refresh-new",
+            "expires_at": 4_102_555_900_u64
+        });
+        let mut replacement = node_b
+            .read_provider_catalog_keys_by_ids_strong(&["key-1".to_string()])
+            .await
+            .expect("node B strong key read should succeed")
+            .pop()
+            .expect("node B should load the key");
+        replacement.encrypted_auth_config = Some(
+            encrypt_python_fernet_plaintext(
+                DEVELOPMENT_ENCRYPTION_KEY,
+                &replacement_auth_config.to_string(),
+            )
+            .expect("replacement auth config should encrypt"),
+        );
+        node_b
+            .update_provider_catalog_key(&replacement)
+            .await
+            .expect("node B key update should succeed")
+            .expect("node B should replace the credential");
+
+        let stale_cached_key = node_a
+            .read_provider_catalog_keys_by_ids(&["key-1".to_string()])
+            .await
+            .expect("node A cached key read should succeed")
+            .pop()
+            .expect("node A should retain its independent cache entry");
+        assert_eq!(
+            stale_cached_key.encrypted_auth_config.as_deref(),
+            Some(initial_encrypted_auth_config.as_str())
+        );
+        assert!(node_a
+            .capture_provider_transport_credential_fence(&stale_transport)
+            .await
+            .expect("node A fence capture should succeed")
+            .is_none());
+
+        drop(node_b);
+        drop(node_a);
+        let _ = std::fs::remove_file(database_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(database_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(database_path);
     }
 
     fn vertex_service_account_state(

@@ -537,6 +537,33 @@ impl SqlxRequestCandidateReadRepository {
         collect_query_rows(builder.build().fetch(&self.pool), map_request_candidate_row).await
     }
 
+    pub async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, DataLayerError> {
+        if provider_ids.is_empty() && key_ids.is_empty() && api_key_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut builder = QueryBuilder::<Postgres>::new(candidate_columns());
+        builder.push(
+            " WHERE status IN ('pending', 'streaming', 'success', 'failed', 'cancelled') \
+             AND COALESCE(started_at, created_at) >= TO_TIMESTAMP(",
+        );
+        builder.push_bind(i64::try_from(since_unix_secs).map_err(|_| {
+            DataLayerError::UnexpectedValue(format!(
+                "invalid runtime request candidate timestamp: {since_unix_secs}"
+            ))
+        })?);
+        builder.push(") AND (");
+        push_runtime_scope_predicates(&mut builder, provider_ids, key_ids, api_key_ids);
+        builder.push(") ORDER BY created_at DESC, id ASC");
+        collect_query_rows(builder.build().fetch(&self.pool), map_request_candidate_row).await
+    }
+
     pub async fn list_by_provider_id(
         &self,
         provider_id: &str,
@@ -1024,6 +1051,17 @@ impl RequestCandidateReadRepository for SqlxRequestCandidateReadRepository {
         Self::list_recent(self, limit).await
     }
 
+    async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, DataLayerError> {
+        Self::list_runtime_scoped_since(self, provider_ids, key_ids, api_key_ids, since_unix_secs)
+            .await
+    }
+
     async fn list_finalized_by_endpoint_ids_since(
         &self,
         endpoint_ids: &[String],
@@ -1149,6 +1187,34 @@ fn candidate_columns() -> &'static str {
         .split_once("WHERE request_id = $1")
         .map(|(prefix, _)| prefix)
         .unwrap_or(LIST_BY_REQUEST_ID_SQL)
+}
+
+fn push_runtime_scope_predicates<'args>(
+    builder: &mut QueryBuilder<'args, Postgres>,
+    provider_ids: &[String],
+    key_ids: &[String],
+    api_key_ids: &[String],
+) {
+    let mut has_predicate = false;
+    for (column, ids) in [
+        ("provider_id", provider_ids),
+        ("key_id", key_ids),
+        ("api_key_id", api_key_ids),
+    ] {
+        if ids.is_empty() {
+            continue;
+        }
+        if has_predicate {
+            builder.push(" OR ");
+        }
+        has_predicate = true;
+        builder.push(column).push(" IN (");
+        let mut values = builder.separated(", ");
+        for id in ids {
+            values.push_bind(id.clone());
+        }
+        values.push_unseparated(")");
+    }
 }
 
 fn status_to_database(status: RequestCandidateStatus) -> &'static str {

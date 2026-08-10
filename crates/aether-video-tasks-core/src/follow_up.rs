@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 #[derive(Clone, Copy, Debug)]
 pub struct VideoFollowUpReportContextInput<'a> {
     pub request_id: &'a str,
+    pub parent_request_id: Option<&'a str>,
     pub user_id: &'a str,
     pub api_key_id: &'a str,
     pub task_id: &'a str,
@@ -18,6 +19,7 @@ pub struct VideoFollowUpReportContextInput<'a> {
 pub fn build_video_follow_up_report_context(input: VideoFollowUpReportContextInput<'_>) -> Value {
     let VideoFollowUpReportContextInput {
         request_id,
+        parent_request_id,
         user_id,
         api_key_id,
         task_id,
@@ -35,6 +37,12 @@ pub fn build_video_follow_up_report_context(input: VideoFollowUpReportContextInp
         "request_id".to_string(),
         Value::String(request_id.to_string()),
     );
+    if let Some(parent_request_id) = parent_request_id.filter(|value| !value.is_empty()) {
+        context.insert(
+            "parent_request_id".to_string(),
+            Value::String(parent_request_id.to_string()),
+        );
+    }
     context.insert("user_id".to_string(), Value::String(user_id.to_string()));
     context.insert(
         "api_key_id".to_string(),
@@ -110,6 +118,7 @@ mod tests {
     fn builds_follow_up_report_context_with_transport_metadata() {
         let context = build_video_follow_up_report_context(VideoFollowUpReportContextInput {
             request_id: "req_123",
+            parent_request_id: Some("req_parent_123"),
             user_id: "user_123",
             api_key_id: "key_123",
             task_id: "task_123",
@@ -123,6 +132,10 @@ mod tests {
         });
 
         assert_eq!(context["request_id"].as_str(), Some("req_123"));
+        assert_eq!(
+            context["parent_request_id"].as_str(),
+            Some("req_parent_123")
+        );
         assert_eq!(context["provider_id"].as_str(), Some("provider_123"));
         assert_eq!(context["provider_name"].as_str(), Some("provider-name"));
         assert_eq!(context["model"].as_str(), Some("model-name"));

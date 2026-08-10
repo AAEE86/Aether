@@ -611,6 +611,35 @@ pub(crate) async fn submit_local_core_error_or_sync_finalize(
     decision: &GatewayControlDecision,
     payload: GatewaySyncReportRequest,
 ) -> Result<Response<Body>, GatewayError> {
+    submit_local_core_error_or_sync_finalize_with_report_ownership(
+        state, trace_id, decision, payload, false,
+    )
+    .await
+}
+
+/// Finalizes a local response after an explicit attempt owner has already
+/// committed candidate terminal state. Background reports remain active as
+/// quota/file metadata observers but must not write another candidate
+/// terminal.
+pub(crate) async fn submit_local_core_error_or_sync_finalize_effects_only(
+    state: &AppState,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    payload: GatewaySyncReportRequest,
+) -> Result<Response<Body>, GatewayError> {
+    submit_local_core_error_or_sync_finalize_with_report_ownership(
+        state, trace_id, decision, payload, true,
+    )
+    .await
+}
+
+async fn submit_local_core_error_or_sync_finalize_with_report_ownership(
+    state: &AppState,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    payload: GatewaySyncReportRequest,
+    attempt_owns_candidate_terminal: bool,
+) -> Result<Response<Body>, GatewayError> {
     let response = if let Some(response) =
         maybe_compile_sync_finalize_response(trace_id, decision, &payload)?
     {
@@ -647,7 +676,11 @@ pub(crate) async fn submit_local_core_error_or_sync_finalize(
             let mut report_payload = payload.clone();
             report_payload.report_kind = success_report_kind.to_string();
             report_payload.status_code = response_status.as_u16();
-            spawn_sync_report(state.clone(), report_payload);
+            if attempt_owns_candidate_terminal {
+                crate::usage::spawn_sync_report_effects_only(state.clone(), report_payload);
+            } else {
+                spawn_sync_report(state.clone(), report_payload);
+            }
         } else {
             warn!(
                 event_name = "local_core_finalize_missing_success_report_mapping",
@@ -663,7 +696,11 @@ pub(crate) async fn submit_local_core_error_or_sync_finalize(
         let mut report_payload = payload.clone();
         report_payload.report_kind = error_report_kind;
         report_payload.status_code = response_status.as_u16();
-        spawn_sync_report(state.clone(), report_payload);
+        if attempt_owns_candidate_terminal {
+            crate::usage::spawn_sync_report_effects_only(state.clone(), report_payload);
+        } else {
+            spawn_sync_report(state.clone(), report_payload);
+        }
     } else {
         warn!(
             event_name = "local_core_finalize_missing_error_report_mapping",

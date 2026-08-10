@@ -30,6 +30,7 @@ async fn gateway_executes_openai_video_content_from_reconstructed_data_task_with
 ) {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenExecutionRuntimeStreamRequest {
+        request_id: String,
         method: String,
         url: String,
     }
@@ -191,6 +192,11 @@ async fn gateway_executes_openai_video_content_from_reconstructed_data_task_with
                 *seen_execution_runtime_stream_inner
                     .lock()
                     .expect("mutex should lock") = Some(SeenExecutionRuntimeStreamRequest {
+                    request_id: payload
+                        .get("request_id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
                     method: payload
                         .get("method")
                         .and_then(|value| value.as_str())
@@ -347,6 +353,14 @@ async fn gateway_executes_openai_video_content_from_reconstructed_data_task_with
     assert_eq!(
         seen_stream_request.url,
         "https://cdn.example.com/video-content.mp4"
+    );
+    assert_ne!(
+        seen_stream_request.request_id,
+        "trace-openai-video-content-local-123"
+    );
+    assert_ne!(
+        seen_stream_request.request_id,
+        "request-openai-video-content-local-123"
     );
     assert_eq!(*decision_stream_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*execute_stream_hits.lock().expect("mutex should lock"), 0);

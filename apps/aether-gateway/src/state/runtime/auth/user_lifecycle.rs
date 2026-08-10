@@ -345,6 +345,22 @@ impl AppState {
             .map(|value| value.unwrap_or_default())
     }
 
+    /// Bypasses the per-user membership cache for authorization decisions on
+    /// persistent transports.
+    pub(crate) async fn list_user_groups_for_user_strong(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<aether_data::repository::users::StoredUserGroup>, GatewayError> {
+        let user_id = user_id.trim();
+        if user_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.data
+            .list_user_groups_for_user(user_id)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     pub(crate) async fn list_user_group_memberships_by_user_ids(
         &self,
         user_ids: &[String],
@@ -939,6 +955,7 @@ mod tests {
             access_allowed: true,
             user_rate_limit: None,
             api_key_rate_limit: None,
+            api_key_concurrent_limit: None,
             api_key_is_standalone: false,
             admin_bypass_limits: false,
             local_rejection: None,

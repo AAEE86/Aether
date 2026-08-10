@@ -3,24 +3,27 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use wreq::ws::message::Message as WreqWsMessage;
 
-use super::adapter::ResponsesWebSocketProtocolAdapter;
+use super::adapter::{responses_public_wire_codec, ResponsesProviderObserver};
+use super::backend::NativeResponsesWebSocketBackend;
 use super::binding::{UpstreamBindingIdentity, UpstreamBindingIdentityError};
 use super::redaction::ResponsesWebSocketRedactionRestorer;
 use super::request::planned_response_create_event;
 use super::state::{BoundResponsesConnection, ExhaustedResponsesWebSocketExclusions};
 use super::turn_state::ResponsesTurnState;
 use crate::ai_serving::{AiExecutionDecision, ResponsesWebSocketBodyNormalization};
-use crate::handlers::proxy::websocket::session::RESPONSES_WEBSOCKET_SESSION_LIMITS;
-use crate::handlers::proxy::websocket::transport::{
-    close_upstream_socket, connect_upstream_websocket, send_upstream_message,
-};
+use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
 
 /// 上游 WebSocket 握手的默认绝对 deadline（30 秒）。
 /// 覆盖 DNS → TCP connect → TLS → HTTP 101 Upgrade → 发送首条 event 的完整链路。
 /// 如果 decision 配置了更短的 first_byte_ms 或 total_ms，取其与此值的较小者。
 const DEFAULT_UPSTREAM_HANDSHAKE_DEADLINE_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResponsesUpstreamBindError {
+    ExecutionReservationLost,
+    Upstream(&'static str),
+}
 
 /// 从 decision.timeouts 推导实际 handshake 绝对 deadline。
 /// 取 first_byte_ms / total_ms / DEFAULT 三者中的最小正值。
@@ -37,59 +40,138 @@ pub(super) fn resolve_upstream_handshake_deadline(decision: &AiExecutionDecision
     Duration::from_millis(deadline_ms)
 }
 
-pub(super) async fn bind_responses_upstream(
+/// Removes protocol negotiation that would change Aether's stable public
+/// Responses contract. The canonical decision is the single source used for
+/// binding identity, physical open, stored state, and reuse comparison.
+pub(super) fn canonicalize_responses_websocket_decision(
+    mut decision: AiExecutionDecision,
+) -> AiExecutionDecision {
+    decision
+        .provider_request_headers
+        .retain(|name, _| !name.trim().eq_ignore_ascii_case("openai-beta"));
+    decision
+        .extra_headers
+        .retain(|name, _| !name.trim().eq_ignore_ascii_case("openai-beta"));
+    if let Some(headers) = decision
+        .report_context
+        .as_mut()
+        .and_then(|context| context.get_mut("provider_request_headers"))
+        .and_then(Value::as_object_mut)
+    {
+        headers.retain(|name, _| !name.trim().eq_ignore_ascii_case("openai-beta"));
+    }
+    decision
+}
+
+pub(super) async fn bind_responses_upstream<F>(
     decision: &AiExecutionDecision,
+    bound_candidate: SchedulerMinimalCandidateSelectionCandidate,
+    credential_binding_fingerprint: String,
     normalization: ResponsesWebSocketBodyNormalization,
     initial_event: &Value,
-    adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
-) -> Result<BoundResponsesConnection, &'static str> {
+    backend: &'static dyn NativeResponsesWebSocketBackend,
+    provider_observer: &'static dyn ResponsesProviderObserver,
+    execution_reservation_is_healthy: F,
+) -> Result<BoundResponsesConnection, ResponsesUpstreamBindError>
+where
+    F: Fn() -> bool,
+{
+    let decision = canonicalize_responses_websocket_decision(decision.clone());
+    if !execution_reservation_is_healthy() {
+        return Err(ResponsesUpstreamBindError::ExecutionReservationLost);
+    }
     // 绝对 deadline：从此刻起必须在限定时间内完成握手 + 首条事件发送，
     // 防止慢 TLS / 慢 HTTP Upgrade 无限占用 connection permit。
-    let handshake_deadline = resolve_upstream_handshake_deadline(decision);
-    tokio::time::timeout(
+    let handshake_deadline = resolve_upstream_handshake_deadline(&decision);
+    let result = tokio::time::timeout(
         handshake_deadline,
-        bind_responses_upstream_inner(decision, normalization, initial_event, adapter),
+        bind_responses_upstream_inner(
+            &decision,
+            bound_candidate,
+            credential_binding_fingerprint,
+            normalization,
+            initial_event,
+            backend,
+            provider_observer,
+            &execution_reservation_is_healthy,
+        ),
     )
-    .await
-    .map_err(|_| "responses_websocket_upstream_handshake_timeout")?
+    .await;
+    match result {
+        Ok(Err(ResponsesUpstreamBindError::Upstream(_))) if !execution_reservation_is_healthy() => {
+            Err(ResponsesUpstreamBindError::ExecutionReservationLost)
+        }
+        Ok(result) => result,
+        Err(_) if !execution_reservation_is_healthy() => {
+            Err(ResponsesUpstreamBindError::ExecutionReservationLost)
+        }
+        Err(_) => Err(ResponsesUpstreamBindError::Upstream(
+            "responses_websocket_upstream_handshake_timeout",
+        )),
+    }
 }
 
 /// 实际执行握手 + 首条事件发送的内部函数，由外层 timeout 包裹。
-async fn bind_responses_upstream_inner(
+async fn bind_responses_upstream_inner<F>(
     decision: &AiExecutionDecision,
+    bound_candidate: SchedulerMinimalCandidateSelectionCandidate,
+    credential_binding_fingerprint: String,
     normalization: ResponsesWebSocketBodyNormalization,
     initial_event: &Value,
-    adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
-) -> Result<BoundResponsesConnection, &'static str> {
+    backend: &'static dyn NativeResponsesWebSocketBackend,
+    provider_observer: &'static dyn ResponsesProviderObserver,
+    execution_reservation_is_healthy: &F,
+) -> Result<BoundResponsesConnection, ResponsesUpstreamBindError>
+where
+    F: Fn() -> bool,
+{
     let binding_identity =
-        UpstreamBindingIdentity::from_decision(adapter, decision).map_err(|error| match error {
-            UpstreamBindingIdentityError::MissingUpstreamUrl => {
-                adapter.upstream_errors().upstream_url_missing
-            }
-            UpstreamBindingIdentityError::InvalidUpstreamUrl => {
-                adapter.upstream_errors().upstream_url_invalid
-            }
-            UpstreamBindingIdentityError::InvalidHandshakeHeaders => {
-                adapter.upstream_errors().headers_invalid
-            }
-        })?;
-    let mut upstream = connect_upstream_websocket(
-        decision,
-        RESPONSES_WEBSOCKET_SESSION_LIMITS,
-        adapter.upstream_errors(),
-    )
-    .await?;
-    let first_event = planned_response_create_event(decision, initial_event)?;
-    send_upstream_message(&mut upstream.socket, WreqWsMessage::text(first_event))
+        UpstreamBindingIdentity::from_decision(backend, decision, &credential_binding_fingerprint)
+            .map_err(|error| {
+                ResponsesUpstreamBindError::Upstream(match error {
+                    UpstreamBindingIdentityError::MissingUpstreamUrl => {
+                        backend.upstream_errors().upstream_url_missing
+                    }
+                    UpstreamBindingIdentityError::InvalidUpstreamUrl => {
+                        backend.upstream_errors().upstream_url_invalid
+                    }
+                    UpstreamBindingIdentityError::InvalidHandshakeHeaders => {
+                        backend.upstream_errors().headers_invalid
+                    }
+                })
+            })?;
+    if !execution_reservation_is_healthy() {
+        return Err(ResponsesUpstreamBindError::ExecutionReservationLost);
+    }
+    let mut opened = backend
+        .open_session(decision)
         .await
-        .map_err(|_| "responses_websocket_initial_send_failed")?;
+        .map_err(ResponsesUpstreamBindError::Upstream)?;
+    let first_event = planned_response_create_event(decision, initial_event)
+        .map_err(ResponsesUpstreamBindError::Upstream)?;
+    let first_event = serde_json::from_str::<Value>(&first_event).map_err(|_| {
+        ResponsesUpstreamBindError::Upstream("responses_websocket_initial_send_failed")
+    })?;
+    if !execution_reservation_is_healthy() {
+        opened.session.close().await;
+        return Err(ResponsesUpstreamBindError::ExecutionReservationLost);
+    }
+    opened
+        .session
+        .send_response_create(&first_event)
+        .await
+        .map_err(|_| {
+            ResponsesUpstreamBindError::Upstream("responses_websocket_initial_send_failed")
+        })?;
 
     let client_model = initial_event
         .get("model")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or("responses_websocket_model_missing")?
+        .ok_or(ResponsesUpstreamBindError::Upstream(
+            "responses_websocket_model_missing",
+        ))?
         .to_string();
     let provider_model = decision
         .provider_request_body
@@ -105,66 +187,80 @@ async fn bind_responses_upstream_inner(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
         })
-        .ok_or("responses_websocket_mapped_model_missing")?
+        .ok_or(ResponsesUpstreamBindError::Upstream(
+            "responses_websocket_mapped_model_missing",
+        ))?
         .to_string();
 
     Ok(BoundResponsesConnection {
-        upstream: Some(upstream.socket),
-        adapter,
+        backend_session: opened.session,
+        backend,
+        public_codec: responses_public_wire_codec(),
+        public_event_state: Default::default(),
+        provider_observer,
         client_model,
         provider_model,
         decision_template: decision.clone(),
+        bound_candidate,
         body_normalization: normalization,
         binding_identity,
         // 首条 response.create 已经发出，但这一轮的 logical turn 和 attempt 由调用方
         // 通过 `ResponsesTurnState::begin` 装上：绑定本身不持有记账状态。
         turn_state: ResponsesTurnState::Idle,
+        public_event_sequence: Default::default(),
+        public_teardown: Default::default(),
+        latest_public_response_id: None,
         // 同理，这一轮的 mask session 也由调用方登记：绑定看不到脱敏链路。
         redaction_restorer: ResponsesWebSocketRedactionRestorer::default(),
         next_turn_index: 2,
-        upstream_response_headers: upstream.response_headers,
-        pending_adapter_drain: None,
-        pending_adapter_observation: None,
+        upstream_response_headers: opened.response_headers,
+        pending_provider_drain: None,
+        pending_provider_observation: None,
         exhausted_exclusions: ExhaustedResponsesWebSocketExclusions::default(),
         pending_turn_finalization: None,
+        session_termination: Default::default(),
     })
 }
 
-pub(super) async fn receive_optional_upstream(
-    upstream: &mut Option<wreq::ws::WebSocket>,
-) -> Option<Result<WreqWsMessage, ()>> {
-    match upstream.as_mut() {
-        Some(upstream) => upstream.recv().await.map(|message| message.map_err(|_| ())),
-        None => std::future::pending().await,
-    }
-}
-
 pub(super) async fn close_bound_upstream(bound: &mut BoundResponsesConnection) {
-    if let Some(mut upstream) = bound.upstream.take() {
-        close_upstream_socket(&mut upstream, None).await;
-    }
+    bound.backend_session.close().await;
 }
 
 pub(super) fn decision_reuses_bound_upstream(
     bound: &BoundResponsesConnection,
-    adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
+    backend: &'static dyn NativeResponsesWebSocketBackend,
     decision: &AiExecutionDecision,
+    credential_binding_fingerprint: &str,
 ) -> bool {
-    bound.upstream.is_some()
-        && UpstreamBindingIdentity::from_decision(adapter, decision)
-            .map(|identity| bound.binding_identity == identity)
+    let decision = canonicalize_responses_websocket_decision(decision.clone());
+    bound.backend_session.is_bound()
+        && bound
+            .binding_identity
+            .matches_turn_decision(backend, &decision, credential_binding_fingerprint)
             .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use aether_contracts::ExecutionTimeouts;
+    use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::Router;
+    use futures_util::StreamExt;
+    use tokio::sync::{oneshot, Mutex};
 
     use crate::ai_serving::AiExecutionDecision;
 
-    use super::{resolve_upstream_handshake_deadline, DEFAULT_UPSTREAM_HANDSHAKE_DEADLINE_MS};
+    use super::{
+        canonicalize_responses_websocket_decision, resolve_upstream_handshake_deadline,
+        ResponsesUpstreamBindError, DEFAULT_UPSTREAM_HANDSHAKE_DEADLINE_MS,
+    };
 
     fn sample_decision() -> AiExecutionDecision {
         AiExecutionDecision {
@@ -205,6 +301,107 @@ mod tests {
             report_kind: None,
             report_context: None,
             auth_context: None,
+        }
+    }
+
+    #[test]
+    fn stable_backend_decision_removes_beta_negotiation_case_insensitively() {
+        let mut decision = sample_decision();
+        decision.provider_request_headers = std::collections::BTreeMap::from([
+            (
+                "OpEnAI-BeTa".to_string(),
+                "responses_multi_agent=2026-05-01".to_string(),
+            ),
+            ("x-provider-header".to_string(), "keep".to_string()),
+        ]);
+        decision.extra_headers.insert(
+            "OPENAI-BETA".to_string(),
+            "responses_multi_agent=2026-05-01".to_string(),
+        );
+        decision.report_context = Some(serde_json::json!({
+            "provider_request_headers": {
+                "OpenAI-Beta": "responses_multi_agent=v1",
+                "x-provider-header": "keep"
+            }
+        }));
+
+        let canonical = canonicalize_responses_websocket_decision(decision);
+
+        assert!(canonical
+            .provider_request_headers
+            .keys()
+            .all(|name| !name.eq_ignore_ascii_case("openai-beta")));
+        assert!(canonical
+            .extra_headers
+            .keys()
+            .all(|name| !name.eq_ignore_ascii_case("openai-beta")));
+        assert_eq!(
+            canonical.provider_request_headers.get("x-provider-header"),
+            Some(&"keep".to_string())
+        );
+        let captured_headers = canonical
+            .report_context
+            .as_ref()
+            .and_then(|context| context.get("provider_request_headers"))
+            .and_then(serde_json::Value::as_object)
+            .expect("captured provider headers should remain an object");
+        assert!(captured_headers
+            .keys()
+            .all(|name| !name.eq_ignore_ascii_case("openai-beta")));
+        assert_eq!(captured_headers["x-provider-header"], "keep");
+    }
+
+    #[test]
+    fn planned_initial_event_rejects_multi_agent_injected_after_public_decoding() {
+        let fallback = serde_json::json!({
+            "type": "response.create",
+            "model": "public-model",
+            "input": "hello",
+        });
+        for provider_body in [
+            serde_json::json!({
+                "model": "provider-model",
+                "multi_agent": {"enabled": true},
+                "input": "hello",
+            }),
+            serde_json::json!({
+                "model": "provider-model",
+                "input": [{
+                    "type": "message",
+                    "caller": {"type": "multi_agent"},
+                }],
+            }),
+        ] {
+            let mut decision = sample_decision();
+            decision.provider_request_body = Some(provider_body);
+
+            assert_eq!(
+                super::planned_response_create_event(&decision, &fallback),
+                Err("responses_websocket_multi_agent_unsupported")
+            );
+        }
+    }
+
+    fn sample_bound_candidate(model: &str) -> SchedulerMinimalCandidateSelectionCandidate {
+        SchedulerMinimalCandidateSelectionCandidate {
+            provider_id: "provider-1".to_string(),
+            provider_name: "Provider".to_string(),
+            provider_type: "custom".to_string(),
+            provider_priority: 0,
+            endpoint_id: "endpoint-1".to_string(),
+            endpoint_api_format: "openai:responses".to_string(),
+            key_id: "key-1".to_string(),
+            key_name: "key-1".to_string(),
+            key_auth_type: "api_key".to_string(),
+            key_internal_priority: 0,
+            key_global_priority_for_format: None,
+            key_capabilities: None,
+            model_id: "model-1".to_string(),
+            global_model_id: "global-model-1".to_string(),
+            global_model_name: model.to_string(),
+            selected_provider_model_name: model.to_string(),
+            supports_streaming: true,
+            mapping_matched_model: None,
         }
     }
 
@@ -273,10 +470,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unhealthy_reservation_short_circuits_before_upstream_validation() {
+        use super::bind_responses_upstream;
+        use crate::ai_serving::ResponsesWebSocketBodyNormalization;
+        use crate::handlers::proxy::websocket::responses::adapter::resolve_responses_provider_observer;
+        use crate::handlers::proxy::websocket::responses::backend::resolve_native_responses_websocket_backend;
+        use serde_json::json;
+
+        let mut decision = sample_decision();
+        decision.upstream_url = Some("not a valid upstream URL".to_string());
+        decision.provider_request_body = Some(json!({"model": "test-model"}));
+        let result = bind_responses_upstream(
+            &decision,
+            sample_bound_candidate("test-model"),
+            "credential-1".to_string(),
+            ResponsesWebSocketBodyNormalization::for_tests("test-model"),
+            &json!({"type": "response.create", "model": "test-model"}),
+            resolve_native_responses_websocket_backend(
+                crate::orchestration::ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+            ),
+            resolve_responses_provider_observer(
+                crate::orchestration::ResponsesProviderObserverKind::Standard,
+            ),
+            || false,
+        )
+        .await;
+
+        assert_eq!(
+            result.err(),
+            Some(ResponsesUpstreamBindError::ExecutionReservationLost)
+        );
+    }
+
+    #[tokio::test]
+    async fn reservation_lost_after_handshake_prevents_initial_provider_send() {
+        use super::bind_responses_upstream;
+        use crate::ai_serving::ResponsesWebSocketBodyNormalization;
+        use crate::handlers::proxy::websocket::responses::adapter::resolve_responses_provider_observer;
+        use crate::handlers::proxy::websocket::responses::backend::resolve_native_responses_websocket_backend;
+        use serde_json::json;
+
+        let (provider_event_tx, provider_event_rx) = oneshot::channel();
+        let provider_event_tx = Arc::new(Mutex::new(Some(provider_event_tx)));
+        let app = Router::new().route(
+            "/v1/responses",
+            get(move |ws: WebSocketUpgrade| {
+                let provider_event_tx = Arc::clone(&provider_event_tx);
+                async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        while let Some(Ok(message)) = socket.next().await {
+                            match message {
+                                Message::Text(_) => {
+                                    if let Some(sender) = provider_event_tx.lock().await.take() {
+                                        let _ = sender.send(());
+                                    }
+                                    break;
+                                }
+                                Message::Close(_) => break,
+                                _ => {}
+                            }
+                        }
+                    })
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock server should run");
+        });
+
+        let mut decision = sample_decision();
+        decision.upstream_url = Some(format!("http://{address}/v1/responses"));
+        decision.provider_request_body = Some(json!({"model": "test-model"}));
+        let health_checks = AtomicUsize::new(0);
+        let result = bind_responses_upstream(
+            &decision,
+            sample_bound_candidate("test-model"),
+            "credential-1".to_string(),
+            ResponsesWebSocketBodyNormalization::for_tests("test-model"),
+            &json!({"type": "response.create", "model": "test-model"}),
+            resolve_native_responses_websocket_backend(
+                crate::orchestration::ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+            ),
+            resolve_responses_provider_observer(
+                crate::orchestration::ResponsesProviderObserverKind::Standard,
+            ),
+            || health_checks.fetch_add(1, Ordering::SeqCst) < 2,
+        )
+        .await;
+
+        assert_eq!(
+            result.err(),
+            Some(ResponsesUpstreamBindError::ExecutionReservationLost)
+        );
+        assert_eq!(health_checks.load(Ordering::SeqCst), 3);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), provider_event_rx)
+                .await
+                .is_err(),
+            "provider must not receive response.create after reservation loss"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn bind_responses_upstream_times_out_against_stalled_server() {
         use super::bind_responses_upstream;
         use crate::ai_serving::ResponsesWebSocketBodyNormalization;
-        use crate::handlers::proxy::websocket::responses::adapter::resolve_responses_websocket_adapter;
+        use crate::handlers::proxy::websocket::responses::adapter::resolve_responses_provider_observer;
+        use crate::handlers::proxy::websocket::responses::backend::resolve_native_responses_websocket_backend;
         use serde_json::json;
 
         // 启动一个接受 TCP 连接但永不完成 HTTP Upgrade 的 mock 服务器
@@ -305,20 +615,27 @@ mod tests {
         });
         decision.provider_request_body = Some(json!({"model": "test-model"}));
 
-        let adapter = resolve_responses_websocket_adapter(
-            crate::orchestration::ResponsesWebSocketAdapter::Standard,
+        let backend = resolve_native_responses_websocket_backend(
+            crate::orchestration::ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+        );
+        let provider_observer = resolve_responses_provider_observer(
+            crate::orchestration::ResponsesProviderObserverKind::Standard,
         );
         let result = bind_responses_upstream(
             &decision,
+            sample_bound_candidate("test-model"),
+            "credential-1".to_string(),
             ResponsesWebSocketBodyNormalization::for_tests("test-model"),
             &json!({"type": "response.create", "model": "test-model"}),
-            adapter,
+            backend,
+            provider_observer,
+            || true,
         )
         .await;
 
         assert_eq!(
             result.err().expect("bind should fail with timeout"),
-            "responses_websocket_upstream_handshake_timeout"
+            ResponsesUpstreamBindError::Upstream("responses_websocket_upstream_handshake_timeout")
         );
     }
 }

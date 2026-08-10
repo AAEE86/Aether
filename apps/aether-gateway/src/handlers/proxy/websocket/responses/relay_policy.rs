@@ -9,7 +9,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FatalRelaySignal {
     ConnectionAdmissionLost,
+    ExecutionReservationLost,
     InvalidUpstreamText,
+    UpstreamClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,12 +35,26 @@ pub const fn fatal_relay_policy(signal: FatalRelaySignal) -> FatalRelayPolicy {
             client_message: "Gateway capacity lease was lost; reconnect to continue",
             close_reason: "connection_admission_lost",
         },
+        FatalRelaySignal::ExecutionReservationLost => FatalRelayPolicy {
+            status_code: 503,
+            close_code: 1011,
+            error_code: "gateway_execution_reservation_lost",
+            client_message: "Gateway execution capacity lease was lost; retry this response",
+            close_reason: "execution_reservation_lost",
+        },
         FatalRelaySignal::InvalidUpstreamText => FatalRelayPolicy {
             status_code: 502,
             close_code: 1011,
             error_code: "responses_websocket_invalid_upstream_event",
             client_message: "Provider returned an invalid WebSocket event",
             close_reason: "invalid_upstream_event",
+        },
+        FatalRelaySignal::UpstreamClosed => FatalRelayPolicy {
+            status_code: 502,
+            close_code: 1011,
+            error_code: "responses_websocket_upstream_closed",
+            client_message: "Provider connection closed unexpectedly",
+            close_reason: "upstream_closed",
         },
     }
 }
@@ -75,12 +91,12 @@ pub const fn classify_upstream_frame(kind: UpstreamFrameKind) -> UpstreamFrameAc
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotaRelayFacts {
-    /// The adapter has observed a definitive quota signal and is ready to
+    /// The provider observer has seen a definitive quota signal and is ready to
     /// drain/rebind the current upstream.
     pub drain_ready: bool,
-    /// The adapter allows a transparent replay of this turn.
+    /// The provider observer allows a transparent replay of this turn.
     pub retry_current_turn: bool,
-    /// The session already attempted the adapter-approved transparent replay
+    /// The session already attempted the observer-approved transparent replay
     /// and could not bind an alternate upstream.  A continuation may request
     /// complete input only after that first recovery path was exhausted.
     pub transparent_retry_failed: bool,
@@ -119,7 +135,11 @@ pub const fn classify_quota_relay(facts: QuotaRelayFacts) -> QuotaRelayAction {
     {
         return QuotaRelayAction::RequestFullContinuationRetry;
     }
-    if facts.upstream_closed {
+    // A definitive provider quota error is a terminal signal even when the
+    // provider keeps its socket open. Once transparent/full-input recovery is
+    // exhausted, surface Aether's standard 429 and detach immediately rather
+    // than forwarding provider-private quota metadata or waiting for Close.
+    if facts.usage_limit_error || facts.upstream_closed {
         return QuotaRelayAction::ForwardQuotaAndDetach;
     }
     QuotaRelayAction::None
@@ -182,7 +202,7 @@ mod tests {
         });
         assert_eq!(first, QuotaRelayAction::AttemptTransparentRetry);
 
-        // A failed transparent retry must not loop forever.  Once the adapter
+        // A failed transparent retry must not loop forever. Once the observer
         // no longer permits replay, the terminal quota event is forwarded and
         // the exhausted upstream is detached.
         let after_retry_failure = classify_quota_relay(QuotaRelayFacts {
@@ -194,6 +214,19 @@ mod tests {
             upstream_closed: true,
         });
         assert_eq!(after_retry_failure, QuotaRelayAction::ForwardQuotaAndDetach);
+
+        let provider_kept_socket_open = classify_quota_relay(QuotaRelayFacts {
+            drain_ready: true,
+            retry_current_turn: false,
+            transparent_retry_failed: true,
+            usage_limit_error: true,
+            continuation_retry_eligible: false,
+            upstream_closed: false,
+        });
+        assert_eq!(
+            provider_kept_socket_open,
+            QuotaRelayAction::ForwardQuotaAndDetach
+        );
     }
 
     #[test]
@@ -250,6 +283,16 @@ mod tests {
             }
         );
         assert_eq!(
+            fatal_relay_policy(FatalRelaySignal::ExecutionReservationLost),
+            FatalRelayPolicy {
+                status_code: 503,
+                close_code: 1011,
+                error_code: "gateway_execution_reservation_lost",
+                client_message: "Gateway execution capacity lease was lost; retry this response",
+                close_reason: "execution_reservation_lost",
+            }
+        );
+        assert_eq!(
             fatal_relay_policy(FatalRelaySignal::InvalidUpstreamText),
             FatalRelayPolicy {
                 status_code: 502,
@@ -259,6 +302,26 @@ mod tests {
                 close_reason: "invalid_upstream_event",
             }
         );
+    }
+
+    #[test]
+    fn upstream_close_uses_a_provider_independent_public_mapping() {
+        let provider_private_reason = "codex account acct_private reached an internal limit";
+        let policy = fatal_relay_policy(FatalRelaySignal::UpstreamClosed);
+
+        assert_eq!(
+            policy,
+            FatalRelayPolicy {
+                status_code: 502,
+                close_code: 1011,
+                error_code: "responses_websocket_upstream_closed",
+                client_message: "Provider connection closed unexpectedly",
+                close_reason: "upstream_closed",
+            }
+        );
+        assert!(!policy.error_code.contains(provider_private_reason));
+        assert!(!policy.client_message.contains(provider_private_reason));
+        assert!(!policy.close_reason.contains(provider_private_reason));
     }
 
     #[test]

@@ -161,6 +161,51 @@ pub(crate) async fn refresh_oauth_plan_auth_for_retry(
     }
 }
 
+pub(crate) async fn refresh_oauth_plan_auth_for_retry_cancellation_safe(
+    state: &AppState,
+    plan: &mut ExecutionPlan,
+    status_code: u16,
+    response_text: Option<&str>,
+    trace_id: &str,
+) -> bool {
+    let state = state.clone();
+    let mut refreshed_plan = plan.clone();
+    let response_text = response_text.map(str::to_string);
+    let trace_id = trace_id.to_string();
+    let refresh_trace_id = trace_id.clone();
+    let refresh = tokio::spawn(async move {
+        let refreshed = refresh_oauth_plan_auth_for_retry(
+            &state,
+            &mut refreshed_plan,
+            status_code,
+            response_text.as_deref(),
+            refresh_trace_id.as_str(),
+        )
+        .await;
+        (refreshed, refreshed_plan)
+    });
+    match refresh.await {
+        Ok((true, refreshed_plan)) => {
+            *plan = refreshed_plan;
+            true
+        }
+        Ok((false, _)) => false,
+        Err(err) => {
+            warn!(
+                event_name = "local_oauth_retry_refresh_task_failed",
+                log_type = "ops",
+                trace_id,
+                provider_id = %plan.provider_id,
+                endpoint_id = %plan.endpoint_id,
+                key_id = %plan.key_id,
+                error = ?err,
+                "gateway oauth retry refresh task failed"
+            );
+            false
+        }
+    }
+}
+
 fn execution_plan_authorization(plan: &ExecutionPlan) -> Option<&str> {
     plan.headers
         .iter()

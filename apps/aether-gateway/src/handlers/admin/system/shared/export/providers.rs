@@ -12,6 +12,16 @@ use aether_admin::system::{
 use aether_data_contracts::repository::global_models::AdminProviderModelListQuery;
 use std::collections::BTreeMap;
 
+fn sanitize_admin_system_export_auth_config(plaintext: String) -> serde_json::Value {
+    let Ok(mut auth_config) =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(plaintext.as_str())
+    else {
+        return serde_json::Value::String(plaintext);
+    };
+    crate::provider_transport::strip_server_owned_credential_generation(&mut auth_config);
+    serde_json::Value::String(serde_json::Value::Object(auth_config).to_string())
+}
+
 pub(crate) async fn build_admin_system_export_providers_payload(
     state: &AdminAppState<'_>,
     global_model_name_by_id: &BTreeMap<String, String>,
@@ -104,7 +114,7 @@ pub(crate) async fn build_admin_system_export_providers_payload(
                         .and_then(|ciphertext| {
                             decrypt_admin_system_export_secret(state, ciphertext)
                         })
-                        .map(serde_json::Value::String);
+                        .map(sanitize_admin_system_export_auth_config);
                     AdminSystemConfigProviderKey {
                         api_key: key.encrypted_api_key.as_deref().map(|ciphertext| {
                             decrypt_admin_system_export_secret(state, ciphertext)
@@ -230,4 +240,39 @@ pub(crate) async fn build_admin_system_export_providers_payload(
             }
         })
         .collect::<Vec<_>>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_admin_system_export_auth_config;
+    use serde_json::json;
+
+    #[test]
+    fn system_export_omits_server_owned_credential_generation() {
+        let exported = sanitize_admin_system_export_auth_config(
+            json!({
+                "provider_type": "codex",
+                "refresh_token": "rotated-refresh",
+                "aether_credential_generation": "refresh-owned-generation"
+            })
+            .to_string(),
+        );
+        let exported = exported
+            .as_str()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .expect("exported auth config should remain a JSON string");
+
+        assert_eq!(
+            exported.get("refresh_token"),
+            Some(&json!("rotated-refresh"))
+        );
+        assert!(exported.get("aether_credential_generation").is_none());
+    }
+
+    #[test]
+    fn system_export_preserves_malformed_legacy_auth_config() {
+        let exported = sanitize_admin_system_export_auth_config("legacy-token".to_string());
+
+        assert_eq!(exported, json!("legacy-token"));
+    }
 }

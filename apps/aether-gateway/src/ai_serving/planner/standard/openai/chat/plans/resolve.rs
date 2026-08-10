@@ -7,6 +7,7 @@ use crate::ai_serving::planner::decision_input::{
     attach_routing_policy_to_local_requested_model_input,
     build_local_requested_model_decision_input, resolve_local_authenticated_decision_input,
 };
+use crate::ai_serving::planner::runtime_miss::runtime_miss_diagnostic_key_from_parts;
 use crate::ai_serving::resolve_local_decision_execution_runtime_auth_context;
 use crate::client_session_affinity::client_session_affinity_from_parts;
 use crate::stage_metrics::observe_gateway_stage_ms;
@@ -21,6 +22,7 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
     plan_kind: &str,
     record_miss_diagnostic: bool,
 ) -> Result<Option<LocalOpenAiChatDecisionInput>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let Some(auth_context) = resolve_local_decision_execution_runtime_auth_context(decision) else {
         warn!(
             trace_id = %trace_id,
@@ -32,7 +34,7 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
         if record_miss_diagnostic {
             set_local_openai_chat_miss_diagnostic(
                 state,
-                trace_id,
+                runtime_miss_key,
                 decision,
                 plan_kind,
                 extract_standard_requested_model(body_json).as_deref(),
@@ -50,7 +52,7 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
         if record_miss_diagnostic {
             set_local_openai_chat_miss_diagnostic(
                 state,
-                trace_id,
+                runtime_miss_key,
                 decision,
                 plan_kind,
                 None,
@@ -82,7 +84,7 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
             if record_miss_diagnostic {
                 set_local_openai_chat_miss_diagnostic(
                     state,
-                    trace_id,
+                    runtime_miss_key,
                     decision,
                     plan_kind,
                     Some(requested_model.as_str()),
@@ -100,7 +102,7 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
             if record_miss_diagnostic {
                 set_local_openai_chat_miss_diagnostic(
                     state,
-                    trace_id,
+                    runtime_miss_key,
                     decision,
                     plan_kind,
                     Some(requested_model.as_str()),
@@ -115,7 +117,11 @@ pub(crate) async fn resolve_local_openai_chat_decision_input(
         auth_started_at.elapsed().as_millis() as u64,
     );
 
-    let mut input = build_local_requested_model_decision_input(resolved_input, requested_model);
+    let mut input = build_local_requested_model_decision_input(
+        resolved_input,
+        requested_model,
+        crate::execution_identity::execution_request_id_from_parts(parts, trace_id).to_string(),
+    );
     input.request_auth_channel = decision.request_auth_channel.clone();
     let affinity_started_at = std::time::Instant::now();
     input.client_session_affinity = client_session_affinity_from_parts(parts, Some(body_json));

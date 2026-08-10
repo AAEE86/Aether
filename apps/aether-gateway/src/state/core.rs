@@ -388,6 +388,7 @@ impl AppState {
             usage_counter_exact_health_metric_last_attempt: Arc::new(StdMutex::new(None)),
             usage_counter_exact_health_metric_refresh: Arc::new(TokioMutex::new(())),
             request_candidate_queue: None,
+            request_candidate_runtime_overlay: Arc::new(Default::default()),
             frontdoor_cors: None,
             frontdoor_user_rpm: Arc::new(FrontdoorUserRpmLimiter::new(
                 FrontdoorUserRpmConfig::default(),

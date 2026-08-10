@@ -1270,6 +1270,8 @@ fn infer_sync_terminal_state(
 ) -> UsageTerminalState {
     if status_code == 499 || report_kind.contains("cancel") {
         UsageTerminalState::Cancelled
+    } else if report_kind == "openai_video_delete_sync_success" && status_code == 404 {
+        UsageTerminalState::Completed
     } else if !(200..300).contains(&status_code)
         || provider_response
             .and_then(|value| value.get("error"))
@@ -2041,6 +2043,13 @@ fn build_runtime_request_metadata_seed(
         provider_request_has_inline_body,
         provider_request_body_ref.as_deref(),
         plan.body.body_bytes_b64.as_deref(),
+    );
+    // A retry/failover attempt has its own execution request id while the
+    // report context keeps the logical root id. Preserve that lineage on the
+    // lifecycle usage row just as terminal usage seeds already do.
+    metadata = merge_usage_request_metadata_owned(
+        metadata,
+        build_usage_request_metadata_seed(plan, context),
     );
     let provider_request_body = plan.body.json_body.as_ref().or_else(|| {
         context_value_ref(context, "provider_request_body").filter(|value| !value.is_null())
@@ -3479,10 +3488,11 @@ mod tests {
         build_sync_terminal_usage_seed, build_terminal_usage_context_seed,
         build_terminal_usage_event_from_seed, build_usage_event_data_seed, decode_body_for_storage,
         extract_token_counts_from_json, extract_token_counts_from_value, headers_to_json,
-        mask_header_value, mask_sensitive_body_fields, mask_sensitive_headers_in_json_value,
-        parse_sse_body_for_storage, resolve_error_message, trim_owned_non_empty_string,
-        LifecycleUsageSeed, TerminalUsageSeed, UsageBodyRefsSeed, UsageBodyStatesSeed,
-        UsageRoutingSeed, UsageTerminalState, MAX_USAGE_CAPTURE_BYTES, MAX_USAGE_CAPTURE_DEPTH,
+        infer_sync_terminal_state, mask_header_value, mask_sensitive_body_fields,
+        mask_sensitive_headers_in_json_value, parse_sse_body_for_storage, resolve_error_message,
+        trim_owned_non_empty_string, LifecycleUsageSeed, TerminalUsageSeed, UsageBodyRefsSeed,
+        UsageBodyStatesSeed, UsageRoutingSeed, UsageTerminalState, MAX_USAGE_CAPTURE_BYTES,
+        MAX_USAGE_CAPTURE_DEPTH,
     };
     use crate::{
         build_upsert_usage_record_from_event, GatewayStreamReportRequest, GatewaySyncReportRequest,
@@ -3495,6 +3505,18 @@ mod tests {
     use base64::Engine as _;
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn idempotent_openai_video_delete_404_is_completed_usage() {
+        assert_eq!(
+            infer_sync_terminal_state("openai_video_delete_sync_success", 404, None),
+            UsageTerminalState::Completed
+        );
+        assert_eq!(
+            infer_sync_terminal_state("openai_video_delete_sync_finalize", 404, None),
+            UsageTerminalState::Failed
+        );
+    }
 
     #[test]
     fn extracts_openai_usage_tokens() {

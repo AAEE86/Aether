@@ -96,6 +96,7 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source_for_kind<'a>(
 pub(crate) fn set_local_openai_chat_execution_exhausted_diagnostic(
     state: &AppState,
     trace_id: &str,
+    runtime_miss_key: &str,
     decision: &GatewayControlDecision,
     plan_kind: &str,
     body_json: &serde_json::Value,
@@ -114,7 +115,7 @@ pub(crate) fn set_local_openai_chat_execution_exhausted_diagnostic(
     );
     set_local_runtime_execution_exhausted_diagnostic(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         plan_kind,
         body_json.get("model").and_then(|value| value.as_str()),

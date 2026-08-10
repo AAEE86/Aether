@@ -8,7 +8,7 @@ use crate::image_capabilities::openai_image_gateway_max_generation_count;
 use crate::tests::{
     any, build_router_with_state, build_state_with_execution_runtime_override, json, start_server,
     to_bytes, AppState, Arc, Body, Json, Mutex, Request, Router, StatusCode, EXECUTION_PATH_HEADER,
-    EXECUTION_PATH_LOCAL_AI_PUBLIC, EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS,
+    EXECUTION_PATH_LOCAL_AI_PUBLIC, EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS, TRACE_ID_HEADER,
 };
 use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
 use aether_data::DataLayerError;
@@ -1593,6 +1593,8 @@ async fn gateway_lists_gemini_operations_without_hitting_fallback_probe() {
 async fn gateway_cancels_gemini_operation_without_hitting_fallback_probe() {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenExecutionRuntimeSyncRequest {
+        request_id: String,
+        trace_id: String,
         method: String,
         url: String,
         api_key: String,
@@ -1618,13 +1620,25 @@ async fn gateway_cancels_gemini_operation_without_hitting_fallback_probe() {
         any(move |request: Request| {
             let seen_execution_runtime_inner = Arc::clone(&seen_execution_runtime_clone);
             async move {
-                let (_parts, body) = request.into_parts();
+                let (parts, body) = request.into_parts();
                 let raw_body = to_bytes(body, usize::MAX).await.expect("body should read");
                 let payload: serde_json::Value = serde_json::from_slice(&raw_body)
                     .expect("execution runtime payload should parse");
+                let request_id = payload
+                    .get("request_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
                 *seen_execution_runtime_inner
                     .lock()
                     .expect("mutex should lock") = Some(SeenExecutionRuntimeSyncRequest {
+                    request_id: request_id.clone(),
+                    trace_id: parts
+                        .headers
+                        .get(TRACE_ID_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string(),
                     method: payload
                         .get("method")
                         .and_then(|value| value.as_str())
@@ -1643,7 +1657,7 @@ async fn gateway_cancels_gemini_operation_without_hitting_fallback_probe() {
                         .to_string(),
                 });
                 Json(json!({
-                    "request_id": "trace-gemini-operation-cancel",
+                    "request_id": request_id,
                     "status_code": 200,
                     "headers": {
                         "content-type": "application/json"
@@ -1698,6 +1712,7 @@ async fn gateway_cancels_gemini_operation_without_hitting_fallback_probe() {
         ))
         .header("x-goog-api-key", "sk-gemini-operation-cancel")
         .header(http::header::CONTENT_TYPE, "application/json")
+        .header(TRACE_ID_HEADER, "trace-gemini-operation-cancel")
         .body("{}")
         .send()
         .await
@@ -1724,6 +1739,23 @@ async fn gateway_cancels_gemini_operation_without_hitting_fallback_probe() {
         .expect("mutex should lock")
         .clone()
         .expect("execution runtime sync should be captured");
+    assert_eq!(
+        seen_execution_runtime_request.trace_id,
+        "trace-gemini-operation-cancel"
+    );
+    assert!(uuid::Uuid::parse_str(&seen_execution_runtime_request.request_id).is_ok());
+    assert_ne!(
+        seen_execution_runtime_request.request_id,
+        "trace-gemini-operation-cancel"
+    );
+    assert_ne!(
+        seen_execution_runtime_request.request_id,
+        "request-task-gemini-operation-cancel"
+    );
+    assert_ne!(
+        seen_execution_runtime_request.request_id,
+        "async-task-admin-cancel-task-gemini-operation-cancel"
+    );
     assert_eq!(seen_execution_runtime_request.method, "POST");
     assert_eq!(
         seen_execution_runtime_request.url,

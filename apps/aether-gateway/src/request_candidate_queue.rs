@@ -12,6 +12,8 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, warn};
 
+use crate::state::RequestCandidateRuntimeOverlayLease;
+
 const MODE_ENV: &str = "AETHER_GATEWAY_REQUEST_CANDIDATE_WRITE_MODE";
 const QUEUE_CAPACITY_ENV: &str = "AETHER_GATEWAY_REQUEST_CANDIDATE_QUEUE_CAPACITY";
 const BATCH_SIZE_ENV: &str = "AETHER_GATEWAY_REQUEST_CANDIDATE_QUEUE_BATCH_SIZE";
@@ -50,6 +52,13 @@ pub(crate) enum RequestCandidateWriteMode {
 pub(crate) enum RequestCandidateQueueFullPolicy {
     Drop,
     Sync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestCandidateEnqueueOutcome {
+    Enqueued,
+    Persisted,
+    Dropped,
 }
 
 #[derive(Debug, Clone)]
@@ -174,14 +183,39 @@ impl RequestCandidateTerminalBarrier {
 
 #[derive(Debug)]
 enum RequestCandidateActiveQueueMessage {
-    Record(UpsertRequestCandidateRecord),
+    Record(RequestCandidateQueueRecord),
     Barrier(Arc<RequestCandidateTerminalBarrier>),
 }
 
 #[derive(Debug)]
 struct RequestCandidateTerminalQueueRecord {
-    record: UpsertRequestCandidateRecord,
+    queued: RequestCandidateQueueRecord,
     barrier: Arc<RequestCandidateTerminalBarrier>,
+}
+
+#[derive(Debug)]
+struct RequestCandidateQueueRecord {
+    record: UpsertRequestCandidateRecord,
+    overlay_leases: Vec<RequestCandidateRuntimeOverlayLease>,
+}
+
+impl RequestCandidateQueueRecord {
+    fn without_overlay(record: UpsertRequestCandidateRecord) -> Self {
+        Self {
+            record,
+            overlay_leases: Vec::new(),
+        }
+    }
+
+    fn with_overlay(
+        record: UpsertRequestCandidateRecord,
+        overlay_lease: RequestCandidateRuntimeOverlayLease,
+    ) -> Self {
+        Self {
+            record,
+            overlay_leases: vec![overlay_lease],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,13 +226,13 @@ enum RequestCandidateLifecycleLane {
 
 #[derive(Debug)]
 enum RequestCandidatePriorityEnqueueError {
-    Full(UpsertRequestCandidateRecord),
-    Closed(UpsertRequestCandidateRecord),
+    Full(RequestCandidateQueueRecord),
+    Closed(RequestCandidateQueueRecord),
 }
 
 #[derive(Clone)]
 pub(crate) struct RequestCandidateQueueRuntime {
-    senders: Vec<mpsc::Sender<UpsertRequestCandidateRecord>>,
+    senders: Vec<mpsc::Sender<RequestCandidateQueueRecord>>,
     active_senders: Vec<mpsc::Sender<RequestCandidateActiveQueueMessage>>,
     terminal_senders: Vec<mpsc::Sender<RequestCandidateTerminalQueueRecord>>,
     normal_admission: Arc<Semaphore>,
@@ -277,10 +311,31 @@ impl RequestCandidateQueueRuntime {
         &self,
         record: UpsertRequestCandidateRecord,
     ) -> Result<(), aether_data::DataLayerError> {
-        let worker_index = self.worker_index_for(&record);
-        if request_candidate_status_is_priority(record.status) {
+        self.enqueue_record_or_fallback(RequestCandidateQueueRecord::without_overlay(record))
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn enqueue_or_fallback_with_overlay(
+        &self,
+        record: UpsertRequestCandidateRecord,
+        overlay_lease: RequestCandidateRuntimeOverlayLease,
+    ) -> Result<RequestCandidateEnqueueOutcome, aether_data::DataLayerError> {
+        self.enqueue_record_or_fallback(RequestCandidateQueueRecord::with_overlay(
+            record,
+            overlay_lease,
+        ))
+        .await
+    }
+
+    async fn enqueue_record_or_fallback(
+        &self,
+        queued: RequestCandidateQueueRecord,
+    ) -> Result<RequestCandidateEnqueueOutcome, aether_data::DataLayerError> {
+        let worker_index = self.worker_index_for(&queued.record);
+        if request_candidate_status_is_priority(queued.record.status) {
             return self
-                .enqueue_priority_or_fallback(worker_index, record)
+                .enqueue_priority_or_fallback(worker_index, queued)
                 .await;
         }
 
@@ -288,42 +343,42 @@ impl RequestCandidateQueueRuntime {
             self.metrics
                 .sync_fallback_total
                 .fetch_add(1, Ordering::AcqRel);
-            return self.repository.upsert(record).await.map(|_| ());
+            return self.persist_synchronously(queued).await;
         };
         let admission = match self.normal_admission.try_acquire() {
             Ok(admission) => admission,
             Err(tokio::sync::TryAcquireError::NoPermits) => {
-                return self.handle_normal_queue_full(worker_index, record).await;
+                return self.handle_normal_queue_full(worker_index, queued).await;
             }
             Err(tokio::sync::TryAcquireError::Closed) => {
                 self.metrics
                     .sync_fallback_total
                     .fetch_add(1, Ordering::AcqRel);
-                return self.repository.upsert(record).await.map(|_| ());
+                return self.persist_synchronously(queued).await;
             }
         };
         self.metrics.queued_current.fetch_add(1, Ordering::AcqRel);
         self.metrics.pending_current.fetch_add(1, Ordering::AcqRel);
-        match sender.try_send(record) {
+        match sender.try_send(queued) {
             Ok(()) => {
                 admission.forget();
                 self.metrics.enqueued_total.fetch_add(1, Ordering::AcqRel);
-                Ok(())
+                Ok(RequestCandidateEnqueueOutcome::Enqueued)
             }
-            Err(mpsc::error::TrySendError::Full(record)) => {
+            Err(mpsc::error::TrySendError::Full(queued)) => {
                 drop(admission);
                 decrement_atomic_usize(&self.metrics.queued_current);
                 decrement_atomic_usize(&self.metrics.pending_current);
-                self.handle_normal_queue_full(worker_index, record).await
+                self.handle_normal_queue_full(worker_index, queued).await
             }
-            Err(mpsc::error::TrySendError::Closed(record)) => {
+            Err(mpsc::error::TrySendError::Closed(queued)) => {
                 drop(admission);
                 decrement_atomic_usize(&self.metrics.queued_current);
                 decrement_atomic_usize(&self.metrics.pending_current);
                 self.metrics
                     .sync_fallback_total
                     .fetch_add(1, Ordering::AcqRel);
-                self.repository.upsert(record).await.map(|_| ())
+                self.persist_synchronously(queued).await
             }
         }
     }
@@ -331,8 +386,8 @@ impl RequestCandidateQueueRuntime {
     async fn handle_normal_queue_full(
         &self,
         worker_index: usize,
-        record: UpsertRequestCandidateRecord,
-    ) -> Result<(), aether_data::DataLayerError> {
+        queued: RequestCandidateQueueRecord,
+    ) -> Result<RequestCandidateEnqueueOutcome, aether_data::DataLayerError> {
         warn!(
             event_name = "request_candidate_queue_full",
             log_type = "event",
@@ -348,13 +403,27 @@ impl RequestCandidateQueueRuntime {
                 self.metrics
                     .sync_fallback_total
                     .fetch_add(1, Ordering::AcqRel);
-                self.repository.upsert(record).await.map(|_| ())
+                self.persist_synchronously(queued).await
             }
             RequestCandidateQueueFullPolicy::Drop => {
                 self.metrics.dropped_total.fetch_add(1, Ordering::AcqRel);
-                Ok(())
+                drop(queued);
+                Ok(RequestCandidateEnqueueOutcome::Dropped)
             }
         }
+    }
+
+    async fn persist_synchronously(
+        &self,
+        queued: RequestCandidateQueueRecord,
+    ) -> Result<RequestCandidateEnqueueOutcome, aether_data::DataLayerError> {
+        let RequestCandidateQueueRecord {
+            record,
+            overlay_leases,
+        } = queued;
+        self.repository.upsert(record).await?;
+        RequestCandidateRuntimeOverlayLease::acknowledge_all(overlay_leases);
+        Ok(RequestCandidateEnqueueOutcome::Persisted)
     }
 
     /// Enqueue a lifecycle status without yielding to the Tokio scheduler.
@@ -366,78 +435,105 @@ impl RequestCandidateQueueRuntime {
         &self,
         record: UpsertRequestCandidateRecord,
     ) -> Result<(), UpsertRequestCandidateRecord> {
-        if !request_candidate_status_is_priority(record.status) {
-            return Err(record);
+        self.try_enqueue_priority_record(RequestCandidateQueueRecord::without_overlay(record))
+            .map_err(|queued| queued.record)
+    }
+
+    pub(crate) fn try_enqueue_priority_status_with_overlay(
+        &self,
+        record: UpsertRequestCandidateRecord,
+        overlay_lease: RequestCandidateRuntimeOverlayLease,
+    ) -> Result<(), UpsertRequestCandidateRecord> {
+        self.try_enqueue_priority_record(RequestCandidateQueueRecord::with_overlay(
+            record,
+            overlay_lease,
+        ))
+        .map_err(|queued| {
+            let RequestCandidateQueueRecord {
+                record,
+                overlay_leases,
+            } = queued;
+            drop(overlay_leases);
+            record
+        })
+    }
+
+    fn try_enqueue_priority_record(
+        &self,
+        queued: RequestCandidateQueueRecord,
+    ) -> Result<(), RequestCandidateQueueRecord> {
+        if !request_candidate_status_is_priority(queued.record.status) {
+            return Err(queued);
         }
-        let worker_index = self.worker_index_for(&record);
-        match self.try_enqueue_priority(worker_index, record) {
+        let worker_index = self.worker_index_for(&queued.record);
+        match self.try_enqueue_priority(worker_index, queued) {
             Ok(()) => Ok(()),
-            Err(RequestCandidatePriorityEnqueueError::Full(record)) => {
+            Err(RequestCandidatePriorityEnqueueError::Full(queued)) => {
                 self.observe_priority_backpressure(worker_index);
-                Err(record)
+                Err(queued)
             }
-            Err(RequestCandidatePriorityEnqueueError::Closed(record)) => Err(record),
+            Err(RequestCandidatePriorityEnqueueError::Closed(queued)) => Err(queued),
         }
     }
 
     async fn enqueue_priority_or_fallback(
         &self,
         worker_index: usize,
-        record: UpsertRequestCandidateRecord,
-    ) -> Result<(), aether_data::DataLayerError> {
-        let record = match self
-            .enqueue_priority_with_backpressure(worker_index, record)
+        queued: RequestCandidateQueueRecord,
+    ) -> Result<RequestCandidateEnqueueOutcome, aether_data::DataLayerError> {
+        let queued = match self
+            .enqueue_priority_with_backpressure(worker_index, queued)
             .await
         {
-            Ok(()) => return Ok(()),
-            Err(record) => record,
+            Ok(()) => return Ok(RequestCandidateEnqueueOutcome::Enqueued),
+            Err(queued) => queued,
         };
         self.metrics
             .sync_fallback_total
             .fetch_add(1, Ordering::AcqRel);
-        self.repository.upsert(record).await.map(|_| ())
+        self.persist_synchronously(queued).await
     }
 
     fn try_enqueue_priority(
         &self,
         worker_index: usize,
-        record: UpsertRequestCandidateRecord,
+        queued: RequestCandidateQueueRecord,
     ) -> Result<(), RequestCandidatePriorityEnqueueError> {
-        if request_candidate_status_is_active(record.status) {
-            return self.try_enqueue_active(worker_index, record);
+        if request_candidate_status_is_active(queued.record.status) {
+            return self.try_enqueue_active(worker_index, queued);
         }
-        if request_candidate_status_is_terminal(record.status) {
-            return self.try_enqueue_terminal(worker_index, record);
+        if request_candidate_status_is_terminal(queued.record.status) {
+            return self.try_enqueue_terminal(worker_index, queued);
         }
-        Err(RequestCandidatePriorityEnqueueError::Closed(record))
+        Err(RequestCandidatePriorityEnqueueError::Closed(queued))
     }
 
     fn try_enqueue_active(
         &self,
         worker_index: usize,
-        record: UpsertRequestCandidateRecord,
+        queued: RequestCandidateQueueRecord,
     ) -> Result<(), RequestCandidatePriorityEnqueueError> {
         let Some(sender) = self.active_senders.get(worker_index) else {
-            return Err(RequestCandidatePriorityEnqueueError::Closed(record));
+            return Err(RequestCandidatePriorityEnqueueError::Closed(queued));
         };
         let admission = match self.priority_admission.try_acquire() {
             Ok(admission) => admission,
             Err(tokio::sync::TryAcquireError::NoPermits) => {
-                return Err(RequestCandidatePriorityEnqueueError::Full(record));
+                return Err(RequestCandidatePriorityEnqueueError::Full(queued));
             }
             Err(tokio::sync::TryAcquireError::Closed) => {
-                return Err(RequestCandidatePriorityEnqueueError::Closed(record));
+                return Err(RequestCandidatePriorityEnqueueError::Closed(queued));
             }
         };
         let sender_permit = match sender.try_reserve() {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(RequestCandidatePriorityEnqueueError::Full(record));
+                return Err(RequestCandidatePriorityEnqueueError::Full(queued));
             }
-            Err(_) => return Err(RequestCandidatePriorityEnqueueError::Closed(record)),
+            Err(_) => return Err(RequestCandidatePriorityEnqueueError::Closed(queued)),
         };
         self.begin_lifecycle_enqueue(RequestCandidateLifecycleLane::Active);
-        sender_permit.send(RequestCandidateActiveQueueMessage::Record(record));
+        sender_permit.send(RequestCandidateActiveQueueMessage::Record(queued));
         admission.forget();
         self.finish_lifecycle_enqueue();
         Ok(())
@@ -446,36 +542,36 @@ impl RequestCandidateQueueRuntime {
     fn try_enqueue_terminal(
         &self,
         worker_index: usize,
-        record: UpsertRequestCandidateRecord,
+        queued: RequestCandidateQueueRecord,
     ) -> Result<(), RequestCandidatePriorityEnqueueError> {
         let (Some(active_sender), Some(terminal_sender)) = (
             self.active_senders.get(worker_index),
             self.terminal_senders.get(worker_index),
         ) else {
-            return Err(RequestCandidatePriorityEnqueueError::Closed(record));
+            return Err(RequestCandidatePriorityEnqueueError::Closed(queued));
         };
         let admission = match self.priority_admission.try_acquire() {
             Ok(admission) => admission,
             Err(tokio::sync::TryAcquireError::NoPermits) => {
-                return Err(RequestCandidatePriorityEnqueueError::Full(record));
+                return Err(RequestCandidatePriorityEnqueueError::Full(queued));
             }
             Err(tokio::sync::TryAcquireError::Closed) => {
-                return Err(RequestCandidatePriorityEnqueueError::Closed(record));
+                return Err(RequestCandidatePriorityEnqueueError::Closed(queued));
             }
         };
         let active_permit = match active_sender.try_reserve() {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(RequestCandidatePriorityEnqueueError::Full(record));
+                return Err(RequestCandidatePriorityEnqueueError::Full(queued));
             }
-            Err(_) => return Err(RequestCandidatePriorityEnqueueError::Closed(record)),
+            Err(_) => return Err(RequestCandidatePriorityEnqueueError::Closed(queued)),
         };
         let terminal_permit = match terminal_sender.try_reserve() {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(RequestCandidatePriorityEnqueueError::Full(record));
+                return Err(RequestCandidatePriorityEnqueueError::Full(queued));
             }
-            Err(_) => return Err(RequestCandidatePriorityEnqueueError::Closed(record)),
+            Err(_) => return Err(RequestCandidatePriorityEnqueueError::Closed(queued)),
         };
         self.begin_lifecycle_enqueue(RequestCandidateLifecycleLane::Terminal);
         let barrier_pending = self
@@ -490,7 +586,7 @@ impl RequestCandidateQueueRuntime {
         active_permit.send(RequestCandidateActiveQueueMessage::Barrier(Arc::clone(
             &barrier,
         )));
-        terminal_permit.send(RequestCandidateTerminalQueueRecord { record, barrier });
+        terminal_permit.send(RequestCandidateTerminalQueueRecord { queued, barrier });
         admission.forget();
         self.finish_lifecycle_enqueue();
         Ok(())
@@ -499,20 +595,20 @@ impl RequestCandidateQueueRuntime {
     async fn enqueue_priority_with_backpressure(
         &self,
         worker_index: usize,
-        record: UpsertRequestCandidateRecord,
-    ) -> Result<(), UpsertRequestCandidateRecord> {
+        queued: RequestCandidateQueueRecord,
+    ) -> Result<(), RequestCandidateQueueRecord> {
         let (Some(active_sender), Some(terminal_sender)) = (
             self.active_senders.get(worker_index),
             self.terminal_senders.get(worker_index),
         ) else {
-            return Err(record);
+            return Err(queued);
         };
-        let lane = if request_candidate_status_is_active(record.status) {
+        let lane = if request_candidate_status_is_active(queued.record.status) {
             RequestCandidateLifecycleLane::Active
-        } else if request_candidate_status_is_terminal(record.status) {
+        } else if request_candidate_status_is_terminal(queued.record.status) {
             RequestCandidateLifecycleLane::Terminal
         } else {
-            return Err(record);
+            return Err(queued);
         };
         if self.priority_admission.available_permits() == 0
             || active_sender.capacity() == 0
@@ -522,15 +618,15 @@ impl RequestCandidateQueueRuntime {
         }
         let active_permit = match active_sender.reserve().await {
             Ok(permit) => permit,
-            Err(_) => return Err(record),
+            Err(_) => return Err(queued),
         };
         if lane == RequestCandidateLifecycleLane::Active {
             let admission = match Arc::clone(&self.priority_admission).acquire_owned().await {
                 Ok(admission) => admission,
-                Err(_) => return Err(record),
+                Err(_) => return Err(queued),
             };
             self.begin_lifecycle_enqueue(lane);
-            active_permit.send(RequestCandidateActiveQueueMessage::Record(record));
+            active_permit.send(RequestCandidateActiveQueueMessage::Record(queued));
             admission.forget();
             self.finish_lifecycle_enqueue();
             return Ok(());
@@ -538,11 +634,11 @@ impl RequestCandidateQueueRuntime {
 
         let terminal_permit = match terminal_sender.reserve().await {
             Ok(permit) => permit,
-            Err(_) => return Err(record),
+            Err(_) => return Err(queued),
         };
         let admission = match Arc::clone(&self.priority_admission).acquire_owned().await {
             Ok(admission) => admission,
-            Err(_) => return Err(record),
+            Err(_) => return Err(queued),
         };
         self.begin_lifecycle_enqueue(lane);
         let barrier_pending = self
@@ -557,7 +653,7 @@ impl RequestCandidateQueueRuntime {
         active_permit.send(RequestCandidateActiveQueueMessage::Barrier(Arc::clone(
             &barrier,
         )));
-        terminal_permit.send(RequestCandidateTerminalQueueRecord { record, barrier });
+        terminal_permit.send(RequestCandidateTerminalQueueRecord { queued, barrier });
         admission.forget();
         self.finish_lifecycle_enqueue();
         Ok(())
@@ -853,7 +949,7 @@ impl RequestCandidateQueueRuntime {
 
     fn spawn_workers(
         self: &Arc<Self>,
-        receivers: Vec<mpsc::Receiver<UpsertRequestCandidateRecord>>,
+        receivers: Vec<mpsc::Receiver<RequestCandidateQueueRecord>>,
         active_receivers: Vec<mpsc::Receiver<RequestCandidateActiveQueueMessage>>,
         terminal_receivers: Vec<mpsc::Receiver<RequestCandidateTerminalQueueRecord>>,
     ) {
@@ -935,16 +1031,16 @@ fn parse_request_candidate_background_runtime_threads(value: Option<&str>) -> us
 
 fn push_active_message(
     message: RequestCandidateActiveQueueMessage,
-    batch: &mut Vec<UpsertRequestCandidateRecord>,
+    batch: &mut Vec<RequestCandidateQueueRecord>,
     barriers: &mut Vec<Arc<RequestCandidateTerminalBarrier>>,
     metrics: &RequestCandidateQueueMetrics,
 ) {
     match message {
-        RequestCandidateActiveQueueMessage::Record(record) => {
+        RequestCandidateActiveQueueMessage::Record(queued) => {
             decrement_atomic_usize(&metrics.queued_current);
             decrement_atomic_usize(&metrics.priority_queued_current);
             decrement_atomic_usize(&metrics.active_queued_current);
-            batch.push(record);
+            batch.push(queued);
         }
         RequestCandidateActiveQueueMessage::Barrier(barrier) => barriers.push(barrier),
     }
@@ -955,7 +1051,7 @@ fn push_active_message(
 /// this FIFO and are only released after the collected active records commit.
 async fn collect_active_micro_batch(
     receiver: &mut mpsc::Receiver<RequestCandidateActiveQueueMessage>,
-    batch: &mut Vec<UpsertRequestCandidateRecord>,
+    batch: &mut Vec<RequestCandidateQueueRecord>,
     barriers: &mut Vec<Arc<RequestCandidateTerminalBarrier>>,
     batch_size: usize,
     metrics: &RequestCandidateQueueMetrics,
@@ -988,7 +1084,7 @@ async fn collect_active_micro_batch(
 fn collect_ready_terminal_batch(
     receiver: &mut mpsc::Receiver<RequestCandidateTerminalQueueRecord>,
     front: &mut Option<RequestCandidateTerminalQueueRecord>,
-    batch: &mut Vec<UpsertRequestCandidateRecord>,
+    batch: &mut Vec<RequestCandidateQueueRecord>,
     batch_size: usize,
     metrics: &RequestCandidateQueueMetrics,
     receiver_open: &mut bool,
@@ -1017,7 +1113,7 @@ fn collect_ready_terminal_batch(
         decrement_atomic_usize(&metrics.queued_current);
         decrement_atomic_usize(&metrics.priority_queued_current);
         decrement_atomic_usize(&metrics.terminal_queued_current);
-        batch.push(record.record);
+        batch.push(record.queued);
     }
 }
 
@@ -1031,17 +1127,17 @@ fn release_terminal_barriers(
 }
 
 fn collect_ready_normal_batch(
-    receiver: &mut mpsc::Receiver<UpsertRequestCandidateRecord>,
-    batch: &mut Vec<UpsertRequestCandidateRecord>,
+    receiver: &mut mpsc::Receiver<RequestCandidateQueueRecord>,
+    batch: &mut Vec<RequestCandidateQueueRecord>,
     batch_size: usize,
     metrics: &RequestCandidateQueueMetrics,
     receiver_open: &mut bool,
 ) {
     while *receiver_open && batch.len() < batch_size.max(1) {
         match receiver.try_recv() {
-            Ok(record) => {
+            Ok(queued) => {
                 decrement_atomic_usize(&metrics.queued_current);
-                batch.push(record);
+                batch.push(queued);
             }
             Err(mpsc::error::TryRecvError::Empty) => break,
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1057,7 +1153,7 @@ async fn run_worker(
     metrics: Arc<RequestCandidateQueueMetrics>,
     db_write_gate: Option<Arc<RequestCandidateDbWriteGate>>,
     worker_index: usize,
-    mut receiver: mpsc::Receiver<UpsertRequestCandidateRecord>,
+    mut receiver: mpsc::Receiver<RequestCandidateQueueRecord>,
     mut active_receiver: mpsc::Receiver<RequestCandidateActiveQueueMessage>,
     mut terminal_receiver: mpsc::Receiver<RequestCandidateTerminalQueueRecord>,
     normal_admission: Arc<Semaphore>,
@@ -1426,15 +1522,15 @@ async fn flush_batch(
     db_write_gate: Option<&Arc<RequestCandidateDbWriteGate>>,
     worker_index: usize,
     lane: RequestCandidateQueueLane,
-    batch: &mut Vec<UpsertRequestCandidateRecord>,
+    batch: &mut Vec<RequestCandidateQueueRecord>,
     admission: Option<&Semaphore>,
 ) {
-    let records = std::mem::take(batch);
-    if records.is_empty() {
+    let queued_records = std::mem::take(batch);
+    if queued_records.is_empty() {
         return;
     }
-    let source_count = records.len();
-    let flush_plan = compact_records_for_flush(records);
+    let source_count = queued_records.len();
+    let flush_plan = compact_queued_records_for_flush(queued_records);
     let compacted = source_count.saturating_sub(flush_plan.record_count());
     if compacted > 0 {
         metrics
@@ -1544,13 +1640,13 @@ async fn flush_ordered_stage(
     lane: RequestCandidateQueueLane,
     records: Vec<CompactedRequestCandidateRecord>,
     blocked_slots: &HashSet<RequestCandidateSlot>,
-    retry_records: &mut Vec<UpsertRequestCandidateRecord>,
+    retry_records: &mut Vec<RequestCandidateQueueRecord>,
 ) -> FlushCompactedRecordsResult {
     let mut ready_records = Vec::with_capacity(records.len());
     for record in records {
         if blocked_slots.contains(&request_candidate_slot(&record.record)) {
             compact_retry_record(metrics, lane, &record);
-            retry_records.push(record.record);
+            retry_records.push(record.into_queue_record());
         } else {
             ready_records.push(record);
         }
@@ -1583,10 +1679,18 @@ async fn flush_compacted_records(
     worker_index: usize,
     lane: RequestCandidateQueueLane,
     records: Vec<CompactedRequestCandidateRecord>,
-    retry_records: &mut Vec<UpsertRequestCandidateRecord>,
+    retry_records: &mut Vec<RequestCandidateQueueRecord>,
 ) -> FlushCompactedRecordsResult {
     let mut result = FlushCompactedRecordsResult::default();
-    for chunk in records.chunks(config.db_batch_size.max(1)) {
+    let mut records = records.into_iter();
+    loop {
+        let chunk = records
+            .by_ref()
+            .take(config.db_batch_size.max(1))
+            .collect::<Vec<_>>();
+        if chunk.is_empty() {
+            break;
+        }
         let source_count = chunk
             .iter()
             .map(|record| record.source_count)
@@ -1606,7 +1710,19 @@ async fn flush_compacted_records(
             None => None,
         };
         let _db_write_in_flight = RequestCandidateDbWriteInFlightGuard::new(metrics);
-        if let Err(err) = repository.upsert_many(upsert_records).await {
+        let persist_result = repository
+            .upsert_many(upsert_records)
+            .await
+            .and_then(|persisted| {
+                if persisted == record_count {
+                    Ok(())
+                } else {
+                    Err(aether_data::DataLayerError::UnexpectedValue(format!(
+                        "request candidate batch upsert persisted {persisted} of {record_count} records"
+                    )))
+                }
+            });
+        if let Err(err) = persist_result {
             result.failed_source_count = result
                 .failed_source_count
                 .saturating_add(source_count as u64);
@@ -1634,7 +1750,11 @@ async fn flush_compacted_records(
                 error = ?err,
                 "gateway failed to asynchronously persist request candidate DB batch"
             );
-            retry_records.extend(chunk.iter().map(|record| record.record.clone()));
+            retry_records.extend(
+                chunk
+                    .into_iter()
+                    .map(CompactedRequestCandidateRecord::into_queue_record),
+            );
         } else {
             metrics
                 .flushed_total
@@ -1646,6 +1766,9 @@ async fn flush_compacted_records(
                     .fetch_add(source_count as u64, Ordering::AcqRel);
             }
             decrement_lifecycle_pending_by(metrics, lane, source_count);
+            for record in chunk {
+                RequestCandidateRuntimeOverlayLease::acknowledge_all(record.overlay_leases);
+            }
         }
     }
     result
@@ -1685,6 +1808,16 @@ fn decrement_lifecycle_pending_by(
 struct CompactedRequestCandidateRecord {
     record: UpsertRequestCandidateRecord,
     source_count: usize,
+    overlay_leases: Vec<RequestCandidateRuntimeOverlayLease>,
+}
+
+impl CompactedRequestCandidateRecord {
+    fn into_queue_record(self) -> RequestCandidateQueueRecord {
+        RequestCandidateQueueRecord {
+            record: self.record,
+            overlay_leases: self.overlay_leases,
+        }
+    }
 }
 
 type RequestCandidateSlot = (String, u32, u32);
@@ -1716,7 +1849,11 @@ struct RequestCandidateSlotCompaction {
 }
 
 impl RequestCandidateSlotCompaction {
-    fn merge(&mut self, record: UpsertRequestCandidateRecord) {
+    fn merge(&mut self, queued: RequestCandidateQueueRecord) {
+        let RequestCandidateQueueRecord {
+            record,
+            mut overlay_leases,
+        } = queued;
         let stage = match record.status {
             RequestCandidateStatus::Available | RequestCandidateStatus::Unused => &mut self.normal,
             RequestCandidateStatus::Pending => &mut self.pending,
@@ -1730,11 +1867,13 @@ impl RequestCandidateSlotCompaction {
             Some(compacted) => {
                 merge_request_candidate_record_for_flush(&mut compacted.record, record);
                 compacted.source_count = compacted.source_count.saturating_add(1);
+                compacted.overlay_leases.append(&mut overlay_leases);
             }
             None => {
                 *stage = Some(CompactedRequestCandidateRecord {
                     record,
                     source_count: 1,
+                    overlay_leases,
                 });
             }
         }
@@ -1764,19 +1903,19 @@ fn append_compacted_stage(
     target.push(stage);
 }
 
-fn compact_records_for_flush(
-    records: Vec<UpsertRequestCandidateRecord>,
+fn compact_queued_records_for_flush(
+    records: Vec<RequestCandidateQueueRecord>,
 ) -> CompactedRequestCandidateFlushPlan {
     let mut latest_slot = HashMap::<RequestCandidateSlot, usize>::new();
     let mut compacted = Vec::<RequestCandidateSlotCompaction>::with_capacity(records.len());
-    for record in records {
-        let slot = request_candidate_slot(&record);
+    for queued in records {
+        let slot = request_candidate_slot(&queued.record);
         match latest_slot.get(&slot).copied() {
-            Some(index) => compacted[index].merge(record),
+            Some(index) => compacted[index].merge(queued),
             _ => {
                 latest_slot.insert(slot, compacted.len());
                 let mut slot = RequestCandidateSlotCompaction::default();
-                slot.merge(record);
+                slot.merge(queued);
                 compacted.push(slot);
             }
         }
@@ -1823,6 +1962,18 @@ fn compact_records_for_flush(
         );
     }
     plan
+}
+
+#[cfg(test)]
+fn compact_records_for_flush(
+    records: Vec<UpsertRequestCandidateRecord>,
+) -> CompactedRequestCandidateFlushPlan {
+    compact_queued_records_for_flush(
+        records
+            .into_iter()
+            .map(RequestCandidateQueueRecord::without_overlay)
+            .collect(),
+    )
 }
 
 fn request_candidate_slot(record: &UpsertRequestCandidateRecord) -> RequestCandidateSlot {
@@ -2091,7 +2242,7 @@ mod tests {
         parse_request_candidate_background_runtime_threads, run_worker,
         spawn_on_request_candidate_background_runtime, RequestCandidateActiveQueueMessage,
         RequestCandidateQueueConfig, RequestCandidateQueueLane, RequestCandidateQueueMetrics,
-        RequestCandidateQueueRuntime, RequestCandidateTerminalBarrier,
+        RequestCandidateQueueRecord, RequestCandidateQueueRuntime, RequestCandidateTerminalBarrier,
         RequestCandidateTerminalQueueRecord, MAX_CONSECUTIVE_ACTIVE_FLUSHES,
         MAX_CONSECUTIVE_PRIORITY_FLUSHES,
     };
@@ -2165,6 +2316,12 @@ mod tests {
         first_attempt: tokio::sync::Notify,
     }
 
+    #[derive(Default)]
+    struct ShortWriteThenPersistRequestCandidateRepository {
+        inner: InMemoryRequestCandidateRepository,
+        attempts: AtomicUsize,
+    }
+
     impl Default for FailUntilReleasedRequestCandidateRepository {
         fn default() -> Self {
             Self {
@@ -2202,6 +2359,42 @@ mod tests {
                 self.inner.upsert(candidate).await?;
             }
             Ok(count)
+        }
+
+        async fn delete_created_before(
+            &self,
+            created_before_unix_secs: u64,
+            limit: usize,
+        ) -> Result<usize, DataLayerError> {
+            self.inner
+                .delete_created_before(created_before_unix_secs, limit)
+                .await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RequestCandidateWriteRepository for ShortWriteThenPersistRequestCandidateRepository {
+        async fn upsert(
+            &self,
+            candidate: UpsertRequestCandidateRecord,
+        ) -> Result<StoredRequestCandidate, DataLayerError> {
+            self.inner.upsert(candidate).await
+        }
+
+        async fn upsert_many(
+            &self,
+            candidates: Vec<UpsertRequestCandidateRecord>,
+        ) -> Result<usize, DataLayerError> {
+            let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
+            let persisted = if attempt == 0 {
+                candidates.len().saturating_sub(1)
+            } else {
+                candidates.len()
+            };
+            for candidate in candidates.into_iter().take(persisted) {
+                self.inner.upsert(candidate).await?;
+            }
+            Ok(persisted)
         }
 
         async fn delete_created_before(
@@ -2567,6 +2760,10 @@ mod tests {
         );
     }
 
+    fn queued(record: UpsertRequestCandidateRecord) -> RequestCandidateQueueRecord {
+        RequestCandidateQueueRecord::without_overlay(record)
+    }
+
     #[tokio::test]
     async fn candidate_queue_tasks_run_on_dedicated_runtime() {
         let thread_name = spawn_on_request_candidate_background_runtime(async {
@@ -2669,10 +2866,10 @@ mod tests {
         // a scheduler yield here makes the test occasionally miss a sender
         // that did not run until after the intentionally tiny 1ms deadline.
         sender
-            .send(RequestCandidateActiveQueueMessage::Record(second))
+            .send(RequestCandidateActiveQueueMessage::Record(queued(second)))
             .await
             .expect("micro-batch receiver open");
-        let mut batch = vec![first];
+        let mut batch = vec![queued(first)];
         let mut barriers = Vec::new();
         let mut receiver_open = true;
         collect_active_micro_batch(
@@ -2712,22 +2909,22 @@ mod tests {
         let (terminal_sender, terminal_receiver) = tokio::sync::mpsc::channel(16);
 
         normal_sender
-            .send(record(
+            .send(queued(record(
                 "normal-fairness",
                 0,
                 0,
                 RequestCandidateStatus::Available,
-            ))
+            )))
             .await
             .expect("normal receiver open");
         for index in 0..(MAX_CONSECUTIVE_PRIORITY_FLUSHES * 2) {
             active_sender
-                .send(RequestCandidateActiveQueueMessage::Record(record(
+                .send(RequestCandidateActiveQueueMessage::Record(queued(record(
                     &format!("priority-fairness-{index}"),
                     0,
                     0,
                     RequestCandidateStatus::Streaming,
-                )))
+                ))))
                 .await
                 .expect("priority receiver open");
         }
@@ -2805,12 +3002,12 @@ mod tests {
         let active_count = MAX_CONSECUTIVE_ACTIVE_FLUSHES * 3;
         for index in 0..active_count {
             active_sender
-                .send(RequestCandidateActiveQueueMessage::Record(record(
+                .send(RequestCandidateActiveQueueMessage::Record(queued(record(
                     &format!("active-fairness-{index}"),
                     0,
                     0,
                     RequestCandidateStatus::Streaming,
-                )))
+                ))))
                 .await
                 .expect("active receiver open");
         }
@@ -2818,7 +3015,12 @@ mod tests {
         barrier.ready.store(true, Ordering::Release);
         terminal_sender
             .send(RequestCandidateTerminalQueueRecord {
-                record: record("terminal-fairness", 0, 0, RequestCandidateStatus::Success),
+                queued: queued(record(
+                    "terminal-fairness",
+                    0,
+                    0,
+                    RequestCandidateStatus::Success,
+                )),
                 barrier,
             })
             .await
@@ -2903,12 +3105,12 @@ mod tests {
         terminal_barrier.ready.store(true, Ordering::Release);
         terminal_sender
             .send(RequestCandidateTerminalQueueRecord {
-                record: record(
+                queued: queued(record(
                     "terminal-amid-barriers",
                     0,
                     0,
                     RequestCandidateStatus::Success,
-                ),
+                )),
                 barrier: terminal_barrier,
             })
             .await
@@ -3009,23 +3211,23 @@ mod tests {
 
         terminal_sender
             .send(RequestCandidateTerminalQueueRecord {
-                record: record(
+                queued: queued(record(
                     "terminal-after-barrier",
                     0,
                     0,
                     RequestCandidateStatus::Success,
-                ),
+                )),
                 barrier: Arc::clone(&barrier),
             })
             .await
             .expect("terminal receiver open");
         normal_sender
-            .send(record(
+            .send(queued(record(
                 "normal-wakeup-sentinel",
                 0,
                 0,
                 RequestCandidateStatus::Available,
-            ))
+            )))
             .await
             .expect("normal receiver open");
 
@@ -3099,12 +3301,12 @@ mod tests {
         metrics.pending_current.store(6, Ordering::Release);
         metrics.priority_pending_current.store(6, Ordering::Release);
         let mut batch = vec![
-            record("ordered", 0, 0, RequestCandidateStatus::Pending),
-            record("ordered", 0, 0, RequestCandidateStatus::Streaming),
-            record("ordered", 0, 0, RequestCandidateStatus::Success),
-            record("ordered", 1, 0, RequestCandidateStatus::Pending),
-            record("ordered", 1, 0, RequestCandidateStatus::Streaming),
-            record("ordered", 1, 0, RequestCandidateStatus::Failed),
+            queued(record("ordered", 0, 0, RequestCandidateStatus::Pending)),
+            queued(record("ordered", 0, 0, RequestCandidateStatus::Streaming)),
+            queued(record("ordered", 0, 0, RequestCandidateStatus::Success)),
+            queued(record("ordered", 1, 0, RequestCandidateStatus::Pending)),
+            queued(record("ordered", 1, 0, RequestCandidateStatus::Streaming)),
+            queued(record("ordered", 1, 0, RequestCandidateStatus::Failed)),
         ];
 
         flush_batch(
@@ -3142,6 +3344,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn short_batch_write_is_retried_instead_of_being_acknowledged() {
+        let repository = Arc::new(ShortWriteThenPersistRequestCandidateRepository::default());
+        let writer: Arc<dyn RequestCandidateWriteRepository> = repository.clone();
+        let config = RequestCandidateQueueConfig {
+            db_batch_size: 512,
+            ..RequestCandidateQueueConfig::default()
+        };
+        let metrics = RequestCandidateQueueMetrics::default();
+        metrics.pending_current.store(2, Ordering::Release);
+        let mut batch = vec![
+            queued(record(
+                "short-write",
+                0,
+                0,
+                RequestCandidateStatus::Available,
+            )),
+            queued(record(
+                "short-write",
+                1,
+                0,
+                RequestCandidateStatus::Available,
+            )),
+        ];
+
+        flush_batch(
+            &writer,
+            &config,
+            &metrics,
+            None,
+            0,
+            RequestCandidateQueueLane::Normal,
+            &mut batch,
+            None,
+        )
+        .await;
+
+        assert_eq!(batch.len(), 2);
+        assert_eq!(metrics.pending_current.load(Ordering::Acquire), 2);
+        assert_eq!(metrics.flushed_total.load(Ordering::Acquire), 0);
+        assert_eq!(metrics.flush_failed_total.load(Ordering::Acquire), 2);
+
+        flush_batch(
+            &writer,
+            &config,
+            &metrics,
+            None,
+            0,
+            RequestCandidateQueueLane::Normal,
+            &mut batch,
+            None,
+        )
+        .await;
+
+        assert!(batch.is_empty());
+        assert_eq!(metrics.pending_current.load(Ordering::Acquire), 0);
+        assert_eq!(metrics.flushed_total.load(Ordering::Acquire), 2);
+        assert_eq!(repository.attempts.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
     async fn pending_is_visible_before_streaming_batch_starts() {
         let recorder = Arc::new(BlockingStreamingBatchRequestCandidateRepository::default());
         let repository: Arc<dyn RequestCandidateWriteRepository> = recorder.clone();
@@ -3157,9 +3419,9 @@ mod tests {
         let worker_repository = Arc::clone(&repository);
         let worker = tokio::spawn(async move {
             let mut batch = vec![
-                record("visible", 0, 0, RequestCandidateStatus::Pending),
-                record("visible", 0, 0, RequestCandidateStatus::Streaming),
-                record("visible", 0, 0, RequestCandidateStatus::Success),
+                queued(record("visible", 0, 0, RequestCandidateStatus::Pending)),
+                queued(record("visible", 0, 0, RequestCandidateStatus::Streaming)),
+                queued(record("visible", 0, 0, RequestCandidateStatus::Success)),
             ];
             flush_batch(
                 &worker_repository,
@@ -3213,9 +3475,14 @@ mod tests {
         metrics.pending_current.store(3, Ordering::Release);
         metrics.priority_pending_current.store(3, Ordering::Release);
         let mut batch = vec![
-            record("retry-order", 0, 0, RequestCandidateStatus::Pending),
-            record("retry-order", 0, 0, RequestCandidateStatus::Streaming),
-            record("retry-order", 0, 0, RequestCandidateStatus::Success),
+            queued(record("retry-order", 0, 0, RequestCandidateStatus::Pending)),
+            queued(record(
+                "retry-order",
+                0,
+                0,
+                RequestCandidateStatus::Streaming,
+            )),
+            queued(record("retry-order", 0, 0, RequestCandidateStatus::Success)),
         ];
 
         flush_batch(
@@ -3234,9 +3501,9 @@ mod tests {
         assert_eq!(first_attempts.len(), 1);
         assert_eq!(first_attempts[0][0].status, RequestCandidateStatus::Pending);
         assert_eq!(batch.len(), 3);
-        assert_eq!(batch[0].status, RequestCandidateStatus::Pending);
-        assert_eq!(batch[1].status, RequestCandidateStatus::Streaming);
-        assert_eq!(batch[2].status, RequestCandidateStatus::Success);
+        assert_eq!(batch[0].record.status, RequestCandidateStatus::Pending);
+        assert_eq!(batch[1].record.status, RequestCandidateStatus::Streaming);
+        assert_eq!(batch[2].record.status, RequestCandidateStatus::Success);
         assert_eq!(metrics.pending_current.load(Ordering::Acquire), 3);
         assert_eq!(metrics.priority_pending_current.load(Ordering::Acquire), 3);
         assert_eq!(metrics.flush_failed_total.load(Ordering::Acquire), 1);

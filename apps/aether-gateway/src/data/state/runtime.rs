@@ -1171,6 +1171,24 @@ impl GatewayDataState {
         }
     }
 
+    pub(crate) async fn find_provider_quota_by_provider_id_strong(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<StoredProviderQuotaSnapshot>, DataLayerError> {
+        let repository = if let Some(backends) = self.backends.as_ref() {
+            backends.read().provider_quotas().ok_or_else(|| {
+                DataLayerError::InvalidConfiguration(
+                    "strong provider quota read repository is unavailable".to_string(),
+                )
+            })?
+        } else if let Some(repository) = self.provider_quota_reader.clone() {
+            repository
+        } else {
+            return Ok(None);
+        };
+        repository.find_by_provider_id(provider_id).await
+    }
+
     pub(crate) async fn find_provider_quotas_by_provider_ids(
         &self,
         provider_ids: &[String],

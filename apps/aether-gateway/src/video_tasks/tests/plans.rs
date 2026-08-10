@@ -43,6 +43,7 @@ fn rust_authoritative_service_builds_openai_cancel_follow_up_plan() {
         .expect("follow-up plan should build");
 
     assert_eq!(follow_up.plan.method, "DELETE");
+    assert_eq!(follow_up.plan.request_id, "trace-openai-cancel-123");
     assert_eq!(
         follow_up.plan.url,
         "https://api.openai.example/v1/videos/ext-video-task-123"
@@ -61,6 +62,22 @@ fn rust_authoritative_service_builds_openai_cancel_follow_up_plan() {
             .and_then(|value| value.get("task_id"))
             .and_then(Value::as_str),
         Some("task-local-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("request_id"))
+            .and_then(Value::as_str),
+        Some("trace-openai-cancel-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("parent_request_id"))
+            .and_then(Value::as_str),
+        Some("request-123")
     );
 }
 
@@ -104,6 +121,7 @@ fn rust_authoritative_service_builds_openai_remix_follow_up_plan() {
         .expect("follow-up plan should build");
 
     assert_eq!(follow_up.plan.method, "POST");
+    assert_eq!(follow_up.plan.request_id, "trace-openai-remix-123");
     assert_eq!(
         follow_up.plan.url,
         "https://api.openai.example/v1/videos/ext-video-task-123/remix"
@@ -122,6 +140,22 @@ fn rust_authoritative_service_builds_openai_remix_follow_up_plan() {
             .and_then(|value| value.get("task_id"))
             .and_then(Value::as_str),
         Some("task-local-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("request_id"))
+            .and_then(Value::as_str),
+        Some("trace-openai-remix-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("parent_request_id"))
+            .and_then(Value::as_str),
+        Some("request-123")
     );
 }
 
@@ -161,6 +195,7 @@ fn rust_authoritative_service_builds_openai_delete_follow_up_plan() {
         .expect("follow-up plan should build");
 
     assert_eq!(follow_up.plan.method, "DELETE");
+    assert_eq!(follow_up.plan.request_id, "trace-openai-delete-123");
     assert_eq!(
         follow_up.plan.url,
         "https://api.openai.example/v1/videos/ext-video-task-123"
@@ -179,6 +214,22 @@ fn rust_authoritative_service_builds_openai_delete_follow_up_plan() {
             .and_then(|value| value.get("task_id"))
             .and_then(Value::as_str),
         Some("task-local-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("request_id"))
+            .and_then(Value::as_str),
+        Some("trace-openai-delete-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("parent_request_id"))
+            .and_then(Value::as_str),
+        Some("request-123")
     );
 }
 
@@ -211,6 +262,7 @@ fn rust_authoritative_service_builds_gemini_cancel_follow_up_plan() {
         .expect("follow-up plan should build");
 
     assert_eq!(follow_up.plan.method, "POST");
+    assert_eq!(follow_up.plan.request_id, "trace-gemini-cancel-123");
     assert_eq!(
             follow_up.plan.url,
             "https://generativelanguage.googleapis.com/v1beta/models/veo-3/operations/ext-video-123:cancel"
@@ -229,6 +281,22 @@ fn rust_authoritative_service_builds_gemini_cancel_follow_up_plan() {
             .and_then(|value| value.get("task_id"))
             .and_then(Value::as_str),
         Some("localshort123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("request_id"))
+            .and_then(Value::as_str),
+        Some("trace-gemini-cancel-123")
+    );
+    assert_eq!(
+        follow_up
+            .report_context
+            .as_ref()
+            .and_then(|value| value.get("parent_request_id"))
+            .and_then(Value::as_str),
+        Some("request-123")
     );
 }
 
@@ -266,6 +334,7 @@ fn rust_authoritative_service_builds_openai_read_refresh_plan() {
         .expect("read refresh plan should build");
 
     assert_eq!(refresh.plan.method, "GET");
+    assert_eq!(refresh.plan.request_id, "trace-openai-read-123");
     assert_eq!(
         refresh.plan.url,
         "https://api.openai.example/v1/videos/ext-video-task-123"
@@ -300,6 +369,7 @@ fn rust_authoritative_service_builds_gemini_read_refresh_plan() {
         .expect("read refresh plan should build");
 
     assert_eq!(refresh.plan.method, "GET");
+    assert_eq!(refresh.plan.request_id, "trace-gemini-read-123");
     assert_eq!(
         refresh.plan.url,
         "https://generativelanguage.googleapis.com/v1beta/models/veo-3/operations/ext-video-123"
@@ -353,7 +423,7 @@ fn rust_authoritative_service_builds_poll_refresh_batch_for_active_tasks_only() 
         transport: sample_transport("https://api.openai.example", "openai:video"),
     }));
 
-    let batch = service.prepare_poll_refresh_batch(10, "trace-poller");
+    let batch = service.prepare_poll_refresh_batch(10, "poll-request");
 
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].plan.method, "GET");
@@ -361,6 +431,11 @@ fn rust_authoritative_service_builds_poll_refresh_batch_for_active_tasks_only() 
         batch[0].plan.url,
         "https://api.openai.example/v1/videos/ext-video-task-123"
     );
+    assert!(batch[0].plan.request_id.starts_with("poll-request-"));
+
+    let next_batch = service.prepare_poll_refresh_batch(10, "poll-request");
+    assert_eq!(next_batch.len(), 1);
+    assert_ne!(batch[0].plan.request_id, next_batch[0].plan.request_id);
 }
 
 #[test]

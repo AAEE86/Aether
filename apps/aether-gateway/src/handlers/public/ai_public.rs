@@ -122,6 +122,7 @@ pub(crate) async fn maybe_build_local_ai_public_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     request_body: Option<&Bytes>,
+    execution_request_id: &str,
 ) -> Option<Response<Body>> {
     if let Some(response) = maybe_build_local_ai_public_route_guard_response(request_context) {
         return Some(response);
@@ -150,7 +151,13 @@ pub(crate) async fn maybe_build_local_ai_public_response(
         return Some(response);
     }
 
-    maybe_build_local_gemini_video_operations_response(state, request_context, decision).await
+    maybe_build_local_gemini_video_operations_response(
+        state,
+        request_context,
+        decision,
+        execution_request_id,
+    )
+    .await
 }
 
 fn maybe_build_local_openai_request_validation_response(
@@ -1293,6 +1300,7 @@ async fn maybe_build_local_gemini_video_operations_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     decision: &GatewayControlDecision,
+    execution_request_id: &str,
 ) -> Option<Response<Body>> {
     if decision.route_family.as_deref() != Some("gemini")
         || decision.route_kind.as_deref() != Some("video")
@@ -1325,8 +1333,14 @@ async fn maybe_build_local_gemini_video_operations_response(
                 .await
         }
         http::Method::POST if operation_path.ends_with(":cancel") => {
-            build_local_gemini_video_operation_cancel_response(state, decision, operation_path)
-                .await
+            build_local_gemini_video_operation_cancel_response(
+                state,
+                decision,
+                operation_path,
+                &request_context.trace_id,
+                execution_request_id,
+            )
+            .await
         }
         _ => build_ai_public_error_response(
             http::StatusCode::METHOD_NOT_ALLOWED,
@@ -1404,6 +1418,8 @@ async fn build_local_gemini_video_operation_cancel_response(
     state: &AppState,
     decision: &GatewayControlDecision,
     operation_path: &str,
+    trace_id: &str,
+    execution_request_id: &str,
 ) -> Response<Body> {
     let task =
         match find_user_gemini_video_task_for_operation(state, decision, operation_path).await {
@@ -1422,7 +1438,14 @@ async fn build_local_gemini_video_operation_cancel_response(
             }
         };
 
-    match crate::async_task::cancel_video_task_record(state, &task.id).await {
+    match crate::async_task::cancel_video_task_record(
+        state,
+        &task.id,
+        trace_id,
+        execution_request_id,
+    )
+    .await
+    {
         Ok(_) => Json(json!({})).into_response(),
         Err(CancelVideoTaskError::NotFound) => build_ai_public_error_response(
             http::StatusCode::NOT_FOUND,

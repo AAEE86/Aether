@@ -18,6 +18,38 @@ struct GatewayRuntimeMissDiagnosticPort<'a> {
     state: Option<&'a AppState>,
 }
 
+/// Removes a request-scoped diagnostic on every exit path, including task
+/// cancellation and panic unwinding.
+pub(crate) struct RuntimeMissDiagnosticCleanupGuard {
+    state: AppState,
+    request_id: String,
+}
+
+impl RuntimeMissDiagnosticCleanupGuard {
+    pub(crate) fn new(state: &AppState, request_id: impl Into<String>) -> Self {
+        Self {
+            state: state.clone(),
+            request_id: request_id.into(),
+        }
+    }
+}
+
+impl Drop for RuntimeMissDiagnosticCleanupGuard {
+    fn drop(&mut self) {
+        self.state
+            .clear_local_execution_runtime_miss_diagnostic(&self.request_id);
+    }
+}
+
+/// Selects the server-owned key used by the per-request runtime-miss state
+/// machine. The public trace remains available to callers for logging only.
+pub(crate) fn runtime_miss_diagnostic_key_from_parts<'a>(
+    parts: &'a http::request::Parts,
+    public_trace_id: &'a str,
+) -> &'a str {
+    crate::execution_identity::execution_request_id_from_parts(parts, public_trace_id)
+}
+
 impl AiRuntimeMissDiagnosticFields for LocalExecutionRuntimeMissDiagnostic {
     fn set_reason(&mut self, reason: String) {
         self.reason = reason;
@@ -253,4 +285,102 @@ pub(crate) fn record_local_runtime_candidate_skip_reason(
 ) {
     let port = GatewayRuntimeMissDiagnosticPort { state: Some(state) };
     record_ai_runtime_candidate_skip_reason(&port, trace_id, skip_reason);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        runtime_miss_diagnostic_key_from_parts, set_local_runtime_miss_diagnostic_reason,
+        RuntimeMissDiagnosticCleanupGuard,
+    };
+    use crate::control::GatewayControlDecision;
+    use crate::execution_identity::ExecutionRequestId;
+    use crate::AppState;
+
+    #[test]
+    fn identical_public_traces_keep_runtime_miss_diagnostics_isolated() {
+        let state = AppState::new().expect("state should build");
+        let public_trace_id = "shared-client-trace";
+        let mut first = http::Request::new(()).into_parts().0;
+        let mut second = http::Request::new(()).into_parts().0;
+        first.extensions.insert(ExecutionRequestId::server_owned(
+            "execution-request-1".to_string(),
+        ));
+        second.extensions.insert(ExecutionRequestId::server_owned(
+            "execution-request-2".to_string(),
+        ));
+        let first_key = runtime_miss_diagnostic_key_from_parts(&first, public_trace_id).to_string();
+        let second_key =
+            runtime_miss_diagnostic_key_from_parts(&second, public_trace_id).to_string();
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/responses",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("responses".to_string()),
+            Some("openai:responses".to_string()),
+        );
+
+        set_local_runtime_miss_diagnostic_reason(
+            &state,
+            &first_key,
+            &decision,
+            "openai_responses_sync",
+            Some("gpt-5"),
+            "first_request_reason",
+        );
+        set_local_runtime_miss_diagnostic_reason(
+            &state,
+            &second_key,
+            &decision,
+            "openai_responses_sync",
+            Some("gpt-5"),
+            "second_request_reason",
+        );
+
+        assert!(state
+            .take_local_execution_runtime_miss_diagnostic(public_trace_id)
+            .is_none());
+        assert_eq!(
+            state
+                .take_local_execution_runtime_miss_diagnostic(&first_key)
+                .expect("first diagnostic")
+                .reason,
+            "first_request_reason"
+        );
+        assert_eq!(
+            state
+                .take_local_execution_runtime_miss_diagnostic(&second_key)
+                .expect("second diagnostic")
+                .reason,
+            "second_request_reason"
+        );
+    }
+
+    #[test]
+    fn cleanup_guard_removes_request_scoped_diagnostic() {
+        let state = AppState::new().expect("state should build");
+        let request_id = "execution-request-cleanup";
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/responses",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("responses".to_string()),
+            Some("openai:responses".to_string()),
+        );
+        {
+            let _cleanup = RuntimeMissDiagnosticCleanupGuard::new(&state, request_id);
+            set_local_runtime_miss_diagnostic_reason(
+                &state,
+                request_id,
+                &decision,
+                "openai_responses_sync",
+                Some("gpt-5"),
+                "candidate_evaluation_incomplete",
+            );
+        }
+
+        assert!(state
+            .take_local_execution_runtime_miss_diagnostic(request_id)
+            .is_none());
+    }
 }

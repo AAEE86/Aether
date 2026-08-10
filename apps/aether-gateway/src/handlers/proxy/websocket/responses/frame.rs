@@ -1,6 +1,6 @@
 //! Parsed OpenAI Responses WebSocket text frames.
 //!
-//! A relay frame is parsed once and then shared by the protocol adapter, turn
+//! A relay frame is parsed once and then shared by the provider observer, turn
 //! accounting, retry safety, and connection lifecycle code.  Keeping the raw
 //! text as a borrow avoids copying the websocket payload while the relay is
 //! processing it.
@@ -28,6 +28,12 @@ pub(super) struct ParsedResponsesWebSocketFrame<'a> {
 impl<'a> ParsedResponsesWebSocketFrame<'a> {
     pub(super) fn parse(raw_text: &'a str) -> serde_json::Result<Self> {
         let event = serde_json::from_str::<Value>(raw_text)?;
+        Ok(Self::from_event(raw_text, event))
+    }
+
+    /// Builds the shared semantic view after a backend has already decoded
+    /// its transport framing into one canonical JSON event.
+    pub(super) fn from_event(raw_text: &'a str, event: Value) -> Self {
         let events = protocol_events_of(&event);
         let started = events.iter().copied().any(event_is_started);
         // A batch carries at most one terminal in practice.  Taking the first
@@ -49,7 +55,7 @@ impl<'a> ParsedResponsesWebSocketFrame<'a> {
         let chunked = event.get("chunks").and_then(Value::as_array).is_some();
         let status = terminal.map(|terminal| terminal.status_code);
 
-        Ok(Self {
+        Self {
             raw_text,
             event,
             event_type,
@@ -58,7 +64,7 @@ impl<'a> ParsedResponsesWebSocketFrame<'a> {
             terminal,
             terminal_event,
             chunked,
-        })
+        }
     }
 
     /// The protocol events this frame carries.
@@ -148,26 +154,18 @@ fn event_is_started(event: &Value) -> bool {
     )
 }
 
-/// `response.incomplete` 的合法终态 reason 白名单。
-///
-/// 这些 reason 表示上游按规则正常结束了本轮响应（写满 `max_output_tokens`、
-/// 命中内容过滤、按工具调用截断），标准流解析里它们会变成 `length` /
-/// `content_filter` / `tool_calls` 这类正常 finish，和
-/// `openai_responses_incomplete_finish_reason` 的既有映射保持一致，因此不能
-/// 当成 provider failure 记账。
-const LEGITIMATE_RESPONSES_INCOMPLETE_REASONS: [&str; 5] = [
-    "max_output_tokens",
-    "max_tokens",
-    "content_filter",
-    "tool_calls",
-    "function_call",
-];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResponsesIncompleteTerminalKind {
+    MaxOutputTokens,
+    ContentFilter,
+    ToolCall,
+}
 
 /// 读取 `response.incomplete` 携带的 `incomplete_details.reason`。
 ///
 /// 标准位置是 `response.incomplete_details.reason`；批量封装偶尔把
 /// `incomplete_details` 直接放在事件顶层，两处都要看，否则合法终态会被漏判。
-fn responses_incomplete_reason(event: &Value) -> Option<&str> {
+pub(super) fn responses_incomplete_reason(event: &Value) -> Option<&str> {
     [
         event.pointer("/response/incomplete_details/reason"),
         event.pointer("/incomplete_details/reason"),
@@ -179,17 +177,34 @@ fn responses_incomplete_reason(event: &Value) -> Option<&str> {
     .find(|reason| !reason.is_empty())
 }
 
+/// Classifies provider variants once for both settlement and public-wire
+/// normalization. Only `max_output_tokens` and `content_filter` are public
+/// Responses reasons; legacy aliases are converted by the public codec.
+pub(super) fn responses_incomplete_terminal_kind(
+    event: &Value,
+) -> Option<ResponsesIncompleteTerminalKind> {
+    let reason = responses_incomplete_reason(event)?;
+    if reason.eq_ignore_ascii_case("max_output_tokens") || reason.eq_ignore_ascii_case("max_tokens")
+    {
+        Some(ResponsesIncompleteTerminalKind::MaxOutputTokens)
+    } else if reason.eq_ignore_ascii_case("content_filter") {
+        Some(ResponsesIncompleteTerminalKind::ContentFilter)
+    } else if reason.eq_ignore_ascii_case("tool_calls")
+        || reason.eq_ignore_ascii_case("function_call")
+    {
+        Some(ResponsesIncompleteTerminalKind::ToolCall)
+    } else {
+        None
+    }
+}
+
 /// 判断一个 `response.incomplete` 是否是合法终态。
 ///
 /// reason 缺失或不在白名单内（例如 `error`、`server_error`）时继续按
 /// provider failure 处理：这类 incomplete 说明上游确实没能正常收尾，仍应扣
 /// 供应商健康分。
 fn responses_incomplete_is_legitimate_terminal(event: &Value) -> bool {
-    responses_incomplete_reason(event).is_some_and(|reason| {
-        LEGITIMATE_RESPONSES_INCOMPLETE_REASONS
-            .iter()
-            .any(|candidate| reason.eq_ignore_ascii_case(candidate))
-    })
+    responses_incomplete_terminal_kind(event).is_some()
 }
 
 fn terminal_for_event(event: &Value) -> Option<ResponsesWebSocketFrameTerminal> {

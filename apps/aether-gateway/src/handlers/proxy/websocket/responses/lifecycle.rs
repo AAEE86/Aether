@@ -1,8 +1,10 @@
 //! Turn finalization and terminal error mapping for a Responses WebSocket.
 //!
-//! A connection can outlive a turn, so persistence and adapter observation
+//! A connection can outlive a turn, so persistence and provider observation
 //! handles are joined in order before the next turn is planned.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::WebSocket;
@@ -10,6 +12,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::state::BoundResponsesConnection;
+use super::state::ResponsesPublicEventSequence;
 use super::turn::{
     spawn_responses_websocket_turn_finalization, ResponsesProviderAttempt,
     ResponsesWebSocketTurnOutcome,
@@ -20,7 +23,7 @@ use crate::handlers::proxy::websocket::session::{
 use crate::handlers::proxy::websocket::transport::send_responses_websocket_error;
 use crate::{AppState, GatewayError};
 
-const RESPONSES_WEBSOCKET_ADAPTER_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
+const RESPONSES_WEBSOCKET_PROVIDER_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
 
 macro_rules! warn {
@@ -40,13 +43,48 @@ macro_rules! warn {
 pub(super) struct ActiveProviderAttempt {
     turn: Option<ResponsesProviderAttempt>,
     state: AppState,
+    session_termination: ResponsesSessionTerminationSignal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResponsesSessionTermination {
+    ConnectionLimitReached = 1,
+    ConnectionAdmissionLost = 2,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct ResponsesSessionTerminationSignal(Arc<AtomicU8>);
+
+impl ResponsesSessionTerminationSignal {
+    pub(super) fn terminate(&self, termination: ResponsesSessionTermination) {
+        let _ = self
+            .0
+            .compare_exchange(0, termination as u8, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    fn abandoned_turn_outcome(&self) -> ResponsesWebSocketTurnOutcome {
+        match self.0.load(Ordering::Acquire) {
+            value if value == ResponsesSessionTermination::ConnectionLimitReached as u8 => {
+                ResponsesWebSocketTurnOutcome::connection_limit_reached()
+            }
+            value if value == ResponsesSessionTermination::ConnectionAdmissionLost as u8 => {
+                ResponsesWebSocketTurnOutcome::connection_admission_lost()
+            }
+            _ => ResponsesWebSocketTurnOutcome::relay_task_abandoned(),
+        }
+    }
 }
 
 impl ActiveProviderAttempt {
-    pub(super) fn new(state: &AppState, turn: ResponsesProviderAttempt) -> Self {
+    pub(super) fn new(
+        state: &AppState,
+        turn: ResponsesProviderAttempt,
+        session_termination: ResponsesSessionTerminationSignal,
+    ) -> Self {
         Self {
             turn: Some(turn),
             state: state.clone(),
+            session_termination,
         }
     }
 
@@ -82,6 +120,7 @@ impl Drop for ActiveProviderAttempt {
             return;
         };
         let state = self.state.clone();
+        let outcome = self.session_termination.abandoned_turn_outcome();
         // No runtime means the process is going down; the spawn could not
         // complete anyway.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -93,11 +132,7 @@ impl Drop for ActiveProviderAttempt {
                 "gateway finalized a Responses WebSocket turn whose relay task went away"
             );
             handle.spawn(async move {
-                turn.finalize_detached(
-                    &state,
-                    ResponsesWebSocketTurnOutcome::relay_task_abandoned(),
-                )
-                .await;
+                turn.finalize_detached(&state, outcome).await;
             });
         }
     }
@@ -113,20 +148,33 @@ pub(super) async fn finalize_active_turn(
     outcome: ResponsesWebSocketTurnOutcome,
 ) {
     if let Some(turn) = bound.turn_state.end() {
-        queue_turn_finalization(bound, state, turn.disarm(), outcome).await;
+        queue_turn_finalization(bound, state, turn.disarm(), outcome);
     }
 }
 
-pub(super) async fn queue_turn_finalization(
+/// Transfers the attempt to a spawned owner before this function returns.
+///
+/// The spawned task also owns the previous provider observation and turn
+/// finalizer handles. This preserves their ordering without leaving the new
+/// attempt in the relay future across an await: cancelling the relay can no
+/// longer drop an unfinalized usage row or admission lease between `end()` and
+/// `spawn`.
+pub(super) fn queue_turn_finalization(
     bound: &mut BoundResponsesConnection,
     state: &AppState,
     turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) {
-    await_pending_adapter_observation(bound).await;
-    await_pending_turn_finalization(bound).await;
-    bound.pending_turn_finalization =
-        Some(spawn_responses_websocket_turn_finalization(state.clone(), turn, outcome).await);
+    let provider_observation = bound.pending_provider_observation.take();
+    let previous_finalization = bound.pending_turn_finalization.take();
+    let state = state.clone();
+    bound.pending_turn_finalization = Some(spawn_owned_finalization(
+        provider_observation,
+        previous_finalization,
+        async move {
+            turn.finalize_detached(&state, outcome).await;
+        },
+    ));
 }
 
 /// 「上一个 attempt 已经结算完毕」的凭证。
@@ -156,22 +204,31 @@ pub(super) async fn settle_turn_finalization(
     turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) -> PreviousAttemptSettled {
-    queue_turn_finalization(bound, state, turn, outcome).await;
+    queue_turn_finalization(bound, state, turn, outcome);
     await_pending_turn_finalization(bound).await;
     PreviousAttemptSettled(())
 }
 
-pub(super) async fn await_pending_adapter_observation(bound: &mut BoundResponsesConnection) {
-    if let Some(mut handle) = bound.pending_adapter_observation.take() {
-        match timeout(RESPONSES_WEBSOCKET_ADAPTER_OBSERVATION_TIMEOUT, &mut handle).await {
+pub(super) async fn await_pending_provider_observation(bound: &mut BoundResponsesConnection) {
+    await_provider_observation_handle(bound.pending_provider_observation.take()).await;
+}
+
+async fn await_provider_observation_handle(handle: Option<JoinHandle<()>>) {
+    if let Some(mut handle) = handle {
+        match timeout(
+            RESPONSES_WEBSOCKET_PROVIDER_OBSERVATION_TIMEOUT,
+            &mut handle,
+        )
+        .await
+        {
             Ok(Err(error)) => {
                 warn!(
-                    event_name = "responses_websocket_adapter_observation_join_failed",
+                    event_name = "responses_websocket_provider_observation_join_failed",
                     log_type = "ops",
                     transport = WEBSOCKET_LOG_TRANSPORT,
                     websocket = true,
                     error = ?error,
-                    "gateway Responses WebSocket adapter observation task failed"
+                    "gateway Responses WebSocket provider observation task failed"
                 );
             }
             Ok(Ok(())) => {}
@@ -179,24 +236,42 @@ pub(super) async fn await_pending_adapter_observation(bound: &mut BoundResponses
                 handle.abort();
                 let _ = handle.await;
                 warn!(
-                    event_name = "responses_websocket_adapter_observation_timeout",
+                    event_name = "responses_websocket_provider_observation_timeout",
                     log_type = "ops",
                     transport = WEBSOCKET_LOG_TRANSPORT,
                     websocket = true,
-                    timeout_ms = RESPONSES_WEBSOCKET_ADAPTER_OBSERVATION_TIMEOUT.as_millis() as u64,
-                    "gateway stopped waiting for a Responses WebSocket adapter observation"
+                    timeout_ms =
+                        RESPONSES_WEBSOCKET_PROVIDER_OBSERVATION_TIMEOUT.as_millis() as u64,
+                    "gateway stopped waiting for a Responses WebSocket provider observation"
                 );
             }
         }
     }
 }
 
-pub(super) async fn finalize_unbound_turn(
+fn spawn_owned_finalization<F>(
+    provider_observation: Option<JoinHandle<()>>,
+    previous_finalization: Option<JoinHandle<()>>,
+    finalization: F,
+) -> JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        await_provider_observation_handle(provider_observation).await;
+        if let Some(previous_finalization) = previous_finalization {
+            await_turn_finalization_handle(previous_finalization).await;
+        }
+        finalization.await;
+    })
+}
+
+pub(super) fn finalize_unbound_turn(
     state: AppState,
     turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) -> JoinHandle<()> {
-    spawn_responses_websocket_turn_finalization(state, turn, outcome).await
+    spawn_responses_websocket_turn_finalization(state, turn, outcome)
 }
 
 pub(super) async fn await_turn_finalization_handle(handle: JoinHandle<()>) {
@@ -226,51 +301,60 @@ pub(super) async fn await_pending_turn_finalization(bound: &mut BoundResponsesCo
 
 pub(super) async fn send_responses_websocket_turn_start_error(
     client_socket: &mut WebSocket,
+    sequence: &ResponsesPublicEventSequence,
     error: &GatewayError,
 ) {
     match error {
         GatewayError::Client { status, message } => {
-            let (error_type, code) = if status.as_u16() == 429 {
-                ("rate_limit_error", "gateway_request_capacity_exceeded")
-            } else {
-                ("invalid_request_error", "gateway_request_not_allowed")
+            let (error_type, code) = match status.as_u16() {
+                429 => ("rate_limit_error", "gateway_request_capacity_exceeded"),
+                503 => ("server_error", "gateway_execution_reservation_unavailable"),
+                _ => ("invalid_request_error", "gateway_request_not_allowed"),
             };
             send_responses_websocket_error(
                 client_socket,
+                sequence,
                 status.as_u16(),
                 error_type,
                 code,
                 message,
+                None,
             )
             .await;
         }
         GatewayError::AdmissionTimeout { .. } => {
             send_responses_websocket_error(
                 client_socket,
+                sequence,
                 503,
                 "server_error",
                 "gateway_admission_timeout",
                 "Gateway capacity is busy; retry this response",
+                None,
             )
             .await;
         }
         GatewayError::LocalExecutionPlanningTimeout { .. } => {
             send_responses_websocket_error(
                 client_socket,
+                sequence,
                 504,
                 "server_error",
                 "gateway_planning_timeout",
                 "Gateway planning timed out; retry this response",
+                None,
             )
             .await;
         }
         _ => {
             send_responses_websocket_error(
                 client_socket,
+                sequence,
                 500,
                 "server_error",
                 "responses_websocket_turn_start_failed",
                 "Gateway could not start this response",
+                None,
             )
             .await;
         }
@@ -279,6 +363,9 @@ pub(super) async fn send_responses_websocket_turn_start_error(
 
 pub(super) fn responses_websocket_turn_start_close(error: &GatewayError) -> (u16, &'static str) {
     match error {
+        GatewayError::Client { status, .. } if status.as_u16() == 503 => {
+            (CLOSE_TRY_AGAIN, "gateway_busy")
+        }
         GatewayError::Client { .. } => (CLOSE_POLICY_VIOLATION, "request_not_allowed"),
         GatewayError::AdmissionTimeout { .. }
         | GatewayError::LocalExecutionPlanningTimeout { .. } => (CLOSE_TRY_AGAIN, "gateway_busy"),
@@ -292,7 +379,66 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::await_turn_finalization_handle;
+    use super::{
+        await_turn_finalization_handle, spawn_owned_finalization, ResponsesSessionTermination,
+        ResponsesSessionTerminationSignal,
+    };
+    use crate::handlers::proxy::websocket::responses::turn::ResponsesWebSocketTurnOutcome;
+
+    struct FinalizationProbe(Arc<AtomicUsize>);
+
+    impl Drop for FinalizationProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn termination_signal_maps_connection_limit_and_admission_to_turn_outcomes() {
+        let connection_limit = ResponsesSessionTerminationSignal::default();
+        connection_limit.terminate(ResponsesSessionTermination::ConnectionLimitReached);
+        assert_eq!(
+            connection_limit.abandoned_turn_outcome(),
+            ResponsesWebSocketTurnOutcome::connection_limit_reached()
+        );
+
+        let admission_lost = ResponsesSessionTerminationSignal::default();
+        admission_lost.terminate(ResponsesSessionTermination::ConnectionAdmissionLost);
+        assert_eq!(
+            admission_lost.abandoned_turn_outcome(),
+            ResponsesWebSocketTurnOutcome::connection_admission_lost()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawned_finalizer_owns_work_while_waiting_for_previous_tasks() {
+        let observation_gate = Arc::new(tokio::sync::Notify::new());
+        let observation_gate_for_task = Arc::clone(&observation_gate);
+        let observation = tokio::spawn(async move {
+            observation_gate_for_task.notified().await;
+        });
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let probe = FinalizationProbe(Arc::clone(&dropped));
+        let finalized = Arc::new(AtomicBool::new(false));
+        let finalized_for_task = Arc::clone(&finalized);
+
+        let owner = spawn_owned_finalization(Some(observation), None, async move {
+            let _probe = probe;
+            finalized_for_task.store(true, Ordering::SeqCst);
+        });
+
+        // The caller no longer owns either the finalization payload or the
+        // dependency it is waiting on. Dropping/cancelling the caller here
+        // cannot discard the payload before the spawned task takes over.
+        tokio::task::yield_now().await;
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        assert!(!finalized.load(Ordering::SeqCst));
+
+        observation_gate.notify_one();
+        await_turn_finalization_handle(owner).await;
+        assert!(finalized.load(Ordering::SeqCst));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
 
     /// C6 依赖的性质：结算是「等到落地」而不是「排进队列」。
     ///

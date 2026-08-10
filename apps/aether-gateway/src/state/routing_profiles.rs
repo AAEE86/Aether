@@ -23,6 +23,14 @@ impl AppState {
         self.data.routing_group_read_repository()
     }
 
+    pub(crate) fn routing_group_read_repository_strong(
+        &self,
+    ) -> Result<Option<Arc<dyn RoutingGroupReadRepository>>, GatewayError> {
+        self.data
+            .routing_group_read_repository_strong()
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     pub(crate) async fn list_routing_groups(
         &self,
     ) -> Result<Vec<StoredRoutingGroup>, GatewayError> {

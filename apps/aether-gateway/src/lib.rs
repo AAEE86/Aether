@@ -43,6 +43,7 @@ mod data;
 mod dispatch;
 mod email_delivery;
 mod error;
+mod execution_identity;
 mod execution_runtime;
 mod executor;
 mod fallback_metrics;

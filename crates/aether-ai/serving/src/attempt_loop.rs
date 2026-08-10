@@ -3,6 +3,10 @@ use async_trait::async_trait;
 pub trait AiExecutionAttempt {
     fn execution_plan(&self) -> &aether_contracts::ExecutionPlan;
 
+    fn execution_plan_mut(&mut self) -> &mut aether_contracts::ExecutionPlan;
+
+    fn replace_report_context(&mut self, _report_context: Option<serde_json::Value>) {}
+
     fn report_kind(&self) -> Option<String>;
 
     fn report_context(&self) -> Option<serde_json::Value>;
@@ -75,7 +79,7 @@ where
         Ok(false)
     }
 
-    async fn record_attempt_started(&self, _attempt: &Attempt) -> Result<(), Self::Error> {
+    async fn record_attempt_started(&self, _attempt: &mut Attempt) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -105,14 +109,14 @@ where
     let mut retry_filters: Vec<AiAttemptRetryFilter> = Vec::new();
     let mut fallback_response = None;
 
-    while let Some(attempt) = remaining.next() {
+    while let Some(mut attempt) = remaining.next() {
         if retry_filters.iter().any(|filter| filter.matches(&attempt))
             || port.should_skip_attempt(&attempt).await?
         {
             port.mark_unused_attempts(vec![attempt]).await?;
             continue;
         }
-        port.record_attempt_started(&attempt).await?;
+        port.record_attempt_started(&mut attempt).await?;
         let execution = match port.execute_attempt(&attempt).await {
             Ok(execution) => execution,
             Err(err) => {
@@ -193,6 +197,14 @@ impl AiExecutionAttempt for crate::dto::AiSyncAttempt {
         &self.plan
     }
 
+    fn execution_plan_mut(&mut self) -> &mut aether_contracts::ExecutionPlan {
+        &mut self.plan
+    }
+
+    fn replace_report_context(&mut self, report_context: Option<serde_json::Value>) {
+        self.report_context = report_context;
+    }
+
     fn report_kind(&self) -> Option<String> {
         self.report_kind.clone()
     }
@@ -209,6 +221,14 @@ impl AiExecutionAttempt for crate::dto::AiSyncAttempt {
 impl AiExecutionAttempt for crate::dto::AiStreamAttempt {
     fn execution_plan(&self) -> &aether_contracts::ExecutionPlan {
         &self.plan
+    }
+
+    fn execution_plan_mut(&mut self) -> &mut aether_contracts::ExecutionPlan {
+        &mut self.plan
+    }
+
+    fn replace_report_context(&mut self, report_context: Option<serde_json::Value>) {
+        self.report_context = report_context;
     }
 
     fn report_kind(&self) -> Option<String> {
@@ -245,6 +265,10 @@ mod tests {
     impl AiExecutionAttempt for TestAttempt {
         fn execution_plan(&self) -> &aether_contracts::ExecutionPlan {
             &self.plan
+        }
+
+        fn execution_plan_mut(&mut self) -> &mut aether_contracts::ExecutionPlan {
+            &mut self.plan
         }
 
         fn report_kind(&self) -> Option<String> {

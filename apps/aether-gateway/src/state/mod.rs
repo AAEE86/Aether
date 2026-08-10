@@ -39,6 +39,7 @@ pub(crate) use self::cache::{
 };
 pub use self::cors::FrontdoorCorsConfig;
 pub(crate) use self::oauth::AgentIdentityAuthConfigFence;
+pub(crate) use self::runtime::RequestCandidateRuntimeOverlayLease;
 pub(crate) use self::types::{
     AdminWalletMutationOutcome, GatewayAdminPaymentCallbackView, GatewayUserPreferenceView,
     GatewayUserSessionView, LocalExecutionRuntimeMissDiagnostic, LocalMutationOutcome,

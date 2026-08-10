@@ -17,12 +17,15 @@ use crate::ai_serving::planner::common::OPENAI_CHAT_SYNC_PLAN_KIND;
 use crate::ai_serving::planner::plan_builders::{
     build_openai_chat_sync_plan_from_decision, AiSyncAttempt,
 };
-use crate::ai_serving::planner::runtime_miss::apply_local_runtime_candidate_terminal_reason;
+use crate::ai_serving::planner::runtime_miss::{
+    apply_local_runtime_candidate_terminal_reason, runtime_miss_diagnostic_key_from_parts,
+};
 
 pub(crate) struct LocalOpenAiChatSyncAttemptSource<'a> {
     state: &'a AppState,
     parts: &'a http::request::Parts,
     trace_id: &'a str,
+    runtime_miss_key: &'a str,
     body_json: serde_json::Value,
     input: LocalOpenAiChatDecisionInput,
     candidates: LocalOpenAiChatCandidateAttemptSource<'a>,
@@ -39,6 +42,7 @@ pub(crate) async fn build_local_openai_chat_sync_attempt_source<'a>(
     if plan_kind != OPENAI_CHAT_SYNC_PLAN_KIND {
         return Ok(None);
     }
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
 
     let Some(input) = resolve_local_openai_chat_decision_input(
         state, parts, trace_id, decision, body_json, plan_kind, true,
@@ -60,7 +64,7 @@ pub(crate) async fn build_local_openai_chat_sync_attempt_source<'a>(
     if candidate_count == 0 {
         set_local_openai_chat_candidate_evaluation_diagnostic(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             Some(input.requested_model.as_str()),
@@ -70,7 +74,7 @@ pub(crate) async fn build_local_openai_chat_sync_attempt_source<'a>(
     }
     set_local_openai_chat_candidate_evaluation_diagnostic(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         plan_kind,
         Some(input.requested_model.as_str()),
@@ -82,6 +86,7 @@ pub(crate) async fn build_local_openai_chat_sync_attempt_source<'a>(
             state,
             parts,
             trace_id,
+            runtime_miss_key,
             body_json: effective_body_json,
             input,
             candidates,
@@ -101,7 +106,7 @@ impl LocalExecutionAttemptSource<AiSyncAttempt> for LocalOpenAiChatSyncAttemptSo
         }
         apply_local_runtime_candidate_terminal_reason(
             self.state,
-            self.trace_id,
+            self.runtime_miss_key,
             "no_local_sync_plans",
         );
         Ok(None)
@@ -185,6 +190,7 @@ pub(crate) async fn build_local_openai_chat_sync_plan_and_reports(
     if plan_kind != OPENAI_CHAT_SYNC_PLAN_KIND {
         return Ok(Vec::new());
     }
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
 
     let Some(input) = resolve_local_openai_chat_decision_input(
         state, parts, trace_id, decision, body_json, plan_kind, true,
@@ -201,7 +207,7 @@ pub(crate) async fn build_local_openai_chat_sync_plan_and_reports(
     else {
         set_local_openai_chat_candidate_evaluation_diagnostic(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             plan_kind,
             Some(input.requested_model.as_str()),
@@ -218,7 +224,7 @@ pub(crate) async fn build_local_openai_chat_sync_plan_and_reports(
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_sync_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_sync_plans");
 
     Ok(plans)
 }

@@ -288,6 +288,7 @@ mod tests {
             access_allowed: true,
             user_rate_limit: None,
             api_key_rate_limit: None,
+            api_key_concurrent_limit: None,
             api_key_is_standalone: false,
             admin_bypass_limits: false,
             local_rejection: None,
@@ -306,7 +307,6 @@ mod tests {
                 .parse::<SocketAddr>()
                 .expect("remote address should parse"),
             decision,
-            rpm_bypassed: false,
             websocket_connection_permit: None,
         }
     }
@@ -335,7 +335,7 @@ mod tests {
         email: &str,
     ) -> ResponsesWebSocketTurnRedaction {
         let context = websocket_context(decision.clone());
-        let parts = build_planning_parts(&context);
+        let parts = build_planning_parts(&context, "request-turn");
         let event = client_event_with_email(email);
         redact_responses_websocket_client_event(state, &parts, &context.decision, &event)
             .await
@@ -367,7 +367,7 @@ mod tests {
     async fn websocket_client_event_is_redacted_without_losing_protocol_fields() {
         let state = redaction_enabled_state();
         let context = websocket_context(control_decision());
-        let parts = build_planning_parts(&context);
+        let parts = build_planning_parts(&context, "request-turn");
         let event = client_event();
 
         let redacted =
@@ -394,7 +394,7 @@ mod tests {
         // 替换、破坏与上游已有 previous_response_id 链的一致性。
         let state = redaction_enabled_state();
         let context = websocket_context(control_decision());
-        let parts = build_planning_parts(&context);
+        let parts = build_planning_parts(&context, "request-turn");
         let event = client_event();
 
         let redacted =
@@ -422,7 +422,7 @@ mod tests {
         let mut decision = control_decision();
         decision.auth_context = None;
         let context = websocket_context(decision);
-        let parts = build_planning_parts(&context);
+        let parts = build_planning_parts(&context, "request-turn");
         let event = client_event();
 
         let redacted =
@@ -506,6 +506,7 @@ mod tests {
         let turn_decision = prepare_responses_websocket_turn_decision(
             &template,
             "turn-1".to_string(),
+            None,
             true,
             &effective_event,
             &provider_event,
@@ -559,6 +560,7 @@ mod tests {
         let turn_decision = prepare_responses_websocket_turn_decision(
             &template,
             "turn-2".to_string(),
+            None,
             false,
             &effective_event,
             &provider_event,
@@ -610,6 +612,7 @@ mod tests {
         let turn_decision = prepare_responses_websocket_turn_decision(
             &template,
             "turn-2-retry".to_string(),
+            Some("turn-2"),
             true,
             &active.client_event,
             &provider_event,
@@ -625,6 +628,7 @@ mod tests {
             .as_ref()
             .expect("turn decision should carry a report context");
         assert_eq!(report_context["websocket_turn_attempt"], 2);
+        assert_eq!(report_context["parent_request_id"], "turn-2");
         assert_redacted_json(
             &report_context["original_request_body"],
             "quota retry audit body",

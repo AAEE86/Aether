@@ -103,6 +103,7 @@ fn provider_oauth_export_payload(
         }
         payload.insert(key.clone(), value.clone());
     }
+    aether_provider_transport::strip_server_owned_credential_generation(&mut payload);
     if !json_map_has_non_empty_string(&payload, &["access_token", "accessToken"]) {
         if let Some(access_token) = fallback_access_token
             .map(str::trim)
@@ -322,5 +323,22 @@ mod tests {
             payload.get("headers"),
             Some(&json!({"authorization": "Bearer imported-session"}))
         );
+    }
+
+    #[test]
+    fn oauth_export_omits_server_owned_credential_generation() {
+        let auth_config = json!({
+            "provider_type": "codex",
+            "refresh_token": "refresh-token",
+            "aether_credential_generation": "server-generation"
+        })
+        .as_object()
+        .cloned()
+        .expect("auth_config should be an object");
+
+        let payload = provider_oauth_export_payload("codex", &auth_config, None, None);
+
+        assert!(!payload.contains_key("aether_credential_generation"));
+        assert_eq!(payload.get("refresh_token"), Some(&json!("refresh-token")));
     }
 }

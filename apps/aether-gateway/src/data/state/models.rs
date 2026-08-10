@@ -11,6 +11,30 @@ use super::{
 };
 
 impl GatewayDataState {
+    /// Reads one concrete pool candidate row from the underlying repository,
+    /// bypassing the short-lived planner cache. Persistent WebSocket
+    /// continuations use this to observe model/key revocation immediately.
+    pub(crate) async fn list_pool_key_candidate_rows_for_group_key_ids_strong(
+        &self,
+        query: &StoredPoolKeyCandidateRowsByKeyIdsQuery,
+    ) -> Result<Vec<StoredMinimalCandidateSelectionRow>, DataLayerError> {
+        let repository = if let Some(backends) = self.backends.as_ref() {
+            backends
+                .read()
+                .minimal_candidate_selection()
+                .ok_or_else(|| {
+                    DataLayerError::InvalidConfiguration(
+                        "strong candidate selection repository is unavailable".to_string(),
+                    )
+                })?
+        } else if let Some(repository) = self.minimal_candidate_selection_reader.clone() {
+            repository
+        } else {
+            return Ok(Vec::new());
+        };
+        repository.list_pool_key_rows_for_group_key_ids(query).await
+    }
+
     pub(crate) async fn list_minimal_candidate_selection_rows(
         &self,
         api_format: &str,

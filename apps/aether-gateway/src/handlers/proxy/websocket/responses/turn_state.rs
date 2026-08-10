@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::lifecycle::ActiveProviderAttempt;
 use super::request::response_create_has_previous_response_id;
+use crate::control::GatewayControlDecision;
 
 /// 客户端一次 `response.create` 对应的 logical turn。
 ///
@@ -18,7 +19,15 @@ use super::request::response_create_has_previous_response_id;
 /// 因为透明重试直接重放它。
 #[derive(Debug, Clone)]
 pub(super) struct LogicalTurn {
+    pub(super) request_id: String,
     pub(super) client_event: Value,
+    /// Strong authorization snapshot accepted for this `response.create`.
+    /// Every provider attempt in the logical turn reuses it; only a new client
+    /// `response.create` is allowed to trigger another refresh.
+    pub(super) control_decision: GatewayControlDecision,
+    /// Strong API-key snapshot accepted for this logical turn. Transparent
+    /// provider retries reuse it and never perform a second authorization read.
+    pub(super) auth_snapshot: Option<crate::data::auth::GatewayAuthApiKeySnapshot>,
     pub(super) turn_index: u64,
     pub(super) logical_turn_id: String,
     pub(super) turn_attempt: u32,
@@ -27,15 +36,43 @@ pub(super) struct LogicalTurn {
 }
 
 impl LogicalTurn {
-    pub(super) fn new(client_event: Value, turn_index: u64, logical_turn_id: String) -> Self {
+    pub(super) fn authorized(
+        request_id: String,
+        client_event: Value,
+        control_decision: GatewayControlDecision,
+        auth_snapshot: Option<crate::data::auth::GatewayAuthApiKeySnapshot>,
+        turn_index: u64,
+        logical_turn_id: String,
+    ) -> Self {
         Self {
+            request_id,
             client_event,
+            control_decision,
+            auth_snapshot,
             turn_index,
             logical_turn_id,
             turn_attempt: 1,
             retry_attempted: false,
             retry_unsafe_reason: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn new(client_event: Value, turn_index: u64, logical_turn_id: String) -> Self {
+        Self::authorized(
+            "request-test".to_string(),
+            client_event,
+            GatewayControlDecision::synthetic(
+                "/v1/responses",
+                Some("ai_public".to_string()),
+                Some("openai".to_string()),
+                Some("responses_websocket".to_string()),
+                Some("openai:responses".to_string()),
+            ),
+            None,
+            turn_index,
+            logical_turn_id,
+        )
     }
 
     pub(super) fn quota_retry_block_reason(&self) -> Option<&'static str> {
@@ -267,6 +304,11 @@ mod tests {
     fn resuming_replaces_the_attempt_of_the_same_logical_turn() {
         let mut state = ResponsesTurnState::Idle;
         state.begin(logical(), FakeAttempt(1));
+        let request_id = state
+            .logical()
+            .expect("a responding turn always has its logical turn")
+            .request_id
+            .clone();
         state
             .logical_mut()
             .expect("a responding turn always has its logical turn")
@@ -277,6 +319,10 @@ mod tests {
         assert!(state.response_in_flight());
         assert_eq!(state.attempt(), Some(&FakeAttempt(2)));
         assert_eq!(state.logical().map(|logical| logical.turn_attempt), Some(2));
+        assert_eq!(
+            state.logical().map(|logical| logical.request_id.as_str()),
+            Some(request_id.as_str())
+        );
     }
 
     #[test]

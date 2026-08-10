@@ -1089,6 +1089,9 @@ async fn proxy_request_inner(
         ),
     }
     let (mut parts, body) = request.into_parts();
+    let execution_request_id = crate::execution_identity::ExecutionRequestId::generate();
+    let execution_request_id_value = execution_request_id.as_str().to_string();
+    parts.extensions.insert(execution_request_id);
     let redaction_slot = crate::privacy::RedactionSessionSlot::default();
     parts.extensions.insert(redaction_slot.clone());
     parts
@@ -1098,7 +1101,11 @@ async fn proxy_request_inner(
             &remote_addr,
         ));
     let trace_id = extract_or_generate_trace_id(&parts.headers);
-    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+    state.clear_local_execution_runtime_miss_diagnostic(&execution_request_id_value);
+    let _runtime_miss_cleanup = crate::ai_serving::RuntimeMissDiagnosticCleanupGuard::new(
+        &state,
+        execution_request_id_value.clone(),
+    );
     if request_hits_execution_loop_guard(&parts) {
         warn!(
             event_name = "frontdoor_execution_loop_detected",
@@ -1572,6 +1579,7 @@ async fn proxy_request_inner(
         &state,
         &request_context,
         buffered_body.as_ref(),
+        &execution_request_id_value,
     )
     .await;
     observe_gateway_stage_ms(
@@ -1675,7 +1683,8 @@ async fn proxy_request_inner(
                         execution_runtime_response,
                         &redaction_slot,
                     )?;
-                    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                    state
+                        .clear_local_execution_runtime_miss_diagnostic(&execution_request_id_value);
                     return Ok(finalize_gateway_response_with_context(
                         &state,
                         execution_runtime_response,
@@ -1735,7 +1744,7 @@ async fn proxy_request_inner(
                     &redaction_slot,
                 )
                 .await?;
-                state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                state.clear_local_execution_runtime_miss_diagnostic(&execution_request_id_value);
                 return Ok(finalize_gateway_response_with_context(
                     &state,
                     execution_runtime_response,
@@ -1795,7 +1804,8 @@ async fn proxy_request_inner(
                         execution_runtime_response,
                         &redaction_slot,
                     )?;
-                    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                    state
+                        .clear_local_execution_runtime_miss_diagnostic(&execution_request_id_value);
                     return Ok(finalize_gateway_response_with_context(
                         &state,
                         execution_runtime_response,
@@ -1854,7 +1864,8 @@ async fn proxy_request_inner(
                             .await?
                     };
                     let mut control_response = control_response;
-                    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                    state
+                        .clear_local_execution_runtime_miss_diagnostic(&execution_request_id_value);
                     control_response.headers_mut().insert(
                         HeaderName::from_static(DEPENDENCY_REASON_HEADER),
                         HeaderValue::from_static(reason.as_label_value()),
@@ -1876,9 +1887,13 @@ async fn proxy_request_inner(
             }
         }
         let local_execution_runtime_miss_diagnostic =
-            state.take_local_execution_runtime_miss_diagnostic(&trace_id);
-        let local_execution_runtime_miss_context =
-            build_local_execution_runtime_miss_context(&state, &trace_id, control_decision).await;
+            state.take_local_execution_runtime_miss_diagnostic(&execution_request_id_value);
+        let local_execution_runtime_miss_context = build_local_execution_runtime_miss_context(
+            &state,
+            &execution_request_id_value,
+            control_decision,
+        )
+        .await;
         let auth_api_key_concurrency_limited = diagnostic_is_auth_api_key_concurrency_limited(
             local_execution_runtime_miss_diagnostic.as_ref(),
         ) || local_execution_runtime_miss_context
@@ -1991,7 +2006,7 @@ async fn proxy_request_inner(
         } else {
             record_failed_usage_for_runtime_miss_request(
                 &state,
-                &trace_id,
+                &execution_request_id_value,
                 &started_at,
                 local_execution_runtime_miss_detail.as_str(),
                 local_execution_failure_path,

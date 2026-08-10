@@ -36,6 +36,7 @@ pub(crate) use self::selection::{
     API_KEY_CONCURRENCY_LIMIT_SKIP_REASON, AUTH_API_KEY_CONCURRENCY_LIMIT_SKIP_REASON,
     LEGACY_API_KEY_CONCURRENCY_LIMIT_SKIP_REASON,
 };
+pub(crate) use runtime::ConcretePoolRuntimePolicy;
 
 use crate::data::auth::GatewayAuthApiKeySnapshot;
 use crate::data::candidate_selection::{
@@ -192,6 +193,46 @@ pub(crate) async fn list_selectable_enumerated_candidates_with_skip_reasons(
         priority_affinity_key,
     )
     .await
+}
+
+/// Revalidates runtime selection state for one concrete provider key.
+///
+/// The normal scheduler intentionally treats candidates from a pool-enabled
+/// provider as logical pool groups and defers member selection. A persistent
+/// WebSocket has already expanded that group, so continuation authorization
+/// must force concrete-key semantics instead of skipping key quota, OAuth,
+/// circuit, concurrency, and RPM checks.
+pub(crate) async fn concrete_candidate_runtime_skip_reason(
+    runtime_state: &impl SchedulerRuntimeState,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
+    now_unix_secs: u64,
+) -> Result<Option<&'static str>, GatewayError> {
+    let snapshot = runtime::read_candidate_runtime_selection_snapshot(
+        runtime_state,
+        std::slice::from_ref(candidate),
+        auth_snapshot,
+        now_unix_secs,
+    )
+    .await?;
+    if runtime::auth_snapshot_concurrency_limit_reached(auth_snapshot, &snapshot, now_unix_secs) {
+        return Ok(Some(API_KEY_CONCURRENCY_LIMIT_SKIP_REASON));
+    }
+    Ok(runtime::current_concrete_candidate_runtime_skip_reason(
+        candidate,
+        &snapshot,
+        now_unix_secs,
+    ))
+}
+
+/// Revalidates pool-only runtime state for the concrete key retained by a
+/// persistent continuation. This never expands the pool or selects a sibling.
+pub(crate) async fn concrete_pool_candidate_runtime_skip_reason(
+    runtime_state: &impl SchedulerRuntimeState,
+    candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    policy: ConcretePoolRuntimePolicy,
+) -> Result<Option<&'static str>, GatewayError> {
+    runtime::concrete_pool_candidate_runtime_skip_reason(runtime_state, candidate, policy).await
 }
 
 pub(crate) async fn list_selectable_candidates_for_required_capability_without_requested_model(

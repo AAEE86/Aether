@@ -112,7 +112,7 @@ pub(crate) async fn maybe_build_local_openai_responses_decision_payload_for_cand
         append_execution_contract_fields_to_value(
             build_local_execution_report_context(LocalExecutionReportContextParts {
                 auth_context: &input.auth_context,
-                request_id: trace_id,
+                request_id: &input.request_id,
                 candidate_id: &candidate_id,
                 attempt_identity,
                 model: &input.requested_model,
@@ -212,7 +212,7 @@ pub(crate) async fn maybe_build_local_openai_responses_decision_payload_for_cand
         decision_kind: spec_metadata.decision_kind.to_string(),
         execution_strategy,
         conversion_mode,
-        request_id: trace_id.to_string(),
+        request_id: input.request_id.clone(),
         candidate_id: candidate_id.clone(),
         provider_name: transport.provider.name.clone(),
         provider_type: transport.provider.provider_type.clone(),

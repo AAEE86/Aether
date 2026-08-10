@@ -104,6 +104,31 @@ impl RequestCandidateReadRepository for SqliteRequestCandidateRepository {
         rows.iter().map(map_candidate_row).collect()
     }
 
+    async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, DataLayerError> {
+        if provider_ids.is_empty() && key_ids.is_empty() && api_key_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut builder = QueryBuilder::<Sqlite>::new(CANDIDATE_COLUMNS);
+        builder
+            .push(
+                " WHERE status IN ('pending', 'streaming', 'success', 'failed', 'cancelled') \
+                 AND COALESCE(started_at, created_at) >= ",
+            )
+            .push_bind(unix_secs_to_ms_i64(since_unix_secs)?)
+            .push(" AND (");
+        push_runtime_scope_predicates(&mut builder, provider_ids, key_ids, api_key_ids);
+        builder.push(") ORDER BY created_at DESC, id ASC");
+        let rows = builder.build().fetch_all(&self.pool).await.map_sql_err()?;
+        rows.iter().map(map_candidate_row).collect()
+    }
+
     async fn list_by_provider_id(
         &self,
         provider_id: &str,
@@ -830,6 +855,34 @@ fn status_to_database(status: RequestCandidateStatus) -> &'static str {
     }
 }
 
+fn push_runtime_scope_predicates<'args>(
+    builder: &mut QueryBuilder<'args, Sqlite>,
+    provider_ids: &[String],
+    key_ids: &[String],
+    api_key_ids: &[String],
+) {
+    let mut has_predicate = false;
+    for (column, ids) in [
+        ("provider_id", provider_ids),
+        ("key_id", key_ids),
+        ("api_key_id", api_key_ids),
+    ] {
+        if ids.is_empty() {
+            continue;
+        }
+        if has_predicate {
+            builder.push(" OR ");
+        }
+        has_predicate = true;
+        builder.push(column).push(" IN (");
+        let mut values = builder.separated(", ");
+        for id in ids {
+            values.push_bind(id.clone());
+        }
+        values.push_unseparated(")");
+    }
+}
+
 fn current_unix_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
@@ -965,6 +1018,112 @@ mod tests {
                 .await
                 .expect("old candidates should delete"),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_runtime_scoped_read_uses_scope_union_and_time_window_without_limit() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        let repository = SqliteRequestCandidateRepository::new(pool);
+
+        let mut expected_ids = Vec::new();
+        for index in 0..129 {
+            let id = format!("provider-match-{index}");
+            let mut row = sample_upsert(
+                id.as_str(),
+                RequestCandidateStatus::Streaming,
+                None,
+                200_000 + index,
+            );
+            row.request_id = format!("provider-request-{index}");
+            row.started_at_unix_ms = Some(200_000 + index);
+            row.finished_at_unix_ms = None;
+            repository
+                .upsert(row)
+                .await
+                .expect("matching candidate should insert");
+            expected_ids.push(id);
+        }
+
+        let mut key_match =
+            sample_upsert("key-match", RequestCandidateStatus::Success, None, 201_000);
+        key_match.request_id = "key-request".to_string();
+        key_match.provider_id = Some("provider-other".to_string());
+        repository
+            .upsert(key_match)
+            .await
+            .expect("key candidate should insert");
+        expected_ids.push("key-match".to_string());
+
+        let mut api_key_match = sample_upsert(
+            "api-key-match",
+            RequestCandidateStatus::Failed,
+            None,
+            202_000,
+        );
+        api_key_match.request_id = "api-key-request".to_string();
+        api_key_match.provider_id = Some("provider-other".to_string());
+        api_key_match.key_id = Some("provider-key-other".to_string());
+        repository
+            .upsert(api_key_match)
+            .await
+            .expect("api key candidate should insert");
+        expected_ids.push("api-key-match".to_string());
+
+        let mut outside_scope = sample_upsert(
+            "outside-scope",
+            RequestCandidateStatus::Streaming,
+            None,
+            203_000,
+        );
+        outside_scope.request_id = "outside-scope-request".to_string();
+        outside_scope.provider_id = Some("provider-other".to_string());
+        outside_scope.key_id = Some("provider-key-other".to_string());
+        outside_scope.api_key_id = Some("api-key-other".to_string());
+        outside_scope.finished_at_unix_ms = None;
+        repository
+            .upsert(outside_scope)
+            .await
+            .expect("outside scope candidate should insert");
+
+        let mut outside_window = sample_upsert(
+            "outside-window",
+            RequestCandidateStatus::Streaming,
+            None,
+            99_000,
+        );
+        outside_window.request_id = "outside-window-request".to_string();
+        outside_window.finished_at_unix_ms = None;
+        repository
+            .upsert(outside_window)
+            .await
+            .expect("outside window candidate should insert");
+
+        let rows = repository
+            .list_runtime_scoped_since(
+                &["provider-1".to_string()],
+                &["provider-key-1".to_string()],
+                &["key-1".to_string()],
+                100,
+            )
+            .await
+            .expect("runtime scoped candidates should load");
+        let actual_ids = rows
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows.len(), 131, "scoped reads must not have a global cap");
+        assert_eq!(
+            actual_ids,
+            expected_ids.into_iter().collect(),
+            "the provider/key/api-key scope union should be exact"
         );
     }
 

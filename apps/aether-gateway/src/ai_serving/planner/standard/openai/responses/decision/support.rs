@@ -21,7 +21,9 @@ use crate::ai_serving::planner::candidate_source::{
 use crate::ai_serving::planner::common::extract_standard_requested_model;
 use crate::ai_serving::planner::decision_input::{
     attach_routing_policy_to_local_requested_model_input,
+    attach_routing_policy_to_local_requested_model_input_strong,
     build_local_requested_model_decision_input, resolve_local_authenticated_decision_input,
+    resolve_local_authenticated_decision_input_with_snapshot,
 };
 use crate::ai_serving::planner::materialization_policy::{
     build_local_candidate_persistence_policy, LocalCandidatePersistencePolicyKind,
@@ -32,9 +34,11 @@ use crate::ai_serving::planner::CandidateFailureDiagnostic;
 use crate::ai_serving::{
     ai_local_execution_contract_for_formats, extract_pool_sticky_session_token,
     openai_responses_request_operation, resolve_local_decision_execution_runtime_auth_context,
-    ExecutionRuntimeAuthContext, GatewayControlDecision, PlannerAppState,
+    ExecutionRuntimeAuthContext, GatewayAuthApiKeySnapshot, GatewayControlDecision,
+    PlannerAppState,
 };
 use crate::client_session_affinity::client_session_affinity_from_parts;
+use crate::system_features::ModelDirectivePolicySnapshot;
 use crate::{AppState, GatewayError};
 
 use super::super::super::openai_request_is_image_generation_intent;
@@ -52,6 +56,82 @@ pub(crate) async fn resolve_local_openai_responses_decision_input(
     body_json: &serde_json::Value,
     plan_kind: &str,
 ) -> Result<Option<LocalOpenAiResponsesDecisionInput>, GatewayError> {
+    resolve_local_openai_responses_decision_input_inner(
+        state,
+        parts,
+        trace_id,
+        decision,
+        body_json,
+        plan_kind,
+        None,
+        &decision.model_directive_policy,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_local_openai_responses_decision_input_with_auth_snapshot(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    body_json: &serde_json::Value,
+    plan_kind: &str,
+    auth_snapshot: &GatewayAuthApiKeySnapshot,
+) -> Result<Option<LocalOpenAiResponsesDecisionInput>, GatewayError> {
+    resolve_local_openai_responses_decision_input_inner(
+        state,
+        parts,
+        trace_id,
+        decision,
+        body_json,
+        plan_kind,
+        Some(auth_snapshot),
+        &decision.model_directive_policy,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_local_openai_responses_decision_input_strong(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    body_json: &serde_json::Value,
+    plan_kind: &str,
+    auth_snapshot: &GatewayAuthApiKeySnapshot,
+) -> Result<Option<LocalOpenAiResponsesDecisionInput>, GatewayError> {
+    let model_directive_policy = ModelDirectivePolicySnapshot::load_strong(state).await?;
+    resolve_local_openai_responses_decision_input_inner(
+        state,
+        parts,
+        trace_id,
+        decision,
+        body_json,
+        plan_kind,
+        Some(auth_snapshot),
+        &model_directive_policy,
+        true,
+    )
+    .await
+}
+
+async fn resolve_local_openai_responses_decision_input_inner(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    body_json: &serde_json::Value,
+    plan_kind: &str,
+    auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
+    model_directive_policy: &ModelDirectivePolicySnapshot,
+    strong_routing: bool,
+) -> Result<Option<LocalOpenAiResponsesDecisionInput>, GatewayError> {
+    let diagnostic_request_id =
+        crate::ai_serving::planner::runtime_miss::runtime_miss_diagnostic_key_from_parts(
+            parts, trace_id,
+        );
     let Some(auth_context) = resolve_local_decision_execution_runtime_auth_context(decision) else {
         warn!(
             trace_id = %trace_id,
@@ -62,7 +142,7 @@ pub(crate) async fn resolve_local_openai_responses_decision_input(
         );
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            diagnostic_request_id,
             decision,
             plan_kind,
             extract_standard_requested_model(body_json).as_deref(),
@@ -78,7 +158,7 @@ pub(crate) async fn resolve_local_openai_responses_decision_input(
         );
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            diagnostic_request_id,
             decision,
             plan_kind,
             None,
@@ -87,64 +167,92 @@ pub(crate) async fn resolve_local_openai_responses_decision_input(
         return Ok(None);
     };
 
-    let resolved_input = match resolve_local_authenticated_decision_input(
-        state,
-        auth_context.clone(),
-        Some(requested_model.as_str()),
-        decision.auth_endpoint_signature.as_deref(),
-        None,
-        &decision.model_directive_policy,
-    )
-    .await
-    {
-        Ok(Some(resolved_input)) => resolved_input,
-        Ok(None) => {
-            warn!(
-                trace_id = %trace_id,
-                user_id = %auth_context.user_id,
-                api_key_id = %auth_context.api_key_id,
-                "gateway local openai responses decision skipped: auth_snapshot_missing"
-            );
-            set_local_runtime_miss_diagnostic_reason(
-                state,
-                trace_id,
-                decision,
-                plan_kind,
-                Some(requested_model.as_str()),
-                "auth_snapshot_missing",
-            );
-            return Ok(None);
-        }
-        Err(err) => {
-            warn!(
-                trace_id = %trace_id,
-                error = ?err,
-                "gateway local openai responses decision auth snapshot read failed"
-            );
-            set_local_runtime_miss_diagnostic_reason(
-                state,
-                trace_id,
-                decision,
-                plan_kind,
-                Some(requested_model.as_str()),
-                "auth_snapshot_read_failed",
-            );
-            return Err(err);
+    let resolved_input = if let Some(auth_snapshot) = auth_snapshot {
+        resolve_local_authenticated_decision_input_with_snapshot(
+            state,
+            auth_context.clone(),
+            auth_snapshot.clone(),
+            Some(requested_model.as_str()),
+            decision.auth_endpoint_signature.as_deref(),
+            None,
+            model_directive_policy,
+        )
+        .await
+    } else {
+        match resolve_local_authenticated_decision_input(
+            state,
+            auth_context.clone(),
+            Some(requested_model.as_str()),
+            decision.auth_endpoint_signature.as_deref(),
+            None,
+            model_directive_policy,
+        )
+        .await
+        {
+            Ok(Some(resolved_input)) => resolved_input,
+            Ok(None) => {
+                warn!(
+                    trace_id = %trace_id,
+                    user_id = %auth_context.user_id,
+                    api_key_id = %auth_context.api_key_id,
+                    "gateway local openai responses decision skipped: auth_snapshot_missing"
+                );
+                set_local_runtime_miss_diagnostic_reason(
+                    state,
+                    diagnostic_request_id,
+                    decision,
+                    plan_kind,
+                    Some(requested_model.as_str()),
+                    "auth_snapshot_missing",
+                );
+                return Ok(None);
+            }
+            Err(err) => {
+                warn!(
+                    trace_id = %trace_id,
+                    error = ?err,
+                    "gateway local openai responses decision auth snapshot read failed"
+                );
+                set_local_runtime_miss_diagnostic_reason(
+                    state,
+                    diagnostic_request_id,
+                    decision,
+                    plan_kind,
+                    Some(requested_model.as_str()),
+                    "auth_snapshot_read_failed",
+                );
+                return Err(err);
+            }
         }
     };
 
-    let mut input = build_local_requested_model_decision_input(resolved_input, requested_model);
+    let mut input = build_local_requested_model_decision_input(
+        resolved_input,
+        requested_model,
+        crate::execution_identity::execution_request_id_from_parts(parts, trace_id).to_string(),
+    );
     input.request_auth_channel = decision.request_auth_channel.clone();
     input.client_session_affinity = client_session_affinity_from_parts(parts, Some(body_json));
-    if let Err(err) = attach_routing_policy_to_local_requested_model_input(
-        state,
-        parts,
-        &mut input,
-        body_json,
-        "openai:responses",
-    )
-    .await
-    {
+    let routing_result = if strong_routing {
+        attach_routing_policy_to_local_requested_model_input_strong(
+            state,
+            parts,
+            &mut input,
+            body_json,
+            "openai:responses",
+        )
+        .await
+    } else {
+        attach_routing_policy_to_local_requested_model_input(
+            state,
+            parts,
+            &mut input,
+            body_json,
+            "openai:responses",
+        )
+        .await
+    };
+    if let Err(err) = routing_result {
         warn!(
             trace_id = %trace_id,
             error = ?err,
@@ -190,6 +298,7 @@ pub(crate) async fn materialize_local_openai_responses_candidate_attempts(
     let outcome = materialize_local_execution_candidates_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         spec_metadata.api_format,
         Some(&input.requested_model),
         Some(&input.auth_snapshot),
@@ -288,6 +397,7 @@ pub(crate) async fn build_local_openai_responses_candidate_attempt_source<'a>(
             planner_state,
             &input.model_directive_policy,
             trace_id,
+            &input.request_id,
             spec_metadata.api_format,
             &input.requested_model,
             request_operation,
@@ -391,6 +501,7 @@ pub(crate) async fn build_local_openai_responses_image_candidate_attempt_source<
     Ok(build_local_execution_candidate_attempt_source_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         spec_metadata.api_format,
         Some(&input.requested_model),
         Some(&input.auth_snapshot),
@@ -473,6 +584,7 @@ pub(crate) async fn mark_skipped_local_openai_responses_candidate(
     mark_skipped_local_execution_candidate(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,
@@ -502,6 +614,7 @@ pub(crate) async fn mark_skipped_local_openai_responses_candidate_with_extra_dat
     mark_skipped_local_execution_candidate_with_extra_data(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,
@@ -532,6 +645,7 @@ pub(crate) async fn mark_skipped_local_openai_responses_candidate_with_failure_d
     mark_skipped_local_execution_candidate_with_failure_diagnostic(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,

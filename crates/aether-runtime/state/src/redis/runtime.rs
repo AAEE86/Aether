@@ -6,7 +6,9 @@ use crate::redis::{
     RedisKeyspace, RedisLaneDiagnostics,
 };
 use crate::{
-    DataLayerError, RateLimitCheck, RateLimitInput, RateLimitScope, RuntimeSemaphoreError,
+    execution_reservation_runtime_key, DataLayerError, ExecutionReservationInput,
+    ExecutionReservationScope, RateLimitCheck, RateLimitInput, RateLimitScope,
+    RuntimeSemaphoreError,
 };
 
 const RATE_LIMIT_CHECK_AND_CONSUME_SCRIPT: &str = r#"
@@ -49,6 +51,102 @@ if key_limit > 0 then
 end
 
 return {1, 0, 0, remaining}
+"#;
+
+const EXECUTION_RESERVATION_ACQUIRE_SCRIPT: &str = r#"
+local candidate_id = ARGV[1]
+local lease_ttl_ms = tonumber(ARGV[2])
+local rpm_window_secs = tonumber(ARGV[3])
+local concurrency_count = tonumber(ARGV[4])
+local arg = 5
+local redis_time = redis.call('TIME')
+local now_secs = tonumber(redis_time[1])
+local now_ms = now_secs * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local expires_at_ms = now_ms + lease_ttl_ms
+
+local concurrency = {}
+for index = 1, concurrency_count do
+    local scope_code = tonumber(ARGV[arg])
+    local limit = tonumber(ARGV[arg + 1])
+    local observed_count = tonumber(ARGV[arg + 2])
+    arg = arg + 3
+    local observed = {}
+    for observed_index = 1, observed_count do
+        observed[ARGV[arg]] = true
+        arg = arg + 1
+    end
+    concurrency[index] = {scope_code = scope_code, limit = limit, observed = observed}
+end
+
+local has_rpm = tonumber(ARGV[arg])
+arg = arg + 1
+local rpm = nil
+if has_rpm == 1 then
+    local limit = tonumber(ARGV[arg])
+    local observed_floor = tonumber(ARGV[arg + 1])
+    local reset_after = tonumber(ARGV[arg + 2])
+    local observed_count = tonumber(ARGV[arg + 3])
+    arg = arg + 4
+    local observed = {}
+    for observed_index = 1, observed_count do
+        observed[ARGV[arg]] = true
+        arg = arg + 1
+    end
+    rpm = {limit = limit, observed_floor = observed_floor,
+           reset_after = reset_after, observed = observed}
+end
+
+for index = 1, concurrency_count do
+    local union = concurrency[index].observed
+    local live = redis.call('ZRANGEBYSCORE', KEYS[index], '(' .. now_ms, '+inf')
+    for _, member in ipairs(live) do union[member] = true end
+    union[candidate_id] = true
+    local usage = 0
+    for _ in pairs(union) do usage = usage + 1 end
+    if usage > concurrency[index].limit then
+        return {0, concurrency[index].scope_code, concurrency[index].limit}
+    end
+end
+
+if has_rpm == 1 then
+    local rpm_key_index = concurrency_count + 1
+    local reset_key_index = concurrency_count + 2
+    local cutoff = now_secs - rpm_window_secs - 1
+    local applied_reset = tonumber(redis.call('GET', KEYS[reset_key_index]) or '-1')
+    local pending_reset = rpm.reset_after >= 0 and rpm.reset_after > applied_reset
+    if pending_reset and rpm.reset_after > cutoff then cutoff = rpm.reset_after end
+    local union = rpm.observed
+    local live = redis.call('ZRANGEBYSCORE', KEYS[rpm_key_index], '(' .. cutoff, '+inf')
+    for _, member in ipairs(live) do union[member] = true end
+    local candidate_already_counted = union[candidate_id] == true
+    local usage = 0
+    for _ in pairs(union) do usage = usage + 1 end
+    if rpm.observed_floor > usage then usage = rpm.observed_floor end
+    if not candidate_already_counted then usage = usage + 1 end
+    if usage > rpm.limit then return {0, 4, rpm.limit} end
+end
+
+for index = 1, concurrency_count do
+    redis.call('ZREMRANGEBYSCORE', KEYS[index], '-inf', now_ms)
+    redis.call('ZADD', KEYS[index], expires_at_ms, candidate_id)
+    redis.call('PEXPIRE', KEYS[index], lease_ttl_ms)
+end
+if has_rpm == 1 then
+    local rpm_key_index = concurrency_count + 1
+    local reset_key_index = concurrency_count + 2
+    local cutoff = now_secs - rpm_window_secs - 1
+    local applied_reset = tonumber(redis.call('GET', KEYS[reset_key_index]) or '-1')
+    local pending_reset = rpm.reset_after >= 0 and rpm.reset_after > applied_reset
+    if pending_reset and rpm.reset_after > cutoff then cutoff = rpm.reset_after end
+    redis.call('ZREMRANGEBYSCORE', KEYS[rpm_key_index], '-inf', cutoff)
+    redis.call('ZADD', KEYS[rpm_key_index], now_secs, candidate_id)
+    local rpm_ttl_ms = (rpm_window_secs + 1) * 1000
+    redis.call('PEXPIRE', KEYS[rpm_key_index], rpm_ttl_ms)
+    if pending_reset then
+        redis.call('PSETEX', KEYS[reset_key_index], rpm_ttl_ms * 2, rpm.reset_after)
+    end
+end
+return {1, 0, 0}
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -280,6 +378,177 @@ impl RedisRuntimeRunner {
                 RateLimitScope::Key => input.key_limit,
             });
         Ok(RateLimitCheck::Rejected { scope, limit })
+    }
+
+    pub(crate) async fn execution_reservation_try_acquire(
+        &self,
+        input: &ExecutionReservationInput,
+        lease_ttl_ms: u64,
+        rpm_window_secs: u64,
+    ) -> Result<Option<(ExecutionReservationScope, usize)>, DataLayerError> {
+        let concurrency = input.concurrency_scopes().collect::<Vec<_>>();
+        let keys = concurrency
+            .iter()
+            .map(|(scope, reservation)| {
+                self.keyspace
+                    .key(&execution_reservation_runtime_key(*scope, &reservation.key))
+            })
+            .chain(input.provider_key_rpm.iter().flat_map(|reservation| {
+                let rpm_key = execution_reservation_runtime_key(
+                    ExecutionReservationScope::ProviderKeyRpm,
+                    &reservation.key,
+                );
+                [
+                    self.keyspace.key(&rpm_key),
+                    self.keyspace.key(&format!("{rpm_key}:reset-generation")),
+                ]
+            }))
+            .collect::<Vec<_>>();
+
+        let raw = run_lane_with_timeout(
+            &self.connections,
+            RedisConnectionLane::Fast,
+            self.command_timeout_ms,
+            "execution reservation acquire",
+            async {
+                let acquire_script = script(EXECUTION_RESERVATION_ACQUIRE_SCRIPT);
+                let mut invocation = acquire_script.prepare_invoke();
+                for key in &keys {
+                    invocation.key(key);
+                }
+                invocation
+                    .arg(&input.candidate_id)
+                    .arg(lease_ttl_ms as i64)
+                    .arg(rpm_window_secs as i64)
+                    .arg(concurrency.len() as i64);
+                for (scope, reservation) in &concurrency {
+                    invocation
+                        .arg(scope.redis_code())
+                        .arg(reservation.limit as i64)
+                        .arg(reservation.observed_candidate_ids.len() as i64);
+                    for candidate_id in &reservation.observed_candidate_ids {
+                        invocation.arg(candidate_id);
+                    }
+                }
+                if let Some(reservation) = &input.provider_key_rpm {
+                    invocation
+                        .arg(1_i64)
+                        .arg(reservation.limit as i64)
+                        .arg(reservation.observed_count_floor as i64)
+                        .arg(
+                            reservation
+                                .reset_after_unix_secs
+                                .and_then(|value| i64::try_from(value).ok())
+                                .unwrap_or(-1),
+                        )
+                        .arg(reservation.observed_candidate_ids.len() as i64);
+                    for candidate_id in &reservation.observed_candidate_ids {
+                        invocation.arg(candidate_id);
+                    }
+                } else {
+                    invocation.arg(0_i64);
+                }
+                let mut connection = self.connections.connection(RedisConnectionLane::Fast);
+                invocation
+                    .invoke_async::<Vec<i64>>(&mut connection)
+                    .await
+                    .map_redis_err()
+            },
+        )
+        .await?;
+        if raw.first().copied().unwrap_or_default() == 1 {
+            return Ok(None);
+        }
+        Ok(Some((
+            ExecutionReservationScope::from_redis_code(raw.get(1).copied().unwrap_or_default()),
+            raw.get(2)
+                .copied()
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or_default(),
+        )))
+    }
+
+    pub(crate) async fn execution_reservation_renew(
+        &self,
+        concurrency_keys: &[String],
+        candidate_id: &str,
+        lease_ttl_ms: u64,
+    ) -> Result<bool, DataLayerError> {
+        let keys = concurrency_keys
+            .iter()
+            .map(|key| self.keyspace.key(key))
+            .collect::<Vec<_>>();
+        run_lane_with_timeout(
+            &self.connections,
+            RedisConnectionLane::Fast,
+            self.command_timeout_ms,
+            "execution reservation renew",
+            async {
+                let renew_script = script(
+                    "local redis_time = redis.call('TIME'); \
+                     local now_ms = tonumber(redis_time[1]) * 1000 \
+                         + math.floor(tonumber(redis_time[2]) / 1000); \
+                     local expires_at_ms = now_ms + tonumber(ARGV[2]); \
+                     for index, key in ipairs(KEYS) do \
+                     redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms); \
+                     if not redis.call('ZSCORE', key, ARGV[1]) then return 0 end; \
+                     end; \
+                     for index, key in ipairs(KEYS) do \
+                     redis.call('ZADD', key, 'XX', expires_at_ms, ARGV[1]); \
+                     redis.call('PEXPIRE', key, ARGV[2]); \
+                     end; return 1;",
+                );
+                let mut invocation = renew_script.prepare_invoke();
+                for key in &keys {
+                    invocation.key(key);
+                }
+                invocation.arg(candidate_id).arg(lease_ttl_ms as i64);
+                let mut connection = self.connections.connection(RedisConnectionLane::Fast);
+                invocation
+                    .invoke_async::<i64>(&mut connection)
+                    .await
+                    .map(|value| value == 1)
+                    .map_redis_err()
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn execution_reservation_release(
+        &self,
+        concurrency_keys: &[String],
+        candidate_id: &str,
+    ) -> Result<(), DataLayerError> {
+        let keys = concurrency_keys
+            .iter()
+            .map(|key| self.keyspace.key(key))
+            .collect::<Vec<_>>();
+        run_lane_with_timeout(
+            &self.connections,
+            RedisConnectionLane::Fast,
+            self.command_timeout_ms,
+            "execution reservation release",
+            async {
+                let release_script = script(
+                    "for index, key in ipairs(KEYS) do \
+                     redis.call('ZREM', key, ARGV[1]); \
+                     if redis.call('ZCARD', key) == 0 then redis.call('DEL', key) end; \
+                     end; return 1;",
+                );
+                let mut invocation = release_script.prepare_invoke();
+                for key in &keys {
+                    invocation.key(key);
+                }
+                invocation.arg(candidate_id);
+                let mut connection = self.connections.connection(RedisConnectionLane::Fast);
+                invocation
+                    .invoke_async::<i64>(&mut connection)
+                    .await
+                    .map(|_| ())
+                    .map_redis_err()
+            },
+        )
+        .await
     }
 
     pub(crate) async fn set_add(&self, key: &str, member: &str) -> Result<bool, DataLayerError> {

@@ -2,7 +2,9 @@
 
 The Responses API supports a WebSocket mode for long-running, tool-call-heavy workflows. In this mode, you keep a persistent connection to `/v1/responses` and continue each turn by sending only new input items plus `previous_response_id`.
 
-WebSocket mode is compatible with both Zero Data Retention (ZDR) and `store=false`.
+The provider request supports `store=false`. This does not by itself disable
+Aether's local usage and audit body capture; configure Aether's retention and
+body-capture policy separately when request persistence is not acceptable.
 
 ## Why use WebSocket mode
 
@@ -86,14 +88,13 @@ ws.send(
 
 WebSocket mode uses the same `previous_response_id` chaining semantics as HTTP mode, but it adds a lower-latency continuation path on the active socket.
 
-On an active WebSocket connection, the service keeps one previous-response state in a connection-local in-memory cache (the most recent response). Continuing from that most recent response is fast because the service can reuse connection-local state. Because the previous-response state is retained only in memory and is not written to disk, you can use WebSocket mode in a way that is compatible with `store=false` and Zero Data Retention (ZDR).
+On an active Aether WebSocket connection, the gateway remembers only the most recent response ID that it successfully delivered to that client. A continuation is accepted only when `previous_response_id` matches that connection-local ID. Older IDs, IDs observed on another connection, and IDs supplied on the first turn return `previous_response_not_found` before authentication, routing, or provider admission.
 
-If a `previous_response_id` is not in the in-memory cache, behavior depends on whether you store responses:
+This restriction is intentional even when the provider supports `store=true`: Aether provider accounts can be shared by multiple tenants, so provider-side persistence is not a client ownership boundary. Cross-connection continuation will require an Aether-owned response registry scoped to the authenticated user or API key. Until that registry exists, reconnect by starting a new chain with complete input.
 
-- With `store=true`, the service may hydrate older response IDs from persisted state when available. Continuation can still work, but it usually loses the in-memory latency benefit.
-- With `store=false` (including ZDR), there is no persisted fallback. If the ID is uncached, the request returns `previous_response_not_found`.
-
-If a turn fails (`4xx` or `5xx`), the service evicts the referenced `previous_response_id` from the connection-local cache. This prevents reusing stale cached state for that failed continuation.
+The connection-local continuation cache stores only the last public response
+ID in memory for the socket lifetime. This limits continuation state, but it
+does not override Aether's independently configured usage and audit retention.
 
 ## Compaction and creating new responses
 
@@ -144,18 +145,20 @@ ws.send(
 - A single WebSocket connection can receive multiple `response.create` messages, but it runs them sequentially (one in-flight response at a time).
 - No multiplexing support today. Use multiple connections if you need parallel runs.
 - Connection duration is limited to 60 minutes. Reconnect when the limit is reached.
-- Aether binds each upstream WebSocket to one selected provider key. A provider must explicitly enable the standard Responses WebSocket capability and expose an `openai:responses` endpoint before it is eligible for this bridge.
-- The Codex adapter additionally watches Codex quota events. A `usage_limit_reached` terminal error immediately marks the bound account unavailable. If the client has not received a standard `response.*` event and the request has no `previous_response_id`, Aether retries that one turn once on another eligible key without closing the public socket.
-- After a standard response event has reached the client, after a retry has already been attempted, or for a request using `previous_response_id`, Aether forwards the provider terminal error and detaches only the exhausted upstream. If the upstream closes immediately after the quota signal, Aether emits a recoverable gateway error instead. The public WebSocket stays open so a later independent `response.create` can select another key.
-- Aether does not transparently move an existing response chain to another provider key. Connection-local `previous_response_id` state cannot be transferred safely, especially with `store=false`/ZDR; send a new request with complete input after an exhausted continuation.
+- Aether's public socket always accepts and emits the OpenAI Responses WebSocket protocol. Provider-private envelopes, quota/account metadata, binary frames, and provider Close details are not part of that public contract.
+- The current upstream backend is native Responses WebSocket passthrough. A provider must explicitly enable that capability and expose an `openai:responses` endpoint before it is eligible. HTTP/SSE or cross-format execution belongs in a separate backend behind the same public protocol boundary.
+- Aether binds each native upstream WebSocket to one selected provider key. A provider observer independently watches Codex quota events without changing the public codec or backend protocol. A `usage_limit_reached` terminal error immediately marks the bound account unavailable. If the client has not received a standard `response.*` event and the request has no `previous_response_id`, Aether retries that one turn once on another eligible key without closing the public socket.
+- After a standard response event has reached the client, after a retry has already been attempted, or for a request using `previous_response_id`, Aether emits a sanitized public error and detaches only the exhausted upstream. If the upstream closes immediately after the quota signal, Aether emits a recoverable gateway error instead. The public WebSocket stays open so a later independent `response.create` can select another key.
+- Aether does not transparently move an existing response chain to another provider key. Connection-local `previous_response_id` state cannot be transferred safely, especially with `store=false`; send a new request with complete input after an exhausted continuation.
 
 ## Reconnect and recover
 
-When a connection closes (or hits the 60-minute limit), open a new WebSocket connection and continue with one of these patterns:
+When a connection closes (or hits the 60-minute limit), open a new WebSocket connection and use one of these patterns:
 
-1. If your prior response is persisted (`store=true`) and you have a valid response ID, continue with `previous_response_id` and new input items.
-2. If you cannot continue the chain (for example, `store=false`/ZDR or `previous_response_not_found`), start a new response by setting `previous_response_id` to `null` (or omitting it) and send the full input context for the next turn.
-3. If you compacted context with `/responses/compact`, use the returned compacted window as the base `input` for that new response, then append the latest user/tool items.
+1. Start a new response by setting `previous_response_id` to `null` (or omitting it) and send the full input context for the next turn.
+2. If you compacted context with `/responses/compact`, use the returned compacted window as the base `input` for that new response, then append the latest user/tool items.
+
+Do not send the prior connection's response ID as the first request on the new socket. Aether currently rejects cross-connection continuation with `previous_response_not_found`, including when the upstream response used `store=true`.
 
 ## Errors to handle
 

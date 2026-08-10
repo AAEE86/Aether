@@ -1,3 +1,7 @@
+use crate::ai_serving::planner::candidate_resolution::{
+    candidate_auth_channel_skip_reason, candidate_transport_policy_facts,
+    provider_transport_uses_pool, EligibleLocalExecutionCandidate, LocalExecutionCandidateKind,
+};
 use crate::ai_serving::planner::common::endpoint_config_forces_body_stream_field;
 use crate::ai_serving::planner::plan_builders::{AiStreamAttempt, AiSyncAttempt};
 use crate::ai_serving::planner::spec_metadata::local_openai_responses_spec_metadata;
@@ -6,11 +10,17 @@ use crate::ai_serving::planner::standard::normalize::build_local_openai_response
 use crate::ai_serving::GatewayControlDecision;
 use crate::orchestration::{
     codex_quota_breaker_blocks_candidate, log_codex_quota_breaker_check_failure,
-    responses_websocket_adapter, ResponsesWebSocketAdapter,
+    responses_websocket_capability, LocalExecutionCandidateMetadata, ResponsesProviderObserverKind,
+    ResponsesWebSocketBackendKind,
 };
 use crate::{AiExecutionDecision, AppState, GatewayError};
+use aether_data_contracts::repository::candidate_selection::{
+    StoredMinimalCandidateSelectionRow, StoredPoolKeyCandidateRowsByKeyIdsQuery,
+};
 use aether_runtime_state::RuntimeLockLease;
+use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 mod decision;
 mod plans;
@@ -19,6 +29,9 @@ use self::decision::{
     build_local_openai_responses_candidate_attempt_source,
     maybe_build_local_openai_responses_decision_payload_for_candidate,
     resolve_local_openai_responses_decision_input,
+    resolve_local_openai_responses_decision_input_strong,
+    resolve_local_openai_responses_decision_input_with_auth_snapshot,
+    LocalOpenAiResponsesCandidateAttempt, LocalOpenAiResponsesDecisionInput,
 };
 use self::plans::{
     build_local_stream_attempt_source, build_local_stream_plan_and_reports,
@@ -176,15 +189,395 @@ pub(crate) async fn maybe_build_stream_local_openai_responses_decision_payload(
     Ok(None)
 }
 
-/// One eligible upstream plus the adapter that is allowed to speak to it.
+/// One eligible upstream plus the backend and provider observer selected for
+/// the public Responses WebSocket session.
 ///
-/// The adapter is selected from the provider-scoped capability before the
-/// decision leaves the planner. This prevents a public Responses socket from
-/// choosing an arbitrary provider protocol after scheduling has completed.
+/// The public wire protocol is not part of this choice: it remains OpenAI
+/// Responses WebSocket for every backend. The current planner only returns the
+/// native fast path; a future HTTP-stream conversion backend can be added as a
+/// second backend without changing the public session state machine.
 pub(crate) struct ResponsesWebSocketDecision {
     pub(crate) execution: AiExecutionDecision,
-    pub(crate) adapter: ResponsesWebSocketAdapter,
+    /// The concrete provider/endpoint/key selected after pool expansion.
+    /// Continuation turns must revalidate this exact identity and may never
+    /// migrate to a sibling key while retaining `previous_response_id`.
+    pub(crate) bound_candidate: SchedulerMinimalCandidateSelectionCandidate,
+    /// Non-secret credential-generation fence for the concrete transport.
+    /// Unlike the final Authorization header, this remains stable across an
+    /// ordinary OAuth refresh and Agent Identity assertion/task rotation.
+    pub(crate) credential_binding_fingerprint: String,
+    pub(crate) backend: ResponsesWebSocketBackendKind,
+    pub(crate) provider_observer: ResponsesProviderObserverKind,
     pub(crate) normalization: ResponsesWebSocketBodyNormalization,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum BoundResponsesCandidateRevalidation {
+    Prepared {
+        decision: AiExecutionDecision,
+        credential_binding_fingerprint: String,
+    },
+    Denied {
+        reason: &'static str,
+    },
+    CapacityLimited {
+        reason: &'static str,
+    },
+    Unavailable {
+        reason: &'static str,
+    },
+}
+
+impl BoundResponsesCandidateRevalidation {
+    fn denied(reason: &'static str) -> Self {
+        Self::Denied { reason }
+    }
+
+    fn capacity_limited(reason: &'static str) -> Self {
+        Self::CapacityLimited { reason }
+    }
+
+    fn unavailable(reason: &'static str) -> Self {
+        Self::Unavailable { reason }
+    }
+}
+
+/// Revalidates the exact physical candidate retained by a Responses
+/// continuation. This function never invokes candidate selection and can
+/// therefore never migrate a `previous_response_id` chain to a sibling key.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn revalidate_bound_responses_candidate(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    auth_snapshot: &crate::data::auth::GatewayAuthApiKeySnapshot,
+    client_event: &serde_json::Value,
+    bound_candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    expected_provider_model: &str,
+    expected_backend: ResponsesWebSocketBackendKind,
+    expected_provider_observer: ResponsesProviderObserverKind,
+) -> BoundResponsesCandidateRevalidation {
+    let runtime_miss_key =
+        crate::ai_serving::runtime_miss_diagnostic_key_from_parts(parts, trace_id).to_string();
+    let _runtime_miss_cleanup =
+        crate::ai_serving::RuntimeMissDiagnosticCleanupGuard::new(state, runtime_miss_key);
+
+    let Some(spec) = resolve_stream_spec(crate::ai_serving::OPENAI_RESPONSES_STREAM_PLAN_KIND)
+    else {
+        return BoundResponsesCandidateRevalidation::unavailable(
+            "responses_websocket_plan_unavailable",
+        );
+    };
+    let input = match resolve_local_openai_responses_decision_input_strong(
+        state,
+        parts,
+        trace_id,
+        decision,
+        client_event,
+        spec.decision_kind,
+        auth_snapshot,
+    )
+    .await
+    {
+        Ok(Some(input)) => input,
+        Ok(None) => {
+            return BoundResponsesCandidateRevalidation::denied(
+                "responses_websocket_candidate_not_authorized",
+            )
+        }
+        Err(GatewayError::Client { .. }) => {
+            return BoundResponsesCandidateRevalidation::denied(
+                "responses_websocket_routing_denied",
+            )
+        }
+        Err(_) => {
+            return BoundResponsesCandidateRevalidation::unavailable(
+                "responses_websocket_revalidation_unavailable",
+            )
+        }
+    };
+
+    if input.routing_policy.as_ref().is_some_and(|policy| {
+        !policy
+            .ranking_overlay
+            .provider_allowed(bound_candidate.provider_id.as_str())
+            || !policy
+                .ranking_overlay
+                .key_allowed(bound_candidate.key_id.as_str())
+    }) {
+        return BoundResponsesCandidateRevalidation::denied(
+            "responses_websocket_routing_candidate_revoked",
+        );
+    }
+
+    let effective_body = input.effective_body_json(client_event);
+    let request_operation =
+        crate::ai_serving::openai_responses_request_operation("openai:responses", effective_body);
+    let query = StoredPoolKeyCandidateRowsByKeyIdsQuery {
+        api_format: "openai:responses".to_string(),
+        provider_id: bound_candidate.provider_id.clone(),
+        endpoint_id: bound_candidate.endpoint_id.clone(),
+        model_id: bound_candidate.model_id.clone(),
+        selected_provider_model_name: bound_candidate.selected_provider_model_name.clone(),
+        key_ids: vec![bound_candidate.key_id.clone()],
+    };
+    let rows = match state
+        .list_pool_key_candidate_rows_for_group_key_ids_strong(&query)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => {
+            return BoundResponsesCandidateRevalidation::unavailable(
+                "responses_websocket_catalog_unavailable",
+            )
+        }
+    };
+    let Some(candidate) =
+        resolve_exact_bound_responses_candidate(rows, &input, bound_candidate, request_operation)
+    else {
+        return BoundResponsesCandidateRevalidation::denied(
+            "responses_websocket_candidate_revoked",
+        );
+    };
+
+    let transport = match state
+        .read_provider_transport_snapshot_strong(
+            candidate.provider_id.as_str(),
+            candidate.endpoint_id.as_str(),
+            candidate.key_id.as_str(),
+        )
+        .await
+    {
+        Ok(Some(transport)) => transport,
+        Ok(None) => {
+            return BoundResponsesCandidateRevalidation::denied(
+                "responses_websocket_transport_revoked",
+            )
+        }
+        Err(_) => {
+            return BoundResponsesCandidateRevalidation::unavailable(
+                "responses_websocket_transport_unavailable",
+            )
+        }
+    };
+    if crate::ai_serving::candidate_common_transport_skip_reason(
+        &transport,
+        candidate_transport_policy_facts(&candidate),
+        Some(input.requested_model.as_str()),
+    )
+    .is_some()
+        || candidate_auth_channel_skip_reason(&transport, input.request_auth_channel.as_deref())
+            .is_some()
+    {
+        return BoundResponsesCandidateRevalidation::denied(
+            "responses_websocket_transport_revoked",
+        );
+    }
+    let Some(capability) = responses_websocket_capability(
+        transport.provider.provider_type.as_str(),
+        transport.provider.config.as_ref(),
+    ) else {
+        return BoundResponsesCandidateRevalidation::denied(
+            "responses_websocket_capability_revoked",
+        );
+    };
+    if capability.backend != expected_backend
+        || capability.provider_observer != expected_provider_observer
+        || !capability.supports_provider_type(transport.provider.provider_type.as_str())
+        || crate::ai_serving::normalize_api_format_alias(transport.endpoint.api_format.as_str())
+            != "openai:responses"
+    {
+        return BoundResponsesCandidateRevalidation::denied(
+            "responses_websocket_binding_contract_changed",
+        );
+    }
+    let credential_binding_fingerprint =
+        crate::ai_serving::transport::provider_transport_credential_binding_fingerprint(&transport);
+
+    let strong_runtime = state.strong_scheduler_runtime_state();
+    match crate::scheduler::candidate::concrete_candidate_runtime_skip_reason(
+        &strong_runtime,
+        &candidate,
+        Some(auth_snapshot),
+        crate::clock::current_unix_secs(),
+    )
+    .await
+    {
+        Ok(Some(reason)) if runtime_skip_reason_is_authorization_failure(reason) => {
+            return BoundResponsesCandidateRevalidation::denied(reason)
+        }
+        Ok(Some(reason)) => return BoundResponsesCandidateRevalidation::capacity_limited(reason),
+        Ok(None) => {}
+        Err(_) => {
+            return BoundResponsesCandidateRevalidation::unavailable(
+                "responses_websocket_runtime_unavailable",
+            )
+        }
+    }
+    if let Some(pool_config) =
+        crate::handlers::shared::provider_pool::admin_provider_pool_config_from_config_value(
+            transport.provider.config.as_ref(),
+        )
+    {
+        let policy = crate::scheduler::candidate::ConcretePoolRuntimePolicy {
+            cost_window_seconds: pool_config.cost_window_seconds,
+            cost_limit_per_key_tokens: pool_config.cost_limit_per_key_tokens,
+            probing_enabled: pool_config.probing_enabled,
+        };
+        match crate::scheduler::candidate::concrete_pool_candidate_runtime_skip_reason(
+            &strong_runtime,
+            &candidate,
+            policy,
+        )
+        .await
+        {
+            Ok(Some(reason)) => {
+                return BoundResponsesCandidateRevalidation::capacity_limited(reason)
+            }
+            Ok(None) => {}
+            Err(_) => {
+                return BoundResponsesCandidateRevalidation::unavailable(
+                    "responses_websocket_pool_runtime_unavailable",
+                )
+            }
+        }
+    }
+
+    let provider_api_format = transport.endpoint.api_format.trim().to_ascii_lowercase();
+    let kind = if provider_transport_uses_pool(&transport) {
+        LocalExecutionCandidateKind::PoolGroup
+    } else {
+        LocalExecutionCandidateKind::SingleKey
+    };
+    let attempt = LocalOpenAiResponsesCandidateAttempt {
+        eligible: EligibleLocalExecutionCandidate {
+            kind,
+            candidate,
+            transport: std::sync::Arc::new(transport),
+            provider_api_format,
+            orchestration: LocalExecutionCandidateMetadata {
+                scheduler_affinity_epoch: Some(state.scheduler_affinity_epoch()),
+                ..LocalExecutionCandidateMetadata::default()
+            },
+            ranking: None,
+        },
+        candidate_index: 0,
+        retry_index: 0,
+        candidate_id: new_bound_responses_revalidation_candidate_id(),
+    };
+    let effective_body = input.effective_body_json(client_event);
+    let fresh_decision = match maybe_build_local_openai_responses_decision_payload_for_candidate(
+        state,
+        parts,
+        trace_id,
+        effective_body,
+        &input,
+        attempt,
+        spec,
+    )
+    .await
+    {
+        Ok(Some(decision)) => decision,
+        Ok(None) => {
+            return BoundResponsesCandidateRevalidation::denied(
+                "responses_websocket_provider_request_revoked",
+            )
+        }
+        Err(GatewayError::Client { .. }) => {
+            return BoundResponsesCandidateRevalidation::denied(
+                "responses_websocket_provider_request_denied",
+            )
+        }
+        Err(_) => {
+            return BoundResponsesCandidateRevalidation::unavailable(
+                "responses_websocket_provider_request_unavailable",
+            )
+        }
+    };
+    let fresh_provider_model = fresh_decision
+        .provider_request_body
+        .as_ref()
+        .and_then(|body| body.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .or(fresh_decision.mapped_model.as_deref())
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if fresh_provider_model != Some(expected_provider_model.trim()) {
+        return BoundResponsesCandidateRevalidation::denied(
+            "responses_websocket_provider_model_changed",
+        );
+    }
+
+    BoundResponsesCandidateRevalidation::Prepared {
+        decision: fresh_decision,
+        credential_binding_fingerprint,
+    }
+}
+
+fn resolve_exact_bound_responses_candidate(
+    rows: Vec<StoredMinimalCandidateSelectionRow>,
+    input: &LocalOpenAiResponsesDecisionInput,
+    bound: &SchedulerMinimalCandidateSelectionCandidate,
+    request_operation: Option<&str>,
+) -> Option<SchedulerMinimalCandidateSelectionCandidate> {
+    let auth_constraints =
+        crate::data::candidate_selection::auth_snapshot_constraints(&input.auth_snapshot);
+    let directive_resolution = input
+        .model_directive_policy
+        .resolve_reasoning("openai:responses", Some(input.requested_model.as_str()));
+    let routing_model = directive_resolution
+        .base_model()
+        .unwrap_or(input.requested_model.as_str());
+    let resolved_global_model = aether_scheduler_core::resolve_requested_global_model_name_with_model_directives_and_request_operation(
+        &rows,
+        routing_model,
+        "openai:responses",
+        false,
+        request_operation,
+    )?;
+    aether_scheduler_core::enumerate_minimal_candidate_selection_with_model_directives(
+        aether_scheduler_core::EnumerateMinimalCandidateSelectionInput {
+            rows,
+            normalized_api_format: "openai:responses",
+            request_operation,
+            requested_model_name: routing_model,
+            resolved_global_model_name: resolved_global_model.as_str(),
+            require_streaming: true,
+            required_capabilities: input.required_capabilities.as_ref(),
+            auth_constraints: Some(&auth_constraints),
+        },
+        false,
+    )
+    .ok()?
+    .into_iter()
+    .find(|candidate| bound_responses_candidate_identity_matches(candidate, bound))
+}
+
+fn bound_responses_candidate_identity_matches(
+    current: &SchedulerMinimalCandidateSelectionCandidate,
+    bound: &SchedulerMinimalCandidateSelectionCandidate,
+) -> bool {
+    current.provider_id == bound.provider_id
+        && current.provider_type == bound.provider_type
+        && current.endpoint_id == bound.endpoint_id
+        && crate::ai_serving::normalize_api_format_alias(&current.endpoint_api_format)
+            == crate::ai_serving::normalize_api_format_alias(&bound.endpoint_api_format)
+        && current.key_id == bound.key_id
+        && current.key_auth_type == bound.key_auth_type
+        && current.model_id == bound.model_id
+        && current.global_model_id == bound.global_model_id
+        && current.global_model_name == bound.global_model_name
+        && current.selected_provider_model_name == bound.selected_provider_model_name
+        && current.mapping_matched_model == bound.mapping_matched_model
+}
+
+fn runtime_skip_reason_is_authorization_failure(reason: &str) -> bool {
+    matches!(reason, "oauth_invalid" | "pool_account_blocked")
+}
+
+fn new_bound_responses_revalidation_candidate_id() -> String {
+    Uuid::new_v4().to_string()
 }
 
 /// Everything needed to re-run provider-body normalization for the candidate a
@@ -246,18 +639,25 @@ impl ResponsesWebSocketBodyNormalization {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_body_rules_for_tests(mut self, rules: serde_json::Value) -> Self {
+        self.body_rules = Some(rules);
+        self
+    }
+
     /// Applies the same body transformations the planner applied on the turn
     /// that bound this upstream.
     ///
     /// Mirrors the same-format branch of
-    /// `resolve_local_openai_responses_candidate_payload_parts`. The
-    /// cross-format, Kiro, Windsurf and Antigravity branches are unreachable
-    /// here: the WebSocket planner only returns candidates whose provider API
-    /// format is `openai:responses`.
+    /// `resolve_local_openai_responses_candidate_payload_parts`. This
+    /// normalizer belongs specifically to the native Responses WebSocket
+    /// backend. Cross-format providers will use a per-turn backend plan and the
+    /// shared canonical request converter instead of retaining this value on a
+    /// physical provider socket.
     ///
-    /// Returns `None` when normalization fails, leaving the caller to fall back
-    /// to the unnormalized event — a continuation cannot re-select a candidate,
-    /// so failing the turn outright would be worse than sending it as-is.
+    /// Returns `None` when normalization fails. The native WebSocket backend
+    /// treats that as a rejected turn because forwarding the unnormalized
+    /// event would bypass the selected provider contract.
     pub(crate) fn normalize_response_create(
         &self,
         client_event: &serde_json::Value,
@@ -325,20 +725,82 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     excluded_key_ids: Option<&BTreeSet<String>>,
     excluded_codex_account_ids: Option<&BTreeSet<String>>,
 ) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
-    let Some(spec) = resolve_stream_spec(crate::ai_serving::OPENAI_RESPONSES_STREAM_PLAN_KIND)
-    else {
-        return Ok(None);
-    };
-    let Some(input) = resolve_local_openai_responses_decision_input(
+    maybe_build_responses_websocket_decision_inner(
         state,
         parts,
         trace_id,
         decision,
         body_json,
-        spec.decision_kind,
+        excluded_key_ids,
+        excluded_codex_account_ids,
+        None,
     )
-    .await?
+    .await
+}
+
+pub(crate) async fn maybe_build_responses_websocket_decision_with_auth_snapshot(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    body_json: &serde_json::Value,
+    excluded_key_ids: Option<&BTreeSet<String>>,
+    excluded_codex_account_ids: Option<&BTreeSet<String>>,
+    auth_snapshot: &crate::data::auth::GatewayAuthApiKeySnapshot,
+) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
+    maybe_build_responses_websocket_decision_inner(
+        state,
+        parts,
+        trace_id,
+        decision,
+        body_json,
+        excluded_key_ids,
+        excluded_codex_account_ids,
+        Some(auth_snapshot),
+    )
+    .await
+}
+
+async fn maybe_build_responses_websocket_decision_inner(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    body_json: &serde_json::Value,
+    excluded_key_ids: Option<&BTreeSet<String>>,
+    excluded_codex_account_ids: Option<&BTreeSet<String>>,
+    auth_snapshot: Option<&crate::data::auth::GatewayAuthApiKeySnapshot>,
+) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
+    let Some(spec) = resolve_stream_spec(crate::ai_serving::OPENAI_RESPONSES_STREAM_PLAN_KIND)
     else {
+        return Ok(None);
+    };
+    let input = match auth_snapshot {
+        Some(auth_snapshot) => {
+            resolve_local_openai_responses_decision_input_with_auth_snapshot(
+                state,
+                parts,
+                trace_id,
+                decision,
+                body_json,
+                spec.decision_kind,
+                auth_snapshot,
+            )
+            .await?
+        }
+        None => {
+            resolve_local_openai_responses_decision_input(
+                state,
+                parts,
+                trace_id,
+                decision,
+                body_json,
+                spec.decision_kind,
+            )
+            .await?
+        }
+    };
+    let Some(input) = input else {
         return Ok(None);
     };
     let body_json = input.effective_body_json(body_json);
@@ -355,7 +817,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
             release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
             continue;
         }
-        let Some(adapter) = responses_websocket_adapter(
+        let Some(capability) = responses_websocket_capability(
             &attempt.eligible.transport.provider.provider_type,
             attempt.eligible.transport.provider.config.as_ref(),
         ) else {
@@ -364,7 +826,12 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         };
         // Captured before `attempt` is consumed so a later continuation turn can
         // reproduce this candidate's body normalization without re-planning.
+        let bound_candidate = attempt.eligible.candidate.clone();
         let transport = std::sync::Arc::clone(&attempt.eligible.transport);
+        let credential_binding_fingerprint =
+            crate::ai_serving::transport::provider_transport_credential_binding_fingerprint(
+                &transport,
+            );
         let candidate_provider_api_format = attempt.eligible.provider_api_format.clone();
         let payload = match maybe_build_local_openai_responses_decision_payload_for_candidate(
             state, parts, trace_id, body_json, &input, attempt, spec,
@@ -414,7 +881,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         if payload
             .provider_type
             .as_deref()
-            .is_some_and(|value| adapter.supports_provider_type(value))
+            .is_some_and(|value| capability.supports_provider_type(value))
             && payload.provider_api_format.as_deref().is_some_and(|value| {
                 crate::ai_serving::normalize_api_format_alias(value) == "openai:responses"
             })
@@ -456,7 +923,10 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
             };
             return Ok(Some(ResponsesWebSocketDecision {
                 execution: payload,
-                adapter,
+                bound_candidate,
+                credential_binding_fingerprint,
+                backend: capability.backend,
+                provider_observer: capability.provider_observer,
                 normalization,
             }));
         }
@@ -484,5 +954,20 @@ async fn release_responses_websocket_planning_lease(
             error = ?error,
             "gateway Responses WebSocket planner failed to release an unused pool key lease"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_bound_responses_revalidation_candidate_id;
+
+    #[test]
+    fn bound_revalidation_candidate_ids_are_unique_uuids() {
+        let first = new_bound_responses_revalidation_candidate_id();
+        let second = new_bound_responses_revalidation_candidate_id();
+
+        assert_ne!(first, second);
+        assert!(uuid::Uuid::parse_str(&first).is_ok());
+        assert!(uuid::Uuid::parse_str(&second).is_ok());
     }
 }

@@ -387,7 +387,7 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     }
 }
 
-fn candidate_transport_policy_facts(
+pub(crate) fn candidate_transport_policy_facts(
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
 ) -> CandidateTransportPolicyFacts<'_> {
     CandidateTransportPolicyFacts {
@@ -398,14 +398,14 @@ fn candidate_transport_policy_facts(
     }
 }
 
-fn provider_transport_uses_pool(transport: &GatewayProviderTransportSnapshot) -> bool {
+pub(crate) fn provider_transport_uses_pool(transport: &GatewayProviderTransportSnapshot) -> bool {
     crate::handlers::shared::provider_pool::admin_provider_pool_config_from_config_value(
         transport.provider.config.as_ref(),
     )
     .is_some()
 }
 
-fn routing_policy_candidate_skip_reason(
+pub(crate) fn routing_policy_candidate_skip_reason(
     routing_policy: Option<&ResolvedRoutingPolicy>,
     candidate: &SchedulerMinimalCandidateSelectionCandidate,
     transport: &GatewayProviderTransportSnapshot,

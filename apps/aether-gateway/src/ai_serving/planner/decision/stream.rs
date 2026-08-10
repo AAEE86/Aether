@@ -159,10 +159,11 @@ async fn maybe_build_local_video_task_content_stream_decision_payload(
         .hydrate_video_task_for_route(decision.route_family.as_deref(), parts.uri.path())
         .await?;
 
+    let request_id = crate::execution_identity::execution_request_id_from_parts(parts, trace_id);
     let Some(action) = state.video_tasks.prepare_openai_content_stream_action(
         parts.uri.path(),
         parts.uri.query(),
-        trace_id,
+        request_id,
     ) else {
         return Ok(None);
     };
@@ -176,7 +177,7 @@ async fn maybe_build_local_video_task_content_stream_decision_payload(
         AiExecutionDecisionFromPlanParts {
             action: EXECUTION_RUNTIME_STREAM_DECISION_ACTION.to_string(),
             decision_kind: Some(plan_kind.to_string()),
-            request_id: None,
+            request_id: Some(request_id.to_string()),
             upstream_base_url: None,
             include_auth_pair: false,
             plan,

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use aether_data_contracts::repository::candidates::StoredRequestCandidate;
@@ -29,10 +30,31 @@ pub(crate) trait SchedulerRuntimeState {
         key_ids: &[String],
     ) -> Result<Vec<StoredProviderCatalogKey>, GatewayError>;
 
-    async fn read_recent_request_candidates(
+    async fn read_runtime_scoped_request_candidates_since(
         &self,
-        limit: usize,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
     ) -> Result<Vec<StoredRequestCandidate>, GatewayError>;
+
+    async fn read_pool_key_cooldown_reason(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+    ) -> Result<Option<String>, GatewayError>;
+
+    async fn read_pool_key_cost_window_usage(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+        cost_window_seconds: u64,
+    ) -> Result<u64, GatewayError>;
+
+    async fn read_pool_active_probe_member_ids(
+        &self,
+        provider_id: &str,
+    ) -> Result<BTreeSet<String>, GatewayError>;
 
     fn provider_key_rpm_reset_at(&self, key_id: &str, now_unix_secs: u64) -> Option<u64>;
 

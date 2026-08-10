@@ -1484,60 +1484,14 @@ fn build_pool_catalog_key_context(
         provider_pool_service.member_signals(provider_type, key, auth_config.as_ref());
     signals.account_blocked |= admin_provider_pool_pure::admin_pool_key_is_known_banned(key);
     signals.account_blocked |=
-        pool_key_requires_reauth_for_scheduling(key, current_unix_ms().saturating_div(1000));
+        admin_provider_pool_pure::admin_pool_key_requires_reauth_for_scheduling(
+            key,
+            current_unix_ms().saturating_div(1000),
+        );
     signals.health_score = health_score;
     signals.latency_avg_ms = latency_avg_ms;
     signals.catalog_lru_score = Some(key.last_used_at_unix_secs.unwrap_or(0) as f64);
     signals
-}
-
-fn pool_key_requires_reauth_for_scheduling(
-    key: &StoredProviderCatalogKey,
-    now_unix_secs: u64,
-) -> bool {
-    if !key.auth_type.trim().eq_ignore_ascii_case("oauth") {
-        return false;
-    }
-
-    let invalid_reason = key
-        .oauth_invalid_reason
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default();
-    if !invalid_reason.is_empty() {
-        let account_state = admin_provider_status_pure::resolve_pool_account_state(
-            None,
-            key.upstream_metadata.as_ref(),
-            Some(invalid_reason),
-        );
-        if account_state.blocked && !account_state.recoverable {
-            return true;
-        }
-        if pool_oauth_reason_has_tag(invalid_reason, "[ACCOUNT_BLOCK]") {
-            return true;
-        }
-        if pool_oauth_reason_has_tag(invalid_reason, "[REQUEST_FAILED]") {
-            return false;
-        }
-        if pool_oauth_reason_has_tag(invalid_reason, "[REFRESH_FAILED]") {
-            return key
-                .expires_at_unix_secs
-                .is_none_or(|expires_at| expires_at == 0 || expires_at <= now_unix_secs);
-        }
-        if pool_oauth_reason_has_tag(invalid_reason, "[OAUTH_EXPIRED]") {
-            return false;
-        }
-        return true;
-    }
-
-    key.oauth_invalid_at_unix_secs.is_some()
-}
-
-fn pool_oauth_reason_has_tag(reason: &str, tag: &str) -> bool {
-    reason
-        .lines()
-        .map(str::trim)
-        .any(|line| line.starts_with(tag))
 }
 
 fn apply_local_execution_pool_scheduler_with_runtime_map(
@@ -1938,8 +1892,7 @@ mod tests {
         apply_local_execution_pool_scheduler_with_runtime_map_outcome,
         apply_local_execution_pool_scheduler_with_runtime_map_outcome_and_configs,
         build_pool_catalog_key_context, effective_pool_config_for_group, pool_config_for_candidate,
-        pool_key_candidate_order_for_group, pool_key_requires_reauth_for_scheduling,
-        prune_unschedulable_active_probe_members_for_request,
+        pool_key_candidate_order_for_group, prune_unschedulable_active_probe_members_for_request,
         remove_active_probe_members_for_request, should_trigger_active_probe_burst_for_request,
         PoolCatalogKeyContext, PoolKeyCursor, POOL_ACTIVE_PROBE_SEALED_SKIP_REASON,
         ROUTING_PROFILE_DISALLOWED_KEY_SKIP_REASON,
@@ -1956,6 +1909,7 @@ mod tests {
     };
     use crate::orchestration::LocalExecutionCandidateMetadata;
     use crate::{AppState, LocalExecutionRuntimeMissDiagnostic};
+    use aether_admin::provider::pool::admin_pool_key_requires_reauth_for_scheduling;
     use aether_data::repository::candidate_selection::InMemoryMinimalCandidateSelectionReadRepository;
     use aether_data::repository::pool_scores::InMemoryPoolMemberScoreRepository;
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
@@ -4216,37 +4170,37 @@ mod tests {
                 .to_string(),
         );
 
-        assert!(!pool_key_requires_reauth_for_scheduling(&key, 100));
-        assert!(pool_key_requires_reauth_for_scheduling(&key, 200));
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 200));
 
         key.oauth_invalid_reason = Some("[REQUEST_FAILED] 账号状态检查失败".to_string());
         key.oauth_invalid_at_unix_secs = Some(100);
-        assert!(!pool_key_requires_reauth_for_scheduling(&key, 300));
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 300));
 
         key.oauth_invalid_reason = Some("[OAUTH_EXPIRED] session expired".to_string());
-        assert!(!pool_key_requires_reauth_for_scheduling(&key, 300));
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 300));
     }
 
     #[test]
     fn pool_key_reauth_scheduling_blocks_invalid_oauth_markers_without_affecting_non_oauth_keys() {
         let mut key = sample_codex_pool_key("provider-a", "key-invalid");
         key.oauth_invalid_reason = Some("[ACCOUNT_BLOCK] account has been deactivated".to_string());
-        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
 
         key.oauth_invalid_reason = Some("[OAUTH_EXPIRED] token invalidated".to_string());
         key.oauth_invalid_at_unix_secs = None;
-        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
 
         key.oauth_invalid_reason = Some("Kiro Token 无效或已过期".to_string());
         key.oauth_invalid_at_unix_secs = None;
-        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
 
         key.oauth_invalid_reason = None;
         key.oauth_invalid_at_unix_secs = Some(100);
-        assert!(pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(admin_pool_key_requires_reauth_for_scheduling(&key, 100));
 
         key.auth_type = "api_key".to_string();
-        assert!(!pool_key_requires_reauth_for_scheduling(&key, 100));
+        assert!(!admin_pool_key_requires_reauth_for_scheduling(&key, 100));
     }
 
     #[tokio::test]

@@ -1,20 +1,23 @@
-//! OpenAI Responses WebSocket protocol entry point, session engine, and adapters.
+//! OpenAI Responses WebSocket protocol entry point and session engine.
 //!
 //! The route is protocol-oriented. `session` bootstraps the authenticated
 //! connection, `connection` owns the socket FSM, `client` and `quota` own
 //! protocol/retry policy, and `lifecycle`/`turn` bridge each turn into the
-//! existing usage and audit runtime. Adapters contain only provider-specific
-//! connection and metadata behavior.
+//! existing usage and audit runtime. The public codec, native backend, and
+//! provider observer are independent axes so a future converted backend can
+//! keep the same public Responses protocol.
 
 mod adapter;
 mod adapters;
 mod admission;
+mod backend;
 mod binding;
 mod client;
 mod connection;
 mod frame;
 mod lifecycle;
 mod observation;
+mod ownership;
 mod quota;
 mod redaction;
 mod relay_policy;
@@ -39,6 +42,8 @@ use crate::handlers::proxy::websocket::ingress::{
 use crate::handlers::proxy::websocket::session::RESPONSES_WEBSOCKET_SESSION_LIMITS;
 use crate::{AppState, GatewayError};
 
+pub(crate) use state::ResponsesPublicEventSequence;
+
 pub(crate) async fn responses_websocket(
     State(state): State<AppState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
@@ -61,5 +66,4 @@ pub(crate) async fn responses_websocket(
 
 const RESPONSES_WEBSOCKET_INGRESS_SPEC: WebSocketIngressSpec = WebSocketIngressSpec {
     route_unavailable_message: "WebSocket route is unavailable",
-    ip_whitelist_failure_event_name: "responses_websocket_ip_whitelist_check_failed",
 };

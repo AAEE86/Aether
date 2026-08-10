@@ -2,7 +2,7 @@
 //!
 //! A Responses continuation carries state that lives on one provider socket.
 //! Comparing only the selected key is therefore not sufficient: transport
-//! settings, stable account headers, and the protocol adapter can all change
+//! settings and native backend can all change
 //! the connection that would receive the next event. Rotating bearer values
 //! are intentionally excluded because they do not change an already-upgraded
 //! socket's physical binding.
@@ -11,14 +11,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use aether_contracts::{ProxySnapshot, ResolvedTransportProfile};
-use sha2::{Digest, Sha256};
 
-use super::adapter::ResponsesWebSocketProtocolAdapter;
+use super::backend::NativeResponsesWebSocketBackend;
 use crate::ai_serving::AiExecutionDecision;
 use crate::handlers::proxy::websocket::transport::{
     websocket_handshake_headers, websocket_upstream_url,
 };
-use crate::orchestration::ResponsesWebSocketAdapter;
+use crate::orchestration::ResponsesWebSocketBackendKind;
 
 /// Stable, comparable identity for the actual WebSocket connection target.
 ///
@@ -28,17 +27,16 @@ use crate::orchestration::ResponsesWebSocketAdapter;
 /// physical connection.
 #[derive(Clone, PartialEq)]
 pub(super) struct UpstreamBindingIdentity {
-    adapter_kind: ResponsesWebSocketAdapter,
+    backend_kind: ResponsesWebSocketBackendKind,
     provider_id: Option<String>,
     endpoint_id: Option<String>,
     key_id: Option<String>,
     upstream_url: String,
     handshake_headers: BTreeMap<String, String>,
-    /// Authentication values are not part of a stable key binding when the
-    /// planner has already supplied a key identity.  If that identity is
-    /// unavailable, retain only a one-way fingerprint so two accounts cannot
-    /// accidentally share a continuation socket.
-    auth_fingerprint: Option<[u8; 32]>,
+    /// Non-secret provider-transport credential generation. This deliberately
+    /// differs from the final Authorization value: OAuth access tokens and
+    /// Agent Identity assertions may rotate without replacing the account.
+    credential_binding_fingerprint: String,
     proxy: Option<ProxySnapshot>,
     transport_profile: Option<ResolvedTransportProfile>,
 }
@@ -54,8 +52,9 @@ impl UpstreamBindingIdentity {
     /// Builds an identity from the same normalized URL and headers used by
     /// the WebSocket transport client.
     pub(super) fn from_decision(
-        adapter: &'static dyn ResponsesWebSocketProtocolAdapter,
+        backend: &'static dyn NativeResponsesWebSocketBackend,
         decision: &AiExecutionDecision,
+        credential_binding_fingerprint: &str,
     ) -> Result<Self, UpstreamBindingIdentityError> {
         let raw_url = decision
             .upstream_url
@@ -70,35 +69,61 @@ impl UpstreamBindingIdentity {
             .map_err(|_| UpstreamBindingIdentityError::InvalidHandshakeHeaders)?;
         let authentication_header_names = authentication_header_names(decision);
         let mut handshake_headers = BTreeMap::new();
-        let mut authentication_headers = BTreeMap::new();
         for (name, value) in &headers {
             let name = name.as_str().to_ascii_lowercase();
             let value = value
                 .to_str()
                 .map_err(|_| UpstreamBindingIdentityError::InvalidHandshakeHeaders)?;
             if authentication_header_names.contains(name.as_str()) {
-                authentication_headers.insert(name, value.to_string());
+                continue;
             } else {
                 handshake_headers.insert(name, value.to_string());
             }
         }
-        let auth_fingerprint = decision
-            .key_id
-            .is_none()
-            .then(|| fingerprint_headers(&authentication_headers))
-            .filter(|_| !authentication_headers.is_empty());
 
         Ok(Self {
-            adapter_kind: adapter.kind(),
+            backend_kind: backend.kind(),
             provider_id: decision.provider_id.clone(),
             endpoint_id: decision.endpoint_id.clone(),
             key_id: decision.key_id.clone(),
             upstream_url,
             handshake_headers,
-            auth_fingerprint,
+            credential_binding_fingerprint: credential_binding_fingerprint.to_string(),
             proxy: effective_proxy_snapshot(decision.proxy.as_ref()),
             transport_profile: decision.transport_profile.clone(),
         })
+    }
+
+    /// Compares a fresh turn decision with the already-upgraded socket.
+    ///
+    /// Codex derives `session-id` and `thread-id` from optional request-body
+    /// cache metadata. Responses continuations are allowed to omit that
+    /// metadata, but an upgraded socket necessarily retains the values from
+    /// its original handshake. Treat an omitted derived header as inheritance;
+    /// an explicitly different value remains a binding change.
+    pub(super) fn matches_turn_decision(
+        &self,
+        backend: &'static dyn NativeResponsesWebSocketBackend,
+        decision: &AiExecutionDecision,
+        credential_binding_fingerprint: &str,
+    ) -> Result<bool, UpstreamBindingIdentityError> {
+        let mut fresh = Self::from_decision(backend, decision, credential_binding_fingerprint)?;
+        if decision
+            .provider_type
+            .as_deref()
+            .is_some_and(|provider_type| provider_type.trim().eq_ignore_ascii_case("codex"))
+        {
+            for header_name in ["session-id", "thread-id"] {
+                if !fresh.handshake_headers.contains_key(header_name) {
+                    if let Some(value) = self.handshake_headers.get(header_name) {
+                        fresh
+                            .handshake_headers
+                            .insert(header_name.to_string(), value.clone());
+                    }
+                }
+            }
+        }
+        Ok(self == &fresh)
     }
 }
 
@@ -123,17 +148,6 @@ fn authentication_header_names(decision: &AiExecutionDecision) -> BTreeSet<Strin
         names.insert(name.to_ascii_lowercase());
     }
     names
-}
-
-fn fingerprint_headers(headers: &BTreeMap<String, String>) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for (name, value) in headers {
-        hasher.update((name.len() as u64).to_be_bytes());
-        hasher.update(name.as_bytes());
-        hasher.update((value.len() as u64).to_be_bytes());
-        hasher.update(value.as_bytes());
-    }
-    hasher.finalize().into()
 }
 
 /// Normalize only values that are provably direct transport.  Keep node/tunnel
@@ -178,7 +192,7 @@ impl fmt::Debug for UpstreamBindingIdentity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("UpstreamBindingIdentity")
-            .field("adapter_kind", &self.adapter_kind)
+            .field("backend_kind", &self.backend_kind)
             .field("provider_id", &self.provider_id)
             .field("endpoint_id", &self.endpoint_id)
             .field("key_id", &self.key_id)
@@ -207,8 +221,14 @@ mod tests {
 
     use super::{UpstreamBindingIdentity, UpstreamBindingIdentityError};
     use crate::ai_serving::AiExecutionDecision;
-    use crate::handlers::proxy::websocket::responses::adapter::resolve_responses_websocket_adapter;
-    use crate::orchestration::ResponsesWebSocketAdapter;
+    use crate::handlers::proxy::websocket::responses::backend::resolve_native_responses_websocket_backend;
+    use crate::orchestration::ResponsesWebSocketBackendKind;
+
+    fn backend() -> &'static dyn crate::handlers::proxy::websocket::responses::backend::NativeResponsesWebSocketBackend{
+        resolve_native_responses_websocket_backend(
+            ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+        )
+    }
 
     fn decision() -> AiExecutionDecision {
         AiExecutionDecision {
@@ -258,8 +278,8 @@ mod tests {
 
     #[test]
     fn identity_normalizes_url_and_hop_by_hop_headers() {
-        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
-        let identity = UpstreamBindingIdentity::from_decision(adapter, &decision()).unwrap();
+        let identity =
+            UpstreamBindingIdentity::from_decision(backend(), &decision(), "credential-1").unwrap();
 
         assert_eq!(identity.upstream_url, "wss://api.example.test/v1/responses");
         assert_eq!(
@@ -270,15 +290,9 @@ mod tests {
 
     #[test]
     fn identity_changes_when_physical_binding_changes() {
-        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
         let base = decision();
-        let identity = UpstreamBindingIdentity::from_decision(adapter, &base).unwrap();
-
-        let codex_adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Codex);
-        assert_ne!(
-            identity,
-            UpstreamBindingIdentity::from_decision(codex_adapter, &base).unwrap()
-        );
+        let identity =
+            UpstreamBindingIdentity::from_decision(backend(), &base, "credential-1").unwrap();
 
         for mutate in [
             |decision: &mut AiExecutionDecision| {
@@ -309,7 +323,8 @@ mod tests {
             let mut changed = base.clone();
             mutate(&mut changed);
             let changed_identity =
-                UpstreamBindingIdentity::from_decision(adapter, &changed).unwrap();
+                UpstreamBindingIdentity::from_decision(backend(), &changed, "credential-1")
+                    .unwrap();
             assert_ne!(identity, changed_identity);
         }
 
@@ -319,13 +334,74 @@ mod tests {
             .insert("Authorization".to_string(), "Bearer rotated".to_string());
         assert_eq!(
             identity,
-            UpstreamBindingIdentity::from_decision(adapter, &rotated).unwrap()
+            UpstreamBindingIdentity::from_decision(backend(), &rotated, "credential-1").unwrap()
         );
     }
 
     #[test]
-    fn stable_key_identity_ignores_custom_auth_value_rotation() {
-        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
+    fn beta_only_header_differences_do_not_change_the_stable_binding() {
+        let bound = super::super::upstream::canonicalize_responses_websocket_decision(decision());
+        let identity =
+            UpstreamBindingIdentity::from_decision(backend(), &bound, "credential-1").unwrap();
+        let mut fresh = decision();
+        fresh.provider_request_headers.insert(
+            "OpEnAI-BeTa".to_string(),
+            "responses_multi_agent=v1".to_string(),
+        );
+        let fresh = super::super::upstream::canonicalize_responses_websocket_decision(fresh);
+
+        assert!(identity
+            .matches_turn_decision(backend(), &fresh, "credential-1")
+            .unwrap());
+    }
+
+    #[test]
+    fn codex_turn_inherits_omitted_session_headers_but_rejects_explicit_changes() {
+        let mut bound = decision();
+        bound.provider_type = Some("codex".to_string());
+        bound
+            .provider_request_headers
+            .insert("session-id".to_string(), "session-1".to_string());
+        bound
+            .provider_request_headers
+            .insert("thread-id".to_string(), "thread-1".to_string());
+        let identity =
+            UpstreamBindingIdentity::from_decision(backend(), &bound, "credential-1").unwrap();
+
+        let mut omitted = bound.clone();
+        omitted.provider_request_headers.remove("session-id");
+        omitted.provider_request_headers.remove("thread-id");
+        assert!(identity
+            .matches_turn_decision(backend(), &omitted, "credential-1")
+            .unwrap());
+
+        let mut changed = omitted;
+        changed
+            .provider_request_headers
+            .insert("session-id".to_string(), "session-2".to_string());
+        assert!(!identity
+            .matches_turn_decision(backend(), &changed, "credential-1")
+            .unwrap());
+    }
+
+    #[test]
+    fn non_codex_turn_cannot_omit_bound_session_headers() {
+        let mut bound = decision();
+        bound
+            .provider_request_headers
+            .insert("session-id".to_string(), "session-1".to_string());
+        let identity =
+            UpstreamBindingIdentity::from_decision(backend(), &bound, "credential-1").unwrap();
+
+        let mut omitted = bound;
+        omitted.provider_request_headers.remove("session-id");
+        assert!(!identity
+            .matches_turn_decision(backend(), &omitted, "credential-1")
+            .unwrap());
+    }
+
+    #[test]
+    fn stable_key_identity_rejects_custom_auth_value_rotation() {
         let mut base = decision();
         base.auth_header = Some("X-Provider-Token".to_string());
         base.provider_request_headers.remove("Authorization");
@@ -333,9 +409,9 @@ mod tests {
             "X-Provider-Token".to_string(),
             "provider-token-1".to_string(),
         );
-        let identity = UpstreamBindingIdentity::from_decision(adapter, &base).unwrap();
+        let identity =
+            UpstreamBindingIdentity::from_decision(backend(), &base, "credential-1").unwrap();
         assert!(!identity.handshake_headers.contains_key("x-provider-token"));
-        assert!(identity.auth_fingerprint.is_none());
 
         let mut rotated = base;
         rotated.provider_request_headers.insert(
@@ -344,26 +420,42 @@ mod tests {
         );
         assert_eq!(
             identity,
-            UpstreamBindingIdentity::from_decision(adapter, &rotated).unwrap()
+            UpstreamBindingIdentity::from_decision(backend(), &rotated, "credential-1").unwrap()
+        );
+        assert_ne!(
+            identity,
+            UpstreamBindingIdentity::from_decision(backend(), &rotated, "credential-2").unwrap()
         );
     }
 
     #[test]
-    fn missing_key_identity_fingerprints_authentication_values() {
-        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
+    fn missing_key_identity_still_uses_explicit_credential_generation() {
         let mut first = decision();
         first.key_id = None;
-        let first_identity = UpstreamBindingIdentity::from_decision(adapter, &first).unwrap();
-        assert!(first_identity.auth_fingerprint.is_some());
+        let first_identity =
+            UpstreamBindingIdentity::from_decision(backend(), &first, "credential-1").unwrap();
 
         let mut same_account_rotation = first.clone();
         same_account_rotation.provider_request_headers.insert(
             "Authorization".to_string(),
             "Bearer different-account-or-token".to_string(),
         );
-        let changed_identity =
-            UpstreamBindingIdentity::from_decision(adapter, &same_account_rotation).unwrap();
-        assert_ne!(first_identity, changed_identity);
+        let changed_identity = UpstreamBindingIdentity::from_decision(
+            backend(),
+            &same_account_rotation,
+            "credential-1",
+        )
+        .unwrap();
+        assert_eq!(first_identity, changed_identity);
+        assert_ne!(
+            first_identity,
+            UpstreamBindingIdentity::from_decision(
+                backend(),
+                &same_account_rotation,
+                "credential-2"
+            )
+            .unwrap()
+        );
 
         let mut non_auth_change = first;
         non_auth_change
@@ -371,15 +463,16 @@ mod tests {
             .insert("X-Client".to_string(), "other-client".to_string());
         assert_ne!(
             first_identity,
-            UpstreamBindingIdentity::from_decision(adapter, &non_auth_change).unwrap()
+            UpstreamBindingIdentity::from_decision(backend(), &non_auth_change, "credential-1")
+                .unwrap()
         );
     }
 
     #[test]
     fn disabled_proxy_is_equivalent_to_direct_transport() {
-        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
         let direct = decision();
-        let direct_identity = UpstreamBindingIdentity::from_decision(adapter, &direct).unwrap();
+        let direct_identity =
+            UpstreamBindingIdentity::from_decision(backend(), &direct, "credential-1").unwrap();
         let mut explicitly_disabled = direct;
         explicitly_disabled.proxy = Some(aether_contracts::ProxySnapshot {
             enabled: Some(false),
@@ -389,24 +482,24 @@ mod tests {
 
         assert_eq!(
             direct_identity,
-            UpstreamBindingIdentity::from_decision(adapter, &explicitly_disabled).unwrap()
+            UpstreamBindingIdentity::from_decision(backend(), &explicitly_disabled, "credential-1")
+                .unwrap()
         );
     }
 
     #[test]
     fn identity_rejects_missing_or_invalid_connection_fields() {
-        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
         let mut missing = decision();
         missing.upstream_url = None;
         assert_eq!(
-            UpstreamBindingIdentity::from_decision(adapter, &missing),
+            UpstreamBindingIdentity::from_decision(backend(), &missing, "credential-1"),
             Err(UpstreamBindingIdentityError::MissingUpstreamUrl)
         );
 
         let mut invalid = decision();
         invalid.upstream_url = Some("file:///tmp/responses".to_string());
         assert_eq!(
-            UpstreamBindingIdentity::from_decision(adapter, &invalid),
+            UpstreamBindingIdentity::from_decision(backend(), &invalid, "credential-1"),
             Err(UpstreamBindingIdentityError::InvalidUpstreamUrl)
         );
     }

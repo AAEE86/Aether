@@ -30,7 +30,7 @@ use base64::Engine as _;
 use serde_json::{json, Map, Value};
 use tracing::warn;
 
-use super::adapter::ResponsesWebSocketProtocolAdapter;
+use super::adapter::{is_public_responses_event, ResponsesProviderObserver};
 use super::admission::ResponsesWebSocketTurnAdmission;
 use super::frame::ParsedResponsesWebSocketFrame;
 use super::observation::ResponsesStructuredTerminalObserver;
@@ -38,8 +38,9 @@ use super::settlement::attempt_facts_for_outcome;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
 use crate::clock::current_unix_ms;
 use crate::control::{
-    execution_plan_balance_capacity_rejection, refresh_execution_runtime_auth_context,
-    request_model_local_rejection, GatewayControlDecision, GatewayLocalAuthRejection,
+    execution_plan_balance_capacity_rejection,
+    refresh_execution_runtime_auth_context_with_snapshot, GatewayControlDecision,
+    GatewayLocalAuthRejection,
 };
 use crate::execution_runtime::attach_provider_response_headers_to_report_context;
 use crate::execution_runtime::attempt_lifecycle::{
@@ -47,13 +48,15 @@ use crate::execution_runtime::attempt_lifecycle::{
     AttemptProviderOutcome, AttemptStageGuard, AttemptTerminalFacts, AttemptTerminalFactsInput,
     ExecutionAttemptLifecycle,
 };
+use crate::handlers::shared::ip_rules_allow;
 use crate::orchestration::{
     apply_local_stream_failure_effects, apply_local_stream_success_effects,
     release_local_pool_key_lease, release_pool_key_lease_from_report_context,
     LocalExecutionEffectContext, LocalStreamFailureEffect,
 };
 use crate::request_candidate_runtime::{
-    ensure_execution_request_candidate_slot, record_local_request_candidate_status,
+    persist_execution_request_candidate_slot, prepare_execution_request_candidate_slot,
+    record_local_request_candidate_status, ExecutionRequestCandidateStartupGuard,
 };
 use crate::usage::{submit_stream_report, GatewayStreamReportRequest};
 use crate::{AppState, GatewayError};
@@ -71,6 +74,7 @@ const WEBSOCKET_CLIENT_DELIVERY_REASON_REPORT_CONTEXT_FIELD: &str =
 const STREAM_STARTED_STATUS_CODE: u16 = 200;
 const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS: u64 = 30_000;
 const RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
+const PRIVATE_PROVIDER_ERROR_REASON: &str = "provider returned a private Responses error";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResponsesWebSocketTurnObservation {
@@ -152,6 +156,13 @@ impl ResponsesWebSocketTurnOutcome {
         }
     }
 
+    pub(super) const fn execution_reservation_lost() -> Self {
+        Self::Failure {
+            status_code: 503,
+            reason: "gateway execution reservation became unhealthy",
+        }
+    }
+
     pub(super) const fn upstream_closed() -> Self {
         Self::Failure {
             status_code: 502,
@@ -163,6 +174,13 @@ impl ResponsesWebSocketTurnOutcome {
         Self::Failure {
             status_code: 502,
             reason: "upstream WebSocket receive failed before provider terminal event",
+        }
+    }
+
+    pub(super) const fn provider_protocol_error() -> Self {
+        Self::Failure {
+            status_code: 502,
+            reason: "provider returned an invalid Responses WebSocket event sequence",
         }
     }
 
@@ -243,6 +261,30 @@ pub(super) struct ResponsesProviderAttempt {
     client_delivery: AttemptClientDelivery,
 }
 
+/// Startup result whose candidate remains guarded until an
+/// [`ActiveProviderAttempt`](super::lifecycle::ActiveProviderAttempt) owns the
+/// complete attempt lifecycle.
+pub(super) struct ResponsesWebSocketTurnStartup {
+    turn: ResponsesProviderAttempt,
+    candidate_guard: ExecutionRequestCandidateStartupGuard,
+}
+
+pub(super) struct ResponsesWebSocketTurnAuthorization {
+    pub(super) decision: GatewayControlDecision,
+    pub(super) auth_snapshot: Option<crate::data::auth::GatewayAuthApiKeySnapshot>,
+}
+
+impl ResponsesWebSocketTurnStartup {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        ResponsesProviderAttempt,
+        ExecutionRequestCandidateStartupGuard,
+    ) {
+        (self.turn, self.candidate_guard)
+    }
+}
+
 /// 组装一轮 turn 的 decision。
 ///
 /// `effective_client_event` 必须是**已经过请求侧脱敏**的客户端事件（见
@@ -253,6 +295,7 @@ pub(super) struct ResponsesProviderAttempt {
 pub(super) fn prepare_responses_websocket_turn_decision(
     template: &AiExecutionDecision,
     request_id: String,
+    parent_request_id: Option<&str>,
     reuse_selected_candidate: bool,
     effective_client_event: &Value,
     provider_event: &Value,
@@ -271,6 +314,7 @@ pub(super) fn prepare_responses_websocket_turn_decision(
     decision.report_context = Some(prepare_websocket_report_context(
         decision.report_context.take(),
         request_id.as_str(),
+        parent_request_id,
         reuse_selected_candidate,
         effective_client_event,
         provider_event,
@@ -288,19 +332,8 @@ pub(super) async fn begin_responses_websocket_turn(
     control_decision: &GatewayControlDecision,
     decision: AiExecutionDecision,
     client_event: &Value,
-) -> Result<ResponsesProviderAttempt, GatewayError> {
+) -> Result<ResponsesWebSocketTurnStartup, GatewayError> {
     let planned_report_context = decision.report_context.clone();
-    let effective_control_decision =
-        match refresh_websocket_turn_auth_context(state, control_decision, parts, client_event)
-            .await
-        {
-            Ok(decision) => decision,
-            Err(error) => {
-                release_pool_key_lease_from_report_context(state, planned_report_context.as_ref())
-                    .await;
-                return Err(error);
-            }
-        };
     let attempt = match build_openai_responses_stream_plan_from_decision(
         parts,
         client_event,
@@ -344,7 +377,7 @@ pub(super) async fn begin_responses_websocket_turn(
 
     let balance_rejection = execution_plan_balance_capacity_rejection(
         state,
-        &effective_control_decision,
+        control_decision,
         &plan,
         report_context.as_ref(),
     )
@@ -375,16 +408,43 @@ pub(super) async fn begin_responses_websocket_turn(
         return Err(websocket_auth_rejection_error(rejection));
     }
 
-    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
+    let prepared_candidate =
+        prepare_execution_request_candidate_slot(state, &mut plan, &mut report_context).await?;
     let admission = match ResponsesWebSocketTurnAdmission::acquire(
         state,
         &plan,
         plan.request_id.as_str(),
+        control_decision.auth_context.as_ref(),
     )
     .await
     {
         Ok(admission) => admission,
         Err(error) => {
+            let status_code = match &error {
+                GatewayError::Client { status, .. } => status.as_u16(),
+                _ => StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            };
+            record_local_request_candidate_status(
+                state,
+                &plan,
+                report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    // The provider was never reached. Keep this candidate out
+                    // of provider concurrency and RPM observations.
+                    status: RequestCandidateStatus::Skipped,
+                    status_code: Some(status_code),
+                    error_type: Some("execution_reservation_rejected".to_string()),
+                    error_message: Some(if status_code == StatusCode::TOO_MANY_REQUESTS.as_u16() {
+                        "Gateway execution capacity is busy".to_string()
+                    } else {
+                        "Gateway execution reservation is unavailable".to_string()
+                    }),
+                    latency_ms: None,
+                    started_at_unix_ms: None,
+                    finished_at_unix_ms: Some(current_unix_ms()),
+                },
+            )
+            .await;
             release_local_pool_key_lease(
                 state,
                 LocalExecutionEffectContext {
@@ -396,6 +456,16 @@ pub(super) async fn begin_responses_websocket_turn(
             return Err(error);
         }
     };
+    let mut candidate_guard =
+        ExecutionRequestCandidateStartupGuard::new(state, &plan, report_context.as_ref());
+    persist_execution_request_candidate_slot(
+        state,
+        &mut plan,
+        &mut report_context,
+        prepared_candidate,
+    )
+    .await?;
+    candidate_guard.refresh(&plan, report_context.as_ref());
 
     let lifecycle = ExecutionAttemptLifecycle::begin(
         state,
@@ -407,58 +477,83 @@ pub(super) async fn begin_responses_websocket_turn(
             // 记账 I/O 都要有等待上界。
             stage_guard: AttemptStageGuard::Bounded(RESPONSES_WEBSOCKET_LIFECYCLE_STAGE_TIMEOUT),
         },
-    )
-    .await;
+    );
 
-    Ok(ResponsesProviderAttempt {
-        lifecycle,
-        started_at: Instant::now(),
-        provider_headers: BTreeMap::new(),
-        observer: ResponsesStructuredTerminalObserver::default(),
-        provider_capture: AttemptBodyCapture::default(),
-        client_capture: AttemptBodyCapture::default(),
-        upstream_bytes: 0,
-        first_event_elapsed_ms: None,
-        first_event_timeout,
-        terminal_timeout,
-        admission: Some(admission),
-        terminal_error_body: None,
-        provider_outcome: None,
-        client_delivery: AttemptClientDelivery::Complete,
+    Ok(ResponsesWebSocketTurnStartup {
+        turn: ResponsesProviderAttempt {
+            lifecycle,
+            started_at: Instant::now(),
+            provider_headers: BTreeMap::new(),
+            observer: ResponsesStructuredTerminalObserver::default(),
+            provider_capture: AttemptBodyCapture::default(),
+            client_capture: AttemptBodyCapture::default(),
+            upstream_bytes: 0,
+            first_event_elapsed_ms: None,
+            first_event_timeout,
+            terminal_timeout,
+            admission: Some(admission),
+            terminal_error_body: None,
+            provider_outcome: None,
+            client_delivery: AttemptClientDelivery::Complete,
+        },
+        candidate_guard,
     })
 }
 
-async fn refresh_websocket_turn_auth_context(
+/// Builds the authorization snapshot for one public `response.create`.
+///
+/// Callers run this before RPM, PII redaction, and planning, then retain the
+/// returned decision for every attempt belonging to the same logical turn.
+/// Transparent provider retries deliberately do not call this a second time.
+pub(super) async fn refresh_responses_websocket_turn_auth(
     state: &AppState,
     control_decision: &GatewayControlDecision,
-    parts: &http::request::Parts,
-    client_event: &Value,
-) -> Result<GatewayControlDecision, GatewayError> {
+    client_ip: std::net::IpAddr,
+) -> Result<ResponsesWebSocketTurnAuthorization, GatewayError> {
     let mut effective = control_decision.clone();
+    effective.model_directive_policy =
+        crate::system_features::ModelDirectivePolicySnapshot::load_strong(state).await?;
+    let mut auth_snapshot = None;
     if let Some(auth_context) = effective.auth_context.take() {
-        let refreshed = refresh_execution_runtime_auth_context(
+        let (refreshed, refreshed_snapshot) = refresh_execution_runtime_auth_context_with_snapshot(
             state,
             auth_context,
             effective.auth_endpoint_signature.as_deref(),
         )
         .await?;
+        auth_snapshot = refreshed_snapshot;
         effective.local_auth_rejection = refreshed.local_rejection.clone();
         effective.auth_context = Some(refreshed);
+    }
+    if auth_snapshot.is_none() {
+        return Err(GatewayError::Internal(
+            "Responses WebSocket turn authorization requires a strong API-key snapshot".to_string(),
+        ));
     }
     if let Some(rejection) = effective.local_auth_rejection.clone() {
         return Err(websocket_auth_rejection_error(rejection));
     }
-
-    let body = serde_json::to_vec(client_event)
-        .map(axum::body::Bytes::from)
-        .map_err(|error| GatewayError::Internal(error.to_string()))?;
-    if let Some(rejection) =
-        request_model_local_rejection(state, Some(&effective), &parts.uri, &parts.headers, &body)
-            .await?
-    {
-        return Err(websocket_auth_rejection_error(rejection));
+    let Some(auth_context) = effective.auth_context.as_ref() else {
+        return Err(websocket_auth_rejection_error(
+            GatewayLocalAuthRejection::InvalidApiKey,
+        ));
+    };
+    if !auth_context.access_allowed {
+        return Err(websocket_auth_rejection_error(
+            GatewayLocalAuthRejection::InvalidApiKey,
+        ));
     }
-    Ok(effective)
+    if !ip_rules_allow(auth_context.ip_rules.as_deref(), client_ip) {
+        return Err(websocket_auth_rejection_error(
+            GatewayLocalAuthRejection::IpNotAllowed {
+                remote_ip: client_ip.to_string(),
+            },
+        ));
+    }
+    Ok(ResponsesWebSocketTurnAuthorization {
+        decision: effective,
+        auth_snapshot,
+    })
 }
 
 fn websocket_auth_rejection_error(rejection: GatewayLocalAuthRejection) -> GatewayError {
@@ -507,6 +602,16 @@ fn websocket_auth_rejection_error(rejection: GatewayLocalAuthRejection) -> Gatew
 }
 
 impl ResponsesProviderAttempt {
+    pub(super) async fn initialize_pending_candidate(&self, state: &AppState) {
+        self.lifecycle.initialize_pending_candidate(state).await;
+    }
+
+    pub(super) fn admission_is_healthy(&self) -> bool {
+        self.admission
+            .as_ref()
+            .is_none_or(ResponsesWebSocketTurnAdmission::is_healthy)
+    }
+
     /// Releases all per-turn capacity before terminal persistence starts.
     /// Provider-pool runtime tokens normally use an awaited removal. The
     /// bounded wait prevents a broken runtime backend from stalling the relay;
@@ -563,32 +668,37 @@ impl ResponsesProviderAttempt {
     pub(super) fn observe_upstream_frame(
         &mut self,
         frame: &ParsedResponsesWebSocketFrame<'_>,
-        adapter: &dyn ResponsesWebSocketProtocolAdapter,
+        provider_observer: &dyn ResponsesProviderObserver,
     ) -> Option<ResponsesWebSocketTurnObservation> {
-        self.upstream_bytes = self
-            .upstream_bytes
-            .saturating_add(frame.raw_text().len() as u64);
+        // Provider metadata is observed from the complete upstream envelope,
+        // while Responses accounting consumes only events that the public
+        // codec recognizes. This prevents quota-only Codex frames from
+        // becoming public TTFB or corrupting the standard terminal parser.
+        let provider_events = self.observe_provider_envelope(frame, provider_observer);
+        let public_events = provider_events
+            .iter()
+            .copied()
+            .filter(|event| is_public_responses_event(event))
+            .collect::<Vec<_>>();
+        if public_events.is_empty() {
+            let outcome = provider_terminal_outcome(frame)?;
+            if self.first_event_elapsed_ms.is_none() {
+                self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
+            }
+            self.provider_outcome.get_or_insert(
+                attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome).provider,
+            );
+            return Some(ResponsesWebSocketTurnObservation::Terminal(outcome));
+        }
         if self.first_event_elapsed_ms.is_none() {
             self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
         }
-
-        // 一帧可以带多个协议事件（批量帧），必须拆开：观测器按事件推进状态机，
-        // 整帧当一个事件喂会丢掉批量里最后那个 completed 的 usage。
-        let events = frame.protocol_events();
-        let mut report_context = self.lifecycle.take_report_context();
-        for event in &events {
-            // 观测已经走结构化入口，但捕获仍然必须是 SSE 形状：usage runtime 按
-            // `data:` 行解析被捕获的 body 判定终态。
-            self.capture_sse_event(event);
-            adapter.decorate_turn_report_context(&mut report_context, event);
-        }
-        self.lifecycle.set_report_context(report_context);
         let fallback_context = json!({
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
         });
         let report_context = self.lifecycle.report_context().unwrap_or(&fallback_context);
-        self.observer.observe_events(report_context, &events);
+        self.observer.observe_events(report_context, &public_events);
 
         let event_type = frame.event_type().unwrap_or_default();
         if matches!(event_type, "error" | "response.failed") {
@@ -610,27 +720,66 @@ impl ResponsesProviderAttempt {
         None
     }
 
+    pub(super) fn observe_private_provider_error(
+        &mut self,
+        frame: &ParsedResponsesWebSocketFrame<'_>,
+        provider_observer: &dyn ResponsesProviderObserver,
+        status_code: u16,
+    ) -> Option<ResponsesWebSocketTurnObservation> {
+        self.observe_provider_envelope(frame, provider_observer);
+        if self.first_event_elapsed_ms.is_none() {
+            self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
+        }
+        self.observer
+            .disable_with_error(PRIVATE_PROVIDER_ERROR_REASON);
+        let outcome = private_provider_error_outcome(status_code);
+        self.provider_outcome = Some(
+            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome).provider,
+        );
+        Some(ResponsesWebSocketTurnObservation::Terminal(outcome))
+    }
+
+    fn observe_provider_envelope<'a>(
+        &mut self,
+        frame: &'a ParsedResponsesWebSocketFrame<'_>,
+        provider_observer: &dyn ResponsesProviderObserver,
+    ) -> Vec<&'a Value> {
+        self.upstream_bytes = self
+            .upstream_bytes
+            .saturating_add(frame.raw_text().len() as u64);
+        let provider_events = frame.protocol_events();
+        let mut report_context = self.lifecycle.take_report_context();
+        for event in &provider_events {
+            provider_observer.decorate_turn_report_context(&mut report_context, event);
+        }
+        self.lifecycle.set_report_context(report_context);
+        provider_events
+    }
+
     pub(super) fn observe_invalid_upstream_text(
         &mut self,
         text: &str,
+    ) -> Option<ResponsesWebSocketTurnObservation> {
+        self.observe_invalid_upstream_protocol(
+            text,
+            "upstream Responses WebSocket event was not valid JSON",
+        )
+    }
+
+    pub(super) fn observe_invalid_upstream_protocol(
+        &mut self,
+        text: &str,
+        reason: &'static str,
     ) -> Option<ResponsesWebSocketTurnObservation> {
         self.upstream_bytes = self.upstream_bytes.saturating_add(text.len() as u64);
         if self.first_event_elapsed_ms.is_none() {
             self.first_event_elapsed_ms = Some(elapsed_ms(self.started_at));
         }
-        self.capture_sse_event(&json!({
-            "type": "error",
-            "error": {
-                "type": "gateway_protocol_error",
-                "message": "upstream Responses WebSocket event was not valid JSON"
-            }
-        }));
-        self.observer
-            .disable_with_error("upstream Responses WebSocket event was not valid JSON");
+        self.observer.disable_with_error(reason);
         Some(ResponsesWebSocketTurnObservation::Terminal(
             ResponsesWebSocketTurnOutcome::Failure {
                 status_code: 502,
-                reason: "upstream Responses WebSocket event was not valid JSON",
+                reason,
             },
         ))
     }
@@ -646,8 +795,13 @@ impl ResponsesProviderAttempt {
     }
 
     pub(super) fn capture_client_frame(&mut self, event: &Value) {
-        self.client_capture
-            .append(&websocket_event_as_sse_line(event));
+        let event = websocket_event_as_sse_line(event);
+        // Both public-side captures describe what actually crossed the final
+        // client hop. Raw provider frames remain available to the observer and
+        // accounting state above, but a withheld quota batch or a failed write
+        // must not appear as delivered response content.
+        self.provider_capture.append(&event);
+        self.client_capture.append(&event);
     }
 
     pub(super) async fn mark_stream_started(&mut self, state: &AppState) {
@@ -708,11 +862,6 @@ impl ResponsesProviderAttempt {
             .await;
     }
 
-    fn capture_sse_event(&mut self, event: &Value) {
-        self.provider_capture
-            .append(&websocket_event_as_sse_line(event));
-    }
-
     /// 终态摘要。
     ///
     /// 只消费两个正交事实：`forced_error` 只在「供应商没给出终态且内容已完整
@@ -770,14 +919,13 @@ impl ResponsesProviderAttempt {
     }
 }
 
-pub(super) async fn spawn_responses_websocket_turn_finalization(
+pub(super) fn spawn_responses_websocket_turn_finalization(
     state: AppState,
-    mut turn: ResponsesProviderAttempt,
+    turn: ResponsesProviderAttempt,
     outcome: ResponsesWebSocketTurnOutcome,
 ) -> tokio::task::JoinHandle<()> {
-    turn.release_admission().await;
     tokio::spawn(async move {
-        turn.settle(&state, outcome).await;
+        turn.finalize_detached(&state, outcome).await;
     })
 }
 
@@ -790,6 +938,7 @@ pub(super) async fn spawn_responses_websocket_turn_finalization(
 fn prepare_websocket_report_context(
     report_context: Option<Value>,
     request_id: &str,
+    parent_request_id: Option<&str>,
     reuse_selected_candidate: bool,
     effective_client_event: &Value,
     provider_event: &Value,
@@ -807,6 +956,20 @@ fn prepare_websocket_report_context(
         "request_id".to_string(),
         Value::String(request_id.to_string()),
     );
+    match parent_request_id
+        .map(str::trim)
+        .filter(|parent_request_id| !parent_request_id.is_empty())
+    {
+        Some(parent_request_id) => {
+            object.insert(
+                "parent_request_id".to_string(),
+                Value::String(parent_request_id.to_string()),
+            );
+        }
+        None => {
+            object.remove("parent_request_id");
+        }
+    }
     if !reuse_selected_candidate {
         for field in [
             "candidate_id",
@@ -906,6 +1069,13 @@ fn provider_terminal_outcome(
         })
 }
 
+const fn private_provider_error_outcome(status_code: u16) -> ResponsesWebSocketTurnOutcome {
+    ResponsesWebSocketTurnOutcome::ProviderTerminal {
+        status_code,
+        cancelled: false,
+    }
+}
+
 fn resolve_responses_websocket_turn_timeouts(
     timeouts: Option<&ExecutionTimeouts>,
 ) -> (Duration, Duration) {
@@ -945,11 +1115,18 @@ fn elapsed_ms(started_at: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use aether_contracts::ExecutionTimeouts;
+    use aether_contracts::{ExecutionPlan, ExecutionTimeouts, RequestBody};
+    use aether_data::repository::auth::{
+        AuthApiKeyWriteRepository, InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
+        UpdateUserApiKeyBasicRecord,
+    };
     use serde_json::json;
 
+    use super::super::adapter::resolve_responses_provider_observer;
     use super::super::observation::ResponsesStructuredTerminalObserver;
 
     use super::super::frame::ParsedResponsesWebSocketFrame;
@@ -958,14 +1135,185 @@ mod tests {
     };
     use super::{
         attach_client_delivery_to_report_context, prepare_websocket_report_context,
-        provider_terminal_outcome, resolve_responses_websocket_turn_timeouts,
-        websocket_event_as_sse_line, ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
-        ResponsesWebSocketTurnTimeoutPhase,
+        provider_terminal_outcome, refresh_responses_websocket_turn_auth,
+        resolve_responses_websocket_turn_timeouts, websocket_event_as_sse_line,
+        ResponsesProviderAttempt, ResponsesWebSocketTurnDeadline,
+        ResponsesWebSocketTurnObservation, ResponsesWebSocketTurnOutcome,
+        ResponsesWebSocketTurnTimeoutPhase, PRIVATE_PROVIDER_ERROR_REASON,
     };
+    use crate::control::{GatewayControlAuthContext, GatewayControlDecision};
+    use crate::data::GatewayDataState;
     use crate::execution_runtime::attempt_lifecycle::{
-        classify_attempt_settlement, AttemptBilling, AttemptCandidateError, AttemptCandidateStatus,
-        AttemptClientDelivery, AttemptProviderEffect, AttemptSettlementInputs,
+        attempt_billing_is_void, classify_attempt_settlement, AttemptBilling,
+        AttemptCandidateError, AttemptCandidateStatus, AttemptClientDelivery, AttemptLifecycleSeed,
+        AttemptProviderEffect, AttemptProviderOutcome, AttemptSettlementInputs, AttemptStageGuard,
+        ExecutionAttemptLifecycle,
     };
+    use crate::orchestration::ResponsesProviderObserverKind;
+    use crate::AppState;
+
+    fn private_error_attempt() -> ResponsesProviderAttempt {
+        let state = AppState::new().expect("test state should build");
+        let lifecycle = ExecutionAttemptLifecycle::begin(
+            &state,
+            AttemptLifecycleSeed {
+                plan: ExecutionPlan {
+                    request_id: "private-error-attempt".to_string(),
+                    candidate_id: Some("private-error-candidate".to_string()),
+                    provider_name: Some("codex".to_string()),
+                    provider_id: "private-error-provider".to_string(),
+                    endpoint_id: "private-error-endpoint".to_string(),
+                    key_id: "private-error-key".to_string(),
+                    method: "POST".to_string(),
+                    url: "https://example.invalid/v1/responses".to_string(),
+                    headers: BTreeMap::new(),
+                    content_type: Some("application/json".to_string()),
+                    content_encoding: None,
+                    body: RequestBody::from_json(json!({"model": "gpt-5"})),
+                    stream: true,
+                    client_api_format: "openai:responses".to_string(),
+                    provider_api_format: "openai:responses".to_string(),
+                    model_name: Some("gpt-5".to_string()),
+                    proxy: None,
+                    transport_profile: None,
+                    timeouts: None,
+                },
+                report_kind: "openai_responses_stream".to_string(),
+                report_context: Some(json!({
+                    "provider_api_format": "openai:responses",
+                    "client_api_format": "openai:responses",
+                })),
+                stage_guard: AttemptStageGuard::Unbounded,
+            },
+        );
+        ResponsesProviderAttempt {
+            lifecycle,
+            started_at: Instant::now(),
+            provider_headers: BTreeMap::new(),
+            observer: ResponsesStructuredTerminalObserver::default(),
+            provider_capture: Default::default(),
+            client_capture: Default::default(),
+            upstream_bytes: 0,
+            first_event_elapsed_ms: None,
+            first_event_timeout: Duration::from_secs(30),
+            terminal_timeout: Duration::from_secs(60),
+            admission: None,
+            terminal_error_body: None,
+            provider_outcome: None,
+            client_delivery: AttemptClientDelivery::Complete,
+        }
+    }
+
+    fn auth_snapshot() -> StoredAuthApiKeySnapshot {
+        StoredAuthApiKeySnapshot::new(
+            "user-ws-turn-auth".to_string(),
+            "alice".to_string(),
+            Some("alice@example.com".to_string()),
+            "user".to_string(),
+            "local".to_string(),
+            true,
+            false,
+            Some(json!(["openai"])),
+            Some(json!(["openai:responses"])),
+            Some(json!(["gpt-5"])),
+            "key-ws-turn-auth".to_string(),
+            Some("default".to_string()),
+            true,
+            false,
+            false,
+            Some(20),
+            Some(5),
+            Some(4_102_444_800),
+            Some(json!(["openai"])),
+            Some(json!(["openai:responses"])),
+            Some(json!(["gpt-5"])),
+        )
+        .expect("auth snapshot should build")
+    }
+
+    fn stale_turn_control_decision() -> GatewayControlDecision {
+        let mut decision = GatewayControlDecision::synthetic(
+            "/v1/responses",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("responses_websocket".to_string()),
+            Some("openai:responses".to_string()),
+        );
+        decision.auth_context = Some(GatewayControlAuthContext {
+            user_id: "user-ws-turn-auth".to_string(),
+            api_key_id: "key-ws-turn-auth".to_string(),
+            username: Some("stale".to_string()),
+            api_key_name: Some("stale".to_string()),
+            balance_remaining: None,
+            access_allowed: true,
+            user_rate_limit: Some(999),
+            api_key_rate_limit: Some(999),
+            api_key_concurrent_limit: Some(999),
+            api_key_is_standalone: false,
+            admin_bypass_limits: true,
+            local_rejection: None,
+            allowed_models: Some(vec!["stale-model".to_string()]),
+            ip_rules: None,
+        });
+        decision
+    }
+
+    #[tokio::test]
+    async fn websocket_turn_auth_strongly_refreshes_limits_and_ip_rules_each_time() {
+        let repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
+            Some("hash-ws-turn-auth".to_string()),
+            auth_snapshot(),
+        )]));
+        let state = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(GatewayDataState::with_auth_api_key_repository_for_tests(
+                repository.clone(),
+            ));
+        let stale = stale_turn_control_decision();
+        let client_ip = "203.0.113.8".parse().expect("client ip should parse");
+
+        let first = refresh_responses_websocket_turn_auth(&state, &stale, client_ip)
+            .await
+            .expect("first response.create should refresh auth");
+        let first_auth = first
+            .decision
+            .auth_context
+            .expect("refreshed auth should exist");
+        assert_eq!(first_auth.api_key_rate_limit, Some(20));
+        assert!(!first_auth.admin_bypass_limits);
+        assert_eq!(first_auth.allowed_models, Some(vec!["gpt-5".to_string()]));
+
+        repository
+            .update_user_api_key_basic(UpdateUserApiKeyBasicRecord {
+                user_id: "user-ws-turn-auth".to_string(),
+                api_key_id: "key-ws-turn-auth".to_string(),
+                name: None,
+                rate_limit: Some(7),
+                concurrent_limit: None,
+                ip_rules: Some(Some(vec!["198.51.100.0/24".to_string()])),
+            })
+            .await
+            .expect("auth update should succeed")
+            .expect("auth record should exist");
+
+        let rejection = match refresh_responses_websocket_turn_auth(&state, &stale, client_ip).await
+        {
+            Ok(_) => panic!("the next response.create must observe the new IP rule"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            rejection,
+            crate::GatewayError::Client {
+                status: axum::http::StatusCode::UNAUTHORIZED,
+                ..
+            }
+        ));
+        assert_eq!(
+            repository.snapshot_lookup_count("key-ws-turn-auth"),
+            2,
+            "each logical turn must perform a strong snapshot read"
+        );
+    }
 
     #[test]
     fn followup_context_uses_a_fresh_request_and_candidate() {
@@ -978,6 +1326,7 @@ mod tests {
                 "original_request_body":{"model":"public"}
             })),
             "turn-2",
+            None,
             false,
             &json!({"type":"response.create","model":"public"}),
             &json!({"type":"response.create","model":"provider-public"}),
@@ -1008,6 +1357,7 @@ mod tests {
                 "original_request_body": {"model": "gpt-5.6-sol", "generate": false}
             })),
             "turn-2",
+            Some("turn-2-root"),
             true,
             &json!({
                 "type": "response.create",
@@ -1026,6 +1376,7 @@ mod tests {
         );
 
         assert_eq!(context["request_id"], "turn-2");
+        assert_eq!(context["parent_request_id"], "turn-2-root");
         assert_eq!(context["candidate_id"], "terra-candidate");
         assert_eq!(context["original_request_body"]["model"], "gpt-5.6-terra");
         assert_eq!(context["model"], "gpt-5.6-terra");
@@ -1305,6 +1656,229 @@ mod tests {
                 cancelled: false,
             })
         );
+    }
+
+    #[test]
+    fn private_provider_errors_force_failure_for_every_snapshot_phase() {
+        for event_type in [
+            "response.created",
+            "response.in_progress",
+            "response.queued",
+            "response.completed",
+            "response.failed",
+            "response.cancelled",
+            "response.incomplete",
+        ] {
+            let event = json!({
+                "type": event_type,
+                "response": {
+                    "id": "resp_private",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "error": {
+                        "code": "provider_profile_error",
+                        "message": "account acct_private failed"
+                    }
+                }
+            });
+            let raw = event.to_string();
+            let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("event should parse");
+            let mut attempt = private_error_attempt();
+            let provider_observer =
+                resolve_responses_provider_observer(ResponsesProviderObserverKind::Codex);
+            let private_error = provider_observer
+                .observe_upstream_event(frame.event())
+                .and_then(|observation| observation.private_error)
+                .expect("Codex snapshot errors must be privately mapped");
+            let public = private_error.public_event();
+            assert_eq!(public["type"], "error");
+            assert_eq!(public["code"], "responses_provider_error");
+            assert_eq!(public["message"], "Provider failed the Responses request");
+            assert!(public["param"].is_null());
+            assert!(!public.to_string().contains("acct_private"));
+            let observation = attempt.observe_private_provider_error(
+                &frame,
+                provider_observer,
+                private_error.status_code,
+            );
+
+            assert_eq!(
+                observation,
+                Some(ResponsesWebSocketTurnObservation::Terminal(
+                    ResponsesWebSocketTurnOutcome::ProviderTerminal {
+                        status_code: 502,
+                        cancelled: false,
+                    }
+                )),
+                "private error must override raw phase semantics: {event_type}"
+            );
+            if matches!(
+                event_type,
+                "response.completed" | "response.cancelled" | "response.incomplete"
+            ) {
+                assert_eq!(
+                    provider_terminal_outcome(&frame).is_some(),
+                    true,
+                    "the regression requires bypassing the raw terminal outcome"
+                );
+            }
+            assert_eq!(
+                attempt.provider_outcome,
+                Some(AttemptProviderOutcome::Terminal {
+                    status_code: 502,
+                    cancelled_by_provider: false,
+                })
+            );
+            assert_eq!(attempt.upstream_bytes, raw.len() as u64);
+            assert!(attempt.first_event_elapsed_ms.is_some());
+            let telemetry = attempt.telemetry();
+            assert_eq!(telemetry.upstream_bytes, Some(raw.len() as u64));
+            assert!(telemetry.ttfb_ms.is_some());
+
+            let outcome = match observation.expect("private error terminates the attempt") {
+                ResponsesWebSocketTurnObservation::Terminal(outcome) => outcome,
+                ResponsesWebSocketTurnObservation::Started => unreachable!(),
+            };
+            let facts = attempt_facts_for_outcome(
+                attempt.provider_outcome,
+                AttemptClientDelivery::Complete,
+                outcome,
+            );
+            assert_eq!(facts.provider.status_code(), 502);
+            assert!(!attempt_billing_is_void(facts));
+            let summary = attempt.finish_summary(facts);
+            assert_eq!(
+                summary.parser_error.as_deref(),
+                Some(PRIVATE_PROVIDER_ERROR_REASON)
+            );
+            assert!(
+                !format!("{summary:?}").contains("acct_private"),
+                "private provider details must not enter the terminal summary"
+            );
+            let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+                facts,
+                report_represents_failure: true,
+                observed_finish: summary.observed_finish,
+                has_parser_error: summary.parser_error.is_some(),
+            });
+            assert_eq!(settlement.status_code, 502);
+            assert_eq!(settlement.billing, AttemptBilling::Billed);
+            assert_eq!(settlement.candidate_status, AttemptCandidateStatus::Failed);
+            assert_eq!(
+                settlement.provider_effect,
+                AttemptProviderEffect::ProviderFailure
+            );
+            assert!(settlement.submit_execution_report);
+        }
+    }
+
+    #[test]
+    fn a_batched_private_error_is_one_429_provider_terminal() {
+        let event = json!({
+            "chunks": [
+                {
+                    "type": "codex.rate_limits",
+                    "plan_type": "free",
+                    "rate_limits": {"allowed": false, "limit_reached": true}
+                },
+                {
+                    "type": "error",
+                    "status_code": 429,
+                    "code": "usage_limit_reached_for_acct_private",
+                    "message": "account acct_private exhausted",
+                    "param": null,
+                    "error": {"type": "usage_limit_reached"}
+                }
+            ]
+        });
+        let raw = event.to_string();
+        let frame = ParsedResponsesWebSocketFrame::parse(&raw).expect("batch should parse");
+        let mut attempt = private_error_attempt();
+        let provider_observer =
+            resolve_responses_provider_observer(ResponsesProviderObserverKind::Codex);
+        let provider_observation = provider_observer
+            .observe_upstream_event(frame.event())
+            .expect("Codex quota batch must be observed");
+        assert!(provider_observation.drain.is_some());
+        let private_error = provider_observation
+            .private_error
+            .expect("quota error must get a private replacement");
+        assert_eq!(private_error.status_code, 429);
+        let observation = attempt.observe_private_provider_error(
+            &frame,
+            provider_observer,
+            private_error.status_code,
+        );
+
+        let outcome = match observation {
+            Some(ResponsesWebSocketTurnObservation::Terminal(outcome)) => outcome,
+            other => panic!("private batch must terminate the attempt: {other:?}"),
+        };
+        assert_eq!(
+            outcome,
+            ResponsesWebSocketTurnOutcome::ProviderTerminal {
+                status_code: 429,
+                cancelled: false,
+            }
+        );
+        assert_eq!(
+            attempt.provider_outcome,
+            Some(AttemptProviderOutcome::Terminal {
+                status_code: 429,
+                cancelled_by_provider: false,
+            })
+        );
+        let facts = attempt_facts_for_outcome(
+            attempt.provider_outcome,
+            AttemptClientDelivery::Complete,
+            outcome,
+        );
+        let summary = attempt.finish_summary(facts);
+        assert_eq!(
+            summary.parser_error.as_deref(),
+            Some(PRIVATE_PROVIDER_ERROR_REASON)
+        );
+        assert_eq!(attempt.upstream_bytes, raw.len() as u64);
+        assert!(!attempt_billing_is_void(facts));
+        assert_eq!(
+            attempt
+                .lifecycle
+                .report_context()
+                .and_then(|context| context.pointer("/codex_websocket_rate_limits/allowed")),
+            Some(&json!(false))
+        );
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: true,
+            observed_finish: summary.observed_finish,
+            has_parser_error: summary.parser_error.is_some(),
+        });
+        assert_eq!(settlement.status_code, 429);
+        assert_eq!(settlement.billing, AttemptBilling::Billed);
+        assert_eq!(settlement.candidate_status, AttemptCandidateStatus::Failed);
+        assert_eq!(
+            settlement.provider_effect,
+            AttemptProviderEffect::ProviderFailure
+        );
+        assert!(settlement.submit_execution_report);
+    }
+
+    #[test]
+    fn private_quota_error_preserves_429_and_delivery_failure_stays_billed() {
+        let outcome = super::private_provider_error_outcome(429);
+        let provider =
+            attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome).provider;
+        let signal = settle_signal_for_client_delivery_failure(Some(outcome));
+        let facts = attempt_facts_for_outcome(
+            Some(provider),
+            AttemptClientDelivery::Aborted {
+                reason: "gateway could not relay the provider event to the client",
+            },
+            signal,
+        );
+
+        assert_eq!(facts.provider.status_code(), 429);
+        assert!(!facts.provider.cancelled_by_provider());
+        assert!(!attempt_billing_is_void(facts));
     }
 
     #[test]

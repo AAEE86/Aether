@@ -29,7 +29,9 @@ use aether_data_contracts::repository::provider_catalog::{
 use aether_data_contracts::repository::usage::{StoredRequestUsageAudit, UsageAuditListQuery};
 use aether_gateway::{build_router_with_state, AppState, GatewayDataConfig, UsageRuntimeConfig};
 use aether_testkit::SpawnedServer;
-use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{
+    CloseFrame as AxumCloseFrame, Message as AxumWsMessage, WebSocket, WebSocketUpgrade,
+};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -52,6 +54,8 @@ const PROVIDER_API_KEY: &str = "sk-upstream-responses-ws-e2e";
 const PROVIDER_ID: &str = "provider-responses-ws-e2e";
 const ENDPOINT_ID: &str = "endpoint-responses-ws-e2e";
 const PROVIDER_KEY_ID: &str = "provider-key-responses-ws-e2e";
+const PROVIDER_PRIVATE_CLOSE_REASON: &str =
+    "codex account acct_private reached an internal provider limit";
 /// 透明重试的替代 key。只有配额重试用例会 seed 它。
 const ALTERNATE_PROVIDER_KEY_ID: &str = "provider-key-responses-ws-e2e-alt";
 const ALTERNATE_PROVIDER_API_KEY: &str = "sk-upstream-responses-ws-e2e-alt";
@@ -87,7 +91,8 @@ async fn continuation_reuses_one_upstream_connection_and_bills_both_turns() -> R
     client
         .send(response_create(json!({"input": "first turn"})))
         .await?;
-    let first = receive_event(&mut client, "response.completed").await?;
+    let first_turn = receive_standard_text_turn(&mut client).await?;
+    let first = &first_turn[3];
     assert_eq!(
         first.pointer("/response/id").and_then(Value::as_str),
         Some("resp-e2e-1")
@@ -99,7 +104,8 @@ async fn continuation_reuses_one_upstream_connection_and_bills_both_turns() -> R
             "input": "second turn"
         })))
         .await?;
-    let second = receive_event(&mut client, "response.completed").await?;
+    let second_turn = receive_standard_text_turn(&mut client).await?;
+    let second = &second_turn[3];
     assert_eq!(
         second.pointer("/response/id").and_then(Value::as_str),
         Some("resp-e2e-2")
@@ -223,10 +229,26 @@ async fn upstream_drop_mid_turn_reports_an_error_and_settles_the_usage_row() -> 
     client
         .send(response_create(json!({"input": "doomed turn"})))
         .await?;
-    let error = receive_error_or_close(&mut client)
-        .await?
-        .ok_or("gateway closed without telling the client why")?;
+    let (error, close_code, close_reason) = receive_error_and_close(&mut client).await?;
     assert_eq!(error.get("type").and_then(Value::as_str), Some("error"));
+    assert_eq!(error["sequence_number"], 1);
+    assert_eq!(error["status"], 502);
+    assert_eq!(error["error"]["type"], "server_error");
+    assert_eq!(
+        error["error"]["code"],
+        "responses_websocket_upstream_closed"
+    );
+    assert_eq!(
+        error["error"]["message"],
+        "Provider connection closed unexpectedly"
+    );
+    assert!(
+        !error.to_string().contains(PROVIDER_PRIVATE_CLOSE_REASON),
+        "provider-private close reason reached the public socket: {error}"
+    );
+    assert_eq!(close_code, 1011);
+    assert_eq!(close_reason, "upstream_closed");
+    assert!(!close_reason.contains(PROVIDER_PRIVATE_CLOSE_REASON));
 
     let audits = harness
         .usage_audits_where(1, "settled turns", |audit| !is_pending(audit))
@@ -320,6 +342,24 @@ async fn provider_quota_exhaustion_transparently_retries_onto_another_key() -> R
             .map(|audit| (audit.status.clone(), audit.status_code))
             .collect::<Vec<_>>()
     );
+    assert_ne!(
+        settled[0].request_id, settled[1].request_id,
+        "each provider attempt must own a distinct execution request id"
+    );
+
+    let exhausted = settled
+        .iter()
+        .find(|audit| audit.status_code == Some(429))
+        .ok_or("the exhausted attempt must keep its own usage row")?;
+    assert!(
+        exhausted
+            .request_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("parent_request_id"))
+            .is_none(),
+        "the first attempt is the retry root: {:?}",
+        exhausted.request_metadata
+    );
 
     let billed = harness
         .usage_audits_where(1, "the billed retry attempt", is_billed)
@@ -333,6 +373,65 @@ async fn provider_quota_exhaustion_transparently_retries_onto_another_key() -> R
         INPUT_TOKENS + OUTPUT_TOKENS,
         "the retry attempt is billed for what it actually consumed"
     );
+    assert_eq!(
+        retry
+            .request_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("parent_request_id"))
+            .and_then(Value::as_str),
+        Some(exhausted.request_id.as_str()),
+        "the successful attempt must point back to the exhausted root attempt"
+    );
+
+    client.close(None).await?;
+    Ok(())
+}
+
+/// Codex may batch standard Responses events inside a provider-private
+/// envelope. The public gateway contract is still one standard event per
+/// frame: neither the envelope nor its `codex.*` metadata may escape.
+#[tokio::test]
+async fn codex_private_batch_is_unwrapped_into_standard_public_events() -> Result<(), BoxError> {
+    let harness = Harness::start_with_fixture(
+        UpstreamBehavior::CodexPrivateBatch,
+        ProviderFixture::CodexKeyPair,
+    )
+    .await?;
+    let mut client = harness.connect().await?;
+
+    client
+        .send(response_create(json!({"input": "batched response"})))
+        .await?;
+
+    let created = receive_next_event(&mut client).await?;
+    let delta = receive_next_event(&mut client).await?;
+    let done = receive_next_event(&mut client).await?;
+    let completed = receive_next_event(&mut client).await?;
+    assert_eq!(created["type"], "response.created");
+    assert_eq!(delta["type"], "response.output_text.delta");
+    assert_eq!(delta["delta"], "batched hello");
+    assert_eq!(done["type"], "response.output_text.done");
+    assert_eq!(done["text"], "batched hello");
+    assert_eq!(completed["type"], "response.completed");
+    for event in [&created, &delta, &done, &completed] {
+        assert!(
+            !event["type"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("codex."),
+            "provider-private event reached the public socket: {event}"
+        );
+        assert!(
+            event.get("chunks").is_none(),
+            "provider batch envelope reached the public socket: {event}"
+        );
+    }
+
+    let audits = harness
+        .usage_audits_where(1, "the billed batched turn", is_billed)
+        .await?;
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].total_tokens, INPUT_TOKENS + OUTPUT_TOKENS);
 
     client.close(None).await?;
     Ok(())
@@ -644,6 +743,66 @@ fn response_create(fields: Value) -> Message {
     Message::Text(event.to_string().into())
 }
 
+async fn receive_next_event<S>(socket: &mut WebSocketStream<S>) -> Result<Value, BoxError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    tokio::time::timeout(RECEIVE_TIMEOUT, async {
+        loop {
+            let message = socket
+                .next()
+                .await
+                .ok_or("gateway WebSocket closed before the next event")??;
+            match message {
+                Message::Text(text) => return Ok(serde_json::from_str(text.as_ref())?),
+                Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
+                Message::Close(frame) => {
+                    return Err(format!("gateway closed before the next event: {frame:?}").into())
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| "timed out waiting for the next event")?
+}
+
+async fn receive_standard_text_turn<S>(
+    socket: &mut WebSocketStream<S>,
+) -> Result<Vec<Value>, BoxError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    const EXPECTED_TYPES: [&str; 4] = [
+        "response.created",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.completed",
+    ];
+    let mut events = Vec::with_capacity(EXPECTED_TYPES.len());
+    for (sequence_number, expected_type) in EXPECTED_TYPES.into_iter().enumerate() {
+        let event = receive_next_event(socket).await?;
+        if event.get("type").and_then(Value::as_str) != Some(expected_type) {
+            return Err(format!("expected {expected_type}, received {event}").into());
+        }
+        if event.get("sequence_number").and_then(Value::as_u64) != Some(sequence_number as u64) {
+            return Err(format!(
+                "{expected_type} did not receive public sequence {sequence_number}: {event}"
+            )
+            .into());
+        }
+        if event.get("provider_debug").is_some()
+            || event
+                .get("response")
+                .is_some_and(|response| response.get("provider_account").is_some())
+        {
+            return Err(format!("provider extension reached the public socket: {event}").into());
+        }
+        events.push(event);
+    }
+    Ok(events)
+}
+
 /// Reads frames until `expected_type` arrives, failing fast on a gateway error.
 async fn receive_event<S>(
     socket: &mut WebSocketStream<S>,
@@ -681,36 +840,40 @@ where
     .map_err(|_| format!("timed out waiting for {expected_type}"))?
 }
 
-/// Drains the socket until the gateway reports an error or hangs up.
-///
-/// Returns the error event when one arrives, `None` when the gateway closed
-/// without explaining itself.
-async fn receive_error_or_close<S>(
+/// Reads the standard public error followed by the gateway-owned Close frame.
+async fn receive_error_and_close<S>(
     socket: &mut WebSocketStream<S>,
-) -> Result<Option<Value>, BoxError>
+) -> Result<(Value, u16, String), BoxError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     tokio::time::timeout(RECEIVE_TIMEOUT, async {
+        let mut public_error = None;
         loop {
-            let Some(message) = socket.next().await else {
-                return Ok(None);
-            };
-            match message? {
+            let message = socket
+                .next()
+                .await
+                .ok_or("gateway closed without a Close frame")??;
+            match message {
                 Message::Text(text) => {
                     let event: Value = serde_json::from_str(text.as_ref())?;
                     if event.get("type").and_then(Value::as_str) == Some("error") {
-                        return Ok(Some(event));
+                        public_error = Some(event);
                     }
                 }
                 Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
-                Message::Close(_) => return Ok(None),
+                Message::Close(frame) => {
+                    let frame = frame.ok_or("gateway Close frame had no status")?;
+                    let error =
+                        public_error.ok_or("gateway closed without a public error event")?;
+                    return Ok((error, u16::from(frame.code), frame.reason.to_string()));
+                }
                 _ => {}
             }
         }
     })
     .await
-    .map_err(|_| "timed out waiting for a gateway error or close")?
+    .map_err(|_| "timed out waiting for a gateway error and close")?
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +894,9 @@ enum UpstreamBehavior {
     /// 第一轮刻意不发 `response.created`：任何标准 `response.*` 事件都会让
     /// codex adapter 把这一轮判成 replay-unsafe，透明重试就不会发生。
     QuotaExhaustedThenComplete,
+    /// Return one Codex-private envelope containing an advisory event followed
+    /// by the complete ordered public Responses stream.
+    CodexPrivateBatch,
     /// 把收到的 `input` 原样回显成一个 delta，再正常完成。
     ///
     /// 上游看到的是脱敏后的 body，所以回显出来的就是占位符——正是响应侧还原要处理
@@ -830,6 +996,12 @@ async fn run_mock_upstream(
                     }
                     UpstreamBehavior::CloseAfterCreated => {
                         let _ = send_mock_created(&mut socket, &response_id).await;
+                        let _ = socket
+                            .send(AxumWsMessage::Close(Some(AxumCloseFrame {
+                                code: 4001,
+                                reason: PROVIDER_PRIVATE_CLOSE_REASON.into(),
+                            })))
+                            .await;
                         break;
                     }
                     UpstreamBehavior::QuotaExhaustedThenComplete => {
@@ -839,6 +1011,14 @@ async fn run_mock_upstream(
                             break;
                         }
                         if send_mock_turn(&mut socket, &response_id).await.is_err() {
+                            break;
+                        }
+                    }
+                    UpstreamBehavior::CodexPrivateBatch => {
+                        if send_mock_codex_batch(&mut socket, &response_id)
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -871,6 +1051,9 @@ async fn run_mock_upstream(
 fn codex_quota_exhausted_error() -> Value {
     json!({
         "type": "error",
+        "code": "usage_limit_reached",
+        "message": "You have hit your usage limit",
+        "param": null,
         "status_code": 429,
         "error": {
             "type": "usage_limit_reached",
@@ -886,11 +1069,8 @@ async fn send_mock_created(socket: &mut WebSocket, response_id: &str) -> Result<
         socket,
         json!({
             "type": "response.created",
-            "response": {
-                "id": response_id,
-                "status": "in_progress",
-                "model": UPSTREAM_MODEL
-            }
+            "response": mock_response_snapshot(response_id, "in_progress"),
+            "provider_debug": {"account_id": "acct_private"}
         }),
     )
     .await
@@ -900,39 +1080,115 @@ async fn send_mock_turn(socket: &mut WebSocket, response_id: &str) -> Result<(),
     send_mock_turn_with_delta(socket, response_id, "hello").await
 }
 
+async fn send_mock_codex_batch(
+    socket: &mut WebSocket,
+    response_id: &str,
+) -> Result<(), axum::Error> {
+    send_mock_event(
+        socket,
+        json!({
+            "type": "codex.response.metadata",
+            "chunks": [
+                {
+                    "type": "codex.rate_limits",
+                    "rate_limits": {"allowed": true, "limit_reached": false}
+                },
+                {
+                    "type": "response.created",
+                    "response": mock_response_snapshot(response_id, "in_progress")
+                },
+                mock_output_text_delta(response_id, "batched hello"),
+                mock_output_text_done(response_id, "batched hello"),
+                {
+                    "type": "response.completed",
+                    "response": mock_completed_response_snapshot(response_id)
+                }
+            ]
+        }),
+    )
+    .await
+}
+
 async fn send_mock_turn_with_delta(
     socket: &mut WebSocket,
     response_id: &str,
     delta: &str,
 ) -> Result<(), axum::Error> {
     send_mock_created(socket, response_id).await?;
-    send_mock_event(
-        socket,
-        json!({
-            "type": "response.output_text.delta",
-            "response_id": response_id,
-            "delta": delta
-        }),
-    )
-    .await?;
+    send_mock_event(socket, mock_output_text_delta(response_id, delta)).await?;
+    send_mock_event(socket, mock_output_text_done(response_id, delta)).await?;
     send_mock_event(
         socket,
         json!({
             "type": "response.completed",
-            "response": {
-                "id": response_id,
-                "status": "completed",
-                "model": UPSTREAM_MODEL,
-                "output": [],
-                "usage": {
-                    "input_tokens": INPUT_TOKENS,
-                    "output_tokens": OUTPUT_TOKENS,
-                    "total_tokens": INPUT_TOKENS + OUTPUT_TOKENS
-                }
-            }
+            "response": mock_completed_response_snapshot(response_id),
+            "provider_debug": {"account_id": "acct_private"}
         }),
     )
     .await
+}
+
+fn mock_response_snapshot(response_id: &str, status: &str) -> Value {
+    json!({
+        "id": response_id,
+        "created_at": 0,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {},
+        "model": UPSTREAM_MODEL,
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": true,
+        "temperature": null,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "status": status,
+        "provider_account": "acct_private"
+    })
+}
+
+fn mock_completed_response_snapshot(response_id: &str) -> Value {
+    let mut response = mock_response_snapshot(response_id, "completed");
+    response["usage"] = json!({
+        "input_tokens": INPUT_TOKENS,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": OUTPUT_TOKENS,
+        "output_tokens_details": {
+            "reasoning_tokens": 0
+        },
+        "total_tokens": INPUT_TOKENS + OUTPUT_TOKENS
+    });
+    response
+}
+
+fn mock_output_text_delta(response_id: &str, delta: &str) -> Value {
+    json!({
+        "type": "response.output_text.delta",
+        "response_id": response_id,
+        "item_id": format!("msg-{response_id}"),
+        "output_index": 0,
+        "content_index": 0,
+        "delta": delta,
+        "logprobs": [],
+        "provider_debug": {"account_id": "acct_private"}
+    })
+}
+
+fn mock_output_text_done(response_id: &str, text: &str) -> Value {
+    json!({
+        "type": "response.output_text.done",
+        "response_id": response_id,
+        "item_id": format!("msg-{response_id}"),
+        "output_index": 0,
+        "content_index": 0,
+        "text": text,
+        "logprobs": [],
+        "provider_debug": {"account_id": "acct_private"}
+    })
 }
 
 async fn send_mock_event(socket: &mut WebSocket, event: Value) -> Result<(), axum::Error> {

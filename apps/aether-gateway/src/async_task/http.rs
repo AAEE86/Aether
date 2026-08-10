@@ -86,7 +86,10 @@ pub(crate) async fn cancel_video_task(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Json<Value>, axum::response::Response> {
-    let stored = cancel_video_task_record(&state, &task_id)
+    let trace_id = format!("async-task-admin-cancel-{task_id}");
+    let execution_request_id =
+        crate::execution_identity::ExecutionRequestId::generate().into_string();
+    let stored = cancel_video_task_record(&state, &task_id, &trace_id, &execution_request_id)
         .await
         .map_err(|err| match err {
             CancelVideoTaskError::NotFound => (

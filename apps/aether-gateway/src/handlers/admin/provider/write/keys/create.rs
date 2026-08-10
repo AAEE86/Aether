@@ -46,7 +46,13 @@ pub(crate) async fn build_admin_create_provider_key_record(
     };
 
     let api_key = payload.api_key.unwrap_or_default().trim().to_string();
-    let auth_config = normalize_json_object(payload.auth_config, "auth_config")?;
+    let mut auth_config = normalize_json_object(payload.auth_config, "auth_config")?;
+    if let Some(auth_config) = auth_config
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        aether_provider_transport::strip_server_owned_credential_generation(auth_config);
+    }
     let auth_config_object = auth_config
         .as_ref()
         .and_then(serde_json::Value::as_object)
@@ -224,4 +230,71 @@ fn raw_secret_auth_type(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "api_key" | "bearer"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_admin_create_provider_key_record;
+    use crate::handlers::admin::provider::shared::payloads::AdminProviderKeyCreateRequest;
+    use crate::handlers::admin::request::AdminAppState;
+    use aether_crypto::{decrypt_python_fernet_ciphertext, DEVELOPMENT_ENCRYPTION_KEY};
+    use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
+    use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn generic_create_strips_forged_credential_generation() {
+        let provider = StoredProviderCatalogProvider::new(
+            "provider-1".to_string(),
+            "Provider".to_string(),
+            None,
+            "custom".to_string(),
+        )
+        .expect("provider should build");
+        let repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+            vec![provider.clone()],
+            vec![],
+            vec![],
+        ));
+        let app = crate::AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_provider_catalog_repository_for_tests(
+                    repository,
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let payload: AdminProviderKeyCreateRequest = serde_json::from_value(json!({
+            "name": "OAuth key",
+            "auth_type": "oauth",
+            "api_formats": ["openai:responses"],
+            "auth_config": {
+                "refresh_token": "replacement-refresh",
+                "aether_credential_generation": "forged-generation"
+            }
+        }))
+        .expect("payload should deserialize");
+
+        let record =
+            build_admin_create_provider_key_record(&AdminAppState::new(&app), &provider, payload)
+                .await
+                .expect("record should build");
+        let plaintext = decrypt_python_fernet_ciphertext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            record
+                .encrypted_auth_config
+                .as_deref()
+                .expect("auth config should be encrypted"),
+        )
+        .expect("auth config should decrypt");
+        let stored: serde_json::Value =
+            serde_json::from_str(&plaintext).expect("auth config should parse");
+
+        assert_eq!(
+            stored.get("refresh_token"),
+            Some(&json!("replacement-refresh"))
+        );
+        assert!(stored.get("aether_credential_generation").is_none());
+    }
 }

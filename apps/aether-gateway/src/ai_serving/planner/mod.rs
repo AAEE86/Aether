@@ -54,6 +54,7 @@ pub(crate) use self::request_gzip::resolve_transport_request_encoding_policy;
 pub(crate) use self::route::is_matching_stream_request as planner_is_matching_stream_request;
 pub(crate) use self::runtime_miss::{
     apply_local_runtime_candidate_terminal_reason, record_local_runtime_candidate_skip_reason,
+    runtime_miss_diagnostic_key_from_parts, RuntimeMissDiagnosticCleanupGuard,
 };
 pub(crate) use self::specialized::{
     build_local_gemini_files_stream_attempt_source_for_kind,
@@ -82,7 +83,9 @@ pub(crate) use self::standard::{
     build_local_sync_attempt_source as build_standard_family_sync_attempt_source,
     build_local_sync_plan_and_reports as build_standard_family_sync_plan_and_reports,
     codex_model_capabilities_for_transport, maybe_build_responses_websocket_decision,
-    set_local_openai_chat_execution_exhausted_diagnostic, validate_final_openai_provider_request,
+    maybe_build_responses_websocket_decision_with_auth_snapshot,
+    revalidate_bound_responses_candidate, set_local_openai_chat_execution_exhausted_diagnostic,
+    validate_final_openai_provider_request, BoundResponsesCandidateRevalidation,
     ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
 };
 pub(crate) use self::state::{
@@ -134,6 +137,8 @@ pub(crate) async fn resolve_tunnel_scheduler_affinity_context(
     let mut input = decision_input::build_local_requested_model_decision_input(
         resolved_auth_input,
         requested_model,
+        crate::execution_identity::execution_request_id_from_parts(parts, "tunnel-affinity")
+            .to_string(),
     );
     decision_input::attach_routing_policy_to_local_requested_model_input(
         state,

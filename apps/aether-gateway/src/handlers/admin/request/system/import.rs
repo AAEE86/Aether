@@ -111,7 +111,7 @@ fn normalize_import_auth_config(value: Option<Value>) -> Result<Option<Value>, S
     let Some(value) = value else {
         return Ok(None);
     };
-    match value {
+    let mut normalized = match value {
         Value::Null => Ok(None),
         Value::String(raw) => {
             let trimmed = raw.trim();
@@ -123,7 +123,11 @@ fn normalize_import_auth_config(value: Option<Value>) -> Result<Option<Value>, S
             normalize_json_object(Some(parsed), "auth_config")
         }
         other => normalize_json_object(Some(other), "auth_config"),
+    }?;
+    if let Some(auth_config) = normalized.as_mut().and_then(Value::as_object_mut) {
+        crate::provider_transport::strip_server_owned_credential_generation(auth_config);
     }
+    Ok(normalized)
 }
 
 fn encrypt_imported_provider_config(
@@ -3594,10 +3598,11 @@ mod tests {
         build_imported_user_usage_total_aggregates, imported_oauth_auth_config_has_credentials,
         imported_oauth_expiry_after_import, imported_optional_bool, imported_optional_f64,
         imported_optional_i32, imported_optional_u64, imported_rfc3339_to_unix_secs,
-        imported_string_list_from_value, normalize_import_endpoint_format,
-        normalize_import_key_formats, normalize_import_key_raw_payload,
-        normalize_imported_wallet_target, seed_imported_oauth_pool_score,
-        validate_imported_system_users_export_version, ImportedProviderKey,
+        imported_string_list_from_value, normalize_import_auth_config,
+        normalize_import_endpoint_format, normalize_import_key_formats,
+        normalize_import_key_raw_payload, normalize_imported_wallet_target,
+        seed_imported_oauth_pool_score, validate_imported_system_users_export_version,
+        ImportedProviderKey,
     };
     use crate::admin_api::AdminAppState;
     use crate::data::GatewayDataState;
@@ -3710,6 +3715,29 @@ mod tests {
 
         assert_eq!(formats, vec!["claude:messages", "openai:responses:compact"]);
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn config_import_strips_server_owned_credential_generation() {
+        for input in [
+            json!({
+                "refresh_token": "replacement-refresh",
+                "aether_credential_generation": "forged-generation"
+            }),
+            json!(
+                r#"{"refresh_token":"replacement-refresh","aether_credential_generation":"forged-generation"}"#
+            ),
+        ] {
+            let normalized = normalize_import_auth_config(Some(input))
+                .expect("auth config should normalize")
+                .expect("auth config should remain present");
+
+            assert_eq!(
+                normalized.get("refresh_token"),
+                Some(&json!("replacement-refresh"))
+            );
+            assert!(normalized.get("aether_credential_generation").is_none());
+        }
     }
 
     #[test]

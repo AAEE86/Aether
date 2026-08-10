@@ -47,6 +47,7 @@ pub(crate) async fn mark_skipped_local_openai_chat_candidate(
     mark_skipped_local_execution_candidate(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,
@@ -76,6 +77,7 @@ pub(crate) async fn mark_skipped_local_openai_chat_candidate_with_extra_data(
     mark_skipped_local_execution_candidate_with_extra_data(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,
@@ -106,6 +108,7 @@ pub(crate) async fn mark_skipped_local_openai_chat_candidate_with_failure_diagno
     mark_skipped_local_execution_candidate_with_failure_diagnostic(
         state,
         trace_id,
+        &input.request_id,
         persistence_policy.skipped,
         candidate,
         candidate_index,
@@ -135,6 +138,7 @@ pub(crate) async fn materialize_local_openai_chat_candidate_attempts(
     let outcome = materialize_local_execution_candidates_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         "openai:chat",
         Some(&input.requested_model),
         Some(&input.auth_snapshot),
@@ -216,6 +220,7 @@ pub(crate) async fn build_local_openai_chat_candidate_attempt_source<'a>(
     build_local_execution_candidate_attempt_source_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         "openai:chat",
         Some(&input.requested_model),
         Some(&input.auth_snapshot),
@@ -295,6 +300,7 @@ pub(crate) async fn build_lazy_local_openai_chat_candidate_attempt_source<'a>(
         planner_state,
         &input.model_directive_policy,
         trace_id,
+        &input.request_id,
         "openai:chat",
         &input.requested_model,
         None,

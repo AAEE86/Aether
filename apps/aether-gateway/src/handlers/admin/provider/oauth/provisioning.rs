@@ -286,6 +286,14 @@ fn grok_oauth_catalog_key_fingerprint(
     grok_browser_transport_fingerprint_from_auth_config(auth_config)
 }
 
+fn sanitized_user_managed_oauth_auth_config(
+    auth_config: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut sanitized = auth_config.clone();
+    aether_provider_transport::strip_server_owned_credential_generation(&mut sanitized);
+    sanitized
+}
+
 pub(crate) async fn create_provider_oauth_catalog_key(
     state: &AdminAppState<'_>,
     provider_id: &str,
@@ -300,6 +308,7 @@ pub(crate) async fn create_provider_oauth_catalog_key(
     let Some(encrypted_api_key) = state.encrypt_catalog_secret_with_fallbacks(access_token) else {
         return Ok(None);
     };
+    let auth_config = sanitized_user_managed_oauth_auth_config(auth_config);
     let auth_config_json = serde_json::to_string(&serde_json::Value::Object(auth_config.clone()))
         .map_err(|err| GatewayError::Internal(err.to_string()))?;
     let Some(encrypted_auth_config) =
@@ -330,7 +339,7 @@ pub(crate) async fn create_provider_oauth_catalog_key(
         None,
         expires_at_unix_secs,
         proxy,
-        grok_oauth_catalog_key_fingerprint(provider_type, auth_config),
+        grok_oauth_catalog_key_fingerprint(provider_type, &auth_config),
     )
     .map_err(|err| GatewayError::Internal(err.to_string()))?;
     record.internal_priority = 50;
@@ -368,6 +377,7 @@ pub(crate) async fn update_existing_provider_oauth_catalog_key(
     let Some(encrypted_api_key) = state.encrypt_catalog_secret_with_fallbacks(access_token) else {
         return Ok(None);
     };
+    let auth_config = sanitized_user_managed_oauth_auth_config(auth_config);
     let auth_config_json = serde_json::to_string(&serde_json::Value::Object(auth_config.clone()))
         .map_err(|err| GatewayError::Internal(err.to_string()))?;
     let Some(encrypted_auth_config) =
@@ -389,7 +399,7 @@ pub(crate) async fn update_existing_provider_oauth_catalog_key(
     updated.oauth_invalid_at_unix_secs = None;
     updated.oauth_invalid_reason = None;
     if updated.fingerprint.is_none() {
-        updated.fingerprint = grok_oauth_catalog_key_fingerprint(provider_type, auth_config);
+        updated.fingerprint = grok_oauth_catalog_key_fingerprint(provider_type, &auth_config);
     }
     if let Some(proxy) = proxy {
         updated.proxy = Some(proxy);
@@ -503,6 +513,7 @@ fn provider_oauth_catalog_key_api_formats(
 mod tests {
     use super::{
         grok_oauth_catalog_key_fingerprint, provider_oauth_token_payload_expires_at_unix_secs,
+        sanitized_user_managed_oauth_auth_config,
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
@@ -608,5 +619,25 @@ mod tests {
         let auth_config = auth_config.as_object().expect("object");
 
         assert!(grok_oauth_catalog_key_fingerprint("openai", auth_config).is_none());
+    }
+
+    #[test]
+    fn oauth_provisioning_strips_imported_credential_generation() {
+        let auth_config = json!({
+            "refresh_token": "replacement-refresh",
+            "aether_credential_generation": "forged-generation"
+        });
+
+        let sanitized = sanitized_user_managed_oauth_auth_config(
+            auth_config
+                .as_object()
+                .expect("auth config should be an object"),
+        );
+
+        assert_eq!(
+            sanitized.get("refresh_token"),
+            Some(&json!("replacement-refresh"))
+        );
+        assert!(!sanitized.contains_key("aether_credential_generation"));
     }
 }

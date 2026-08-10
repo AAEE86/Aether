@@ -119,6 +119,7 @@ fn rust_authoritative_service_builds_openai_content_stream_plan_from_direct_vide
     let LocalVideoTaskContentAction::StreamPlan(plan) = action else {
         panic!("content action should be stream plan");
     };
+    assert_eq!(plan.request_id, "trace-openai-content-123");
     assert_eq!(plan.method.as_str(), "GET");
     assert_eq!(
         plan.url.as_str(),

@@ -10,8 +10,100 @@ use super::{
     StoredProviderCatalogKeyStats, StoredProviderCatalogProvider, StoredRequestCandidate,
     UpsertGeminiFileMappingRecord, UpsertRequestCandidateRecord,
 };
+use aether_data_contracts::repository::provider_catalog::ProviderCatalogReadRepository;
 
 impl GatewayDataState {
+    fn provider_catalog_read_repository_strong(
+        &self,
+    ) -> Result<Option<std::sync::Arc<dyn ProviderCatalogReadRepository>>, DataLayerError> {
+        let Some(backends) = self.backends.as_ref() else {
+            return Ok(self.provider_catalog_reader.clone());
+        };
+        backends.read().provider_catalog().map(Some).ok_or_else(|| {
+            DataLayerError::InvalidConfiguration(
+                "strong provider catalog read repository is unavailable".to_string(),
+            )
+        })
+    }
+
+    /// Loads exactly one provider/endpoint/key transport identity from the
+    /// underlying repositories without consulting the catalog cache.
+    pub(crate) async fn read_provider_transport_snapshot_strong(
+        &self,
+        provider_id: &str,
+        endpoint_id: &str,
+        key_id: &str,
+    ) -> Result<Option<crate::provider_transport::GatewayProviderTransportSnapshot>, DataLayerError>
+    {
+        struct StrongTransportSource<'a> {
+            encryption_key: Option<&'a str>,
+            repository: std::sync::Arc<dyn ProviderCatalogReadRepository>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::provider_transport::ProviderTransportSnapshotSource for StrongTransportSource<'_> {
+            fn encryption_key(&self) -> Option<&str> {
+                self.encryption_key
+            }
+
+            async fn list_provider_catalog_providers_by_ids(
+                &self,
+                ids: &[String],
+            ) -> Result<Vec<StoredProviderCatalogProvider>, DataLayerError> {
+                self.repository.list_providers_by_ids(ids).await
+            }
+
+            async fn list_provider_catalog_endpoints_by_ids(
+                &self,
+                ids: &[String],
+            ) -> Result<Vec<StoredProviderCatalogEndpoint>, DataLayerError> {
+                self.repository.list_endpoints_by_ids(ids).await
+            }
+
+            async fn list_provider_catalog_keys_by_ids(
+                &self,
+                ids: &[String],
+            ) -> Result<Vec<StoredProviderCatalogKey>, DataLayerError> {
+                self.repository.list_keys_by_ids(ids).await
+            }
+        }
+
+        let Some(repository) = self.provider_catalog_read_repository_strong()? else {
+            return Ok(None);
+        };
+        let source = StrongTransportSource {
+            encryption_key: self.encryption_key(),
+            repository,
+        };
+        crate::provider_transport::read_provider_transport_snapshot(
+            &source,
+            provider_id,
+            endpoint_id,
+            key_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn list_provider_catalog_providers_by_ids_strong(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogProvider>, DataLayerError> {
+        let Some(repository) = self.provider_catalog_read_repository_strong()? else {
+            return Ok(Vec::new());
+        };
+        repository.list_providers_by_ids(provider_ids).await
+    }
+
+    pub(crate) async fn list_provider_catalog_keys_by_ids_strong(
+        &self,
+        key_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogKey>, DataLayerError> {
+        let Some(repository) = self.provider_catalog_read_repository_strong()? else {
+            return Ok(Vec::new());
+        };
+        repository.list_keys_by_ids(key_ids).await
+    }
+
     pub(crate) async fn list_request_candidates_by_request_id(
         &self,
         request_id: &str,
@@ -51,6 +143,29 @@ impl GatewayDataState {
             Some(repository) => repository.list_recent(limit).await,
             None => Ok(Vec::new()),
         }
+    }
+
+    pub(crate) async fn list_runtime_scoped_request_candidates_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, DataLayerError> {
+        let repository = if let Some(backends) = self.backends.as_ref() {
+            backends.read().request_candidates().ok_or_else(|| {
+                DataLayerError::InvalidConfiguration(
+                    "runtime request candidate read repository is unavailable".to_string(),
+                )
+            })?
+        } else if let Some(repository) = self.request_candidate_reader.clone() {
+            repository
+        } else {
+            return Ok(Vec::new());
+        };
+        repository
+            .list_runtime_scoped_since(provider_ids, key_ids, api_key_ids, since_unix_secs)
+            .await
     }
 
     pub(crate) async fn list_finalized_request_candidates_by_endpoint_ids_since(

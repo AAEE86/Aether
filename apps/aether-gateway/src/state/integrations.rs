@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use aether_contracts::{ExecutionPlan, ExecutionResult, ProxySnapshot};
@@ -33,6 +34,16 @@ use crate::request_candidate_runtime::{
 };
 use crate::scheduler::state::SchedulerRuntimeState;
 use crate::{execution_runtime, provider_transport};
+
+pub(crate) struct StrongSchedulerRuntimeState<'a> {
+    app: &'a AppState,
+}
+
+impl AppState {
+    pub(crate) fn strong_scheduler_runtime_state(&self) -> StrongSchedulerRuntimeState<'_> {
+        StrongSchedulerRuntimeState { app: self }
+    }
+}
 
 impl AppState {
     pub(crate) async fn hydrate_antigravity_project_metadata_for_transport(
@@ -451,7 +462,7 @@ impl RequestCandidateRuntimeReader for AppState {
         &self,
         request_id: &str,
     ) -> Result<Vec<StoredRequestCandidate>, GatewayError> {
-        AppState::read_request_candidates_by_request_id(self, request_id).await
+        AppState::read_request_candidates_with_runtime_overlay(self, request_id).await
     }
 }
 
@@ -524,11 +535,63 @@ impl SchedulerRuntimeState for AppState {
         AppState::read_provider_catalog_keys_by_ids(self, key_ids).await
     }
 
-    async fn read_recent_request_candidates(
+    async fn read_runtime_scoped_request_candidates_since(
         &self,
-        limit: usize,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
     ) -> Result<Vec<StoredRequestCandidate>, GatewayError> {
-        AppState::read_recent_request_candidates(self, limit).await
+        AppState::read_runtime_scoped_request_candidates_since(
+            self,
+            provider_ids,
+            key_ids,
+            api_key_ids,
+            since_unix_secs,
+        )
+        .await
+    }
+
+    async fn read_pool_key_cooldown_reason(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+    ) -> Result<Option<String>, GatewayError> {
+        crate::handlers::shared::provider_pool::read_admin_provider_pool_key_cooldown_reason(
+            self.runtime_state(),
+            provider_id,
+            key_id,
+        )
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    async fn read_pool_key_cost_window_usage(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+        cost_window_seconds: u64,
+    ) -> Result<u64, GatewayError> {
+        crate::handlers::shared::provider_pool::read_admin_provider_pool_key_cost_window_usage(
+            self.runtime_state(),
+            provider_id,
+            key_id,
+            cost_window_seconds,
+        )
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    async fn read_pool_active_probe_member_ids(
+        &self,
+        provider_id: &str,
+    ) -> Result<BTreeSet<String>, GatewayError> {
+        crate::handlers::shared::provider_pool::read_admin_provider_pool_active_probe_member_ids(
+            self.runtime_state(),
+            provider_id,
+        )
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))
     }
 
     fn provider_key_rpm_reset_at(&self, key_id: &str, now_unix_secs: u64) -> Option<u64> {
@@ -579,5 +642,141 @@ impl SchedulerRuntimeState for AppState {
         &self,
     ) -> Result<crate::scheduler::config::SchedulerOrderingConfig, GatewayError> {
         crate::scheduler::config::read_scheduler_ordering_config(self).await
+    }
+}
+
+#[async_trait]
+impl SchedulerRuntimeState for StrongSchedulerRuntimeState<'_> {
+    async fn read_provider_quota_snapshot(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<StoredProviderQuotaSnapshot>, GatewayError> {
+        self.app
+            .read_provider_quota_snapshot_strong(provider_id)
+            .await
+    }
+
+    async fn read_provider_catalog_providers_by_ids(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogProvider>, GatewayError> {
+        self.app
+            .read_provider_catalog_providers_by_ids_strong(provider_ids)
+            .await
+    }
+
+    async fn read_provider_catalog_keys_by_ids(
+        &self,
+        key_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogKey>, GatewayError> {
+        self.app
+            .read_provider_catalog_keys_by_ids_strong(key_ids)
+            .await
+    }
+
+    async fn read_runtime_scoped_request_candidates_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, GatewayError> {
+        self.app
+            .read_runtime_scoped_request_candidates_since(
+                provider_ids,
+                key_ids,
+                api_key_ids,
+                since_unix_secs,
+            )
+            .await
+    }
+
+    async fn read_pool_key_cooldown_reason(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+    ) -> Result<Option<String>, GatewayError> {
+        <AppState as SchedulerRuntimeState>::read_pool_key_cooldown_reason(
+            self.app,
+            provider_id,
+            key_id,
+        )
+        .await
+    }
+
+    async fn read_pool_key_cost_window_usage(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+        cost_window_seconds: u64,
+    ) -> Result<u64, GatewayError> {
+        <AppState as SchedulerRuntimeState>::read_pool_key_cost_window_usage(
+            self.app,
+            provider_id,
+            key_id,
+            cost_window_seconds,
+        )
+        .await
+    }
+
+    async fn read_pool_active_probe_member_ids(
+        &self,
+        provider_id: &str,
+    ) -> Result<BTreeSet<String>, GatewayError> {
+        <AppState as SchedulerRuntimeState>::read_pool_active_probe_member_ids(
+            self.app,
+            provider_id,
+        )
+        .await
+    }
+
+    fn provider_key_rpm_reset_at(&self, key_id: &str, now_unix_secs: u64) -> Option<u64> {
+        self.app.provider_key_rpm_reset_at(key_id, now_unix_secs)
+    }
+
+    fn read_cached_scheduler_affinity_target(
+        &self,
+        cache_key: &str,
+        ttl: Duration,
+    ) -> Option<SchedulerAffinityTarget> {
+        self.app.read_scheduler_affinity_target(cache_key, ttl)
+    }
+
+    fn scheduler_affinity_epoch(&self) -> u64 {
+        self.app.scheduler_affinity_epoch()
+    }
+
+    fn remember_scheduler_affinity_target(
+        &self,
+        cache_key: &str,
+        target: SchedulerAffinityTarget,
+        ttl: Duration,
+        max_entries: usize,
+    ) {
+        self.app
+            .remember_scheduler_affinity_target(cache_key, target, ttl, max_entries);
+    }
+
+    fn remember_scheduler_affinity_target_for_epoch(
+        &self,
+        cache_key: &str,
+        target: SchedulerAffinityTarget,
+        ttl: Duration,
+        max_entries: usize,
+        expected_epoch: Option<u64>,
+    ) -> bool {
+        self.app.remember_scheduler_affinity_target_for_epoch(
+            cache_key,
+            target,
+            ttl,
+            max_entries,
+            expected_epoch,
+        )
+    }
+
+    async fn read_scheduler_ordering_config(
+        &self,
+    ) -> Result<crate::scheduler::config::SchedulerOrderingConfig, GatewayError> {
+        crate::scheduler::config::read_scheduler_ordering_config(self.app).await
     }
 }

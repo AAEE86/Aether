@@ -536,7 +536,8 @@ fn build_windsurf_stream_frame_stream(
             let mut streamed_native_call_ids = HashSet::new();
             let mut next_tool_index = 0usize;
             let buffer_for_tool_calls = should_parse_windsurf_tool_calls(&prepared.input);
-            let poll_result = poll_windsurf_cascade_with_transport_recovery(&prepared, |event| {
+            let cancel_tx = tx.clone();
+            let Some(poll_result) = run_until_stream_receiver_closes(cancel_tx, poll_windsurf_cascade_with_transport_recovery(&prepared, |event| {
                 match event {
                     WindsurfPollEvent::TextDelta(delta) => {
                         let delta = sanitize_windsurf_text(&delta);
@@ -564,7 +565,9 @@ fn build_windsurf_stream_frame_stream(
                     }
                 }
                 Ok(())
-            }).await;
+            })).await else {
+                return;
+            };
 
             match poll_result {
                 Ok(poll_result) => {
@@ -646,6 +649,20 @@ fn build_windsurf_stream_frame_stream(
         while let Some(frame) = rx.recv().await {
             yield frame;
         }
+    }
+}
+
+async fn run_until_stream_receiver_closes<T, F>(
+    cancel_tx: mpsc::UnboundedSender<T>,
+    future: F,
+) -> Option<F::Output>
+where
+    F: std::future::Future,
+{
+    tokio::select! {
+        biased;
+        _ = cancel_tx.closed() => None,
+        output = future => Some(output),
     }
 }
 
@@ -4166,6 +4183,8 @@ fn current_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     use aether_contracts::{
         ExecutionErrorKind, ExecutionPhase, ExecutionPlan, RequestBody, StreamFrame,
@@ -4184,6 +4203,45 @@ mod tests {
         is_windsurf_cascade_transport_error, is_windsurf_send_retryable_error, WindsurfToolCall,
         WindsurfToolDefinition,
     };
+
+    struct PollDropMarker(Arc<AtomicBool>);
+
+    impl Drop for PollDropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_stream_receiver_cancels_the_detached_poll_future() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let started_for_poll = Arc::clone(&started);
+        let dropped_for_poll = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            super::run_until_stream_receiver_closes(tx, async move {
+                let _marker = PollDropMarker(dropped_for_poll);
+                started_for_poll.notify_one();
+                std::future::pending::<()>().await;
+            })
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
+            .await
+            .expect("poll future should start");
+        drop(rx);
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), task)
+                .await
+                .expect("receiver close should stop the producer")
+                .expect("producer task should not panic"),
+            None
+        );
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 
     fn windsurf_plan() -> ExecutionPlan {
         ExecutionPlan {

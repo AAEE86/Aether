@@ -132,22 +132,30 @@ impl<'a> AdminAppState<'a> {
         aether_data_contracts::repository::video_tasks::StoredVideoTask,
         AdminCancelVideoTaskError,
     > {
-        crate::async_task::cancel_video_task_record(self.app, task_id)
-            .await
-            .map_err(|err| match err {
-                crate::async_task::CancelVideoTaskError::NotFound => {
-                    AdminCancelVideoTaskError::NotFound
-                }
-                crate::async_task::CancelVideoTaskError::InvalidStatus(status) => {
-                    AdminCancelVideoTaskError::InvalidStatus(status)
-                }
-                crate::async_task::CancelVideoTaskError::Response(response) => {
-                    AdminCancelVideoTaskError::Response(response)
-                }
-                crate::async_task::CancelVideoTaskError::Gateway(err) => {
-                    AdminCancelVideoTaskError::Gateway(err)
-                }
-            })
+        let trace_id = format!("async-task-admin-cancel-{task_id}");
+        let execution_request_id =
+            crate::execution_identity::ExecutionRequestId::generate().into_string();
+        crate::async_task::cancel_video_task_record(
+            self.app,
+            task_id,
+            &trace_id,
+            &execution_request_id,
+        )
+        .await
+        .map_err(|err| match err {
+            crate::async_task::CancelVideoTaskError::NotFound => {
+                AdminCancelVideoTaskError::NotFound
+            }
+            crate::async_task::CancelVideoTaskError::InvalidStatus(status) => {
+                AdminCancelVideoTaskError::InvalidStatus(status)
+            }
+            crate::async_task::CancelVideoTaskError::Response(response) => {
+                AdminCancelVideoTaskError::Response(response)
+            }
+            crate::async_task::CancelVideoTaskError::Gateway(err) => {
+                AdminCancelVideoTaskError::Gateway(err)
+            }
+        })
     }
 
     pub(crate) async fn read_video_task_detail(

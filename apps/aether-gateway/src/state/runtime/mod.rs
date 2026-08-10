@@ -22,6 +22,10 @@ mod usage_queries;
 mod user_preferences;
 mod wallet;
 
+pub(crate) use candidate_queries::{
+    RequestCandidateRuntimeOverlay, RequestCandidateRuntimeOverlayLease,
+};
+
 impl AppState {
     pub fn has_announcement_data_reader(&self) -> bool {
         self.data.has_announcement_reader()

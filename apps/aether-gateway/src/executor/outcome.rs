@@ -171,14 +171,21 @@ pub(crate) async fn build_local_execution_exhaustion(
 ) -> LocalExecutionExhaustion {
     let mut exhaustion = build_fast_local_execution_exhaustion(plan, report_context);
     let mut data = build_usage_event_data_seed(plan, report_context);
+    let candidate_request_id = report_context
+        .and_then(Value::as_object)
+        .and_then(|context| context.get("request_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|request_id| !request_id.is_empty())
+        .unwrap_or(plan.request_id.as_str());
     let last_failed_candidate = match state
-        .read_request_candidates_by_request_id(plan.request_id.as_str())
+        .read_request_candidates_by_request_id(candidate_request_id)
         .await
     {
         Ok(candidates) => select_last_failed_request_candidate(&candidates).cloned(),
         Err(err) => {
             warn!(
-                request_id = %plan.request_id,
+                request_id = %candidate_request_id,
                 error = ?err,
                 "gateway failed to load request candidates for exhausted local execution"
             );

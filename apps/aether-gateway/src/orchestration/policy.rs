@@ -274,19 +274,29 @@ pub(crate) fn codex_cyber_flag_passthrough_enabled(
         .unwrap_or(true)
 }
 
-/// Selects the protocol adapter responsible for one eligible Responses
-/// WebSocket upstream. Provider-scoped feature switches remain the source of
-/// truth; this enum only identifies provider-specific extensions around the
-/// otherwise standard Responses WebSocket protocol.
+/// How a public Responses WebSocket turn is executed upstream.
+///
+/// The public protocol is always OpenAI Responses WebSocket. This enum only
+/// describes the transport selected behind that protocol boundary. Additional
+/// backends, such as per-turn HTTP streaming with format conversion, can be
+/// added without changing the public session engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResponsesWebSocketAdapter {
-    /// A provider that speaks the standard OpenAI Responses WebSocket protocol.
+pub(crate) enum ResponsesWebSocketBackendKind {
+    /// Reuse a provider connection that speaks OpenAI Responses WebSocket.
+    NativeResponsesWebSocket,
+}
+
+/// Provider-specific observations that are independent from transport and
+/// public wire encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponsesProviderObserverKind {
     Standard,
-    /// Standard protocol plus Codex account and quota extensions.
+    /// Observe Codex quota/account metadata while the public codec continues to
+    /// expose only standard Responses events.
     Codex,
 }
 
-impl ResponsesWebSocketAdapter {
+impl ResponsesProviderObserverKind {
     pub(crate) fn supports_provider_type(self, provider_type: &str) -> bool {
         match self {
             Self::Standard => {
@@ -295,6 +305,22 @@ impl ResponsesWebSocketAdapter {
             }
             Self::Codex => provider_type.trim().eq_ignore_ascii_case("codex"),
         }
+    }
+}
+
+/// An upstream capability selected by the Responses WebSocket planner.
+///
+/// Keeping backend execution and provider observation as separate axes avoids
+/// turning Codex extensions into a second public protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResponsesWebSocketCapability {
+    pub(crate) backend: ResponsesWebSocketBackendKind,
+    pub(crate) provider_observer: ResponsesProviderObserverKind,
+}
+
+impl ResponsesWebSocketCapability {
+    pub(crate) fn supports_provider_type(self, provider_type: &str) -> bool {
+        self.provider_observer.supports_provider_type(provider_type)
     }
 }
 
@@ -310,13 +336,14 @@ pub(crate) fn responses_websocket_enabled(provider_config: Option<&Value>) -> bo
         .unwrap_or(false)
 }
 
-/// Returns the enabled Responses WebSocket adapter for a provider. The shared
-/// protocol bridge remains opt-in, while this resolver isolates provider-only
-/// extensions from candidate planning and the session engine.
-pub(crate) fn responses_websocket_adapter(
+/// Returns a provider's explicitly enabled native Responses WebSocket
+/// capability. This switch describes an upstream transport capability; it does
+/// not control whether Aether exposes its public Responses WebSocket endpoint,
+/// nor whether a future HTTP/conversion backend may use this provider.
+pub(crate) fn responses_websocket_capability(
     provider_type: &str,
     provider_config: Option<&Value>,
-) -> Option<ResponsesWebSocketAdapter> {
+) -> Option<ResponsesWebSocketCapability> {
     let provider_type = provider_type.trim();
     if provider_type.is_empty() {
         return None;
@@ -324,10 +351,14 @@ pub(crate) fn responses_websocket_adapter(
     if !responses_websocket_enabled(provider_config) {
         return None;
     }
-    Some(if provider_type.eq_ignore_ascii_case("codex") {
-        ResponsesWebSocketAdapter::Codex
+    let provider_observer = if provider_type.eq_ignore_ascii_case("codex") {
+        ResponsesProviderObserverKind::Codex
     } else {
-        ResponsesWebSocketAdapter::Standard
+        ResponsesProviderObserverKind::Standard
+    };
+    Some(ResponsesWebSocketCapability {
+        backend: ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+        provider_observer,
     })
 }
 
@@ -402,9 +433,9 @@ mod tests {
 
     use super::{
         append_local_failover_policy_to_value, local_failover_policy_from_report_context,
-        local_failover_policy_from_transport, responses_websocket_adapter,
+        local_failover_policy_from_transport, responses_websocket_capability,
         responses_websocket_enabled, LocalFailoverPolicy, LocalFailoverRegexRule,
-        ResponsesWebSocketAdapter,
+        ResponsesProviderObserverKind, ResponsesWebSocketBackendKind, ResponsesWebSocketCapability,
     };
     use crate::provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
@@ -621,29 +652,35 @@ mod tests {
         }))));
 
         assert_eq!(
-            responses_websocket_adapter(
+            responses_websocket_capability(
                 "custom",
                 Some(&json!({"responses_websocket": {"enabled": false}})),
             ),
             None
         );
         assert_eq!(
-            responses_websocket_adapter(
+            responses_websocket_capability(
                 "custom",
                 Some(&json!({"responses_websocket": {"enabled": true}})),
             ),
-            Some(ResponsesWebSocketAdapter::Standard)
+            Some(ResponsesWebSocketCapability {
+                backend: ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+                provider_observer: ResponsesProviderObserverKind::Standard,
+            })
         );
         assert_eq!(
-            responses_websocket_adapter(
+            responses_websocket_capability(
                 "codex",
                 Some(&json!({"responses_websocket": {"enabled": true}})),
             ),
-            Some(ResponsesWebSocketAdapter::Codex)
+            Some(ResponsesWebSocketCapability {
+                backend: ResponsesWebSocketBackendKind::NativeResponsesWebSocket,
+                provider_observer: ResponsesProviderObserverKind::Codex,
+            })
         );
-        assert!(ResponsesWebSocketAdapter::Codex.supports_provider_type("CODEX"));
-        assert!(!ResponsesWebSocketAdapter::Codex.supports_provider_type("openai"));
-        assert!(ResponsesWebSocketAdapter::Standard.supports_provider_type("custom"));
-        assert!(!ResponsesWebSocketAdapter::Standard.supports_provider_type("codex"));
+        assert!(ResponsesProviderObserverKind::Codex.supports_provider_type("CODEX"));
+        assert!(!ResponsesProviderObserverKind::Codex.supports_provider_type("openai"));
+        assert!(ResponsesProviderObserverKind::Standard.supports_provider_type("custom"));
+        assert!(!ResponsesProviderObserverKind::Standard.supports_provider_type("codex"));
     }
 }

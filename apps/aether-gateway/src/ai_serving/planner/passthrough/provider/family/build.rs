@@ -1,7 +1,8 @@
 use crate::ai_serving::planner::common::extract_requested_model_from_request;
 use crate::ai_serving::planner::runtime_miss::{
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal,
-    apply_local_runtime_candidate_terminal_reason, set_local_runtime_miss_diagnostic_reason,
+    apply_local_runtime_candidate_terminal_reason, runtime_miss_diagnostic_key_from_parts,
+    set_local_runtime_miss_diagnostic_reason,
 };
 use crate::ai_serving::planner::spec_metadata::local_same_format_provider_spec_metadata;
 use crate::ai_serving::GatewayControlDecision;
@@ -26,6 +27,7 @@ pub(crate) async fn maybe_build_sync_local_same_format_provider_decision_payload
         return Ok(None);
     };
     let spec_metadata = local_same_format_provider_spec_metadata(spec);
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let requested_model_family = spec_metadata
         .requested_model_family
         .expect("same-format provider spec metadata should include requested-model family");
@@ -37,7 +39,7 @@ pub(crate) async fn maybe_build_sync_local_same_format_provider_decision_payload
     else {
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             spec_metadata.decision_kind,
             extract_requested_model_from_request(parts, body_json, requested_model_family)
@@ -49,7 +51,7 @@ pub(crate) async fn maybe_build_sync_local_same_format_provider_decision_payload
 
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -62,7 +64,7 @@ pub(crate) async fn maybe_build_sync_local_same_format_provider_decision_payload
     .await?;
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
         state,
-        trace_id,
+        runtime_miss_key,
         candidate_count,
     );
 
@@ -77,7 +79,7 @@ pub(crate) async fn maybe_build_sync_local_same_format_provider_decision_payload
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_sync_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_sync_plans");
 
     Ok(None)
 }
@@ -94,6 +96,7 @@ pub(crate) async fn maybe_build_stream_local_same_format_provider_decision_paylo
         return Ok(None);
     };
     let spec_metadata = local_same_format_provider_spec_metadata(spec);
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let requested_model_family = spec_metadata
         .requested_model_family
         .expect("same-format provider spec metadata should include requested-model family");
@@ -105,7 +108,7 @@ pub(crate) async fn maybe_build_stream_local_same_format_provider_decision_paylo
     else {
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             spec_metadata.decision_kind,
             extract_requested_model_from_request(parts, body_json, requested_model_family)
@@ -117,7 +120,7 @@ pub(crate) async fn maybe_build_stream_local_same_format_provider_decision_paylo
 
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -130,7 +133,7 @@ pub(crate) async fn maybe_build_stream_local_same_format_provider_decision_paylo
     .await?;
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
         state,
-        trace_id,
+        runtime_miss_key,
         candidate_count,
     );
 
@@ -145,7 +148,7 @@ pub(crate) async fn maybe_build_stream_local_same_format_provider_decision_paylo
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_stream_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_stream_plans");
 
     Ok(None)
 }

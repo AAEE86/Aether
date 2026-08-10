@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::Error as IoError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,13 +10,16 @@ use aether_contracts::{
     ExecutionTelemetry,
 };
 use aether_data_contracts::repository::candidates::RequestCandidateStatus;
+use aether_runtime::AdmissionPermitHealth;
+use aether_runtime_state::{ExecutionReservationError, ExecutionReservationHealth};
 use aether_scheduler_core::{
     execution_error_details, parse_request_candidate_report_context,
     SchedulerRequestCandidateStatusUpdate,
 };
 use aether_usage_runtime::{
     build_lifecycle_usage_seed, build_sync_terminal_usage_payload_seed,
-    build_terminal_usage_context_seed, build_usage_event_data_seed, UsageEvent, UsageEventType,
+    build_terminal_usage_context_seed, build_usage_event_data_seed, sync_report_represents_failure,
+    UsageEvent, UsageEventType,
 };
 use async_stream::stream;
 use axum::body::{to_bytes, Body, Bytes};
@@ -48,11 +52,11 @@ use crate::execution_runtime::kiro_cache::{
     kiro_simulated_cache_enabled_from_report_context, KiroPromptCacheUsage,
     KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
 };
-use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry;
+use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry_cancellation_safe;
 #[cfg(test)]
 use crate::execution_runtime::remote_compat::post_sync_plan_to_remote_execution_runtime;
 use crate::execution_runtime::submission::{
-    resolve_local_sync_error_status_code, submit_local_core_error_or_sync_finalize,
+    resolve_local_sync_error_status_code, submit_local_core_error_or_sync_finalize_effects_only,
 };
 use crate::execution_runtime::transport::{
     append_upstream_response_body_chunk, build_execution_response_body, build_request_body,
@@ -65,6 +69,7 @@ use crate::execution_runtime::windsurf::maybe_execute_windsurf_sync;
 use crate::execution_runtime::{
     ai_attempt_retry_scope_from_failure_disposition, analyze_local_candidate_failover_sync,
     apply_endpoint_response_header_rules, attach_provider_response_headers_to_report_context,
+    build_execution_reservation_rejection_response, build_transport_error_response,
     local_failover_response_text, resolve_core_sync_error_finalize_report_kind,
     should_fallback_to_control_sync, should_finalize_sync_response, LocalFailoverDecision,
 };
@@ -73,12 +78,15 @@ use crate::orchestration::{
     apply_local_execution_effect, build_local_error_flow_metadata, trace_upstream_response_body,
     with_error_flow_report_context, with_upstream_response_report_context,
     LocalAdaptiveRateLimitEffect, LocalAdaptiveSuccessEffect, LocalAttemptFailureEffect,
-    LocalExecutionEffect, LocalExecutionEffectContext, LocalHealthFailureEffect,
-    LocalHealthSuccessEffect, LocalOAuthInvalidationEffect, LocalPoolErrorEffect,
+    LocalExecutionEffect, LocalExecutionEffectContext, LocalFailoverClassification,
+    LocalHealthFailureEffect, LocalHealthSuccessEffect, LocalOAuthInvalidationEffect,
+    LocalPoolErrorEffect,
 };
 use crate::provider_pool_demand::acquire_provider_pool_in_flight_guard;
 use crate::request_candidate_runtime::{
-    ensure_execution_request_candidate_slot, record_local_request_candidate_extra_data,
+    acquire_execution_request_reservation, ensure_execution_request_candidate_slot,
+    install_execution_request_candidate_identity, persist_execution_request_candidate_slot,
+    prepare_execution_request_candidate_slot, record_local_request_candidate_extra_data,
     record_local_request_candidate_status, record_local_request_candidate_status_snapshot,
     snapshot_local_request_candidate_status,
 };
@@ -87,7 +95,7 @@ use crate::request_diagnostics::{
     attach_request_diagnostics_to_report_context, calibrate_candidate_first_byte_elapsed_ms,
     current_request_diagnostics, RequestDiagnostics,
 };
-use crate::usage::{spawn_sync_report, submit_sync_report};
+use crate::usage::{spawn_sync_report_effects_only, submit_sync_report_effects_only};
 use crate::video_tasks::VideoTaskSyncReportMode;
 use crate::{usage::GatewaySyncReportRequest, AppState, GatewayError};
 
@@ -110,7 +118,101 @@ const SYNC_EXECUTION_IDLE_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const OPENAI_IMAGE_SYNC_JSON_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const OPENAI_IMAGE_SYNC_JSON_HEARTBEAT_BYTES: &[u8] = b"\n";
 const OPENAI_IMAGE_SYNC_PROGRESS_WRITE_INTERVAL: Duration = Duration::from_secs(5);
+const SYNC_EXECUTION_RESERVATION_HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const INVALID_GEMINI_PROVIDER_SUCCESS_MESSAGE: &str = "Provider returned HTTP 200 but the Gemini response did not contain visible model output; refusing to finalize it as a successful response.";
+
+fn execution_reservation_lost_error() -> GatewayError {
+    GatewayError::Client {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: "Gateway execution capacity lease was lost; retry the request".to_string(),
+    }
+}
+
+fn ensure_execution_reservation_healthy<H>(health: Option<&H>) -> Result<(), GatewayError>
+where
+    H: AdmissionPermitHealth + ?Sized,
+{
+    if health.is_none_or(AdmissionPermitHealth::is_healthy) {
+        Ok(())
+    } else {
+        Err(execution_reservation_lost_error())
+    }
+}
+
+async fn await_oauth_refresh_before_retry<H, F>(
+    health: Option<&H>,
+    refresh: F,
+) -> Result<F::Output, GatewayError>
+where
+    H: AdmissionPermitHealth + ?Sized,
+    F: Future,
+{
+    let output = refresh.await;
+    ensure_execution_reservation_healthy(health)?;
+    Ok(output)
+}
+
+async fn await_with_execution_reservation_health<F>(
+    health: Option<&ExecutionReservationHealth>,
+    future: F,
+) -> Result<F::Output, GatewayError>
+where
+    F: Future,
+{
+    ensure_execution_reservation_healthy(health)?;
+    let Some(health) = health else {
+        return Ok(future.await);
+    };
+    let mut future = Box::pin(future);
+    let mut health_poll = tokio::time::interval(SYNC_EXECUTION_RESERVATION_HEALTH_POLL_INTERVAL);
+    health_poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    health_poll.tick().await;
+
+    loop {
+        tokio::select! {
+            biased;
+            output = future.as_mut() => {
+                ensure_execution_reservation_healthy(Some(health))?;
+                return Ok(output);
+            }
+            _ = health_poll.tick() => {
+                ensure_execution_reservation_healthy(Some(health))?;
+            }
+        }
+    }
+}
+
+fn map_additional_rpm_attempt_error(error: ExecutionReservationError) -> GatewayError {
+    match error {
+        ExecutionReservationError::Rejected { scope, limit } => GatewayError::Client {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: format!(
+                "Gateway execution reservation {} limit of {limit} rejected the retry attempt",
+                scope.as_str()
+            ),
+        },
+        ExecutionReservationError::Unavailable { message } => GatewayError::Client {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: format!("Gateway execution reservation is unavailable: {message}"),
+        },
+        ExecutionReservationError::InvalidConfiguration(message) => GatewayError::Client {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: format!("Gateway execution reservation configuration is invalid: {message}"),
+        },
+    }
+}
+
+fn sync_attempt_terminal_status_code(error: &GatewayError) -> u16 {
+    match error {
+        GatewayError::UpstreamUnavailable { .. } | GatewayError::ControlUnavailable { .. } => {
+            StatusCode::BAD_GATEWAY.as_u16()
+        }
+        GatewayError::LocalExecutionPlanningTimeout { .. } => StatusCode::GATEWAY_TIMEOUT.as_u16(),
+        GatewayError::AdmissionTimeout { .. } => StatusCode::TOO_MANY_REQUESTS.as_u16(),
+        GatewayError::Client { status, .. } => status.as_u16(),
+        GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+    }
+}
 
 fn elapsed_ms_since(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
@@ -143,6 +245,154 @@ enum SyncExecutionFailureFallbackKind {
     UpstreamResponseDecode,
 }
 
+#[derive(Clone)]
+struct SyncAttemptFailureEffects {
+    status_code: u16,
+    classification: LocalFailoverClassification,
+    headers: BTreeMap<String, String>,
+    response_text: Option<String>,
+}
+
+#[derive(Clone)]
+enum SyncAttemptTerminalEffects {
+    Success(GatewaySyncReportRequest),
+    Failure(SyncAttemptFailureEffects),
+    ReleaseOnly,
+}
+
+enum SyncAttemptTerminalUsage {
+    None,
+    Sync {
+        payload: GatewaySyncReportRequest,
+        candidate_first_byte_elapsed_ms: Option<u64>,
+    },
+    Direct {
+        event_type: UsageEventType,
+        status_code: u16,
+        error_type: String,
+        error_message: String,
+    },
+}
+
+struct SyncAttemptTerminalWork {
+    state: AppState,
+    plan: ExecutionPlan,
+    report_context: Option<Value>,
+    request_diagnostics: Option<Arc<RequestDiagnostics>>,
+    candidate_started_unix_ms: u64,
+    candidate_started_at: Instant,
+    candidate_update: SchedulerRequestCandidateStatusUpdate,
+    effects: SyncAttemptTerminalEffects,
+    usage: SyncAttemptTerminalUsage,
+}
+
+impl SyncAttemptTerminalWork {
+    async fn run(self) {
+        let Self {
+            state,
+            plan,
+            report_context,
+            request_diagnostics,
+            candidate_started_unix_ms: _,
+            candidate_started_at,
+            candidate_update,
+            effects,
+            usage,
+        } = self;
+        let report_context = attach_request_diagnostics_to_report_context(
+            report_context,
+            request_diagnostics.as_ref(),
+        );
+
+        record_local_request_candidate_status(
+            &state,
+            &plan,
+            report_context.as_ref(),
+            candidate_update,
+        )
+        .await;
+
+        match effects {
+            SyncAttemptTerminalEffects::Success(payload) => {
+                apply_sync_success_effects(&state, &plan, report_context.as_ref(), &payload).await;
+            }
+            SyncAttemptTerminalEffects::Failure(failure) => {
+                apply_sync_failure_effects(&state, &plan, report_context.as_ref(), &failure).await;
+            }
+            SyncAttemptTerminalEffects::ReleaseOnly => {
+                crate::orchestration::release_local_pool_key_lease(
+                    &state,
+                    LocalExecutionEffectContext {
+                        plan: &plan,
+                        report_context: report_context.as_ref(),
+                    },
+                )
+                .await;
+            }
+        }
+
+        match usage {
+            SyncAttemptTerminalUsage::None => {}
+            SyncAttemptTerminalUsage::Sync {
+                payload,
+                candidate_first_byte_elapsed_ms,
+            } => {
+                record_sync_terminal_usage(
+                    &state,
+                    &plan,
+                    payload.report_context.as_ref().or(report_context.as_ref()),
+                    &payload,
+                    candidate_started_at,
+                    candidate_first_byte_elapsed_ms,
+                )
+                .await;
+            }
+            SyncAttemptTerminalUsage::Direct {
+                event_type,
+                status_code,
+                error_type,
+                error_message,
+            } => {
+                if state.usage_runtime.is_enabled() {
+                    let latency_ms = elapsed_ms_since(candidate_started_at);
+                    let mut usage_data =
+                        build_usage_event_data_seed(&plan, report_context.as_ref());
+                    usage_data.status_code = Some(status_code);
+                    usage_data.error_message = Some(error_message.clone());
+                    usage_data.error_category = Some(
+                        match event_type {
+                            UsageEventType::Cancelled => "cancelled",
+                            _ => "server_error",
+                        }
+                        .to_string(),
+                    );
+                    usage_data.response_time_ms = Some(latency_ms);
+                    let error_body = json!({
+                        "error": {
+                            "type": error_type,
+                            "message": error_message,
+                            "code": status_code
+                        }
+                    });
+                    usage_data.response_headers = Some(json!({"content-type": "application/json"}));
+                    usage_data.response_body = Some(error_body.clone());
+                    usage_data.client_response_headers =
+                        Some(json!({"content-type": "application/json"}));
+                    usage_data.client_response_body = Some(error_body);
+
+                    state
+                        .usage_runtime
+                        .record_terminal_event_direct(
+                            state.usage_lifecycle_data_state().as_ref(),
+                            UsageEvent::new(event_type, plan.request_id.clone(), usage_data),
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+}
+
 impl SyncExecutionFailureFallbackKind {
     fn error_type(self) -> &'static str {
         match self {
@@ -166,6 +416,9 @@ struct SyncAttemptTerminalGuard {
     request_diagnostics: Option<Arc<RequestDiagnostics>>,
     candidate_started_unix_ms: u64,
     candidate_started_at: Instant,
+    usage_started: bool,
+    response_candidate_update: Option<SchedulerRequestCandidateStatusUpdate>,
+    response_failure_effects: Option<SyncAttemptFailureEffects>,
     armed: bool,
 }
 
@@ -184,33 +437,152 @@ impl SyncAttemptTerminalGuard {
             request_diagnostics: current_request_diagnostics(),
             candidate_started_unix_ms,
             candidate_started_at,
+            usage_started: false,
+            response_candidate_update: None,
+            response_failure_effects: None,
             armed: true,
         }
+    }
+
+    fn refresh(&mut self, plan: &ExecutionPlan, report_context: Option<Value>) {
+        self.plan = plan.clone();
+        self.report_context = report_context;
+    }
+
+    fn refresh_report_context(&mut self, report_context: Option<Value>) {
+        self.report_context = report_context;
+    }
+
+    fn mark_usage_started(&mut self) {
+        self.usage_started = true;
+    }
+
+    fn prepare_response_terminal(
+        &mut self,
+        candidate_update: SchedulerRequestCandidateStatusUpdate,
+        failure_effects: Option<SyncAttemptFailureEffects>,
+    ) {
+        self.response_candidate_update = Some(candidate_update);
+        self.response_failure_effects = failure_effects;
+    }
+
+    fn handoff_response_terminal(
+        &mut self,
+        payload: GatewaySyncReportRequest,
+        candidate_first_byte_elapsed_ms: Option<u64>,
+    ) -> tokio::task::JoinHandle<()> {
+        let mut candidate_update = self
+            .response_candidate_update
+            .take()
+            .expect("sync response terminal candidate update must be prepared before handoff");
+        let report_error_type = execution_error_details(None, payload.body_json.as_ref()).0;
+        let response_failed =
+            sync_report_represents_failure(&payload, report_error_type.as_deref());
+        candidate_update.status = if response_failed {
+            RequestCandidateStatus::Failed
+        } else {
+            candidate_update.error_type = None;
+            candidate_update.error_message = None;
+            RequestCandidateStatus::Success
+        };
+        let effects = if response_failed {
+            SyncAttemptTerminalEffects::Failure(
+                self.response_failure_effects
+                    .take()
+                    .expect("sync failure effects must be prepared before handoff"),
+            )
+        } else {
+            self.response_failure_effects = None;
+            SyncAttemptTerminalEffects::Success(payload.clone())
+        };
+        self.handoff(
+            candidate_update,
+            effects,
+            SyncAttemptTerminalUsage::Sync {
+                payload,
+                candidate_first_byte_elapsed_ms,
+            },
+        )
     }
 
     fn disarm(&mut self) {
         self.armed = false;
     }
 
+    fn handoff(
+        &mut self,
+        candidate_update: SchedulerRequestCandidateStatusUpdate,
+        effects: SyncAttemptTerminalEffects,
+        usage: SyncAttemptTerminalUsage,
+    ) -> tokio::task::JoinHandle<()> {
+        let work = SyncAttemptTerminalWork {
+            state: self.state.clone(),
+            plan: self.plan.clone(),
+            report_context: self.report_context.clone(),
+            request_diagnostics: self.request_diagnostics.clone(),
+            candidate_started_unix_ms: self.candidate_started_unix_ms,
+            candidate_started_at: self.candidate_started_at,
+            candidate_update,
+            effects,
+            usage,
+        };
+        let task = tokio::spawn(work.run());
+        self.armed = false;
+        task
+    }
+
     async fn fail_and_disarm(&mut self, error: &GatewayError) {
         if !self.armed {
             return;
         }
-        self.armed = false;
-        record_sync_attempt_forced_terminal_state(
-            self.state.clone(),
-            self.plan.clone(),
-            self.report_context.clone(),
-            self.request_diagnostics.clone(),
-            self.candidate_started_unix_ms,
-            self.candidate_started_at,
+        let task = self.spawn_forced_terminal(
             UsageEventType::Failed,
             RequestCandidateStatus::Failed,
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            sync_attempt_terminal_status_code(error),
             "local_sync_attempt_aborted",
             format!("Local sync attempt failed before terminal finalization: {error:?}"),
+        );
+        if let Err(error) = task.await {
+            warn!(
+                event_name = "local_sync_attempt_terminal_handoff_failed",
+                log_type = "ops",
+                error = %error,
+                "gateway sync attempt terminal handoff task failed"
+            );
+        }
+    }
+
+    fn spawn_forced_terminal(
+        &mut self,
+        usage_event_type: UsageEventType,
+        candidate_status: RequestCandidateStatus,
+        status_code: u16,
+        error_type: &'static str,
+        error_message: impl Into<String>,
+    ) -> tokio::task::JoinHandle<()> {
+        let error_message = error_message.into();
+        self.handoff(
+            SchedulerRequestCandidateStatusUpdate {
+                status: candidate_status,
+                status_code: Some(status_code),
+                error_type: Some(error_type.to_string()),
+                error_message: Some(error_message.clone()),
+                latency_ms: Some(elapsed_ms_since(self.candidate_started_at)),
+                started_at_unix_ms: Some(self.candidate_started_unix_ms),
+                finished_at_unix_ms: Some(current_request_candidate_unix_ms()),
+            },
+            SyncAttemptTerminalEffects::ReleaseOnly,
+            if self.usage_started {
+                SyncAttemptTerminalUsage::Direct {
+                    event_type: usage_event_type,
+                    status_code,
+                    error_type: error_type.to_string(),
+                    error_message,
+                }
+            } else {
+                SyncAttemptTerminalUsage::None
+            },
         )
-        .await;
     }
 }
 
@@ -219,30 +591,38 @@ impl Drop for SyncAttemptTerminalGuard {
         if !self.armed {
             return;
         }
-        self.armed = false;
-        let state = self.state.clone();
-        let plan = self.plan.clone();
-        let report_context = self.report_context.clone();
-        let request_diagnostics = self.request_diagnostics.clone();
-        let candidate_started_unix_ms = self.candidate_started_unix_ms;
-        let candidate_started_at = self.candidate_started_at;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                record_sync_attempt_forced_terminal_state(
-                    state,
-                    plan,
-                    report_context,
-                    request_diagnostics,
-                    candidate_started_unix_ms,
-                    candidate_started_at,
-                    UsageEventType::Cancelled,
-                    RequestCandidateStatus::Cancelled,
-                    499,
-                    "local_sync_attempt_cancelled",
-                    "Local sync attempt was dropped before terminal finalization, usually because the client disconnected or the request task was cancelled.",
-                )
-                .await;
-            });
+            let error_message = "Local sync attempt was dropped before terminal finalization, usually because the client disconnected or the request task was cancelled.".to_string();
+            let work = SyncAttemptTerminalWork {
+                state: self.state.clone(),
+                plan: self.plan.clone(),
+                report_context: self.report_context.clone(),
+                request_diagnostics: self.request_diagnostics.clone(),
+                candidate_started_unix_ms: self.candidate_started_unix_ms,
+                candidate_started_at: self.candidate_started_at,
+                candidate_update: SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Cancelled,
+                    status_code: Some(499),
+                    error_type: Some("local_sync_attempt_cancelled".to_string()),
+                    error_message: Some(error_message.clone()),
+                    latency_ms: Some(elapsed_ms_since(self.candidate_started_at)),
+                    started_at_unix_ms: Some(self.candidate_started_unix_ms),
+                    finished_at_unix_ms: Some(current_request_candidate_unix_ms()),
+                },
+                effects: SyncAttemptTerminalEffects::ReleaseOnly,
+                usage: if self.usage_started {
+                    SyncAttemptTerminalUsage::Direct {
+                        event_type: UsageEventType::Cancelled,
+                        status_code: 499,
+                        error_type: "local_sync_attempt_cancelled".to_string(),
+                        error_message,
+                    }
+                } else {
+                    SyncAttemptTerminalUsage::None
+                },
+            };
+            handle.spawn(work.run());
+            self.armed = false;
         } else {
             warn!(
                 event_name = "local_sync_attempt_terminal_guard_no_runtime",
@@ -253,77 +633,6 @@ impl Drop for SyncAttemptTerminalGuard {
             );
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn record_sync_attempt_forced_terminal_state(
-    state: AppState,
-    plan: ExecutionPlan,
-    report_context: Option<Value>,
-    request_diagnostics: Option<Arc<RequestDiagnostics>>,
-    candidate_started_unix_ms: u64,
-    candidate_started_at: Instant,
-    usage_event_type: UsageEventType,
-    candidate_status: RequestCandidateStatus,
-    status_code: u16,
-    error_type: &'static str,
-    error_message: impl Into<String>,
-) {
-    let error_message = error_message.into();
-    let report_context =
-        attach_request_diagnostics_to_report_context(report_context, request_diagnostics.as_ref());
-    let terminal_unix_ms = current_request_candidate_unix_ms();
-    let latency_ms = elapsed_ms_since(candidate_started_at);
-    record_local_request_candidate_status(
-        &state,
-        &plan,
-        report_context.as_ref(),
-        SchedulerRequestCandidateStatusUpdate {
-            status: candidate_status,
-            status_code: Some(status_code),
-            error_type: Some(error_type.to_string()),
-            error_message: Some(error_message.clone()),
-            latency_ms: Some(latency_ms),
-            started_at_unix_ms: Some(candidate_started_unix_ms),
-            finished_at_unix_ms: Some(terminal_unix_ms),
-        },
-    )
-    .await;
-
-    if !state.usage_runtime.is_enabled() {
-        return;
-    }
-
-    let mut usage_data = build_usage_event_data_seed(&plan, report_context.as_ref());
-    usage_data.status_code = Some(status_code);
-    usage_data.error_message = Some(error_message.clone());
-    usage_data.error_category = Some(
-        match usage_event_type {
-            UsageEventType::Cancelled => "cancelled",
-            _ => "server_error",
-        }
-        .to_string(),
-    );
-    usage_data.response_time_ms = Some(latency_ms);
-    let error_body = json!({
-        "error": {
-            "type": error_type,
-            "message": error_message,
-            "code": status_code
-        }
-    });
-    usage_data.response_headers = Some(json!({"content-type": "application/json"}));
-    usage_data.response_body = Some(error_body.clone());
-    usage_data.client_response_headers = Some(json!({"content-type": "application/json"}));
-    usage_data.client_response_body = Some(error_body);
-
-    state
-        .usage_runtime
-        .record_terminal_event_direct(
-            state.usage_lifecycle_data_state().as_ref(),
-            UsageEvent::new(usage_event_type, plan.request_id.clone(), usage_data),
-        )
-        .await;
 }
 
 impl SyncExecutionFailure {
@@ -453,6 +762,7 @@ async fn maybe_build_sync_transport_error_stop_response(
     error_type: &str,
     error_message: &str,
     elapsed_ms: u64,
+    terminal_guard: &mut SyncAttemptTerminalGuard,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let analysis = crate::orchestration::resolve_local_transport_failover_analysis_for_attempt(
         state,
@@ -460,23 +770,47 @@ async fn maybe_build_sync_transport_error_stop_response(
         report_context,
     )
     .await;
+    terminal_guard.refresh(plan, report_context.cloned());
+    let task = terminal_guard.handoff(
+        SchedulerRequestCandidateStatusUpdate {
+            status: RequestCandidateStatus::Failed,
+            status_code: Some(StatusCode::BAD_GATEWAY.as_u16()),
+            error_type: Some(error_type.to_string()),
+            error_message: Some(error_message.to_string()),
+            latency_ms: Some(elapsed_ms),
+            started_at_unix_ms: Some(terminal_guard.candidate_started_unix_ms),
+            finished_at_unix_ms: Some(current_request_candidate_unix_ms()),
+        },
+        SyncAttemptTerminalEffects::Failure(SyncAttemptFailureEffects {
+            status_code: StatusCode::BAD_GATEWAY.as_u16(),
+            classification: match analysis.decision {
+                LocalFailoverDecision::RetryNextCandidate => {
+                    LocalFailoverClassification::RetryUpstreamFailure
+                }
+                _ => LocalFailoverClassification::StopExecutionError,
+            },
+            headers: BTreeMap::new(),
+            response_text: Some(error_message.to_string()),
+        }),
+        if terminal_guard.usage_started {
+            SyncAttemptTerminalUsage::Direct {
+                event_type: UsageEventType::Failed,
+                status_code: StatusCode::BAD_GATEWAY.as_u16(),
+                error_type: error_type.to_string(),
+                error_message: error_message.to_string(),
+            }
+        } else {
+            SyncAttemptTerminalUsage::None
+        },
+    );
+    task.await
+        .map_err(|error| GatewayError::Internal(error.to_string()))?;
     if !matches!(analysis.decision, LocalFailoverDecision::StopLocalFailover) {
         return Ok(None);
     }
 
-    crate::execution_runtime::build_transport_error_stop_response(
-        state,
-        plan,
-        report_context,
-        trace_id,
-        decision,
-        StatusCode::BAD_GATEWAY.as_u16(),
-        error_type,
-        error_message,
-        elapsed_ms,
-    )
-    .await
-    .map(Some)
+    build_transport_error_response(plan, trace_id, decision, StatusCode::BAD_GATEWAY.as_u16())
+        .map(Some)
 }
 
 struct ImplicitSyncFinalizeOutcome {
@@ -591,7 +925,7 @@ async fn record_sync_terminal_usage(
 }
 
 async fn record_sync_terminal_usage_and_disarm_guard(
-    state: &AppState,
+    _state: &AppState,
     plan: &ExecutionPlan,
     report_context: Option<&serde_json::Value>,
     payload: &GatewaySyncReportRequest,
@@ -599,16 +933,28 @@ async fn record_sync_terminal_usage_and_disarm_guard(
     candidate_first_byte_elapsed_ms: Option<u64>,
     terminal_guard: &mut SyncAttemptTerminalGuard,
 ) {
-    record_sync_terminal_usage(
-        state,
-        plan,
-        report_context,
-        payload,
-        candidate_started_at,
-        candidate_first_byte_elapsed_ms,
-    )
-    .await;
-    terminal_guard.disarm();
+    terminal_guard.refresh(plan, report_context.cloned());
+    let task =
+        terminal_guard.handoff_response_terminal(payload.clone(), candidate_first_byte_elapsed_ms);
+    if let Err(error) = task.await {
+        warn!(
+            event_name = "local_sync_terminal_usage_handoff_failed",
+            log_type = "ops",
+            error = %error,
+            "gateway sync terminal usage handoff task failed"
+        );
+    }
+}
+
+fn record_sync_pending_lifecycle(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+) {
+    state.usage_runtime.record_pending(
+        state.usage_lifecycle_data_state().as_ref(),
+        build_lifecycle_usage_seed(plan, report_context),
+    );
 }
 
 fn with_sync_error_trace_context(
@@ -1829,11 +2175,75 @@ async fn apply_sync_success_effects(
     .await;
 }
 
+async fn apply_sync_failure_effects(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&serde_json::Value>,
+    failure: &SyncAttemptFailureEffects,
+) {
+    let context = || LocalExecutionEffectContext {
+        plan,
+        report_context,
+    };
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::AttemptFailure(LocalAttemptFailureEffect {
+            status_code: failure.status_code,
+            classification: failure.classification,
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::AdaptiveRateLimit(LocalAdaptiveRateLimitEffect {
+            status_code: failure.status_code,
+            classification: failure.classification,
+            headers: Some(&failure.headers),
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::HealthFailure(LocalHealthFailureEffect {
+            status_code: failure.status_code,
+            classification: failure.classification,
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::OauthInvalidation(LocalOAuthInvalidationEffect {
+            status_code: failure.status_code,
+            response_text: failure.response_text.as_deref(),
+        }),
+    )
+    .await;
+    apply_local_execution_effect(
+        state,
+        context(),
+        LocalExecutionEffect::PoolError(LocalPoolErrorEffect {
+            status_code: failure.status_code,
+            classification: failure.classification,
+            headers: &failure.headers,
+            error_body: failure.response_text.as_deref(),
+        }),
+    )
+    .await;
+}
+
 #[cfg(test)]
 enum RemoteSyncFallbackOutcome {
     Executed(ExecutionResult),
-    ClientResponse(Response<Body>),
-    Unavailable,
+    ClientResponse {
+        response: Response<Body>,
+        status_code: u16,
+        error_message: String,
+    },
+    Unavailable(String),
 }
 
 #[allow(clippy::too_many_arguments)] // internal function, grouping would add unnecessary indirection
@@ -1932,7 +2342,71 @@ async fn execute_execution_runtime_sync_impl(
         .map(Some);
     }
 
-    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
+    install_execution_request_candidate_identity(&mut plan, &mut report_context);
+    let candidate_started_at = Instant::now();
+    let candidate_started_unix_secs = current_request_candidate_unix_ms();
+    let mut terminal_guard = SyncAttemptTerminalGuard::new(
+        state,
+        &plan,
+        report_context.clone(),
+        candidate_started_unix_secs,
+        candidate_started_at,
+    );
+    let prepared_candidate =
+        match prepare_execution_request_candidate_slot(state, &mut plan, &mut report_context).await
+        {
+            Ok(prepared_candidate) => prepared_candidate,
+            Err(error) => {
+                terminal_guard.fail_and_disarm(&error).await;
+                return Err(error);
+            }
+        };
+    terminal_guard.refresh(&plan, report_context.clone());
+    let mut execution_reservation =
+        match acquire_execution_request_reservation(state, &plan, decision.auth_context.as_ref())
+            .await
+        {
+            Ok(permit) => permit,
+            Err(error) => {
+                let state = state.clone();
+                let plan = plan.clone();
+                let report_context = report_context.clone();
+                let trace_id = trace_id.to_string();
+                let decision = decision.clone();
+                let task = tokio::spawn(async move {
+                    build_execution_reservation_rejection_response(
+                        &state,
+                        &plan,
+                        report_context.as_ref(),
+                        trace_id.as_str(),
+                        &decision,
+                        error,
+                    )
+                    .await
+                });
+                terminal_guard.disarm();
+                return task
+                    .await
+                    .map_err(|error| GatewayError::Internal(error.to_string()))?
+                    .map(Some);
+            }
+        };
+    let execution_reservation_health = execution_reservation
+        .as_ref()
+        .map(|permit| permit.health_handle());
+    record_sync_pending_lifecycle(state, &plan, report_context.as_ref());
+    terminal_guard.mark_usage_started();
+    if let Err(error) = persist_execution_request_candidate_slot(
+        state,
+        &mut plan,
+        &mut report_context,
+        prepared_candidate,
+    )
+    .await
+    {
+        terminal_guard.fail_and_disarm(&error).await;
+        return Err(error);
+    }
     let plan_request_id = plan.request_id.clone();
     let plan_request_id_for_log = short_request_id(plan_request_id.as_str());
     let plan_candidate_id = plan.candidate_id.clone();
@@ -1947,14 +2421,6 @@ async fn execute_execution_runtime_sync_impl(
         .and_then(|context| context.candidate_index)
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string());
-    let candidate_started_at = Instant::now();
-    let candidate_started_unix_secs = current_request_candidate_unix_ms();
-    let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
-    let usage_data = state.usage_lifecycle_data_state().as_ref().clone();
-    state
-        .usage_runtime
-        .record_pending_direct(&usage_data, lifecycle_seed)
-        .await;
     record_local_request_candidate_status(
         state,
         &plan,
@@ -1970,13 +2436,6 @@ async fn execute_execution_runtime_sync_impl(
         },
     )
     .await;
-    let mut terminal_guard = SyncAttemptTerminalGuard::new(
-        state,
-        &plan,
-        report_context.clone(),
-        candidate_started_unix_secs,
-        candidate_started_at,
-    );
     let result = (async {
     let _provider_pool_in_flight_guard = acquire_provider_pool_in_flight_guard(
         state.runtime_state.clone(),
@@ -1986,6 +2445,7 @@ async fn execute_execution_runtime_sync_impl(
         key_id.as_str(),
     )
     .await;
+    ensure_execution_reservation_healthy(execution_reservation_health.as_ref())?;
     record_sync_execution_active(
         state,
         &plan,
@@ -1994,30 +2454,45 @@ async fn execute_execution_runtime_sync_impl(
     );
     #[cfg(not(test))]
     let mut result = {
-        match maybe_execute_grok_sync(&plan, report_context.as_ref()).await {
+        match await_with_execution_reservation_health(
+            execution_reservation_health.as_ref(),
+            maybe_execute_grok_sync(&plan, report_context.as_ref()),
+        )
+        .await?
+        {
             Ok(Some(result)) => result,
             Ok(None) => {
-                match maybe_execute_chatgpt_web_image_sync(state, &plan, report_context.as_ref())
-                    .await
-                {
-                    Ok(Some(result)) => result,
-                    Ok(None) => match execute_direct_sync_runtime_candidate(
+                match await_with_execution_reservation_health(
+                    execution_reservation_health.as_ref(),
+                    maybe_execute_chatgpt_web_image_sync(
                         state,
                         &plan,
                         report_context.as_ref(),
-                        trace_id,
-                        plan_kind,
-                        candidate_started_unix_secs,
-                        plan_request_id_for_log.as_str(),
-                        plan_candidate_id.as_deref(),
-                        provider_name.as_str(),
-                        endpoint_id.as_str(),
-                        key_id.as_str(),
-                        model_name.as_str(),
-                        candidate_index.as_str(),
-                        progress_snapshot.clone(),
+                    ),
+                )
+                .await?
+                {
+                    Ok(Some(result)) => result,
+                    Ok(None) => match await_with_execution_reservation_health(
+                        execution_reservation_health.as_ref(),
+                        execute_direct_sync_runtime_candidate(
+                            state,
+                            &plan,
+                            report_context.as_ref(),
+                            trace_id,
+                            plan_kind,
+                            candidate_started_unix_secs,
+                            plan_request_id_for_log.as_str(),
+                            plan_candidate_id.as_deref(),
+                            provider_name.as_str(),
+                            endpoint_id.as_str(),
+                            key_id.as_str(),
+                            model_name.as_str(),
+                            candidate_index.as_str(),
+                            progress_snapshot.clone(),
+                        ),
                     )
-                    .await
+                    .await?
                     {
                         Ok(result) => result,
                         Err(err) => {
@@ -2049,22 +2524,6 @@ async fn execute_execution_runtime_sync_impl(
                                 error = %err.message,
                                 "gateway in-process sync execution unavailable"
                             );
-                            let terminal_unix_secs = current_request_candidate_unix_ms();
-                            record_local_request_candidate_status(
-                                state,
-                                &plan,
-                                report_context.as_ref(),
-                                SchedulerRequestCandidateStatusUpdate {
-                                    status: RequestCandidateStatus::Failed,
-                                    status_code: None,
-                                    error_type: Some(failure_error_type.to_string()),
-                                    error_message: Some(err.message),
-                                    latency_ms: Some(failure_latency_ms),
-                                    started_at_unix_ms: Some(candidate_started_unix_secs),
-                                    finished_at_unix_ms: Some(terminal_unix_secs),
-                                },
-                            )
-                            .await;
                             if let Some(response) = maybe_build_sync_transport_error_stop_response(
                                 state,
                                 &plan,
@@ -2074,6 +2533,7 @@ async fn execute_execution_runtime_sync_impl(
                                 failure_error_type,
                                 failure_message.as_str(),
                                 failure_latency_ms,
+                                &mut terminal_guard,
                             )
                             .await?
                             {
@@ -2098,24 +2558,6 @@ async fn execute_execution_runtime_sync_impl(
                             error = %err,
                             "gateway ChatGPT-Web image execution unavailable"
                         );
-                        let terminal_unix_secs = current_request_candidate_unix_ms();
-                        record_local_request_candidate_status(
-                            state,
-                            &plan,
-                            report_context.as_ref(),
-                            SchedulerRequestCandidateStatusUpdate {
-                                status: RequestCandidateStatus::Failed,
-                                status_code: None,
-                                error_type: Some(
-                                    "chatgpt_web_image_execution_unavailable".to_string(),
-                                ),
-                                error_message: Some(transport_error_message.clone()),
-                                latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                                started_at_unix_ms: Some(candidate_started_unix_secs),
-                                finished_at_unix_ms: Some(terminal_unix_secs),
-                            },
-                        )
-                        .await;
                         if let Some(response) = maybe_build_sync_transport_error_stop_response(
                             state,
                             &plan,
@@ -2125,6 +2567,7 @@ async fn execute_execution_runtime_sync_impl(
                             "chatgpt_web_image_execution_unavailable",
                             transport_error_message.as_str(),
                             elapsed_ms_since(candidate_started_at),
+                            &mut terminal_guard,
                         )
                         .await?
                         {
@@ -2150,22 +2593,6 @@ async fn execute_execution_runtime_sync_impl(
                     error = %err,
                     "gateway Grok execution unavailable"
                 );
-                let terminal_unix_secs = current_request_candidate_unix_ms();
-                record_local_request_candidate_status(
-                    state,
-                    &plan,
-                    report_context.as_ref(),
-                    SchedulerRequestCandidateStatusUpdate {
-                        status: RequestCandidateStatus::Failed,
-                        status_code: None,
-                        error_type: Some("grok_execution_unavailable".to_string()),
-                        error_message: Some(transport_error_message.clone()),
-                        latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                        started_at_unix_ms: Some(candidate_started_unix_secs),
-                        finished_at_unix_ms: Some(terminal_unix_secs),
-                    },
-                )
-                .await;
                 if let Some(response) = maybe_build_sync_transport_error_stop_response(
                     state,
                     &plan,
@@ -2175,6 +2602,7 @@ async fn execute_execution_runtime_sync_impl(
                     "grok_execution_unavailable",
                     transport_error_message.as_str(),
                     elapsed_ms_since(candidate_started_at),
+                    &mut terminal_guard,
                 )
                 .await?
                 {
@@ -2205,22 +2633,6 @@ async fn execute_execution_runtime_sync_impl(
                         error = ?err,
                         "gateway test sync execution override failed"
                     );
-                    let terminal_unix_secs = current_request_candidate_unix_ms();
-                    record_local_request_candidate_status(
-                        state,
-                        &plan,
-                        report_context.as_ref(),
-                        SchedulerRequestCandidateStatusUpdate {
-                            status: RequestCandidateStatus::Failed,
-                            status_code: None,
-                            error_type: Some("execution_runtime_unavailable".to_string()),
-                            error_message: Some(transport_error_message.clone()),
-                            latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                            started_at_unix_ms: Some(candidate_started_unix_secs),
-                            finished_at_unix_ms: Some(terminal_unix_secs),
-                        },
-                    )
-                    .await;
                     if let Some(response) = maybe_build_sync_transport_error_stop_response(
                         state,
                         &plan,
@@ -2230,6 +2642,7 @@ async fn execute_execution_runtime_sync_impl(
                         "execution_runtime_unavailable",
                         transport_error_message.as_str(),
                         elapsed_ms_since(candidate_started_at),
+                        &mut terminal_guard,
                     )
                     .await?
                     {
@@ -2244,33 +2657,44 @@ async fn execute_execution_runtime_sync_impl(
             .trim()
             .is_empty()
         {
-            match maybe_execute_grok_sync(&plan, report_context.as_ref()).await {
+            match await_with_execution_reservation_health(
+                execution_reservation_health.as_ref(),
+                maybe_execute_grok_sync(&plan, report_context.as_ref()),
+            )
+            .await?
+            {
                 Ok(Some(result)) => result,
-                Ok(None) => match maybe_execute_chatgpt_web_image_sync(
-                    state,
-                    &plan,
-                    report_context.as_ref(),
-                )
-                .await
-                {
-                    Ok(Some(result)) => result,
-                    Ok(None) => match execute_direct_sync_runtime_candidate(
+                Ok(None) => match await_with_execution_reservation_health(
+                    execution_reservation_health.as_ref(),
+                    maybe_execute_chatgpt_web_image_sync(
                         state,
                         &plan,
                         report_context.as_ref(),
-                        trace_id,
-                        plan_kind,
-                        candidate_started_unix_secs,
-                        plan_request_id_for_log.as_str(),
-                        plan_candidate_id.as_deref(),
-                        provider_name.as_str(),
-                        endpoint_id.as_str(),
-                        key_id.as_str(),
-                        model_name.as_str(),
-                        candidate_index.as_str(),
-                        progress_snapshot.clone(),
+                    ),
+                )
+                .await?
+                {
+                    Ok(Some(result)) => result,
+                    Ok(None) => match await_with_execution_reservation_health(
+                        execution_reservation_health.as_ref(),
+                        execute_direct_sync_runtime_candidate(
+                            state,
+                            &plan,
+                            report_context.as_ref(),
+                            trace_id,
+                            plan_kind,
+                            candidate_started_unix_secs,
+                            plan_request_id_for_log.as_str(),
+                            plan_candidate_id.as_deref(),
+                            provider_name.as_str(),
+                            endpoint_id.as_str(),
+                            key_id.as_str(),
+                            model_name.as_str(),
+                            candidate_index.as_str(),
+                            progress_snapshot.clone(),
+                        ),
                     )
-                    .await
+                    .await?
                     {
                         Ok(result) => result,
                         Err(err) => {
@@ -2302,22 +2726,6 @@ async fn execute_execution_runtime_sync_impl(
                                 error = %err.message,
                                 "gateway in-process sync execution unavailable"
                             );
-                            let terminal_unix_secs = current_request_candidate_unix_ms();
-                            record_local_request_candidate_status(
-                                state,
-                                &plan,
-                                report_context.as_ref(),
-                                SchedulerRequestCandidateStatusUpdate {
-                                    status: RequestCandidateStatus::Failed,
-                                    status_code: None,
-                                    error_type: Some(failure_error_type.to_string()),
-                                    error_message: Some(err.message),
-                                    latency_ms: Some(failure_latency_ms),
-                                    started_at_unix_ms: Some(candidate_started_unix_secs),
-                                    finished_at_unix_ms: Some(terminal_unix_secs),
-                                },
-                            )
-                            .await;
                             if let Some(response) = maybe_build_sync_transport_error_stop_response(
                                 state,
                                 &plan,
@@ -2327,6 +2735,7 @@ async fn execute_execution_runtime_sync_impl(
                                 failure_error_type,
                                 failure_message.as_str(),
                                 failure_latency_ms,
+                                &mut terminal_guard,
                             )
                             .await?
                             {
@@ -2351,24 +2760,6 @@ async fn execute_execution_runtime_sync_impl(
                             error = %err,
                             "gateway ChatGPT-Web image execution unavailable"
                         );
-                        let terminal_unix_secs = current_request_candidate_unix_ms();
-                        record_local_request_candidate_status(
-                            state,
-                            &plan,
-                            report_context.as_ref(),
-                            SchedulerRequestCandidateStatusUpdate {
-                                status: RequestCandidateStatus::Failed,
-                                status_code: None,
-                                error_type: Some(
-                                    "chatgpt_web_image_execution_unavailable".to_string(),
-                                ),
-                                error_message: Some(transport_error_message.clone()),
-                                latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                                started_at_unix_ms: Some(candidate_started_unix_secs),
-                                finished_at_unix_ms: Some(terminal_unix_secs),
-                            },
-                        )
-                        .await;
                         if let Some(response) = maybe_build_sync_transport_error_stop_response(
                             state,
                             &plan,
@@ -2378,6 +2769,7 @@ async fn execute_execution_runtime_sync_impl(
                             "chatgpt_web_image_execution_unavailable",
                             transport_error_message.as_str(),
                             elapsed_ms_since(candidate_started_at),
+                            &mut terminal_guard,
                         )
                         .await?
                         {
@@ -2402,31 +2794,16 @@ async fn execute_execution_runtime_sync_impl(
                         error = %err,
                         "gateway Grok execution unavailable"
                     );
-                    let terminal_unix_secs = current_request_candidate_unix_ms();
-                    record_local_request_candidate_status(
-                        state,
-                        &plan,
-                        report_context.as_ref(),
-                        SchedulerRequestCandidateStatusUpdate {
-                            status: RequestCandidateStatus::Failed,
-                            status_code: None,
-                            error_type: Some("grok_execution_unavailable".to_string()),
-                            error_message: Some(transport_error_message.clone()),
-                            latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                            started_at_unix_ms: Some(candidate_started_unix_secs),
-                            finished_at_unix_ms: Some(terminal_unix_secs),
-                        },
-                    )
-                    .await;
                     if let Some(response) = maybe_build_sync_transport_error_stop_response(
                         state,
                         &plan,
                         report_context.as_ref(),
                         trace_id,
                         decision,
-                        "grok_execution_unavailable",
-                        transport_error_message.as_str(),
-                        elapsed_ms_since(candidate_started_at),
+                    "grok_execution_unavailable",
+                    transport_error_message.as_str(),
+                    elapsed_ms_since(candidate_started_at),
+                    &mut terminal_guard,
                     )
                     .await?
                     {
@@ -2439,23 +2816,51 @@ async fn execute_execution_runtime_sync_impl(
             let remote_execution_runtime_base_url = state
                 .execution_runtime_override_base_url()
                 .unwrap_or_default();
-            let remote_outcome = execute_sync_via_remote_execution_runtime(
-                state,
-                remote_execution_runtime_base_url,
-                trace_id,
-                decision,
-                &plan,
-                plan_request_id.as_str(),
-                plan_candidate_id.as_deref(),
-                report_context.as_ref(),
-                candidate_started_unix_secs,
-                candidate_started_at,
+            let remote_outcome = await_with_execution_reservation_health(
+                execution_reservation_health.as_ref(),
+                execute_sync_via_remote_execution_runtime(
+                    state,
+                    remote_execution_runtime_base_url,
+                    trace_id,
+                    decision,
+                    &plan,
+                    plan_request_id.as_str(),
+                    plan_candidate_id.as_deref(),
+                ),
             )
-            .await?;
+            .await??;
             match remote_outcome {
                 RemoteSyncFallbackOutcome::Executed(result) => result,
-                RemoteSyncFallbackOutcome::ClientResponse(response) => return Ok(Some(response)),
-                RemoteSyncFallbackOutcome::Unavailable => return Ok(None),
+                RemoteSyncFallbackOutcome::ClientResponse {
+                    response,
+                    status_code,
+                    error_message,
+                } => {
+                    terminal_guard
+                        .spawn_forced_terminal(
+                            UsageEventType::Failed,
+                            RequestCandidateStatus::Failed,
+                            status_code,
+                            "execution_runtime_http_error",
+                            error_message,
+                        )
+                        .await
+                        .map_err(|error| GatewayError::Internal(error.to_string()))?;
+                    return Ok(Some(response));
+                }
+                RemoteSyncFallbackOutcome::Unavailable(error_message) => {
+                    terminal_guard
+                        .spawn_forced_terminal(
+                            UsageEventType::Failed,
+                            RequestCandidateStatus::Failed,
+                            StatusCode::BAD_GATEWAY.as_u16(),
+                            "execution_runtime_unavailable",
+                            error_message,
+                        )
+                        .await
+                        .map_err(|error| GatewayError::Internal(error.to_string()))?;
+                    return Ok(None);
+                }
             }
         }
     };
@@ -2526,24 +2931,40 @@ async fn execute_execution_runtime_sync_impl(
             result.error.as_ref().map(|error| error.message.as_str()),
         );
 
-        if result.status_code >= 400
-            && !oauth_retry_attempted
-            && refresh_oauth_plan_auth_for_retry(
-                state,
-                &mut plan,
-                result.status_code,
-                local_failover_response_text.as_deref(),
-                trace_id,
+        let oauth_retry_ready = if result.status_code >= 400 && !oauth_retry_attempted {
+            await_oauth_refresh_before_retry(
+                execution_reservation_health.as_ref(),
+                refresh_oauth_plan_auth_for_retry_cancellation_safe(
+                    state,
+                    &mut plan,
+                    result.status_code,
+                    local_failover_response_text.as_deref(),
+                    trace_id,
+                ),
             )
-            .await
-        {
+            .await?
+        } else {
+            false
+        };
+        if oauth_retry_ready {
             oauth_retry_attempted = true;
-            match crate::execution_runtime::execute_execution_runtime_sync_plan(
-                state,
-                Some(trace_id),
-                &plan,
+            ensure_execution_reservation_healthy(execution_reservation_health.as_ref())?;
+            if let Some(permit) = execution_reservation.as_mut() {
+                permit
+                    .consume_additional_rpm_attempt()
+                    .await
+                    .map_err(map_additional_rpm_attempt_error)?;
+            }
+            ensure_execution_reservation_healthy(execution_reservation_health.as_ref())?;
+            match await_with_execution_reservation_health(
+                execution_reservation_health.as_ref(),
+                crate::execution_runtime::execute_execution_runtime_sync_plan(
+                    state,
+                    Some(trace_id),
+                    &plan,
+                ),
             )
-            .await
+            .await?
             {
                 Ok(retry_result) => {
                     candidate_first_byte_elapsed_ms =
@@ -2594,71 +3015,12 @@ async fn execute_execution_runtime_sync_impl(
             local_failover_analysis,
         );
     };
-    if result.status_code >= 400 {
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan: &plan,
-                report_context: report_context.as_ref(),
-            },
-            LocalExecutionEffect::AttemptFailure(LocalAttemptFailureEffect {
-                status_code: result.status_code,
-                classification: local_failover_analysis.classification,
-            }),
-        )
-        .await;
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan: &plan,
-                report_context: report_context.as_ref(),
-            },
-            LocalExecutionEffect::AdaptiveRateLimit(LocalAdaptiveRateLimitEffect {
-                status_code: result.status_code,
-                classification: local_failover_analysis.classification,
-                headers: Some(&headers),
-            }),
-        )
-        .await;
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan: &plan,
-                report_context: report_context.as_ref(),
-            },
-            LocalExecutionEffect::HealthFailure(LocalHealthFailureEffect {
-                status_code: result.status_code,
-                classification: local_failover_analysis.classification,
-            }),
-        )
-        .await;
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan: &plan,
-                report_context: report_context.as_ref(),
-            },
-            LocalExecutionEffect::OauthInvalidation(LocalOAuthInvalidationEffect {
-                status_code: result.status_code,
-                response_text: local_failover_response_text.as_deref(),
-            }),
-        )
-        .await;
-        apply_local_execution_effect(
-            state,
-            LocalExecutionEffectContext {
-                plan: &plan,
-                report_context: report_context.as_ref(),
-            },
-            LocalExecutionEffect::PoolError(LocalPoolErrorEffect {
-                status_code: result.status_code,
-                classification: local_failover_analysis.classification,
-                headers: &headers,
-                error_body: local_failover_response_text.as_deref(),
-            }),
-        )
-        .await;
-    }
+    let failure_effects = Some(SyncAttemptFailureEffects {
+        status_code: result.status_code,
+        classification: local_failover_analysis.classification,
+        headers: headers.clone(),
+        response_text: local_failover_response_text.clone(),
+    });
     if matches!(
         local_failover_analysis.decision,
         LocalFailoverDecision::RetryNextCandidate
@@ -2695,7 +3057,6 @@ async fn execute_execution_runtime_sync_impl(
                 )?);
             }
         }
-        let terminal_unix_secs = current_request_candidate_unix_ms();
         let error_trace_report_context = with_sync_error_trace_context(
             report_context.as_ref(),
             result.status_code,
@@ -2705,12 +3066,12 @@ async fn execute_execution_runtime_sync_impl(
             local_failover_response_text.as_deref(),
             local_failover_analysis,
         );
-        record_local_request_candidate_status(
-            state,
-            &plan,
+        terminal_guard.refresh_report_context(
             error_trace_report_context
-                .as_ref()
-                .or(report_context.as_ref()),
+                .clone()
+                .or_else(|| report_context.clone()),
+        );
+        let task = terminal_guard.handoff(
             SchedulerRequestCandidateStatusUpdate {
                 status: RequestCandidateStatus::Failed,
                 status_code: Some(result.status_code),
@@ -2718,10 +3079,29 @@ async fn execute_execution_runtime_sync_impl(
                 error_message: result_error_message.clone(),
                 latency_ms: result_latency_ms,
                 started_at_unix_ms: Some(candidate_started_unix_secs),
-                finished_at_unix_ms: Some(terminal_unix_secs),
+                finished_at_unix_ms: Some(current_request_candidate_unix_ms()),
             },
-        )
-        .await;
+            SyncAttemptTerminalEffects::Failure(
+                failure_effects
+                    .clone()
+                    .expect("retry response must carry failure effects"),
+            ),
+            SyncAttemptTerminalUsage::Sync {
+                payload: build_sync_report_payload(
+                    trace_id,
+                    report_kind.clone().unwrap_or_default(),
+                    error_trace_report_context.clone().or_else(|| report_context.clone()),
+                    result.status_code,
+                    headers.clone(),
+                    body_json.clone(),
+                    body_base64.clone(),
+                    result.telemetry.clone(),
+                ),
+                candidate_first_byte_elapsed_ms,
+            },
+        );
+        task.await
+            .map_err(|error| GatewayError::Internal(error.to_string()))?;
         warn!(
             event_name = "local_sync_candidate_retry_scheduled",
             log_type = "event",
@@ -2741,12 +3121,14 @@ async fn execute_execution_runtime_sync_impl(
     let has_body_bytes = body_base64.is_some();
     let mut report_context =
         attach_provider_response_headers_to_report_context(report_context, &headers);
+    terminal_guard.refresh_report_context(report_context.clone());
     if (200..300).contains(&status_code) {
         seed_kiro_sync_simulated_cache_enabled(state, &plan, &mut report_context).await;
         if kiro_simulated_cache_enabled_from_report_context(report_context.as_ref()) {
             seed_kiro_sync_report_context_input_tokens(&plan, &mut report_context);
         }
         seed_kiro_sync_report_context_prompt_cache_usage(state, &plan, &mut report_context).await;
+        terminal_guard.refresh_report_context(report_context.clone());
     }
     let mut client_headers = headers.clone();
     apply_endpoint_response_header_rules(state, &plan, &mut client_headers, body_json.as_ref())
@@ -2780,7 +3162,6 @@ async fn execute_execution_runtime_sync_impl(
         explicit_finalize || implicit_finalize.is_some(),
         mapped_error_finalize_kind.is_some(),
     ) {
-        let terminal_unix_secs = current_request_candidate_unix_ms();
         let error_trace_report_context = with_sync_error_trace_context(
             report_context.as_ref(),
             result.status_code,
@@ -2790,12 +3171,12 @@ async fn execute_execution_runtime_sync_impl(
             local_failover_response_text.as_deref(),
             local_failover_analysis,
         );
-        record_local_request_candidate_status(
-            state,
-            &plan,
+        terminal_guard.refresh_report_context(
             error_trace_report_context
-                .as_ref()
-                .or(report_context.as_ref()),
+                .clone()
+                .or_else(|| report_context.clone()),
+        );
+        let task = terminal_guard.handoff(
             SchedulerRequestCandidateStatusUpdate {
                 status: RequestCandidateStatus::Failed,
                 status_code: Some(result.status_code),
@@ -2803,10 +3184,29 @@ async fn execute_execution_runtime_sync_impl(
                 error_message: result_error_message.clone(),
                 latency_ms: result_latency_ms,
                 started_at_unix_ms: Some(candidate_started_unix_secs),
-                finished_at_unix_ms: Some(terminal_unix_secs),
+                finished_at_unix_ms: Some(current_request_candidate_unix_ms()),
             },
-        )
-        .await;
+            SyncAttemptTerminalEffects::Failure(
+                failure_effects
+                    .clone()
+                    .expect("fallback response must carry failure effects"),
+            ),
+            SyncAttemptTerminalUsage::Sync {
+                payload: build_sync_report_payload(
+                    trace_id,
+                    report_kind.clone().unwrap_or_default(),
+                    error_trace_report_context.clone().or_else(|| report_context.clone()),
+                    result.status_code,
+                    headers.clone(),
+                    body_json.clone(),
+                    body_base64.clone(),
+                    result.telemetry.clone(),
+                ),
+                candidate_first_byte_elapsed_ms,
+            },
+        );
+        task.await
+            .map_err(|error| GatewayError::Internal(error.to_string()))?;
         return Ok(None);
     }
 
@@ -2824,12 +3224,12 @@ async fn execute_execution_runtime_sync_impl(
             )
         })
         .flatten();
-    record_local_request_candidate_status(
-        state,
-        &plan,
+    terminal_guard.refresh_report_context(
         error_flow_report_context
-            .as_ref()
-            .or(report_context.as_ref()),
+            .clone()
+            .or_else(|| report_context.clone()),
+    );
+    terminal_guard.prepare_response_terminal(
         SchedulerRequestCandidateStatusUpdate {
             status: if result.status_code >= 400 {
                 RequestCandidateStatus::Failed
@@ -2843,8 +3243,8 @@ async fn execute_execution_runtime_sync_impl(
             started_at_unix_ms: Some(candidate_started_unix_secs),
             finished_at_unix_ms: Some(terminal_unix_secs),
         },
-    )
-    .await;
+        failure_effects,
+    );
 
     let request_id_owned = result.request_id;
     let candidate_id_owned = result.candidate_id;
@@ -2865,13 +3265,6 @@ async fn execute_execution_runtime_sync_impl(
             .background_report
             .as_ref()
             .unwrap_or(&implicit_finalize.payload);
-        apply_sync_success_effects(
-            state,
-            &plan,
-            implicit_finalize.payload.report_context.as_ref(),
-            usage_payload,
-        )
-        .await;
         record_sync_terminal_usage_and_disarm_guard(
             state,
             &plan,
@@ -2883,7 +3276,7 @@ async fn execute_execution_runtime_sync_impl(
         )
         .await;
         if let Some(report_payload) = implicit_finalize.outcome.background_report {
-            spawn_sync_report(state.clone(), report_payload);
+            spawn_sync_report_effects_only(state.clone(), report_payload);
         } else {
             warn!(
                 event_name = "local_core_finalize_missing_success_report_mapping",
@@ -2919,15 +3312,6 @@ async fn execute_execution_runtime_sync_impl(
         );
         if let Some(outcome) = maybe_build_sync_finalize_outcome(trace_id, decision, &payload)? {
             let usage_payload = outcome.background_report.as_ref().unwrap_or(&payload);
-            if status_code < 400 {
-                apply_sync_success_effects(
-                    state,
-                    &plan,
-                    payload.report_context.as_ref(),
-                    usage_payload,
-                )
-                .await;
-            }
             record_sync_terminal_usage_and_disarm_guard(
                 state,
                 &plan,
@@ -2939,7 +3323,7 @@ async fn execute_execution_runtime_sync_impl(
             )
             .await;
             if let Some(report_payload) = outcome.background_report {
-                spawn_sync_report(state.clone(), report_payload);
+                spawn_sync_report_effects_only(state.clone(), report_payload);
             } else {
                 warn!(
                     event_name = "local_core_finalize_missing_success_report_mapping",
@@ -2970,13 +3354,6 @@ async fn execute_execution_runtime_sync_impl(
                     report_mode,
                     local_task_snapshot,
                 } = outcome;
-                apply_sync_success_effects(
-                    state,
-                    &plan,
-                    original_report_context.as_ref(),
-                    &report_payload,
-                )
-                .await;
                 record_sync_terminal_usage_and_disarm_guard(
                     state,
                     &plan,
@@ -2993,10 +3370,10 @@ async fn execute_execution_runtime_sync_impl(
                 }
                 match report_mode {
                     VideoTaskSyncReportMode::InlineSync => {
-                        submit_sync_report(state, report_payload).await?;
+                        submit_sync_report_effects_only(state, report_payload).await?;
                     }
                     VideoTaskSyncReportMode::Background => {
-                        spawn_sync_report(state.clone(), report_payload);
+                        spawn_sync_report_effects_only(state.clone(), report_payload);
                     }
                 }
                 return Ok(Some(attach_control_metadata_headers(
@@ -3012,8 +3389,13 @@ async fn execute_execution_runtime_sync_impl(
         {
             let background_success_report_kind =
                 resolve_local_sync_success_background_report_kind(payload.report_kind.as_str());
-            apply_sync_success_effects(state, &plan, payload.report_context.as_ref(), &payload)
-                .await;
+            if let Some(success_report_kind) = background_success_report_kind {
+                // The finalized client outcome owns terminal semantics. For
+                // idempotent delete, upstream 404 is a documented success;
+                // classify candidate, usage, and observer payload from the
+                // success report kind before handing terminal ownership off.
+                payload.report_kind = success_report_kind.to_string();
+            }
             record_sync_terminal_usage_and_disarm_guard(
                 state,
                 &plan,
@@ -3033,11 +3415,8 @@ async fn execute_execution_runtime_sync_impl(
             {
                 let _ = state.upsert_video_task_snapshot(&snapshot).await?;
             }
-            if let Some(success_report_kind) = background_success_report_kind {
-                payload.report_kind = success_report_kind.to_string();
-            }
             if background_success_report_kind.is_some() {
-                spawn_sync_report(state.clone(), payload);
+                spawn_sync_report_effects_only(state.clone(), payload);
             } else {
                 warn!(
                     event_name = "local_video_finalize_missing_success_report_mapping",
@@ -3074,7 +3453,7 @@ async fn execute_execution_runtime_sync_impl(
             )
             .await;
             if background_error_report_kind.is_some() {
-                spawn_sync_report(state.clone(), payload);
+                spawn_sync_report_effects_only(state.clone(), payload);
             } else {
                 warn!(
                     event_name = "local_video_finalize_missing_error_report_mapping",
@@ -3102,8 +3481,10 @@ async fn execute_execution_runtime_sync_impl(
             &mut terminal_guard,
         )
         .await;
-        let response =
-            submit_local_core_error_or_sync_finalize(state, trace_id, decision, payload).await?;
+        let response = submit_local_core_error_or_sync_finalize_effects_only(
+            state, trace_id, decision, payload,
+        )
+        .await?;
         return Ok(Some(attach_control_metadata_headers(
             response,
             request_id,
@@ -3121,15 +3502,6 @@ async fn execute_execution_runtime_sync_impl(
         body_base64,
         telemetry,
     );
-    if status_code < 400 {
-        apply_sync_success_effects(
-            state,
-            &plan,
-            usage_payload.report_context.as_ref(),
-            &usage_payload,
-        )
-        .await;
-    }
     record_sync_terminal_usage_and_disarm_guard(
         state,
         &plan,
@@ -3154,7 +3526,7 @@ async fn execute_execution_runtime_sync_impl(
     if !usage_payload.report_kind.trim().is_empty() {
         if status_code >= 400 {
             let report_kind = usage_payload.report_kind.clone();
-            if let Err(err) = submit_sync_report(state, usage_payload).await {
+            if let Err(err) = submit_sync_report_effects_only(state, usage_payload).await {
                 warn!(
                     event_name = "local_sync_error_report_submit_failed",
                     log_type = "ops",
@@ -3164,7 +3536,7 @@ async fn execute_execution_runtime_sync_impl(
                 );
             }
         } else {
-            spawn_sync_report(state.clone(), usage_payload);
+            spawn_sync_report_effects_only(state.clone(), usage_payload);
         }
     }
 
@@ -3173,8 +3545,17 @@ async fn execute_execution_runtime_sync_impl(
     .await;
     if let Err(error) = result.as_ref() {
         terminal_guard.fail_and_disarm(error).await;
-    } else {
-        terminal_guard.disarm();
+    } else if terminal_guard.armed {
+        terminal_guard
+            .spawn_forced_terminal(
+                UsageEventType::Failed,
+                RequestCandidateStatus::Failed,
+                StatusCode::BAD_GATEWAY.as_u16(),
+                "local_sync_attempt_retry",
+                "Local sync attempt ended without a response and will retry another candidate",
+            )
+            .await
+            .map_err(|error| GatewayError::Internal(error.to_string()))?;
     }
     result
 }
@@ -3227,9 +3608,6 @@ async fn execute_sync_via_remote_execution_runtime(
     plan: &ExecutionPlan,
     plan_request_id: &str,
     plan_candidate_id: Option<&str>,
-    report_context: Option<&serde_json::Value>,
-    candidate_started_unix_secs: u64,
-    candidate_started_at: Instant,
 ) -> Result<RemoteSyncFallbackOutcome, GatewayError> {
     let response = match post_sync_plan_to_remote_execution_runtime(
         state,
@@ -3250,53 +3628,22 @@ async fn execute_sync_via_remote_execution_runtime(
                 error = ?err,
                 "gateway remote execution runtime sync unavailable"
             );
-            let terminal_unix_secs = current_request_candidate_unix_ms();
-            record_local_request_candidate_status(
-                state,
-                plan,
-                report_context,
-                SchedulerRequestCandidateStatusUpdate {
-                    status: RequestCandidateStatus::Failed,
-                    status_code: None,
-                    error_type: Some("execution_runtime_unavailable".to_string()),
-                    error_message: Some(format!("{err:?}")),
-                    latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                    started_at_unix_ms: Some(candidate_started_unix_secs),
-                    finished_at_unix_ms: Some(terminal_unix_secs),
-                },
-            )
-            .await;
-            return Ok(RemoteSyncFallbackOutcome::Unavailable);
+            return Ok(RemoteSyncFallbackOutcome::Unavailable(format!("{err:?}")));
         }
     };
 
     if response.status() != http::StatusCode::OK {
-        let terminal_unix_secs = current_request_candidate_unix_ms();
-        record_local_request_candidate_status(
-            state,
-            plan,
-            report_context,
-            SchedulerRequestCandidateStatusUpdate {
-                status: RequestCandidateStatus::Failed,
-                status_code: Some(response.status().as_u16()),
-                error_type: Some("execution_runtime_http_error".to_string()),
-                error_message: Some(format!(
-                    "execution runtime returned HTTP {}",
-                    response.status()
-                )),
-                latency_ms: Some(elapsed_ms_since(candidate_started_at)),
-                started_at_unix_ms: Some(candidate_started_unix_secs),
-                finished_at_unix_ms: Some(terminal_unix_secs),
-            },
-        )
-        .await;
-        return Ok(RemoteSyncFallbackOutcome::ClientResponse(
-            attach_control_metadata_headers(
+        let status_code = response.status().as_u16();
+        let error_message = format!("execution runtime returned HTTP {}", response.status());
+        return Ok(RemoteSyncFallbackOutcome::ClientResponse {
+            response: attach_control_metadata_headers(
                 build_client_response(response, trace_id, Some(decision))?,
                 Some(plan_request_id),
                 plan_candidate_id,
             )?,
-        ));
+            status_code,
+            error_message,
+        });
     }
 
     response
@@ -3313,8 +3660,114 @@ mod tests {
     use aether_data::repository::usage::InMemoryUsageReadRepository;
     use aether_data_contracts::repository::candidates::RequestCandidateReadRepository;
     use aether_data_contracts::repository::usage::UsageReadRepository;
+    use aether_runtime_state::ExecutionReservationScope;
     use aether_usage_runtime::UsageRuntimeConfig;
     use futures_util::{pin_mut, StreamExt as _};
+
+    #[test]
+    fn additional_rpm_attempt_rejection_maps_to_too_many_requests() {
+        let error = map_additional_rpm_attempt_error(ExecutionReservationError::Rejected {
+            scope: ExecutionReservationScope::ProviderKeyRpm,
+            limit: 42,
+        });
+
+        assert!(matches!(
+            error,
+            GatewayError::Client {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn additional_rpm_attempt_runtime_failure_maps_to_service_unavailable() {
+        for error in [
+            ExecutionReservationError::Unavailable {
+                message: "redis unavailable".to_string(),
+            },
+            ExecutionReservationError::InvalidConfiguration("invalid RPM limit".to_string()),
+        ] {
+            assert!(matches!(
+                map_additional_rpm_attempt_error(error),
+                GatewayError::Client {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_completes_before_lost_reservation_blocks_retry_send() {
+        struct UnhealthyReservation;
+
+        impl AdmissionPermitHealth for UnhealthyReservation {
+            fn is_healthy(&self) -> bool {
+                false
+            }
+        }
+
+        let health = UnhealthyReservation;
+        let mut refresh_completed = false;
+        let mut retry_send_count = 0;
+        let result = await_oauth_refresh_before_retry(Some(&health), async {
+            refresh_completed = true;
+            true
+        })
+        .await;
+
+        if matches!(&result, Ok(true)) {
+            retry_send_count += 1;
+        }
+
+        assert!(refresh_completed);
+        assert!(matches!(
+            result,
+            Err(GatewayError::Client {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                ..
+            })
+        ));
+        assert_eq!(retry_send_count, 0);
+    }
+
+    #[test]
+    fn sync_attempt_terminal_status_preserves_public_error_status() {
+        let error = execution_reservation_lost_error();
+
+        assert_eq!(
+            sync_attempt_terminal_status_code(&error),
+            StatusCode::SERVICE_UNAVAILABLE.as_u16()
+        );
+        assert_eq!(
+            sync_attempt_terminal_status_code(&GatewayError::UpstreamUnavailable {
+                trace_id: "trace-upstream".to_string(),
+                message: "upstream unavailable".to_string(),
+            }),
+            StatusCode::BAD_GATEWAY.as_u16()
+        );
+        assert_eq!(
+            sync_attempt_terminal_status_code(&GatewayError::LocalExecutionPlanningTimeout {
+                trace_id: "trace-planning".to_string(),
+                phase: "candidate",
+                timeout_ms: 100,
+            }),
+            StatusCode::GATEWAY_TIMEOUT.as_u16()
+        );
+        assert_eq!(
+            sync_attempt_terminal_status_code(&GatewayError::AdmissionTimeout {
+                trace_id: "trace-admission".to_string(),
+                gate: "candidate",
+                queue_budget_ms: 100,
+            }),
+            StatusCode::TOO_MANY_REQUESTS.as_u16()
+        );
+        assert_eq!(
+            sync_attempt_terminal_status_code(&GatewayError::Internal("failure".to_string())),
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+        );
+    }
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -3607,7 +4060,9 @@ mod tests {
             "mapped_model": "gpt-image-2",
         }));
 
-        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context).await;
+        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context)
+            .await
+            .expect("candidate slot should be seeded");
         let candidate_started_at = Instant::now();
         let started_at = current_request_candidate_unix_ms();
         state.usage_runtime.record_pending(
@@ -3634,13 +4089,14 @@ mod tests {
             crate::request_diagnostics::record_request_accepted_at(
                 Instant::now() - Duration::from_millis(25),
             );
-            let _guard = SyncAttemptTerminalGuard::new(
+            let mut guard = SyncAttemptTerminalGuard::new(
                 &state,
                 &plan,
                 report_context.clone(),
                 started_at,
                 candidate_started_at,
             );
+            guard.mark_usage_started();
         })
         .await;
 
@@ -3689,6 +4145,143 @@ mod tests {
             stored_candidates[0].error_type.as_deref(),
             Some("local_sync_attempt_cancelled")
         );
+    }
+
+    #[tokio::test]
+    async fn sync_startup_guard_cancels_candidate_without_creating_usage() {
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let state = AppState::new()
+            .expect("gateway state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                    Arc::clone(&request_candidate_repository),
+                    Arc::clone(&usage_repository),
+                ),
+            )
+            .with_usage_runtime_for_tests(UsageRuntimeConfig {
+                enabled: true,
+                ..UsageRuntimeConfig::default()
+            });
+        let mut plan = test_openai_image_plan(false);
+        plan.request_id = "sync-startup-cancel-request".to_string();
+        plan.candidate_id = None;
+        let mut report_context = Some(json!({
+            "request_id": "sync-startup-cancel-request",
+            "candidate_index": 0,
+            "retry_index": 0,
+            "user_id": "user-startup-cancel",
+            "api_key_id": "api-key-startup-cancel",
+        }));
+        install_execution_request_candidate_identity(&mut plan, &mut report_context);
+        let candidate_id = plan.candidate_id.clone().expect("candidate id");
+
+        let guard = SyncAttemptTerminalGuard::new(
+            &state,
+            &plan,
+            report_context,
+            current_request_candidate_unix_ms(),
+            Instant::now(),
+        );
+        drop(guard);
+
+        let candidate = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let stored = request_candidate_repository
+                    .list_by_request_id("sync-startup-cancel-request")
+                    .await
+                    .expect("candidate should read");
+                if let Some(candidate) = stored
+                    .into_iter()
+                    .find(|candidate| candidate.status == RequestCandidateStatus::Cancelled)
+                {
+                    break candidate;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("startup cancellation should finalize candidate");
+        assert_eq!(candidate.id, candidate_id);
+        assert_eq!(candidate.status_code, Some(499));
+        assert!(usage_repository
+            .find_by_request_id("sync-startup-cancel-request")
+            .await
+            .expect("usage should read")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_retry_terminal_handoff_finalizes_usage_and_candidate() {
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let state = AppState::new()
+            .expect("gateway state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                    Arc::clone(&request_candidate_repository),
+                    Arc::clone(&usage_repository),
+                ),
+            )
+            .with_usage_runtime_for_tests(UsageRuntimeConfig {
+                enabled: true,
+                ..UsageRuntimeConfig::default()
+            });
+        let mut plan = test_openai_image_plan(false);
+        plan.request_id = "sync-retry-terminal-request".to_string();
+        plan.candidate_id = Some("sync-retry-terminal-candidate".to_string());
+        let report_context = Some(json!({
+            "request_id": "sync-retry-terminal-request",
+            "candidate_id": "sync-retry-terminal-candidate",
+            "candidate_index": 0,
+            "retry_index": 0,
+            "user_id": "user-retry",
+            "api_key_id": "api-key-retry",
+        }));
+        record_sync_pending_lifecycle(&state, &plan, report_context.as_ref());
+        let mut guard = SyncAttemptTerminalGuard::new(
+            &state,
+            &plan,
+            report_context,
+            current_request_candidate_unix_ms(),
+            Instant::now(),
+        );
+        guard.mark_usage_started();
+
+        guard
+            .spawn_forced_terminal(
+                UsageEventType::Failed,
+                RequestCandidateStatus::Failed,
+                502,
+                "local_sync_attempt_retry",
+                "retry next candidate",
+            )
+            .await
+            .expect("terminal handoff should finish");
+
+        let usage = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(usage) = usage_repository
+                    .find_by_request_id("sync-retry-terminal-request")
+                    .await
+                    .expect("usage should read")
+                    .filter(|usage| usage.status == "failed")
+                {
+                    break usage;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retry usage should become terminal");
+        assert_eq!(usage.status_code, Some(502));
+        let candidates = request_candidate_repository
+            .list_by_request_id("sync-retry-terminal-request")
+            .await
+            .expect("candidate should read");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].status, RequestCandidateStatus::Failed);
+        assert_eq!(candidates[0].status_code, Some(502));
     }
 
     #[tokio::test]

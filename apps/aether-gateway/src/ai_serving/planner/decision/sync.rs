@@ -206,12 +206,13 @@ async fn maybe_build_local_video_task_follow_up_sync_decision_payload(
     let Some(auth_context) = auth_context else {
         return Ok(None);
     };
+    let request_id = crate::execution_identity::execution_request_id_from_parts(parts, trace_id);
     let Some(follow_up) = state.video_tasks.prepare_follow_up_sync_plan(
         plan_kind,
         parts.uri.path(),
         Some(body_json),
         Some(&auth_context),
-        trace_id,
+        request_id,
     ) else {
         return Ok(None);
     };
@@ -227,7 +228,7 @@ async fn maybe_build_local_video_task_follow_up_sync_decision_payload(
         event_name = "local_video_follow_up_sync_decision_payload_built",
         log_type = "debug",
         trace_id = %trace_id,
-        request_id = %trace_id,
+        request_id = %request_id,
         candidate_id = ?plan.candidate_id,
         provider_id = %plan.provider_id,
         endpoint_id = %plan.endpoint_id,
@@ -245,7 +246,7 @@ async fn maybe_build_local_video_task_follow_up_sync_decision_payload(
         AiExecutionDecisionFromPlanParts {
             action: EXECUTION_RUNTIME_SYNC_DECISION_ACTION.to_string(),
             decision_kind: Some(plan_kind.to_string()),
-            request_id: Some(trace_id.to_string()),
+            request_id: Some(request_id.to_string()),
             upstream_base_url,
             include_auth_pair: true,
             plan,

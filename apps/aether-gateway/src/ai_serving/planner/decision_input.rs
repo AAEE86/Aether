@@ -37,6 +37,18 @@ const ROUTING_GROUP_SELECTION_CACHE_STALE_TTL: Duration = Duration::from_secs(12
 const CODEX_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const CODEX_FEDRAMP_HEADER: &str = "x-openai-fedramp";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoutingPolicyReadMode {
+    Cached,
+    Strong,
+}
+
+impl RoutingPolicyReadMode {
+    fn is_strong(self) -> bool {
+        matches!(self, Self::Strong)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedLocalDecisionAuthInput {
     pub(crate) auth_context: ExecutionRuntimeAuthContext,
@@ -47,6 +59,9 @@ pub(crate) struct ResolvedLocalDecisionAuthInput {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalRequestedModelDecisionInput {
+    /// Server-owned identity shared by candidate persistence, execution plans,
+    /// usage, and reservations for this logical request.
+    pub(crate) request_id: String,
     pub(crate) auth_context: ExecutionRuntimeAuthContext,
     pub(crate) requested_model: String,
     pub(crate) auth_snapshot: GatewayAuthApiKeySnapshot,
@@ -373,8 +388,10 @@ impl AiAuthenticatedDecisionInputPort for GatewayAuthenticatedDecisionInputPort<
 pub(crate) fn build_local_requested_model_decision_input(
     resolved_input: ResolvedLocalDecisionAuthInput,
     requested_model: String,
+    request_id: String,
 ) -> LocalRequestedModelDecisionInput {
     LocalRequestedModelDecisionInput {
+        request_id,
         auth_context: resolved_input.auth_context,
         requested_model,
         auth_snapshot: resolved_input.auth_snapshot,
@@ -397,8 +414,53 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
     body_json: &Value,
     client_api_format: &str,
 ) -> Result<(), GatewayError> {
+    attach_routing_policy_to_local_requested_model_input_inner(
+        state,
+        parts,
+        input,
+        body_json,
+        client_api_format,
+        RoutingPolicyReadMode::Cached,
+    )
+    .await
+}
+
+/// Resolves routing directly from the backing repositories. This is reserved
+/// for continuation authorization, where accepting a stale group or binding
+/// would keep an already-open provider socket usable after revocation.
+pub(crate) async fn attach_routing_policy_to_local_requested_model_input_strong(
+    state: &AppState,
+    parts: &http::request::Parts,
+    input: &mut LocalRequestedModelDecisionInput,
+    body_json: &Value,
+    client_api_format: &str,
+) -> Result<(), GatewayError> {
+    attach_routing_policy_to_local_requested_model_input_inner(
+        state,
+        parts,
+        input,
+        body_json,
+        client_api_format,
+        RoutingPolicyReadMode::Strong,
+    )
+    .await
+}
+
+async fn attach_routing_policy_to_local_requested_model_input_inner(
+    state: &AppState,
+    parts: &http::request::Parts,
+    input: &mut LocalRequestedModelDecisionInput,
+    body_json: &Value,
+    client_api_format: &str,
+    read_mode: RoutingPolicyReadMode,
+) -> Result<(), GatewayError> {
     let explicit_group = routing_header_value_str(&parts.headers, ROUTING_GROUP_HEADER);
-    let selected_group = match state.routing_group_read_repository() {
+    let repository = if read_mode.is_strong() {
+        state.routing_group_read_repository_strong()?
+    } else {
+        state.routing_group_read_repository()
+    };
+    let selected_group = match repository {
         Some(repository) => {
             // Explicit non-default groups are authorized against principal
             // bindings, so both selection and its cache key must retain the
@@ -418,9 +480,15 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
             };
             let user_group_ids = if principal_context_required {
                 let user_groups_lookup_started_at = std::time::Instant::now();
-                let user_groups = state
-                    .list_user_groups_for_user(&input.auth_context.user_id)
-                    .await;
+                let user_groups = if read_mode.is_strong() {
+                    state
+                        .list_user_groups_for_user_strong(&input.auth_context.user_id)
+                        .await
+                } else {
+                    state
+                        .list_user_groups_for_user(&input.auth_context.user_id)
+                        .await
+                };
                 observe_gateway_stage_ms(
                     "routing_user_groups_lookup",
                     user_groups_lookup_started_at.elapsed().as_millis() as u64,
@@ -436,52 +504,40 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
                 principal_context_required.then(|| input.auth_context.user_id.clone());
             let selection_api_key_id =
                 principal_context_required.then(|| input.auth_context.api_key_id.clone());
-            let selection_cache_key = routing_group_selection_cache_key(
-                explicit_group.as_deref(),
-                selection_user_id.as_deref(),
-                selection_api_key_id.as_deref(),
-                &user_group_ids,
-            );
             let group_selection_started_at = std::time::Instant::now();
-            let selection = state
-                .routing_group_selection_cache
-                .get_or_load_once_stale_while_revalidating(
-                    selection_cache_key,
-                    ROUTING_GROUP_SELECTION_CACHE_TTL,
-                    ROUTING_GROUP_SELECTION_CACHE_STALE_TTL,
-                    || async {
-                        let selection_load_started_at = std::time::Instant::now();
-                        let selection = select_gateway_routing_group(
-                            repository.as_ref(),
-                            GatewayRoutingSelectionInput {
-                                explicit_group: explicit_group.as_deref(),
-                                user_id: selection_user_id.as_deref(),
-                                api_key_id: selection_api_key_id.as_deref(),
-                                user_group_ids: &user_group_ids,
-                            },
-                        )
-                        .await
-                        .map_err(routing_selection_error)?;
-                        observe_gateway_stage_ms(
-                            "routing_group_selection_load",
-                            selection_load_started_at.elapsed().as_millis() as u64,
-                        );
-                        Ok::<_, GatewayError>(Some(selection))
+            let selection = if read_mode.is_strong() {
+                select_gateway_routing_group(
+                    repository.as_ref(),
+                    GatewayRoutingSelectionInput {
+                        explicit_group: explicit_group.as_deref(),
+                        user_id: selection_user_id.as_deref(),
+                        api_key_id: selection_api_key_id.as_deref(),
+                        user_group_ids: &user_group_ids,
                     },
-                    || {
-                        let repository = repository.clone();
-                        let explicit_group = explicit_group.clone();
-                        let user_id = selection_user_id.clone();
-                        let api_key_id = selection_api_key_id.clone();
-                        let user_group_ids = user_group_ids.clone();
-                        async move {
+                )
+                .await
+                .map_err(routing_selection_error)?
+            } else {
+                let selection_cache_key = routing_group_selection_cache_key(
+                    explicit_group.as_deref(),
+                    selection_user_id.as_deref(),
+                    selection_api_key_id.as_deref(),
+                    &user_group_ids,
+                );
+                state
+                    .routing_group_selection_cache
+                    .get_or_load_once_stale_while_revalidating(
+                        selection_cache_key,
+                        ROUTING_GROUP_SELECTION_CACHE_TTL,
+                        ROUTING_GROUP_SELECTION_CACHE_STALE_TTL,
+                        || async {
                             let selection_load_started_at = std::time::Instant::now();
                             let selection = select_gateway_routing_group(
                                 repository.as_ref(),
                                 GatewayRoutingSelectionInput {
                                     explicit_group: explicit_group.as_deref(),
-                                    user_id: user_id.as_deref(),
-                                    api_key_id: api_key_id.as_deref(),
+                                    user_id: selection_user_id.as_deref(),
+                                    api_key_id: selection_api_key_id.as_deref(),
                                     user_group_ids: &user_group_ids,
                                 },
                             )
@@ -492,12 +548,38 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
                                 selection_load_started_at.elapsed().as_millis() as u64,
                             );
                             Ok::<_, GatewayError>(Some(selection))
-                        }
-                    },
-                    CacheLoadObserver::default(),
-                )
-                .await?
-                .unwrap_or_default();
+                        },
+                        || {
+                            let repository = repository.clone();
+                            let explicit_group = explicit_group.clone();
+                            let user_id = selection_user_id.clone();
+                            let api_key_id = selection_api_key_id.clone();
+                            let user_group_ids = user_group_ids.clone();
+                            async move {
+                                let selection_load_started_at = std::time::Instant::now();
+                                let selection = select_gateway_routing_group(
+                                    repository.as_ref(),
+                                    GatewayRoutingSelectionInput {
+                                        explicit_group: explicit_group.as_deref(),
+                                        user_id: user_id.as_deref(),
+                                        api_key_id: api_key_id.as_deref(),
+                                        user_group_ids: &user_group_ids,
+                                    },
+                                )
+                                .await
+                                .map_err(routing_selection_error)?;
+                                observe_gateway_stage_ms(
+                                    "routing_group_selection_load",
+                                    selection_load_started_at.elapsed().as_millis() as u64,
+                                );
+                                Ok::<_, GatewayError>(Some(selection))
+                            }
+                        },
+                        CacheLoadObserver::default(),
+                    )
+                    .await?
+                    .unwrap_or_default()
+            };
             observe_gateway_stage_ms(
                 "routing_group_selection",
                 group_selection_started_at.elapsed().as_millis() as u64,
@@ -730,6 +812,45 @@ pub(crate) async fn resolve_local_authenticated_decision_input(
         explicit_required_capabilities,
     )
     .await
+}
+
+/// Builds local planner auth input from a caller-owned strong snapshot.
+///
+/// Long-lived transports use this after an uncached per-turn authorization
+/// refresh so planning cannot silently fall back to an older cached allow
+/// snapshot for provider, format, model, or concurrency policy.
+pub(crate) async fn resolve_local_authenticated_decision_input_with_snapshot(
+    state: &AppState,
+    auth_context: ExecutionRuntimeAuthContext,
+    auth_snapshot: GatewayAuthApiKeySnapshot,
+    requested_model: Option<&str>,
+    requested_model_api_format: Option<&str>,
+    explicit_required_capabilities: Option<&serde_json::Value>,
+    model_directive_policy: &crate::system_features::ModelDirectivePolicySnapshot,
+) -> ResolvedLocalDecisionAuthInput {
+    let model_directive_base_model = match (requested_model, requested_model_api_format) {
+        (Some(model), Some(api_format)) => model_directive_policy
+            .resolve_reasoning(api_format, Some(model))
+            .base_model()
+            .map(str::to_owned),
+        _ => None,
+    };
+    let required_capabilities = PlannerAppState::new(state)
+        .resolve_request_candidate_required_capabilities(
+            &auth_context.user_id,
+            &auth_context.api_key_id,
+            requested_model,
+            explicit_required_capabilities,
+            model_directive_base_model.as_deref(),
+        )
+        .await;
+
+    ResolvedLocalDecisionAuthInput {
+        auth_context,
+        auth_snapshot,
+        required_capabilities,
+        model_directive_policy: model_directive_policy.clone(),
+    }
 }
 
 fn routing_selection_error(error: GatewayRoutingSelectionError) -> GatewayError {
@@ -1146,6 +1267,7 @@ mod tests {
 
     fn sample_decision_input() -> LocalRequestedModelDecisionInput {
         LocalRequestedModelDecisionInput {
+            request_id: "request-1".to_string(),
             auth_context: sample_auth_context(),
             requested_model: "gpt-5".to_string(),
             auth_snapshot: sample_auth_snapshot(),
@@ -1343,6 +1465,7 @@ mod tests {
             .expect("request should build");
         let (parts, _) = request.into_parts();
         let mut input = LocalRequestedModelDecisionInput {
+            request_id: "request-1".to_string(),
             auth_context: sample_auth_context(),
             requested_model: "mock-model".to_string(),
             auth_snapshot: sample_auth_snapshot(),
@@ -1412,6 +1535,7 @@ mod tests {
             .expect("request should build");
         let (parts, _) = request.into_parts();
         let mut input = LocalRequestedModelDecisionInput {
+            request_id: "request-1".to_string(),
             auth_context: sample_auth_context(),
             requested_model: "mock-model".to_string(),
             auth_snapshot: sample_auth_snapshot(),

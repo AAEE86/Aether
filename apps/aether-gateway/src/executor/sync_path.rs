@@ -325,10 +325,11 @@ async fn maybe_build_local_video_task_read_response(
         .hydrate_video_task_for_route(decision.route_family.as_deref(), parts.uri.path())
         .await?;
 
+    let request_id = crate::execution_identity::execution_request_id_from_parts(parts, trace_id);
     let refresh_plan = state.video_tasks.prepare_read_refresh_sync_plan(
         decision.route_family.as_deref(),
         parts.uri.path(),
-        trace_id,
+        request_id,
     );
 
     if let Some(refresh_plan) = refresh_plan {
@@ -401,12 +402,13 @@ async fn maybe_execute_local_video_task_follow_up_sync(
         trace_id,
     )
     .await?;
+    let request_id = crate::execution_identity::execution_request_id_from_parts(parts, trace_id);
     let Some(follow_up) = state.video_tasks.prepare_follow_up_sync_plan(
         plan_kind,
         parts.uri.path(),
         Some(body_json),
         auth_context.as_ref(),
-        trace_id,
+        request_id,
     ) else {
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };

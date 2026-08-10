@@ -467,6 +467,19 @@ pub trait RequestCandidateReadRepository: Send + Sync {
         limit: usize,
     ) -> Result<Vec<StoredRequestCandidate>, crate::DataLayerError>;
 
+    /// Lists recent runtime observations matching any of the supplied scheduling scopes.
+    ///
+    /// This query is intentionally unbounded: concurrency and RPM enforcement must not lose
+    /// matching observations merely because unrelated traffic is newer. Callers are responsible
+    /// for supplying a narrow time window and only the scopes with active runtime limits.
+    async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, crate::DataLayerError>;
+
     async fn list_by_provider_id(
         &self,
         provider_id: &str,

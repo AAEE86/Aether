@@ -26,7 +26,8 @@ mod transport_failure;
 mod windsurf;
 
 pub(crate) use self::admission::{
-    acquire_upstream_execution_gate, UpstreamExecutionGateProvider, UPSTREAM_EXECUTION_GATE_NAME,
+    acquire_upstream_execution_gate, build_execution_reservation_rejection_response,
+    UpstreamExecutionGateProvider, UPSTREAM_EXECUTION_GATE_NAME,
 };
 pub(crate) use self::chatgpt_web_image::maybe_execute_chatgpt_web_image_sync;
 pub(crate) use self::constants::{
@@ -140,8 +141,10 @@ pub(crate) use transport::{
     DirectUpstreamStreamExecution, ExecutionRuntimeTransportError,
 };
 pub(crate) use transport_failure::{
-    build_transport_error_stop_response, mark_stream_candidate_watchdog_terminal_started,
-    StreamCandidateWatchdogProgress,
+    build_transport_error_response, build_transport_error_stop_response,
+    current_stream_candidate_watchdog_progress, mark_stream_candidate_watchdog_terminal_started,
+    StreamCandidateCancellationCause, StreamCandidateWatchdogProgress,
+    STREAM_CANDIDATE_WATCHDOG_TIMEOUT_ERROR_TYPE, STREAM_CANDIDATE_WATCHDOG_TIMEOUT_MESSAGE,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

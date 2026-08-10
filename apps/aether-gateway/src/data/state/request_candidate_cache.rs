@@ -95,6 +95,18 @@ impl RequestCandidateReadRepository for CachedRequestCandidateReadRepository {
         Ok(rows)
     }
 
+    async fn list_runtime_scoped_since(
+        &self,
+        provider_ids: &[String],
+        key_ids: &[String],
+        api_key_ids: &[String],
+        since_unix_secs: u64,
+    ) -> Result<Vec<StoredRequestCandidate>, aether_data::DataLayerError> {
+        self.inner
+            .list_runtime_scoped_since(provider_ids, key_ids, api_key_ids, since_unix_secs)
+            .await
+    }
+
     async fn list_by_provider_id(
         &self,
         provider_id: &str,

@@ -354,6 +354,7 @@ fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<St
     copy_non_empty_string(source, target, "request_path");
     copy_non_empty_string(source, target, "request_query_string");
     copy_non_empty_string(source, target, "request_path_and_query");
+    copy_non_empty_string(source, target, "parent_request_id");
     copy_non_empty_string(source, target, REQUESTED_REASONING_EFFORT_METADATA_KEY);
     copy_non_empty_string(source, target, PROVIDER_REASONING_EFFORT_METADATA_KEY);
     copy_non_empty_string(source, target, PROVIDER_SERVICE_TIER_METADATA_KEY);
@@ -410,6 +411,7 @@ fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map
     remove_non_empty_string(&mut source, target, "request_path");
     remove_non_empty_string(&mut source, target, "request_query_string");
     remove_non_empty_string(&mut source, target, "request_path_and_query");
+    remove_non_empty_string(&mut source, target, "parent_request_id");
     remove_non_empty_string(&mut source, target, REQUESTED_REASONING_EFFORT_METADATA_KEY);
     remove_non_empty_string(&mut source, target, PROVIDER_REASONING_EFFORT_METADATA_KEY);
     remove_non_empty_string(&mut source, target, PROVIDER_SERVICE_TIER_METADATA_KEY);
@@ -790,6 +792,7 @@ mod tests {
             "model": "gpt-5",
             "candidate_index": 2,
             "trace_id": "trace-1",
+            "parent_request_id": "req-parent-1",
             "client_ip": "203.0.113.8",
             "user_agent": "Claude-Code/1.0",
             "client_requested_stream": false,
@@ -841,6 +844,7 @@ mod tests {
             metadata,
             json!({
                 "trace_id": "trace-1",
+                "parent_request_id": "req-parent-1",
                 "client_ip": "203.0.113.8",
                 "user_agent": "Claude-Code/1.0",
                 "client_requested_stream": false,
@@ -1024,6 +1028,7 @@ mod tests {
                 json!({
                     "request_id": "req-1",
                     "candidate_index": 0,
+                    "parent_request_id": "req-parent-1",
                     "client_requested_stream": false,
                     "upstream_is_stream": true,
                     "api_key_is_standalone": true,
@@ -1062,6 +1067,7 @@ mod tests {
             metadata,
             json!({
                 "client_requested_stream": false,
+                "parent_request_id": "req-parent-1",
                 "upstream_is_stream": true,
                 "api_key_is_standalone": true,
                 "end_to_end_time_ms": 10626,

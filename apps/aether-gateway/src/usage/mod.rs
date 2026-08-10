@@ -11,6 +11,7 @@ pub(crate) use aether_usage_runtime::{
 };
 pub(crate) use aether_usage_runtime::{UsageQueueHealthSnapshot, UsageRuntimeMetricsSnapshot};
 pub(crate) use reporting::{
-    spawn_sync_report, submit_stream_report, submit_sync_report, GatewayStreamReportRequest,
-    GatewaySyncReportRequest,
+    spawn_sync_report, spawn_sync_report_effects_only, submit_stream_report,
+    submit_stream_report_effects_only, submit_sync_report, submit_sync_report_effects_only,
+    GatewayStreamReportRequest, GatewaySyncReportRequest,
 };

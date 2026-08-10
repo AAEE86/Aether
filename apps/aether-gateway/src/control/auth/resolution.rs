@@ -84,6 +84,8 @@ pub(crate) struct GatewayControlAuthContext {
     #[serde(skip)]
     pub(crate) api_key_rate_limit: Option<i32>,
     #[serde(skip)]
+    pub(crate) api_key_concurrent_limit: Option<i32>,
+    #[serde(skip)]
     pub(crate) api_key_is_standalone: bool,
     #[serde(skip)]
     pub(crate) admin_bypass_limits: bool,
@@ -725,20 +727,40 @@ pub(crate) async fn refresh_execution_runtime_auth_context(
     auth_context: GatewayControlAuthContext,
     auth_endpoint_signature: Option<&str>,
 ) -> Result<GatewayControlAuthContext, GatewayError> {
+    Ok(refresh_execution_runtime_auth_context_with_snapshot(
+        state,
+        auth_context,
+        auth_endpoint_signature,
+    )
+    .await?
+    .0)
+}
+
+pub(crate) async fn refresh_execution_runtime_auth_context_with_snapshot(
+    state: &AppState,
+    auth_context: GatewayControlAuthContext,
+    auth_endpoint_signature: Option<&str>,
+) -> Result<
+    (
+        GatewayControlAuthContext,
+        Option<crate::data::auth::GatewayAuthApiKeySnapshot>,
+    ),
+    GatewayError,
+> {
     if auth_context.local_rejection.is_some() || !auth_context.access_allowed {
-        return Ok(auth_context);
+        return Ok((auth_context, None));
     }
     let Some(auth_endpoint_signature) = auth_endpoint_signature
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return Ok(auth_context);
+        return Ok((auth_context, None));
     };
     if !state.has_auth_api_key_reader()
         || auth_context.user_id.trim().is_empty()
         || auth_context.api_key_id.trim().is_empty()
     {
-        return Ok(auth_context);
+        return Ok((auth_context, None));
     }
 
     let snapshot = {
@@ -758,19 +780,20 @@ pub(crate) async fn refresh_execution_runtime_auth_context(
         denied.access_allowed = false;
         denied.local_rejection = Some(GatewayLocalAuthRejection::InvalidApiKey);
         denied.balance_remaining = None;
-        return Ok(denied);
+        return Ok((denied, None));
     };
 
     let wallet_access = resolve_wallet_auth_gate_uncached(state, &snapshot).await?;
-    Ok(build_data_backed_auth_context(
+    let refreshed = build_data_backed_auth_context(
         state,
-        snapshot,
+        snapshot.clone(),
         auth_endpoint_signature,
         Some(true),
         auth_context.balance_remaining,
         wallet_access,
     )
-    .await)
+    .await;
+    Ok((refreshed, Some(snapshot)))
 }
 
 fn put_cached_auth_context(
@@ -922,6 +945,7 @@ pub(super) async fn resolve_data_backed_auth_context(
                     access_allowed: false,
                     user_rate_limit: None,
                     api_key_rate_limit: None,
+                    api_key_concurrent_limit: None,
                     api_key_is_standalone: false,
                     admin_bypass_limits: false,
                     local_rejection: Some(GatewayLocalAuthRejection::InvalidApiKey),
@@ -1035,6 +1059,7 @@ async fn resolve_antigravity_bearer_bridge_auth_context(
             access_allowed: false,
             user_rate_limit: None,
             api_key_rate_limit: None,
+            api_key_concurrent_limit: None,
             api_key_is_standalone: false,
             admin_bypass_limits: false,
             local_rejection: Some(GatewayLocalAuthRejection::InvalidApiKey),
@@ -1094,6 +1119,7 @@ async fn resolve_trusted_auth_context(
             access_allowed: false,
             user_rate_limit: None,
             api_key_rate_limit: None,
+            api_key_concurrent_limit: None,
             api_key_is_standalone: false,
             admin_bypass_limits: false,
             local_rejection: Some(GatewayLocalAuthRejection::InvalidApiKey),
@@ -1191,6 +1217,7 @@ async fn build_data_backed_auth_context(
         access_allowed: key_access_allowed && local_rejection.is_none(),
         user_rate_limit: snapshot.user_rate_limit,
         api_key_rate_limit: snapshot.api_key_rate_limit,
+        api_key_concurrent_limit: snapshot.api_key_concurrent_limit,
         api_key_is_standalone: snapshot.api_key_is_standalone,
         admin_bypass_limits: snapshot.user_role.eq_ignore_ascii_case("admin")
             && !snapshot.api_key_is_standalone,

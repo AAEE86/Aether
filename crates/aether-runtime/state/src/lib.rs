@@ -2,7 +2,7 @@ mod error;
 mod memory;
 pub mod redis;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,6 +27,9 @@ const DEFAULT_KV_TTL_SECONDS: u64 = 300;
 // lease TTL, so fail-closed fencing still has ample time to stop a stale holder.
 const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_STREAM_BLOCK_TIMEOUT_GRACE_MS: u64 = 1_000;
+const EXECUTION_RESERVATION_LEASE_TTL_MS: u64 = 30_000;
+const EXECUTION_RESERVATION_RENEW_INTERVAL_MS: u64 = 10_000;
+const EXECUTION_RESERVATION_RPM_WINDOW_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeStateBackendMode {
@@ -718,6 +721,436 @@ impl RuntimeState {
         config: RuntimeSemaphoreConfig,
     ) -> Result<RuntimeSemaphore, RuntimeSemaphoreError> {
         RuntimeSemaphore::new(self.clone(), gate, limit, config)
+    }
+
+    /// Atomically reserves all configured execution concurrency and RPM scopes.
+    ///
+    /// Persistent observations and live runtime reservations are de-duplicated by candidate ID.
+    /// Dropping the returned permit releases concurrency reservations; an RPM consumption remains
+    /// until it leaves the rolling window or is hidden by the supplied reset watermark.
+    pub async fn try_acquire_execution_reservation(
+        &self,
+        input: ExecutionReservationInput,
+    ) -> Result<ExecutionReservationPermit, ExecutionReservationError> {
+        input.validate()?;
+
+        let concurrency_keys = input.concurrency_runtime_keys();
+        self.try_acquire_execution_reservation_input(&input).await?;
+        let provider_key_rpm = input.provider_key_rpm.map(|mut reservation| {
+            let observed_candidate_ids = reservation
+                .observed_candidate_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            reservation.observed_count_floor = reservation
+                .observed_count_floor
+                .max(observed_candidate_ids.len())
+                .saturating_add(usize::from(
+                    !observed_candidate_ids.contains(input.candidate_id.as_str()),
+                ));
+            reservation
+        });
+
+        let healthy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let renew_task = if concurrency_keys.is_empty() {
+            None
+        } else {
+            let runtime = self.clone();
+            let candidate_id = input.candidate_id.clone();
+            let renew_keys = concurrency_keys.clone();
+            let renew_health = Arc::clone(&healthy);
+            Some(tokio::spawn(async move {
+                let interval = Duration::from_millis(EXECUTION_RESERVATION_RENEW_INTERVAL_MS);
+                loop {
+                    tokio::time::sleep(interval).await;
+                    if let Err(err) = runtime
+                        .renew_execution_reservation(&renew_keys, &candidate_id)
+                        .await
+                    {
+                        renew_health.store(false, Ordering::Release);
+                        warn!(
+                            candidate_id,
+                            error = %err,
+                            "failed to renew execution reservation"
+                        );
+                        break;
+                    }
+                }
+            }))
+        };
+
+        Ok(ExecutionReservationPermit {
+            runtime: self.clone(),
+            candidate_id: input.candidate_id,
+            concurrency_keys,
+            provider_key_rpm,
+            additional_rpm_attempt_sequence: 0,
+            renew_task,
+            healthy,
+        })
+    }
+
+    async fn try_acquire_execution_reservation_input(
+        &self,
+        input: &ExecutionReservationInput,
+    ) -> Result<(), ExecutionReservationError> {
+        let result = match self.backend.as_ref() {
+            RuntimeStateBackend::Memory(memory) => {
+                memory
+                    .execution_reservation_try_acquire(
+                        input,
+                        EXECUTION_RESERVATION_LEASE_TTL_MS,
+                        EXECUTION_RESERVATION_RPM_WINDOW_SECS,
+                    )
+                    .await
+            }
+            RuntimeStateBackend::Redis(redis) => redis
+                .runtime
+                .execution_reservation_try_acquire(
+                    input,
+                    EXECUTION_RESERVATION_LEASE_TTL_MS,
+                    EXECUTION_RESERVATION_RPM_WINDOW_SECS,
+                )
+                .await
+                .map_err(|err| ExecutionReservationError::Unavailable {
+                    message: format!("acquire failed: {err}"),
+                })?,
+        };
+        if let Some((scope, limit)) = result {
+            return Err(ExecutionReservationError::Rejected { scope, limit });
+        }
+        Ok(())
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        concurrency_keys: &[String],
+        candidate_id: &str,
+    ) -> Result<(), ExecutionReservationError> {
+        let renewed = match self.backend.as_ref() {
+            RuntimeStateBackend::Memory(memory) => {
+                memory
+                    .execution_reservation_renew(
+                        concurrency_keys,
+                        candidate_id,
+                        EXECUTION_RESERVATION_LEASE_TTL_MS,
+                    )
+                    .await
+            }
+            RuntimeStateBackend::Redis(redis) => redis
+                .runtime
+                .execution_reservation_renew(
+                    concurrency_keys,
+                    candidate_id,
+                    EXECUTION_RESERVATION_LEASE_TTL_MS,
+                )
+                .await
+                .map_err(|err| ExecutionReservationError::Unavailable {
+                    message: format!("renew failed: {err}"),
+                })?,
+        };
+        if renewed {
+            Ok(())
+        } else {
+            Err(ExecutionReservationError::Unavailable {
+                message: "one or more execution reservation leases expired".to_string(),
+            })
+        }
+    }
+
+    async fn release_execution_reservation(
+        &self,
+        concurrency_keys: &[String],
+        candidate_id: &str,
+    ) -> Result<(), ExecutionReservationError> {
+        match self.backend.as_ref() {
+            RuntimeStateBackend::Memory(memory) => {
+                memory
+                    .execution_reservation_release(concurrency_keys, candidate_id)
+                    .await;
+                Ok(())
+            }
+            RuntimeStateBackend::Redis(redis) => redis
+                .runtime
+                .execution_reservation_release(concurrency_keys, candidate_id)
+                .await
+                .map_err(|err| ExecutionReservationError::Unavailable {
+                    message: format!("release failed: {err}"),
+                }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionReservationScope {
+    Provider,
+    ProviderKey,
+    ApiKey,
+    ProviderKeyRpm,
+}
+
+impl ExecutionReservationScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Provider => "provider",
+            Self::ProviderKey => "provider_key",
+            Self::ApiKey => "api_key",
+            Self::ProviderKeyRpm => "provider_key_rpm",
+        }
+    }
+
+    const fn redis_code(self) -> i64 {
+        match self {
+            Self::Provider => 1,
+            Self::ProviderKey => 2,
+            Self::ApiKey => 3,
+            Self::ProviderKeyRpm => 4,
+        }
+    }
+
+    fn from_redis_code(value: i64) -> Self {
+        match value {
+            2 => Self::ProviderKey,
+            3 => Self::ApiKey,
+            4 => Self::ProviderKeyRpm,
+            _ => Self::Provider,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionConcurrencyReservation {
+    pub key: String,
+    pub limit: usize,
+    pub observed_candidate_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionRpmReservation {
+    pub key: String,
+    pub limit: usize,
+    pub observed_candidate_ids: Vec<String>,
+    pub observed_count_floor: usize,
+    pub reset_after_unix_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionReservationInput {
+    pub candidate_id: String,
+    pub provider: Option<ExecutionConcurrencyReservation>,
+    pub provider_key: Option<ExecutionConcurrencyReservation>,
+    pub api_key: Option<ExecutionConcurrencyReservation>,
+    pub provider_key_rpm: Option<ExecutionRpmReservation>,
+}
+
+impl ExecutionReservationInput {
+    fn validate(&self) -> Result<(), ExecutionReservationError> {
+        if self.candidate_id.trim().is_empty() {
+            return Err(ExecutionReservationError::InvalidConfiguration(
+                "execution reservation candidate_id cannot be empty".to_string(),
+            ));
+        }
+        if self.provider.is_none()
+            && self.provider_key.is_none()
+            && self.api_key.is_none()
+            && self.provider_key_rpm.is_none()
+        {
+            return Err(ExecutionReservationError::InvalidConfiguration(
+                "execution reservation requires at least one scope".to_string(),
+            ));
+        }
+        for (scope, reservation) in self.configured_concurrency_scopes() {
+            if reservation.limit == 0 {
+                return Err(ExecutionReservationError::InvalidConfiguration(format!(
+                    "execution reservation {} limit must be positive",
+                    scope.as_str()
+                )));
+            }
+        }
+        for (scope, key) in self
+            .concurrency_scopes()
+            .map(|(scope, reservation)| (scope, reservation.key.as_str()))
+            .chain(self.provider_key_rpm.iter().map(|reservation| {
+                (
+                    ExecutionReservationScope::ProviderKeyRpm,
+                    reservation.key.as_str(),
+                )
+            }))
+        {
+            if key.trim().is_empty() {
+                return Err(ExecutionReservationError::InvalidConfiguration(format!(
+                    "execution reservation {} key cannot be empty",
+                    scope.as_str()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn concurrency_scopes(
+        &self,
+    ) -> impl Iterator<Item = (ExecutionReservationScope, &ExecutionConcurrencyReservation)> {
+        self.configured_concurrency_scopes()
+            .filter(|(_, reservation)| reservation.limit > 0)
+    }
+
+    fn configured_concurrency_scopes(
+        &self,
+    ) -> impl Iterator<Item = (ExecutionReservationScope, &ExecutionConcurrencyReservation)> {
+        [
+            (ExecutionReservationScope::Provider, self.provider.as_ref()),
+            (
+                ExecutionReservationScope::ProviderKey,
+                self.provider_key.as_ref(),
+            ),
+            (ExecutionReservationScope::ApiKey, self.api_key.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(scope, reservation)| reservation.map(|reservation| (scope, reservation)))
+    }
+
+    fn concurrency_runtime_keys(&self) -> Vec<String> {
+        self.concurrency_scopes()
+            .map(|(scope, reservation)| execution_reservation_runtime_key(scope, &reservation.key))
+            .collect()
+    }
+}
+
+fn execution_reservation_runtime_key(scope: ExecutionReservationScope, key: &str) -> String {
+    format!("execution-reservation:{}:{key}", scope.as_str())
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ExecutionReservationError {
+    #[error("execution reservation {scope:?} is saturated at {limit}")]
+    Rejected {
+        scope: ExecutionReservationScope,
+        limit: usize,
+    },
+    #[error("execution reservation is unavailable: {message}")]
+    Unavailable { message: String },
+    #[error("{0}")]
+    InvalidConfiguration(String),
+}
+
+#[derive(Debug)]
+pub struct ExecutionReservationPermit {
+    runtime: RuntimeState,
+    candidate_id: String,
+    concurrency_keys: Vec<String>,
+    provider_key_rpm: Option<ExecutionRpmReservation>,
+    additional_rpm_attempt_sequence: u64,
+    renew_task: Option<JoinHandle<()>>,
+    healthy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutionReservationHealth {
+    healthy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ExecutionReservationHealth {
+    pub fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
+    }
+}
+
+impl aether_runtime::AdmissionPermitHealth for ExecutionReservationHealth {
+    fn is_healthy(&self) -> bool {
+        self.is_healthy()
+    }
+}
+
+impl ExecutionReservationPermit {
+    pub fn health_handle(&self) -> ExecutionReservationHealth {
+        ExecutionReservationHealth {
+            healthy: Arc::clone(&self.healthy),
+        }
+    }
+
+    /// Atomically consumes provider-key RPM for another upstream attempt made by this permit.
+    ///
+    /// The additional attempt gets its own runtime member and does not acquire the concurrency
+    /// scopes again. A rejected consumption has no runtime side effects and does not advance the
+    /// attempt sequence, so the caller may retry after the rolling window changes.
+    pub async fn consume_additional_rpm_attempt(
+        &mut self,
+    ) -> Result<(), ExecutionReservationError> {
+        let Some(provider_key_rpm) = self.provider_key_rpm.clone() else {
+            return Ok(());
+        };
+        let sequence = self
+            .additional_rpm_attempt_sequence
+            .checked_add(1)
+            .ok_or_else(|| ExecutionReservationError::Unavailable {
+                message: "additional RPM attempt sequence exhausted".to_string(),
+            })?;
+        let input = ExecutionReservationInput {
+            candidate_id: format!("{}:attempt:{sequence}", self.candidate_id),
+            provider: None,
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: Some(provider_key_rpm),
+        };
+        input.validate()?;
+        self.runtime
+            .try_acquire_execution_reservation_input(&input)
+            .await?;
+        self.additional_rpm_attempt_sequence = sequence;
+        if let Some(provider_key_rpm) = self.provider_key_rpm.as_mut() {
+            provider_key_rpm.observed_count_floor =
+                provider_key_rpm.observed_count_floor.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Releases concurrency scopes synchronously. RPM consumption is intentionally retained.
+    pub async fn release(mut self) -> Result<(), ExecutionReservationError> {
+        if let Some(renew_task) = self.renew_task.take() {
+            renew_task.abort();
+        }
+        if self.concurrency_keys.is_empty() {
+            return Ok(());
+        }
+        self.runtime
+            .release_execution_reservation(&self.concurrency_keys, &self.candidate_id)
+            .await?;
+        self.concurrency_keys.clear();
+        Ok(())
+    }
+}
+
+impl aether_runtime::AdmissionPermitHealth for ExecutionReservationPermit {
+    fn is_healthy(&self) -> bool {
+        self.health_handle().is_healthy()
+    }
+}
+
+impl Drop for ExecutionReservationPermit {
+    fn drop(&mut self) {
+        if let Some(renew_task) = self.renew_task.take() {
+            renew_task.abort();
+        }
+        if self.concurrency_keys.is_empty() {
+            return;
+        }
+        let runtime = self.runtime.clone();
+        let candidate_id = self.candidate_id.clone();
+        let concurrency_keys = self.concurrency_keys.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(err) = runtime
+                    .release_execution_reservation(&concurrency_keys, &candidate_id)
+                    .await
+                {
+                    warn!(
+                        candidate_id,
+                        error = %err,
+                        "failed to release execution reservation"
+                    );
+                }
+            });
+        }
     }
 }
 
@@ -1574,6 +2007,385 @@ mod tests {
         );
     }
 
+    fn execution_reservation_input(candidate_id: &str) -> ExecutionReservationInput {
+        ExecutionReservationInput {
+            candidate_id: candidate_id.to_string(),
+            provider: Some(ExecutionConcurrencyReservation {
+                key: "provider-1".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+            }),
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_execution_reservation_serializes_concurrent_limit_one() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let (first, second) = tokio::join!(
+            runtime.try_acquire_execution_reservation(execution_reservation_input("candidate-1")),
+            runtime.try_acquire_execution_reservation(execution_reservation_input("candidate-2")),
+        );
+        let acquired = usize::from(first.is_ok()) + usize::from(second.is_ok());
+        assert_eq!(acquired, 1);
+        let rejected = first.err().or_else(|| second.err()).expect("one rejection");
+        assert_eq!(
+            rejected,
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::Provider,
+                limit: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_reservation_health_handle_tracks_permit_health() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let permit = runtime
+            .try_acquire_execution_reservation(execution_reservation_input("candidate-health"))
+            .await
+            .expect("execution reservation");
+        let health = permit.health_handle();
+
+        assert!(health.is_healthy());
+        assert!(aether_runtime::AdmissionPermitHealth::is_healthy(&permit));
+        permit.healthy.store(false, Ordering::Release);
+        assert!(!health.is_healthy());
+        assert!(!aether_runtime::AdmissionPermitHealth::is_healthy(&permit));
+    }
+
+    #[tokio::test]
+    async fn memory_execution_reservation_unions_observed_and_live_without_double_counting() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let permit = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                provider: Some(ExecutionConcurrencyReservation {
+                    key: "provider-1".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: vec!["candidate-1".to_string()],
+                }),
+                ..execution_reservation_input("candidate-1")
+            })
+            .await
+            .expect("the same observed candidate must not consume twice");
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn memory_execution_reservation_rejection_has_no_partial_side_effects() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let blocker = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                provider: None,
+                provider_key: Some(ExecutionConcurrencyReservation {
+                    key: "provider-key-1".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                ..execution_reservation_input("blocker")
+            })
+            .await
+            .expect("blocker");
+
+        let rejected = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                provider: Some(ExecutionConcurrencyReservation {
+                    key: "provider-1".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                provider_key: Some(ExecutionConcurrencyReservation {
+                    key: "provider-key-1".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                ..execution_reservation_input("rejected")
+            })
+            .await;
+        assert!(matches!(
+            rejected,
+            Err(ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKey,
+                ..
+            })
+        ));
+
+        let provider_permit = runtime
+            .try_acquire_execution_reservation(execution_reservation_input("accepted"))
+            .await
+            .expect("provider scope must remain untouched after later-scope rejection");
+        drop(provider_permit);
+        drop(blocker);
+    }
+
+    #[tokio::test]
+    async fn memory_execution_rpm_consumption_survives_permit_drop() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let rpm_input = |candidate_id: &str| ExecutionReservationInput {
+            candidate_id: candidate_id.to_string(),
+            provider: None,
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: Some(ExecutionRpmReservation {
+                key: "provider-key-1".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+                observed_count_floor: 0,
+                reset_after_unix_secs: None,
+            }),
+        };
+        let permit = runtime
+            .try_acquire_execution_reservation(rpm_input("candidate-1"))
+            .await
+            .expect("first RPM consumption");
+        drop(permit);
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            runtime
+                .try_acquire_execution_reservation(rpm_input("candidate-2"))
+                .await
+                .expect_err("dropping permit must not refund RPM"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_execution_reservation_consumes_additional_rpm_without_reacquiring_concurrency()
+    {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let mut permit = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                candidate_id: "candidate-retry".to_string(),
+                provider: Some(ExecutionConcurrencyReservation {
+                    key: "provider-retry".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: Some(ExecutionRpmReservation {
+                    key: "provider-key-retry".to_string(),
+                    limit: 2,
+                    observed_candidate_ids: Vec::new(),
+                    observed_count_floor: 0,
+                    reset_after_unix_secs: None,
+                }),
+            })
+            .await
+            .expect("first upstream attempt");
+
+        permit
+            .consume_additional_rpm_attempt()
+            .await
+            .expect("second upstream attempt");
+        assert_eq!(
+            permit
+                .consume_additional_rpm_attempt()
+                .await
+                .expect_err("third upstream attempt must exceed RPM"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 2,
+            }
+        );
+        assert_eq!(
+            permit.additional_rpm_attempt_sequence, 1,
+            "a rejected attempt must not advance the member sequence"
+        );
+
+        permit.release().await.expect("release concurrency");
+        let concurrency_only = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                candidate_id: "candidate-after-release".to_string(),
+                provider: Some(ExecutionConcurrencyReservation {
+                    key: "provider-retry".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: None,
+            })
+            .await
+            .expect("additional RPM attempts must not leave another concurrency holder");
+        concurrency_only
+            .release()
+            .await
+            .expect("release concurrency-only permit");
+    }
+
+    #[tokio::test]
+    async fn memory_additional_rpm_attempt_respects_observed_floor_and_is_a_noop_without_rpm() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let mut floor_permit = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                candidate_id: "candidate-floor-initial".to_string(),
+                provider: None,
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: Some(ExecutionRpmReservation {
+                    key: "provider-key-additional-floor".to_string(),
+                    limit: 3,
+                    observed_candidate_ids: Vec::new(),
+                    observed_count_floor: 2,
+                    reset_after_unix_secs: None,
+                }),
+            })
+            .await
+            .expect("initial attempt should fill the observed floor");
+        assert_eq!(
+            floor_permit
+                .consume_additional_rpm_attempt()
+                .await
+                .expect_err("additional attempt must count beyond the observed floor"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 3,
+            }
+        );
+
+        let mut no_rpm = runtime
+            .try_acquire_execution_reservation(execution_reservation_input("candidate-no-rpm"))
+            .await
+            .expect("concurrency-only permit");
+        no_rpm
+            .consume_additional_rpm_attempt()
+            .await
+            .expect("an unconfigured RPM scope is a no-op");
+    }
+
+    #[tokio::test]
+    async fn memory_execution_rpm_floor_counts_a_new_candidate() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let error = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                candidate_id: "new-candidate".to_string(),
+                provider: None,
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: Some(ExecutionRpmReservation {
+                    key: "provider-key-floor".to_string(),
+                    limit: 10,
+                    observed_candidate_ids: Vec::new(),
+                    observed_count_floor: 10,
+                    reset_after_unix_secs: None,
+                }),
+            })
+            .await
+            .expect_err("a new candidate must consume capacity beyond the observed floor");
+
+        assert_eq!(
+            error,
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 10,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_execution_rpm_applies_same_second_reset_only_once() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let reset_at = unix_time_ms() / 1_000;
+        let input = |candidate_id: &str| ExecutionReservationInput {
+            candidate_id: candidate_id.to_string(),
+            provider: None,
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: Some(ExecutionRpmReservation {
+                key: "provider-key-reset".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+                observed_count_floor: 0,
+                reset_after_unix_secs: Some(reset_at),
+            }),
+        };
+
+        runtime
+            .try_acquire_execution_reservation(input("candidate-1"))
+            .await
+            .expect("first candidate after reset");
+        assert_eq!(
+            runtime
+                .try_acquire_execution_reservation(input("candidate-2"))
+                .await
+                .expect_err("the same reset generation must not erase candidate-1"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_execution_rpm_rejection_does_not_apply_reset_generation() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let rpm_only =
+            |candidate_id: &str, reset_after_unix_secs: Option<u64>| ExecutionReservationInput {
+                candidate_id: candidate_id.to_string(),
+                provider: None,
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: Some(ExecutionRpmReservation {
+                    key: "provider-key-reset-reject".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                    observed_count_floor: 0,
+                    reset_after_unix_secs,
+                }),
+            };
+        runtime
+            .try_acquire_execution_reservation(rpm_only("old-candidate", None))
+            .await
+            .expect("seed RPM observation");
+        let blocker = runtime
+            .try_acquire_execution_reservation(execution_reservation_input("blocker"))
+            .await
+            .expect("concurrency blocker");
+        let reset_at = unix_time_ms() / 1_000;
+        let mut rejected = rpm_only("rejected-candidate", Some(reset_at));
+        rejected.provider = execution_reservation_input("rejected-candidate").provider;
+        assert!(matches!(
+            runtime.try_acquire_execution_reservation(rejected).await,
+            Err(ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::Provider,
+                ..
+            })
+        ));
+        blocker.release().await.expect("release blocker");
+
+        runtime
+            .try_acquire_execution_reservation(rpm_only("after-reset", Some(reset_at)))
+            .await
+            .expect("rejected admission must not consume the reset generation");
+        assert!(matches!(
+            runtime
+                .try_acquire_execution_reservation(rpm_only("after-reset-2", Some(reset_at)))
+                .await,
+            Err(ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 1,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_execution_reservation_rejects_zero_concurrency_limit() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let mut input = execution_reservation_input("candidate-zero");
+        input.provider.as_mut().expect("provider scope").limit = 0;
+        assert!(matches!(
+            runtime.try_acquire_execution_reservation(input).await,
+            Err(ExecutionReservationError::InvalidConfiguration(_))
+        ));
+    }
+
     #[tokio::test]
     async fn memory_rate_limit_keeps_user_limit_atomic_across_api_keys() {
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
@@ -1804,6 +2616,277 @@ mod tests {
         assert_eq!(
             after, before,
             "runtime Redis operations should reuse initialized lanes"
+        );
+    }
+
+    #[tokio::test]
+    async fn redis_execution_reservation_is_atomic_and_does_not_refund_rpm() {
+        let Some((_redis, runtime)) = redis_runtime_for_test("execution-reservation").await else {
+            return;
+        };
+        let input = |candidate_id: &str| ExecutionReservationInput {
+            candidate_id: candidate_id.to_string(),
+            provider: Some(ExecutionConcurrencyReservation {
+                key: "provider-1".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+            }),
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: Some(ExecutionRpmReservation {
+                key: "provider-key-1".to_string(),
+                limit: 2,
+                observed_candidate_ids: Vec::new(),
+                observed_count_floor: 0,
+                reset_after_unix_secs: None,
+            }),
+        };
+
+        let first = runtime
+            .try_acquire_execution_reservation(input("candidate-1"))
+            .await
+            .expect("first reservation");
+        assert_eq!(
+            runtime
+                .try_acquire_execution_reservation(input("candidate-2"))
+                .await
+                .expect_err("provider concurrency should reject"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::Provider,
+                limit: 1,
+            }
+        );
+        first.release().await.expect("explicit release");
+
+        let third = runtime
+            .try_acquire_execution_reservation(input("candidate-3"))
+            .await
+            .expect("rejected candidate must not consume RPM");
+        third.release().await.expect("third release");
+
+        let mut fourth = input("candidate-4");
+        fourth.provider = None;
+        assert_eq!(
+            runtime
+                .try_acquire_execution_reservation(fourth)
+                .await
+                .expect_err("RPM must survive concurrency release"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 2,
+            }
+        );
+
+        let mut floor = input("candidate-floor");
+        floor.provider = None;
+        floor.provider_key_rpm = Some(ExecutionRpmReservation {
+            key: "provider-key-floor".to_string(),
+            limit: 10,
+            observed_candidate_ids: Vec::new(),
+            observed_count_floor: 10,
+            reset_after_unix_secs: None,
+        });
+        assert_eq!(
+            runtime
+                .try_acquire_execution_reservation(floor)
+                .await
+                .expect_err("a new candidate must consume capacity beyond the observed floor"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 10,
+            }
+        );
+
+        let mut old = input("reset-old");
+        old.provider = None;
+        old.provider_key_rpm = Some(ExecutionRpmReservation {
+            key: "provider-key-reset-reject".to_string(),
+            limit: 1,
+            observed_candidate_ids: Vec::new(),
+            observed_count_floor: 0,
+            reset_after_unix_secs: None,
+        });
+        runtime
+            .try_acquire_execution_reservation(old)
+            .await
+            .expect("seed RPM observation");
+        let blocker = runtime
+            .try_acquire_execution_reservation(execution_reservation_input("reset-blocker"))
+            .await
+            .expect("concurrency blocker");
+        let reset_at = unix_time_ms() / 1_000;
+        let reset_input = |candidate_id: &str, with_provider: bool| ExecutionReservationInput {
+            candidate_id: candidate_id.to_string(),
+            provider: with_provider.then(|| ExecutionConcurrencyReservation {
+                key: "provider-1".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+            }),
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: Some(ExecutionRpmReservation {
+                key: "provider-key-reset-reject".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+                observed_count_floor: 0,
+                reset_after_unix_secs: Some(reset_at),
+            }),
+        };
+        assert!(matches!(
+            runtime
+                .try_acquire_execution_reservation(reset_input("reset-rejected", true))
+                .await,
+            Err(ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::Provider,
+                ..
+            })
+        ));
+        blocker.release().await.expect("release blocker");
+        runtime
+            .try_acquire_execution_reservation(reset_input("reset-after", false))
+            .await
+            .expect("rejected admission must not consume reset generation");
+        assert!(matches!(
+            runtime
+                .try_acquire_execution_reservation(reset_input("reset-after-2", false))
+                .await,
+            Err(ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 1,
+            })
+        ));
+
+        let reset_at = unix_time_ms() / 1_000;
+        let reset_input = |candidate_id: &str| ExecutionReservationInput {
+            candidate_id: candidate_id.to_string(),
+            provider: None,
+            provider_key: None,
+            api_key: None,
+            provider_key_rpm: Some(ExecutionRpmReservation {
+                key: "provider-key-reset".to_string(),
+                limit: 1,
+                observed_candidate_ids: Vec::new(),
+                observed_count_floor: 0,
+                reset_after_unix_secs: Some(reset_at),
+            }),
+        };
+        runtime
+            .try_acquire_execution_reservation(reset_input("reset-candidate-1"))
+            .await
+            .expect("first candidate after reset");
+        assert_eq!(
+            runtime
+                .try_acquire_execution_reservation(reset_input("reset-candidate-2"))
+                .await
+                .expect_err("the same reset generation must not erase the first candidate"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn redis_execution_reservation_consumes_additional_rpm_without_reacquiring_concurrency() {
+        let Some((_redis, runtime)) =
+            redis_runtime_for_test("execution-reservation-retry-rpm").await
+        else {
+            return;
+        };
+        let mut permit = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                candidate_id: "redis-candidate-retry".to_string(),
+                provider: Some(ExecutionConcurrencyReservation {
+                    key: "redis-provider-retry".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: Some(ExecutionRpmReservation {
+                    key: "redis-provider-key-retry".to_string(),
+                    limit: 2,
+                    observed_candidate_ids: Vec::new(),
+                    observed_count_floor: 0,
+                    reset_after_unix_secs: None,
+                }),
+            })
+            .await
+            .expect("first Redis upstream attempt");
+
+        permit
+            .consume_additional_rpm_attempt()
+            .await
+            .expect("second Redis upstream attempt");
+        assert_eq!(
+            permit
+                .consume_additional_rpm_attempt()
+                .await
+                .expect_err("third Redis upstream attempt must exceed RPM"),
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::ProviderKeyRpm,
+                limit: 2,
+            }
+        );
+        assert_eq!(permit.additional_rpm_attempt_sequence, 1);
+
+        permit.release().await.expect("release Redis concurrency");
+        let concurrency_only = runtime
+            .try_acquire_execution_reservation(ExecutionReservationInput {
+                candidate_id: "redis-candidate-after-release".to_string(),
+                provider: Some(ExecutionConcurrencyReservation {
+                    key: "redis-provider-retry".to_string(),
+                    limit: 1,
+                    observed_candidate_ids: Vec::new(),
+                }),
+                provider_key: None,
+                api_key: None,
+                provider_key_rpm: None,
+            })
+            .await
+            .expect("additional Redis RPM attempts must not occupy concurrency");
+        concurrency_only
+            .release()
+            .await
+            .expect("release Redis concurrency-only permit");
+    }
+
+    #[tokio::test]
+    async fn redis_execution_reservation_is_atomic_across_runtime_instances() {
+        let Some(redis) = TestRedisServer::start().await else {
+            return;
+        };
+        let key_prefix = format!(
+            "aether-runtime-test-execution-reservation-multi-{}",
+            std::process::id()
+        );
+        let config = || RedisClientConfig {
+            url: redis.redis_url.clone(),
+            key_prefix: Some(key_prefix.clone()),
+        };
+        let first_runtime = RuntimeState::redis(config(), Some(1_000))
+            .await
+            .expect("first runtime");
+        let second_runtime = RuntimeState::redis(config(), Some(1_000))
+            .await
+            .expect("second runtime");
+
+        let (first, second) = tokio::join!(
+            first_runtime.try_acquire_execution_reservation(execution_reservation_input(
+                "multi-candidate-1"
+            )),
+            second_runtime.try_acquire_execution_reservation(execution_reservation_input(
+                "multi-candidate-2"
+            )),
+        );
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        let rejection = first.err().or_else(|| second.err()).expect("one rejection");
+        assert_eq!(
+            rejection,
+            ExecutionReservationError::Rejected {
+                scope: ExecutionReservationScope::Provider,
+                limit: 1,
+            }
         );
     }
 

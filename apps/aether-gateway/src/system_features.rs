@@ -57,6 +57,17 @@ impl ModelDirectivePolicySnapshot {
         model_directive_policy_snapshot_from_config_reads(enabled, settings)
     }
 
+    pub(crate) async fn load_strong(state: &AppState) -> Result<Self, crate::GatewayError> {
+        let (enabled, settings) = tokio::try_join!(
+            state.read_system_config_json_value_strong(ENABLE_MODEL_DIRECTIVES_CONFIG_KEY),
+            state.read_system_config_json_value_strong(MODEL_DIRECTIVES_CONFIG_KEY),
+        )?;
+        Ok(Self::from_config_values(
+            enabled.as_ref(),
+            settings.as_ref(),
+        ))
+    }
+
     pub(crate) fn from_config_values(
         enabled: Option<&serde_json::Value>,
         settings: Option<&serde_json::Value>,

@@ -22,8 +22,12 @@ use crate::ai_serving::AiExecutionDecision;
 use crate::execution_runtime::transport::{
     build_browser_wreq_client, build_request_headers, ExecutionTransportControls,
 };
+use crate::handlers::proxy::websocket::responses::ResponsesPublicEventSequence;
 use crate::handlers::proxy::websocket::session::{
     WebSocketSessionLimits, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+};
+use aether_contracts::{
+    ResolvedTransportProfile, TRANSPORT_BACKEND_BROWSER_WREQ, TRANSPORT_BACKEND_REQWEST_RUSTLS,
 };
 
 #[derive(Clone, Copy)]
@@ -136,15 +140,22 @@ fn build_websocket_client(
     errors: UpstreamWebSocketErrorCodes,
 ) -> Result<wreq::Client, &'static str> {
     let timeouts = websocket_timeouts(decision);
-    if let Some(profile) = decision.transport_profile.as_ref() {
-        return build_browser_wreq_client(
-            timeouts.as_ref(),
-            decision.proxy.as_ref(),
-            profile,
-            ExecutionTransportControls::default(),
-            false,
-        )
-        .map_err(|_| errors.client_build_failed);
+    match websocket_client_backend(decision.transport_profile.as_ref()) {
+        Ok(WebSocketClientBackend::BrowserWreq) => {
+            return build_browser_wreq_client(
+                timeouts.as_ref(),
+                decision.proxy.as_ref(),
+                decision
+                    .transport_profile
+                    .as_ref()
+                    .expect("browser backend requires a transport profile"),
+                ExecutionTransportControls::default(),
+                false,
+            )
+            .map_err(|_| errors.client_build_failed);
+        }
+        Ok(WebSocketClientBackend::ReqwestRustlsCompatible) => {}
+        Err(()) => return Err(errors.client_build_failed),
     }
 
     let mut builder = wreq::Client::builder();
@@ -169,6 +180,28 @@ fn build_websocket_client(
         }
     }
     builder.build().map_err(|_| errors.client_build_failed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebSocketClientBackend {
+    ReqwestRustlsCompatible,
+    BrowserWreq,
+}
+
+fn websocket_client_backend(
+    profile: Option<&ResolvedTransportProfile>,
+) -> Result<WebSocketClientBackend, ()> {
+    let Some(profile) = profile else {
+        return Ok(WebSocketClientBackend::ReqwestRustlsCompatible);
+    };
+    let backend = profile.backend.trim();
+    if backend.eq_ignore_ascii_case(TRANSPORT_BACKEND_REQWEST_RUSTLS) {
+        return Ok(WebSocketClientBackend::ReqwestRustlsCompatible);
+    }
+    if backend.eq_ignore_ascii_case(TRANSPORT_BACKEND_BROWSER_WREQ) {
+        return Ok(WebSocketClientBackend::BrowserWreq);
+    }
+    Err(())
 }
 
 pub(crate) fn websocket_timeouts(
@@ -211,6 +244,49 @@ pub(crate) async fn send_client_message(
     .await
 }
 
+/// Relays one frame without extending an already established batch, turn, or
+/// connection deadline. A deadline at or before `now` fails immediately.
+pub(crate) async fn send_client_message_until(
+    client_socket: &mut WebSocket,
+    message: AxumWsMessage,
+    deadline: tokio::time::Instant,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send_until(deadline, client_socket.send(message).map_err(|_| ())).await
+}
+
+/// Accepts one public frame into the WebSocket sink without flushing it.
+/// Callers commit protocol-visible state immediately after this returns: once
+/// `start_send` has accepted the frame, a later cancellation may still flush
+/// it through the next writer and must not reuse its sequence number.
+pub(crate) async fn feed_client_message_until(
+    client_socket: &mut WebSocket,
+    message: AxumWsMessage,
+    deadline: tokio::time::Instant,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send_until(deadline, client_socket.feed(message).map_err(|_| ())).await
+}
+
+pub(crate) async fn flush_client_messages_until(
+    client_socket: &mut WebSocket,
+    deadline: tokio::time::Instant,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send_until(deadline, client_socket.flush().map_err(|_| ())).await
+}
+
+async fn bounded_send_until<F>(
+    deadline: tokio::time::Instant,
+    write: F,
+) -> Result<(), WebSocketWriteError>
+where
+    F: std::future::Future<Output = Result<(), ()>>,
+{
+    match tokio::time::timeout_at(deadline, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(())) => Err(WebSocketWriteError::Failed),
+        Err(_) => Err(WebSocketWriteError::TimedOut),
+    }
+}
+
 /// Sends one frame to the upstream under [`RELAY_WRITE_TIMEOUT`].
 pub(crate) async fn send_upstream_message(
     upstream: &mut wreq::ws::WebSocket,
@@ -248,26 +324,6 @@ pub(crate) async fn close_upstream_socket(
     send_teardown_message(upstream.send(WreqWsMessage::Close(frame)).map_err(|_| ())).await;
 }
 
-pub(crate) fn upstream_message_to_client(message: WreqWsMessage) -> AxumWsMessage {
-    match message {
-        WreqWsMessage::Text(text) => AxumWsMessage::Text(text.to_string().into()),
-        WreqWsMessage::Binary(data) => AxumWsMessage::Binary(data),
-        WreqWsMessage::Ping(data) => AxumWsMessage::Ping(data),
-        WreqWsMessage::Pong(data) => AxumWsMessage::Pong(data),
-        WreqWsMessage::Close(frame) => AxumWsMessage::Close(frame.map(|frame| AxumCloseFrame {
-            code: frame.code.into(),
-            reason: frame.reason.to_string().into(),
-        })),
-    }
-}
-
-pub(crate) fn client_close_to_upstream(frame: Option<AxumCloseFrame>) -> Option<WreqCloseFrame> {
-    frame.map(|frame| WreqCloseFrame {
-        code: frame.code.into(),
-        reason: frame.reason.to_string().into(),
-    })
-}
-
 /// Builds a Responses WebSocket error event in the shape understood by the
 /// official client implementations.  The status is part of the event body,
 /// not the WebSocket handshake, because the connection is already upgraded.
@@ -276,45 +332,115 @@ pub(crate) fn responses_websocket_error_event(
     error_type: &str,
     code: &str,
     message: &str,
+    param: Option<&str>,
+    sequence_number: u64,
 ) -> serde_json::Value {
     json!({
         "type": "error",
+        // The Responses server-event schema is discriminated by `type` and
+        // requires these top-level fields. Keep them even for the WebSocket
+        // guide's response-style error envelope so typed SDKs can consume the
+        // same event without losing the documented status/error details.
+        "code": code,
+        "message": message,
+        "param": param,
+        "sequence_number": sequence_number,
         "status": status,
         "error": {
             "type": error_type,
             "code": code,
             "message": message,
+            "param": param,
         },
     })
 }
 
 pub(crate) async fn send_responses_websocket_error(
     client_socket: &mut WebSocket,
+    sequence: &ResponsesPublicEventSequence,
     status: u16,
     error_type: &str,
     code: &str,
     message: &str,
+    param: Option<&str>,
 ) {
-    let event = responses_websocket_error_event(status, error_type, code, message);
-    send_teardown_message(
-        client_socket
-            .send(AxumWsMessage::Text(event.to_string().into()))
-            .map_err(|_| ()),
+    let _ = send_responses_websocket_error_with(
+        client_socket,
+        sequence,
+        status,
+        error_type,
+        code,
+        message,
+        param,
     )
     .await;
 }
 
-pub(crate) async fn send_gateway_error(client_socket: &mut WebSocket, code: &str, message: &str) {
-    send_gateway_error_with_status(client_socket, 400, code, message).await;
+async fn send_responses_websocket_error_with<S>(
+    client_socket: &mut S,
+    sequence: &ResponsesPublicEventSequence,
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+    param: Option<&str>,
+) -> Result<(), WebSocketWriteError>
+where
+    S: futures_util::Sink<AxumWsMessage> + Unpin,
+{
+    // The sequence becomes durable at the sink-acceptance boundary, before
+    // flush. `SinkExt::send` combines both phases and is cancellation-ambiguous:
+    // a frame can already be buffered even though the future has not returned.
+    let reservation = sequence.reserve();
+    let event = responses_websocket_error_event(
+        status,
+        error_type,
+        code,
+        message,
+        param,
+        reservation.sequence_number(),
+    );
+    bounded_send(
+        TEARDOWN_WRITE_TIMEOUT,
+        client_socket
+            .feed(AxumWsMessage::Text(event.to_string().into()))
+            .map_err(|_| ()),
+    )
+    .await?;
+    reservation.commit();
+    bounded_send(
+        TEARDOWN_WRITE_TIMEOUT,
+        client_socket.flush().map_err(|_| ()),
+    )
+    .await
+}
+
+pub(crate) async fn send_gateway_error(
+    client_socket: &mut WebSocket,
+    sequence: &ResponsesPublicEventSequence,
+    code: &str,
+    message: &str,
+) {
+    send_gateway_error_with_status(client_socket, sequence, 400, code, message).await;
 }
 
 pub(crate) async fn send_gateway_error_with_status(
     client_socket: &mut WebSocket,
+    sequence: &ResponsesPublicEventSequence,
     status: u16,
     code: &str,
     message: &str,
 ) {
-    send_responses_websocket_error(client_socket, status, "gateway_error", code, message).await;
+    send_responses_websocket_error(
+        client_socket,
+        sequence,
+        status,
+        "gateway_error",
+        code,
+        message,
+        None,
+    )
+    .await;
 }
 
 pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16, reason: &str) {
@@ -331,11 +457,66 @@ pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use axum::extract::ws::Message as AxumWsMessage;
+    use futures_util::Sink;
+
     use super::{
-        bounded_send, responses_websocket_error_event, websocket_upstream_url, WebSocketWriteError,
-        RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+        bounded_send, bounded_send_until, responses_websocket_error_event,
+        send_responses_websocket_error_with, websocket_client_backend, websocket_upstream_url,
+        WebSocketClientBackend, WebSocketWriteError, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+    };
+    use crate::handlers::proxy::websocket::responses::ResponsesPublicEventSequence;
+    use aether_contracts::{
+        ResolvedTransportProfile, TRANSPORT_BACKEND_BROWSER_WREQ, TRANSPORT_BACKEND_REQWEST_RUSTLS,
     };
     use std::time::Duration;
+
+    enum TestSink {
+        Accept,
+        FailReady,
+        PendingReady,
+        FailFlush,
+    }
+
+    impl Sink<AxumWsMessage> for TestSink {
+        type Error = ();
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            match self.as_ref().get_ref() {
+                Self::FailReady => Poll::Ready(Err(())),
+                Self::PendingReady => Poll::Pending,
+                Self::Accept | Self::FailFlush => Poll::Ready(Ok(())),
+            }
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: AxumWsMessage) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            if matches!(self.as_ref().get_ref(), Self::FailFlush) {
+                Poll::Ready(Err(()))
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[tokio::test]
     async fn a_peer_that_never_drains_its_window_times_out_instead_of_pinning_the_relay() {
@@ -362,6 +543,17 @@ mod tests {
         assert_eq!(outcome, Ok(()));
     }
 
+    #[tokio::test]
+    async fn client_write_respects_an_existing_absolute_deadline() {
+        let result = bounded_send_until(
+            tokio::time::Instant::now() - Duration::from_millis(1),
+            std::future::pending::<Result<(), ()>>(),
+        )
+        .await;
+
+        assert_eq!(result, Err(WebSocketWriteError::TimedOut));
+    }
+
     #[test]
     fn teardown_writes_are_given_a_shorter_budget_than_relayed_frames() {
         assert!(TEARDOWN_WRITE_TIMEOUT < RELAY_WRITE_TIMEOUT);
@@ -374,9 +566,15 @@ mod tests {
             "invalid_request_error",
             "previous_response_not_found",
             "Previous response was not found.",
+            Some("previous_response_id"),
+            7,
         );
 
         assert_eq!(event["type"], "error");
+        assert_eq!(event["code"], "previous_response_not_found");
+        assert_eq!(event["message"], "Previous response was not found.");
+        assert_eq!(event["param"], "previous_response_id");
+        assert_eq!(event["sequence_number"], 7);
         assert_eq!(event["status"], 400);
         assert_eq!(event["error"]["type"], "invalid_request_error");
         assert_eq!(event["error"]["code"], "previous_response_not_found");
@@ -384,6 +582,83 @@ mod tests {
             event["error"]["message"],
             "Previous response was not found."
         );
+        assert_eq!(event["error"]["param"], "previous_response_id");
+    }
+
+    #[tokio::test]
+    async fn responses_error_sequence_commits_only_after_a_successful_write() {
+        let sequence = ResponsesPublicEventSequence::default();
+        let mut failed_sink = TestSink::FailReady;
+        let failed = send_responses_websocket_error_with(
+            &mut failed_sink,
+            &sequence,
+            502,
+            "server_error",
+            "responses_websocket_upstream_closed",
+            "Provider connection closed unexpectedly",
+            None,
+        )
+        .await;
+
+        assert_eq!(failed, Err(WebSocketWriteError::Failed));
+        assert_eq!(sequence.reserve().sequence_number(), 0);
+
+        let mut successful_sink = TestSink::Accept;
+        let succeeded = send_responses_websocket_error_with(
+            &mut successful_sink,
+            &sequence,
+            502,
+            "server_error",
+            "responses_websocket_upstream_closed",
+            "Provider connection closed unexpectedly",
+            None,
+        )
+        .await;
+
+        assert_eq!(succeeded, Ok(()));
+        assert_eq!(sequence.reserve().sequence_number(), 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_error_sequence_survives_a_flush_failure() {
+        let sequence = ResponsesPublicEventSequence::default();
+        let mut sink = TestSink::FailFlush;
+
+        let result = send_responses_websocket_error_with(
+            &mut sink,
+            &sequence,
+            502,
+            "server_error",
+            "responses_websocket_upstream_closed",
+            "Provider connection closed unexpectedly",
+            None,
+        )
+        .await;
+
+        assert_eq!(result, Err(WebSocketWriteError::Failed));
+        assert_eq!(sequence.reserve().sequence_number(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_responses_error_write_releases_its_sequence_number() {
+        let sequence = ResponsesPublicEventSequence::default();
+        let mut sink = TestSink::PendingReady;
+        let result = tokio::time::timeout(
+            Duration::from_millis(1),
+            send_responses_websocket_error_with(
+                &mut sink,
+                &sequence,
+                502,
+                "server_error",
+                "responses_websocket_upstream_closed",
+                "Provider connection closed unexpectedly",
+                None,
+            ),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(sequence.reserve().sequence_number(), 0);
     }
 
     #[test]
@@ -402,5 +677,39 @@ mod tests {
     #[test]
     fn rejects_upstream_url_with_credentials() {
         assert!(websocket_upstream_url("https://token@example.test/responses", "invalid").is_err());
+    }
+
+    #[test]
+    fn dispatches_websocket_transport_profiles_by_backend() {
+        assert_eq!(
+            websocket_client_backend(None),
+            Ok(WebSocketClientBackend::ReqwestRustlsCompatible)
+        );
+
+        let reqwest = ResolvedTransportProfile {
+            profile_id: "ordinary-profile".to_string(),
+            backend: TRANSPORT_BACKEND_REQWEST_RUSTLS.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            websocket_client_backend(Some(&reqwest)),
+            Ok(WebSocketClientBackend::ReqwestRustlsCompatible)
+        );
+
+        let browser = ResolvedTransportProfile {
+            profile_id: "chrome136".to_string(),
+            backend: TRANSPORT_BACKEND_BROWSER_WREQ.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            websocket_client_backend(Some(&browser)),
+            Ok(WebSocketClientBackend::BrowserWreq)
+        );
+
+        let unsupported = ResolvedTransportProfile {
+            backend: "hyper_rustls".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(websocket_client_backend(Some(&unsupported)), Err(()));
     }
 }

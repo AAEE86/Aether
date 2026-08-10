@@ -79,7 +79,11 @@ pub(super) async fn resolve_local_standard_decision_input(
         }
     };
 
-    let mut input = build_local_requested_model_decision_input(resolved_input, requested_model);
+    let mut input = build_local_requested_model_decision_input(
+        resolved_input,
+        requested_model,
+        crate::execution_identity::execution_request_id_from_parts(parts, trace_id).to_string(),
+    );
     input.request_auth_channel = decision.request_auth_channel.clone();
     input.client_session_affinity = client_session_affinity_from_parts(parts, Some(body_json));
     if let Err(err) = attach_routing_policy_to_local_requested_model_input(
@@ -148,6 +152,7 @@ pub(super) async fn materialize_local_standard_candidate_attempts(
     let outcome = materialize_local_execution_candidates_with_serving(
         planner_state,
         trace_id,
+        &input.request_id,
         spec_metadata.api_format,
         Some(&input.requested_model),
         Some(&input.auth_snapshot),
@@ -249,6 +254,7 @@ pub(super) async fn build_local_standard_candidate_attempt_source<'a>(
             planner_state,
             &input.model_directive_policy,
             trace_id,
+            &input.request_id,
             spec_metadata.api_format,
             &input.requested_model,
             None,

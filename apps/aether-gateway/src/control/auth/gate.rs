@@ -919,6 +919,7 @@ mod tests {
             access_allowed: true,
             user_rate_limit: None,
             api_key_rate_limit: None,
+            api_key_concurrent_limit: None,
             api_key_is_standalone: false,
             admin_bypass_limits: false,
             local_rejection: None,

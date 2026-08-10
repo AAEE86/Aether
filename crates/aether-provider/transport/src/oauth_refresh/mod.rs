@@ -15,6 +15,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::agent_identity::{is_codex_agent_identity_transport, CodexAgentIdentityRefreshAdapter};
+use super::credential_binding::preserve_oauth_credential_generation;
 use super::generic_oauth::supports_local_generic_oauth_request_auth_resolution;
 pub use super::generic_oauth::GenericOAuthRefreshAdapter;
 use super::kiro::{
@@ -44,24 +45,41 @@ pub struct LocalOAuthResolution {
     /// Indicates that a forced caller reused a newer completed refresh rather
     /// than producing a new entry that needs persistence.
     pub reused_refresh: bool,
-    /// Held until the caller persists `refreshed_entry`. The lease TTL remains
-    /// the cancellation fallback if the caller is dropped.
+    /// Held until the caller persists `refreshed_entry`. A matching RAII guard
+    /// schedules release if the caller is dropped before explicit release.
     pub distributed_lease: Option<RuntimeLockLease>,
-    /// Keeps memory-only refreshes singleflight until the caller validates the
-    /// credential fence and publishes or discards `refreshed_entry`.
+    /// Keeps the refresh lease alive until the caller validates the credential
+    /// fence and publishes or discards `refreshed_entry`.
     #[doc(hidden)]
     pub local_refresh_guard: Option<LocalOAuthRefreshCommitGuard>,
 }
 
 #[derive(Clone)]
 pub struct LocalOAuthRefreshCommitGuard {
-    guard: Arc<OwnedMutexGuard<()>>,
+    state: Arc<LocalOAuthRefreshCommitState>,
+}
+
+struct LocalOAuthRefreshCommitState {
+    _local_guard: Option<OwnedMutexGuard<()>>,
+    _distributed_guard: Option<DistributedOAuthRefreshLeaseGuard>,
 }
 
 impl LocalOAuthRefreshCommitGuard {
     fn new(guard: OwnedMutexGuard<()>) -> Self {
         Self {
-            guard: Arc::new(guard),
+            state: Arc::new(LocalOAuthRefreshCommitState {
+                _local_guard: Some(guard),
+                _distributed_guard: None,
+            }),
+        }
+    }
+
+    fn with_distributed_guard(guard: DistributedOAuthRefreshLeaseGuard) -> Self {
+        Self {
+            state: Arc::new(LocalOAuthRefreshCommitState {
+                _local_guard: None,
+                _distributed_guard: Some(guard),
+            }),
         }
     }
 }
@@ -74,7 +92,70 @@ impl fmt::Debug for LocalOAuthRefreshCommitGuard {
 
 impl PartialEq for LocalOAuthRefreshCommitGuard {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.guard, &other.guard)
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+struct DistributedOAuthRefreshLeaseGuard {
+    runtime_state: RuntimeState,
+    lease: Option<RuntimeLockLease>,
+    provider_type: &'static str,
+}
+
+impl DistributedOAuthRefreshLeaseGuard {
+    fn new(
+        runtime_state: RuntimeState,
+        lease: RuntimeLockLease,
+        provider_type: &'static str,
+    ) -> Self {
+        Self {
+            runtime_state,
+            lease: Some(lease),
+            provider_type,
+        }
+    }
+
+    fn lease(&self) -> Option<&RuntimeLockLease> {
+        self.lease.as_ref()
+    }
+
+    async fn release(mut self) {
+        let Some(lease) = self.lease.as_ref() else {
+            return;
+        };
+        let result = self.runtime_state.lock_release(lease).await;
+        if let Err(err) = result {
+            tracing::warn!(
+                key_id = %lease.key,
+                provider_type = self.provider_type,
+                error = ?err,
+                "gateway local oauth refresh distributed lock release failed"
+            );
+        }
+        self.lease.take();
+    }
+}
+
+impl Drop for DistributedOAuthRefreshLeaseGuard {
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        let runtime_state = self.runtime_state.clone();
+        let provider_type = self.provider_type;
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            if let Err(err) = runtime_state.lock_release(&lease).await {
+                tracing::warn!(
+                    key_id = %lease.key,
+                    provider_type,
+                    error = ?err,
+                    "gateway local oauth refresh distributed lock release failed after cancellation"
+                );
+            }
+        });
     }
 }
 
@@ -442,8 +523,8 @@ impl Default for LocalOAuthRefreshCoordinator {
 
 impl LocalOAuthRefreshCoordinator {
     // Keep the lease alive through the 30s upstream HTTP timeout and the
-    // subsequent encrypted DB CAS/persistence step. Cancellation still relies
-    // on expiry as the last-resort release path.
+    // subsequent encrypted DB CAS/persistence step. The TTL is the fallback
+    // when the process exits before the RAII release task can run.
     const DISTRIBUTED_REFRESH_LOCK_TTL_MS: u64 = 120_000;
 
     pub fn new() -> Self {
@@ -669,7 +750,7 @@ impl LocalOAuthRefreshCoordinator {
             }
         }
 
-        let distributed_lease = if !shares_refresh_through_transport_persistence {
+        let mut distributed_lease_guard = if !shares_refresh_through_transport_persistence {
             None
         } else {
             match (distributed_lock, distributed_owner) {
@@ -682,7 +763,11 @@ impl LocalOAuthRefreshCoordinator {
                         )
                         .await
                     {
-                        Ok(Some(lease)) => Some(lease),
+                        Ok(Some(lease)) => Some(DistributedOAuthRefreshLeaseGuard::new(
+                            lock.clone(),
+                            lease,
+                            adapter.provider_type(),
+                        )),
                         Ok(None) => return Ok(Some(LocalOAuthResolution::refresh_in_flight())),
                         Err(err) => {
                             tracing::warn!(
@@ -719,19 +804,13 @@ impl LocalOAuthRefreshCoordinator {
         // came from the original transport snapshot.
         let refresh_entry = cached_entry.as_ref();
         let refresh_result = adapter.refresh(executor, transport, refresh_entry).await;
-        let refreshed_entry = match refresh_result {
+        let mut refreshed_entry = match refresh_result {
             Ok(Some(entry)) => {
                 self.clear_refresh_backoff(key_id).await;
                 entry
             }
             Ok(None) => {
-                Self::release_distributed_lease(
-                    distributed_lock,
-                    distributed_lease.as_ref(),
-                    key_id,
-                    adapter.provider_type(),
-                )
-                .await;
+                Self::release_distributed_lease(distributed_lease_guard.take()).await;
                 return Ok(None);
             }
             Err(error) => {
@@ -739,33 +818,27 @@ impl LocalOAuthRefreshCoordinator {
                     self.record_refresh_failure(key_id, refresh_fingerprint.as_deref())
                         .await;
                 }
-                Self::release_distributed_lease(
-                    distributed_lock,
-                    distributed_lease.as_ref(),
-                    key_id,
-                    adapter.provider_type(),
-                )
-                .await;
+                Self::release_distributed_lease(distributed_lease_guard.take()).await;
                 return Err(error);
             }
         };
+        if let Some(metadata) = refreshed_entry.metadata.as_mut() {
+            preserve_oauth_credential_generation(transport, metadata);
+        }
         // Cache publication belongs to the caller after durable persistence.
         // The result still carries the entry so lock-free callers can inspect
         // it or explicitly commit it with `store_cached_entry`.
         let Some(auth) = adapter.resolve_refreshed(transport, &refreshed_entry) else {
-            Self::release_distributed_lease(
-                distributed_lock,
-                distributed_lease.as_ref(),
-                key_id,
-                adapter.provider_type(),
-            )
-            .await;
+            Self::release_distributed_lease(distributed_lease_guard.take()).await;
             return Ok(None);
         };
-        let local_refresh_guard = if shares_refresh_through_transport_persistence {
-            None
-        } else {
-            Some(LocalOAuthRefreshCommitGuard::new(key_guard))
+        let distributed_lease = distributed_lease_guard
+            .as_ref()
+            .and_then(DistributedOAuthRefreshLeaseGuard::lease)
+            .cloned();
+        let local_refresh_guard = match distributed_lease_guard {
+            Some(guard) => Some(LocalOAuthRefreshCommitGuard::with_distributed_guard(guard)),
+            None => Some(LocalOAuthRefreshCommitGuard::new(key_guard)),
         };
         Ok(Some(LocalOAuthResolution::refreshed(
             auth,
@@ -858,22 +931,9 @@ impl LocalOAuthRefreshCoordinator {
         self.refresh_backoff.lock().await.remove(key_id);
     }
 
-    async fn release_distributed_lease(
-        distributed_lock: Option<&RuntimeState>,
-        lease: Option<&RuntimeLockLease>,
-        key_id: &str,
-        provider_type: &'static str,
-    ) {
-        let (Some(lock), Some(lease)) = (distributed_lock, lease) else {
-            return;
-        };
-        if let Err(err) = lock.lock_release(lease).await {
-            tracing::warn!(
-                key_id = %key_id,
-                provider_type,
-                error = ?err,
-                "gateway local oauth refresh distributed lock release failed"
-            );
+    async fn release_distributed_lease(guard: Option<DistributedOAuthRefreshLeaseGuard>) {
+        if let Some(guard) = guard {
+            guard.release().await;
         }
     }
 
@@ -989,6 +1049,11 @@ mod tests {
     struct MemoryOnlyFencedTestAdapter {
         refresh_hits: Arc<AtomicUsize>,
         fingerprint_hits: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    struct BlockingRefreshAdapter {
+        refresh_entered: Arc<tokio::sync::Notify>,
     }
 
     #[async_trait]
@@ -1193,6 +1258,46 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl LocalOAuthRefreshAdapter for BlockingRefreshAdapter {
+        fn provider_type(&self) -> &'static str {
+            "test-oauth"
+        }
+
+        fn resolve_cached(
+            &self,
+            _transport: &GatewayProviderTransportSnapshot,
+            _entry: &CachedOAuthEntry,
+        ) -> Option<LocalResolvedOAuthRequestAuth> {
+            None
+        }
+
+        fn resolve_without_refresh(
+            &self,
+            _transport: &GatewayProviderTransportSnapshot,
+        ) -> Option<LocalResolvedOAuthRequestAuth> {
+            None
+        }
+
+        fn should_refresh(
+            &self,
+            _transport: &GatewayProviderTransportSnapshot,
+            _entry: Option<&CachedOAuthEntry>,
+        ) -> bool {
+            true
+        }
+
+        async fn refresh(
+            &self,
+            _executor: &dyn LocalOAuthHttpExecutor,
+            _transport: &GatewayProviderTransportSnapshot,
+            _entry: Option<&CachedOAuthEntry>,
+        ) -> Result<Option<CachedOAuthEntry>, LocalOAuthRefreshError> {
+            self.refresh_entered.notify_one();
+            std::future::pending().await
+        }
+    }
+
     fn sample_transport() -> GatewayProviderTransportSnapshot {
         GatewayProviderTransportSnapshot {
             provider: GatewayProviderTransportProvider {
@@ -1262,7 +1367,7 @@ mod tests {
         let transport = sample_transport();
         let executor = ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new());
 
-        let first = coordinator
+        let mut first = coordinator
             .resolve_with_result(&executor, &transport, None, None)
             .await
             .expect("first resolve should succeed");
@@ -1279,6 +1384,9 @@ mod tests {
                     .expect("first resolve should provide cached entry"),
             )
             .await;
+        first
+            .as_mut()
+            .and_then(|resolution| resolution.local_refresh_guard.take());
         let second = coordinator
             .resolve_with_result(&executor, &transport, None, None)
             .await
@@ -1323,6 +1431,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_refresh_releases_distributed_lease_without_waiting_for_ttl() {
+        let refresh_entered = Arc::new(tokio::sync::Notify::new());
+        let coordinator = Arc::new(LocalOAuthRefreshCoordinator::with_adapters_for_tests(vec![
+            Arc::new(BlockingRefreshAdapter {
+                refresh_entered: Arc::clone(&refresh_entered),
+            }),
+        ]));
+        let runtime_state = aether_runtime_state::RuntimeState::memory(
+            aether_runtime_state::MemoryRuntimeStateConfig::default(),
+        );
+        let refresh_coordinator = Arc::clone(&coordinator);
+        let refresh_runtime_state = runtime_state.clone();
+        let refresh_task = tokio::spawn(async move {
+            refresh_coordinator
+                .force_refresh_with_result(
+                    &ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new()),
+                    &sample_transport(),
+                    Some(&refresh_runtime_state),
+                    Some("refresh-owner"),
+                )
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), refresh_entered.notified())
+            .await
+            .expect("refresh should start after acquiring its distributed lease");
+        refresh_task.abort();
+        assert!(refresh_task
+            .await
+            .expect_err("refresh should be cancelled")
+            .is_cancelled());
+
+        let lease = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(lease) = runtime_state
+                    .lock_try_acquire(
+                        "provider_oauth_refresh_lock:key-1",
+                        "next-owner",
+                        Duration::from_secs(1),
+                    )
+                    .await
+                    .expect("distributed lock retry should succeed")
+                {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled refresh should release its lease before the TTL");
+        assert!(runtime_state
+            .lock_release(&lease)
+            .await
+            .expect("replacement lease release should succeed"));
+    }
+
+    #[tokio::test]
+    async fn guard_drop_cannot_release_a_new_owner_after_explicit_handoff_release() {
+        let coordinator =
+            LocalOAuthRefreshCoordinator::with_adapters_for_tests(vec![Arc::new(TestAdapter {
+                refresh_hits: Arc::new(AtomicUsize::new(0)),
+                refresh_with_entry_hits: Arc::new(AtomicUsize::new(0)),
+            })]);
+        let runtime_state = aether_runtime_state::RuntimeState::memory(
+            aether_runtime_state::MemoryRuntimeStateConfig::default(),
+        );
+        let mut resolution = coordinator
+            .force_refresh_with_result(
+                &ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new()),
+                &sample_transport(),
+                Some(&runtime_state),
+                Some("refresh-owner"),
+            )
+            .await
+            .expect("refresh should succeed")
+            .expect("refresh should resolve");
+        assert!(resolution.local_refresh_guard.is_some());
+        let original_lease = resolution
+            .distributed_lease
+            .take()
+            .expect("refresh should hand off its distributed lease");
+
+        assert!(runtime_state
+            .lock_release(&original_lease)
+            .await
+            .expect("explicit handoff release should succeed"));
+        let replacement_lease = runtime_state
+            .lock_try_acquire(
+                "provider_oauth_refresh_lock:key-1",
+                "replacement-owner",
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("replacement lock acquisition should succeed")
+            .expect("replacement owner should acquire the released lock");
+
+        drop(resolution);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(runtime_state
+            .lock_try_acquire(
+                "provider_oauth_refresh_lock:key-1",
+                "third-owner",
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("third lock acquisition should be readable")
+            .is_none());
+        assert!(runtime_state
+            .lock_release(&replacement_lease)
+            .await
+            .expect("replacement lease release should succeed"));
+    }
+
+    #[tokio::test]
     async fn coordinator_force_refresh_bypasses_runtime_cache() {
         let refresh_hits = Arc::new(AtomicUsize::new(0));
         let refresh_with_entry_hits = Arc::new(AtomicUsize::new(0));
@@ -1334,7 +1556,7 @@ mod tests {
         let transport = sample_transport();
         let executor = ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new());
 
-        let first = coordinator
+        let mut first = coordinator
             .resolve_with_result(&executor, &transport, None, None)
             .await
             .expect("initial resolve should succeed");
@@ -1347,6 +1569,9 @@ mod tests {
                     .expect("first resolve should provide cached entry"),
             )
             .await;
+        first
+            .as_mut()
+            .and_then(|resolution| resolution.local_refresh_guard.take());
         let forced = coordinator
             .force_refresh_with_result(&executor, &transport, None, None)
             .await
@@ -1463,7 +1688,7 @@ mod tests {
         let transport = sample_transport();
         let executor = ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new());
 
-        let first = coordinator
+        let mut first = coordinator
             .force_refresh_with_result_fenced(
                 &executor,
                 &transport,
@@ -1474,7 +1699,30 @@ mod tests {
             .await
             .expect("first refresh should succeed")
             .expect("first refresh should resolve");
-        coordinator
+        assert!(first.local_refresh_guard.is_some());
+
+        let waiter_coordinator = Arc::new(coordinator);
+        let waiter_runtime = Arc::clone(&waiter_coordinator);
+        let waiter_transport = transport.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_runtime
+                .force_refresh_with_result_fenced(
+                    &ReqwestLocalOAuthHttpExecutor::new(reqwest::Client::new()),
+                    &waiter_transport,
+                    None,
+                    None,
+                    Some("generation-1"),
+                )
+                .await
+                .expect("waiter should reuse winner")
+                .expect("waiter should resolve")
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "the local commit guard must cover persistence when no distributed lease exists"
+        );
+        waiter_coordinator
             .store_cached_entry(
                 transport.key.id.as_str(),
                 first
@@ -1483,17 +1731,11 @@ mod tests {
                     .expect("first refresh should return an entry to persist"),
             )
             .await;
-        let waiter = coordinator
-            .force_refresh_with_result_fenced(
-                &executor,
-                &transport,
-                None,
-                None,
-                Some("generation-1"),
-            )
+        first.local_refresh_guard.take();
+        let waiter = tokio::time::timeout(Duration::from_secs(1), waiter)
             .await
-            .expect("waiter should reuse winner")
-            .expect("waiter should resolve");
+            .expect("waiter should unblock after persistence")
+            .expect("waiter task should join");
 
         assert!(first.refreshed_entry.is_some());
         assert!(waiter.refreshed_entry.is_some());

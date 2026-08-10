@@ -7,7 +7,8 @@ use crate::ai_serving::planner::common::{
 };
 use crate::ai_serving::planner::runtime_miss::{
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal,
-    apply_local_runtime_candidate_terminal_reason, set_local_runtime_miss_diagnostic_reason,
+    apply_local_runtime_candidate_terminal_reason, runtime_miss_diagnostic_key_from_parts,
+    set_local_runtime_miss_diagnostic_reason,
 };
 use crate::ai_serving::planner::spec_metadata::{
     build_stream_plan_from_requested_model_family, build_sync_plan_from_requested_model_family,
@@ -31,6 +32,7 @@ pub(crate) struct LocalSameFormatProviderSyncAttemptSource<'a> {
     state: &'a AppState,
     parts: &'a http::request::Parts,
     trace_id: &'a str,
+    runtime_miss_key: &'a str,
     body_json: serde_json::Value,
     input: LocalSameFormatProviderDecisionInput,
     spec: LocalSameFormatProviderSpec,
@@ -42,6 +44,7 @@ pub(crate) struct LocalSameFormatProviderStreamAttemptSource<'a> {
     state: &'a AppState,
     parts: &'a http::request::Parts,
     trace_id: &'a str,
+    runtime_miss_key: &'a str,
     body_json: serde_json::Value,
     input: LocalSameFormatProviderDecisionInput,
     spec: LocalSameFormatProviderSpec,
@@ -57,6 +60,7 @@ pub(crate) async fn build_local_sync_attempt_source<'a>(
     body_json: &'a serde_json::Value,
     spec: LocalSameFormatProviderSpec,
 ) -> Result<Option<(LocalSameFormatProviderSyncAttemptSource<'a>, usize)>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_same_format_provider_spec_metadata(spec);
     let requested_model_family = spec_metadata
         .requested_model_family
@@ -68,7 +72,7 @@ pub(crate) async fn build_local_sync_attempt_source<'a>(
     else {
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             spec_metadata.decision_kind,
             extract_requested_model_from_request(parts, body_json, requested_model_family)
@@ -79,7 +83,7 @@ pub(crate) async fn build_local_sync_attempt_source<'a>(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -96,7 +100,7 @@ pub(crate) async fn build_local_sync_attempt_source<'a>(
     .await?;
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
         state,
-        trace_id,
+        runtime_miss_key,
         candidate_count,
     );
     if candidate_count == 0 {
@@ -108,6 +112,7 @@ pub(crate) async fn build_local_sync_attempt_source<'a>(
             state,
             parts,
             trace_id,
+            runtime_miss_key,
             body_json: effective_body_json,
             input,
             spec,
@@ -126,6 +131,7 @@ pub(crate) async fn build_local_stream_attempt_source<'a>(
     body_json: &'a serde_json::Value,
     spec: LocalSameFormatProviderSpec,
 ) -> Result<Option<(LocalSameFormatProviderStreamAttemptSource<'a>, usize)>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_same_format_provider_spec_metadata(spec);
     let requested_model_family = spec_metadata
         .requested_model_family
@@ -137,7 +143,7 @@ pub(crate) async fn build_local_stream_attempt_source<'a>(
     else {
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             spec_metadata.decision_kind,
             extract_requested_model_from_request(parts, body_json, requested_model_family)
@@ -148,7 +154,7 @@ pub(crate) async fn build_local_stream_attempt_source<'a>(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -165,7 +171,7 @@ pub(crate) async fn build_local_stream_attempt_source<'a>(
     .await?;
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
         state,
-        trace_id,
+        runtime_miss_key,
         candidate_count,
     );
     if candidate_count == 0 {
@@ -177,6 +183,7 @@ pub(crate) async fn build_local_stream_attempt_source<'a>(
             state,
             parts,
             trace_id,
+            runtime_miss_key,
             body_json: effective_body_json,
             input,
             spec,
@@ -198,7 +205,7 @@ impl LocalExecutionAttemptSource<AiSyncAttempt> for LocalSameFormatProviderSyncA
         }
         apply_local_runtime_candidate_terminal_reason(
             self.state,
-            self.trace_id,
+            self.runtime_miss_key,
             "no_local_sync_plans",
         );
         Ok(None)
@@ -243,7 +250,7 @@ impl LocalExecutionAttemptSource<AiStreamAttempt>
         }
         apply_local_runtime_candidate_terminal_reason(
             self.state,
-            self.trace_id,
+            self.runtime_miss_key,
             "no_local_stream_plans",
         );
         Ok(None)
@@ -359,6 +366,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalSameFormatProviderSpec,
 ) -> Result<Vec<AiSyncAttempt>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_same_format_provider_spec_metadata(spec);
     let requested_model_family = spec_metadata
         .requested_model_family
@@ -370,7 +378,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
     else {
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             spec_metadata.decision_kind,
             extract_requested_model_from_request(parts, body_json, requested_model_family)
@@ -381,7 +389,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -394,7 +402,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
     .await?;
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
         state,
-        trace_id,
+        runtime_miss_key,
         candidate_count,
     );
     if candidate_count == 0 {
@@ -432,7 +440,7 @@ pub(crate) async fn build_local_sync_plan_and_reports(
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_sync_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_sync_plans");
 
     Ok(plans)
 }
@@ -445,6 +453,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalSameFormatProviderSpec,
 ) -> Result<Vec<AiStreamAttempt>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_same_format_provider_spec_metadata(spec);
     let requested_model_family = spec_metadata
         .requested_model_family
@@ -456,7 +465,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
     else {
         set_local_runtime_miss_diagnostic_reason(
             state,
-            trace_id,
+            runtime_miss_key,
             decision,
             spec_metadata.decision_kind,
             extract_requested_model_from_request(parts, body_json, requested_model_family)
@@ -467,7 +476,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -480,7 +489,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
     .await?;
     apply_local_runtime_candidate_evaluation_progress_preserving_candidate_signal(
         state,
-        trace_id,
+        runtime_miss_key,
         candidate_count,
     );
     if candidate_count == 0 {
@@ -518,7 +527,7 @@ pub(crate) async fn build_local_stream_plan_and_reports(
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_stream_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_stream_plans");
 
     Ok(plans)
 }

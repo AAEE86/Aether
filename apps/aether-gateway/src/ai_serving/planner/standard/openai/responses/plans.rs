@@ -15,7 +15,8 @@ use crate::ai_serving::planner::plan_builders::{
 };
 use crate::ai_serving::planner::runtime_miss::{
     apply_local_runtime_candidate_evaluation_progress,
-    apply_local_runtime_candidate_terminal_reason, set_local_runtime_miss_diagnostic_reason,
+    apply_local_runtime_candidate_terminal_reason, runtime_miss_diagnostic_key_from_parts,
+    set_local_runtime_miss_diagnostic_reason,
 };
 use crate::ai_serving::planner::spec_metadata::local_openai_responses_spec_metadata;
 use crate::ai_serving::GatewayControlDecision;
@@ -29,6 +30,7 @@ pub(crate) struct LocalOpenAiResponsesSyncAttemptSource<'a> {
     state: &'a AppState,
     parts: &'a http::request::Parts,
     trace_id: &'a str,
+    runtime_miss_key: &'a str,
     body_json: serde_json::Value,
     input: LocalOpenAiResponsesDecisionInput,
     spec: LocalOpenAiResponsesSpec,
@@ -39,6 +41,7 @@ pub(crate) struct LocalOpenAiResponsesStreamAttemptSource<'a> {
     state: &'a AppState,
     parts: &'a http::request::Parts,
     trace_id: &'a str,
+    runtime_miss_key: &'a str,
     body_json: serde_json::Value,
     input: LocalOpenAiResponsesDecisionInput,
     spec: LocalOpenAiResponsesSpec,
@@ -53,6 +56,7 @@ pub(super) async fn build_local_sync_attempt_source<'a>(
     body_json: &'a serde_json::Value,
     spec: LocalOpenAiResponsesSpec,
 ) -> Result<Option<(LocalOpenAiResponsesSyncAttemptSource<'a>, usize)>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_openai_responses_spec_metadata(spec);
     let Some(input) = resolve_local_openai_responses_decision_input(
         state,
@@ -68,7 +72,7 @@ pub(super) async fn build_local_sync_attempt_source<'a>(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -83,7 +87,7 @@ pub(super) async fn build_local_sync_attempt_source<'a>(
         spec,
     )
     .await?;
-    apply_local_runtime_candidate_evaluation_progress(state, trace_id, candidate_count);
+    apply_local_runtime_candidate_evaluation_progress(state, runtime_miss_key, candidate_count);
     if candidate_count == 0 {
         return Ok(None);
     }
@@ -93,6 +97,7 @@ pub(super) async fn build_local_sync_attempt_source<'a>(
             state,
             parts,
             trace_id,
+            runtime_miss_key,
             body_json: effective_body_json,
             input,
             spec,
@@ -110,6 +115,7 @@ pub(super) async fn build_local_stream_attempt_source<'a>(
     body_json: &'a serde_json::Value,
     spec: LocalOpenAiResponsesSpec,
 ) -> Result<Option<(LocalOpenAiResponsesStreamAttemptSource<'a>, usize)>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_openai_responses_spec_metadata(spec);
     let Some(input) = resolve_local_openai_responses_decision_input(
         state,
@@ -125,7 +131,7 @@ pub(super) async fn build_local_stream_attempt_source<'a>(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -140,7 +146,7 @@ pub(super) async fn build_local_stream_attempt_source<'a>(
         spec,
     )
     .await?;
-    apply_local_runtime_candidate_evaluation_progress(state, trace_id, candidate_count);
+    apply_local_runtime_candidate_evaluation_progress(state, runtime_miss_key, candidate_count);
     if candidate_count == 0 {
         return Ok(None);
     }
@@ -150,6 +156,7 @@ pub(super) async fn build_local_stream_attempt_source<'a>(
             state,
             parts,
             trace_id,
+            runtime_miss_key,
             body_json: effective_body_json,
             input,
             spec,
@@ -170,7 +177,7 @@ impl LocalExecutionAttemptSource<AiSyncAttempt> for LocalOpenAiResponsesSyncAtte
         }
         apply_local_runtime_candidate_terminal_reason(
             self.state,
-            self.trace_id,
+            self.runtime_miss_key,
             "no_local_sync_plans",
         );
         Ok(None)
@@ -213,7 +220,7 @@ impl LocalExecutionAttemptSource<AiStreamAttempt> for LocalOpenAiResponsesStream
         }
         apply_local_runtime_candidate_terminal_reason(
             self.state,
-            self.trace_id,
+            self.runtime_miss_key,
             "no_local_stream_plans",
         );
         Ok(None)
@@ -329,6 +336,7 @@ pub(super) async fn build_local_sync_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalOpenAiResponsesSpec,
 ) -> Result<Vec<AiSyncAttempt>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_openai_responses_spec_metadata(spec);
     let Some(input) = resolve_local_openai_responses_decision_input(
         state,
@@ -344,7 +352,7 @@ pub(super) async fn build_local_sync_plan_and_reports(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -355,7 +363,7 @@ pub(super) async fn build_local_sync_plan_and_reports(
         state, trace_id, &input, body_json, spec,
     )
     .await?;
-    apply_local_runtime_candidate_evaluation_progress(state, trace_id, candidate_count);
+    apply_local_runtime_candidate_evaluation_progress(state, runtime_miss_key, candidate_count);
     if candidate_count == 0 {
         return Ok(Vec::new());
     }
@@ -389,7 +397,7 @@ pub(super) async fn build_local_sync_plan_and_reports(
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_sync_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_sync_plans");
     Ok(plans)
 }
 
@@ -401,6 +409,7 @@ pub(super) async fn build_local_stream_plan_and_reports(
     body_json: &serde_json::Value,
     spec: LocalOpenAiResponsesSpec,
 ) -> Result<Vec<AiStreamAttempt>, GatewayError> {
+    let runtime_miss_key = runtime_miss_diagnostic_key_from_parts(parts, trace_id);
     let spec_metadata = local_openai_responses_spec_metadata(spec);
     let Some(input) = resolve_local_openai_responses_decision_input(
         state,
@@ -416,7 +425,7 @@ pub(super) async fn build_local_stream_plan_and_reports(
     };
     set_local_runtime_miss_diagnostic_reason(
         state,
-        trace_id,
+        runtime_miss_key,
         decision,
         spec_metadata.decision_kind,
         Some(input.requested_model.as_str()),
@@ -427,7 +436,7 @@ pub(super) async fn build_local_stream_plan_and_reports(
         state, trace_id, &input, body_json, spec,
     )
     .await?;
-    apply_local_runtime_candidate_evaluation_progress(state, trace_id, candidate_count);
+    apply_local_runtime_candidate_evaluation_progress(state, runtime_miss_key, candidate_count);
     if candidate_count == 0 {
         return Ok(Vec::new());
     }
@@ -461,6 +470,6 @@ pub(super) async fn build_local_stream_plan_and_reports(
         }
     }
 
-    apply_local_runtime_candidate_terminal_reason(state, trace_id, "no_local_stream_plans");
+    apply_local_runtime_candidate_terminal_reason(state, runtime_miss_key, "no_local_stream_plans");
     Ok(plans)
 }

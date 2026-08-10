@@ -1022,6 +1022,16 @@ impl AppState {
             .map_err(|err| GatewayError::Internal(err.to_string()))
     }
 
+    pub(crate) async fn read_provider_catalog_providers_by_ids_strong(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<provider_catalog::StoredProviderCatalogProvider>, GatewayError> {
+        self.data
+            .list_provider_catalog_providers_by_ids_strong(provider_ids)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     pub(crate) async fn read_provider_catalog_endpoints_by_ids(
         &self,
         endpoint_ids: &[String],
@@ -1038,6 +1048,16 @@ impl AppState {
     ) -> Result<Vec<provider_catalog::StoredProviderCatalogKey>, GatewayError> {
         self.data
             .list_provider_catalog_keys_by_ids(key_ids)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn read_provider_catalog_keys_by_ids_strong(
+        &self,
+        key_ids: &[String],
+    ) -> Result<Vec<provider_catalog::StoredProviderCatalogKey>, GatewayError> {
+        self.data
+            .list_provider_catalog_keys_by_ids_strong(key_ids)
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()))
     }
