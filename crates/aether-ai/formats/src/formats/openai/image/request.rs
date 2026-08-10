@@ -543,20 +543,6 @@ pub fn build_openai_image_api_provider_request_body(
     mapped_model: Option<&str>,
     upstream_is_stream: bool,
 ) -> Option<Value> {
-    build_openai_image_api_provider_request_body_with_edit_images(
-        request,
-        mapped_model,
-        upstream_is_stream,
-        true,
-    )
-}
-
-fn build_openai_image_api_provider_request_body_with_edit_images(
-    request: &NormalizedOpenAiImageRequest,
-    mapped_model: Option<&str>,
-    upstream_is_stream: bool,
-    use_plural_edit_images: bool,
-) -> Option<Value> {
     let model = mapped_model
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -592,16 +578,12 @@ fn build_openai_image_api_provider_request_body_with_edit_images(
             .or_insert_with(|| response_format.clone());
     }
     insert_standard_openai_image_inputs(&mut body, request.images.clone());
-    let mut body = project_openai_image_api_request_body(
+    project_openai_image_api_request_body(
         &Value::Object(body),
         model,
         request.operation,
         request.max_generation_count,
-    )?;
-    if use_plural_edit_images && request.operation == OpenAiImageOperation::Edit {
-        insert_standard_openai_images_edit_inputs(body.as_object_mut()?, request.images.clone())?;
-    }
-    Some(body)
+    )
 }
 
 pub fn build_codex_openai_image_api_provider_request_body(
@@ -609,12 +591,8 @@ pub fn build_codex_openai_image_api_provider_request_body(
     mapped_model: Option<&str>,
     upstream_is_stream: bool,
 ) -> Option<Value> {
-    let body = build_openai_image_api_provider_request_body_with_edit_images(
-        request,
-        mapped_model,
-        upstream_is_stream,
-        false,
-    )?;
+    let body =
+        build_openai_image_api_provider_request_body(request, mapped_model, upstream_is_stream)?;
     project_codex_openai_image_api_request_body(&body, request.operation)
 }
 
@@ -654,7 +632,27 @@ pub fn project_openai_image_api_request_body(
     projected.remove("image");
     projected.remove("images");
     let image_input_count = image_inputs.len();
-    insert_standard_openai_image_inputs(&mut projected, image_inputs);
+    if operation == OpenAiImageOperation::Edit {
+        let images = image_inputs
+            .into_iter()
+            .map(|image| {
+                let image = image.as_object()?;
+                image
+                    .get("image_url")
+                    .cloned()
+                    .map(|image_url| json!({ "image_url": image_url }))
+                    .or_else(|| {
+                        image
+                            .get("file_id")
+                            .cloned()
+                            .map(|file_id| json!({ "file_id": file_id }))
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        projected.insert("images".to_string(), Value::Array(images));
+    } else {
+        insert_standard_openai_image_inputs(&mut projected, image_inputs);
+    }
     match operation {
         OpenAiImageOperation::Generate
             if image_input_count > 0 || projected.contains_key("mask") =>
@@ -920,31 +918,6 @@ pub(crate) fn insert_standard_openai_image_inputs(
     object.insert("image".to_string(), image);
 }
 
-fn insert_standard_openai_images_edit_inputs(
-    object: &mut Map<String, Value>,
-    images: Vec<Value>,
-) -> Option<()> {
-    let images = images
-        .into_iter()
-        .map(|image| {
-            let image = image.as_object()?;
-            image
-                .get("image_url")
-                .cloned()
-                .map(|image_url| json!({ "image_url": image_url }))
-                .or_else(|| {
-                    image
-                        .get("file_id")
-                        .cloned()
-                        .map(|file_id| json!({ "file_id": file_id }))
-                })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    object.remove("image");
-    object.insert("images".to_string(), Value::Array(images));
-    Some(())
-}
-
 fn openai_image_api_inputs(object: &Map<String, Value>) -> Option<Vec<&Value>> {
     match (object.get("image"), object.get("images")) {
         (Some(_), Some(_)) => None,
@@ -1025,7 +998,7 @@ pub fn project_codex_openai_image_api_request_body(
                 | "n"
                 | "quality"
                 | "size"
-                | "image"
+                | "images"
                 | "response_format"
                 | "stream"
         )
