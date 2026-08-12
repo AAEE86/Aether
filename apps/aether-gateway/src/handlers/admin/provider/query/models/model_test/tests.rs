@@ -243,6 +243,26 @@ fn provider_query_default_test_request_body_does_not_set_max_tokens() {
 }
 
 #[test]
+fn provider_query_default_test_request_bodies_do_not_set_temperature() {
+    let payload = json!({});
+    let default_body = provider_query_build_test_request_body(&payload, "fallback-model");
+    assert!(default_body.get("temperature").is_none());
+
+    for api_format in ["openai:chat", "openai:responses", "claude:messages"] {
+        let body = provider_query_build_test_request_body_for_api_format(
+            &payload,
+            "fallback-model",
+            "/api/admin/provider-query/test-model",
+            api_format,
+        );
+        assert!(
+            body.get("temperature").is_none(),
+            "admin model test must not set temperature for {api_format}"
+        );
+    }
+}
+
+#[test]
 fn provider_query_failover_request_body_overrides_custom_model() {
     let payload = json!({
         "request_body": {
