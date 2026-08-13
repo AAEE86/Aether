@@ -632,7 +632,27 @@ pub fn project_openai_image_api_request_body(
     projected.remove("image");
     projected.remove("images");
     let image_input_count = image_inputs.len();
-    insert_standard_openai_image_inputs(&mut projected, image_inputs);
+    if operation == OpenAiImageOperation::Edit {
+        let images = image_inputs
+            .into_iter()
+            .map(|image| {
+                let image = image.as_object()?;
+                image
+                    .get("image_url")
+                    .cloned()
+                    .map(|image_url| json!({ "image_url": image_url }))
+                    .or_else(|| {
+                        image
+                            .get("file_id")
+                            .cloned()
+                            .map(|file_id| json!({ "file_id": file_id }))
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        projected.insert("images".to_string(), Value::Array(images));
+    } else {
+        insert_standard_openai_image_inputs(&mut projected, image_inputs);
+    }
     match operation {
         OpenAiImageOperation::Generate
             if image_input_count > 0 || projected.contains_key("mask") =>
@@ -978,7 +998,7 @@ pub fn project_codex_openai_image_api_request_body(
                 | "n"
                 | "quality"
                 | "size"
-                | "image"
+                | "images"
                 | "response_format"
                 | "stream"
         )
@@ -2316,9 +2336,10 @@ mod tests {
         assert_eq!(provider_request_body["response_format"], "url");
         assert_eq!(provider_request_body["user"], "user-123");
         assert_eq!(
-            provider_request_body["image"]["image_url"],
-            "data:image/png;base64,aW1hZ2U="
+            provider_request_body["images"],
+            json!([{"image_url": "data:image/png;base64,aW1hZ2U="}])
         );
+        assert!(provider_request_body.get("image").is_none());
         assert_eq!(
             provider_request_body["mask"]["image_url"],
             "data:image/png;base64,bWFzaw=="
@@ -2329,7 +2350,7 @@ mod tests {
     }
 
     #[test]
-    fn build_image_api_provider_edit_request_uses_one_standard_image_field() {
+    fn build_image_api_provider_edit_request_uses_plural_images_field() {
         let parts = request_parts("/v1/images/edits", Some("application/json"));
         let request = normalize_openai_image_request(
             &parts,
@@ -2350,10 +2371,13 @@ mod tests {
                 .expect("standard Images edit body should project");
 
         assert_eq!(
-            provider_request_body["image"].as_array().map(Vec::len),
-            Some(2)
+            provider_request_body["images"],
+            json!([
+                {"image_url": "data:image/png;base64,Zm9v"},
+                {"image_url": "https://example.test/reference.png"}
+            ])
         );
-        assert!(provider_request_body.get("images").is_none());
+        assert!(provider_request_body.get("image").is_none());
     }
 
     #[test]
