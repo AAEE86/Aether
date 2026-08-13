@@ -543,11 +543,54 @@ pub fn build_openai_image_api_provider_request_body(
     mapped_model: Option<&str>,
     upstream_is_stream: bool,
 ) -> Option<Value> {
-    let model = mapped_model
+    let model = resolve_openai_image_api_provider_model(request, mapped_model);
+    let body = build_unprojected_openai_image_api_provider_request_body(
+        request,
+        model,
+        upstream_is_stream,
+    );
+    project_openai_image_api_request_body(
+        &body,
+        model,
+        request.operation,
+        request.max_generation_count,
+    )
+}
+
+pub fn build_codex_openai_image_api_provider_request_body(
+    request: &NormalizedOpenAiImageRequest,
+    mapped_model: Option<&str>,
+    upstream_is_stream: bool,
+) -> Option<Value> {
+    let model = resolve_openai_image_api_provider_model(request, mapped_model);
+    let body = build_unprojected_openai_image_api_provider_request_body(
+        request,
+        model,
+        upstream_is_stream,
+    );
+    project_codex_openai_image_api_request_body_with_max_generation_count(
+        &body,
+        request.operation,
+        request.max_generation_count,
+    )
+}
+
+fn resolve_openai_image_api_provider_model<'a>(
+    request: &'a NormalizedOpenAiImageRequest,
+    mapped_model: Option<&'a str>,
+) -> &'a str {
+    mapped_model
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .or(request.requested_model.as_deref())
-        .unwrap_or_else(|| default_model_for_openai_image_operation(request.operation));
+        .unwrap_or_else(|| default_model_for_openai_image_operation(request.operation))
+}
+
+fn build_unprojected_openai_image_api_provider_request_body(
+    request: &NormalizedOpenAiImageRequest,
+    model: &str,
+    upstream_is_stream: bool,
+) -> Value {
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.to_string()));
     if let Some(prompt) = request.prompt.as_ref() {
@@ -578,22 +621,7 @@ pub fn build_openai_image_api_provider_request_body(
             .or_insert_with(|| response_format.clone());
     }
     insert_standard_openai_image_inputs(&mut body, request.images.clone());
-    project_openai_image_api_request_body(
-        &Value::Object(body),
-        model,
-        request.operation,
-        request.max_generation_count,
-    )
-}
-
-pub fn build_codex_openai_image_api_provider_request_body(
-    request: &NormalizedOpenAiImageRequest,
-    mapped_model: Option<&str>,
-    upstream_is_stream: bool,
-) -> Option<Value> {
-    let body =
-        build_openai_image_api_provider_request_body(request, mapped_model, upstream_is_stream)?;
-    project_codex_openai_image_api_request_body(&body, request.operation)
+    Value::Object(body)
 }
 
 pub fn project_openai_image_api_request_body(
@@ -981,13 +1009,31 @@ pub fn project_codex_openai_image_api_request_body(
     body: &Value,
     operation: OpenAiImageOperation,
 ) -> Option<Value> {
-    let model = body.get("model").and_then(Value::as_str)?;
-    let projected_body = project_openai_image_api_request_body(
+    project_codex_openai_image_api_request_body_with_max_generation_count(
         body,
-        model,
         operation,
         OPENAI_IMAGE_MAX_GENERATION_COUNT,
-    )?;
+    )
+}
+
+fn project_codex_openai_image_api_request_body_with_max_generation_count(
+    body: &Value,
+    operation: OpenAiImageOperation,
+    max_generation_count: u64,
+) -> Option<Value> {
+    let source_object = body.as_object()?;
+    let source_images = if operation == OpenAiImageOperation::Edit {
+        let images = collect_codex_openai_image_urls(source_object)?;
+        if images.is_empty() || images.len() > 5 {
+            return None;
+        }
+        images
+    } else {
+        Vec::new()
+    };
+    let model = body.get("model").and_then(Value::as_str)?;
+    let projected_body =
+        project_openai_image_api_request_body(body, model, operation, max_generation_count)?;
     let object = projected_body.as_object()?;
     if object.keys().any(|key| {
         !matches!(
@@ -1023,11 +1069,7 @@ pub fn project_codex_openai_image_api_request_body(
 
     let mut projected = Map::new();
     if operation == OpenAiImageOperation::Edit {
-        let images = collect_codex_openai_image_urls(object)?;
-        if images.is_empty() || images.len() > 5 {
-            return None;
-        }
-        projected.insert("images".to_string(), Value::Array(images));
+        projected.insert("images".to_string(), Value::Array(source_images));
     } else if object.contains_key("image") || object.contains_key("images") {
         return None;
     }
@@ -2072,6 +2114,62 @@ mod tests {
     }
 
     #[test]
+    fn codex_image_projection_rejects_invalid_source_image_parts() {
+        for body in [
+            json!({
+                "model": "gpt-image-2",
+                "prompt": "edit image",
+                "image": {
+                    "type": "wrong_type",
+                    "image_url": "https://example.test/input.png"
+                }
+            }),
+            json!({
+                "model": "gpt-image-2",
+                "prompt": "edit image",
+                "images": [{
+                    "type": "input_image",
+                    "image_url": "https://example.test/input.png",
+                    "detail": "high"
+                }]
+            }),
+            json!({
+                "model": "gpt-image-2",
+                "prompt": "edit image",
+                "images": [{"file_id": "file_123"}]
+            }),
+        ] {
+            assert!(
+                project_codex_openai_image_api_request_body(&body, OpenAiImageOperation::Edit,)
+                    .is_none(),
+                "invalid Codex image part should be rejected: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_image_projection_accepts_untyped_plural_image_urls() {
+        let body = json!({
+            "model": "gpt-image-2",
+            "prompt": "edit image",
+            "images": [{
+                "image_url": "https://example.test/input.png"
+            }]
+        });
+
+        assert_eq!(
+            project_codex_openai_image_api_request_body(&body, OpenAiImageOperation::Edit),
+            Some(json!({
+                "images": [{
+                    "image_url": "https://example.test/input.png"
+                }],
+                "prompt": "edit image",
+                "model": "gpt-image-2"
+            }))
+        );
+    }
+
+    #[test]
     fn codex_image_projection_enforces_the_openai_output_count_range() {
         let valid = json!({
             "model": "gpt-image-2",
@@ -2376,6 +2474,31 @@ mod tests {
                 {"image_url": "data:image/png;base64,Zm9v"},
                 {"image_url": "https://example.test/reference.png"}
             ])
+        );
+        assert!(provider_request_body.get("image").is_none());
+    }
+
+    #[test]
+    fn build_image_api_provider_edit_request_preserves_file_id() {
+        let parts = request_parts("/v1/images/edits", Some("application/json"));
+        let request = normalize_openai_image_request(
+            &parts,
+            &json!({
+                "model": "gpt-image-2",
+                "prompt": "edit the uploaded image",
+                "image": {"file_id": "file_123"}
+            }),
+            None,
+        )
+        .expect("file ID edit request should normalize");
+
+        let provider_request_body =
+            build_openai_image_api_provider_request_body(&request, None, false)
+                .expect("standard Images edit body should project");
+
+        assert_eq!(
+            provider_request_body["images"],
+            json!([{"file_id": "file_123"}])
         );
         assert!(provider_request_body.get("image").is_none());
     }
