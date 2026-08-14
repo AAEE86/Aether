@@ -339,7 +339,7 @@ fn apply_codex_oauth_fingerprint_convergence_to_decision(
     else {
         return;
     };
-    crate::provider_transport::apply_codex_oauth_fingerprint_convergence(
+    crate::ai_serving::transport::apply_codex_oauth_fingerprint_convergence(
         transport,
         provider_api_format,
         input.original_client_session_id.as_deref(),

@@ -282,6 +282,16 @@ impl GatewayDataState {
         }
     }
 
+    pub(crate) async fn list_provider_catalog_keys_by_ids_strong(
+        &self,
+        key_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogKey>, DataLayerError> {
+        match &self.provider_catalog_reader {
+            Some(repository) => repository.list_keys_by_ids_strong(key_ids).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub(crate) async fn list_provider_catalog_keys_by_provider_ids(
         &self,
         provider_ids: &[String],
