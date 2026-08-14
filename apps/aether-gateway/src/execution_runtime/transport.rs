@@ -21,6 +21,7 @@ use aether_http::{apply_http_client_config, HttpClientConfig};
 use aether_runtime::{MetricKind, MetricSample};
 use axum::body::Bytes;
 use base64::Engine as _;
+use brotli::Decompressor as BrotliDecoder;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -62,6 +63,10 @@ const DEFAULT_STREAM_FIRST_BYTE_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_NON_STREAM_TOTAL_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_CODEX_COMPACT_TOTAL_TIMEOUT_MS: u64 = 1_200_000;
 const MIN_TUNNEL_TIMEOUT_SECS: u64 = 1;
+const EXECUTION_RESPONSE_BODY_LIMIT_HEADER: &str = "x-aether-execution-response-body-limit-bytes";
+const DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const MAX_SCOPED_RESPONSE_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const DIRECT_REQWEST_H2_CLIENT_SHARDS_ENV: &str = "AETHER_GATEWAY_DIRECT_REQWEST_H2_CLIENT_SHARDS";
 const DIRECT_REQWEST_CLIENT_SHARDS_ENV: &str = "AETHER_GATEWAY_DIRECT_REQWEST_CLIENT_SHARDS";
 const DIRECT_REQWEST_H2_TARGET_STREAMS_PER_CLIENT_ENV: &str =
@@ -607,6 +612,56 @@ impl std::fmt::Display for UpstreamResponseBodyPhase {
     }
 }
 
+pub(crate) fn with_upstream_response_body_limit(
+    plan: &ExecutionPlan,
+    limit_bytes: usize,
+) -> ExecutionPlan {
+    let mut bounded_plan = plan.clone();
+    bounded_plan
+        .headers
+        .retain(|name, _| !name.eq_ignore_ascii_case(EXECUTION_RESPONSE_BODY_LIMIT_HEADER));
+    bounded_plan.headers.insert(
+        EXECUTION_RESPONSE_BODY_LIMIT_HEADER.to_string(),
+        normalize_scoped_response_body_limit(limit_bytes)
+            .unwrap_or(DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES)
+            .to_string(),
+    );
+    bounded_plan
+}
+
+pub(crate) fn execution_plan_response_body_limit_bytes(plan: &ExecutionPlan) -> usize {
+    effective_response_body_limit_bytes(
+        execution_transport_header_value(&plan.headers, EXECUTION_RESPONSE_BODY_LIMIT_HEADER),
+        crate::headers::max_internal_buffered_body_bytes(),
+    )
+}
+
+fn effective_response_body_limit_bytes(
+    raw_scoped_limit: Option<&str>,
+    global_limit: usize,
+) -> usize {
+    let Some(raw_scoped_limit) = raw_scoped_limit else {
+        return global_limit;
+    };
+    parse_scoped_response_body_limit(raw_scoped_limit)
+        .unwrap_or(DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES)
+        .min(global_limit)
+}
+
+fn parse_scoped_response_body_limit(value: &str) -> Option<usize> {
+    let raw_limit = value.trim().parse::<u64>().ok()?;
+    usize::try_from(raw_limit)
+        .ok()
+        .and_then(normalize_scoped_response_body_limit)
+}
+
+fn normalize_scoped_response_body_limit(limit_bytes: usize) -> Option<usize> {
+    (limit_bytes > 0).then_some(limit_bytes.clamp(
+        MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+        MAX_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+    ))
+}
+
 pub(crate) fn append_upstream_response_body_chunk(
     body: &mut Vec<u8>,
     chunk: &[u8],
@@ -618,7 +673,7 @@ pub(crate) fn append_upstream_response_body_chunk(
     )
 }
 
-fn append_upstream_response_body_chunk_with_limit(
+pub(crate) fn append_upstream_response_body_chunk_with_limit(
     body: &mut Vec<u8>,
     chunk: &[u8],
     limit_bytes: usize,
@@ -724,6 +779,7 @@ impl DirectSyncExecutionRuntime {
         F: FnOnce(DirectSyncResponseStarted),
     {
         let body_bytes = build_request_body(plan)?;
+        let response_body_limit_bytes = execution_plan_response_body_limit_bytes(plan);
 
         let started_at = Instant::now();
         let request_started_at_unix_ms = crate::clock::current_unix_ms();
@@ -744,9 +800,14 @@ impl DirectSyncExecutionRuntime {
                 ttfb_ms,
                 response_observation: response_observation.clone(),
             });
-            let (body_bytes, stream_ttfb_ms) =
-                response.bytes_with_stream_timeout(plan, started_at).await?;
-            let decoded_body_bytes = decode_response_body_bytes(&headers, &body_bytes)?;
+            let (body_bytes, stream_ttfb_ms) = response
+                .bytes_with_stream_timeout(plan, started_at, response_body_limit_bytes)
+                .await?;
+            let decoded_body_bytes = decode_response_body_bytes_with_limit(
+                &headers,
+                &body_bytes,
+                response_body_limit_bytes,
+            )?;
             let elapsed_ms = started_at.elapsed().as_millis() as u64;
             let upstream_bytes = body_bytes.len() as u64;
 
@@ -1058,6 +1119,7 @@ async fn execute_sync_plan_via_local_tunnel_inner(
     }
 
     let body_bytes = build_request_body(plan)?;
+    let response_body_limit_bytes = execution_plan_response_body_limit_bytes(plan);
     let transport_controls = resolve_execution_transport_controls(&plan.headers);
     let headers = build_request_headers(
         &plan.headers,
@@ -1113,8 +1175,10 @@ async fn execute_sync_plan_via_local_tunnel_inner(
     );
     let proxy_timing = execution_header_for_log(&headers, "x-proxy-timing").unwrap_or("-");
     let (body_bytes, stream_ttfb_ms) =
-        collect_local_tunnel_response_body(response, plan, started_at).await?;
-    let decoded_body_bytes = decode_response_body_bytes(&headers, &body_bytes)?;
+        collect_local_tunnel_response_body(response, plan, started_at, response_body_limit_bytes)
+            .await?;
+    let decoded_body_bytes =
+        decode_response_body_bytes_with_limit(&headers, &body_bytes, response_body_limit_bytes)?;
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     let upstream_bytes = body_bytes.len() as u64;
     if status_code >= 400 {
@@ -1179,6 +1243,7 @@ async fn collect_local_tunnel_response_body(
     mut response: tunnel::DirectRelayResponse,
     plan: &ExecutionPlan,
     started_at: Instant,
+    response_body_limit_bytes: usize,
 ) -> Result<(Vec<u8>, Option<u64>), ExecutionRuntimeTransportError> {
     let mut body_bytes = Vec::new();
     let mut first_byte_ms = None;
@@ -1201,7 +1266,11 @@ async fn collect_local_tunnel_response_body(
         if plan.stream && first_byte_ms.is_none() && !chunk.is_empty() {
             first_byte_ms = Some(started_at.elapsed().as_millis() as u64);
         }
-        append_upstream_response_body_chunk(&mut body_bytes, &chunk)?;
+        append_upstream_response_body_chunk_with_limit(
+            &mut body_bytes,
+            &chunk,
+            response_body_limit_bytes,
+        )?;
     }
 
     Ok((body_bytes, first_byte_ms))
@@ -1362,20 +1431,28 @@ impl DirectHttpResponse {
     }
 
     pub(crate) async fn bytes(self) -> Result<Bytes, ExecutionRuntimeTransportError> {
+        self.bytes_with_limit(crate::headers::max_internal_buffered_body_bytes())
+            .await
+    }
+
+    async fn bytes_with_limit(
+        self,
+        response_body_limit_bytes: usize,
+    ) -> Result<Bytes, ExecutionRuntimeTransportError> {
         let started_at = Instant::now();
         match self {
             DirectHttpResponse::Reqwest(response) => {
-                collect_reqwest_stream_body(response, started_at, None)
+                collect_reqwest_stream_body(response, started_at, None, response_body_limit_bytes)
                     .await
                     .map(|(body, _)| body)
             }
             DirectHttpResponse::HyperH2c(response) => {
-                collect_hyper_stream_body(response, started_at, None)
+                collect_hyper_stream_body(response, started_at, None, response_body_limit_bytes)
                     .await
                     .map(|(body, _)| body)
             }
             DirectHttpResponse::BrowserWreq(response) => {
-                collect_wreq_stream_body(response, started_at, None)
+                collect_wreq_stream_body(response, started_at, None, response_body_limit_bytes)
                     .await
                     .map(|(body, _)| body)
             }
@@ -1386,21 +1463,43 @@ impl DirectHttpResponse {
         self,
         plan: &ExecutionPlan,
         started_at: Instant,
+        response_body_limit_bytes: usize,
     ) -> Result<(Bytes, Option<u64>), ExecutionRuntimeTransportError> {
         if !plan.stream {
-            return self.bytes().await.map(|bytes| (bytes, None));
+            return self
+                .bytes_with_limit(response_body_limit_bytes)
+                .await
+                .map(|bytes| (bytes, None));
         }
 
         let first_byte_timeout = resolve_stream_first_byte_timeout(plan);
         match self {
             DirectHttpResponse::Reqwest(response) => {
-                collect_reqwest_stream_body(response, started_at, first_byte_timeout).await
+                collect_reqwest_stream_body(
+                    response,
+                    started_at,
+                    first_byte_timeout,
+                    response_body_limit_bytes,
+                )
+                .await
             }
             DirectHttpResponse::HyperH2c(response) => {
-                collect_hyper_stream_body(response, started_at, first_byte_timeout).await
+                collect_hyper_stream_body(
+                    response,
+                    started_at,
+                    first_byte_timeout,
+                    response_body_limit_bytes,
+                )
+                .await
             }
             DirectHttpResponse::BrowserWreq(response) => {
-                collect_wreq_stream_body(response, started_at, first_byte_timeout).await
+                collect_wreq_stream_body(
+                    response,
+                    started_at,
+                    first_byte_timeout,
+                    response_body_limit_bytes,
+                )
+                .await
             }
         }
     }
@@ -1446,6 +1545,7 @@ async fn collect_reqwest_stream_body(
     response: reqwest::Response,
     started_at: Instant,
     first_byte_timeout: Option<Duration>,
+    response_body_limit_bytes: usize,
 ) -> Result<(Bytes, Option<u64>), ExecutionRuntimeTransportError> {
     let mut stream = response.bytes_stream();
     let mut body_bytes = Vec::new();
@@ -1466,7 +1566,11 @@ async fn collect_reqwest_stream_body(
         if first_byte_ms.is_none() && !chunk.is_empty() {
             first_byte_ms = Some(started_at.elapsed().as_millis() as u64);
         }
-        append_upstream_response_body_chunk(&mut body_bytes, &chunk)?;
+        append_upstream_response_body_chunk_with_limit(
+            &mut body_bytes,
+            &chunk,
+            response_body_limit_bytes,
+        )?;
     }
 
     Ok((Bytes::from(body_bytes), first_byte_ms))
@@ -1476,6 +1580,7 @@ async fn collect_hyper_stream_body(
     response: hyper::Response<HyperIncomingBody>,
     started_at: Instant,
     first_byte_timeout: Option<Duration>,
+    response_body_limit_bytes: usize,
 ) -> Result<(Bytes, Option<u64>), ExecutionRuntimeTransportError> {
     let mut stream = response.into_body().into_data_stream();
     let mut body_bytes = Vec::new();
@@ -1496,7 +1601,11 @@ async fn collect_hyper_stream_body(
         if first_byte_ms.is_none() && !chunk.is_empty() {
             first_byte_ms = Some(started_at.elapsed().as_millis() as u64);
         }
-        append_upstream_response_body_chunk(&mut body_bytes, &chunk)?;
+        append_upstream_response_body_chunk_with_limit(
+            &mut body_bytes,
+            &chunk,
+            response_body_limit_bytes,
+        )?;
     }
 
     Ok((Bytes::from(body_bytes), first_byte_ms))
@@ -1506,6 +1615,7 @@ async fn collect_wreq_stream_body(
     response: wreq::Response,
     started_at: Instant,
     first_byte_timeout: Option<Duration>,
+    response_body_limit_bytes: usize,
 ) -> Result<(Bytes, Option<u64>), ExecutionRuntimeTransportError> {
     let mut stream = response.bytes_stream();
     let mut body_bytes = Vec::new();
@@ -1526,7 +1636,11 @@ async fn collect_wreq_stream_body(
         if first_byte_ms.is_none() && !chunk.is_empty() {
             first_byte_ms = Some(started_at.elapsed().as_millis() as u64);
         }
-        append_upstream_response_body_chunk(&mut body_bytes, &chunk)?;
+        append_upstream_response_body_chunk_with_limit(
+            &mut body_bytes,
+            &chunk,
+            response_body_limit_bytes,
+        )?;
     }
 
     Ok((Bytes::from(body_bytes), first_byte_ms))
@@ -2378,10 +2492,31 @@ async fn send_via_tunnel_relay(
             error_kind = %kind,
             "gateway execution runtime tunnel relay returned relay error"
         );
-        let message = response
-            .text()
-            .await
-            .unwrap_or_else(|_| format!("hub relay error: {kind}"));
+        let response_headers = collect_response_headers(response.headers());
+        let response_body_limit_bytes = execution_plan_response_body_limit_bytes(plan);
+        let (wire_body, _) =
+            collect_reqwest_stream_body(response, Instant::now(), None, response_body_limit_bytes)
+                .await
+                .map_err(|error| {
+                    ExecutionRuntimeTransportError::RelayError(format!(
+                        "hub relay error: {kind}: bounded error body read failed: {error}"
+                    ))
+                })?;
+        let decoded_body = decode_response_body_bytes_with_limit(
+            &response_headers,
+            &wire_body,
+            response_body_limit_bytes,
+        )
+        .map_err(|error| {
+            ExecutionRuntimeTransportError::RelayError(format!(
+                "hub relay error: {kind}: bounded error body decode failed: {error}"
+            ))
+        })?;
+        let message = if decoded_body.is_empty() {
+            format!("hub relay error: {kind}")
+        } else {
+            String::from_utf8_lossy(decoded_body.as_ref()).into_owned()
+        };
         return Err(ExecutionRuntimeTransportError::RelayError(message));
     }
 
@@ -3903,6 +4038,7 @@ pub(crate) fn build_request_headers(
             || normalized_key == EXECUTION_REQUEST_HTTP1_ONLY_HEADER
             || normalized_key == EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER
             || normalized_key == EXECUTION_RESPONSE_BODY_MODE_HEADER
+            || normalized_key == EXECUTION_RESPONSE_BODY_LIMIT_HEADER
         {
             continue;
         }
@@ -4051,7 +4187,7 @@ pub(crate) fn decode_response_body_bytes<'a>(
     )
 }
 
-fn decode_response_body_bytes_with_limit<'a>(
+pub(crate) fn decode_response_body_bytes_with_limit<'a>(
     headers: &BTreeMap<String, String>,
     body_bytes: &'a [u8],
     limit_bytes: usize,
@@ -4071,6 +4207,11 @@ fn decode_response_body_bytes_with_limit<'a>(
         Some("deflate") => {
             let mut decoder = DeflateDecoder::new(body_bytes);
             read_upstream_response_decoder_with_limit("deflate", &mut decoder, limit_bytes)
+                .map(Cow::Owned)
+        }
+        Some("br") => {
+            let mut decoder = BrotliDecoder::new(body_bytes, 4_096);
+            read_upstream_response_decoder_with_limit("br", &mut decoder, limit_bytes)
                 .map(Cow::Owned)
         }
         _ => Ok(Cow::Borrowed(body_bytes)),
@@ -4192,12 +4333,16 @@ mod tests {
     use super::{
         append_upstream_response_body_chunk_with_limit, build_browser_wreq_client, build_client,
         build_direct_tunnel_request_meta, build_execution_response_body, build_request_headers,
-        decode_response_body_bytes_with_limit, execute_sync_plan, execution_response_body_mode,
+        decode_response_body_bytes_with_limit, effective_response_body_limit_bytes,
+        execute_sync_plan, execution_plan_response_body_limit_bytes, execution_response_body_mode,
         record_manual_proxy_request_failure, record_manual_proxy_request_outcome,
         record_manual_proxy_request_success, record_manual_proxy_stream_error,
         resolve_execution_transport_controls, resolve_non_stream_total_timeout,
-        resolve_stream_first_byte_timeout, response_body_is_json, DirectSyncExecutionRuntime,
+        resolve_stream_first_byte_timeout, response_body_is_json,
+        with_upstream_response_body_limit, DirectSyncExecutionRuntime,
         ExecutionRuntimeTransportError, ExecutionTransportControls, UpstreamResponseBodyPhase,
+        DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES, EXECUTION_RESPONSE_BODY_LIMIT_HEADER,
+        MAX_SCOPED_RESPONSE_BODY_LIMIT_BYTES, MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
     };
     use crate::constants::{
         EXECUTION_RUNTIME_LOOP_GUARD_HEADER, EXECUTION_RUNTIME_LOOP_GUARD_VIA_TOKEN,
@@ -4250,6 +4395,162 @@ mod tests {
         );
         assert!(!materialized.contains_key("x-aether-grok-runtime"));
         assert!(!materialized.contains_key("x-aether-future-control"));
+    }
+
+    #[test]
+    fn scoped_response_body_limit_injection_preserves_transport_profile_and_extra() {
+        let mut plan = tunnel_timeout_plan(false);
+        let original_profile = ResolvedTransportProfile {
+            profile_id: "existing-profile".into(),
+            backend: TRANSPORT_BACKEND_BROWSER_WREQ.into(),
+            http_mode: TRANSPORT_HTTP_MODE_HTTP1_ONLY.into(),
+            pool_scope: "provider".into(),
+            header_fingerprint: Some(json!({"user_agent": "existing"})),
+            extra: Some(json!({"existing": {"nested": true}})),
+        };
+        plan.transport_profile = Some(original_profile.clone());
+
+        let bounded_plan =
+            with_upstream_response_body_limit(&plan, DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES);
+
+        assert_eq!(plan.transport_profile, Some(original_profile.clone()));
+        assert_eq!(bounded_plan.transport_profile, Some(original_profile));
+        assert_eq!(
+            bounded_plan
+                .headers
+                .get(EXECUTION_RESPONSE_BODY_LIMIT_HEADER)
+                .and_then(|value| value.parse::<usize>().ok()),
+            Some(DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES)
+        );
+        assert_eq!(
+            execution_plan_response_body_limit_bytes(&bounded_plan),
+            DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES
+        );
+
+        let unprofiled_plan = tunnel_timeout_plan(false);
+        let bounded_unprofiled_plan = with_upstream_response_body_limit(
+            &unprofiled_plan,
+            DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+        );
+        assert!(unprofiled_plan.transport_profile.is_none());
+        assert!(bounded_unprofiled_plan.transport_profile.is_none());
+        assert_eq!(
+            execution_plan_response_body_limit_bytes(&bounded_unprofiled_plan),
+            DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES
+        );
+
+        let mut shadowed_plan = tunnel_timeout_plan(false);
+        shadowed_plan.headers.insert(
+            EXECUTION_RESPONSE_BODY_LIMIT_HEADER.to_ascii_uppercase(),
+            "65536".to_string(),
+        );
+        let bounded_shadowed_plan = with_upstream_response_body_limit(
+            &shadowed_plan,
+            DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+        );
+        assert_eq!(
+            bounded_shadowed_plan
+                .headers
+                .keys()
+                .filter(|name| name.eq_ignore_ascii_case(EXECUTION_RESPONSE_BODY_LIMIT_HEADER))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn scoped_response_body_limit_parsing_rejects_invalid_values_and_clamps_bounds() {
+        let scoped_plan = |raw_limit: &str| {
+            let mut plan = tunnel_timeout_plan(false);
+            plan.headers.insert(
+                EXECUTION_RESPONSE_BODY_LIMIT_HEADER.to_string(),
+                raw_limit.to_string(),
+            );
+            plan
+        };
+
+        for invalid in ["0", "-1", "1.5", "", "invalid"] {
+            assert_eq!(
+                execution_plan_response_body_limit_bytes(&scoped_plan(invalid)),
+                DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES
+            );
+        }
+        assert_eq!(
+            execution_plan_response_body_limit_bytes(&scoped_plan("1")),
+            MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES
+        );
+        assert_eq!(
+            execution_plan_response_body_limit_bytes(&scoped_plan(
+                &(MAX_SCOPED_RESPONSE_BODY_LIMIT_BYTES as u64 + 1).to_string()
+            )),
+            MAX_SCOPED_RESPONSE_BODY_LIMIT_BYTES
+        );
+        assert_eq!(
+            execution_plan_response_body_limit_bytes(&scoped_plan("1048576")),
+            1_048_576
+        );
+        assert_eq!(
+            effective_response_body_limit_bytes(
+                Some(&(DEFAULT_SCOPED_RESPONSE_BODY_LIMIT_BYTES * 2).to_string()),
+                1024 * 1024,
+            ),
+            1024 * 1024,
+            "a scoped limit must never raise the operator's global cap"
+        );
+    }
+
+    #[test]
+    fn scoped_response_body_wire_limit_rejects_overflow() {
+        let bounded_plan = with_upstream_response_body_limit(
+            &tunnel_timeout_plan(false),
+            MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+        );
+        let limit_bytes = execution_plan_response_body_limit_bytes(&bounded_plan);
+        let mut body = vec![b'x'; limit_bytes];
+
+        let error =
+            append_upstream_response_body_chunk_with_limit(&mut body, b"overflow", limit_bytes)
+                .expect_err("wire body above the plan-scoped limit should fail");
+
+        assert!(matches!(
+            error,
+            ExecutionRuntimeTransportError::UpstreamResponseTooLarge {
+                phase: UpstreamResponseBodyPhase::Wire,
+                limit_bytes: MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+            }
+        ));
+    }
+
+    #[test]
+    fn scoped_response_body_limit_rejects_gzip_bomb_after_wire_check() {
+        let bounded_plan = with_upstream_response_body_limit(
+            &tunnel_timeout_plan(false),
+            MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+        );
+        let limit_bytes = execution_plan_response_body_limit_bytes(&bounded_plan);
+        let payload = vec![b'x'; limit_bytes + 1];
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(&payload)
+            .expect("gzip payload should encode");
+        let encoded = encoder.finish().expect("gzip payload should finish");
+        assert!(encoded.len() < limit_bytes);
+
+        let mut wire_body = Vec::new();
+        append_upstream_response_body_chunk_with_limit(&mut wire_body, &encoded, limit_bytes)
+            .expect("compressed wire body should fit within the plan-scoped limit");
+        let headers = BTreeMap::from([("content-encoding".to_string(), "gzip".to_string())]);
+
+        let error = decode_response_body_bytes_with_limit(&headers, &wire_body, limit_bytes)
+            .expect_err("decoded body above the plan-scoped limit should fail");
+
+        assert!(matches!(
+            error,
+            ExecutionRuntimeTransportError::UpstreamResponseTooLarge {
+                phase: UpstreamResponseBodyPhase::Decoded,
+                limit_bytes: MIN_SCOPED_RESPONSE_BODY_LIMIT_BYTES,
+            }
+        ));
     }
 
     #[test]

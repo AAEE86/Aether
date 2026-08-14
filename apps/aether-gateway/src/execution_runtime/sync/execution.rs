@@ -55,8 +55,9 @@ use crate::execution_runtime::submission::{
     resolve_local_sync_error_status_code, submit_local_core_error_or_sync_finalize,
 };
 use crate::execution_runtime::transport::{
-    append_upstream_response_body_chunk, build_execution_response_body, build_request_body,
-    collect_response_headers, decode_response_body_bytes, execution_response_body_mode,
+    append_upstream_response_body_chunk_with_limit, build_execution_response_body,
+    build_request_body, collect_response_headers, decode_response_body_bytes_with_limit,
+    execution_plan_response_body_limit_bytes, execution_response_body_mode,
     format_hyper_error_chain, format_upstream_request_error, format_wreq_upstream_request_error,
     response_body_is_json, send_request, DirectHttpResponse, DirectSyncExecutionRuntime,
     ExecutionRuntimeTransportError,
@@ -1491,6 +1492,7 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
     progress_snapshot: Option<Arc<Mutex<OpenAiImageSyncProgressSnapshot>>>,
 ) -> Result<ExecutionResult, SyncExecutionFailure> {
     let request_body = build_request_body(plan).map_err(SyncExecutionFailure::from_transport)?;
+    let response_body_limit_bytes = execution_plan_response_body_limit_bytes(plan);
     let started_at = Instant::now();
     let mut progress =
         OpenAiImageSyncProgressRecorder::new(state, plan, report_context, progress_snapshot);
@@ -1529,8 +1531,12 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
                         ),
                     )
                 })?;
-                append_upstream_response_body_chunk(&mut body_bytes, &chunk)
-                    .map_err(SyncExecutionFailure::from_transport)?;
+                append_upstream_response_body_chunk_with_limit(
+                    &mut body_bytes,
+                    &chunk,
+                    response_body_limit_bytes,
+                )
+                .map_err(SyncExecutionFailure::from_transport)?;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 progress
                     .observe_chunk(&chunk, status_code, elapsed_ms)
@@ -1547,8 +1553,12 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
                         )),
                     )
                 })?;
-                append_upstream_response_body_chunk(&mut body_bytes, &chunk)
-                    .map_err(SyncExecutionFailure::from_transport)?;
+                append_upstream_response_body_chunk_with_limit(
+                    &mut body_bytes,
+                    &chunk,
+                    response_body_limit_bytes,
+                )
+                .map_err(SyncExecutionFailure::from_transport)?;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 progress
                     .observe_chunk(&chunk, status_code, elapsed_ms)
@@ -1565,8 +1575,12 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
                         ),
                     )
                 })?;
-                append_upstream_response_body_chunk(&mut body_bytes, &chunk)
-                    .map_err(SyncExecutionFailure::from_transport)?;
+                append_upstream_response_body_chunk_with_limit(
+                    &mut body_bytes,
+                    &chunk,
+                    response_body_limit_bytes,
+                )
+                .map_err(SyncExecutionFailure::from_transport)?;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 progress
                     .observe_chunk(&chunk, status_code, elapsed_ms)
@@ -1575,8 +1589,9 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
         }
     }
 
-    let decoded_body_bytes = decode_response_body_bytes(&headers, &body_bytes)
-        .map_err(SyncExecutionFailure::from_transport)?;
+    let decoded_body_bytes =
+        decode_response_body_bytes_with_limit(&headers, &body_bytes, response_body_limit_bytes)
+            .map_err(SyncExecutionFailure::from_transport)?;
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     let upstream_bytes = body_bytes.len() as u64;
     progress.finish(status_code, elapsed_ms).await;

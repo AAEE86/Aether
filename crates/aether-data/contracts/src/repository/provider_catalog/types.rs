@@ -797,6 +797,18 @@ pub trait ProviderCatalogReadRepository: Send + Sync {
         key_ids: &[String],
     ) -> Result<Vec<StoredProviderCatalogKey>, crate::DataLayerError>;
 
+    /// Reads credential-bearing key records without an intervening repository cache.
+    ///
+    /// Callers use this only for security-sensitive generation fences where a short-lived cached
+    /// key record could bind data to credentials that an administrator has already replaced.
+    /// Repository implementations that do not add a read cache can use the default behavior.
+    async fn list_keys_by_ids_strong(
+        &self,
+        key_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogKey>, crate::DataLayerError> {
+        self.list_keys_by_ids(key_ids).await
+    }
+
     async fn list_keys_by_provider_ids(
         &self,
         provider_ids: &[String],
