@@ -867,6 +867,7 @@ mod tests {
             candidate_id: None,
             status_code: 200,
             headers: Default::default(),
+            response_observation: None,
             body: Some(aether_contracts::ResponseBody {
                 json_body: Some(body),
                 body_bytes_b64: None,

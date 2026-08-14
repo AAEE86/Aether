@@ -9,12 +9,12 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex, OnceLock, RwLock as StdRwLock}
 use std::time::{Duration, Instant};
 
 use aether_contracts::{
-    ExecutionPlan, ExecutionResponseBodyMode, ExecutionResult, ExecutionTelemetry, ProxySnapshot,
-    ResolvedTransportProfile, ResponseBody, EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER,
-    EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER, EXECUTION_REQUEST_HTTP1_ONLY_HEADER,
-    EXECUTION_RESPONSE_BODY_MODE_HEADER, TRANSPORT_BACKEND_BROWSER_WREQ,
-    TRANSPORT_BACKEND_REQWEST_RUSTLS, TRANSPORT_HTTP_MODE_H2C_PRIOR_KNOWLEDGE,
-    TRANSPORT_HTTP_MODE_HTTP1_ONLY,
+    ExecutionPlan, ExecutionResponseBodyMode, ExecutionResponseObservation, ExecutionResult,
+    ExecutionTelemetry, ProxySnapshot, ResolvedTransportProfile, ResponseBody,
+    EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER, EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER,
+    EXECUTION_REQUEST_HTTP1_ONLY_HEADER, EXECUTION_RESPONSE_BODY_MODE_HEADER,
+    TRANSPORT_BACKEND_BROWSER_WREQ, TRANSPORT_BACKEND_REQWEST_RUSTLS,
+    TRANSPORT_HTTP_MODE_H2C_PRIOR_KNOWLEDGE, TRANSPORT_HTTP_MODE_HTTP1_ONLY,
 };
 use aether_data::repository::proxy_nodes::ProxyNodeTrafficMutation;
 use aether_http::{apply_http_client_config, HttpClientConfig};
@@ -691,6 +691,7 @@ pub(crate) struct DirectUpstreamStreamExecution {
     pub(crate) stream_precommit_committed: bool,
     pub(crate) response: DirectUpstreamResponse,
     pub(crate) started_at: Instant,
+    pub(crate) response_observation: ExecutionResponseObservation,
     pub(crate) stream_first_byte_timeout: Option<Duration>,
     pub(crate) upstream_target_permit: Option<UpstreamTargetAdmissionPermit>,
 }
@@ -699,6 +700,7 @@ pub(crate) struct DirectUpstreamStreamExecution {
 pub(crate) struct DirectSyncResponseStarted {
     pub(crate) status_code: u16,
     pub(crate) ttfb_ms: u64,
+    pub(crate) response_observation: ExecutionResponseObservation,
 }
 
 impl DirectSyncExecutionRuntime {
@@ -724,14 +726,23 @@ impl DirectSyncExecutionRuntime {
         let body_bytes = build_request_body(plan)?;
 
         let started_at = Instant::now();
+        let request_started_at_unix_ms = crate::clock::current_unix_ms();
+        let request_order_id = uuid::Uuid::now_v7().to_string();
         with_non_stream_total_timeout(plan, async move {
             let response = send_request_inner(plan, body_bytes, false).await?;
             let ttfb_ms = started_at.elapsed().as_millis() as u64;
+            let response_headers_observed_at_unix_ms = crate::clock::current_unix_ms();
             let status_code = response.status_code();
             let headers = response.headers();
+            let response_observation = ExecutionResponseObservation {
+                request_started_at_unix_ms,
+                response_headers_observed_at_unix_ms,
+                request_order_id,
+            };
             on_response_started(DirectSyncResponseStarted {
                 status_code,
                 ttfb_ms,
+                response_observation: response_observation.clone(),
             });
             let (body_bytes, stream_ttfb_ms) =
                 response.bytes_with_stream_timeout(plan, started_at).await?;
@@ -752,6 +763,7 @@ impl DirectSyncExecutionRuntime {
                 candidate_id: plan.candidate_id.clone(),
                 status_code,
                 headers,
+                response_observation: Some(response_observation),
                 body,
                 telemetry: Some(ExecutionTelemetry {
                     ttfb_ms: stream_ttfb_ms.or(Some(ttfb_ms)),
@@ -776,6 +788,8 @@ impl DirectSyncExecutionRuntime {
         );
 
         let started_at = Instant::now();
+        let request_started_at_unix_ms = crate::clock::current_unix_ms();
+        let request_order_id = uuid::Uuid::now_v7().to_string();
         let response = send_request(plan, body_bytes).await?;
         observe_gateway_stage_ms(
             "direct_send_headers",
@@ -783,6 +797,7 @@ impl DirectSyncExecutionRuntime {
         );
         let status_code = response.status_code();
         let headers = response.headers();
+        let response_headers_observed_at_unix_ms = crate::clock::current_unix_ms();
 
         let stream_summary_report_context = build_stream_summary_report_context(plan);
 
@@ -797,6 +812,11 @@ impl DirectSyncExecutionRuntime {
             stream_precommit_committed: false,
             response: response.into_direct_upstream_response(),
             started_at,
+            response_observation: ExecutionResponseObservation {
+                request_started_at_unix_ms,
+                response_headers_observed_at_unix_ms,
+                request_order_id,
+            },
             stream_first_byte_timeout: resolve_stream_first_byte_timeout(plan),
             upstream_target_permit: None,
         })
@@ -834,7 +854,7 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     }
 
     if resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).is_some() {
-        return execute_sync_plan_via_local_tunnel(state, plan)
+        return execute_sync_plan_via_local_tunnel(state, plan, report_context)
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()));
     }
@@ -857,7 +877,24 @@ pub(crate) async fn execute_sync_plan_with_report_context(
         Ok(None) => {}
         Err(err) => return Err(GatewayError::Internal(err.to_string())),
     }
-    match DirectSyncExecutionRuntime::new().execute_sync(plan).await {
+    let state_for_response_started = state.clone();
+    match DirectSyncExecutionRuntime::new()
+        .execute_sync_with_response_started(plan, move |event| {
+            crate::orchestration::spawn_local_oauth_success_effect(
+                state_for_response_started,
+                plan,
+                report_context,
+                crate::orchestration::LocalOAuthSuccessEffect {
+                    status_code: event.status_code,
+                    request_started_at_unix_ms: Some(
+                        event.response_observation.request_started_at_unix_ms,
+                    ),
+                    request_order_id: Some(&event.response_observation.request_order_id),
+                },
+            );
+        })
+        .await
+    {
         Ok(result) => {
             record_manual_proxy_request_outcome(state, plan, result.status_code).await;
             Ok(result)
@@ -889,6 +926,8 @@ pub(crate) async fn execute_stream_plan_via_local_tunnel(
         plan.body.body_bytes_b64.is_some(),
     )?;
     let started_at = Instant::now();
+    let request_started_at_unix_ms = crate::clock::current_unix_ms();
+    let request_order_id = uuid::Uuid::now_v7().to_string();
     let response = state
         .tunnel
         .open_direct_relay_stream(
@@ -900,6 +939,7 @@ pub(crate) async fn execute_stream_plan_via_local_tunnel(
         .map_err(ExecutionRuntimeTransportError::RelayError)?;
     let status_code = response.status();
     let headers = collect_tunnel_response_headers(response.headers());
+    let response_headers_observed_at_unix_ms = crate::clock::current_unix_ms();
 
     Ok(Some(DirectUpstreamStreamExecution {
         request_id: plan.request_id.clone(),
@@ -912,6 +952,11 @@ pub(crate) async fn execute_stream_plan_via_local_tunnel(
         stream_precommit_committed: false,
         response: DirectUpstreamResponse::LocalTunnel(response),
         started_at,
+        response_observation: ExecutionResponseObservation {
+            request_started_at_unix_ms,
+            response_headers_observed_at_unix_ms,
+            request_order_id,
+        },
         stream_first_byte_timeout: resolve_stream_first_byte_timeout(plan),
         upstream_target_permit: None,
     }))
@@ -991,13 +1036,19 @@ fn manual_proxy_node_id(proxy: Option<&ProxySnapshot>) -> Option<String> {
 async fn execute_sync_plan_via_local_tunnel(
     state: &AppState,
     plan: &ExecutionPlan,
+    report_context: Option<&serde_json::Value>,
 ) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
-    with_non_stream_total_timeout(plan, execute_sync_plan_via_local_tunnel_inner(state, plan)).await
+    with_non_stream_total_timeout(
+        plan,
+        execute_sync_plan_via_local_tunnel_inner(state, plan, report_context),
+    )
+    .await
 }
 
 async fn execute_sync_plan_via_local_tunnel_inner(
     state: &AppState,
     plan: &ExecutionPlan,
+    report_context: Option<&serde_json::Value>,
 ) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
     let node_id = resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).ok_or_else(|| {
         ExecutionRuntimeTransportError::RelayError("local tunnel node unavailable".to_string())
@@ -1030,6 +1081,8 @@ async fn execute_sync_plan_via_local_tunnel_inner(
         "gateway execution runtime local tunnel request prepared"
     );
     let started_at = Instant::now();
+    let request_started_at_unix_ms = crate::clock::current_unix_ms();
+    let request_order_id = uuid::Uuid::now_v7().to_string();
     let mut response = state
         .tunnel
         .open_direct_relay_stream(
@@ -1040,8 +1093,24 @@ async fn execute_sync_plan_via_local_tunnel_inner(
         .await
         .map_err(ExecutionRuntimeTransportError::RelayError)?;
     let ttfb_ms = started_at.elapsed().as_millis() as u64;
+    let response_headers_observed_at_unix_ms = crate::clock::current_unix_ms();
     let status_code = response.status();
     let headers = collect_tunnel_response_headers(response.headers());
+    let response_observation = ExecutionResponseObservation {
+        request_started_at_unix_ms,
+        response_headers_observed_at_unix_ms,
+        request_order_id,
+    };
+    crate::orchestration::spawn_local_oauth_success_effect(
+        state.clone(),
+        plan,
+        report_context,
+        crate::orchestration::LocalOAuthSuccessEffect {
+            status_code,
+            request_started_at_unix_ms: Some(response_observation.request_started_at_unix_ms),
+            request_order_id: Some(&response_observation.request_order_id),
+        },
+    );
     let proxy_timing = execution_header_for_log(&headers, "x-proxy-timing").unwrap_or("-");
     let (body_bytes, stream_ttfb_ms) =
         collect_local_tunnel_response_body(response, plan, started_at).await?;
@@ -1095,6 +1164,7 @@ async fn execute_sync_plan_via_local_tunnel_inner(
         candidate_id: plan.candidate_id.clone(),
         status_code,
         headers,
+        response_observation: Some(response_observation),
         body,
         telemetry: Some(ExecutionTelemetry {
             ttfb_ms: stream_ttfb_ms.or(Some(ttfb_ms)),
@@ -5605,6 +5675,8 @@ mod tests {
                 )
                 .await
                 .expect("headers should write");
+            socket.flush().await.expect("headers should flush");
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
             socket
                 .write_all(b"b\r\ndata: one\n\n\r\n")
                 .await
@@ -5634,12 +5706,34 @@ mod tests {
 
         let body = result
             .body
+            .clone()
             .and_then(|body| body.body_bytes_b64)
             .and_then(|body| base64::engine::general_purpose::STANDARD.decode(body).ok())
             .expect("stream body should be captured as bytes");
         let body = String::from_utf8(body).expect("stream body should be utf8");
         assert!(body.contains("data: one"));
         assert!(body.contains("data: two"));
+        let observation = result
+            .response_observation
+            .expect("stream sync execution should preserve header observation");
+        let telemetry = result
+            .telemetry
+            .expect("stream sync execution should include telemetry");
+        let ttfb_ms = telemetry
+            .ttfb_ms
+            .expect("stream sync execution should measure the first body byte");
+        assert!(
+            observation.response_headers_observed_at_unix_ms
+                >= observation.request_started_at_unix_ms
+        );
+        assert!(
+            observation
+                .response_headers_observed_at_unix_ms
+                .saturating_sub(observation.request_started_at_unix_ms)
+                < ttfb_ms,
+            "header observation must not be derived from body-byte ttfb"
+        );
+        assert!(!observation.request_order_id.is_empty());
     }
 
     #[tokio::test]

@@ -178,6 +178,7 @@ fn provider_query_execution_json_body_decodes_stream_encoded_json_response() {
             "content-type".to_string(),
             "application/json".to_string(),
         )]),
+        response_observation: None,
         body: Some(aether_contracts::ResponseBody {
             json_body: None,
             body_bytes_b64: Some(encoded_body),
@@ -436,6 +437,7 @@ fn provider_query_standard_test_aggregates_responses_stream_body() {
         candidate_id: Some("candidate-0".to_string()),
         status_code: 200,
         headers: BTreeMap::new(),
+        response_observation: None,
         body: Some(aether_contracts::ResponseBody {
             json_body: None,
             body_bytes_b64: Some(
@@ -468,6 +470,7 @@ fn provider_query_standard_test_aggregates_responses_image_generation_call() {
         candidate_id: Some("candidate-0".to_string()),
         status_code: 200,
         headers: BTreeMap::new(),
+        response_observation: None,
         body: Some(aether_contracts::ResponseBody {
             json_body: None,
             body_bytes_b64: Some(
@@ -601,6 +604,7 @@ fn provider_query_search_success_requires_non_empty_output() {
             candidate_id: Some("candidate-0".to_string()),
             status_code: 200,
             headers: BTreeMap::new(),
+            response_observation: None,
             body: Some(aether_contracts::ResponseBody {
                 json_body: Some(body),
                 body_bytes_b64: None,
@@ -751,6 +755,7 @@ fn provider_query_standard_test_rejects_gemini_success_without_visible_output() 
         candidate_id: Some("candidate-0".to_string()),
         status_code: 200,
         headers: BTreeMap::new(),
+        response_observation: None,
         body: Some(aether_contracts::ResponseBody {
             json_body: Some(json!({
                 "candidates": [{

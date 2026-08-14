@@ -323,6 +323,7 @@ export interface EndpointAPIKey {
 
 // Codex 上游元数据类型
 export interface CodexUpstreamMetadata {
+  credential_generation?: string
   updated_at?: number  // 更新时间（Unix 时间戳）
   plan_type?: string  // 套餐类型
   primary_used_percent?: number  // 周限额窗口使用百分比
@@ -348,6 +349,10 @@ export interface CodexUpstreamMetadata {
   has_credits?: boolean  // 是否有积分
   credits_balance?: number  // 积分余额
   reset_credits?: QuotaResetCreditsSnapshot | null  // Codex earned rate-limit reset credits
+  account_quota_reset_reservation?: {
+    idempotency_key?: string | null
+    generation?: number | null
+  } | null
 }
 
 export interface AntigravityModelQuota {

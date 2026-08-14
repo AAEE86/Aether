@@ -1,14 +1,14 @@
 use super::{
     ApiKeyLastUsedDelta, DataLayerError, GatewayDataState, GeminiFileMappingListQuery,
     GeminiFileMappingStats, ProviderCatalogKeyAdaptiveStateUpdate,
-    ProviderCatalogKeyHealthStateUpdate, ProviderCatalogKeyListQuery,
-    ProviderCatalogKeyOAuthCredentialCasDelete, ProviderCatalogKeyOAuthRuntimeStateCasUpdate,
-    ProviderCatalogKeyRuntimeMetadataUpdate, ProviderCatalogKeyStatusSnapshotUpdate,
-    PublicHealthStatusCount, PublicHealthTimelineBucket, StoredGeminiFileMapping,
-    StoredGeminiFileMappingListPage, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
-    StoredProviderCatalogKeyMaintenanceSummary, StoredProviderCatalogKeyPage,
-    StoredProviderCatalogKeyStats, StoredProviderCatalogProvider, StoredRequestCandidate,
-    UpsertGeminiFileMappingRecord, UpsertRequestCandidateRecord,
+    ProviderCatalogKeyAdminCasUpdate, ProviderCatalogKeyHealthStateUpdate,
+    ProviderCatalogKeyListQuery, ProviderCatalogKeyOAuthCredentialCasDelete,
+    ProviderCatalogKeyOAuthRuntimeStateCasUpdate, ProviderCatalogKeyRuntimeMetadataUpdate,
+    ProviderCatalogKeyStatusSnapshotUpdate, PublicHealthStatusCount, PublicHealthTimelineBucket,
+    StoredGeminiFileMapping, StoredGeminiFileMappingListPage, StoredProviderCatalogEndpoint,
+    StoredProviderCatalogKey, StoredProviderCatalogKeyMaintenanceSummary,
+    StoredProviderCatalogKeyPage, StoredProviderCatalogKeyStats, StoredProviderCatalogProvider,
+    StoredRequestCandidate, UpsertGeminiFileMappingRecord, UpsertRequestCandidateRecord,
 };
 
 impl GatewayDataState {
@@ -558,6 +558,20 @@ impl GatewayDataState {
         if updated.is_some() {
             self.clear_provider_catalog_cache();
         }
+        Ok(updated)
+    }
+
+    pub(crate) async fn compare_and_update_provider_catalog_key_admin_state(
+        &self,
+        update: &ProviderCatalogKeyAdminCasUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let updated = match &self.provider_catalog_writer {
+            Some(repository) => repository.compare_and_update_key_admin_state(update).await,
+            None => Ok(false),
+        }?;
+        // Clear on both success and conflict so a retry cannot reuse the stale
+        // credential snapshot that lost the CAS.
+        self.clear_provider_catalog_cache();
         Ok(updated)
     }
 

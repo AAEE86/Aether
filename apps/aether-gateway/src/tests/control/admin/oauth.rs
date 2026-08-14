@@ -3440,11 +3440,16 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
     let token_hits_clone = Arc::clone(&token_hits);
     let seen_token = Arc::new(Mutex::new(None::<SeenTokenRequest>));
     let seen_token_clone = Arc::clone(&seen_token);
+    let namespace_race_repository = Arc::new(Mutex::new(
+        None::<Arc<InMemoryProviderCatalogReadRepository>>,
+    ));
+    let namespace_race_repository_clone = Arc::clone(&namespace_race_repository);
     let token_server = Router::new().route(
         "/oauth/token",
         any(move |request: Request| {
             let token_hits_inner = Arc::clone(&token_hits_clone);
             let seen_token_inner = Arc::clone(&seen_token_clone);
+            let namespace_race_repository_inner = Arc::clone(&namespace_race_repository_clone);
             async move {
                 *token_hits_inner.lock().expect("mutex should lock") += 1;
                 let (parts, body) = request.into_parts();
@@ -3459,6 +3464,23 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
                     body: String::from_utf8(raw_body.to_vec())
                         .expect("token request body should be utf8"),
                 });
+                let repository = namespace_race_repository_inner
+                    .lock()
+                    .expect("mutex should lock")
+                    .clone()
+                    .expect("provider catalog repository should be installed");
+                repository
+                    .upsert_key_upstream_metadata_namespace(
+                        "key-codex-oauth",
+                        "codex",
+                        &json!({
+                            "primary_used_percent": 80.0,
+                            "account_quota_request_id": "concurrent-refresh"
+                        }),
+                        Some(1_800_000_001),
+                    )
+                    .await
+                    .expect("concurrent Codex namespace update should succeed");
                 Json(json!({
                     "access_token": "new-codex-access-token",
                     "refresh_token": "new-codex-refresh-token",
@@ -3492,6 +3514,33 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
     key.circuit_breaker_by_format = Some(json!({
         "openai:chat": {"state": "open"}
     }));
+    key.upstream_metadata = Some(json!({
+        "codex": {
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 4_200_000_000u64,
+            "account_quota_reset_fence_unix_ms": 1_800_000_000_000u64,
+            "account_quota_reset_fence_id": "old-account-fence",
+            "account_quota_reset_processed_ids": ["old-account-reset"],
+            "account_quota_reset_pending": true
+        },
+        "unrelated_runtime": {
+            "preserved": true
+        }
+    }));
+    key.status_snapshot = Some(json!({
+        "oauth": {
+            "code": "invalid"
+        },
+        "quota": {
+            "provider_type": "codex",
+            "usage_ratio": 1.0,
+            "windows": [{
+                "kind": "primary",
+                "usage": 100.0,
+                "reset_at": 4_200_000_000u64
+            }]
+        }
+    }));
 
     let score_identity = PoolMemberIdentity::provider_api_key("provider-codex", "key-codex-oauth");
     let score_scope = provider_key_pool_score_scope();
@@ -3510,6 +3559,8 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
         vec![],
         vec![key],
     ));
+    *namespace_race_repository.lock().expect("mutex should lock") =
+        Some(Arc::clone(&provider_catalog_repository));
     let pool_score_repository =
         Arc::new(InMemoryPoolMemberScoreRepository::seed(vec![invalid_score]));
 
@@ -3593,6 +3644,37 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
     assert_eq!(persisted.error_count, Some(0));
     assert_eq!(persisted.health_by_format, Some(json!({})));
     assert_eq!(persisted.circuit_breaker_by_format, Some(json!({})));
+    assert_eq!(
+        persisted
+            .upstream_metadata
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata.get("codex"))
+            .and_then(Value::as_object)
+            .map(|codex| codex.keys().cloned().collect::<Vec<_>>()),
+        Some(vec!["credential_generation".to_string()]),
+        "explicit Codex reauthorization must not carry quota/reset state across accounts"
+    );
+    assert!(persisted
+        .upstream_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/codex/credential_generation"))
+        .and_then(Value::as_str)
+        .is_some_and(|generation| !generation.is_empty()));
+    assert_eq!(
+        persisted
+            .upstream_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("unrelated_runtime")),
+        Some(&json!({"preserved": true}))
+    );
+    assert_eq!(
+        persisted
+            .status_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.get("quota")),
+        Some(&Value::Null)
+    );
     let scores = pool_score_repository
         .get_pool_member_scores_by_ids(&GetPoolMemberScoresByIdsQuery {
             ids: vec![provider_key_pool_score_id(&score_identity, &score_scope)],
@@ -6164,6 +6246,7 @@ async fn gateway_refreshes_admin_provider_oauth_key_locally_with_trusted_admin_p
                     candidate_id: None,
                     status_code: 401,
                     headers: std::collections::BTreeMap::new(),
+                    response_observation: None,
                     body: None,
                     telemetry: None,
                     error: None,
@@ -6523,6 +6606,7 @@ async fn gateway_manual_codex_oauth_refresh_reconciles_missing_fixed_endpoint_im
                     candidate_id: None,
                     status_code: 200,
                     headers: std::collections::BTreeMap::new(),
+                    response_observation: None,
                     body: Some(aether_contracts::ResponseBody {
                         json_body: Some(json!({
                             "plan_type": "plus",
@@ -6757,6 +6841,7 @@ async fn run_gateway_manual_kiro_oauth_refresh_maintenance_endpoint_test(
                     candidate_id: None,
                     status_code: 200,
                     headers: std::collections::BTreeMap::new(),
+                    response_observation: None,
                     body: Some(aether_contracts::ResponseBody {
                         json_body: Some(json!({
                             "subscriptionInfo": {

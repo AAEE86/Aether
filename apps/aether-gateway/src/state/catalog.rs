@@ -662,6 +662,21 @@ impl AppState {
         Ok(updated)
     }
 
+    pub(crate) async fn compare_and_update_provider_catalog_key_admin_state(
+        &self,
+        update: &provider_catalog::ProviderCatalogKeyAdminCasUpdate,
+    ) -> Result<bool, GatewayError> {
+        let updated = self
+            .data
+            .compare_and_update_provider_catalog_key_admin_state(update)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))?;
+        // A conflict means another instance changed credentials. Invalidate on
+        // both outcomes before the caller reloads or reports the conflict.
+        self.invalidate_provider_routing_caches();
+        Ok(updated)
+    }
+
     pub(crate) async fn update_provider_catalog_keys(
         &self,
         keys: &[provider_catalog::StoredProviderCatalogKey],

@@ -1475,6 +1475,7 @@ mod tests {
                 candidate_id: plan.candidate_id.clone(),
                 status_code: self.status_code,
                 headers: BTreeMap::new(),
+                response_observation: None,
                 body: Some(ResponseBody {
                     json_body: Some(self.response_body.clone()),
                     body_bytes_b64: None,
@@ -1526,6 +1527,7 @@ mod tests {
                 candidate_id: plan.candidate_id.clone(),
                 status_code,
                 headers: BTreeMap::new(),
+                response_observation: None,
                 body: Some(ResponseBody {
                     json_body: Some(response_body),
                     body_bytes_b64: None,
@@ -1582,6 +1584,7 @@ mod tests {
                 candidate_id: plan.candidate_id.clone(),
                 status_code,
                 headers: BTreeMap::new(),
+                response_observation: None,
                 body: Some(ResponseBody {
                     json_body: Some(response_body),
                     body_bytes_b64: None,
