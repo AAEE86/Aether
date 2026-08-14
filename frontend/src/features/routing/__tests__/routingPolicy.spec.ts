@@ -99,7 +99,7 @@ describe('routingPolicy', () => {
       allowed_models: ['legacy-model'],
     })
 
-    expect(parseAllowedModelsInput(' gpt-5, claude-*\nlegacy-model, gpt-5 ')).toEqual([
+    expect(parseAllowedModelsInput(' gpt-5\nclaude-*\nlegacy-model\ngpt-5 ')).toEqual([
       'gpt-5',
       'claude-*',
       'legacy-model',
@@ -107,15 +107,32 @@ describe('routingPolicy', () => {
 
     const restricted = updateAllowedModelsFromInput(
       config,
-      'gpt-5, claude-*\nlegacy-model, gpt-5',
+      'gpt-5\nclaude-*\nlegacy-model\ngpt-5',
     )
     expect(restricted.allowed_models).toEqual(['gpt-5', 'claude-*', 'legacy-model'])
-    expect(formatAllowedModelsInput(restricted.allowed_models)).toBe('gpt-5, claude-*, legacy-model')
+    expect(formatAllowedModelsInput(restricted.allowed_models)).toBe('gpt-5\nclaude-*\nlegacy-model')
     expect(routingModelScopeLabel(restricted)).toBe('3 个模型')
 
     const unrestricted = clearAllowedModels(restricted)
     expect(unrestricted.allowed_models).toEqual([])
     expect(routingModelScopeLabel(unrestricted)).toBe('全部模型')
+  })
+
+  it('round-trips selectors containing commas and labels wildcard scope as unrestricted', () => {
+    const selectors = ['vendor,model', 'gpt-*']
+    expect(parseAllowedModelsInput(formatAllowedModelsInput(selectors))).toEqual(selectors)
+
+    const wildcard = normalizeRoutingGroupConfig({ allowed_models: ['gpt-*', '*'] })
+    expect(routingModelScopeLabel(wildcard)).toBe('全部模型')
+  })
+
+  it('preserves historical empty selectors until unrestricted scope is explicit', () => {
+    const legacy = normalizeRoutingGroupConfig({ allowed_models: ['', '  '] })
+
+    expect(updateAllowedModelsFromInput(legacy, '  \n')).toMatchObject({
+      allowed_models: ['', '  '],
+    })
+    expect(clearAllowedModels(legacy).allowed_models).toEqual([])
   })
 
   it('preserves an explicit model allowlist across per-model editing actions', () => {

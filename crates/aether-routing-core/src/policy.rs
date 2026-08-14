@@ -278,8 +278,7 @@ mod tests {
     use serde_json::json;
 
     use crate::actions::{
-        RoutingJsonPatchOperation, RoutingRulePhase, RoutingSchedulingMode,
-        RoutingSetPriorityMode,
+        RoutingJsonPatchOperation, RoutingRulePhase, RoutingSchedulingMode, RoutingSetPriorityMode,
     };
     use crate::conditions::{RoutingCondition, RoutingConditionOp};
     use crate::model::{RoutingDefaultPolicy, RoutingRule};
@@ -367,10 +366,7 @@ mod tests {
             model_policies: vec![RoutingModelPolicy {
                 model: "special-model".to_string(),
                 allowed_providers: vec!["provider-special".to_string()],
-                provider_priority_overrides: BTreeMap::from([(
-                    "provider-special".to_string(),
-                    0,
-                )]),
+                provider_priority_overrides: BTreeMap::from([("provider-special".to_string(), 0)]),
                 ..RoutingModelPolicy::default()
             }],
             rules: vec![],

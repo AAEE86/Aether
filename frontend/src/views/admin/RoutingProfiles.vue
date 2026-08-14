@@ -187,6 +187,8 @@
       <Card
         v-if="draft"
         class="overflow-hidden"
+        :inert="saving"
+        :aria-busy="saving"
       >
         <div class="border-b border-border/60 px-5 py-4">
           <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -336,20 +338,21 @@
                   >
                     模型白名单
                   </h3>
-                  <Badge :variant="draft.config_json.allowed_models.length ? 'outline' : 'secondary'">
-                    {{ draft.config_json.allowed_models.length ? `${draft.config_json.allowed_models.length} 项` : '全部模型' }}
+                  <Badge :variant="routingModelScopeLabel(draft.config_json) === '全部模型' ? 'secondary' : 'outline'">
+                    {{ routingModelScopeLabel(draft.config_json) }}
                   </Badge>
                 </div>
                 <p class="mt-1 text-xs text-muted-foreground">
-                  控制此策略分组适用于哪些模型；留空表示全部模型。它与“区分模型”中的专属调度覆盖相互独立，支持精确值、* 和前缀通配符（如 gpt-*），多个值用英文逗号或换行分隔。
+                  控制此策略分组适用于哪些模型；留空表示全部模型。它与“区分模型”中的专属调度覆盖相互独立，支持精确值、* 和前缀通配符（如 gpt-*），每行填写一个值。
                 </p>
               </div>
               <Button
-                v-if="draft.config_json.allowed_models.length"
+                v-if="routingModelScopeLabel(draft.config_json) !== '全部模型'"
                 type="button"
                 variant="ghost"
                 size="sm"
                 class="shrink-0 text-muted-foreground hover:text-foreground"
+                :disabled="saving"
                 data-testid="clear-allowed-models"
                 @click="clearAllowedModelScope"
               >
@@ -357,24 +360,15 @@
               </Button>
             </div>
 
-            <div class="flex flex-col gap-2 sm:flex-row">
-              <Input
-                v-model="allowedModelsInput"
-                class="min-w-0 flex-1"
-                data-testid="allowed-models-input"
-                aria-label="模型白名单"
-                placeholder="留空表示全部模型，例如：gpt-5, claude-*, legacy-model"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                class="shrink-0"
-                data-testid="apply-allowed-models"
-                @click="applyAllowedModelScope"
-              >
-                应用范围
-              </Button>
-            </div>
+            <Textarea
+              :model-value="allowedModelsInput"
+              class="min-h-[96px] font-mono"
+              :disabled="saving"
+              data-testid="allowed-models-input"
+              aria-label="模型白名单"
+              placeholder="留空表示全部模型，每行一个模型"
+              @update:model-value="updateAllowedModelScope"
+            />
 
             <div
               v-if="draft.config_json.allowed_models.length"
@@ -736,10 +730,34 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronDown, ChevronRight, Copy, Key, Layers, Plus, Save, Star, Trash2 } from 'lucide-vue-next'
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Key,
+  Layers,
+  Plus,
+  Save,
+  SlidersHorizontal,
+  Star,
+  Trash2,
+} from 'lucide-vue-next'
 
 import { PageContainer } from '@/components/layout'
-import { Badge, Button, Card, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCard } from '@/components/ui'
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Table,
+  TableBody,
+  TableCard,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Textarea,
+} from '@/components/ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { AlertDialog } from '@/components/common'
 import {
@@ -824,6 +842,7 @@ const loading = ref(false)
 const saving = ref(false)
 const deleting = ref(false)
 const isCreating = ref(false)
+let draftGeneration = 0
 
 const switchModelTarget = ref<string | null>(null)
 const switchModelDialogOpen = ref(false)
@@ -950,6 +969,7 @@ function paramToString(value: unknown): string | null {
 }
 
 function clearDraftState(): void {
+  draftGeneration += 1
   isCreating.value = false
   selectedGroupId.value = null
   draft.value = null
@@ -964,6 +984,7 @@ function clearDraftState(): void {
 
 function selectGroup(group: RoutingGroupRecord): void {
   const normalized = normalizeRecord(group)
+  draftGeneration += 1
   isCreating.value = false
   selectedGroupId.value = normalized.id
   draft.value = buildDraft(normalized)
@@ -979,6 +1000,7 @@ function setDraftEnabled(value: boolean): void {
 }
 
 function startCreate(): void {
+  draftGeneration += 1
   isCreating.value = true
   selectedGroupId.value = null
   draft.value = {
@@ -1309,18 +1331,18 @@ function globalModelLabel(modelName: string): string {
   return `${model.display_name} (${model.name})`
 }
 
-function applyAllowedModelScope(): void {
-  if (!draft.value) return
-  const next = updateAllowedModelsFromInput(draft.value.config_json, allowedModelsInput.value)
+function updateAllowedModelScope(value: string): void {
+  if (!draft.value || saving.value) return
+  allowedModelsInput.value = value
+  const next = updateAllowedModelsFromInput(draft.value.config_json, value)
   updateDraftConfig(next)
   if (editingConfig.value) {
-    editingConfig.value = updateAllowedModelsFromInput(editingConfig.value, allowedModelsInput.value)
+    editingConfig.value = updateAllowedModelsFromInput(editingConfig.value, value)
   }
-  allowedModelsInput.value = formatAllowedModelsInput(next.allowed_models)
 }
 
 function clearAllowedModelScope(): void {
-  if (!draft.value) return
+  if (!draft.value || saving.value) return
   const next = clearAllowedModels(draft.value.config_json)
   updateDraftConfig(next)
   if (editingConfig.value) {
@@ -1329,7 +1351,7 @@ function clearAllowedModelScope(): void {
   allowedModelsInput.value = ''
 }
 
-function replaceGroup(group: RoutingGroupRecord): void {
+function replaceGroup(group: RoutingGroupRecord, select = true): void {
   const normalized = normalizeRecord(group)
   const index = groups.value.findIndex(item => item.id === normalized.id)
   if (index >= 0) {
@@ -1337,7 +1359,9 @@ function replaceGroup(group: RoutingGroupRecord): void {
   } else {
     groups.value.unshift(normalized)
   }
-  selectGroup(normalized)
+  if (select) {
+    selectGroup(normalized)
+  }
 }
 
 async function fetchGroups(): Promise<void> {
@@ -1373,7 +1397,7 @@ async function loadGlobalModels(options: { cacheTtlMs?: number } = {}): Promise<
 }
 
 async function saveDraft(): Promise<void> {
-  if (!draft.value) return
+  if (!draft.value || saving.value) return
   const name = draft.value.name.trim()
   if (!name) {
     showError('策略名称不能为空')
@@ -1385,6 +1409,10 @@ async function saveDraft(): Promise<void> {
     return
   }
 
+  const targetGroupId = draft.value.id ?? null
+  const submittedGeneration = draftGeneration
+  const submittedSnapshot = draftSnapshotValue(draft.value)
+  const wasCreating = isCreating.value || !draft.value.id
   saving.value = true
   try {
     const payload = {
@@ -1394,13 +1422,28 @@ async function saveDraft(): Promise<void> {
       is_system_default: draft.value.is_system_default,
       config_json: config,
     }
-    const wasCreating = isCreating.value || !draft.value.id
     const saved = wasCreating
       ? await createRoutingGroup(payload)
       : await updateRoutingGroup(draft.value.id, payload)
-    isCreating.value = false
-    replaceGroup(saved)
-    if (wasCreating) {
+
+    const sameDraftGeneration = draftGeneration === submittedGeneration
+    const stillEditingSubmittedDraft = wasCreating
+      ? sameDraftGeneration
+        && isCreateRoute.value
+        && isCreating.value
+        && draft.value != null
+        && draftSnapshotValue(draft.value) === submittedSnapshot
+      : routeGroupId.value === targetGroupId
+        && draft.value?.id === targetGroupId
+        && (sameDraftGeneration
+          ? draftSnapshotValue(draft.value) === submittedSnapshot
+          : !draftDirty.value)
+
+    if (stillEditingSubmittedDraft) {
+      isCreating.value = false
+    }
+    replaceGroup(saved, stillEditingSubmittedDraft)
+    if (wasCreating && stillEditingSubmittedDraft) {
       await router.replace({ name: 'RoutingProfileDetail', params: { groupId: saved.id } })
     }
     success('调度策略已保存')

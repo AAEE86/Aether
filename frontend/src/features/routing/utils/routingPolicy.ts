@@ -114,7 +114,7 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
 export function parseAllowedModelsInput(value: string): string[] {
   const seen = new Set<string>()
   return value
-    .split(/[,\r\n]+/u)
+    .split(/\r\n?|\n/u)
     .map(item => item.trim())
     .filter(Boolean)
     .filter((model) => {
@@ -125,7 +125,7 @@ export function parseAllowedModelsInput(value: string): string[] {
 }
 
 export function formatAllowedModelsInput(models: string[]): string {
-  return models.join(', ')
+  return models.join('\n')
 }
 
 export function updateAllowedModelsFromInput(
@@ -133,6 +133,14 @@ export function updateAllowedModelsFromInput(
   value: string,
 ): RoutingGroupConfig {
   const next = normalizeRoutingGroupConfig(config)
+  // Preserve the historical "empty selector" form until the user explicitly
+  // chooses the unrestricted scope. It is distinct from an empty allowlist in
+  // the routing core, where it matches no normal model.
+  const hasHistoricalEmptySelector = next.allowed_models.length > 0
+    && next.allowed_models.every(model => model.trim() === '')
+  if (value.trim() === '' && hasHistoricalEmptySelector) {
+    return next
+  }
   next.allowed_models = parseAllowedModelsInput(value)
   return next
 }
@@ -144,8 +152,11 @@ export function clearAllowedModels(config: RoutingGroupConfig): RoutingGroupConf
 }
 
 export function routingModelScopeLabel(config: RoutingGroupConfig): string {
-  const count = normalizeRoutingGroupConfig(config).allowed_models.length
-  return count ? `${count} 个模型` : '全部模型'
+  const models = normalizeRoutingGroupConfig(config).allowed_models
+  if (models.length === 0 || models.some(model => model.trim() === '*')) {
+    return '全部模型'
+  }
+  return `${models.length} 个模型`
 }
 
 export function allowedModelsMirrorPerModelPolicies(config: RoutingGroupConfig): boolean {
