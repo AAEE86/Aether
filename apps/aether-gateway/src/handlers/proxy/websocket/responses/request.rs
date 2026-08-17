@@ -13,6 +13,25 @@ use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::headers::request_origin_from_headers_and_remote_addr;
 use crate::privacy::RedactionSessionSlot;
 
+/// Model identifiers are copied into planner diagnostics. Bound them before
+/// any planning/logging so a single 16 MiB WebSocket frame cannot amplify into
+/// repeated multi-megabyte log records.
+pub(super) const MAX_RESPONSES_WEBSOCKET_MODEL_BYTES: usize = 256;
+
+pub(super) fn validated_response_create_model(value: &Value) -> Result<&str, &'static str> {
+    let Some(model) = value
+        .as_str()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return Err("invalid_response_create_model");
+    };
+    if model.len() > MAX_RESPONSES_WEBSOCKET_MODEL_BYTES {
+        return Err("invalid_response_create_model");
+    }
+    Ok(model)
+}
+
 /// 把一条 WebSocket turn 还原成 planner 需要的 HTTP 形状请求头部。
 ///
 /// 这里必须和 HTTP 前门（`handlers/proxy/mod.rs`）保持同一份 extension 契约：
@@ -73,11 +92,12 @@ pub(super) fn planned_response_create_event(
 /// Restores the WebSocket protocol framing that provider-body normalization is
 /// not aware of.
 ///
-/// `previous_response_id` is on the Codex unsupported-field list and `generate`
-/// is not an HTTP body option at all, so normalization strips both — yet they
-/// are the entire point of WebSocket mode. They must be re-grafted from the
-/// client event afterwards. `stream`/`background` go the other way: the
-/// normalizer inserts `stream`, and the WebSocket protocol has no use for it.
+/// `previous_response_id` is on the Codex unsupported-field list, Codex HTTP
+/// normalization may force `store`, and `generate` is not an HTTP body option
+/// at all. Those fields are WebSocket protocol state, so an explicitly supplied
+/// value (including `null`) must be re-grafted verbatim from the client event.
+/// `stream`/`background` go the other way: the normalizer inserts `stream`, and
+/// the WebSocket protocol has no use for it.
 fn finish_response_create_event(
     mut event: Value,
     client_event: &Value,
@@ -89,13 +109,9 @@ fn finish_response_create_event(
         "type".to_string(),
         Value::String("response.create".to_string()),
     );
-    for field in ["previous_response_id", "generate"] {
+    for field in ["store", "previous_response_id", "generate"] {
         if let Some(value) = client_event.get(field) {
-            if value.is_null() {
-                object.remove(field);
-            } else {
-                object.insert(field.to_string(), value.clone());
-            }
+            object.insert(field.to_string(), value.clone());
         }
     }
     object.remove("stream");
@@ -109,13 +125,6 @@ pub(super) fn response_create_has_previous_response_id(event: &Value) -> bool {
         .is_some_and(|value| !value.is_null())
 }
 
-pub(super) fn continuation_requires_same_upstream(
-    event: &Value,
-    reuses_bound_upstream: bool,
-) -> bool {
-    response_create_has_previous_response_id(event) && !reuses_bound_upstream
-}
-
 pub(super) fn changed_followup_response_create_model(
     event: &Value,
     current_client_model: &str,
@@ -126,13 +135,7 @@ pub(super) fn changed_followup_response_create_model(
     let Some(model) = object.get("model") else {
         return Ok(None);
     };
-    let Some(model) = model
-        .as_str()
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-    else {
-        return Err("invalid_response_create_model");
-    };
+    let model = validated_response_create_model(model)?;
     if model.eq_ignore_ascii_case(current_client_model) {
         Ok(None)
     } else {
@@ -154,14 +157,10 @@ pub(super) fn response_create_model_or_current(
         );
         return Ok(current_client_model.to_string());
     };
-    let Some(model) = model
-        .as_str()
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-    else {
-        return Err("invalid_response_create_model");
-    };
-    Ok(model.to_string())
+    let model = validated_response_create_model(model)?;
+    let model = model.to_string();
+    object.insert("model".to_string(), Value::String(model.clone()));
+    Ok(model)
 }
 
 pub(super) fn provider_model_from_decision(decision: &AiExecutionDecision) -> Option<String> {
@@ -217,7 +216,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use axum::http::{HeaderMap, Uri};
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         build_planning_parts, normalize_followup_response_create,
@@ -236,6 +235,7 @@ mod tests {
             remote_addr: "127.0.0.1:65001"
                 .parse::<SocketAddr>()
                 .expect("remote address should parse"),
+            client_ip: "127.0.0.1".parse().expect("client IP should parse"),
             decision: GatewayControlDecision::synthetic(
                 "/v1/responses".to_string(),
                 Some("ai_public".to_string()),
@@ -243,7 +243,6 @@ mod tests {
                 Some("responses_websocket".to_string()),
                 Some("openai:responses".to_string()),
             ),
-            rpm_bypassed: false,
             websocket_connection_permit: None,
         }
     }
@@ -309,6 +308,56 @@ mod tests {
         assert_eq!(normalized["model"], "provider-model");
         assert!(normalized.get("stream").is_none());
         assert!(normalized.get("background").is_none());
+    }
+
+    #[test]
+    fn explicit_store_and_previous_response_id_are_forwarded_opaquely() {
+        let event = json!({
+            "type": "response.create",
+            "model": "public-model",
+            "store": true,
+            "previous_response_id": {"future": "opaque"},
+            "input": [],
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model")
+                .with_provider_type_for_tests("codex"),
+        );
+
+        // Codex HTTP normalization normally forces `store: false` and removes
+        // `previous_response_id`. WebSocket framing restores exactly what the
+        // client sent so the upstream owns validation and continuation lookup.
+        assert_eq!(normalized["store"], true);
+        assert_eq!(
+            normalized["previous_response_id"],
+            json!({"future": "opaque"})
+        );
+    }
+
+    #[test]
+    fn explicit_null_websocket_protocol_state_is_not_rewritten() {
+        let event = json!({
+            "type": "response.create",
+            "model": "public-model",
+            "store": null,
+            "previous_response_id": null,
+            "generate": null,
+            "input": [],
+        });
+
+        let normalized = normalized_continuation(
+            &event,
+            &ResponsesWebSocketBodyNormalization::for_tests("provider-model")
+                .with_provider_type_for_tests("codex"),
+        );
+
+        assert!(normalized.get("store").is_some_and(Value::is_null));
+        assert!(normalized
+            .get("previous_response_id")
+            .is_some_and(Value::is_null));
+        assert!(normalized.get("generate").is_some_and(Value::is_null));
     }
 
     #[test]

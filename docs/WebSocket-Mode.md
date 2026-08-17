@@ -8,7 +8,7 @@ WebSocket mode is compatible with both Zero Data Retention (ZDR) and `store=fals
 
 WebSocket mode is most useful when a workflow involves many model-tool round trips (for example, agentic coding or orchestration loops with repeated tool calls).
 
-Because the connection stays open and each turn sends only incremental input, WebSocket mode reduces per-turn continuation overhead and improves end-to-end latency across long chains. For rollouts with 20+ tool calls, we have seen up to roughly 40% faster end-to-end execution.
+Because the connection stays open and each turn sends only incremental input, WebSocket mode reduces per-turn continuation overhead and improves end-to-end latency across long chains. The [OpenAI WebSocket-mode guide](https://developers.openai.com/api/docs/guides/websocket-mode) reports up to roughly 40% faster end-to-end execution for workloads with 20 or more tool calls; this is an upstream product claim, not an Aether benchmark.
 
 ## Connect and create responses
 

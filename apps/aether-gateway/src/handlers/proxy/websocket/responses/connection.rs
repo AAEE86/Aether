@@ -5,20 +5,18 @@ use std::time::Duration;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::time::sleep;
 use wreq::ws::message::Message as WreqWsMessage;
 
+use super::adapter::ResponsesWebSocketRelayDirective;
 use super::client::{adapter_drain_ready, forward_client_message, RelayDisposition};
-use super::frame::ParsedResponsesWebSocketFrame;
+use super::frame::{encode_opaque_websocket_event, ParsedResponsesWebSocketFrame};
 use super::lifecycle::{
     await_pending_adapter_observation, finalize_active_turn, queue_turn_finalization,
-    settle_turn_finalization, ActiveProviderAttempt, PreviousAttemptSettled,
+    settle_turn_finalization, spawn_bounded_adapter_observation, PreviousAttemptSettled,
 };
 use super::quota::{
-    active_continuation_can_retry_from_full_input, detach_exhausted_upstream,
-    is_usage_limit_error_event, mark_active_response_retry_unsafe,
+    detach_exhausted_upstream, is_usage_limit_error_event, mark_active_response_retry_unsafe,
     observe_active_response_rebind_safety, retry_active_turn_after_quota_exhaustion,
-    send_previous_response_not_found, should_request_full_continuation_retry,
 };
 use super::relay_policy::{
     classify_quota_relay, fatal_relay_policy, FatalRelaySignal, QuotaRelayAction, QuotaRelayFacts,
@@ -31,8 +29,7 @@ use super::turn::{
 use super::upstream::{close_bound_upstream, receive_optional_upstream};
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::handlers::proxy::websocket::session::{
-    wait_for_optional_deadline, CLOSE_INTERNAL_ERROR, CLOSE_TRY_AGAIN,
-    RESPONSES_WEBSOCKET_SESSION_LIMITS, WEBSOCKET_LOG_TRANSPORT,
+    wait_for_optional_deadline, CLOSE_INTERNAL_ERROR, CLOSE_TRY_AGAIN, WEBSOCKET_LOG_TRANSPORT,
 };
 use crate::handlers::proxy::websocket::transport::{
     close_client_socket, send_client_message, send_gateway_error_with_status,
@@ -64,30 +61,10 @@ pub(super) async fn relay_bound_connection(
     bound: &mut BoundResponsesConnection,
     state: &AppState,
     context: &WebSocketRequestContext,
-    connection_permit: Option<aether_runtime::AdmissionPermit>,
 ) {
-    let connection_deadline = sleep(RESPONSES_WEBSOCKET_SESSION_LIMITS.max_connection_duration);
-    tokio::pin!(connection_deadline);
-
     loop {
         let active_turn_deadline = bound.turn_state.attempt().map(|turn| turn.deadline());
         tokio::select! {
-            _ = &mut connection_deadline => {
-                finalize_active_turn(
-                    bound,
-                    state,
-                    ResponsesWebSocketTurnOutcome::connection_limit_reached(),
-                ).await;
-                send_gateway_error_with_status(
-                    client_socket,
-                    503,
-                    "websocket_connection_limit_reached",
-                    "WebSocket connection duration limit reached; reconnect to continue",
-                ).await;
-                close_bound_upstream(bound).await;
-                close_client_socket(client_socket, CLOSE_TRY_AGAIN, "connection_limit_reached").await;
-                break;
-            }
             _ = wait_for_optional_deadline(active_turn_deadline.map(|deadline| deadline.deadline)) => {
                 let Some(turn_deadline) = active_turn_deadline else {
                     continue;
@@ -117,31 +94,6 @@ pub(super) async fn relay_bound_connection(
                 ).await;
                 break;
             }
-            _ = wait_for_connection_permit_loss(connection_permit.as_ref()) => {
-                let policy = fatal_relay_policy(FatalRelaySignal::ConnectionAdmissionLost);
-                warn!(
-                    event_name = "responses_websocket_connection_admission_lost",
-                    log_type = "ops",
-                    transport = WEBSOCKET_LOG_TRANSPORT,
-                    websocket = true,
-                    trace_id = %context.trace_id,
-                    "gateway closed Responses WebSocket after its connection admission became unhealthy"
-                );
-                finalize_active_turn(
-                    bound,
-                    state,
-                    ResponsesWebSocketTurnOutcome::connection_admission_lost(),
-                ).await;
-                close_bound_upstream(bound).await;
-                send_gateway_error_with_status(
-                    client_socket,
-                    policy.status_code,
-                    policy.error_code,
-                    policy.client_message,
-                ).await;
-                close_client_socket(client_socket, policy.close_code, policy.close_reason).await;
-                break;
-            }
             client_message = client_socket.next() => {
                 let Some(client_message) = client_message else {
                     finalize_active_turn(
@@ -169,7 +121,15 @@ pub(super) async fn relay_bound_connection(
                     close_bound_upstream(bound).await;
                     break;
                 };
-                match forward_client_message(client_message, bound, client_socket, state, context).await {
+                match Box::pin(forward_client_message(
+                    client_message,
+                    bound,
+                    client_socket,
+                    state,
+                    context,
+                ))
+                .await
+                {
                     RelayDisposition::Continue => {}
                     RelayDisposition::Close => {
                         finalize_active_turn(
@@ -288,7 +248,7 @@ pub(super) async fn relay_bound_connection(
                             let state_for_observation = state.clone();
                             let trace_id = context.trace_id.clone();
                             let report_context = bound.decision_template.report_context.clone();
-                            bound.pending_adapter_observation = Some(tokio::spawn(async move {
+                            bound.pending_adapter_observation = Some(spawn_bounded_adapter_observation(async move {
                                 adapter
                                     .persist_upstream_observation(
                                         &state_for_observation,
@@ -380,19 +340,19 @@ pub(super) async fn relay_bound_connection(
                     drain_ready: drain_for_adapter,
                     retry_current_turn: bound
                         .pending_adapter_drain
-                        .is_some_and(|directive| directive.retry_current_turn),
+                        .is_some_and(|directive| directive.retry_current_turn)
+                        && bound
+                            .turn_state
+                            .logical()
+                            .is_some_and(|turn| turn.quota_retry_block_reason().is_none()),
                     transparent_retry_failed: false,
                     usage_limit_error: parsed_upstream_event.is_some_and(is_usage_limit_error_event),
-                    continuation_retry_eligible: active_continuation_can_retry_from_full_input(bound),
                     upstream_closed: is_close,
                 };
                 let mut quota_relay_action = classify_quota_relay(quota_facts);
                 if matches!(quota_relay_action, QuotaRelayAction::AttemptTransparentRetry) {
                     // detach_attempt 保留 logical turn：重试是同一轮请求的下一个 attempt。
-                    let retry_turn = bound
-                        .turn_state
-                        .detach_attempt()
-                        .map(ActiveProviderAttempt::disarm);
+                    let retry_turn = bound.turn_state.detach_attempt();
                     // 先结算旧 attempt 并等它落地，再规划下一个 attempt。两个理由：
                     //
                     // 1. 规划要读 health / adaptive / pool 状态，而这些正是旧
@@ -417,7 +377,14 @@ pub(super) async fn relay_bound_connection(
                         }
                         None => PreviousAttemptSettled::nothing_to_settle(),
                     };
-                    if retry_active_turn_after_quota_exhaustion(bound, state, context, settled).await
+                    // Planning and binding a replacement carries the complete
+                    // scheduler/provider state machine. Keep that large future
+                    // off the relay task's stack; the default Tokio/test worker
+                    // stack is otherwise easy to exhaust on this rare branch.
+                    if Box::pin(retry_active_turn_after_quota_exhaustion(
+                        bound, state, context, settled,
+                    ))
+                    .await
                     {
                         continue;
                     }
@@ -430,42 +397,9 @@ pub(super) async fn relay_bound_connection(
                         ..quota_facts
                     });
                 }
-                if matches!(
-                    quota_relay_action,
-                    QuotaRelayAction::RequestFullContinuationRetry
-                ) {
-                    let directive = bound
-                        .pending_adapter_drain
-                        .expect("adapter drain state should be present");
-                    debug!(
-                        event_name = "responses_websocket_continuation_retry_required",
-                        log_type = "event",
-                        transport = WEBSOCKET_LOG_TRANSPORT,
-                        websocket = true,
-                        trace_id = %context.trace_id,
-                        error_code = "previous_response_not_found",
-                        "gateway will ask the client to retry the continuation with complete input"
-                    );
-                    let mut turn = bound.turn_state.end().map(ActiveProviderAttempt::disarm);
-                    if let Some(active_turn) = turn.as_mut() {
-                        active_turn.release_admission().await;
-                    }
-                    send_previous_response_not_found(client_socket).await;
-                    if let Some(turn) = turn {
-                        queue_turn_finalization(
-                            bound,
-                            state,
-                            turn,
-                            terminal_outcome.unwrap_or_else(
-                                ResponsesWebSocketTurnOutcome::upstream_closed,
-                            ),
-                        )
-                        .await;
-                    }
-                    detach_exhausted_upstream(bound, directive, &context.trace_id).await;
-                    continue;
-                }
-                if matches!(quota_relay_action, QuotaRelayAction::ForwardQuotaAndDetach) {
+                let detach_after_forward =
+                    matches!(quota_relay_action, QuotaRelayAction::ForwardQuotaAndDetach);
+                if detach_after_forward && is_close {
                     let directive = bound
                         .pending_adapter_drain
                         .expect("adapter drain state should be present");
@@ -486,22 +420,127 @@ pub(super) async fn relay_bound_connection(
                     detach_exhausted_upstream(bound, directive, &context.trace_id).await;
                     continue;
                 }
-                // 响应侧还原：HTTP 在把响应体交给客户端之前会把占位符换回真实值
-                // （`privacy::restore_sync_response_body` /
-                // `privacy::StreamingResponseRestorer`），这里是 WS 的同一个位置
-                // ——最后一跳之前，并且在 `capture_client_frame` 之前，所以审计与
-                // 终态观测继续消费脱敏态的事件。没有命中还原时保持上游原字节。
-                let restored_client_frame = parsed_upstream_frame
+                // Standard Responses frames cross the gateway byte-for-byte unless PII
+                // restoration has something to replace. Codex may wrap public events with
+                // provider-private side-channel chunks; only that explicit envelope is
+                // peeled, and each retained event is serialized as a complete opaque Value.
+                // Observation and capture continue to consume the redacted event, while the
+                // final client hop receives restored text.
+                let relay_directive = parsed_upstream_frame
                     .as_ref()
-                    .map(ParsedResponsesWebSocketFrame::event)
-                    .and_then(|event| {
-                        bound.redaction_restorer.restore_provider_frame_text(event)
+                    .map(|frame| {
+                        bound
+                            .adapter
+                            .relay_directive_for_upstream_event(frame.event())
                     });
-                let client_frame = match restored_client_frame {
-                    Some(restored) => AxumWsMessage::Text(restored.into()),
-                    None => upstream_message_to_client(upstream_message.clone()),
-                };
-                if let Err(error) = send_client_message(client_socket, client_frame).await {
+                let mut relay_send_error = None;
+                let mut relay_serialization_failed = false;
+                match relay_directive {
+                    Some(ResponsesWebSocketRelayDirective::ForwardOriginal) => {
+                        let restored = parsed_upstream_frame
+                            .as_ref()
+                            .and_then(|frame| {
+                                bound
+                                    .redaction_restorer
+                                    .restore_provider_frame_text(frame.event())
+                            });
+                        let client_frame = match restored {
+                            Some(text) => AxumWsMessage::Text(text.into()),
+                            None => upstream_message_to_client(upstream_message.clone()),
+                        };
+                        match send_client_message(client_socket, client_frame).await {
+                            Ok(()) => {
+                                if let (Some(turn), Some(frame)) = (
+                                    bound.turn_state.attempt_mut(),
+                                    parsed_upstream_frame.as_ref(),
+                                ) {
+                                    turn.capture_client_frame(frame.event());
+                                }
+                            }
+                            Err(error) => relay_send_error = Some(error),
+                        }
+                    }
+                    Some(ResponsesWebSocketRelayDirective::ForwardEvents(events)) => {
+                        for event in events {
+                            let text = match bound
+                                .redaction_restorer
+                                .restore_provider_frame_text(event)
+                            {
+                                Some(restored) => restored,
+                                None => match encode_opaque_websocket_event(event) {
+                                    Ok(encoded) => encoded,
+                                    Err(_) => {
+                                        relay_serialization_failed = true;
+                                        break;
+                                    }
+                                },
+                            };
+                            match send_client_message(
+                                client_socket,
+                                AxumWsMessage::Text(text.into()),
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    if let Some(turn) = bound.turn_state.attempt_mut() {
+                                        turn.capture_client_frame(event);
+                                    }
+                                }
+                                Err(error) => {
+                                    relay_send_error = Some(error);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Some(ResponsesWebSocketRelayDirective::SuppressProviderPrivate) => {}
+                    None => {
+                        if let Err(error) = send_client_message(
+                            client_socket,
+                            upstream_message_to_client(upstream_message.clone()),
+                        )
+                        .await
+                        {
+                            relay_send_error = Some(error);
+                        }
+                    }
+                }
+                if relay_serialization_failed {
+                    warn!(
+                        event_name = "responses_websocket_provider_event_serialization_failed",
+                        log_type = "ops",
+                        transport = WEBSOCKET_LOG_TRANSPORT,
+                        websocket = true,
+                        trace_id = %context.trace_id,
+                        provider_terminal_reached = terminal_outcome.is_some(),
+                        "gateway could not serialize an opaque provider event"
+                    );
+                    bound
+                        .turn_state
+                        .record_client_delivery_aborted(CLIENT_DELIVERY_FAILED_REASON);
+                    finalize_active_turn(
+                        bound,
+                        state,
+                        settle_signal_for_client_delivery_failure(terminal_outcome),
+                    )
+                    .await;
+                    send_gateway_error_with_status(
+                        client_socket,
+                        502,
+                        "responses_websocket_event_serialization_failed",
+                        "Gateway could not relay the provider event",
+                    )
+                    .await;
+                    close_bound_upstream(bound).await;
+                    close_client_socket(
+                        client_socket,
+                        CLOSE_INTERNAL_ERROR,
+                        "provider_event_serialization_failed",
+                    )
+                    .await;
+                    break;
+                }
+                if let Some(error) = relay_send_error {
                     warn!(
                         event_name = "responses_websocket_client_send_failed",
                         log_type = "ops",
@@ -525,11 +564,6 @@ pub(super) async fn relay_bound_connection(
                     close_bound_upstream(bound).await;
                     break;
                 }
-                if let (Some(turn), Some(frame)) =
-                    (bound.turn_state.attempt_mut(), parsed_upstream_frame.as_ref())
-                {
-                    turn.capture_client_frame(frame.event());
-                }
                 if let Some(outcome) = terminal_outcome {
                     finalize_active_turn(bound, state, outcome).await;
                 } else if is_close {
@@ -539,6 +573,21 @@ pub(super) async fn relay_bound_connection(
                         ResponsesWebSocketTurnOutcome::upstream_closed(),
                     )
                     .await;
+                }
+                if detach_after_forward {
+                    let directive = bound
+                        .pending_adapter_drain
+                        .expect("adapter drain state should be present");
+                    if bound.turn_state.response_in_flight() {
+                        finalize_active_turn(
+                            bound,
+                            state,
+                            ResponsesWebSocketTurnOutcome::provider_quota_exhausted(),
+                        )
+                        .await;
+                    }
+                    detach_exhausted_upstream(bound, directive, &context.trace_id).await;
+                    continue;
                 }
                 if drain_for_adapter {
                     let directive = bound
@@ -556,7 +605,9 @@ pub(super) async fn relay_bound_connection(
     }
 }
 
-async fn wait_for_connection_permit_loss(permit: Option<&aether_runtime::AdmissionPermit>) {
+pub(super) async fn wait_for_connection_permit_loss(
+    permit: Option<&aether_runtime::AdmissionPermit>,
+) {
     let Some(permit) = permit else {
         std::future::pending::<()>().await;
         return;

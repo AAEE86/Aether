@@ -7,6 +7,7 @@ use super::super::adapter::{
     is_standard_responses_event, ResponsesWebSocketAdapterObservation,
     ResponsesWebSocketDrainDirective, ResponsesWebSocketExclusionIdentity,
     ResponsesWebSocketProtocolAdapter, ResponsesWebSocketRebindSafety,
+    ResponsesWebSocketRelayDirective,
 };
 use crate::ai_serving::AiExecutionDecision;
 use crate::clock::current_unix_secs;
@@ -66,19 +67,45 @@ impl ResponsesWebSocketProtocolAdapter for CodexResponsesWebSocketAdapter {
     }
 
     fn rebind_safety_for_upstream_event(&self, event: &Value) -> ResponsesWebSocketRebindSafety {
-        if let Some(chunks) = event.get("chunks").and_then(Value::as_array) {
-            if chunks.is_empty() {
+        let mut saw_event = false;
+        if event.get("type").and_then(Value::as_str).is_some() {
+            saw_event = true;
+            let safety = codex_direct_rebind_safety(event);
+            if matches!(safety, ResponsesWebSocketRebindSafety::Unsafe { .. }) {
+                return safety;
+            }
+        }
+        match event.get("chunks") {
+            Some(Value::Array(chunks)) => {
+                for chunk in chunks {
+                    saw_event = true;
+                    let safety = codex_direct_rebind_safety(chunk);
+                    if matches!(safety, ResponsesWebSocketRebindSafety::Unsafe { .. }) {
+                        return safety;
+                    }
+                }
+            }
+            Some(_) => {
                 return ResponsesWebSocketRebindSafety::Unsafe {
                     reason: "unrecognized_upstream_event",
                 };
             }
-            return chunks
-                .iter()
-                .map(codex_direct_rebind_safety)
-                .find(|safety| matches!(safety, ResponsesWebSocketRebindSafety::Unsafe { .. }))
-                .unwrap_or(ResponsesWebSocketRebindSafety::Safe);
+            None => {}
         }
-        codex_direct_rebind_safety(event)
+        if saw_event {
+            ResponsesWebSocketRebindSafety::Safe
+        } else {
+            ResponsesWebSocketRebindSafety::Unsafe {
+                reason: "unrecognized_upstream_event",
+            }
+        }
+    }
+
+    fn relay_directive_for_upstream_event<'a>(
+        &self,
+        event: &'a Value,
+    ) -> ResponsesWebSocketRelayDirective<'a> {
+        codex_relay_directive(event)
     }
 
     fn observe_upstream_event(
@@ -148,9 +175,15 @@ fn codex_direct_rebind_safety(event: &Value) -> ResponsesWebSocketRebindSafety {
         // upstream can safely emit its own current snapshot.
         return ResponsesWebSocketRebindSafety::Safe;
     }
-    if event_type == "error" && parse_codex_rate_limits(event).is_some() {
-        // The quota error is withheld from the client when the shared
-        // session successfully rebinds, therefore it remains replay-safe.
+    if event_type == "error"
+        && event.pointer("/error/type").and_then(Value::as_str) == Some("usage_limit_reached")
+        && parse_codex_rate_limits(event).is_some()
+    {
+        // This terminal quota event has not been relayed yet. It can trigger
+        // one transparent attempt on another key as long as no earlier public
+        // response event made the logical turn unsafe. If replanning fails,
+        // the connection layer forwards this exact upstream error instead of
+        // manufacturing a gateway continuation error.
         return ResponsesWebSocketRebindSafety::Safe;
     }
     let reason = if is_standard_responses_event(event) {
@@ -159,6 +192,55 @@ fn codex_direct_rebind_safety(event: &Value) -> ResponsesWebSocketRebindSafety {
         "unrecognized_upstream_event"
     };
     ResponsesWebSocketRebindSafety::Unsafe { reason }
+}
+
+fn codex_relay_directive(event: &Value) -> ResponsesWebSocketRelayDirective<'_> {
+    match event.get("chunks") {
+        Some(Value::Array(chunks)) if is_explicit_codex_batch_envelope(event) => {
+            let public_events = chunks
+                .iter()
+                .filter(|chunk| !is_codex_private_leaf_event(chunk))
+                .collect::<Vec<_>>();
+            if public_events.is_empty() {
+                ResponsesWebSocketRelayDirective::SuppressProviderPrivate
+            } else {
+                ResponsesWebSocketRelayDirective::ForwardEvents(public_events)
+            }
+        }
+        // A malformed or future shape is not proven private. Preserve it
+        // opaquely rather than guessing at a provider schema.
+        Some(_) => ResponsesWebSocketRelayDirective::ForwardOriginal,
+        None if is_codex_private_leaf_event(event) => {
+            ResponsesWebSocketRelayDirective::SuppressProviderPrivate
+        }
+        None => ResponsesWebSocketRelayDirective::ForwardOriginal,
+    }
+}
+
+/// Recognizes only Codex's private batch container. A type-less object must
+/// contain exactly `chunks`; unknown siblings could be future public protocol
+/// data and therefore force opaque forwarding. A named Codex private root may
+/// carry provider metadata alongside its chunks and is safe to peel.
+fn is_explicit_codex_batch_envelope(event: &Value) -> bool {
+    if is_codex_private_event_type(event) {
+        return true;
+    }
+    event.as_object().is_some_and(|object| {
+        object.len() == 1
+            && object.contains_key("chunks")
+            && event.get("type").and_then(Value::as_str).is_none()
+    })
+}
+
+fn is_codex_private_leaf_event(event: &Value) -> bool {
+    is_codex_private_event_type(event) && event.get("chunks").is_none()
+}
+
+fn is_codex_private_event_type(event: &Value) -> bool {
+    matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("codex.rate_limits" | "codex.response.metadata")
+    )
 }
 
 fn parse_codex_rate_limits(event: &Value) -> Option<Value> {
@@ -174,7 +256,7 @@ mod tests {
 
     use super::{
         CodexResponsesWebSocketAdapter, ResponsesWebSocketProtocolAdapter,
-        ResponsesWebSocketRebindSafety,
+        ResponsesWebSocketRebindSafety, ResponsesWebSocketRelayDirective,
     };
 
     #[test]
@@ -245,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn only_known_codex_pre_response_metadata_is_safe_to_rebind() {
+    fn only_known_codex_pre_response_signals_are_safe_to_rebind() {
         let adapter = CodexResponsesWebSocketAdapter;
 
         assert_eq!(
@@ -286,5 +368,105 @@ mod tests {
                 reason: "unrecognized_upstream_event"
             }
         );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "error",
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "plus",
+                    "resets_in_seconds": 3_600
+                },
+                "status_code": 429
+            })),
+            ResponsesWebSocketRebindSafety::Safe
+        );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "error",
+                "error": {"type": "usage_limit_reached"}
+            })),
+            ResponsesWebSocketRebindSafety::Unsafe {
+                reason: "unrecognized_upstream_event"
+            }
+        );
+        assert_eq!(
+            adapter.rebind_safety_for_upstream_event(&json!({
+                "type": "response.future_capability.delta",
+                "chunks": [{"type": "codex.rate_limits"}]
+            })),
+            ResponsesWebSocketRebindSafety::Unsafe {
+                reason: "standard_response_event"
+            }
+        );
+    }
+
+    #[test]
+    fn codex_suppresses_only_explicit_private_events_and_envelopes() {
+        let adapter = CodexResponsesWebSocketAdapter;
+
+        for event in [
+            json!({"type": "codex.rate_limits", "rate_limits": {"allowed": true}}),
+            json!({"type": "codex.response.metadata", "account_hint": "private"}),
+            json!({"chunks": [
+                {"type": "codex.rate_limits"},
+                {"type": "codex.response.metadata"}
+            ]}),
+        ] {
+            assert_eq!(
+                adapter.relay_directive_for_upstream_event(&event),
+                ResponsesWebSocketRelayDirective::SuppressProviderPrivate
+            );
+        }
+
+        for event in [
+            json!({"type": "error", "error": {"type": "usage_limit_reached"}}),
+            json!({"type": "codex.future_private_maybe", "future": true}),
+            json!({"chunks": [], "future_envelope_field": {"must": "survive"}}),
+            json!({"type": "response.future.done", "future_capability": true}),
+        ] {
+            assert_eq!(
+                adapter.relay_directive_for_upstream_event(&event),
+                ResponsesWebSocketRelayDirective::ForwardOriginal
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_codex_batch_forwards_whole_non_private_events_in_order() {
+        let adapter = CodexResponsesWebSocketAdapter;
+        let event = json!({
+            "chunks": [
+                {
+                    "type": "response.created",
+                    "response": {"id": "resp_future"},
+                    "future_created_field": {"opaque": true}
+                },
+                {"type": "codex.rate_limits", "account_hint": "private"},
+                {
+                    "type": "response.future_capability.delta",
+                    "future_capability": {"nested": [1, 2, 3]},
+                    "sequence_number": 2
+                },
+                {"provider_future_event": {"unknown": "must be forwarded"}},
+                {
+                    "type": "error",
+                    "error": {"type": "future_error", "future_detail": 7}
+                }
+            ]
+        });
+
+        let ResponsesWebSocketRelayDirective::ForwardEvents(events) =
+            adapter.relay_directive_for_upstream_event(&event)
+        else {
+            panic!("a mixed private envelope must retain all non-private events");
+        };
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0]["future_created_field"], json!({"opaque": true}));
+        assert_eq!(events[1]["future_capability"], json!({"nested": [1, 2, 3]}));
+        assert_eq!(
+            events[2]["provider_future_event"],
+            json!({"unknown": "must be forwarded"})
+        );
+        assert_eq!(events[3]["error"]["future_detail"], json!(7));
     }
 }

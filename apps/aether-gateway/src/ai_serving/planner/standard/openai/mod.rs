@@ -26,5 +26,5 @@ pub(crate) use responses::{
     maybe_build_responses_websocket_decision,
     maybe_build_stream_local_openai_responses_decision_payload,
     maybe_build_sync_local_openai_responses_decision_payload, ResponsesWebSocketBodyNormalization,
-    ResponsesWebSocketDecision,
+    ResponsesWebSocketDecision, ResponsesWebSocketPinnedCandidate,
 };

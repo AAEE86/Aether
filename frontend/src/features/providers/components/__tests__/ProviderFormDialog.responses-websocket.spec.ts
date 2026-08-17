@@ -13,6 +13,10 @@ describe('ProviderFormDialog Responses WebSocket switch', () => {
     expect(source).toContain('Responses WebSocket 模式')
     expect(source).toContain('responses_websocket_enabled')
     expect(source).toContain('responses_websocket_enabled: form.value.responses_websocket_enabled')
-    expect(source).not.toContain("v-if=\"form.provider_type === 'codex'\"")
+    expect(source).toMatch(
+      /<div(?=[^>]*data-testid="responses-websocket-setting")(?![^>]*\bv-if=)[^>]*>[\s\S]{0,500}Responses WebSocket 模式/,
+    )
+    expect(source).toContain('id="responses-websocket-enabled"')
+    expect(source).toContain(':aria-label="legacyT(\'Responses WebSocket 模式\')"')
   })
 })

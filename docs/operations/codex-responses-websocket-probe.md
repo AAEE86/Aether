@@ -89,17 +89,22 @@ It opens an upstream WebSocket using the selected provider key.
 The selected provider's model mapping and request headers are applied to every
 turn, along with the rest of that candidate's provider-body normalization:
 model-directive patches, endpoint body rules, and the Codex body contract
-(unsupported-field stripping, `store: false`, `tool_choice` defaulting). A
-continuation turn is normalized against the binding it is pinned to rather than
-being re-planned, so it can never move to another provider key.
-`previous_response_id` and `generate` are re-applied after normalization
-because they are WebSocket protocol state that the provider body contract
-otherwise strips. `stream` and `background` are removed because they are HTTP
-transport fields, not WebSocket-mode fields. If a later `response.create` changes the
-public model, Aether runs access checks and candidate planning again. It keeps
-the existing upstream when the same target remains eligible, or transparently
-replaces the upstream between responses when the selected target changes.
-Overlapping responses on one client socket remain rejected.
+(unsupported-field stripping, its HTTP `store: false` default, and
+`tool_choice` defaulting). An explicitly supplied WebSocket `store` value is
+restored unchanged after that HTTP-oriented normalization. A
+continuation turn with a non-null `previous_response_id` is revalidated through
+the current scheduler and normalized against its pinned binding. It can never
+move to another provider key, and it is rejected if that exact candidate is no
+longer eligible or its physical binding changed.
+`store`, `previous_response_id`, and `generate` are re-applied after
+normalization because they are WebSocket protocol state that the provider body
+contract may otherwise rewrite or strip. `stream` and `background` are removed
+because they are HTTP transport fields, not WebSocket-mode fields. Every
+independent `response.create` (one without a non-null `previous_response_id`)
+runs access checks and candidate planning again, even when the public model is unchanged.
+It keeps the existing upstream when the same target remains eligible, or
+transparently replaces the upstream between responses when the selected target
+changes. Overlapping responses on one client socket remain rejected.
 
 Each `response.create` is tracked as an independent Aether logical request:
 it receives its own request/candidate identity, usage lifecycle, and terminal
@@ -140,8 +145,9 @@ ws.send(json.dumps({
   deadline expires.
 - Responses are sequential; no multiplexing is supported on one socket.
 - Each `response.create` consumes the normal Aether user/API-key RPM budget.
-- Same-model turns stay on the bound provider key. A model change is planned
-  again and can rebind the upstream between completed turns when necessary.
+- Continuations with a non-null `previous_response_id` stay on the bound
+  provider key. Independent turns are re-authorized and re-planned each time;
+  they reuse the socket only when planning selects the same physical target.
 - Direct provider proxy settings are honored through the selected transport
   profile. Tunnel-mode proxy nodes are not supported for this bridge yet.
 

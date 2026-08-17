@@ -37,7 +37,11 @@ impl ResponsesStructuredTerminalObserver {
     /// 第一个被拒绝的事件就停止推进并把摘要标成 parser_error：解析器的状态机是
     /// 有顺序的，跳过一个事件继续喂后面的只会得到更没意义的摘要。
     pub(super) fn observe_events(&mut self, report_context: &Value, events: &[&Value]) {
-        for event in events {
+        for event in events
+            .iter()
+            .copied()
+            .filter(|event| event_is_relevant_to_terminal_observation(event))
+        {
             if let Err(error) = self.inner.push_event(report_context, event) {
                 self.inner.disable_with_error(error.to_string());
                 break;
@@ -59,6 +63,28 @@ impl ResponsesStructuredTerminalObserver {
             }
         }
     }
+}
+
+/// The WebSocket relay is not a Responses schema gateway. It forwards all
+/// events opaquely, while this observer consumes only identity/terminal
+/// snapshots needed for usage and settlement. In particular, a future
+/// `response.*` delta must not become an observation failure merely because
+/// Aether's canonical streaming parser does not know it yet.
+fn event_is_relevant_to_terminal_observation(event: &Value) -> bool {
+    matches!(
+        event.get("type").and_then(Value::as_str),
+        Some(
+            "response.created"
+                | "response.in_progress"
+                | "response.queued"
+                | "response.completed"
+                | "response.done"
+                | "response.failed"
+                | "response.incomplete"
+                | "response.cancelled"
+                | "error"
+        )
+    )
 }
 
 #[cfg(test)]
@@ -139,6 +165,45 @@ mod tests {
         assert_eq!(usage.input_tokens, 3);
         assert_eq!(usage.output_tokens, 1);
         assert_eq!(usage.dimensions.get("total_tokens"), Some(&json!(4)));
+    }
+
+    #[test]
+    fn future_and_provider_private_events_are_ignored_only_by_the_side_observer() {
+        let context = report_context();
+        let private = json!({
+            "type": "codex.response.metadata",
+            "private_future_field": {"shape": "unknown"},
+        });
+        let future = json!({
+            "type": "response.future_capability.delta",
+            "future_capability": {"nested": [1, 2, 3]},
+        });
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_future",
+                "model": "future-model",
+                "status": "completed",
+                "future_response_field": {"also": "unknown"},
+                "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            },
+        });
+
+        let mut observer = ResponsesStructuredTerminalObserver::default();
+        observer.observe_events(&context, &[&private, &future, &completed]);
+        let summary = observer.finish(&context);
+
+        assert!(summary.observed_finish);
+        assert_eq!(summary.response_id.as_deref(), Some("resp_future"));
+        assert_eq!(summary.unknown_event_count, 0);
+        assert_eq!(
+            summary
+                .standardized_usage
+                .as_ref()
+                .map(|usage| (usage.input_tokens, usage.output_tokens)),
+            Some((5, 2))
+        );
+        assert!(summary.parser_error.is_none());
     }
 
     #[test]

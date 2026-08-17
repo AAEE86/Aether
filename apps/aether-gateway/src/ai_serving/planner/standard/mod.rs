@@ -50,6 +50,7 @@ pub(crate) use self::openai::{
     maybe_build_sync_local_openai_responses_decision_payload, parse_openai_stop_sequences,
     resolve_openai_chat_max_tokens, set_local_openai_chat_execution_exhausted_diagnostic,
     value_as_u64, ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
+    ResponsesWebSocketPinnedCandidate,
 };
 pub(crate) use crate::ai_serving::normalize_standard_request_to_openai_chat_request;
 pub(crate) use crate::ai_serving::{

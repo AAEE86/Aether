@@ -12,9 +12,11 @@ mod admission;
 mod binding;
 mod client;
 mod connection;
+mod control;
 mod frame;
 mod lifecycle;
 mod observation;
+mod ownership;
 mod quota;
 mod redaction;
 mod relay_policy;
@@ -61,5 +63,4 @@ pub(crate) async fn responses_websocket(
 
 const RESPONSES_WEBSOCKET_INGRESS_SPEC: WebSocketIngressSpec = WebSocketIngressSpec {
     route_unavailable_message: "WebSocket route is unavailable",
-    ip_whitelist_failure_event_name: "responses_websocket_ip_whitelist_check_failed",
 };

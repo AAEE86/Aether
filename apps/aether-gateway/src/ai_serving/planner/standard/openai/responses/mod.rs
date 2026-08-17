@@ -12,6 +12,49 @@ use crate::{AiExecutionDecision, AppState, GatewayError};
 use aether_runtime_state::RuntimeLockLease;
 use std::collections::BTreeSet;
 
+/// Releases a scheduler pool-key lease if WebSocket planning is cancelled
+/// after candidate selection but before ownership reaches the turn lifecycle.
+struct ResponsesWebSocketPlanningLeaseGuard {
+    state: AppState,
+    lease: Option<RuntimeLockLease>,
+}
+
+impl ResponsesWebSocketPlanningLeaseGuard {
+    fn new(state: &AppState, lease: Option<&RuntimeLockLease>) -> Self {
+        Self {
+            state: state.clone(),
+            lease: lease.cloned(),
+        }
+    }
+
+    async fn release(mut self) {
+        // Keep the lease armed across the await. If the owner task is aborted
+        // or reaches its hard deadline while the runtime backend is stalled,
+        // Drop can still hand cleanup to a detached owner.
+        if release_responses_websocket_planning_lease(&self.state, self.lease.as_ref()).await {
+            self.lease = None;
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.lease = None;
+    }
+}
+
+impl Drop for ResponsesWebSocketPlanningLeaseGuard {
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        let state = self.state.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = release_responses_websocket_planning_lease(&state, Some(&lease)).await;
+            });
+        }
+    }
+}
+
 mod decision;
 mod plans;
 
@@ -19,6 +62,7 @@ use self::decision::{
     build_local_openai_responses_candidate_attempt_source,
     maybe_build_local_openai_responses_decision_payload_for_candidate,
     resolve_local_openai_responses_decision_input,
+    resolve_local_openai_responses_decision_input_with_snapshot,
 };
 use self::plans::{
     build_local_stream_attempt_source, build_local_stream_plan_and_reports,
@@ -187,6 +231,45 @@ pub(crate) struct ResponsesWebSocketDecision {
     pub(crate) normalization: ResponsesWebSocketBodyNormalization,
 }
 
+/// The scheduler identity a continuation is allowed to reuse.
+///
+/// A `previous_response_id` chain cannot move to another provider connection,
+/// but it still has to pass the current scheduler runtime checks on every
+/// turn. The planner uses this identity as a filter rather than selecting an
+/// arbitrary eligible replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponsesWebSocketPinnedCandidate {
+    provider_id: String,
+    endpoint_id: String,
+    key_id: String,
+}
+
+impl ResponsesWebSocketPinnedCandidate {
+    pub(crate) fn from_decision(decision: &AiExecutionDecision) -> Option<Self> {
+        Some(Self {
+            provider_id: non_empty_decision_identity(decision.provider_id.as_deref())?,
+            endpoint_id: non_empty_decision_identity(decision.endpoint_id.as_deref())?,
+            key_id: non_empty_decision_identity(decision.key_id.as_deref())?,
+        })
+    }
+
+    fn matches(
+        &self,
+        candidate: &aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate,
+    ) -> bool {
+        candidate.provider_id == self.provider_id
+            && candidate.endpoint_id == self.endpoint_id
+            && candidate.key_id == self.key_id
+    }
+}
+
+fn non_empty_decision_identity(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 /// Everything needed to re-run provider-body normalization for the candidate a
 /// socket is already bound to.
 ///
@@ -321,21 +404,24 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     parts: &http::request::Parts,
     trace_id: &str,
     decision: &GatewayControlDecision,
+    auth_snapshot: Option<&crate::ai_serving::GatewayAuthApiKeySnapshot>,
     body_json: &serde_json::Value,
     excluded_key_ids: Option<&BTreeSet<String>>,
     excluded_codex_account_ids: Option<&BTreeSet<String>>,
+    pinned_candidate: Option<&ResponsesWebSocketPinnedCandidate>,
 ) -> Result<Option<ResponsesWebSocketDecision>, GatewayError> {
     let Some(spec) = resolve_stream_spec(crate::ai_serving::OPENAI_RESPONSES_STREAM_PLAN_KIND)
     else {
         return Ok(None);
     };
-    let Some(input) = resolve_local_openai_responses_decision_input(
+    let Some(input) = resolve_local_openai_responses_decision_input_with_snapshot(
         state,
         parts,
         trace_id,
         decision,
         body_json,
         spec.decision_kind,
+        auth_snapshot,
     )
     .await?
     else {
@@ -348,18 +434,28 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
     .await?;
 
     while let Some(attempt) = source.next_attempt().await? {
-        let pool_key_lease = attempt.eligible.orchestration.pool_key_lease.clone();
+        // `next_attempt` may return with a distributed pool-key lease. Arm a
+        // guard before the first await so owner-task timeout/cancellation
+        // cannot strand that lease until its server-side TTL expires.
+        let mut planning_lease = ResponsesWebSocketPlanningLeaseGuard::new(
+            state,
+            attempt.eligible.orchestration.pool_key_lease.as_ref(),
+        );
+        if pinned_candidate.is_some_and(|pinned| !pinned.matches(&attempt.eligible.candidate)) {
+            planning_lease.release().await;
+            continue;
+        }
         if excluded_key_ids
             .is_some_and(|key_ids| key_ids.contains(attempt.eligible.candidate.key_id.as_str()))
         {
-            release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+            planning_lease.release().await;
             continue;
         }
         let Some(adapter) = responses_websocket_adapter(
             &attempt.eligible.transport.provider.provider_type,
             attempt.eligible.transport.provider.config.as_ref(),
         ) else {
-            release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+            planning_lease.release().await;
             continue;
         };
         // Captured before `attempt` is consumed so a later continuation turn can
@@ -373,11 +469,11 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         {
             Ok(Some(payload)) => payload,
             Ok(None) => {
-                release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+                planning_lease.release().await;
                 continue;
             }
             Err(error) => {
-                release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+                planning_lease.release().await;
                 return Err(error);
             }
         };
@@ -393,7 +489,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
                     .is_some_and(|account_ids| account_ids.contains(account_id))
             })
         {
-            release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+            planning_lease.release().await;
             continue;
         }
         match codex_quota_breaker_blocks_candidate(
@@ -405,7 +501,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         .await
         {
             Ok(true) => {
-                release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+                planning_lease.release().await;
                 continue;
             }
             Ok(false) => {}
@@ -454,13 +550,17 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
                     .flatten(),
                 mapped_model,
             };
-            return Ok(Some(ResponsesWebSocketDecision {
+            let decision = ResponsesWebSocketDecision {
                 execution: payload,
                 adapter,
                 normalization,
-            }));
+            };
+            // The decision report context now carries the lease identity. The
+            // WebSocket ownership layer takes over before any further await.
+            planning_lease.disarm();
+            return Ok(Some(decision));
         }
-        release_responses_websocket_planning_lease(state, pool_key_lease.as_ref()).await;
+        planning_lease.release().await;
     }
 
     Ok(None)
@@ -469,20 +569,23 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
 async fn release_responses_websocket_planning_lease(
     state: &AppState,
     lease: Option<&RuntimeLockLease>,
-) {
+) -> bool {
     let Some(lease) = lease else {
-        return;
+        return true;
     };
-    if let Err(error) =
-        crate::handlers::shared::provider_pool::release_admin_provider_pool_key_lease(
-            state.runtime_state.as_ref(),
-            lease,
-        )
-        .await
+    match crate::handlers::shared::provider_pool::release_admin_provider_pool_key_lease(
+        state.runtime_state.as_ref(),
+        lease,
+    )
+    .await
     {
-        tracing::warn!(
-            error = ?error,
-            "gateway Responses WebSocket planner failed to release an unused pool key lease"
-        );
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(
+                error = ?error,
+                "gateway Responses WebSocket planner failed to release an unused pool key lease"
+            );
+            false
+        }
     }
 }

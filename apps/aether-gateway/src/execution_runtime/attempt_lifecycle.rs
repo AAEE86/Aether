@@ -684,33 +684,35 @@ impl ExecutionAttemptLifecycle {
             terminal_summary.parser_error.as_deref(),
             reason,
         );
-        let _ = self
-            .stage_guard
-            .await_stage(
-                self.trace_id.as_str(),
-                "candidate_terminal",
+        let candidate_state = state.clone();
+        let candidate_plan = self.plan.clone();
+        let candidate_report_context = payload.report_context.clone();
+        let candidate_update = SchedulerRequestCandidateStatusUpdate {
+            status: match settlement.candidate_status {
+                AttemptCandidateStatus::Cancelled => RequestCandidateStatus::Cancelled,
+                AttemptCandidateStatus::Failed => RequestCandidateStatus::Failed,
+                AttemptCandidateStatus::Success => RequestCandidateStatus::Success,
+            },
+            status_code: Some(settlement.status_code),
+            error_type,
+            error_message,
+            latency_ms: payload
+                .telemetry
+                .as_ref()
+                .and_then(|value| value.elapsed_ms),
+            started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
+            finished_at_unix_ms: Some(current_unix_ms()),
+        };
+        self.stage_guard
+            .await_detachable_stage(self.trace_id.as_str(), "candidate_terminal", async move {
                 record_local_request_candidate_status(
-                    state,
-                    &self.plan,
-                    payload.report_context.as_ref(),
-                    SchedulerRequestCandidateStatusUpdate {
-                        status: match settlement.candidate_status {
-                            AttemptCandidateStatus::Cancelled => RequestCandidateStatus::Cancelled,
-                            AttemptCandidateStatus::Failed => RequestCandidateStatus::Failed,
-                            AttemptCandidateStatus::Success => RequestCandidateStatus::Success,
-                        },
-                        status_code: Some(settlement.status_code),
-                        error_type,
-                        error_message,
-                        latency_ms: payload
-                            .telemetry
-                            .as_ref()
-                            .and_then(|value| value.elapsed_ms),
-                        started_at_unix_ms: Some(self.candidate_started_at_unix_ms),
-                        finished_at_unix_ms: Some(current_unix_ms()),
-                    },
-                ),
-            )
+                    &candidate_state,
+                    &candidate_plan,
+                    candidate_report_context.as_ref(),
+                    candidate_update,
+                )
+                .await;
+            })
             .await;
 
         // 3. provider 效果
@@ -747,12 +749,28 @@ impl ExecutionAttemptLifecycle {
             .await
             .is_some();
         if !effects_completed {
-            let _ = self
-                .stage_guard
-                .await_stage(
+            // The provider-effects future was dropped at the caller's stage bound.  Lease
+            // cleanup must not be dropped by that same bound as well: retain an owned copy of
+            // the exact report context (including its lease token/fencing token) and let the
+            // cleanup task finish after the caller stops waiting.  The underlying conditional
+            // release is idempotent, and a context without a lease is a no-op.
+            let release_state = state.clone();
+            let release_plan = self.plan.clone();
+            let release_report_context = payload.report_context.clone();
+            self.stage_guard
+                .await_detachable_stage(
                     self.trace_id.as_str(),
                     "pool_lease_release_after_effect_timeout",
-                    release_local_pool_key_lease(state, effect_context),
+                    async move {
+                        release_local_pool_key_lease(
+                            &release_state,
+                            LocalExecutionEffectContext {
+                                plan: &release_plan,
+                                report_context: release_report_context.as_ref(),
+                            },
+                        )
+                        .await;
+                    },
                 )
                 .await;
         }
@@ -1273,17 +1291,21 @@ mod stage_tests {
     use std::time::Duration;
 
     use base64::Engine as _;
+    use tokio::sync::Notify;
 
     use super::{
         candidate_error_fields, AttemptBodyCapture, AttemptCandidateError, AttemptStageGuard,
     };
 
     /// 效果段超时后仍然必须释放 pool key lease，否则那把 key 要等 lease TTL
-    /// 过期才放出来。这里用 `await_stage` 返回 `None` 驱动兜底分支。
+    /// 过期才放出来。调用方对兜底清理的等待也必须有界，但不能把 owned cleanup
+    /// 一并取消。
     #[tokio::test]
-    async fn a_timed_out_effect_stage_still_reaches_the_lease_release_fallback() {
+    async fn a_timed_out_effect_stage_detaches_lease_cleanup_until_it_completes() {
         let guard = AttemptStageGuard::Bounded(Duration::from_millis(20));
         let lease_released = Arc::new(AtomicBool::new(false));
+        let allow_release = Arc::new(Notify::new());
+        let release_completed = Arc::new(Notify::new());
 
         // 第一段：永不完成的效果投射。
         let effects_completed = guard
@@ -1295,23 +1317,34 @@ mod stage_tests {
             "a stage that never completes must not report success"
         );
 
-        // 生产代码据此走兜底释放。
+        // 生产代码据此走 owned/detached 兜底释放。让清理刻意慢于 caller bound，
+        // 证明调用方先返回之后，清理任务仍然存活并最终完成。
         if !effects_completed {
             let released = Arc::clone(&lease_released);
-            let _ = guard
-                .await_stage(
+            let allow_release = Arc::clone(&allow_release);
+            let release_completed_task = Arc::clone(&release_completed);
+            guard
+                .await_detachable_stage(
                     "trace",
                     "pool_lease_release_after_effect_timeout",
                     async move {
+                        allow_release.notified().await;
                         released.store(true, Ordering::SeqCst);
+                        release_completed_task.notify_one();
                     },
                 )
                 .await;
         }
         assert!(
-            lease_released.load(Ordering::SeqCst),
-            "the lease must still be released after an effect-stage timeout"
+            !lease_released.load(Ordering::SeqCst),
+            "the caller must stop waiting at its bound even while cleanup is pending"
         );
+
+        allow_release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), release_completed.notified())
+            .await
+            .expect("detached lease cleanup must eventually complete");
+        assert!(lease_released.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1327,16 +1360,16 @@ mod stage_tests {
         assert_eq!(value, Some(7));
     }
 
-    /// 不能丢的写入即使调用方停止等待也要跑完：`await_detachable_stage` 先 spawn
-    /// 再等，上界只约束「等多久」。
+    /// candidate 终态不能因为调用方的等待上界而丢失：先 spawn 再等，超时只
+    /// 停止 relay 对它的等待，后台写入仍然必须完成。
     #[tokio::test]
-    async fn a_detachable_stage_completes_even_after_the_caller_stops_waiting() {
+    async fn a_detachable_candidate_terminal_completes_after_the_caller_stops_waiting() {
         let guard = AttemptStageGuard::Bounded(Duration::from_millis(20));
         let written = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&written);
 
         guard
-            .await_detachable_stage("trace", "usage_terminal", async move {
+            .await_detachable_stage("trace", "candidate_terminal", async move {
                 tokio::time::sleep(Duration::from_millis(120)).await;
                 flag.store(true, Ordering::SeqCst);
             })
@@ -1349,7 +1382,7 @@ mod stage_tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
             written.load(Ordering::SeqCst),
-            "a detached write must still run to completion"
+            "a detached candidate terminal write must still run to completion"
         );
     }
 

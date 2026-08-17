@@ -357,15 +357,25 @@
           />
         </div>
 
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
+        <div
+          class="flex items-center justify-between p-3 border rounded-lg bg-muted/50"
+          data-testid="responses-websocket-setting"
+        >
           <div class="space-y-0.5">
-            <span class="text-sm font-medium">{{ legacyT('Responses WebSocket 模式') }}</span>
+            <Label
+              for="responses-websocket-enabled"
+              class="text-sm font-medium"
+            >
+              {{ legacyT('Responses WebSocket 模式') }}
+            </Label>
             <p class="text-xs text-muted-foreground leading-relaxed">
               {{ legacyT('允许此提供商处理标准 Responses API WebSocket 请求。仅在已验证兼容性后启用。') }}
             </p>
           </div>
           <Switch
+            id="responses-websocket-enabled"
             :model-value="form.responses_websocket_enabled"
+            :aria-label="legacyT('Responses WebSocket 模式')"
             @update:model-value="(v: boolean) => form.responses_websocket_enabled = v"
           />
         </div>

@@ -31,7 +31,7 @@ use aether_gateway::{build_router_with_state, AppState, GatewayDataConfig, Usage
 use aether_testkit::SpawnedServer;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
@@ -159,6 +159,304 @@ async fn continuation_reuses_one_upstream_connection_and_bills_both_turns() -> R
         "each turn gets its own logical request identity"
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn persisted_previous_response_can_continue_on_a_new_client_connection(
+) -> Result<(), BoxError> {
+    let harness = Harness::start(UpstreamBehavior::CompleteEveryTurn).await?;
+
+    let mut first_client = harness.connect().await?;
+    first_client
+        .send(response_create(json!({
+            "store": true,
+            "input": "first connection"
+        })))
+        .await?;
+    let first = receive_event(&mut first_client, "response.completed").await?;
+    assert_eq!(
+        first.pointer("/response/id").and_then(Value::as_str),
+        Some("resp-e2e-1")
+    );
+    first_client.close(None).await?;
+
+    let mut second_client = harness.connect().await?;
+    second_client
+        .send(response_create(json!({
+            "store": true,
+            "previous_response_id": "resp-e2e-1",
+            "input": "second connection"
+        })))
+        .await?;
+    let second = receive_event(&mut second_client, "response.completed").await?;
+    assert_eq!(
+        second.pointer("/response/id").and_then(Value::as_str),
+        Some("resp-e2e-2")
+    );
+
+    let upstream_events = harness.upstream.observed_events().await;
+    assert_eq!(upstream_events.len(), 2);
+    assert_eq!(harness.upstream.connections(), 2);
+    assert_eq!(upstream_events[0]["store"], json!(true));
+    assert_eq!(upstream_events[1]["store"], json!(true));
+    assert_eq!(
+        upstream_events[1]["previous_response_id"],
+        json!("resp-e2e-1")
+    );
+
+    let audits = harness
+        .usage_audits_where(2, "billed cross-connection turns", is_billed)
+        .await?;
+    assert_eq!(audits.iter().filter(|audit| is_billed(audit)).count(), 2);
+
+    second_client.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_future_request_and_response_fields_round_trip_opaquely() -> Result<(), BoxError> {
+    let harness = Harness::start(UpstreamBehavior::FutureEventThenComplete).await?;
+    let mut client = harness.connect().await?;
+
+    client
+        .send(response_create(json!({
+            "input": "future-compatible",
+            "future_request_capability": {
+                "mode": "opaque",
+                "revision": 7
+            }
+        })))
+        .await?;
+
+    let future = receive_event(&mut client, "response.future.capability").await?;
+    assert_eq!(future["future_capability"]["enabled"], json!(true));
+    assert_eq!(future["future_capability"]["revision"], json!(7));
+    receive_event(&mut client, "response.completed").await?;
+
+    let upstream_events = harness.upstream.observed_events().await;
+    assert_eq!(upstream_events.len(), 1);
+    assert_eq!(
+        upstream_events[0]["future_request_capability"],
+        json!({"mode": "opaque", "revision": 7})
+    );
+
+    client.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_or_control_text_on_a_bound_socket_does_not_poison_the_next_valid_turn(
+) -> Result<(), BoxError> {
+    let harness = Harness::start(UpstreamBehavior::CompleteEveryTurn).await?;
+    let mut client = harness.connect().await?;
+
+    // Establish the provider connection first. Initial-frame validation has a
+    // separate handshake policy; this regression targets client events read by
+    // the live relay loop after the socket is fully bound.
+    client
+        .send(response_create(json!({"input": "bind the socket"})))
+        .await?;
+    receive_event(&mut client, "response.completed").await?;
+
+    client
+        .send(Message::Text("this is not json".into()))
+        .await?;
+    let invalid_json = receive_error_or_close(&mut client)
+        .await?
+        .ok_or("gateway closed after invalid JSON instead of returning an error")?;
+    assert_eq!(invalid_json["status"], json!(400));
+    assert_eq!(
+        invalid_json.pointer("/error/code").and_then(Value::as_str),
+        Some("invalid_response_create")
+    );
+
+    client
+        .send(Message::Text(
+            json!({"type": "response.cancel"}).to_string().into(),
+        ))
+        .await?;
+    let unsupported_control = receive_error_or_close(&mut client)
+        .await?
+        .ok_or("gateway closed after a control event instead of returning an error")?;
+    assert_eq!(unsupported_control["status"], json!(400));
+    assert_eq!(
+        unsupported_control
+            .pointer("/error/code")
+            .and_then(Value::as_str),
+        Some("expected_response_create")
+    );
+    client
+        .send(response_create(json!({"input": "valid after errors"})))
+        .await?;
+    let completed = receive_event(&mut client, "response.completed").await?;
+    assert_eq!(
+        completed
+            .pointer("/response/status")
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+
+    let upstream_events = harness.upstream.observed_events().await;
+    assert_eq!(upstream_events.len(), 2);
+    assert_eq!(upstream_events[0]["input"], json!("bind the socket"));
+    assert_eq!(upstream_events[1]["input"], json!("valid after errors"));
+    assert_eq!(
+        harness.upstream.connections(),
+        1,
+        "client protocol errors must not tear down the bound provider socket"
+    );
+    let audits = harness
+        .usage_audits_where(2, "valid turns surrounding client errors", is_billed)
+        .await?;
+    assert_eq!(audits.iter().filter(|audit| is_billed(audit)).count(), 2);
+
+    client.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn downstream_credentials_and_handshake_headers_do_not_reach_upstream() -> Result<(), BoxError>
+{
+    const QUERY_CREDENTIAL: &str = "downstream-query-secret";
+    const COOKIE_CREDENTIAL: &str = "downstream-cookie-secret";
+    const PROXY_CREDENTIAL: &str = "downstream-proxy-secret";
+    const WEBSOCKET_FUTURE_VALUE: &str = "downstream-future-websocket-secret";
+    const CONNECTION_SECRET: &str = "downstream-connection-secret";
+
+    let harness = Harness::start(UpstreamBehavior::CompleteEveryTurn).await?;
+    let mut request = format!(
+        "{}?key={QUERY_CREDENTIAL}&client_version=0.145.2",
+        harness.websocket_url
+    )
+    .into_client_request()?;
+    request.headers_mut().insert(
+        "authorization",
+        http::HeaderValue::from_str(&format!("Bearer {CLIENT_API_KEY}"))?,
+    );
+    request.headers_mut().insert(
+        "cookie",
+        http::HeaderValue::from_str(&format!("session={COOKIE_CREDENTIAL}"))?,
+    );
+    request.headers_mut().insert(
+        "proxy-authorization",
+        http::HeaderValue::from_str(&format!("Bearer {PROXY_CREDENTIAL}"))?,
+    );
+    request.headers_mut().insert(
+        "sec-websocket-future-capability",
+        http::HeaderValue::from_static(WEBSOCKET_FUTURE_VALUE),
+    );
+    request.headers_mut().insert(
+        "connection",
+        http::HeaderValue::from_static("Upgrade, x-downstream-connection-secret"),
+    );
+    request.headers_mut().insert(
+        "x-downstream-connection-secret",
+        http::HeaderValue::from_static(CONNECTION_SECRET),
+    );
+
+    let mut client = harness.connect_request(request).await?;
+    client
+        .send(response_create(json!({"input": "sanitize handshake"})))
+        .await?;
+    receive_event(&mut client, "response.completed").await?;
+
+    let handshakes = harness.upstream.observed_handshakes().await;
+    assert_eq!(handshakes.len(), 1);
+    let handshake = &handshakes[0];
+    assert_eq!(
+        handshake.request_target, "/v1/responses?client_version=0.145.2",
+        "benign query state must survive while the downstream credential is removed"
+    );
+
+    let expected_provider_authorization = format!("Bearer {PROVIDER_API_KEY}");
+    assert_eq!(
+        handshake
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_provider_authorization.as_str()),
+        "provider authentication must be generated independently"
+    );
+    for removed in [
+        "cookie",
+        "proxy-authorization",
+        "sec-websocket-future-capability",
+        "x-downstream-connection-secret",
+    ] {
+        assert!(
+            handshake.headers.get(removed).is_none(),
+            "downstream header {removed} reached the upstream handshake"
+        );
+    }
+    for (name, value) in &handshake.headers {
+        let value = value.to_str().unwrap_or_default();
+        for secret in [
+            CLIENT_API_KEY,
+            QUERY_CREDENTIAL,
+            COOKIE_CREDENTIAL,
+            PROXY_CREDENTIAL,
+            WEBSOCKET_FUTURE_VALUE,
+            CONNECTION_SECRET,
+        ] {
+            assert!(
+                !value.contains(secret),
+                "downstream secret leaked through upstream header {name}: {value}"
+            );
+        }
+    }
+
+    client.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabling_the_downstream_key_is_enforced_on_the_next_turn_of_the_same_socket(
+) -> Result<(), BoxError> {
+    let harness = Harness::start(UpstreamBehavior::CompleteEveryTurn).await?;
+    let mut client = harness.connect().await?;
+
+    client
+        .send(response_create(json!({"input": "before key disable"})))
+        .await?;
+    receive_event(&mut client, "response.completed").await?;
+
+    // Mutate through a repository handle that is independent of the gateway
+    // state. The next turn must perform a strong refresh instead of trusting
+    // the Upgrade-time or ordinary cached auth snapshot.
+    harness.set_client_api_key_active(false).await?;
+
+    client
+        .send(response_create(json!({"input": "after key disable"})))
+        .await?;
+    let rejection = receive_error_or_close(&mut client)
+        .await?
+        .ok_or("gateway closed without reporting the live API-key rejection")?;
+    assert_eq!(rejection["status"], json!(401));
+    assert_eq!(
+        rejection.pointer("/error/code").and_then(Value::as_str),
+        Some("gateway_request_not_allowed")
+    );
+
+    let upstream_events = harness.upstream.observed_events().await;
+    assert_eq!(
+        upstream_events.len(),
+        1,
+        "the disabled key's second turn must not reach the provider"
+    );
+    assert_eq!(upstream_events[0]["input"], json!("before key disable"));
+    assert_eq!(harness.upstream.connections(), 1);
+
+    let audits = harness
+        .usage_audits_where(1, "the turn completed before key disable", is_billed)
+        .await?;
+    assert_eq!(
+        audits.len(),
+        1,
+        "a control-plane rejection must not create a provider attempt row"
+    );
+
+    client.close(None).await?;
     Ok(())
 }
 
@@ -546,6 +844,10 @@ impl Harness {
             "authorization",
             http::HeaderValue::from_str(&format!("Bearer {CLIENT_API_KEY}"))?,
         );
+        self.connect_request(request).await
+    }
+
+    async fn connect_request(&self, request: http::Request<()>) -> Result<ClientSocket, BoxError> {
         let (socket, response) =
             tokio::time::timeout(RECEIVE_TIMEOUT, tokio_tungstenite::connect_async(request))
                 .await
@@ -622,6 +924,21 @@ impl Harness {
             .await?;
         drop(backends);
         Ok(audits)
+    }
+
+    async fn set_client_api_key_active(&self, is_active: bool) -> Result<(), BoxError> {
+        let backends = DataBackends::from_config(DataLayerConfig::from_database(
+            self.database.config.clone(),
+        ))?;
+        backends
+            .write()
+            .auth_api_keys()
+            .ok_or("auth API key writer unavailable")?
+            .set_standalone_api_key_active(API_KEY_ID, is_active)
+            .await?
+            .ok_or("the E2E client API key disappeared before its live-control update")?;
+        drop(backends);
+        Ok(())
     }
 }
 
@@ -736,6 +1053,8 @@ enum UpstreamBehavior {
     /// 上游看到的是脱敏后的 body，所以回显出来的就是占位符——正是响应侧还原要处理
     /// 的形状。
     EchoInputBack,
+    /// Emit an event type and fields the gateway does not know, then complete.
+    FutureEventThenComplete,
 }
 
 #[derive(Debug)]
@@ -744,6 +1063,13 @@ struct MockUpstreamState {
     connections: AtomicUsize,
     events: Mutex<Vec<Value>>,
     authorization_headers: Mutex<Vec<Option<String>>>,
+    handshakes: Mutex<Vec<ObservedUpstreamHandshake>>,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedUpstreamHandshake {
+    request_target: String,
+    headers: HeaderMap,
 }
 
 impl MockUpstreamState {
@@ -753,6 +1079,7 @@ impl MockUpstreamState {
             connections: AtomicUsize::new(0),
             events: Mutex::new(Vec::new()),
             authorization_headers: Mutex::new(Vec::new()),
+            handshakes: Mutex::new(Vec::new()),
         }
     }
 
@@ -767,6 +1094,10 @@ impl MockUpstreamState {
     async fn authorization_headers(&self) -> Vec<Option<String>> {
         self.authorization_headers.lock().await.clone()
     }
+
+    async fn observed_handshakes(&self) -> Vec<ObservedUpstreamHandshake> {
+        self.handshakes.lock().await.clone()
+    }
 }
 
 fn mock_upstream_router(state: Arc<MockUpstreamState>) -> Router {
@@ -777,6 +1108,7 @@ fn mock_upstream_router(state: Arc<MockUpstreamState>) -> Router {
 
 async fn mock_responses_websocket(
     State(state): State<Arc<MockUpstreamState>>,
+    uri: Uri,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -784,16 +1116,22 @@ async fn mock_responses_websocket(
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    ws.on_upgrade(move |socket| run_mock_upstream(socket, state, authorization))
+    let handshake = ObservedUpstreamHandshake {
+        request_target: uri.to_string(),
+        headers,
+    };
+    ws.on_upgrade(move |socket| run_mock_upstream(socket, state, authorization, handshake))
 }
 
 async fn run_mock_upstream(
     mut socket: WebSocket,
     state: Arc<MockUpstreamState>,
     authorization: Option<String>,
+    handshake: ObservedUpstreamHandshake,
 ) {
     state.connections.fetch_add(1, Ordering::AcqRel);
     state.authorization_headers.lock().await.push(authorization);
+    state.handshakes.lock().await.push(handshake);
     while let Some(message) = socket.recv().await {
         let Ok(message) = message else {
             break;
@@ -847,6 +1185,27 @@ async fn run_mock_upstream(
                             .await
                             .is_err()
                         {
+                            break;
+                        }
+                    }
+                    UpstreamBehavior::FutureEventThenComplete => {
+                        if send_mock_event(
+                            &mut socket,
+                            json!({
+                                "type": "response.future.capability",
+                                "response_id": response_id,
+                                "future_capability": {
+                                    "enabled": true,
+                                    "revision": 7
+                                }
+                            }),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
+                        if send_mock_turn(&mut socket, &response_id).await.is_err() {
                             break;
                         }
                     }

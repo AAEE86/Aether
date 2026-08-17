@@ -46,6 +46,25 @@ pub(super) enum ResponsesWebSocketRebindSafety {
     Unsafe { reason: &'static str },
 }
 
+/// How an upstream text frame crosses the public Responses WebSocket boundary.
+///
+/// The normal path is deliberately byte-opaque: callers forward the parsed
+/// frame's original text without rebuilding it from a gateway-owned schema.
+/// Codex is the only adapter that may peel its documented private batch
+/// envelope.  Even then, the retained events are borrowed whole so unknown
+/// `response.*` event types and unknown fields survive unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ResponsesWebSocketRelayDirective<'a> {
+    /// Forward the provider frame's original text exactly as received.
+    ForwardOriginal,
+    /// The provider frame was a private batch envelope. Forward each retained
+    /// event in document order by serializing the complete borrowed value.
+    ForwardEvents(Vec<&'a Value>),
+    /// The entire frame was an explicitly recognized provider-private
+    /// envelope and therefore has no public event to relay.
+    SuppressProviderPrivate,
+}
+
 /// Boundary between the standard Responses protocol engine and provider
 /// behavior. Adapters receive already-planned provider requests; they never
 /// own public WebSocket parsing, turn accounting, or model scheduling.
@@ -68,6 +87,15 @@ pub(super) trait ResponsesWebSocketProtocolAdapter: Send + Sync {
     /// for events that neither create public Responses state nor make a replay
     /// observably ambiguous to the client.
     fn rebind_safety_for_upstream_event(&self, event: &Value) -> ResponsesWebSocketRebindSafety;
+
+    /// Selects the public relay shape without projecting a provider event
+    /// through an Aether-owned field or event-type allowlist.
+    fn relay_directive_for_upstream_event<'a>(
+        &self,
+        _event: &'a Value,
+    ) -> ResponsesWebSocketRelayDirective<'a> {
+        ResponsesWebSocketRelayDirective::ForwardOriginal
+    }
 
     /// Lets an adapter classify provider-only events. Returning a directive
     /// asks the shared session to drain after the active standard response.
@@ -169,7 +197,12 @@ pub(super) fn is_standard_responses_event(event: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_responses_websocket_adapter, ResponsesWebSocketProtocolAdapter};
+    use serde_json::json;
+
+    use super::{
+        resolve_responses_websocket_adapter, ResponsesWebSocketProtocolAdapter,
+        ResponsesWebSocketRelayDirective,
+    };
     use crate::orchestration::ResponsesWebSocketAdapter;
 
     #[test]
@@ -181,6 +214,21 @@ mod tests {
         assert_eq!(
             adapter.upstream_errors().handshake_failed,
             "responses_websocket_handshake_failed"
+        );
+    }
+
+    #[test]
+    fn standard_adapter_always_forwards_future_events_opaquely() {
+        let adapter = resolve_responses_websocket_adapter(ResponsesWebSocketAdapter::Standard);
+        let event = json!({
+            "type": "response.future_capability.delta",
+            "delta": {"future_shape": [1, {"nested": true}]},
+            "unknown_top_level": {"must": "survive"},
+        });
+
+        assert_eq!(
+            adapter.relay_directive_for_upstream_event(&event),
+            ResponsesWebSocketRelayDirective::ForwardOriginal
         );
     }
 }

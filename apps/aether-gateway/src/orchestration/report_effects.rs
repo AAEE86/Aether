@@ -1255,33 +1255,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_quota_snapshot_match_requires_explicit_signal_projection() {
-        let parsed = json!({
-            "allowed": false,
-            "limit_reached": true,
-        });
-
-        assert!(!codex_quota_snapshot_matches_metadata(
-            Some(&json!({
-                "quota": {
-                    "exhausted": true
-                }
-            })),
-            &parsed,
-        ));
-        assert!(codex_quota_snapshot_matches_metadata(
-            Some(&json!({
-                "quota": {
-                    "exhausted": true,
-                    "allowed": false,
-                    "limit_reached": true
-                }
-            })),
-            &parsed,
-        ));
-    }
-
-    #[test]
     fn grok_quota_feedback_decrements_the_matching_window() {
         let mut bucket = json!({
             "quota_by_model": {
@@ -1466,43 +1439,5 @@ mod tests {
             grok_wait_duration_seconds_from_text("no duration here"),
             None
         );
-    }
-
-    #[test]
-    fn codex_quota_snapshot_does_not_roll_back_exhaustion() {
-        let current = json!({
-            "allowed": false,
-            "limit_reached": true,
-            "primary_used_percent": 100.0,
-            "primary_reset_at": 2_000,
-            "updated_at": 100
-        });
-        let delayed = json!({
-            "allowed": true,
-            "limit_reached": false,
-            "primary_used_percent": 99.0,
-            "primary_reset_at": 2_000,
-            "updated_at": 101
-        });
-        assert!(codex_snapshot_regresses(&current, &delayed));
-    }
-
-    #[test]
-    fn codex_quota_snapshot_allows_a_new_reset_window() {
-        let current = json!({
-            "allowed": false,
-            "limit_reached": true,
-            "primary_used_percent": 100.0,
-            "primary_reset_at": 2_000,
-            "updated_at": 100
-        });
-        let refreshed = json!({
-            "allowed": true,
-            "limit_reached": false,
-            "primary_used_percent": 1.0,
-            "primary_reset_at": 1_000,
-            "updated_at": 101
-        });
-        assert!(!codex_snapshot_regresses(&current, &refreshed));
     }
 }

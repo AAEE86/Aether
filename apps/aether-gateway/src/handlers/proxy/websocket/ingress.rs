@@ -1,11 +1,16 @@
 //! Authenticated public WebSocket upgrade admission shared by AI adapters.
 
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use axum::body::Body;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderMap, Method, Response, StatusCode, Uri};
+use axum::http::header::{
+    AUTHORIZATION, CONNECTION, COOKIE, HOST, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING,
+    UPGRADE,
+};
+use axum::http::uri::PathAndQuery;
+use axum::http::{HeaderMap, HeaderName, Method, Response, StatusCode, Uri};
 use tracing::{info, warn};
 
 use crate::api::response::{
@@ -13,7 +18,8 @@ use crate::api::response::{
     build_local_overloaded_response,
 };
 use crate::control::{
-    trusted_auth_local_rejection, GatewayControlDecision, GatewayLocalAuthRejection,
+    trusted_auth_local_rejection, GatewayControlDecision, GatewayCredentialCarrier,
+    GatewayLocalAuthRejection,
 };
 use crate::handlers::proxy::websocket::session::{WebSocketSessionLimits, WEBSOCKET_LOG_TRANSPORT};
 use crate::handlers::shared::ip_rules_allow;
@@ -28,8 +34,10 @@ pub(crate) struct WebSocketRequestContext {
     pub(crate) headers: HeaderMap,
     pub(crate) uri: Uri,
     pub(crate) remote_addr: SocketAddr,
+    /// Effective client IP resolved once from the authenticated Upgrade. Every
+    /// turn re-checks live API-key/admin IP policy against this immutable fact.
+    pub(crate) client_ip: IpAddr,
     pub(crate) decision: GatewayControlDecision,
-    pub(crate) rpm_bypassed: bool,
     /// Held for the lifetime of the upgraded socket. The Responses session
     /// polls its health and closes the client when a distributed lease is
     /// revoked or expires.
@@ -40,7 +48,6 @@ pub(crate) struct WebSocketRequestContext {
 #[derive(Clone, Copy)]
 pub(crate) struct WebSocketIngressSpec {
     pub(crate) route_unavailable_message: &'static str,
-    pub(crate) ip_whitelist_failure_event_name: &'static str,
 }
 
 /// Performs the HTTP-only part of an AI WebSocket request.
@@ -81,7 +88,7 @@ where
         &trace_id,
     )
     .await?;
-    let Some(decision) = request_context.control_decision else {
+    let Some(mut decision) = request_context.control_decision else {
         return build_local_http_error_response(
             &trace_id,
             None,
@@ -92,6 +99,28 @@ where
     if let Some(rejection) = trusted_auth_local_rejection(Some(&decision), &headers) {
         return build_local_auth_rejection_response(&trace_id, Some(&decision), &rejection);
     }
+    // Browsers attach cookies to WebSocket handshakes automatically and the
+    // WebSocket API does not let callers add an Authorization header.  A
+    // cookie-only public upgrade would therefore be vulnerable to cross-site
+    // WebSocket hijacking unless every deployment maintained an Origin
+    // allowlist.  Explicit API-key/bearer credentials (or trusted internal
+    // auth resolved by the control plane) remain supported.
+    if !websocket_credential_carrier_is_allowed(decision.gateway_credential_carrier) {
+        warn!(
+            event_name = "ai_websocket_cookie_only_auth_rejected",
+            log_type = "security",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %trace_id,
+            client_ip = %client_ip,
+            "gateway rejected cookie-only public WebSocket authentication"
+        );
+        return build_local_auth_rejection_response(
+            &trace_id,
+            Some(&decision),
+            &GatewayLocalAuthRejection::InvalidApiKey,
+        );
+    }
     let Some(auth_context) = decision.auth_context.as_ref() else {
         return build_local_auth_rejection_response(
             &trace_id,
@@ -99,7 +128,10 @@ where
             &GatewayLocalAuthRejection::InvalidApiKey,
         );
     };
-    if !auth_context.access_allowed {
+    if !auth_context.access_allowed
+        || auth_context.user_id.trim().is_empty()
+        || auth_context.api_key_id.trim().is_empty()
+    {
         return build_local_auth_rejection_response(
             &trace_id,
             Some(&decision),
@@ -116,22 +148,6 @@ where
         );
     }
 
-    let ip_whitelisted = match state.admin_security_ip_whitelisted(client_ip).await {
-        Ok(value) => value,
-        Err(error) => {
-            warn!(
-                event_name = spec.ip_whitelist_failure_event_name,
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %trace_id,
-                client_ip = %client_ip,
-                error = ?error,
-                "gateway continued with WebSocket rate limiting after IP whitelist check error"
-            );
-            false
-        }
-    };
     let request_permit = match state.try_acquire_request_permit().await {
         Ok(permit) => permit,
         Err(error) => {
@@ -155,13 +171,21 @@ where
         }
     };
 
+    // Authentication has consumed the downstream credentials.  From this
+    // point on the URI and headers become planner input, so retain neither an
+    // API key from the query string nor client authentication/handshake
+    // headers.  Provider authentication is added independently by the
+    // planner and is therefore unaffected by this boundary.
+    let uri = websocket_planning_uri(&uri);
+    decision.public_query_string = uri.query().map(ToOwned::to_owned);
+    let headers = websocket_planning_headers(headers);
     let context = WebSocketRequestContext {
         trace_id,
         headers,
         uri,
         remote_addr,
+        client_ip,
         decision,
-        rpm_bypassed: ip_whitelisted,
         websocket_connection_permit,
     };
     Ok(ws
@@ -171,6 +195,106 @@ where
             drop(request_permit);
             run_session(socket, state, context).await;
         }))
+}
+
+fn websocket_credential_carrier_is_allowed(carrier: Option<GatewayCredentialCarrier>) -> bool {
+    carrier != Some(GatewayCredentialCarrier::CookieHeader)
+}
+
+fn websocket_planning_uri(uri: &Uri) -> Uri {
+    let Some(query) = uri.query() else {
+        return uri.clone();
+    };
+    let mut retained = Vec::new();
+    let mut removed_sensitive_value = false;
+    for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if websocket_query_parameter_is_sensitive(name.as_ref()) {
+            removed_sensitive_value = true;
+        } else {
+            retained.push((name.into_owned(), value.into_owned()));
+        }
+    }
+    if !removed_sensitive_value {
+        return uri.clone();
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.extend_pairs(retained.iter().map(|(name, value)| (name, value)));
+    let retained_query = serializer.finish();
+    let path_and_query = if retained_query.is_empty() {
+        uri.path().to_string()
+    } else {
+        format!("{}?{retained_query}", uri.path())
+    };
+    let path_and_query = path_and_query
+        .parse::<PathAndQuery>()
+        .expect("a valid URI path plus form-encoded query must remain valid");
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(path_and_query);
+    Uri::from_parts(parts).expect("replacing only path-and-query must preserve a valid URI")
+}
+
+fn websocket_query_parameter_is_sensitive(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "key" | "api_key" | "api-key" | "access_token" | "authorization" | "token"
+    )
+}
+
+fn websocket_planning_headers(mut headers: HeaderMap) -> HeaderMap {
+    // RFC 9110 permits Connection to name additional hop-by-hop fields.  Read
+    // those names before removing Connection itself.
+    let connection_scoped_names = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect::<Vec<_>>();
+    for name in connection_scoped_names {
+        headers.remove(name);
+    }
+
+    for name in [
+        AUTHORIZATION,
+        CONNECTION,
+        COOKIE,
+        HOST,
+        PROXY_AUTHORIZATION,
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+    ] {
+        headers.remove(name);
+    }
+    for name in [
+        "api-key",
+        "keep-alive",
+        "proxy-connection",
+        "x-api-key",
+        "x-goog-api-key",
+        crate::constants::GATEWAY_HEADER,
+        crate::constants::TRUSTED_AUTH_USER_ID_HEADER,
+        crate::constants::TRUSTED_AUTH_API_KEY_ID_HEADER,
+        crate::constants::TRUSTED_AUTH_BALANCE_HEADER,
+        crate::constants::TRUSTED_AUTH_ACCESS_ALLOWED_HEADER,
+        crate::constants::TRUSTED_ADMIN_USER_ID_HEADER,
+        crate::constants::TRUSTED_ADMIN_USER_ROLE_HEADER,
+        crate::constants::TRUSTED_ADMIN_SESSION_ID_HEADER,
+        crate::constants::TRUSTED_ADMIN_MANAGEMENT_TOKEN_ID_HEADER,
+    ] {
+        headers.remove(name);
+    }
+    let websocket_managed_names = headers
+        .keys()
+        .filter(|name| name.as_str().starts_with("sec-websocket-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in websocket_managed_names {
+        headers.remove(name);
+    }
+    headers
 }
 
 fn websocket_admission_error_response(
@@ -289,5 +413,115 @@ impl Drop for WebSocketConnectionLog {
             elapsed_ms = self.started_at.elapsed().as_millis() as u64,
             message = self.spec.closed_message,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::header::{
+        AUTHORIZATION, CONNECTION, COOKIE, HOST, ORIGIN, SEC_WEBSOCKET_KEY, UPGRADE, USER_AGENT,
+    };
+    use axum::http::{HeaderMap, HeaderValue, Uri};
+
+    use super::{
+        websocket_credential_carrier_is_allowed, websocket_planning_headers, websocket_planning_uri,
+    };
+    use crate::control::GatewayCredentialCarrier;
+
+    #[test]
+    fn planning_uri_removes_query_credentials_without_losing_safe_parameters() {
+        let uri: Uri = "/v1/responses?key=downstream-secret&client_hint=a%20b&token=also-secret"
+            .parse()
+            .expect("request URI should parse");
+
+        let sanitized = websocket_planning_uri(&uri);
+
+        assert_eq!(sanitized.path(), "/v1/responses");
+        assert_eq!(sanitized.query(), Some("client_hint=a+b"));
+        assert!(!sanitized.to_string().contains("downstream-secret"));
+        assert!(!sanitized.to_string().contains("also-secret"));
+    }
+
+    #[test]
+    fn planning_uri_leaves_an_uncredentialed_query_byte_for_byte_unchanged() {
+        let uri: Uri = "/v1/responses?client_hint=a%20b&empty="
+            .parse()
+            .expect("request URI should parse");
+
+        assert_eq!(websocket_planning_uri(&uri), uri);
+    }
+
+    #[test]
+    fn planning_headers_drop_client_auth_cookie_and_websocket_transport_state() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer client-secret"),
+        );
+        headers.insert(COOKIE, HeaderValue::from_static("session=client-secret"));
+        headers.insert("x-api-key", HeaderValue::from_static("client-secret"));
+        headers.insert(HOST, HeaderValue::from_static("gateway.example"));
+        headers.insert(
+            CONNECTION,
+            HeaderValue::from_static("keep-alive, Upgrade, x-connection-secret"),
+        );
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert(SEC_WEBSOCKET_KEY, HeaderValue::from_static("handshake-key"));
+        headers.insert(
+            "sec-websocket-future-field",
+            HeaderValue::from_static("future-handshake-value"),
+        );
+        headers.insert(
+            "x-connection-secret",
+            HeaderValue::from_static("connection-secret"),
+        );
+        headers.insert(ORIGIN, HeaderValue::from_static("https://client.example"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("codex-cli/test"));
+        headers.insert("x-client-hint", HeaderValue::from_static("safe"));
+
+        let sanitized = websocket_planning_headers(headers);
+
+        for name in [
+            AUTHORIZATION.as_str(),
+            COOKIE.as_str(),
+            "x-api-key",
+            HOST.as_str(),
+            CONNECTION.as_str(),
+            UPGRADE.as_str(),
+            SEC_WEBSOCKET_KEY.as_str(),
+            "sec-websocket-future-field",
+            "x-connection-secret",
+        ] {
+            assert!(sanitized.get(name).is_none(), "{name} must not survive");
+        }
+        assert_eq!(
+            sanitized.get(ORIGIN),
+            Some(&HeaderValue::from_static("https://client.example"))
+        );
+        assert_eq!(
+            sanitized.get(USER_AGENT),
+            Some(&HeaderValue::from_static("codex-cli/test"))
+        );
+        assert_eq!(
+            sanitized.get("x-client-hint"),
+            Some(&HeaderValue::from_static("safe"))
+        );
+    }
+
+    #[test]
+    fn websocket_auth_requires_an_explicit_credential_instead_of_cookie_only() {
+        assert!(!websocket_credential_carrier_is_allowed(Some(
+            GatewayCredentialCarrier::CookieHeader
+        )));
+        for carrier in [
+            None,
+            Some(GatewayCredentialCarrier::AuthorizationBearer),
+            Some(GatewayCredentialCarrier::XApiKey),
+            Some(GatewayCredentialCarrier::ApiKey),
+            Some(GatewayCredentialCarrier::XGoogApiKey),
+            Some(GatewayCredentialCarrier::QueryKey),
+        ] {
+            assert!(websocket_credential_carrier_is_allowed(carrier));
+        }
     }
 }

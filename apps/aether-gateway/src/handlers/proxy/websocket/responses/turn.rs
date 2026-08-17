@@ -38,8 +38,7 @@ use super::settlement::attempt_facts_for_outcome;
 use crate::ai_serving::{build_openai_responses_stream_plan_from_decision, AiExecutionDecision};
 use crate::clock::current_unix_ms;
 use crate::control::{
-    execution_plan_balance_capacity_rejection, refresh_execution_runtime_auth_context,
-    request_model_local_rejection, GatewayControlDecision, GatewayLocalAuthRejection,
+    execution_plan_balance_capacity_rejection, GatewayControlDecision, GatewayLocalAuthRejection,
 };
 use crate::execution_runtime::attach_provider_response_headers_to_report_context;
 use crate::execution_runtime::attempt_lifecycle::{
@@ -208,6 +207,20 @@ impl ResponsesWebSocketTurnOutcome {
         }
     }
 
+    pub(super) const fn relay_task_abandoned_before_upstream_send() -> Self {
+        Self::Cancelled {
+            reason: "gateway abandoned the turn before sending response.create upstream",
+        }
+    }
+
+    pub(super) const fn relay_task_abandonment(upstream_request_sent: bool) -> Self {
+        if upstream_request_sent {
+            Self::relay_task_abandoned()
+        } else {
+            Self::relay_task_abandoned_before_upstream_send()
+        }
+    }
+
     const fn status_code(self) -> u16 {
         match self {
             Self::ProviderTerminal { status_code, .. } | Self::Failure { status_code, .. } => {
@@ -226,6 +239,8 @@ pub(super) struct ResponsesProviderAttempt {
     /// 记账三段（pending / started / terminal）由共享的 transport 中立生命周期负责。
     lifecycle: ExecutionAttemptLifecycle,
     started_at: Instant,
+    provider_request_started_at_unix_ms: u64,
+    provider_request_order_id: String,
     provider_headers: BTreeMap<String, String>,
     observer: ResponsesStructuredTerminalObserver,
     provider_capture: AttemptBodyCapture,
@@ -241,6 +256,10 @@ pub(super) struct ResponsesProviderAttempt {
     provider_outcome: Option<AttemptProviderOutcome>,
     /// 这一个 attempt 的内容是否完整交付给了客户端。与 provider 终态正交。
     client_delivery: AttemptClientDelivery,
+    /// True only after `response.create` has been accepted by the upstream
+    /// socket writer. Cancellation before this point must not be projected as
+    /// provider failure or billed usage.
+    upstream_request_sent: bool,
 }
 
 /// 组装一轮 turn 的 decision。
@@ -282,7 +301,7 @@ pub(super) fn prepare_responses_websocket_turn_decision(
     decision
 }
 
-pub(super) async fn begin_responses_websocket_turn(
+pub(super) async fn begin_unowned_responses_websocket_turn(
     state: &AppState,
     parts: &http::request::Parts,
     control_decision: &GatewayControlDecision,
@@ -290,17 +309,6 @@ pub(super) async fn begin_responses_websocket_turn(
     client_event: &Value,
 ) -> Result<ResponsesProviderAttempt, GatewayError> {
     let planned_report_context = decision.report_context.clone();
-    let effective_control_decision =
-        match refresh_websocket_turn_auth_context(state, control_decision, parts, client_event)
-            .await
-        {
-            Ok(decision) => decision,
-            Err(error) => {
-                release_pool_key_lease_from_report_context(state, planned_report_context.as_ref())
-                    .await;
-                return Err(error);
-            }
-        };
     let attempt = match build_openai_responses_stream_plan_from_decision(
         parts,
         client_event,
@@ -344,7 +352,7 @@ pub(super) async fn begin_responses_websocket_turn(
 
     let balance_rejection = execution_plan_balance_capacity_rejection(
         state,
-        &effective_control_decision,
+        control_decision,
         &plan,
         report_context.as_ref(),
     )
@@ -375,6 +383,7 @@ pub(super) async fn begin_responses_websocket_turn(
         return Err(websocket_auth_rejection_error(rejection));
     }
 
+    let candidate_started_at_unix_ms = current_unix_ms();
     ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
     let admission = match ResponsesWebSocketTurnAdmission::acquire(
         state,
@@ -385,12 +394,21 @@ pub(super) async fn begin_responses_websocket_turn(
     {
         Ok(admission) => admission,
         Err(error) => {
-            release_local_pool_key_lease(
-                state,
-                LocalExecutionEffectContext {
-                    plan: &plan,
-                    report_context: report_context.as_ref(),
-                },
+            release_then_record_responses_websocket_admission_failure(
+                release_local_pool_key_lease(
+                    state,
+                    LocalExecutionEffectContext {
+                        plan: &plan,
+                        report_context: report_context.as_ref(),
+                    },
+                ),
+                record_responses_websocket_admission_failure(
+                    state,
+                    &plan,
+                    report_context.as_ref(),
+                    candidate_started_at_unix_ms,
+                    &error,
+                ),
             )
             .await;
             return Err(error);
@@ -413,6 +431,8 @@ pub(super) async fn begin_responses_websocket_turn(
     Ok(ResponsesProviderAttempt {
         lifecycle,
         started_at: Instant::now(),
+        provider_request_started_at_unix_ms: current_unix_ms(),
+        provider_request_order_id: uuid::Uuid::now_v7().to_string(),
         provider_headers: BTreeMap::new(),
         observer: ResponsesStructuredTerminalObserver::default(),
         provider_capture: AttemptBodyCapture::default(),
@@ -425,40 +445,72 @@ pub(super) async fn begin_responses_websocket_turn(
         terminal_error_body: None,
         provider_outcome: None,
         client_delivery: AttemptClientDelivery::Complete,
+        upstream_request_sent: false,
     })
 }
 
-async fn refresh_websocket_turn_auth_context(
-    state: &AppState,
-    control_decision: &GatewayControlDecision,
-    parts: &http::request::Parts,
-    client_event: &Value,
-) -> Result<GatewayControlDecision, GatewayError> {
-    let mut effective = control_decision.clone();
-    if let Some(auth_context) = effective.auth_context.take() {
-        let refreshed = refresh_execution_runtime_auth_context(
-            state,
-            auth_context,
-            effective.auth_endpoint_signature.as_deref(),
-        )
-        .await?;
-        effective.local_auth_rejection = refreshed.local_rejection.clone();
-        effective.auth_context = Some(refreshed);
-    }
-    if let Some(rejection) = effective.local_auth_rejection.clone() {
-        return Err(websocket_auth_rejection_error(rejection));
-    }
+async fn release_then_record_responses_websocket_admission_failure(
+    release_pool_lease: impl Future<Output = ()>,
+    record_candidate_failure: impl Future<Output = ()>,
+) {
+    // Lease cleanup protects live routing capacity and must not sit behind a
+    // slow candidate writer. The candidate write still follows immediately so
+    // the seeded row reaches a terminal state on the ordinary error path.
+    release_pool_lease.await;
+    record_candidate_failure.await;
+}
 
-    let body = serde_json::to_vec(client_event)
-        .map(axum::body::Bytes::from)
-        .map_err(|error| GatewayError::Internal(error.to_string()))?;
-    if let Some(rejection) =
-        request_model_local_rejection(state, Some(&effective), &parts.uri, &parts.headers, &body)
-            .await?
-    {
-        return Err(websocket_auth_rejection_error(rejection));
+async fn record_responses_websocket_admission_failure(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+    candidate_started_at_unix_ms: u64,
+    error: &GatewayError,
+) {
+    let terminal_at_unix_ms = current_unix_ms();
+    record_local_request_candidate_status(
+        state,
+        plan,
+        report_context,
+        responses_websocket_admission_failure_update(
+            candidate_started_at_unix_ms,
+            terminal_at_unix_ms,
+            error,
+        ),
+    )
+    .await;
+}
+
+fn responses_websocket_admission_failure_update(
+    candidate_started_at_unix_ms: u64,
+    terminal_at_unix_ms: u64,
+    error: &GatewayError,
+) -> SchedulerRequestCandidateStatusUpdate {
+    let (status_code, error_type, error_message) = match error {
+        GatewayError::AdmissionTimeout {
+            gate,
+            queue_budget_ms,
+            ..
+        } => (
+            StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            "gateway_admission_timeout",
+            format!("gateway admission gate {gate} timed out after {queue_budget_ms}ms"),
+        ),
+        other => (
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            "gateway_admission_failed",
+            format!("{other:?}"),
+        ),
+    };
+    SchedulerRequestCandidateStatusUpdate {
+        status: RequestCandidateStatus::Failed,
+        status_code: Some(status_code),
+        error_type: Some(error_type.to_string()),
+        error_message: Some(error_message),
+        latency_ms: Some(terminal_at_unix_ms.saturating_sub(candidate_started_at_unix_ms)),
+        started_at_unix_ms: Some(candidate_started_at_unix_ms),
+        finished_at_unix_ms: Some(terminal_at_unix_ms),
     }
-    Ok(effective)
 }
 
 fn websocket_auth_rejection_error(rejection: GatewayLocalAuthRejection) -> GatewayError {
@@ -526,9 +578,13 @@ impl ResponsesProviderAttempt {
     }
 
     pub(super) fn set_provider_response_headers(&mut self, headers: BTreeMap<String, String>) {
+        let observed_at_unix_ms = current_unix_ms();
         let report_context = attach_provider_response_headers_to_report_context(
             self.lifecycle.take_report_context(),
             &headers,
+            self.provider_request_started_at_unix_ms,
+            observed_at_unix_ms,
+            &self.provider_request_order_id,
         );
         self.lifecycle.set_report_context(report_context);
         self.provider_headers = headers;
@@ -537,8 +593,19 @@ impl ResponsesProviderAttempt {
     /// Starts the per-turn response deadlines only after the corresponding
     /// `response.create` has been accepted by the upstream socket writer.
     pub(super) fn mark_upstream_request_sent(&mut self) {
+        self.upstream_request_sent = true;
         self.started_at = Instant::now();
+        self.provider_request_started_at_unix_ms = current_unix_ms();
+        self.provider_request_order_id = uuid::Uuid::now_v7().to_string();
         self.first_event_elapsed_ms = None;
+    }
+
+    /// Selects a cancellation-safe fallback for an attempt whose owner task
+    /// disappeared. Before the upstream write this is a void cancellation;
+    /// after the write it remains a gateway relay failure because provider
+    /// work may already have started.
+    pub(super) const fn abandonment_outcome(&self) -> ResponsesWebSocketTurnOutcome {
+        ResponsesWebSocketTurnOutcome::relay_task_abandonment(self.upstream_request_sent)
     }
 
     pub(super) fn deadline(&self) -> ResponsesWebSocketTurnDeadline {
@@ -770,17 +837,6 @@ impl ResponsesProviderAttempt {
     }
 }
 
-pub(super) async fn spawn_responses_websocket_turn_finalization(
-    state: AppState,
-    mut turn: ResponsesProviderAttempt,
-    outcome: ResponsesWebSocketTurnOutcome,
-) -> tokio::task::JoinHandle<()> {
-    turn.release_admission().await;
-    tokio::spawn(async move {
-        turn.settle(&state, outcome).await;
-    })
-}
-
 /// 把一轮 turn 的事实写进审计/用量 report context。
 ///
 /// `effective_client_event` 是脱敏后的客户端事件（未启用脱敏时就是原事件）。
@@ -945,9 +1001,12 @@ fn elapsed_ms(started_at: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use aether_contracts::ExecutionTimeouts;
+    use aether_data_contracts::repository::candidates::RequestCandidateStatus;
     use serde_json::json;
 
     use super::super::observation::ResponsesStructuredTerminalObserver;
@@ -958,7 +1017,8 @@ mod tests {
     };
     use super::{
         attach_client_delivery_to_report_context, prepare_websocket_report_context,
-        provider_terminal_outcome, resolve_responses_websocket_turn_timeouts,
+        provider_terminal_outcome, release_then_record_responses_websocket_admission_failure,
+        resolve_responses_websocket_turn_timeouts, responses_websocket_admission_failure_update,
         websocket_event_as_sse_line, ResponsesWebSocketTurnDeadline, ResponsesWebSocketTurnOutcome,
         ResponsesWebSocketTurnTimeoutPhase,
     };
@@ -966,6 +1026,72 @@ mod tests {
         classify_attempt_settlement, AttemptBilling, AttemptCandidateError, AttemptCandidateStatus,
         AttemptClientDelivery, AttemptProviderEffect, AttemptSettlementInputs,
     };
+    use crate::GatewayError;
+
+    #[tokio::test]
+    async fn admission_failure_releases_pool_lease_before_recording_candidate_terminal() {
+        let phase = Arc::new(AtomicU8::new(0));
+        let release_phase = Arc::clone(&phase);
+        let record_phase = Arc::clone(&phase);
+
+        release_then_record_responses_websocket_admission_failure(
+            async move {
+                assert_eq!(release_phase.swap(1, Ordering::SeqCst), 0);
+            },
+            async move {
+                assert_eq!(record_phase.swap(2, Ordering::SeqCst), 1);
+            },
+        )
+        .await;
+
+        assert_eq!(phase.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn admission_timeout_terminalizes_the_seeded_candidate() {
+        let update = responses_websocket_admission_failure_update(
+            1_000,
+            1_025,
+            &GatewayError::AdmissionTimeout {
+                trace_id: "turn-1".to_string(),
+                gate: "gateway_upstream_execution",
+                queue_budget_ms: 25,
+            },
+        );
+
+        assert_eq!(update.status, RequestCandidateStatus::Failed);
+        assert_eq!(update.status_code, Some(429));
+        assert_eq!(
+            update.error_type.as_deref(),
+            Some("gateway_admission_timeout")
+        );
+        assert_eq!(
+            update.error_message.as_deref(),
+            Some("gateway admission gate gateway_upstream_execution timed out after 25ms")
+        );
+        assert_eq!(update.latency_ms, Some(25));
+        assert_eq!(update.started_at_unix_ms, Some(1_000));
+        assert_eq!(update.finished_at_unix_ms, Some(1_025));
+    }
+
+    #[test]
+    fn non_timeout_admission_failure_still_terminalizes_the_seeded_candidate() {
+        let update = responses_websocket_admission_failure_update(
+            50,
+            40,
+            &GatewayError::Internal("admission gate closed".to_string()),
+        );
+
+        assert_eq!(update.status, RequestCandidateStatus::Failed);
+        assert_eq!(update.status_code, Some(500));
+        assert_eq!(
+            update.error_type.as_deref(),
+            Some("gateway_admission_failed")
+        );
+        assert_eq!(update.latency_ms, Some(0));
+        assert_eq!(update.started_at_unix_ms, Some(50));
+        assert_eq!(update.finished_at_unix_ms, Some(40));
+    }
 
     #[test]
     fn followup_context_uses_a_fresh_request_and_candidate() {
@@ -1321,11 +1447,8 @@ mod tests {
     }
 
     #[test]
-    fn an_abandoned_turn_is_recorded_as_a_gateway_failure_not_a_cancellation() {
-        // A turn reclaimed by the Drop guard must not look like a client
-        // cancellation: cancelled turns skip the stream report entirely, which
-        // would defeat the point of reclaiming it.
-        let outcome = ResponsesWebSocketTurnOutcome::relay_task_abandoned();
+    fn an_abandoned_turn_after_upstream_send_is_recorded_as_a_gateway_failure() {
+        let outcome = ResponsesWebSocketTurnOutcome::relay_task_abandonment(true);
         let facts = attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome);
         let settlement = classify_attempt_settlement(AttemptSettlementInputs {
             facts,
@@ -1339,6 +1462,31 @@ mod tests {
         assert!(!facts.provider.cancelled_by_provider());
         assert!(facts.forced_error().is_some());
         assert!(settlement.submit_execution_report);
+    }
+
+    #[test]
+    fn an_abandoned_turn_before_upstream_send_is_void_and_does_not_penalize_provider() {
+        let outcome = ResponsesWebSocketTurnOutcome::relay_task_abandonment(false);
+        let facts = attempt_facts_for_outcome(None, AttemptClientDelivery::Complete, outcome);
+        let settlement = classify_attempt_settlement(AttemptSettlementInputs {
+            facts,
+            report_represents_failure: false,
+            observed_finish: false,
+            has_parser_error: false,
+        });
+
+        assert_eq!(settlement.status_code, 499);
+        assert_eq!(settlement.billing, AttemptBilling::Void);
+        assert_eq!(
+            settlement.candidate_status,
+            AttemptCandidateStatus::Cancelled
+        );
+        assert_eq!(settlement.candidate_error, AttemptCandidateError::Cancelled);
+        assert_eq!(
+            settlement.provider_effect,
+            AttemptProviderEffect::ReleasePoolKeyLease
+        );
+        assert!(!settlement.submit_execution_report);
     }
 
     #[test]

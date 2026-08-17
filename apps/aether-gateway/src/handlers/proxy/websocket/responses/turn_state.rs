@@ -7,6 +7,7 @@
 
 use serde_json::Value;
 
+use super::control::ResponsesWebSocketTurnControl;
 use super::lifecycle::ActiveProviderAttempt;
 use super::request::response_create_has_previous_response_id;
 
@@ -24,6 +25,10 @@ pub(super) struct LogicalTurn {
     pub(super) turn_attempt: u32,
     pub(super) retry_attempted: bool,
     pub(super) retry_unsafe_reason: Option<&'static str>,
+    /// Exact live control decision and strong auth snapshot used to authorize
+    /// this logical turn. Quota retries reuse it instead of falling back to the
+    /// connection's Upgrade-time authorization snapshot.
+    pub(super) turn_control: Option<ResponsesWebSocketTurnControl>,
 }
 
 impl LogicalTurn {
@@ -35,7 +40,13 @@ impl LogicalTurn {
             turn_attempt: 1,
             retry_attempted: false,
             retry_unsafe_reason: None,
+            turn_control: None,
         }
+    }
+
+    pub(super) fn with_turn_control(mut self, turn_control: ResponsesWebSocketTurnControl) -> Self {
+        self.turn_control = Some(turn_control);
+        self
     }
 
     pub(super) fn quota_retry_block_reason(&self) -> Option<&'static str> {

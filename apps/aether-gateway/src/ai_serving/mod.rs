@@ -64,7 +64,7 @@ pub(crate) use self::planner::{
     GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalExecutionAttemptSource,
     LocalExecutionCandidateKind, LocalResolvedOAuthRequestAuth, PlannerAppState,
     ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
-    SkippedLocalExecutionCandidate,
+    ResponsesWebSocketPinnedCandidate, SkippedLocalExecutionCandidate,
 };
 pub(crate) use self::pure::*;
 pub(crate) use self::response_history::{

@@ -1,6 +1,5 @@
 //! Client-side Responses WebSocket event forwarding and follow-up planning.
 
-use axum::body::Bytes;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
 use futures_util::SinkExt;
 use serde_json::Value;
@@ -8,39 +7,43 @@ use uuid::Uuid;
 use wreq::ws::message::Message as WreqWsMessage;
 
 use super::adapter::{resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective};
+use super::control::{resolve_responses_websocket_turn_control, ResponsesWebSocketTurnControl};
 use super::lifecycle::{
     await_pending_turn_finalization, queue_turn_finalization,
-    send_responses_websocket_turn_start_error, ActiveProviderAttempt,
+    send_responses_websocket_turn_start_error,
 };
-use super::quota::{mark_active_response_retry_unsafe, send_previous_response_not_found};
+use super::ownership::{
+    await_owned_responses_websocket_plan, begin_responses_websocket_turn_with_planned_lease,
+    spawn_owned_responses_websocket_plan, OwnedResponsesWebSocketDecision,
+};
+use super::quota::mark_active_response_retry_unsafe;
 use super::redaction::redact_responses_websocket_client_event;
 use super::request::{
-    build_planning_parts, changed_followup_response_create_model,
-    continuation_requires_same_upstream, normalize_followup_response_create,
-    planned_response_create_event, provider_model_from_decision,
-    response_create_has_previous_response_id, response_create_model_or_current,
+    build_planning_parts, changed_followup_response_create_model, planned_response_create_event,
+    provider_model_from_decision, response_create_has_previous_response_id,
+    response_create_model_or_current,
 };
 use super::state::BoundResponsesConnection;
 use super::turn::{
-    begin_responses_websocket_turn, prepare_responses_websocket_turn_decision,
-    ResponsesWebSocketTurnObservation, ResponsesWebSocketTurnOutcome,
+    prepare_responses_websocket_turn_decision, ResponsesWebSocketTurnObservation,
+    ResponsesWebSocketTurnOutcome,
 };
 use super::turn_state::LogicalTurn;
 use super::upstream::{bind_responses_upstream, decision_reuses_bound_upstream};
-use crate::ai_serving::maybe_build_responses_websocket_decision;
+use crate::ai_serving::ResponsesWebSocketPinnedCandidate;
 use crate::clock::current_unix_secs;
-use crate::control::{request_model_local_rejection, GatewayControlDecision};
+use crate::control::GatewayControlDecision;
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::handlers::proxy::websocket::session::{CLOSE_INTERNAL_ERROR, WEBSOCKET_LOG_TRANSPORT};
 use crate::handlers::proxy::websocket::transport::{
-    client_close_to_upstream, close_client_socket, close_upstream_socket, send_client_message,
-    send_gateway_error, send_gateway_error_with_status, send_upstream_message,
+    close_client_socket, close_upstream_socket, send_client_message, send_gateway_error,
+    send_gateway_error_with_status, send_upstream_message,
 };
-use crate::orchestration::release_pool_key_lease_from_report_context;
 use crate::rate_limit::FrontdoorUserRpmOutcome;
 use crate::AppState;
 
 const LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
+const CLOSE_UNSUPPORTED_DATA: u16 = 1003;
 
 macro_rules! debug {
     ($($arg:tt)*) => {
@@ -75,6 +78,65 @@ pub(super) fn adapter_drain_ready(
             ))
 }
 
+fn parse_response_create_event(text: &str) -> Result<Value, &'static str> {
+    let event = serde_json::from_str::<Value>(text).map_err(|_| "invalid_response_create")?;
+    if event.as_object().is_none() {
+        return Err("invalid_response_create");
+    }
+    if event.get("type").and_then(Value::as_str) != Some("response.create") {
+        return Err("expected_response_create");
+    }
+    Ok(event)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuationConstraint {
+    Pinned,
+    UpstreamUnavailable,
+    ModelChangeUnsupported,
+}
+
+/// Classifies only response-chain turns. Independent turns return `None` and
+/// remain free to use the normal planner. A non-null `previous_response_id`
+/// must never fall through to that path: its state belongs to the connection
+/// and provider key that produced it.
+fn continuation_constraint(
+    event: &Value,
+    current_client_model: &str,
+    upstream_available: bool,
+) -> Result<Option<ContinuationConstraint>, &'static str> {
+    if !response_create_has_previous_response_id(event) {
+        return Ok(None);
+    }
+    if changed_followup_response_create_model(event, current_client_model)?.is_some() {
+        return Ok(Some(ContinuationConstraint::ModelChangeUnsupported));
+    }
+    if !upstream_available {
+        return Ok(Some(ContinuationConstraint::UpstreamUnavailable));
+    }
+    Ok(Some(ContinuationConstraint::Pinned))
+}
+
+fn pinned_continuation_planning_event(
+    client_event: &Value,
+    current_client_model: &str,
+) -> Result<Value, &'static str> {
+    let mut planning_event = client_event.clone();
+    // Validate an explicitly supplied value before replacing it with the
+    // canonical bound model. The routing decision has already established
+    // that this is not a model-changing continuation, but the planner must not
+    // receive a whitespace or case variant that fails exact mapping lookup.
+    response_create_model_or_current(&mut planning_event, current_client_model)?;
+    planning_event
+        .as_object_mut()
+        .ok_or("invalid_response_create")?
+        .insert(
+            "model".to_string(),
+            Value::String(current_client_model.to_string()),
+        );
+    Ok(planning_event)
+}
+
 pub(super) async fn forward_client_message(
     client_message: AxumWsMessage,
     bound: &mut BoundResponsesConnection,
@@ -85,39 +147,18 @@ pub(super) async fn forward_client_message(
     match client_message {
         AxumWsMessage::Text(text) => {
             let text = text.to_string();
-            let client_event = serde_json::from_str::<Value>(&text).ok();
-            let is_response_create = client_event
-                .as_ref()
-                .and_then(|event| event.get("type"))
-                .and_then(Value::as_str)
-                == Some("response.create");
-            if !is_response_create {
-                if bound.upstream.is_none() {
+            let mut client_event = match parse_response_create_event(&text) {
+                Ok(event) => event,
+                Err(code) => {
                     send_gateway_error(
                         client_socket,
-                        "responses_websocket_upstream_rebind_required",
-                        "Send a new response.create to select another Provider connection",
+                        code,
+                        "WebSocket client text events must be response.create JSON objects",
                     )
                     .await;
                     return RelayDisposition::Continue;
                 }
-                // We cannot reconstruct arbitrary Responses control events on
-                // a replacement socket.  A concurrent quota error must be
-                // surfaced rather than replaying only the response.create.
-                mark_active_response_retry_unsafe(bound, "client_control_event");
-                return send_upstream_message(
-                    bound
-                        .upstream
-                        .as_mut()
-                        .expect("upstream presence was checked above"),
-                    WreqWsMessage::text(text),
-                )
-                .await
-                .map(|()| RelayDisposition::Continue)
-                .unwrap_or(RelayDisposition::UpstreamError(
-                    "responses_websocket_send_failed",
-                ));
-            }
+            };
 
             if !bound.turn_state.accepts_new_response_create() {
                 send_gateway_error(
@@ -134,8 +175,55 @@ pub(super) async fn forward_client_message(
             // plan against stale health, adaptive, or pool state.
             await_pending_turn_finalization(bound).await;
 
-            match consume_response_create_rate_limit(state, &context.decision, context.rpm_bypassed)
-                .await
+            let requested_model =
+                match response_create_model_or_current(&mut client_event, &bound.client_model) {
+                    Ok(model) => model,
+                    Err(code) => {
+                        send_gateway_error(
+                            client_socket,
+                            code,
+                            "response.create.model must be a non-empty string",
+                        )
+                        .await;
+                        return RelayDisposition::Continue;
+                    }
+                };
+
+            // Build the per-turn planning shape before any policy check, then
+            // derive one strong live control snapshot that every stage below
+            // shares. The connection's Upgrade-time decision is only the
+            // immutable identity seed.
+            let planning_parts = build_planning_parts(context);
+            let turn_control = match resolve_responses_websocket_turn_control(
+                state,
+                context,
+                &planning_parts,
+                &client_event,
+            )
+            .await
+            {
+                Ok(control) => control,
+                Err(error) => {
+                    warn!(
+                        event_name = "responses_websocket_followup_turn_control_rejected",
+                        log_type = "ops",
+                        transport = WEBSOCKET_LOG_TRANSPORT,
+                        websocket = true,
+                        trace_id = %context.trace_id,
+                        error = ?error,
+                        "gateway rejected a Responses WebSocket follow-up after live policy refresh"
+                    );
+                    send_responses_websocket_turn_start_error(client_socket, &error).await;
+                    return RelayDisposition::Continue;
+                }
+            };
+
+            match consume_response_create_rate_limit(
+                state,
+                &turn_control.decision,
+                turn_control.rpm_bypassed,
+            )
+            .await
             {
                 Ok(true) => {}
                 Ok(false) => {
@@ -166,25 +254,15 @@ pub(super) async fn forward_client_message(
                 }
             }
 
-            let Some(client_event) = client_event else {
-                send_gateway_error(
-                    client_socket,
-                    "invalid_response_create",
-                    "response.create must be valid JSON",
-                )
-                .await;
-                return RelayDisposition::Continue;
-            };
             // 这一轮的 planning Parts 只构造一次（它携带 per-turn 的
             // RedactionSessionSlot），并且客户端事件也只在这里脱敏一次：
             // 复用已绑定 upstream 的 continuation 根本不进 planner，只靠 planner
             // 内部脱敏拦不住它。之后 re-plan / continuation / 配额重试都只看脱敏
             // 后的事件，上游请求体与审计 original_request_body 因此一致。
-            let planning_parts = build_planning_parts(context);
             let redacted_client_event = redact_responses_websocket_client_event(
                 state,
                 &planning_parts,
-                &context.decision,
+                &turn_control.decision,
                 &client_event,
             )
             .await;
@@ -221,228 +299,343 @@ pub(super) async fn forward_client_message(
                     return RelayDisposition::Close;
                 }
             };
-            if bound.upstream.is_none() {
-                if response_create_has_previous_response_id(&client_event) {
-                    send_previous_response_not_found(client_socket).await;
+            match continuation_constraint(
+                &client_event,
+                &bound.client_model,
+                bound.upstream.is_some(),
+            ) {
+                Ok(Some(ContinuationConstraint::Pinned)) => {
+                    return forward_pinned_continuation(
+                        bound,
+                        client_socket,
+                        state,
+                        context,
+                        planning_parts,
+                        client_event,
+                        turn_control,
+                    )
+                    .await;
+                }
+                Ok(Some(ContinuationConstraint::UpstreamUnavailable)) => {
+                    send_gateway_error_with_status(
+                        client_socket,
+                        503,
+                        "responses_continuation_provider_unavailable",
+                        "The bound provider connection is unavailable for this continuation",
+                    )
+                    .await;
                     return RelayDisposition::Continue;
                 }
-                let mut client_event = client_event;
-                let requested_model = match response_create_model_or_current(
-                    &mut client_event,
-                    &bound.client_model,
-                ) {
-                    Ok(model) => model,
-                    Err(code) => {
-                        send_gateway_error(
-                            client_socket,
-                            code,
-                            "response.create.model must be a non-empty string",
-                        )
-                        .await;
-                        return RelayDisposition::Continue;
-                    }
-                };
-                return forward_replanned_response_create(
-                    bound,
-                    client_socket,
-                    state,
-                    context,
-                    &planning_parts,
-                    client_event,
-                    requested_model,
-                )
-                .await;
-            }
-            let changed_model =
-                match changed_followup_response_create_model(&client_event, &bound.client_model) {
-                    Ok(model) => model,
-                    Err(code) => {
-                        send_gateway_error(
-                            client_socket,
-                            code,
-                            "response.create.model must be a non-empty string",
-                        )
-                        .await;
-                        return RelayDisposition::Continue;
-                    }
-                };
-            if let Some(requested_model) = changed_model {
-                return forward_replanned_response_create(
-                    bound,
-                    client_socket,
-                    state,
-                    context,
-                    &planning_parts,
-                    client_event,
-                    requested_model,
-                )
-                .await;
-            }
-            if !response_create_has_previous_response_id(&client_event) {
-                return forward_replanned_response_create(
-                    bound,
-                    client_socket,
-                    state,
-                    context,
-                    &planning_parts,
-                    client_event,
-                    bound.client_model.clone(),
-                )
-                .await;
-            }
-
-            let outbound = match normalize_followup_response_create(
-                &client_event,
-                &bound.provider_model,
-                &bound.body_normalization,
-            ) {
-                Ok(value) => value,
+                Ok(Some(ContinuationConstraint::ModelChangeUnsupported)) => {
+                    send_gateway_error_with_status(
+                        client_socket,
+                        409,
+                        "responses_continuation_model_change_unsupported",
+                        "A continuation cannot change models on the bound provider connection",
+                    )
+                    .await;
+                    return RelayDisposition::Continue;
+                }
+                Ok(None) => {}
                 Err(code) => {
                     send_gateway_error(
                         client_socket,
                         code,
-                        "Gateway could not prepare the response.create event",
+                        "response.create.model must be a non-empty string",
                     )
                     .await;
                     return RelayDisposition::Continue;
                 }
-            };
-            let provider_event = match serde_json::from_str::<Value>(&outbound) {
-                Ok(event) => event,
-                Err(_) => {
-                    send_gateway_error(
-                        client_socket,
-                        "response_create_serialization_failed",
-                        "Gateway could not prepare the response.create event",
-                    )
-                    .await;
-                    return RelayDisposition::Continue;
-                }
-            };
-            let turn_index = bound.next_turn_index;
-            let turn_request_id = Uuid::new_v4().to_string();
-            let logical_turn_id = Uuid::new_v4().to_string();
-            debug!(
-                event_name = "responses_websocket_response_create_forwarding",
-                log_type = "event",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                turn_index,
-                client_model = %bound.client_model,
-                provider_model = %bound.provider_model,
-                model_replanned = false,
-                has_previous_response_id = response_create_has_previous_response_id(&client_event),
-                "gateway is forwarding a Responses response.create"
-            );
-            let turn_decision = prepare_responses_websocket_turn_decision(
-                &bound.decision_template,
-                turn_request_id,
-                false,
-                &client_event,
-                &provider_event,
-                &context.trace_id,
-                turn_index,
-                &logical_turn_id,
-                1,
-            );
-            let mut turn = match begin_responses_websocket_turn(
+            }
+            forward_replanned_response_create(
+                bound,
+                client_socket,
                 state,
-                &planning_parts,
-                &context.decision,
-                turn_decision,
-                &client_event,
+                context,
+                planning_parts,
+                client_event,
+                requested_model,
+                turn_control,
             )
             .await
-            {
-                Ok(turn) => turn,
-                Err(error) => {
-                    warn!(
-                        event_name = "responses_websocket_followup_turn_lifecycle_start_failed",
-                        log_type = "ops",
-                        transport = WEBSOCKET_LOG_TRANSPORT,
-                        websocket = true,
-                        trace_id = %context.trace_id,
-                        error = ?error,
-                        "gateway could not start Responses WebSocket follow-up usage/audit lifecycle"
-                    );
-                    send_responses_websocket_turn_start_error(client_socket, &error).await;
-                    return RelayDisposition::Continue;
-                }
-            };
-            turn.set_provider_response_headers(bound.upstream_response_headers.clone());
-            bound.turn_state.begin(
-                LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id),
-                ActiveProviderAttempt::new(state, turn),
-            );
-            bound.next_turn_index = bound.next_turn_index.saturating_add(1);
-
-            let Some(upstream) = bound.upstream.as_mut() else {
-                return RelayDisposition::UpstreamError("responses_websocket_send_failed");
-            };
-            match send_upstream_message(upstream, WreqWsMessage::text(outbound)).await {
-                Ok(()) => {
-                    if let Some(turn) = bound.turn_state.attempt_mut() {
-                        turn.mark_upstream_request_sent();
-                    }
-                    RelayDisposition::Continue
-                }
-                Err(_) => RelayDisposition::UpstreamError("responses_websocket_send_failed"),
-            }
         }
-        AxumWsMessage::Binary(data) => {
-            if bound.upstream.is_some() {
-                mark_active_response_retry_unsafe(bound, "client_binary_frame");
-                send_upstream_message(
-                    bound
-                        .upstream
-                        .as_mut()
-                        .expect("upstream presence was checked above"),
-                    WreqWsMessage::Binary(data),
-                )
-                .await
-                .map(|()| RelayDisposition::Continue)
-                .unwrap_or(RelayDisposition::UpstreamError(
-                    "responses_websocket_send_failed",
-                ))
-            } else {
-                send_gateway_error(
-                    client_socket,
-                    "responses_websocket_upstream_rebind_required",
-                    "Send a new response.create to select another Provider connection",
-                )
-                .await;
-                RelayDisposition::Continue
-            }
+        AxumWsMessage::Binary(_) => {
+            mark_active_response_retry_unsafe(bound, "client_binary_frame");
+            send_gateway_error(
+                client_socket,
+                "responses_websocket_binary_frame_unsupported",
+                "Responses WebSocket mode accepts text events only",
+            )
+            .await;
+            close_client_socket(client_socket, CLOSE_UNSUPPORTED_DATA, "unsupported_data").await;
+            RelayDisposition::Close
         }
-        AxumWsMessage::Ping(data) => match bound.upstream.as_mut() {
-            Some(upstream) => send_upstream_message(upstream, WreqWsMessage::Ping(data))
-                .await
-                .map(|()| RelayDisposition::Continue)
-                .unwrap_or(RelayDisposition::UpstreamError(
-                    "responses_websocket_send_failed",
-                )),
-            None => send_client_message(client_socket, AxumWsMessage::Pong(data))
-                .await
-                .map(|()| RelayDisposition::Continue)
-                .unwrap_or(RelayDisposition::Close),
-        },
-        AxumWsMessage::Pong(data) => match bound.upstream.as_mut() {
-            Some(upstream) => send_upstream_message(upstream, WreqWsMessage::Pong(data))
-                .await
-                .map(|()| RelayDisposition::Continue)
-                .unwrap_or(RelayDisposition::UpstreamError(
-                    "responses_websocket_send_failed",
-                )),
-            None => RelayDisposition::Continue,
-        },
-        AxumWsMessage::Close(frame) => {
+        AxumWsMessage::Ping(data) => send_client_message(client_socket, AxumWsMessage::Pong(data))
+            .await
+            .map(|()| RelayDisposition::Continue)
+            .unwrap_or(RelayDisposition::Close),
+        AxumWsMessage::Pong(_) => RelayDisposition::Continue,
+        AxumWsMessage::Close(_) => {
             if let Some(upstream) = bound.upstream.as_mut() {
-                close_upstream_socket(upstream, client_close_to_upstream(frame)).await;
+                // Do not forward an untrusted client close reason across the
+                // provider trust boundary. A neutral close is sufficient to
+                // tear down the bound upstream transport.
+                close_upstream_socket(upstream, None).await;
             }
             RelayDisposition::Close
         }
     }
+}
+
+/// Revalidates a continuation against the live scheduler while keeping it on
+/// the physical provider connection that owns its `previous_response_id`
+/// state. This deliberately plans only the pinned provider/endpoint/key: an
+/// eligible alternate key is valid for an independent turn, but not for an
+/// in-flight response chain.
+async fn forward_pinned_continuation(
+    bound: &mut BoundResponsesConnection,
+    client_socket: &mut WebSocket,
+    state: &AppState,
+    context: &WebSocketRequestContext,
+    planning_parts: http::request::Parts,
+    client_event: Value,
+    turn_control: ResponsesWebSocketTurnControl,
+) -> RelayDisposition {
+    let Some(pinned_candidate) =
+        ResponsesWebSocketPinnedCandidate::from_decision(&bound.decision_template)
+    else {
+        warn!(
+            event_name = "responses_websocket_continuation_binding_identity_missing",
+            log_type = "ops",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %context.trace_id,
+            "gateway cannot revalidate a continuation whose bound candidate identity is incomplete"
+        );
+        send_gateway_error_with_status(
+            client_socket,
+            503,
+            "responses_continuation_provider_unavailable",
+            "The bound provider connection cannot accept this continuation",
+        )
+        .await;
+        return RelayDisposition::Continue;
+    };
+
+    // The public protocol allows follow-ups to omit `model`. The planner still
+    // needs the effective public model to enumerate the pinned mapping; this
+    // injected copy never replaces the opaque client event kept for audit and
+    // protocol-field restoration.
+    let planning_event =
+        match pinned_continuation_planning_event(&client_event, bound.client_model.as_str()) {
+            Ok(event) => event,
+            Err(code) => {
+                send_gateway_error(
+                    client_socket,
+                    code,
+                    "response.create.model must be a non-empty string",
+                )
+                .await;
+                return RelayDisposition::Continue;
+            }
+        };
+
+    let turn_request_id = Uuid::new_v4().to_string();
+    let logical_turn_id = Uuid::new_v4().to_string();
+    let planned = match await_owned_responses_websocket_plan(spawn_owned_responses_websocket_plan(
+        state.clone(),
+        planning_parts,
+        turn_request_id.clone(),
+        turn_control.decision.clone(),
+        turn_control.auth_snapshot.clone(),
+        planning_event,
+        None,
+        None,
+        Some(pinned_candidate),
+    ))
+    .await
+    {
+        Ok(Some(decision)) => decision,
+        Ok(None) => {
+            send_gateway_error_with_status(
+                client_socket,
+                503,
+                "responses_continuation_provider_unavailable",
+                "The bound provider is not currently eligible for this continuation",
+            )
+            .await;
+            return RelayDisposition::Continue;
+        }
+        Err(error) => {
+            warn!(
+                event_name = "responses_websocket_continuation_revalidation_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                key_id = ?bound.decision_template.key_id,
+                error = ?error,
+                "gateway failed to revalidate the bound Responses WebSocket candidate"
+            );
+            send_gateway_error_with_status(
+                client_socket,
+                503,
+                "responses_continuation_provider_unavailable",
+                "Gateway could not revalidate the bound provider",
+            )
+            .await;
+            return RelayDisposition::Continue;
+        }
+    };
+    let OwnedResponsesWebSocketDecision {
+        planned,
+        planning_parts,
+        planned_lease,
+    } = planned;
+    let adapter = resolve_responses_websocket_adapter(planned.adapter);
+    let normalization = planned.normalization;
+    let decision = planned.execution;
+    let planned_provider_model = provider_model_from_decision(&decision);
+    if !decision_reuses_bound_upstream(bound, adapter, &decision)
+        || planned_provider_model.as_deref() != Some(bound.provider_model.as_str())
+    {
+        planned_lease.release().await;
+        warn!(
+            event_name = "responses_websocket_continuation_binding_changed",
+            log_type = "ops",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %context.trace_id,
+            key_id = ?decision.key_id,
+            "gateway rejected a continuation after the pinned candidate's physical binding changed"
+        );
+        send_gateway_error_with_status(
+            client_socket,
+            409,
+            "responses_continuation_binding_changed",
+            "The provider binding changed; reconnect or start an independent response",
+        )
+        .await;
+        return RelayDisposition::Continue;
+    }
+
+    let provider_event =
+        match planned_response_create_event(&decision, &client_event).and_then(|event| {
+            serde_json::from_str::<Value>(&event)
+                .map_err(|_| "response_create_serialization_failed")
+        }) {
+            Ok(event) => event,
+            Err(code) => {
+                planned_lease.release().await;
+                send_gateway_error(
+                    client_socket,
+                    code,
+                    "Gateway could not prepare the response.create event",
+                )
+                .await;
+                return RelayDisposition::Continue;
+            }
+        };
+    let outbound = match serde_json::to_string(&provider_event) {
+        Ok(outbound) => outbound,
+        Err(_) => {
+            planned_lease.release().await;
+            send_gateway_error(
+                client_socket,
+                "response_create_serialization_failed",
+                "Gateway could not prepare the response.create event",
+            )
+            .await;
+            return RelayDisposition::Continue;
+        }
+    };
+    let turn_index = bound.next_turn_index;
+    let turn_decision = prepare_responses_websocket_turn_decision(
+        &decision,
+        turn_request_id,
+        true,
+        &client_event,
+        &provider_event,
+        &context.trace_id,
+        turn_index,
+        &logical_turn_id,
+        1,
+    );
+    let mut turn = match begin_responses_websocket_turn_with_planned_lease(
+        state,
+        &context.trace_id,
+        planning_parts,
+        &turn_control.decision,
+        turn_decision,
+        &client_event,
+        planned_lease,
+    )
+    .await
+    {
+        Ok(turn) => turn,
+        Err(error) => {
+            warn!(
+                event_name = "responses_websocket_continuation_turn_start_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                error = ?error,
+                "gateway could not admit a revalidated Responses WebSocket continuation"
+            );
+            send_responses_websocket_turn_start_error(client_socket, &error).await;
+            return RelayDisposition::Continue;
+        }
+    };
+
+    let Some(upstream) = bound.upstream.as_mut() else {
+        queue_turn_finalization(
+            bound,
+            state,
+            turn,
+            ResponsesWebSocketTurnOutcome::upstream_send_failed(),
+        )
+        .await;
+        return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+    };
+    if send_upstream_message(upstream, WreqWsMessage::text(outbound))
+        .await
+        .is_err()
+    {
+        queue_turn_finalization(
+            bound,
+            state,
+            turn,
+            ResponsesWebSocketTurnOutcome::upstream_send_failed(),
+        )
+        .await;
+        return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+    }
+
+    turn.mark_upstream_request_sent();
+    turn.set_provider_response_headers(bound.upstream_response_headers.clone());
+    bound.adapter = adapter;
+    bound.decision_template = decision;
+    bound.body_normalization = normalization;
+    bound.turn_state.begin(
+        LogicalTurn::new(client_event, turn_index, logical_turn_id).with_turn_control(turn_control),
+        turn,
+    );
+    bound.next_turn_index = bound.next_turn_index.saturating_add(1);
+    debug!(
+        event_name = "responses_websocket_continuation_forwarding",
+        log_type = "event",
+        transport = WEBSOCKET_LOG_TRANSPORT,
+        websocket = true,
+        trace_id = %context.trace_id,
+        turn_index,
+        client_model = %bound.client_model,
+        provider_model = %bound.provider_model,
+        key_id = ?bound.decision_template.key_id,
+        candidate_revalidated = true,
+        "gateway forwarded a pinned Responses WebSocket continuation after runtime revalidation"
+    );
+    RelayDisposition::Continue
 }
 
 /// 重新规划一轮 `response.create`（换模型或独立轮）。
@@ -455,85 +648,30 @@ async fn forward_replanned_response_create(
     client_socket: &mut WebSocket,
     state: &AppState,
     context: &WebSocketRequestContext,
-    planning_parts: &http::request::Parts,
+    planning_parts: http::request::Parts,
     client_event: Value,
     requested_model: String,
+    turn_control: ResponsesWebSocketTurnControl,
 ) -> RelayDisposition {
-    let client_event_text = match serde_json::to_vec(&client_event) {
-        Ok(value) => Bytes::from(value),
-        Err(_) => {
-            send_gateway_error(
-                client_socket,
-                "invalid_response_create",
-                "response.create must be valid JSON",
-            )
-            .await;
-            return RelayDisposition::Continue;
-        }
-    };
-    match request_model_local_rejection(
-        state,
-        Some(&context.decision),
-        &planning_parts.uri,
-        &planning_parts.headers,
-        &client_event_text,
-    )
-    .await
-    {
-        Ok(Some(_)) => {
-            send_gateway_error(
-                client_socket,
-                "model_not_allowed",
-                "The requested model is not available to this API key",
-            )
-            .await;
-            return RelayDisposition::Continue;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            warn!(
-                event_name = "responses_websocket_followup_model_access_check_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                requested_model = %requested_model,
-                error = ?error,
-                "gateway failed to evaluate follow-up WebSocket model access policy"
-            );
-            send_gateway_error(
-                client_socket,
-                "gateway_auth_unavailable",
-                "Gateway could not evaluate request access",
-            )
-            .await;
-            close_client_socket(
-                client_socket,
-                CLOSE_INTERNAL_ERROR,
-                "gateway_auth_unavailable",
-            )
-            .await;
-            return RelayDisposition::Close;
-        }
-    }
-
     let turn_request_id = Uuid::new_v4().to_string();
     let logical_turn_id = Uuid::new_v4().to_string();
     let now_unix_secs = current_unix_secs();
     let excluded_key_ids = bound.exhausted_exclusions.key_ids(now_unix_secs);
     let excluded_codex_account_ids = bound.exhausted_exclusions.codex_account_ids(now_unix_secs);
-    let excluded_key_ids = (!excluded_key_ids.is_empty()).then_some(&excluded_key_ids);
+    let excluded_key_ids = (!excluded_key_ids.is_empty()).then_some(excluded_key_ids);
     let excluded_codex_account_ids =
-        (!excluded_codex_account_ids.is_empty()).then_some(&excluded_codex_account_ids);
-    let planned = match maybe_build_responses_websocket_decision(
-        state,
+        (!excluded_codex_account_ids.is_empty()).then_some(excluded_codex_account_ids);
+    let planned = match await_owned_responses_websocket_plan(spawn_owned_responses_websocket_plan(
+        state.clone(),
         planning_parts,
-        &turn_request_id,
-        &context.decision,
-        &client_event,
+        turn_request_id.clone(),
+        turn_control.decision.clone(),
+        turn_control.auth_snapshot.clone(),
+        client_event.clone(),
         excluded_key_ids,
         excluded_codex_account_ids,
-    )
+        None,
+    ))
     .await
     {
         Ok(Some(decision)) => decision,
@@ -568,27 +706,15 @@ async fn forward_replanned_response_create(
             return RelayDisposition::Continue;
         }
     };
+    let OwnedResponsesWebSocketDecision {
+        planned,
+        planning_parts,
+        planned_lease,
+    } = planned;
     let adapter = resolve_responses_websocket_adapter(planned.adapter);
     let normalization = planned.normalization;
     let decision = planned.execution;
     let reuses_bound_upstream = decision_reuses_bound_upstream(bound, adapter, &decision);
-    if continuation_requires_same_upstream(&client_event, reuses_bound_upstream) {
-        release_pool_key_lease_from_report_context(state, decision.report_context.as_ref()).await;
-        debug!(
-            event_name = "responses_websocket_continuation_rebind_rejected",
-            log_type = "event",
-            transport = WEBSOCKET_LOG_TRANSPORT,
-            websocket = true,
-            trace_id = %context.trace_id,
-            requested_model = %requested_model,
-            previous_key_id = ?bound.decision_template.key_id,
-            planned_key_id = ?decision.key_id,
-            error_code = "previous_response_not_found",
-            "gateway refused to move a Responses continuation to a different upstream account or connection"
-        );
-        send_previous_response_not_found(client_socket).await;
-        return RelayDisposition::Continue;
-    }
     let provider_event =
         match planned_response_create_event(&decision, &client_event).and_then(|event| {
             serde_json::from_str::<Value>(&event)
@@ -596,8 +722,7 @@ async fn forward_replanned_response_create(
         }) {
             Ok(event) => event,
             Err(code) => {
-                release_pool_key_lease_from_report_context(state, decision.report_context.as_ref())
-                    .await;
+                planned_lease.release().await;
                 send_gateway_error(
                     client_socket,
                     code,
@@ -619,12 +744,14 @@ async fn forward_replanned_response_create(
         &logical_turn_id,
         1,
     );
-    let mut turn = match begin_responses_websocket_turn(
+    let mut turn = match begin_responses_websocket_turn_with_planned_lease(
         state,
+        &context.trace_id,
         planning_parts,
-        &context.decision,
+        &turn_control.decision,
         turn_decision,
         &client_event,
+        planned_lease,
     )
     .await
     {
@@ -700,8 +827,9 @@ async fn forward_replanned_response_create(
         // continuations must normalize against the new plan, not the old one.
         bound.body_normalization = normalization;
         bound.turn_state.begin(
-            LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id.clone()),
-            ActiveProviderAttempt::new(state, turn),
+            LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id.clone())
+                .with_turn_control(turn_control),
+            turn,
         );
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
         debug!(
@@ -772,8 +900,8 @@ async fn forward_replanned_response_create(
     bound.body_normalization = replacement.body_normalization;
     bound.binding_identity = replacement.binding_identity;
     bound.turn_state.begin(
-        LogicalTurn::new(client_event, turn_index, logical_turn_id),
-        ActiveProviderAttempt::new(state, turn),
+        LogicalTurn::new(client_event, turn_index, logical_turn_id).with_turn_control(turn_control),
+        turn,
     );
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
     bound.upstream_response_headers = replacement.upstream_response_headers;
@@ -812,5 +940,92 @@ pub(super) async fn consume_response_create_rate_limit(
     {
         FrontdoorUserRpmOutcome::Rejected(_) => Ok(false),
         FrontdoorUserRpmOutcome::Allowed | FrontdoorUserRpmOutcome::NotApplicable => Ok(true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        continuation_constraint, parse_response_create_event, pinned_continuation_planning_event,
+        ContinuationConstraint,
+    };
+
+    #[test]
+    fn invalid_client_text_does_not_poison_the_next_response_create() {
+        assert_eq!(
+            parse_response_create_event("not-json"),
+            Err("invalid_response_create")
+        );
+        assert_eq!(
+            parse_response_create_event("[]"),
+            Err("invalid_response_create")
+        );
+        assert_eq!(
+            parse_response_create_event(r#"{"type":"response.cancel"}"#),
+            Err("expected_response_create")
+        );
+
+        let valid = parse_response_create_event(
+            r#"{"type":"response.create","model":"gpt-test","store":true}"#,
+        )
+        .expect("a valid event after rejected text should still parse");
+        assert_eq!(valid["type"], "response.create");
+        assert_eq!(valid["store"], true);
+    }
+
+    #[test]
+    fn continuation_without_an_upstream_never_falls_through_to_replanning() {
+        let continuation = json!({
+            "type": "response.create",
+            "previous_response_id": "resp-previous",
+        });
+
+        assert_eq!(
+            continuation_constraint(&continuation, "gpt-current", false),
+            Ok(Some(ContinuationConstraint::UpstreamUnavailable))
+        );
+        assert_eq!(
+            continuation_constraint(&continuation, "gpt-current", true),
+            Ok(Some(ContinuationConstraint::Pinned))
+        );
+        assert_eq!(
+            continuation_constraint(
+                &json!({"type": "response.create", "model": "gpt-current"}),
+                "gpt-current",
+                false,
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn model_changing_continuation_never_falls_through_to_replanning() {
+        let continuation = json!({
+            "type": "response.create",
+            "model": "gpt-other",
+            "previous_response_id": "resp-previous",
+        });
+
+        assert_eq!(
+            continuation_constraint(&continuation, "gpt-current", true),
+            Ok(Some(ContinuationConstraint::ModelChangeUnsupported))
+        );
+    }
+
+    #[test]
+    fn pinned_planning_uses_the_canonical_bound_model() {
+        let client_event = json!({
+            "type": "response.create",
+            "model": "  GPT-CURRENT  ",
+            "previous_response_id": "resp-previous",
+        });
+
+        let planning = pinned_continuation_planning_event(&client_event, "gpt-current")
+            .expect("a same-model continuation should normalize");
+        assert_eq!(planning["model"], "gpt-current");
+        assert_eq!(client_event["model"], "  GPT-CURRENT  ");
+        assert_eq!(planning["previous_response_id"], "resp-previous");
     }
 }

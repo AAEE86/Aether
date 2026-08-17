@@ -119,6 +119,17 @@ impl<'a> ParsedResponsesWebSocketFrame<'a> {
     }
 }
 
+/// Encodes one event peeled from a provider-private envelope without applying
+/// an event-type or field projection.
+///
+/// Direct provider events should use [`ParsedResponsesWebSocketFrame::raw_text`]
+/// so their bytes remain identical. This helper exists only for batch
+/// envelopes that cannot be relayed as a whole: serializing the complete
+/// [`Value`] preserves every known and future JSON member.
+pub(super) fn encode_opaque_websocket_event(event: &Value) -> serde_json::Result<String> {
+    serde_json::to_string(event)
+}
+
 /// Flattens a frame into the events it carries.  An envelope may name its own
 /// `type` *and* batch further events under `chunks`; both are protocol events.
 fn protocol_events_of(event: &Value) -> Vec<&Value> {
@@ -148,21 +159,6 @@ fn event_is_started(event: &Value) -> bool {
     )
 }
 
-/// `response.incomplete` 的合法终态 reason 白名单。
-///
-/// 这些 reason 表示上游按规则正常结束了本轮响应（写满 `max_output_tokens`、
-/// 命中内容过滤、按工具调用截断），标准流解析里它们会变成 `length` /
-/// `content_filter` / `tool_calls` 这类正常 finish，和
-/// `openai_responses_incomplete_finish_reason` 的既有映射保持一致，因此不能
-/// 当成 provider failure 记账。
-const LEGITIMATE_RESPONSES_INCOMPLETE_REASONS: [&str; 5] = [
-    "max_output_tokens",
-    "max_tokens",
-    "content_filter",
-    "tool_calls",
-    "function_call",
-];
-
 /// 读取 `response.incomplete` 携带的 `incomplete_details.reason`。
 ///
 /// 标准位置是 `response.incomplete_details.reason`；批量封装偶尔把
@@ -179,17 +175,33 @@ fn responses_incomplete_reason(event: &Value) -> Option<&str> {
     .find(|reason| !reason.is_empty())
 }
 
-/// 判断一个 `response.incomplete` 是否是合法终态。
+fn responses_incomplete_has_explicit_error(event: &Value) -> bool {
+    [event.get("error"), event.pointer("/response/error")]
+        .into_iter()
+        .flatten()
+        .any(|error| !error.is_null())
+}
+
+/// Derives only the fallback status for `response.incomplete`.
 ///
-/// reason 缺失或不在白名单内（例如 `error`、`server_error`）时继续按
-/// provider failure 处理：这类 incomplete 说明上游确实没能正常收尾，仍应扣
-/// 供应商健康分。
-fn responses_incomplete_is_legitimate_terminal(event: &Value) -> bool {
-    responses_incomplete_reason(event).is_some_and(|reason| {
-        LEGITIMATE_RESPONSES_INCOMPLETE_REASONS
-            .iter()
-            .any(|candidate| reason.eq_ignore_ascii_case(candidate))
-    })
+/// A non-empty reason is provider-owned protocol data. Treating it as a fixed
+/// allowlist would turn every future legitimate reason into a synthetic 502
+/// and incorrectly penalize provider health. Missing/malformed reasons and
+/// explicit error markers still fail closed; numeric status and recognized
+/// error codes continue to override this fallback in
+/// [`websocket_event_status_code`].
+fn responses_incomplete_default_status(event: &Value) -> u16 {
+    match responses_incomplete_reason(event) {
+        None => 502,
+        Some(reason)
+            if reason.eq_ignore_ascii_case("error")
+                || reason.eq_ignore_ascii_case("server_error") =>
+        {
+            502
+        }
+        Some(_) if responses_incomplete_has_explicit_error(event) => 502,
+        Some(_) => 200,
+    }
 }
 
 fn terminal_for_event(event: &Value) -> Option<ResponsesWebSocketFrameTerminal> {
@@ -198,18 +210,13 @@ fn terminal_for_event(event: &Value) -> Option<ResponsesWebSocketFrameTerminal> 
             status_code: websocket_event_status_code(event, 200),
             cancelled: false,
         }),
-        // 合法 incomplete（例如写满 max_output_tokens）是正常终态，默认按 200
-        // 记账，不再一律当 502 provider failure；reason 缺失或未知时保留原来的
-        // 502 默认值。显式 `status_code` 和 error code 映射仍然优先于默认值，
-        // 所以带 `rate_limit_exceeded` 的 incomplete 依旧是 429。
+        // A non-empty provider reason is a normal terminal by default, including
+        // future reasons Aether does not yet know. Explicit status/error data
+        // still wins, so quota and server failures retain their failure status.
         "response.incomplete" => Some(ResponsesWebSocketFrameTerminal {
             status_code: websocket_event_status_code(
                 event,
-                if responses_incomplete_is_legitimate_terminal(event) {
-                    200
-                } else {
-                    502
-                },
+                responses_incomplete_default_status(event),
             ),
             cancelled: false,
         }),
@@ -282,7 +289,9 @@ fn safe_websocket_event_label(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ParsedResponsesWebSocketFrame;
+    use serde_json::json;
+
+    use super::{encode_opaque_websocket_event, ParsedResponsesWebSocketFrame};
 
     #[test]
     fn parses_started_frame_once_with_raw_text_and_event_metadata() {
@@ -296,6 +305,37 @@ mod tests {
         assert!(!frame.is_terminal());
         assert_eq!(frame.event()["response"]["status"], 200);
         assert_eq!(frame.event_type_for_log(), "response.in_progress");
+    }
+
+    #[test]
+    fn future_response_event_keeps_its_exact_original_text_and_unknown_fields() {
+        let raw = "{ \n  \"future_top_level\": {\"nested\": [1, true, null]}, \n  \"type\": \"response.future_capability.delta\", \n  \"delta\": {\"new_wire_shape\": \"opaque\"}\n}";
+        let frame = ParsedResponsesWebSocketFrame::parse(raw).expect("valid future event");
+
+        assert_eq!(frame.raw_text(), raw);
+        assert_eq!(
+            frame.event()["future_top_level"],
+            json!({"nested": [1, true, null]})
+        );
+        assert_eq!(frame.event()["delta"], json!({"new_wire_shape": "opaque"}));
+        assert!(!frame.is_terminal());
+    }
+
+    #[test]
+    fn peeled_batch_event_encoding_preserves_the_complete_opaque_value() {
+        let frame = ParsedResponsesWebSocketFrame::parse(
+            r#"{"chunks":[{"type":"response.future.done","future_capability":{"mode":"new"},"response":{"id":"resp_future","future_usage":{"novel_tokens":7}}}]}"#,
+        )
+        .expect("valid private envelope");
+        let events = frame.protocol_events();
+        let event = events.first().expect("one future response event");
+        let encoded = encode_opaque_websocket_event(event).expect("Value serialization succeeds");
+        let round_trip: serde_json::Value =
+            serde_json::from_str(&encoded).expect("encoded event stays valid JSON");
+
+        assert_eq!(round_trip, **event);
+        assert_eq!(round_trip["future_capability"], json!({"mode": "new"}));
+        assert_eq!(round_trip["response"]["future_usage"]["novel_tokens"], 7);
     }
 
     #[test]
@@ -373,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incomplete_without_a_legitimate_reason_stays_a_provider_failure() {
+    fn an_incomplete_without_a_reason_or_with_a_failure_reason_stays_a_provider_failure() {
         for raw in [
             r#"{"type":"response.incomplete"}"#,
             r#"{"type":"response.incomplete","response":{"incomplete_details":null}}"#,
@@ -386,9 +426,24 @@ mod tests {
             assert_eq!(
                 frame.status(),
                 Some(502),
-                "an incomplete without a known-good reason must stay a provider failure: {raw}"
+                "an incomplete without a usable reason must stay a provider failure: {raw}"
             );
         }
+    }
+
+    #[test]
+    fn a_future_incomplete_reason_is_forward_compatible_without_hiding_explicit_errors() {
+        let future = ParsedResponsesWebSocketFrame::parse(
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"future_context_boundary"}}}"#,
+        )
+        .expect("valid frame");
+        assert_eq!(future.status(), Some(200));
+
+        let future_with_error = ParsedResponsesWebSocketFrame::parse(
+            r#"{"type":"response.incomplete","response":{"error":{"code":"future_provider_error"},"incomplete_details":{"reason":"future_context_boundary"}}}"#,
+        )
+        .expect("valid frame");
+        assert_eq!(future_with_error.status(), Some(502));
     }
 
     #[test]

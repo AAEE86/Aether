@@ -1,7 +1,5 @@
 //! Quota exhaustion, replay safety, and upstream replacement policy.
 
-use axum::extract::ws::WebSocket;
-use futures_util::SinkExt;
 use serde_json::Value;
 use uuid::Uuid;
 use wreq::ws::message::Message as WreqWsMessage;
@@ -10,28 +8,21 @@ use super::adapter::{
     resolve_responses_websocket_adapter, ResponsesWebSocketDrainDirective,
     ResponsesWebSocketRebindSafety,
 };
-use super::lifecycle::{queue_turn_finalization, ActiveProviderAttempt, PreviousAttemptSettled};
-use super::request::{
-    build_planning_parts, planned_response_create_event, response_create_has_previous_response_id,
+use super::lifecycle::{queue_turn_finalization, PreviousAttemptSettled};
+use super::ownership::{
+    await_owned_responses_websocket_plan, begin_responses_websocket_turn_with_planned_lease,
+    spawn_owned_responses_websocket_plan, OwnedResponsesWebSocketDecision,
 };
+use super::request::{build_planning_parts, planned_response_create_event};
 use super::state::BoundResponsesConnection;
-use super::turn::{
-    begin_responses_websocket_turn, prepare_responses_websocket_turn_decision,
-    ResponsesWebSocketTurnOutcome,
-};
+use super::turn::{prepare_responses_websocket_turn_decision, ResponsesWebSocketTurnOutcome};
 use super::upstream::{bind_responses_upstream, close_bound_upstream};
-use crate::ai_serving::maybe_build_responses_websocket_decision;
 use crate::clock::current_unix_secs;
 use crate::handlers::proxy::websocket::ingress::WebSocketRequestContext;
 use crate::handlers::proxy::websocket::session::WEBSOCKET_LOG_TRANSPORT;
-use crate::handlers::proxy::websocket::transport::{
-    close_upstream_socket, send_responses_websocket_error,
-};
-use crate::orchestration::release_pool_key_lease_from_report_context;
+use crate::handlers::proxy::websocket::transport::close_upstream_socket;
 use crate::AppState;
 
-const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
-    "Previous response was not found. Retrying the full request.";
 const LOG_TARGET: &str = "aether_gateway::handlers::proxy::responses_ws";
 
 macro_rules! debug {
@@ -132,6 +123,17 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     active.retry_attempted = true;
     active.turn_attempt = active.turn_attempt.saturating_add(1);
     let client_event = active.client_event.clone();
+    let Some(turn_control) = active.turn_control.clone() else {
+        warn!(
+            event_name = "responses_websocket_quota_retry_control_missing",
+            log_type = "ops",
+            transport = WEBSOCKET_LOG_TRANSPORT,
+            websocket = true,
+            trace_id = %context.trace_id,
+            "gateway refused to retry a WebSocket turn without its live authorization snapshot"
+        );
+        return false;
+    };
     let turn_index = active.turn_index;
     let logical_turn_id = active.logical_turn_id.clone();
     let turn_attempt = active.turn_attempt;
@@ -147,18 +149,20 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     let now_unix_secs = current_unix_secs();
     let excluded_key_ids = bound.exhausted_exclusions.key_ids(now_unix_secs);
     let excluded_codex_account_ids = bound.exhausted_exclusions.codex_account_ids(now_unix_secs);
-    let excluded_key_ids = (!excluded_key_ids.is_empty()).then_some(&excluded_key_ids);
+    let excluded_key_ids = (!excluded_key_ids.is_empty()).then_some(excluded_key_ids);
     let excluded_codex_account_ids =
-        (!excluded_codex_account_ids.is_empty()).then_some(&excluded_codex_account_ids);
-    let planned = match maybe_build_responses_websocket_decision(
-        state,
-        &planning_parts,
-        &turn_request_id,
-        &context.decision,
-        &client_event,
+        (!excluded_codex_account_ids.is_empty()).then_some(excluded_codex_account_ids);
+    let planned = match await_owned_responses_websocket_plan(spawn_owned_responses_websocket_plan(
+        state.clone(),
+        planning_parts,
+        turn_request_id.clone(),
+        turn_control.decision.clone(),
+        turn_control.auth_snapshot.clone(),
+        client_event.clone(),
         excluded_key_ids,
         excluded_codex_account_ids,
-    )
+        None,
+    ))
     .await
     {
         Ok(Some(decision)) => decision,
@@ -188,11 +192,16 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
             return false;
         }
     };
+    let OwnedResponsesWebSocketDecision {
+        planned,
+        planning_parts,
+        planned_lease,
+    } = planned;
     let adapter = resolve_responses_websocket_adapter(planned.adapter);
     let normalization = planned.normalization;
     let decision = planned.execution;
     if exhausted_key_id.as_deref() == decision.key_id.as_deref() {
-        release_pool_key_lease_from_report_context(state, decision.report_context.as_ref()).await;
+        planned_lease.release().await;
         warn!(
             event_name = "responses_websocket_quota_retry_selected_exhausted_key",
             log_type = "ops",
@@ -212,8 +221,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     ) {
         Ok(event) => event,
         Err(code) => {
-            release_pool_key_lease_from_report_context(state, decision.report_context.as_ref())
-                .await;
+            planned_lease.release().await;
             warn!(
                 event_name = "responses_websocket_quota_retry_normalization_failed",
                 log_type = "ops",
@@ -237,12 +245,14 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
         &logical_turn_id,
         turn_attempt,
     );
-    let mut turn = match begin_responses_websocket_turn(
+    let mut turn = match begin_responses_websocket_turn_with_planned_lease(
         state,
-        &planning_parts,
-        &context.decision,
+        &context.trace_id,
+        planning_parts,
+        &turn_control.decision,
         turn_decision,
         &client_event,
+        planned_lease,
     )
     .await
     {
@@ -309,10 +319,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     // 同一个 logical turn 的下一个 attempt 就位。状态不符时把 attempt 交回
     // drop guard 结算并让调用方走「透明重试失败」分支，不静默丢弃一条已经写了
     // pending usage 行、占着 candidate 和 pool key lease 的 attempt。
-    if let Err(orphan) = bound
-        .turn_state
-        .resume(ActiveProviderAttempt::new(state, turn))
-    {
+    if let Err(orphan) = bound.turn_state.resume(turn) {
         drop(orphan);
         return false;
     }
@@ -334,15 +341,6 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     true
 }
 
-pub(super) fn active_continuation_can_retry_from_full_input(
-    bound: &BoundResponsesConnection,
-) -> bool {
-    bound.turn_state.logical().is_some_and(|active| {
-        response_create_has_previous_response_id(&active.client_event)
-            && active.retry_unsafe_reason.is_none()
-    })
-}
-
 pub(super) fn is_usage_limit_error_event(event: &Value) -> bool {
     let is_error = |value: &Value| {
         value.get("type").and_then(Value::as_str) == Some("error")
@@ -353,27 +351,6 @@ pub(super) fn is_usage_limit_error_event(event: &Value) -> bool {
             .get("chunks")
             .and_then(Value::as_array)
             .is_some_and(|chunks| chunks.iter().any(is_error))
-}
-
-pub(super) fn should_request_full_continuation_retry(
-    bound: &BoundResponsesConnection,
-    retry_current_turn: bool,
-    upstream_event: Option<&Value>,
-) -> bool {
-    retry_current_turn
-        && active_continuation_can_retry_from_full_input(bound)
-        && upstream_event.is_some_and(is_usage_limit_error_event)
-}
-
-pub(super) async fn send_previous_response_not_found(client_socket: &mut WebSocket) {
-    send_responses_websocket_error(
-        client_socket,
-        400,
-        "invalid_request_error",
-        "previous_response_not_found",
-        PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
-    )
-    .await;
 }
 
 pub(super) fn observe_active_response_rebind_safety(

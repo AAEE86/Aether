@@ -305,8 +305,8 @@ mod tests {
             remote_addr: "127.0.0.1:65000"
                 .parse::<SocketAddr>()
                 .expect("remote address should parse"),
+            client_ip: "127.0.0.1".parse().expect("client IP should parse"),
             decision,
-            rpm_bypassed: false,
             websocket_connection_permit: None,
         }
     }

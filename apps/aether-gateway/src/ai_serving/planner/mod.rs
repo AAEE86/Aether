@@ -84,6 +84,7 @@ pub(crate) use self::standard::{
     codex_model_capabilities_for_transport, maybe_build_responses_websocket_decision,
     set_local_openai_chat_execution_exhausted_diagnostic, validate_final_openai_provider_request,
     ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
+    ResponsesWebSocketPinnedCandidate,
 };
 pub(crate) use self::state::{
     GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalResolvedOAuthRequestAuth,

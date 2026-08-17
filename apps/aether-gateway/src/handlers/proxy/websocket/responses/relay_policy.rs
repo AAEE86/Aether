@@ -81,15 +81,12 @@ pub struct QuotaRelayFacts {
     /// The adapter allows a transparent replay of this turn.
     pub retry_current_turn: bool,
     /// The session already attempted the adapter-approved transparent replay
-    /// and could not bind an alternate upstream.  A continuation may request
-    /// complete input only after that first recovery path was exhausted.
+    /// and could not bind an alternate upstream. This prevents retry loops and
+    /// causes the original upstream quota event to be relayed to the client.
     pub transparent_retry_failed: bool,
     /// The event contains the definitive `usage_limit_reached` error.  A
     /// merely exhausted-looking rate-limit snapshot must not trigger retry.
     pub usage_limit_error: bool,
-    /// The active request is a continuation that can be retried from complete
-    /// input after the old account is detached.
-    pub continuation_retry_eligible: bool,
     pub upstream_closed: bool,
 }
 
@@ -97,7 +94,6 @@ pub struct QuotaRelayFacts {
 pub enum QuotaRelayAction {
     None,
     AttemptTransparentRetry,
-    RequestFullContinuationRetry,
     ForwardQuotaAndDetach,
 }
 
@@ -113,13 +109,7 @@ pub const fn classify_quota_relay(facts: QuotaRelayFacts) -> QuotaRelayAction {
     if facts.usage_limit_error && facts.retry_current_turn && !facts.transparent_retry_failed {
         return QuotaRelayAction::AttemptTransparentRetry;
     }
-    if facts.usage_limit_error
-        && facts.continuation_retry_eligible
-        && (facts.transparent_retry_failed || !facts.retry_current_turn)
-    {
-        return QuotaRelayAction::RequestFullContinuationRetry;
-    }
-    if facts.upstream_closed {
+    if facts.usage_limit_error || facts.upstream_closed {
         return QuotaRelayAction::ForwardQuotaAndDetach;
     }
     QuotaRelayAction::None
@@ -177,7 +167,6 @@ mod tests {
             retry_current_turn: true,
             transparent_retry_failed: false,
             usage_limit_error: true,
-            continuation_retry_eligible: false,
             upstream_closed: false,
         });
         assert_eq!(first, QuotaRelayAction::AttemptTransparentRetry);
@@ -190,50 +179,22 @@ mod tests {
             retry_current_turn: false,
             transparent_retry_failed: true,
             usage_limit_error: true,
-            continuation_retry_eligible: false,
             upstream_closed: true,
         });
         assert_eq!(after_retry_failure, QuotaRelayAction::ForwardQuotaAndDetach);
     }
 
     #[test]
-    fn continuation_quota_can_request_full_input_retry_without_replaying_partial_state() {
+    fn quota_error_is_forwarded_after_transparent_retry_is_unavailable() {
         assert_eq!(
             classify_quota_relay(QuotaRelayFacts {
                 drain_ready: true,
                 retry_current_turn: false,
                 transparent_retry_failed: false,
                 usage_limit_error: true,
-                continuation_retry_eligible: true,
-                upstream_closed: true,
-            }),
-            QuotaRelayAction::RequestFullContinuationRetry
-        );
-        assert_eq!(
-            classify_quota_relay(QuotaRelayFacts {
-                drain_ready: true,
-                retry_current_turn: false,
-                transparent_retry_failed: true,
-                usage_limit_error: true,
-                continuation_retry_eligible: true,
-                upstream_closed: true,
-            }),
-            QuotaRelayAction::RequestFullContinuationRetry
-        );
-    }
-
-    #[test]
-    fn continuation_quota_without_transparent_retry_support_uses_full_input_retry() {
-        assert_eq!(
-            classify_quota_relay(QuotaRelayFacts {
-                drain_ready: true,
-                retry_current_turn: false,
-                transparent_retry_failed: false,
-                usage_limit_error: true,
-                continuation_retry_eligible: true,
                 upstream_closed: false,
             }),
-            QuotaRelayAction::RequestFullContinuationRetry
+            QuotaRelayAction::ForwardQuotaAndDetach
         );
     }
 
@@ -277,7 +238,6 @@ mod tests {
                 retry_current_turn: true,
                 transparent_retry_failed: false,
                 usage_limit_error: false,
-                continuation_retry_eligible: false,
                 upstream_closed: false,
             }),
             QuotaRelayAction::None
@@ -289,7 +249,6 @@ mod tests {
                 retry_current_turn: false,
                 transparent_retry_failed: true,
                 usage_limit_error: false,
-                continuation_retry_eligible: false,
                 upstream_closed: true,
             }),
             QuotaRelayAction::ForwardQuotaAndDetach

@@ -10,9 +10,9 @@ use std::time::Duration;
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumWsMessage, WebSocket};
 use axum::http::header::{
     ACCEPT, ACCEPT_ENCODING, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST,
-    TRANSFER_ENCODING, UPGRADE,
+    PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderName};
 use futures_util::{SinkExt, TryFutureExt};
 use serde_json::json;
 use url::Url;
@@ -113,8 +113,20 @@ pub(crate) fn websocket_handshake_headers(
     provider_headers: &BTreeMap<String, String>,
     invalid_code: &'static str,
 ) -> Result<HeaderMap, &'static str> {
+    // `build_request_headers` already strips `Connection` itself. Read the
+    // dynamic hop-by-hop names from the source map first, otherwise a header
+    // named by `Connection: keep-alive, x-provider-hop` would survive.
+    let connection_scoped_names = provider_headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(CONNECTION.as_str()))
+        .flat_map(|(_, value)| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect::<Vec<_>>();
     let mut headers =
         build_request_headers(provider_headers, None, false).map_err(|_| invalid_code)?;
+    for name in connection_scoped_names {
+        headers.remove(name);
+    }
     for header in [
         ACCEPT,
         ACCEPT_ENCODING,
@@ -123,10 +135,28 @@ pub(crate) fn websocket_handshake_headers(
         CONTENT_LENGTH,
         CONTENT_TYPE,
         HOST,
+        PROXY_AUTHORIZATION,
+        TE,
+        TRAILER,
         TRANSFER_ENCODING,
         UPGRADE,
     ] {
         headers.remove(header);
+    }
+    for header in ["keep-alive", "proxy-connection"] {
+        headers.remove(header);
+    }
+    // The WebSocket client owns every Sec-WebSocket-* field, including
+    // extensions introduced after this gateway was built.  Passing a
+    // downstream handshake field through here can corrupt negotiation or
+    // disclose the client's nonce/subprotocol to a different upstream.
+    let websocket_managed_names = headers
+        .keys()
+        .filter(|name| name.as_str().starts_with("sec-websocket-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in websocket_managed_names {
+        headers.remove(name);
     }
     Ok(headers)
 }
@@ -261,13 +291,6 @@ pub(crate) fn upstream_message_to_client(message: WreqWsMessage) -> AxumWsMessag
     }
 }
 
-pub(crate) fn client_close_to_upstream(frame: Option<AxumCloseFrame>) -> Option<WreqCloseFrame> {
-    frame.map(|frame| WreqCloseFrame {
-        code: frame.code.into(),
-        reason: frame.reason.to_string().into(),
-    })
-}
-
 /// Builds a Responses WebSocket error event in the shape understood by the
 /// official client implementations.  The status is part of the event body,
 /// not the WebSocket handshake, because the connection is already upgraded.
@@ -332,9 +355,10 @@ pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_send, responses_websocket_error_event, websocket_upstream_url, WebSocketWriteError,
-        RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+        bounded_send, responses_websocket_error_event, websocket_handshake_headers,
+        websocket_upstream_url, WebSocketWriteError, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
     };
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     #[tokio::test]
@@ -402,5 +426,75 @@ mod tests {
     #[test]
     fn rejects_upstream_url_with_credentials() {
         assert!(websocket_upstream_url("https://token@example.test/responses", "invalid").is_err());
+    }
+
+    #[test]
+    fn upstream_handshake_keeps_provider_auth_but_drops_transport_managed_headers() {
+        let provider_headers = BTreeMap::from([
+            (
+                "authorization".to_string(),
+                "Bearer provider-token".to_string(),
+            ),
+            ("x-api-key".to_string(), "provider-api-key".to_string()),
+            (
+                "cookie".to_string(),
+                "provider_session=provider-cookie".to_string(),
+            ),
+            (
+                "connection".to_string(),
+                "keep-alive, x-provider-hop".to_string(),
+            ),
+            ("x-provider-hop".to_string(), "must-not-pass".to_string()),
+            ("upgrade".to_string(), "websocket".to_string()),
+            (
+                "sec-websocket-key".to_string(),
+                "downstream-nonce".to_string(),
+            ),
+            (
+                "sec-websocket-future-field".to_string(),
+                "future-value".to_string(),
+            ),
+            (
+                "proxy-authorization".to_string(),
+                "Basic must-not-pass".to_string(),
+            ),
+            ("x-provider-header".to_string(), "safe".to_string()),
+        ]);
+
+        let headers = websocket_handshake_headers(&provider_headers, "invalid")
+            .expect("provider headers should be valid");
+
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer provider-token")
+        );
+        assert_eq!(
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("provider-api-key")
+        );
+        assert_eq!(
+            headers.get("cookie").and_then(|value| value.to_str().ok()),
+            Some("provider_session=provider-cookie")
+        );
+        assert_eq!(
+            headers
+                .get("x-provider-header")
+                .and_then(|value| value.to_str().ok()),
+            Some("safe")
+        );
+        for name in [
+            "connection",
+            "x-provider-hop",
+            "upgrade",
+            "sec-websocket-key",
+            "sec-websocket-future-field",
+            "proxy-authorization",
+        ] {
+            assert!(headers.get(name).is_none(), "{name} must not survive");
+        }
     }
 }
