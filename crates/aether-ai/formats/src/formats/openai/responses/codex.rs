@@ -1345,6 +1345,7 @@ fn codex_responses_lite_supports_request_body(provider_request_body: Option<&Val
 fn apply_codex_responses_lite_body_contract(
     body_object: &mut serde_json::Map<String, Value>,
     capabilities: &CodexResponsesModelCapabilities,
+    websocket_continuation: bool,
 ) {
     if !capabilities.use_responses_lite {
         return;
@@ -1380,6 +1381,23 @@ fn apply_codex_responses_lite_body_contract(
         .get_mut("input")
         .and_then(Value::as_array_mut)
         .expect("Responses Lite input was validated as an array");
+
+    // `previous_response_id` already references the prior response's stored
+    // input. The Codex client sends only the new input items on these turns;
+    // replaying the current top-level tools/instructions as synthetic history
+    // would permanently append another copy on every tool round-trip. Keep
+    // the Lite wire requirements below, but do not synthesize static config
+    // for a continuation.
+    if websocket_continuation {
+        for item in input
+            .iter_mut()
+            .filter(|item| !is_codex_responses_lite_additional_tools_item(item))
+        {
+            strip_codex_responses_lite_image_details(item);
+        }
+        body_object.insert("parallel_tool_calls".to_string(), json!(false));
+        return;
+    }
 
     let existing_additional_tools = input
         .iter()
@@ -1710,8 +1728,21 @@ pub fn apply_codex_openai_responses_special_body_edits_with_source_model_and_cap
         return;
     };
 
+    // HTTP Responses bodies do not carry an event `type`. Preserve this
+    // marker only for an actual WebSocket response.create continuation so it
+    // survives both normalization/finalization passes. The framing layer owns
+    // the field and will forward it verbatim to the already-bound upstream.
+    let websocket_continuation = body_object.get("type").and_then(Value::as_str)
+        == Some("response.create")
+        && body_object
+            .get("previous_response_id")
+            .is_some_and(|value| !value.is_null());
+
     wrap_codex_responses_string_input_for_backend(body_object, provider_api_format);
     for field in CODEX_OPENAI_RESPONSES_UNSUPPORTED_BODY_FIELDS {
+        if *field == "previous_response_id" && websocket_continuation {
+            continue;
+        }
         if !body_rules_handle_path(body_rules, field) {
             body_object.remove(*field);
         }
@@ -1794,7 +1825,7 @@ pub fn apply_codex_openai_responses_special_body_edits_with_source_model_and_cap
         capabilities,
         body_rules,
     );
-    apply_codex_responses_lite_body_contract(body_object, capabilities);
+    apply_codex_responses_lite_body_contract(body_object, capabilities, websocket_continuation);
     strip_codex_cache_control_fields(provider_request_body);
     apply_codex_openai_responses_compact_body_edits(
         provider_request_body,
@@ -3192,6 +3223,93 @@ mod tests {
         assert_eq!(
             existing_additional_tools["input"][0]["tools"],
             json!([{"type": "function", "name": "shell", "parameters": {}}])
+        );
+    }
+
+    #[test]
+    fn codex_responses_lite_websocket_continuations_do_not_reappend_static_config() {
+        let incremental_input = json!([
+            {
+                "type": "reasoning",
+                "id": "rs_provider_123",
+                "content": [{
+                    "type": "reasoning_text",
+                    "text": "Pass the provider reasoning state through unchanged."
+                }],
+                "encrypted_content": "opaque-provider-state"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "small result"
+            }
+        ]);
+        let mut provider_request_body = json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "previous_response_id": "resp_123",
+            "instructions": "Static developer instructions.",
+            "tools": [{
+                "type": "function",
+                "name": "lookup",
+                "parameters": {"type": "object"}
+            }],
+            "input": incremental_input.clone()
+        });
+
+        apply_codex_openai_responses_special_body_edits(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+        );
+
+        assert_eq!(provider_request_body["previous_response_id"], "resp_123");
+        assert!(provider_request_body.get("instructions").is_none());
+        assert!(provider_request_body.get("tools").is_none());
+        assert_eq!(provider_request_body["input"], incremental_input);
+        assert_eq!(provider_request_body["parallel_tool_calls"], false);
+
+        let once = provider_request_body.clone();
+        apply_codex_openai_responses_special_body_edits(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+        );
+        assert_eq!(provider_request_body, once);
+    }
+
+    #[test]
+    fn codex_responses_lite_null_previous_id_is_an_independent_turn() {
+        let mut provider_request_body = json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "previous_response_id": null,
+            "instructions": "Fresh instructions.",
+            "tools": [{"type": "function", "name": "lookup", "parameters": {}}],
+            "input": [{"type": "message", "role": "user", "content": []}]
+        });
+
+        apply_codex_openai_responses_special_body_edits(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+        );
+
+        assert!(provider_request_body.get("previous_response_id").is_none());
+        assert_eq!(
+            provider_request_body["input"][0]["type"],
+            "additional_tools"
+        );
+        assert_eq!(provider_request_body["input"][1]["role"], "developer");
+        assert_eq!(
+            provider_request_body["input"][1]["content"][0]["text"],
+            "Fresh instructions."
         );
     }
 

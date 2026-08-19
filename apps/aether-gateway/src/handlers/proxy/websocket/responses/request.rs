@@ -389,6 +389,54 @@ mod tests {
     }
 
     #[test]
+    fn lite_continuations_forward_only_each_turns_incremental_input() {
+        let normalization = ResponsesWebSocketBodyNormalization::for_tests("gpt-5.6-sol")
+            .with_provider_type_for_tests("codex");
+
+        for turn in 1..=4 {
+            let event = json!({
+                "type": "response.create",
+                "model": "gpt-5.6-sol",
+                "previous_response_id": format!("resp_{turn}"),
+                "instructions": "The same large developer instructions.",
+                "tools": [{
+                    "type": "function",
+                    "name": "shell",
+                    "parameters": {"type": "object"}
+                }],
+                "input": [
+                    {
+                        "type": "reasoning",
+                        "id": format!("rs_{turn}"),
+                        "content": [{
+                            "type": "reasoning_text",
+                            "text": format!("reasoning state {turn}")
+                        }],
+                        "encrypted_content": format!("opaque-{turn}")
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": format!("call_{turn}"),
+                        "output": format!("result {turn}")
+                    }
+                ]
+            });
+
+            let normalized = normalized_continuation(&event, &normalization);
+            let input = normalized["input"].as_array().expect("incremental input");
+            assert_eq!(input.len(), 2);
+            assert_eq!(input[0]["type"], "reasoning");
+            assert_eq!(input[0]["content"][0]["type"], "reasoning_text");
+            assert_eq!(input[1]["type"], "function_call_output");
+            assert!(normalized.get("instructions").is_none());
+            assert!(normalized.get("tools").is_none());
+            assert!(!input.iter().any(|item| item["type"] == "additional_tools"));
+            assert!(!input.iter().any(|item| item["role"] == "developer"));
+            assert_eq!(normalized["previous_response_id"], format!("resp_{turn}"));
+        }
+    }
+
+    #[test]
     fn continuation_keeps_a_warmup_generate_flag() {
         let event = json!({
             "type": "response.create",
