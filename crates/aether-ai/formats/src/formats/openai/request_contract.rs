@@ -27,13 +27,32 @@ pub fn finalize_openai_provider_request(
     body: &mut Value,
     finalization: OpenAiProviderRequestFinalization<'_>,
 ) -> Result<(), OpenAiProviderRequestContractViolation> {
-    finalize_openai_provider_request_with_codex_model_capabilities(body, finalization, None)
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
+        body,
+        finalization,
+        None,
+        super::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
+    )
 }
 
 pub fn finalize_openai_provider_request_with_codex_model_capabilities(
     body: &mut Value,
     finalization: OpenAiProviderRequestFinalization<'_>,
     model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
+) -> Result<(), OpenAiProviderRequestContractViolation> {
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
+        body,
+        finalization,
+        model_capabilities,
+        super::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
+    )
+}
+
+pub fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
+    body: &mut Value,
+    finalization: OpenAiProviderRequestFinalization<'_>,
+    model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
+    reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
 ) -> Result<(), OpenAiProviderRequestContractViolation> {
     let is_codex_reasoning_endpoint = finalization
         .provider_type
@@ -80,9 +99,10 @@ pub fn finalize_openai_provider_request_with_codex_model_capabilities(
         body,
         finalization.provider_api_format,
     );
-    super::responses::strip_incompatible_openai_responses_reasoning_items(
+    super::responses::strip_incompatible_openai_responses_reasoning_items_with_policy(
         body,
         finalization.provider_api_format,
+        reasoning_replay_policy,
     );
     crate::enforce_request_body_stream_field(
         body,

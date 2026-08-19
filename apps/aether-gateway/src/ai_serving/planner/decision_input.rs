@@ -257,7 +257,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision(
                 input.requested_model.as_str(),
             )
         });
-        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
             &mut provider_request_body,
             crate::ai_serving::OpenAiProviderRequestFinalization {
                 source_api_format: context.client_api_format.as_str(),
@@ -272,6 +272,14 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision(
                     .is_some_and(|body| body.get("stream").is_some()),
             },
             model_capabilities.as_ref(),
+            transport
+                .map(|transport| {
+                    crate::ai_serving::openai_responses_reasoning_replay_policy(
+                        transport.provider.provider_type.as_str(),
+                        transport.endpoint.base_url.as_str(),
+                    )
+                })
+                .unwrap_or_default(),
         )
         .map_err(|violation| GatewayError::Client {
             status: StatusCode::BAD_REQUEST,

@@ -32,8 +32,8 @@ use crate::ai_serving::planner::standard::{
     build_cross_format_openai_responses_upstream_url,
     build_local_openai_responses_request_body_with_codex_model_capabilities,
     build_local_openai_responses_upstream_url, codex_model_capabilities_for_transport,
-    openai_provider_request_contract_failure_extra_data, request_body_build_failure_extra_data,
-    request_conversion_failure_extra_data,
+    openai_provider_request_contract_failure_extra_data, openai_responses_reasoning_replay_policy,
+    request_body_build_failure_extra_data, request_conversion_failure_extra_data,
 };
 use crate::ai_serving::transport::antigravity::is_antigravity_provider_transport;
 use crate::ai_serving::transport::auth::{
@@ -532,7 +532,7 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
         Some(body_json),
     );
     if let Err(violation) =
-        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
             &mut base_provider_request_body,
             crate::ai_serving::OpenAiProviderRequestFinalization {
                 source_api_format: spec_metadata.api_format,
@@ -548,6 +548,10 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
                 ),
             },
             codex_model_capabilities.as_ref(),
+            openai_responses_reasoning_replay_policy(
+                transport.provider.provider_type.as_str(),
+                transport.endpoint.base_url.as_str(),
+            ),
         )
     {
         mark_skipped_local_openai_responses_candidate_with_extra_data(

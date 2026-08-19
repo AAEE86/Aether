@@ -73,6 +73,7 @@ pub fn build_standard_request_body_with_model_directives(
         user_api_key_id,
         None,
         enable_model_directives,
+        crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
     )
 }
 
@@ -89,6 +90,7 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
     user_api_key_id: Option<&str>,
     request_headers: Option<&http::HeaderMap>,
     enable_model_directives: bool,
+    reasoning_replay_policy: crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy,
 ) -> Option<Value> {
     let mut format_context = FormatContext::default()
         .with_mapped_model(mapped_model)
@@ -102,13 +104,26 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
         client_api_format,
         provider_api_format,
     );
-    let mut provider_request_body = convert_request(
-        source_api_format.as_ref(),
-        provider_api_format,
-        body_json,
-        &format_context,
-    )
-    .ok()?;
+    // A same-family Responses hop is a wire-preserving route. Parsing through the
+    // canonical request model here would intentionally discard provider-owned
+    // input item fields (for example DeepSeek's id-less `reasoning_text` and
+    // future opaque capability fields), even though no format conversion is
+    // required. Keep the original object and only rewrite the routing model;
+    // the normal provider-contract and compatibility passes below still apply.
+    let mut provider_request_body =
+        if is_same_openai_responses_family(source_api_format.as_ref(), provider_api_format) {
+            let mut object = body_json.as_object()?.clone();
+            object.insert("model".to_string(), Value::String(mapped_model.to_string()));
+            Value::Object(object)
+        } else {
+            convert_request(
+                source_api_format.as_ref(),
+                provider_api_format,
+                body_json,
+                &format_context,
+            )
+            .ok()?
+        };
 
     if enable_model_directives {
         apply_model_directive_overrides_from_request(
@@ -153,9 +168,10 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
         &mut provider_request_body,
         provider_api_format,
     );
-    crate::formats::openai::responses::strip_incompatible_openai_responses_reasoning_items(
+    crate::formats::openai::responses::strip_incompatible_openai_responses_reasoning_items_with_policy(
         &mut provider_request_body,
         provider_api_format,
+        reasoning_replay_policy,
     );
     strip_openai_responses_input_content_cache_control(
         &mut provider_request_body,
@@ -174,6 +190,16 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
         require_body_stream_field,
     );
     Some(provider_request_body)
+}
+
+fn is_same_openai_responses_family(source_api_format: &str, provider_api_format: &str) -> bool {
+    matches!(
+        aether_ai_formats::normalize_api_format_alias(source_api_format).as_str(),
+        "openai:responses" | "openai:responses:compact"
+    ) && matches!(
+        aether_ai_formats::normalize_api_format_alias(provider_api_format).as_str(),
+        "openai:responses" | "openai:responses:compact"
+    )
 }
 
 fn compatible_source_format_for_standard_request<'a>(
@@ -352,8 +378,10 @@ mod tests {
     use super::{
         build_standard_request_body, build_standard_request_body_from_canonical,
         build_standard_request_body_with_model_directives,
+        build_standard_request_body_with_model_directives_and_request_headers,
         normalize_standard_request_to_openai_chat_request,
     };
+    use crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy;
     use serde_json::{json, Value};
 
     const STANDARD_SURFACES: &[&str] = &[
@@ -498,6 +526,84 @@ mod tests {
 
             assert_explicit_stream_flag(provider_api_format, false, &converted);
         }
+    }
+
+    #[test]
+    fn same_responses_family_matrix_preserves_opaque_reasoning_items_and_unknown_fields() {
+        let input = (0..66)
+            .map(|index| {
+                json!({
+                    "type": "reasoning",
+                    "encrypted_content": format!("opaque-state-{index}"),
+                    "content": [{
+                        "type": "reasoning_text",
+                        "text": format!("thinking {index}")
+                    }],
+                    "future_capability": {"budget_class": "dynamic"}
+                })
+            })
+            .collect::<Vec<_>>();
+        let request = json!({
+            "model": "deepseek-v4-flash",
+            "input": input,
+            "future_request_field": {"preserve": true}
+        });
+
+        let preserved = build_standard_request_body_with_model_directives_and_request_headers(
+            &request,
+            "openai:responses",
+            "deepseek-v4-flash",
+            "custom",
+            "openai:responses",
+            "/v1/responses",
+            false,
+            None,
+            None,
+            None,
+            false,
+            OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        )
+        .expect("same-family Responses body should build");
+        assert_eq!(preserved["model"], "deepseek-v4-flash");
+        assert_eq!(preserved["future_request_field"]["preserve"], true);
+        assert_eq!(
+            preserved["input"]
+                .as_array()
+                .expect("input array")
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            66
+        );
+        assert_eq!(
+            preserved["input"][0]["future_capability"]["budget_class"],
+            "dynamic"
+        );
+
+        let strict = build_standard_request_body_with_model_directives_and_request_headers(
+            &request,
+            "openai:responses",
+            "deepseek-v4-flash",
+            "openai",
+            "openai:responses",
+            "/v1/responses",
+            false,
+            None,
+            None,
+            None,
+            false,
+            OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
+        )
+        .expect("strict same-family Responses body should build");
+        assert_eq!(
+            strict["input"]
+                .as_array()
+                .expect("strict input array")
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            0
+        );
     }
 
     #[test]

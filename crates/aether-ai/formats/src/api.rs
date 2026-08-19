@@ -72,12 +72,15 @@ pub use crate::formats::openai::{
     request_contract::{
         finalize_openai_provider_request,
         finalize_openai_provider_request_with_codex_model_capabilities,
+        finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy,
         validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
         OpenAiProviderRequestFinalization,
     },
     responses::{
         openai_responses_synthetic_reasoning_item_id,
         strip_incompatible_openai_responses_reasoning_items,
+        strip_incompatible_openai_responses_reasoning_items_with_policy,
+        OpenAiResponsesReasoningReplayPolicy,
     },
 };
 pub use crate::formats::shared::error_body::{

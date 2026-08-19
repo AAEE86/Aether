@@ -3,6 +3,7 @@ use crate::ai_serving::planner::plan_builders::{AiStreamAttempt, AiSyncAttempt};
 use crate::ai_serving::planner::spec_metadata::local_openai_responses_spec_metadata;
 use crate::ai_serving::planner::standard::codex::codex_model_capabilities_for_transport;
 use crate::ai_serving::planner::standard::normalize::build_local_openai_responses_request_body_with_codex_model_capabilities;
+use crate::ai_serving::planner::standard::openai_responses_reasoning_replay_policy;
 use crate::ai_serving::GatewayControlDecision;
 use crate::orchestration::{
     codex_quota_breaker_blocks_candidate, log_codex_quota_breaker_check_failure,
@@ -293,6 +294,7 @@ pub(crate) struct ResponsesWebSocketBodyNormalization {
     body_rules: Option<serde_json::Value>,
     request_headers: http::HeaderMap,
     codex_model_capabilities: Option<crate::ai_serving::CodexResponsesModelCapabilities>,
+    reasoning_replay_policy: crate::ai_serving::OpenAiResponsesReasoningReplayPolicy,
     model_directive_patch: Option<serde_json::Value>,
 }
 
@@ -313,6 +315,8 @@ impl ResponsesWebSocketBodyNormalization {
             body_rules: None,
             request_headers: http::HeaderMap::new(),
             codex_model_capabilities: None,
+            reasoning_replay_policy:
+                crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
             model_directive_patch: None,
         }
     }
@@ -377,7 +381,7 @@ impl ResponsesWebSocketBodyNormalization {
                 require_body_stream_field,
             );
         }
-        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
             &mut body,
             crate::ai_serving::OpenAiProviderRequestFinalization {
                 source_api_format: self.client_api_format.as_str(),
@@ -390,6 +394,7 @@ impl ResponsesWebSocketBodyNormalization {
                 require_body_stream_field,
             },
             self.codex_model_capabilities.as_ref(),
+            self.reasoning_replay_policy,
         )
         .ok()?;
         Some(body)
@@ -538,6 +543,10 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
                     candidate_provider_api_format.as_str(),
                     mapped_model.as_str(),
                     source_model,
+                ),
+                reasoning_replay_policy: openai_responses_reasoning_replay_policy(
+                    transport.provider.provider_type.as_str(),
+                    transport.endpoint.base_url.as_str(),
                 ),
                 model_directive_patch: input
                     .model_directive_policy

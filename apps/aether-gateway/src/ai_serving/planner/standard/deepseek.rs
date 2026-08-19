@@ -13,6 +13,17 @@ pub(crate) fn is_deepseek_provider(provider_type: &str, base_url: &str) -> bool 
     host == "deepseek.com" || host.ends_with(".deepseek.com")
 }
 
+pub(crate) fn openai_responses_reasoning_replay_policy(
+    provider_type: &str,
+    base_url: &str,
+) -> crate::ai_serving::OpenAiResponsesReasoningReplayPolicy {
+    if is_deepseek_provider(provider_type, base_url) {
+        crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+    } else {
+        crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds
+    }
+}
+
 pub(crate) fn apply_deepseek_tool_call_thinking_compat(
     provider_request_body: &mut Value,
     provider_type: &str,
@@ -241,7 +252,10 @@ fn is_claude_thinking_block(block: &Value) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{apply_deepseek_tool_call_thinking_compat, is_deepseek_provider};
+    use super::{
+        apply_deepseek_tool_call_thinking_compat, is_deepseek_provider,
+        openai_responses_reasoning_replay_policy,
+    };
 
     #[test]
     fn detects_deepseek_provider_by_type_or_host() {
@@ -257,6 +271,52 @@ mod tests {
             "custom",
             "https://example.com/deepseek"
         ));
+        assert_eq!(
+            openai_responses_reasoning_replay_policy("custom", "https://api.deepseek.com/v1"),
+            crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+        );
+        assert_eq!(
+            openai_responses_reasoning_replay_policy("openai", "https://api.openai.com/v1"),
+            crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds
+        );
+    }
+
+    #[test]
+    fn custom_deepseek_host_preserves_production_shaped_opaque_reasoning_replay() {
+        let reasoning_items = (0..66)
+            .map(|index| {
+                json!({
+                    "type": "reasoning",
+                    "encrypted_content": format!("550e8400-e29b-41d4-a716-{index:012}"),
+                    "content": [{
+                        "type": "reasoning_text",
+                        "text": format!("opaque DeepSeek reasoning {index}")
+                    }]
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut deepseek = json!({"input": reasoning_items.clone()});
+        let mut openai = json!({"input": reasoning_items});
+
+        assert_eq!(
+            aether_ai_formats::strip_incompatible_openai_responses_reasoning_items_with_policy(
+                &mut deepseek,
+                "openai:responses",
+                openai_responses_reasoning_replay_policy("custom", "https://api.deepseek.com/v1"),
+            ),
+            0
+        );
+        assert_eq!(deepseek["input"].as_array().map(Vec::len), Some(66));
+
+        assert_eq!(
+            aether_ai_formats::strip_incompatible_openai_responses_reasoning_items_with_policy(
+                &mut openai,
+                "openai:responses",
+                openai_responses_reasoning_replay_policy("openai", "https://api.openai.com/v1"),
+            ),
+            66
+        );
+        assert_eq!(openai["input"].as_array().map(Vec::len), Some(0));
     }
 
     #[test]
