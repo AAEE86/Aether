@@ -69,6 +69,7 @@ enum CodexOpenAiEndpointKind {
     Compact,
     Search,
     Images,
+    Live,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,6 +653,8 @@ fn codex_openai_endpoint_kind(
         Some(CodexOpenAiEndpointKind::Search)
     } else if is_openai_image_request(provider_api_format) {
         Some(CodexOpenAiEndpointKind::Images)
+    } else if aether_ai_formats::api_format_alias_matches(provider_api_format, "codex:live") {
+        Some(CodexOpenAiEndpointKind::Live)
     } else {
         None
     }
@@ -2079,7 +2082,13 @@ pub fn apply_codex_openai_special_headers(
         }
         return;
     }
-    if endpoint_kind == CodexOpenAiEndpointKind::Images {
+    if matches!(
+        endpoint_kind,
+        CodexOpenAiEndpointKind::Images | CodexOpenAiEndpointKind::Live
+    ) {
+        if endpoint_kind == CodexOpenAiEndpointKind::Live {
+            remove_btree_header(provider_request_headers, CODEX_RESPONSES_LITE_HEADER);
+        }
         return;
     }
 
@@ -2871,6 +2880,42 @@ mod tests {
         assert!(!headers.contains_key(CODEX_RESPONSES_LITE_HEADER));
         assert!(!headers.contains_key("openai-beta"));
         assert!(!headers.contains_key("accept"));
+    }
+
+    #[test]
+    fn codex_live_uses_account_identity_without_responses_lite_headers() {
+        let mut headers = std::collections::BTreeMap::from([(
+            CODEX_RESPONSES_LITE_HEADER.to_string(),
+            "true".to_string(),
+        )]);
+
+        apply_codex_openai_special_headers(
+            &mut headers,
+            &json!({"model": "gpt-live"}),
+            &http::HeaderMap::new(),
+            "codex",
+            "codex:live",
+            Some("request-live"),
+            Some(r#"{"account_id":"account-live","is_fedramp":true}"#),
+        );
+
+        assert_eq!(
+            headers.get("chatgpt-account-id").map(String::as_str),
+            Some("account-live")
+        );
+        assert_eq!(
+            headers.get("x-openai-fedramp").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            headers.get("user-agent").map(String::as_str),
+            Some(CODEX_CLIENT_USER_AGENT)
+        );
+        assert_eq!(
+            headers.get("originator").map(String::as_str),
+            Some(CODEX_CLIENT_ORIGINATOR)
+        );
+        assert!(!headers.contains_key(CODEX_RESPONSES_LITE_HEADER));
     }
 
     #[test]

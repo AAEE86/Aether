@@ -8,7 +8,7 @@ use super::{aliyun, claude, doubao, gemini, jina, openai};
 use crate::api::response::build_local_http_error_response_with_request_path;
 use crate::headers::extract_or_generate_trace_id;
 use crate::{
-    handlers::proxy::{live_websocket, proxy_request, responses_websocket},
+    handlers::proxy::{live_websocket, proxy_request, realtime_websocket, responses_websocket},
     state::AppState,
     GatewayError,
 };
@@ -65,6 +65,7 @@ pub(crate) fn mount_ai_routes(mut router: Router<AppState>) -> Router<AppState> 
         };
     }
     router = router.route("/v1/live/{call_id}", get(live_websocket));
+    router = router.route("/v1/realtime", get(realtime_websocket));
     for path in CLAUDE_POST_ROUTE_PATTERNS {
         router = router.route(
             path,
@@ -160,6 +161,8 @@ mod tests {
             ),
             ("openai:rerank", "openai", "rerank", "/v1/rerank"),
             ("openai:search", "openai", "search", "/v1/alpha/search"),
+            ("openai:realtime", "openai", "realtime", "/v1/realtime"),
+            ("codex:live", "codex", "live", "/v1/live"),
             ("jina:rerank", "jina", "rerank", "/v1/rerank"),
         ] {
             assert_eq!(

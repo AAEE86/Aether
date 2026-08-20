@@ -248,6 +248,12 @@ mod tests {
             sanitize_access_log_path("/v1/live/rtc_secret_opaque?token=hidden"),
             "/v1/live/{call_id}"
         );
+        assert_eq!(
+            sanitize_access_log_path(
+                "/v1/realtime?model=gpt-realtime-2.1&api_key=secret&token=hidden"
+            ),
+            "/v1/realtime?model=gpt-realtime-2.1"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -38,6 +38,7 @@ pub(crate) use self::common::resolve_upstream_is_stream_for_provider;
 pub(crate) use self::passthrough::{
     build_local_same_format_stream_attempt_source, build_local_same_format_stream_plan_and_reports,
     build_local_same_format_sync_attempt_source, build_local_same_format_sync_plan_and_reports,
+    maybe_build_pinned_stream_local_same_format_provider_decision_payload,
 };
 pub(crate) use self::plan_builders::{
     build_gemini_stream_plan_from_decision, build_gemini_sync_plan_from_decision,

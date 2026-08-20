@@ -15,6 +15,8 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderName};
 use futures_util::{SinkExt, TryFutureExt};
 use serde_json::json;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use wreq::ws::message::{CloseFrame as WreqCloseFrame, Message as WreqWsMessage};
 
@@ -255,6 +257,7 @@ pub(crate) fn websocket_timeouts(
 pub(crate) enum WebSocketWriteError {
     Failed,
     TimedOut,
+    Cancelled,
 }
 
 impl WebSocketWriteError {
@@ -262,8 +265,74 @@ impl WebSocketWriteError {
         match self {
             Self::Failed => "write_failed",
             Self::TimedOut => "write_timeout",
+            Self::Cancelled => "write_cancelled",
         }
     }
+}
+
+/// A small per-direction buffer keeps a slow reader from blocking the opposite
+/// WebSocket direction while still applying bounded backpressure. At the Live
+/// audio cadence this is deliberately only a short burst buffer, not a place
+/// where a session can accumulate unbounded media.
+pub(crate) const RELAY_FRAME_QUEUE_CAPACITY: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WebSocketRelayQueueError {
+    Closed,
+    Cancelled,
+}
+
+/// Shared cancellation for both read/write halves of a bidirectional relay.
+///
+/// Queue admission and socket writes both observe this token, so a connection
+/// deadline or lease loss can interrupt a full queue and an in-flight slow
+/// write immediately instead of waiting for [`RELAY_WRITE_TIMEOUT`].
+#[derive(Clone, Default)]
+pub(crate) struct WebSocketRelayPumpControl {
+    cancellation: CancellationToken,
+}
+
+impl WebSocketRelayPumpControl {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        self.cancellation.cancelled().await;
+    }
+
+    pub(crate) async fn enqueue<T>(
+        &self,
+        sender: &mpsc::Sender<T>,
+        message: T,
+    ) -> Result<(), WebSocketRelayQueueError> {
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(WebSocketRelayQueueError::Cancelled),
+            result = sender.send(message) => {
+                result.map_err(|_| WebSocketRelayQueueError::Closed)
+            }
+        }
+    }
+
+    pub(crate) async fn send<F>(&self, write: F) -> Result<(), WebSocketWriteError>
+    where
+        F: std::future::Future<Output = Result<(), ()>>,
+    {
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(WebSocketWriteError::Cancelled),
+            result = bounded_send(RELAY_WRITE_TIMEOUT, write) => result,
+        }
+    }
+}
+
+pub(crate) fn websocket_relay_frame_queue<T>() -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+    mpsc::channel(RELAY_FRAME_QUEUE_CAPACITY)
 }
 
 /// Relays one frame to the client under [`RELAY_WRITE_TIMEOUT`].
@@ -500,8 +569,9 @@ mod tests {
     use super::{
         bounded_send, guarded_websocket_upstream_url, responses_websocket_error_event,
         responses_websocket_error_event_with_stream_id, websocket_handshake_headers,
-        websocket_response_headers, websocket_upstream_url, WebSocketWriteError,
-        RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+        websocket_relay_frame_queue, websocket_response_headers, websocket_upstream_url,
+        WebSocketRelayPumpControl, WebSocketRelayQueueError, WebSocketWriteError,
+        RELAY_FRAME_QUEUE_CAPACITY, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
     };
     use crate::frontdoor_loop_guard::configured_gateway_frontdoor_base_url;
     use axum::http::HeaderMap;
@@ -524,6 +594,64 @@ mod tests {
         assert_eq!(outcome, Err(WebSocketWriteError::Failed));
         assert_eq!(WebSocketWriteError::Failed.as_str(), "write_failed");
         assert_eq!(WebSocketWriteError::TimedOut.as_str(), "write_timeout");
+        assert_eq!(WebSocketWriteError::Cancelled.as_str(), "write_cancelled");
+    }
+
+    #[tokio::test]
+    async fn relay_frame_queue_is_bounded_and_fifo() {
+        let (sender, mut receiver) = websocket_relay_frame_queue();
+        for frame in 0..RELAY_FRAME_QUEUE_CAPACITY {
+            sender
+                .try_send(frame)
+                .expect("the configured burst buffer should accept this frame");
+        }
+        assert!(matches!(
+            sender.try_send(RELAY_FRAME_QUEUE_CAPACITY),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+        for expected in 0..RELAY_FRAME_QUEUE_CAPACITY {
+            assert_eq!(receiver.recv().await, Some(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_interrupts_a_full_queue_without_waiting_for_capacity() {
+        let control = WebSocketRelayPumpControl::new();
+        let (sender, _receiver) = websocket_relay_frame_queue();
+        for frame in 0..RELAY_FRAME_QUEUE_CAPACITY {
+            sender.try_send(frame).expect("queue should fill exactly");
+        }
+        let enqueue = control.enqueue(&sender, RELAY_FRAME_QUEUE_CAPACITY);
+        tokio::pin!(enqueue);
+        assert!(tokio::time::timeout(Duration::from_millis(5), &mut enqueue)
+            .await
+            .is_err());
+
+        control.cancel();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), enqueue)
+                .await
+                .expect("cancellation should wake a blocked producer"),
+            Err(WebSocketRelayQueueError::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_interrupts_a_stalled_socket_write() {
+        let control = WebSocketRelayPumpControl::new();
+        let write = control.send(std::future::pending::<Result<(), ()>>());
+        tokio::pin!(write);
+        assert!(tokio::time::timeout(Duration::from_millis(5), &mut write)
+            .await
+            .is_err());
+
+        control.cancel();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), write)
+                .await
+                .expect("cancellation should wake a stalled writer"),
+            Err(WebSocketWriteError::Cancelled)
+        );
     }
 
     #[tokio::test]

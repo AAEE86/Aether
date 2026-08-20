@@ -22,6 +22,7 @@ use crate::execution_runtime::execute_execution_runtime_sync_plan_with_report_co
 use crate::handlers::proxy::websocket::responses::ResponsesWebSocketTurnAdmission;
 use crate::{AppState, GatewayError};
 
+use super::audit::mark_live_call_create_report_context;
 use super::live_usage_accounting_is_safe;
 use super::planner::{live_call_url, plan_live_candidate, LiveAuthMode, LivePoolLeaseGuard};
 use super::protocol::{build_live_multipart, extract_call_id_from_location, parse_live_multipart};
@@ -158,7 +159,7 @@ pub(crate) async fn maybe_handle_live_http(
             .to_string(),
     );
 
-    let Some(attempt) =
+    let Some(mut attempt) =
         build_standard_sync_plan_from_decision(parts, &provider_body_marker, candidate.execution)?
     else {
         lease.release().await;
@@ -168,6 +169,10 @@ pub(crate) async fn maybe_handle_live_http(
             "Codex Live provider request could not be built",
         )?));
     };
+    // The synchronous SDP exchange has an ordinary request lifecycle, but it
+    // does not contain the media leg's token/cost usage. Keep the existing row
+    // while making that boundary explicit and non-billable.
+    mark_live_call_create_report_context(&mut attempt.report_context);
     if let Some(rejection) = execution_plan_balance_capacity_rejection(
         state,
         control_decision,

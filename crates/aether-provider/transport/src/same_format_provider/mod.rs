@@ -835,6 +835,8 @@ fn resolve_same_format_standard_direct_auth(
 ) -> Option<(String, String)> {
     if aether_ai_formats::api_format_alias_matches(provider_api_format, "openai:embedding")
         || aether_ai_formats::api_format_alias_matches(provider_api_format, "openai:search")
+        || aether_ai_formats::api_format_alias_matches(provider_api_format, "openai:realtime")
+        || aether_ai_formats::api_format_alias_matches(provider_api_format, "codex:live")
     {
         resolve_local_openai_bearer_auth(transport)
     } else {
@@ -1426,6 +1428,56 @@ mod tests {
                 &transport,
                 SameFormatProviderFamily::Standard,
                 "openai:search",
+            ),
+            Some(("authorization".to_string(), "Bearer secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolves_openai_realtime_direct_auth_with_bearer_header() {
+        let mut transport = sample_transport("openai");
+        transport.endpoint.api_format = "openai:realtime".to_string();
+        transport.key.auth_type = "api_key".to_string();
+        let behavior = classify_same_format_provider_request_behavior(
+            &transport,
+            SameFormatProviderRequestBehaviorParams {
+                require_streaming: true,
+                provider_api_format: "openai:realtime",
+                report_kind: "openai_realtime_websocket_success",
+            },
+        );
+
+        assert_eq!(
+            resolve_same_format_provider_direct_auth(
+                &behavior,
+                &transport,
+                SameFormatProviderFamily::Standard,
+                "openai:realtime",
+            ),
+            Some(("authorization".to_string(), "Bearer secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolves_codex_live_direct_auth_with_bearer_header() {
+        let mut transport = sample_transport("openai");
+        transport.endpoint.api_format = "codex:live".to_string();
+        transport.key.auth_type = "api_key".to_string();
+        let behavior = classify_same_format_provider_request_behavior(
+            &transport,
+            SameFormatProviderRequestBehaviorParams {
+                require_streaming: true,
+                provider_api_format: "codex:live",
+                report_kind: "codex_live_websocket_success",
+            },
+        );
+
+        assert_eq!(
+            resolve_same_format_provider_direct_auth(
+                &behavior,
+                &transport,
+                SameFormatProviderFamily::Standard,
+                "codex:live",
             ),
             Some(("authorization".to_string(), "Bearer secret".to_string()))
         );

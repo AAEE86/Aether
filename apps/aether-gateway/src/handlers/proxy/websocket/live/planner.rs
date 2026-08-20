@@ -1,11 +1,10 @@
 //! Candidate planning and provider request shaping for Codex Live.
 //!
-//! Live deliberately reuses the existing Responses permission and scheduler
-//! surface. Only the selected candidate, model alias and transport identity are
-//! reused; Responses body normalization and its WebSocket state machine never
-//! see a Live protocol frame.
+//! Live has its own endpoint and permission surface. Candidate selection,
+//! model aliases and transport policy are shared with the ordinary scheduler,
+//! but Responses body normalization and its WebSocket state machine never see
+//! a Live protocol frame.
 
-use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,8 +17,9 @@ use sha2::{Digest, Sha256};
 use url::{form_urlencoded, Url};
 
 use crate::ai_serving::{
-    build_standard_stream_plan_from_decision, maybe_build_responses_websocket_decision,
-    AiExecutionDecision, AiStreamAttempt, ResponsesWebSocketPinnedCandidate,
+    build_standard_stream_plan_from_decision,
+    maybe_build_pinned_stream_local_same_format_provider_decision_payload, AiExecutionDecision,
+    AiStreamAttempt, ResponsesWebSocketPinnedCandidate,
 };
 use crate::control::GatewayControlDecision;
 use crate::headers::request_origin_from_headers_and_remote_addr;
@@ -155,30 +155,59 @@ pub(super) async fn plan_live_candidate(
     }
     let parts = build_live_planning_parts(headers, remote_addr);
     let body = json!({"model": client_model, "input": []});
-    let planned = maybe_build_responses_websocket_decision(
+    let execution = maybe_build_pinned_stream_local_same_format_provider_decision_payload(
         state,
         &parts,
         trace_id,
         decision,
-        None,
         &body,
-        None::<&BTreeSet<String>>,
-        None::<&BTreeSet<String>>,
-        pinned_candidate,
+        crate::ai_serving::CODEX_LIVE_STREAM_PLAN_KIND,
+        pinned_candidate
+            .map(|pinned| (pinned.provider_id(), pinned.endpoint_id(), pinned.key_id())),
     )
     .await?;
-    let Some(planned) = planned else {
+    let Some(mut execution) = execution else {
         return Ok(None);
     };
-    let effective_auth_type = planned.effective_auth_type;
-    let mut execution = planned.execution;
+    if execution
+        .provider_api_format
+        .as_deref()
+        .map(crate::ai_serving::normalize_api_format_alias)
+        .as_deref()
+        != Some("codex:live")
+    {
+        crate::orchestration::release_pool_key_lease_from_report_context(
+            state,
+            execution.report_context.as_ref(),
+        )
+        .await;
+        return Ok(None);
+    }
+    let Some(effective_auth_type) = execution
+        .report_context
+        .as_ref()
+        .and_then(|context| context.get("upstream_credential_mode"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        crate::orchestration::release_pool_key_lease_from_report_context(
+            state,
+            execution.report_context.as_ref(),
+        )
+        .await;
+        return Ok(None);
+    };
     let provider_type = execution
         .provider_type
         .as_deref()
         .map(str::trim)
         .unwrap_or_default();
-    if !provider_type.eq_ignore_ascii_case("codex") && !provider_type.eq_ignore_ascii_case("openai")
-    {
+    if !matches!(
+        provider_type.to_ascii_lowercase().as_str(),
+        "codex" | "openai" | "custom"
+    ) {
         crate::orchestration::release_pool_key_lease_from_report_context(
             state,
             execution.report_context.as_ref(),
@@ -247,7 +276,7 @@ pub(super) fn direct_live_websocket_url(
     if candidate.auth_mode == LiveAuthMode::ChatGptOauth {
         return Err(LiveProtocolError::OauthDirectWebSocketUnsupported);
     }
-    replace_responses_suffix(
+    replace_live_suffix(
         candidate.execution.upstream_url.as_deref(),
         &["live"],
         Some(("model", candidate.provider_model.as_str())),
@@ -257,12 +286,12 @@ pub(super) fn direct_live_websocket_url(
 pub(super) fn live_call_url(candidate: &PlannedLiveCandidate) -> Result<String, LiveProtocolError> {
     match candidate.auth_mode {
         LiveAuthMode::ApiKey => {
-            replace_responses_suffix(candidate.execution.upstream_url.as_deref(), &["live"], None)
+            replace_live_suffix(candidate.execution.upstream_url.as_deref(), &["live"], None)
         }
         LiveAuthMode::ChatGptOauth => {
             let source =
                 validated_official_chatgpt_url(candidate.execution.upstream_url.as_deref())?;
-            replace_responses_suffix(
+            replace_live_suffix(
                 Some(source.as_str()),
                 &["realtime", "calls"],
                 Some(("intent", "quicksilver")),
@@ -283,7 +312,7 @@ pub(super) fn live_sideband_url(
 ) -> Result<String, LiveProtocolError> {
     super::protocol::validate_call_id(call_id)?;
     match candidate.auth_mode {
-        LiveAuthMode::ApiKey => replace_responses_suffix(
+        LiveAuthMode::ApiKey => replace_live_suffix(
             candidate.execution.upstream_url.as_deref(),
             &["live", call_id],
             None,
@@ -353,7 +382,7 @@ fn live_routing_fingerprint(
     }
     let path = url.path().trim_end_matches('/');
     let path_family = path
-        .strip_suffix("/responses")
+        .strip_suffix("/live")
         .ok_or(LiveProtocolError::InvalidUpstreamUrl)?;
     if auth_mode == LiveAuthMode::ChatGptOauth {
         validated_official_chatgpt_url(Some(raw_url))?;
@@ -419,15 +448,14 @@ fn validated_official_chatgpt_url(raw: Option<&str>) -> Result<Url, LiveProtocol
         && url.username().is_empty()
         && url.password().is_none()
         && url.fragment().is_none()
-        && url.path().trim_end_matches('/').strip_suffix("/responses")
-            == Some("/backend-api/codex");
+        && url.path().trim_end_matches('/').strip_suffix("/live") == Some("/backend-api/codex");
     if !official {
         return Err(LiveProtocolError::OauthUpstreamUnsupported);
     }
     Ok(url)
 }
 
-fn replace_responses_suffix(
+fn replace_live_suffix(
     raw: Option<&str>,
     suffix: &[&str],
     query: Option<(&str, &str)>,
@@ -441,7 +469,7 @@ fn replace_responses_suffix(
     {
         return Err(LiveProtocolError::InvalidUpstreamUrl);
     }
-    if url.path_segments().and_then(Iterator::last) != Some("responses") {
+    if url.path_segments().and_then(Iterator::last) != Some("live") {
         return Err(LiveProtocolError::InvalidUpstreamUrl);
     }
     {
@@ -524,8 +552,8 @@ fn build_live_planning_parts(
     remote_addr: &SocketAddr,
 ) -> http::request::Parts {
     let mut request = http::Request::builder()
-        .method(Method::POST)
-        .uri("/v1/responses")
+        .method(Method::GET)
+        .uri("/v1/live")
         .body(())
         .expect("the fixed Live planning request must be valid");
     *request.headers_mut() = sanitize_live_planning_headers(headers.clone());
@@ -658,9 +686,9 @@ mod tests {
             endpoint: GatewayProviderTransportEndpoint {
                 id: "endpoint-1".to_string(),
                 provider_id: "provider-1".to_string(),
-                api_format: "openai:responses".to_string(),
-                api_family: Some("openai".to_string()),
-                endpoint_kind: Some("responses".to_string()),
+                api_format: "codex:live".to_string(),
+                api_family: Some("codex".to_string()),
+                endpoint_kind: Some("live".to_string()),
                 is_active: true,
                 base_url: "https://chatgpt.com/backend-api/codex".to_string(),
                 header_rules: None,
@@ -677,7 +705,7 @@ mod tests {
                 name: "key".to_string(),
                 auth_type: default_auth_type.to_string(),
                 is_active: true,
-                api_formats: Some(vec!["openai:responses".to_string()]),
+                api_formats: Some(vec!["codex:live".to_string()]),
                 auth_type_by_format,
                 allow_auth_channel_mismatch_formats: None,
                 allowed_models: None,
@@ -701,7 +729,7 @@ mod tests {
         session_id: &str,
     ) -> AiExecutionDecision {
         let mut decision = candidate(
-            "https://chatgpt.com/backend-api/codex/responses",
+            "https://chatgpt.com/backend-api/codex/live",
             LiveAuthMode::ChatGptOauth,
         )
         .execution;
@@ -717,7 +745,7 @@ mod tests {
     #[test]
     fn format_auth_override_selects_the_effective_live_auth_mode() {
         let overridden =
-            transport_with_auth_override("oauth", Some(json!({"openai:responses": "bearer"})));
+            transport_with_auth_override("oauth", Some(json!({"codex:live": "bearer"})));
         let effective =
             aether_provider_transport::auth::resolve_local_auth_type_for_transport_format(
                 &overridden,
@@ -744,7 +772,7 @@ mod tests {
     #[test]
     fn derives_api_key_live_urls_preserves_query_and_replaces_the_mapped_model() {
         let mut candidate = candidate(
-            "https://api.example.test/v1/responses?api-version=2026-08-01&model=stale&MODEL=duplicate",
+            "https://api.example.test/v1/live?api-version=2026-08-01&model=stale&MODEL=duplicate",
             LiveAuthMode::ApiKey,
         );
         candidate.provider_model = "upstream/model + future".to_string();
@@ -778,7 +806,7 @@ mod tests {
     #[test]
     fn derives_chatgpt_call_and_official_sideband_urls() {
         let candidate = candidate(
-            "https://chatgpt.com/backend-api/codex/responses?api-version=2026-08-01&intent=stale&INTENT=duplicate&architecture=stale&ARCHITECTURE=duplicate",
+            "https://chatgpt.com/backend-api/codex/live?api-version=2026-08-01&intent=stale&INTENT=duplicate&architecture=stale&ARCHITECTURE=duplicate",
             LiveAuthMode::ChatGptOauth,
         );
         let call = Url::parse(live_call_url(&candidate).unwrap().as_str()).unwrap();
@@ -816,7 +844,7 @@ mod tests {
     #[test]
     fn chatgpt_oauth_live_fails_closed_for_custom_backend_origins() {
         let candidate = candidate(
-            "https://relay.example/backend-api/codex/responses",
+            "https://relay.example/backend-api/codex/live",
             LiveAuthMode::ChatGptOauth,
         );
         assert_eq!(
@@ -861,8 +889,7 @@ mod tests {
 
     #[test]
     fn routing_fingerprint_binds_api_key_origin_without_hashing_the_token() {
-        let mut first =
-            candidate("https://api-a.example/v1/responses", LiveAuthMode::ApiKey).execution;
+        let mut first = candidate("https://api-a.example/v1/live", LiveAuthMode::ApiKey).execution;
         first.provider_request_headers.extend([
             ("authorization".to_string(), "Bearer token-1".to_string()),
             ("x-session-id".to_string(), "session-1".to_string()),
@@ -877,7 +904,7 @@ mod tests {
         );
 
         let mut changed_origin =
-            candidate("https://api-b.example/v1/responses", LiveAuthMode::ApiKey).execution;
+            candidate("https://api-b.example/v1/live", LiveAuthMode::ApiKey).execution;
         changed_origin
             .provider_request_headers
             .insert("x-session-id".to_string(), "session-1".to_string());
@@ -896,7 +923,7 @@ mod tests {
         );
 
         let missing_session =
-            candidate("https://api-a.example/v1/responses", LiveAuthMode::ApiKey).execution;
+            candidate("https://api-a.example/v1/live", LiveAuthMode::ApiKey).execution;
         assert_eq!(
             live_routing_fingerprint(&missing_session, "bearer", LiveAuthMode::ApiKey),
             Err(LiveProtocolError::InvalidUpstreamUrl)
@@ -906,7 +933,7 @@ mod tests {
     #[test]
     fn routing_fingerprint_canonicalizes_safe_query_and_ignores_query_credentials() {
         let mut baseline = candidate(
-            "https://api-a.example/v1/responses?api-version=2026-08-01&deployment=primary&alt=sse&token=secret-1&key=secret-1",
+            "https://api-a.example/v1/live?api-version=2026-08-01&deployment=primary&alt=sse&token=secret-1&key=secret-1",
             LiveAuthMode::ApiKey,
         )
         .execution;
@@ -917,7 +944,7 @@ mod tests {
             live_routing_fingerprint(&baseline, "bearer", LiveAuthMode::ApiKey).unwrap();
 
         let mut reordered = candidate(
-            "https://api-a.example/v1/responses?key=secret-2&alt=sse&token=secret-2&deployment=primary&api-version=2026-08-01",
+            "https://api-a.example/v1/live?key=secret-2&alt=sse&token=secret-2&deployment=primary&api-version=2026-08-01",
             LiveAuthMode::ApiKey,
         )
         .execution;
@@ -931,7 +958,7 @@ mod tests {
         );
 
         let mut changed_route = candidate(
-            "https://api-a.example/v1/responses?api-version=2026-08-01&deployment=secondary&alt=sse&token=secret-2&key=secret-2",
+            "https://api-a.example/v1/live?api-version=2026-08-01&deployment=secondary&alt=sse&token=secret-2&key=secret-2",
             LiveAuthMode::ApiKey,
         )
         .execution;
@@ -989,10 +1016,7 @@ mod tests {
 
     #[test]
     fn live_urls_reject_credentials_invalid_suffixes_and_call_ids() {
-        let credentials = candidate(
-            "https://token@example.test/v1/responses",
-            LiveAuthMode::ApiKey,
-        );
+        let credentials = candidate("https://token@example.test/v1/live", LiveAuthMode::ApiKey);
         assert_eq!(
             direct_live_websocket_url(&credentials),
             Err(LiveProtocolError::InvalidUpstreamUrl)
@@ -1012,7 +1036,7 @@ mod tests {
         );
 
         let fragment = candidate(
-            "https://api.example.test/v1/responses#not-sent-upstream",
+            "https://api.example.test/v1/live#not-sent-upstream",
             LiveAuthMode::ApiKey,
         );
         assert_eq!(

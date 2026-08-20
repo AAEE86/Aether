@@ -1,8 +1,59 @@
-# WebSocket Mode
+# WebSocket transports
+
+Aether exposes three independent WebSocket surfaces. They share transport
+machinery, but not request schemas or continuation state:
+
+| Public route | API format | Protocol |
+| --- | --- | --- |
+| `GET /v1/responses` | `openai:responses` | Responses WebSocket mode; every turn starts with `response.create`. |
+| `GET /v1/realtime?model=...` | `openai:realtime` | OpenAI Realtime JSON events, including Base64 audio events. |
+| `GET /v1/live[/{call_id}]` | `codex:live` | Codex Frameless/Live direct and WebRTC-sideband transport. |
+
+Do not point one surface at an endpoint configured for another. In particular,
+a Realtime or Live event is not passed through the Responses
+`response.create` state machine.
+
+## Responses WebSocket mode
 
 The Responses API supports a WebSocket mode for long-running, tool-call-heavy workflows. In this mode, you keep a persistent connection to `/v1/responses` and continue each turn by sending only new input items plus `previous_response_id`.
 
 WebSocket mode is compatible with both Zero Data Retention (ZDR) and `store=false`.
+
+## OpenAI Realtime WebSocket bridge
+
+Configure an active `openai:realtime` provider endpoint, then connect to:
+
+```text
+wss://<aether-host>/v1/realtime?model=<authorized-global-model>
+```
+
+Aether authenticates and plans the request before returning the downstream
+WebSocket upgrade. The global model alias is replaced in the upstream query,
+while safe non-credential query parameters, provider authentication,
+`header_rules`, and proxy settings continue to apply. Client credentials in
+the query string are rejected or removed rather than forwarded upstream.
+
+After the handshake, Aether relays text, binary, ping, pong, and close frames
+one at a time. JSON events, Base64 audio payloads, and unknown future fields are
+not rebuilt or coalesced. When an upstream `response.done` contains an
+authoritative `response.usage`, its text/audio token counters are accumulated
+for the connection's usage record. A session that closes without authoritative
+usage is recorded as `usage_available=false`; Aether does not estimate token
+counts, audio duration, or cost from frame sizes.
+
+`response.done` covers Realtime Response usage. Optional input transcription
+is reported by a different event and can use a different transcription model;
+it is not folded into the Response model's session row or priced as if it used
+that model. Finite-balance Realtime access therefore remains fail-closed until
+multi-event, multi-model settlement is implemented.
+
+The upstream handshake is completed before Aether sends HTTP 101 to the
+client. A provider authentication, TLS, proxy, or upgrade failure therefore
+returns an ordinary bounded HTTP error instead of opening a socket that fails
+immediately.
+
+See the official [OpenAI Realtime WebSocket guide](https://developers.openai.com/api/docs/guides/realtime-websocket)
+for the current event contract.
 
 ## Experimental Codex Live bridge
 
@@ -21,16 +72,11 @@ state machine:
   already initialized call, so Aether neither waits for nor sends a second
   `session.update` frame.
 
-The provider must expose an `openai:responses` endpoint and explicitly enable
-the existing provider-scoped WebSocket capability:
-
-```json
-{
-  "responses_websocket": {
-    "enabled": true
-  }
-}
-```
+The provider must expose an active, dedicated `codex:live` endpoint. Fixed
+Codex providers receive this endpoint from the managed provider template;
+custom providers can add it in the endpoint editor. The
+`responses_websocket.enabled` provider option belongs only to
+`openai:responses` WebSocket mode and is not reused as the Live permission.
 
 API-key and bearer providers can use direct WebSocket or WebRTC. ChatGPT OAuth
 uses the official Codex backend for WebRTC call creation and the OpenAI Live
@@ -47,13 +93,20 @@ abuse; they are not provider-concurrency reservations.
 Frameless V3 currently has no stable usage object that Aether can settle into
 its wallet pipeline. Aether therefore enables Live only for principals without
 a finite `balance_remaining`; finite-balance keys receive an explicit local
-error instead of unmetered service. Aether-relayed direct and sideband
-WebSocket connections are limited to 60 minutes; the WebRTC media leg itself
-does not traverse Aether after call creation. The provider-pool and admission
-leases therefore cover only the synchronous HTTP call-creation exchange and
-are released after its SDP response. Aether cannot infer media lifetime from
-the binding TTL or sideband lifetime, so a created call that never attaches a
-sideband is not held against provider concurrency after call creation.
+error instead of unmetered service. Aether writes one lifecycle record for each
+relayed direct or sideband WebSocket connection, with frame/byte counts and
+`usage_available=false`; it does not create one database row per audio frame.
+The synchronous WebRTC call-creation exchange keeps its ordinary HTTP record
+and is also marked usage-unavailable. The WebRTC media leg itself does not
+traverse Aether after call creation, so Aether cannot observe or invent a
+separate audio-session usage record, token count, duration, or cost for it.
+
+Aether-relayed direct and sideband WebSocket connections are limited to 60
+minutes. The provider-pool and admission leases cover only the synchronous
+HTTP call-creation exchange and are released after its SDP response. Aether
+cannot infer media lifetime from the binding TTL or sideband lifetime, so a
+created call that never attaches a sideband is not held against provider
+concurrency after call creation.
 
 For the public GA Realtime API's connection and session concepts, see the
 [OpenAI Realtime guide](https://developers.openai.com/api/docs/guides/realtime).

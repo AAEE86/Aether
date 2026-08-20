@@ -41,6 +41,7 @@ pub(crate) fn frontdoor_self_loop_public_ai_path(path: &str) -> bool {
             | "/v1/rerank"
             | "/v1/responses"
             | "/v1/responses/compact"
+            | "/v1/realtime"
             | "/v1/live"
             | "/v1/alpha/search"
             | "/v1beta/files"
@@ -142,4 +143,24 @@ fn normalize_host_for_frontdoor_loop_guard(host: &str) -> String {
 
 fn is_loopbackish_host(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "::")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        frontdoor_self_loop_public_ai_path, gateway_frontdoor_self_loop_guard_matches_with_port,
+    };
+
+    #[test]
+    fn realtime_is_protected_from_frontdoor_self_loops() {
+        assert!(frontdoor_self_loop_public_ai_path("/v1/realtime"));
+        assert!(gateway_frontdoor_self_loop_guard_matches_with_port(
+            8084,
+            "ws://127.0.0.1:8084/v1/realtime?model=gpt-realtime"
+        ));
+        assert!(gateway_frontdoor_self_loop_guard_matches_with_port(
+            8084,
+            "wss://localhost:8084/v1/realtime?model=gpt-realtime"
+        ));
+    }
 }
