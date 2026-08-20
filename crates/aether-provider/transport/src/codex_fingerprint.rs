@@ -138,6 +138,10 @@ fn apply_converged_headers(
     set_header(headers, "session-id", fingerprint.session_id.clone());
     set_header(headers, "session_id", fingerprint.session_id.clone());
     set_header(headers, "thread-id", fingerprint.thread_id.clone());
+    // Codex Live/Realtime uses `x-session-id` for the thread-scoped session
+    // identity on the WebSocket upgrade request. Keep it aligned with the
+    // converged thread identity instead of the account-scoped session value.
+    set_header(headers, "x-session-id", fingerprint.thread_id.clone());
     rewrite_header_turn_metadata(headers, fingerprint);
 }
 
@@ -357,6 +361,10 @@ mod tests {
         let mut headers = BTreeMap::from([
             ("Session-Id".to_string(), "client-session".to_string()),
             (
+                "X-Session-Id".to_string(),
+                "client-live-session".to_string(),
+            ),
+            (
                 "x-codex-turn-metadata".to_string(),
                 json!({
                     "installation_id": "client-installation",
@@ -410,7 +418,15 @@ mod tests {
         );
         assert_eq!(headers["session_id"], *session_id);
         assert_eq!(headers["x-client-request-id"], *thread_id);
+        assert_eq!(headers["x-session-id"], *thread_id);
         assert_eq!(headers["x-codex-window-id"], format!("{thread_id}:0"));
+        assert_eq!(
+            headers
+                .keys()
+                .filter(|name| name.eq_ignore_ascii_case("x-session-id"))
+                .count(),
+            1
+        );
         assert_eq!(body["client_metadata"]["session_id"], *session_id);
         assert_eq!(body["client_metadata"]["thread_id"], *thread_id);
         assert_eq!(

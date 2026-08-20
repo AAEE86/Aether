@@ -24,6 +24,7 @@ use crate::ai_serving::planner::gemini_cli::{
 };
 use crate::ai_serving::planner::redaction::{
     request_identity_response_encoding_when_redacted, resolve_provider_chat_pii_redaction,
+    sanitize_upstream_url_for_log,
 };
 use crate::ai_serving::planner::spec_metadata::local_openai_responses_spec_metadata;
 use crate::ai_serving::planner::standard::{
@@ -865,6 +866,17 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts_with_
 
     let (execution_strategy, conversion_mode) =
         ai_local_execution_contract_for_formats(spec_metadata.api_format, provider_api_format);
+    let log_base_url = sanitize_upstream_url_for_log(transport.endpoint.base_url.as_str());
+    let log_custom_path = transport
+        .endpoint
+        .custom_path
+        .as_deref()
+        .map(sanitize_upstream_url_for_log);
+    let log_request_query = parts
+        .uri
+        .query()
+        .and_then(crate::ai_serving::api::sanitize_request_query_string);
+    let log_upstream_url = sanitize_upstream_url_for_log(upstream_url.as_str());
 
     debug!(
         event_name = "local_openai_responses_upstream_url_resolved",
@@ -880,12 +892,12 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts_with_
         provider_api_format = %provider_api_format,
         execution_strategy = execution_strategy.as_str(),
         conversion_mode = conversion_mode.as_str(),
-        base_url = %transport.endpoint.base_url,
-        custom_path = ?transport.endpoint.custom_path,
+        base_url = %log_base_url,
+        custom_path = ?log_custom_path,
         request_path = %parts.uri.path(),
-        request_query = ?parts.uri.query(),
+        request_query = ?log_request_query,
         mapped_model = %mapped_model,
-        upstream_url = %upstream_url,
+        upstream_url = %log_upstream_url,
         upstream_is_stream,
         "gateway resolved local openai responses upstream url"
     );
@@ -1998,6 +2010,7 @@ async fn build_kiro_openai_responses_payload_parts(
     };
     let (execution_strategy, conversion_mode) =
         ai_local_execution_contract_for_formats(client_api_format, provider_api_format);
+    let log_upstream_url = sanitize_upstream_url_for_log(upstream_url.as_str());
 
     debug!(
         event_name = "local_openai_responses_kiro_upstream_url_resolved",
@@ -2013,7 +2026,7 @@ async fn build_kiro_openai_responses_payload_parts(
         provider_api_format = %provider_api_format,
         execution_strategy = execution_strategy.as_str(),
         conversion_mode = conversion_mode.as_str(),
-        upstream_url = %upstream_url,
+        upstream_url = %log_upstream_url,
         upstream_is_stream,
         "gateway resolved local openai responses kiro upstream url"
     );

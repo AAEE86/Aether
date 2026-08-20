@@ -411,7 +411,19 @@ pub fn sanitize_request_path(path: &str) -> Option<String> {
         .map(|(path, _)| path)
         .unwrap_or_else(|| path.trim())
         .trim();
-    (!path.is_empty()).then(|| path.to_string())
+    if path.is_empty() {
+        return None;
+    }
+    if path
+        .strip_prefix("/v1/live/")
+        .is_some_and(|call_id| !call_id.is_empty())
+    {
+        // A Live call id identifies an in-progress WebRTC session. Keep this
+        // bearer-like capability out of logs and persisted request metadata,
+        // including for malformed routes that will later be rejected.
+        return Some("/v1/live/{call_id}".to_string());
+    }
+    Some(path.to_string())
 }
 
 pub fn sanitize_request_query_string(query: &str) -> Option<String> {
@@ -440,12 +452,13 @@ pub fn sanitize_request_path_and_query(path: &str, query: Option<&str>) -> Optio
         return None;
     }
 
+    let sanitized_path = sanitize_request_path(path)?;
     let sanitized_query = query
         .and_then(sanitize_request_query_string)
         .or_else(|| embedded_query.and_then(sanitize_request_query_string));
     Some(match sanitized_query {
-        Some(query) => format!("{path}?{query}"),
-        None => path.to_string(),
+        Some(query) => format!("{sanitized_path}?{query}"),
+        None => sanitized_path,
     })
 }
 
@@ -870,6 +883,14 @@ mod tests {
             )
             .as_deref(),
             Some("/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse")
+        );
+        assert_eq!(
+            sanitize_request_path_and_query(
+                "/v1/live/rtc_secret_opaque?alt=sse&token=hidden",
+                None
+            )
+            .as_deref(),
+            Some("/v1/live/{call_id}?alt=sse")
         );
     }
 
