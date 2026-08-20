@@ -23,6 +23,7 @@ pub(crate) use self::finalize::internal::{
     maybe_build_sync_finalize_outcome, maybe_compile_sync_finalize_response,
     SyncToStreamBridgeOutcome,
 };
+pub(crate) use self::planner::openai_responses_reasoning_replay_policy;
 pub(crate) use self::planner::{
     apply_local_runtime_candidate_terminal_reason, build_gemini_stream_plan_from_decision,
     build_gemini_sync_plan_from_decision, build_local_gemini_files_stream_attempt_source_for_kind,

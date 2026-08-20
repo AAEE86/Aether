@@ -12,6 +12,7 @@ mod admission;
 mod binding;
 mod client;
 mod connection;
+mod continuation;
 mod control;
 mod frame;
 mod lifecycle;

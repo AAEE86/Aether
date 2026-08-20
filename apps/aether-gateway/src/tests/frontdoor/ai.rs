@@ -724,6 +724,14 @@ async fn run_versioned_codex_model_cards_frontdoor_scenario() {
             ),
         ),
         (
+            Some(hash_api_key("sk-codex-hidden-only")),
+            codex_models_snapshot(
+                "key-codex-hidden-only",
+                "user-codex-hidden-only",
+                &["hidden-alias"],
+            ),
+        ),
+        (
             Some(hash_api_key("sk-codex-second-mixed")),
             codex_models_snapshot(
                 "key-codex-second-mixed",
@@ -1015,10 +1023,13 @@ async fn run_versioned_codex_model_cards_frontdoor_scenario() {
         .await
         .expect("incomplete authorized Codex catalog request should succeed");
     assert_eq!(incomplete_authorized_response.status(), StatusCode::OK);
-    assert!(incomplete_authorized_response
-        .headers()
-        .get(http::header::ETAG)
-        .is_none());
+    assert_eq!(
+        incomplete_authorized_response
+            .headers()
+            .get(http::header::ETAG)
+            .and_then(|value| value.to_str().ok()),
+        Some("\"catalog-etag-v1\"")
+    );
     let incomplete_authorized_payload: serde_json::Value = incomplete_authorized_response
         .json()
         .await
@@ -1026,9 +1037,34 @@ async fn run_versioned_codex_model_cards_frontdoor_scenario() {
     assert_eq!(
         incomplete_authorized_payload["models"]
             .as_array()
-            .map(Vec::len),
+            .map(|models| models
+                .iter()
+                .map(|model| model["slug"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>()),
+        Some(vec!["future-alias"]),
+        "one hidden or not-yet-described mapping must not erase valid dynamic cards"
+    );
+    assert_eq!(catalog_hits.load(Ordering::SeqCst), 1);
+
+    let hidden_only_response = client
+        .get(format!("{gateway_url}/v1/models?client_version=0.145.2"))
+        .header("authorization", "Bearer sk-codex-hidden-only")
+        .send()
+        .await
+        .expect("hidden-only authorized Codex catalog request should succeed");
+    assert_eq!(hidden_only_response.status(), StatusCode::OK);
+    assert!(hidden_only_response
+        .headers()
+        .get(http::header::ETAG)
+        .is_none());
+    let hidden_only_payload: serde_json::Value = hidden_only_response
+        .json()
+        .await
+        .expect("hidden-only authorized Codex body should parse");
+    assert_eq!(
+        hidden_only_payload["models"].as_array().map(Vec::len),
         Some(0),
-        "a partial non-empty remote catalog would hide the client's bundled fallback models"
+        "a model absent from the authoritative upstream catalog must not receive a fabricated card"
     );
     assert_eq!(catalog_hits.load(Ordering::SeqCst), 1);
 
@@ -1044,8 +1080,13 @@ async fn run_versioned_codex_model_cards_frontdoor_scenario() {
         .await
         .expect("not-yet-published authorized model body should parse");
     assert_eq!(
-        pending_second_payload["models"].as_array().map(Vec::len),
-        Some(0)
+        pending_second_payload["models"]
+            .as_array()
+            .map(|models| models
+                .iter()
+                .map(|model| model["slug"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>()),
+        Some(vec!["future-alias"])
     );
     assert_eq!(catalog_hits.load(Ordering::SeqCst), 1);
 
