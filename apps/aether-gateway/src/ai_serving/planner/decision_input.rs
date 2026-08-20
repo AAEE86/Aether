@@ -486,8 +486,7 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
     body_json: &Value,
     client_api_format: &str,
 ) -> Result<(), GatewayError> {
-    input.original_client_session_id = routing_header_value_str(&parts.headers, "session-id")
-        .or_else(|| routing_header_value_str(&parts.headers, "session_id"));
+    input.original_client_session_id = original_client_session_id_from_headers(&parts.headers);
     let explicit_group = routing_header_value_str(&parts.headers, ROUTING_GROUP_HEADER);
     let selected_group = match state.routing_group_read_repository() {
         Some(repository) => {
@@ -736,6 +735,12 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
         effective_headers,
     });
     Ok(())
+}
+
+fn original_client_session_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    routing_header_value_str(headers, "session-id")
+        .or_else(|| routing_header_value_str(headers, "session_id"))
+        .or_else(|| routing_header_value_str(headers, "x-session-id"))
 }
 
 fn try_attach_static_default_routing_policy_to_input(
@@ -1100,6 +1105,38 @@ mod tests {
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider,
     };
+
+    #[test]
+    fn original_client_session_id_accepts_live_header_as_fallback() {
+        let headers = HeaderMap::from_iter([(
+            HeaderName::from_static("x-session-id"),
+            HeaderValue::from_static("live-thread-1"),
+        )]);
+
+        assert_eq!(
+            original_client_session_id_from_headers(&headers).as_deref(),
+            Some("live-thread-1")
+        );
+    }
+
+    #[test]
+    fn original_client_session_id_prefers_responses_headers_over_live_fallback() {
+        let headers = HeaderMap::from_iter([
+            (
+                HeaderName::from_static("session-id"),
+                HeaderValue::from_static("responses-session"),
+            ),
+            (
+                HeaderName::from_static("x-session-id"),
+                HeaderValue::from_static("live-thread"),
+            ),
+        ]);
+
+        assert_eq!(
+            original_client_session_id_from_headers(&headers).as_deref(),
+            Some("responses-session")
+        );
+    }
 
     #[test]
     fn explicit_routing_selection_cache_key_is_principal_specific() {

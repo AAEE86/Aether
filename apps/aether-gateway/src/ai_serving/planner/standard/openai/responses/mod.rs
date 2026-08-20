@@ -234,6 +234,10 @@ pub(crate) struct ResponsesWebSocketDecision {
     pub(crate) execution: AiExecutionDecision,
     pub(crate) adapter: ResponsesWebSocketAdapter,
     pub(crate) normalization: ResponsesWebSocketBodyNormalization,
+    /// Effective key auth after applying the endpoint API-format override.
+    /// Protocol companions such as Codex Live must not infer this from a URL
+    /// or from the presence of one particular generated header.
+    pub(crate) effective_auth_type: String,
 }
 
 /// The scheduler identity a continuation is allowed to reuse.
@@ -909,6 +913,10 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
         // Captured before `attempt` is consumed so a later continuation turn can
         // reproduce this candidate's body normalization without re-planning.
         let transport = std::sync::Arc::clone(&attempt.eligible.transport);
+        let effective_auth_type =
+            aether_provider_transport::auth::resolve_local_auth_type_for_transport_format(
+                transport.as_ref(),
+            );
         let candidate_provider_api_format = attempt.eligible.provider_api_format.clone();
         let payload = match maybe_build_local_openai_responses_decision_payload_for_candidate_with_websocket_mode(
             state,
@@ -1013,6 +1021,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
                 execution: payload,
                 adapter,
                 normalization,
+                effective_auth_type,
             };
             // The decision report context now carries the lease identity. The
             // WebSocket ownership layer takes over before any further await.

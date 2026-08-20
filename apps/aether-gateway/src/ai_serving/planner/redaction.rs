@@ -61,6 +61,34 @@ pub(crate) fn request_identity_response_encoding_when_redacted(
     }
 }
 
+/// Removes credential-bearing URL components before attaching an upstream URL
+/// to a diagnostic event. Endpoint query parameters remain untouched on the
+/// wire, but they can contain API keys or signed tokens and must not reach
+/// logs.
+pub(crate) fn sanitize_upstream_url_for_log(raw: &str) -> String {
+    if let Ok(mut url) = url::Url::parse(raw) {
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return "<invalid-upstream-url>".to_string();
+        }
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    let suffix_offset = raw
+        .char_indices()
+        .find_map(|(offset, character)| matches!(character, '?' | '#').then_some(offset))
+        .unwrap_or(raw.len());
+    let path = &raw[..suffix_offset];
+    if path.starts_with('/') && !path.starts_with("//") && !path.contains('@') {
+        path.to_string()
+    } else {
+        "<invalid-upstream-url>".to_string()
+    }
+}
+
 pub(crate) async fn resolve_provider_chat_pii_redaction<'a>(
     state: &AppState,
     parts: &http::request::Parts,
@@ -240,7 +268,32 @@ fn redaction_mask_error_to_gateway_error(error: RedactionMaskError) -> GatewayEr
 mod tests {
     use serde_json::json;
 
-    use super::ChatPiiRedactionFeatureSettings;
+    use super::{sanitize_upstream_url_for_log, ChatPiiRedactionFeatureSettings};
+
+    #[test]
+    fn upstream_url_log_projection_removes_all_credential_carriers() {
+        assert_eq!(
+            sanitize_upstream_url_for_log(
+                "https://user:password@api.example.test/v1/responses?api-version=2026-08-01&token=secret#fragment"
+            ),
+            "https://api.example.test/v1/responses"
+        );
+        assert_eq!(
+            sanitize_upstream_url_for_log("/v1/responses?key=secret#fragment"),
+            "/v1/responses"
+        );
+        for invalid in [
+            "https://user:secret@invalid host/v1/responses",
+            "//user:secret@api.example.test/v1/responses?token=hidden",
+            "not-a-url?token=hidden",
+            "data:text/plain,secret",
+        ] {
+            assert_eq!(
+                sanitize_upstream_url_for_log(invalid),
+                "<invalid-upstream-url>"
+            );
+        }
+    }
 
     #[test]
     fn chat_pii_redaction_feature_settings_only_control_enablement() {

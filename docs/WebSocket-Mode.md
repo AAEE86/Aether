@@ -4,6 +4,60 @@ The Responses API supports a WebSocket mode for long-running, tool-call-heavy wo
 
 WebSocket mode is compatible with both Zero Data Retention (ZDR) and `store=false`.
 
+## Experimental Codex Live bridge
+
+Aether also exposes the Codex Frameless Bidi V3 transport used by current
+Codex clients. It is related to the OpenAI Realtime API, but it is not the
+Responses WebSocket protocol and never enters Aether's `response.create`
+state machine:
+
+- Direct WebSocket: `GET /v1/live?model=<global-model>`. The first client text
+  frame must be `session.update`; later text, binary, ping, pong, and close
+  frames are relayed opaquely.
+- WebRTC call creation: `POST /v1/live` with bounded `sdp` and `session`
+  multipart parts. Aether applies the existing global-to-provider model
+  mapping and rewrites the upstream `Location` to `/v1/live/<call-id>`.
+- WebRTC sideband: `GET /v1/live/<call-id>`. Frameless sideband attaches to an
+  already initialized call, so Aether neither waits for nor sends a second
+  `session.update` frame.
+
+The provider must expose an `openai:responses` endpoint and explicitly enable
+the existing provider-scoped WebSocket capability:
+
+```json
+{
+  "responses_websocket": {
+    "enabled": true
+  }
+}
+```
+
+API-key and bearer providers can use direct WebSocket or WebRTC. ChatGPT OAuth
+uses the official Codex backend for WebRTC call creation and the OpenAI Live
+origin for its sideband; direct OAuth WebSocket and custom OAuth backend
+origins fail closed. The call binding fixes the authenticated downstream
+principal, provider/endpoint/key, mapped model, auth mode, account/FedRAMP
+identity, session identity, and upstream origin. Raw call IDs are hashed in
+RuntimeState keys, records expire after two hours, each principal retains at
+most 64 call bindings, and one call permits only one renewable sideband
+attachment at a time. The memory RuntimeState backend loses these bindings on
+restart. The two-hour binding TTL and 64-record cap bound routing state and
+abuse; they are not provider-concurrency reservations.
+
+Frameless V3 currently has no stable usage object that Aether can settle into
+its wallet pipeline. Aether therefore enables Live only for principals without
+a finite `balance_remaining`; finite-balance keys receive an explicit local
+error instead of unmetered service. Aether-relayed direct and sideband
+WebSocket connections are limited to 60 minutes; the WebRTC media leg itself
+does not traverse Aether after call creation. The provider-pool and admission
+leases therefore cover only the synchronous HTTP call-creation exchange and
+are released after its SDP response. Aether cannot infer media lifetime from
+the binding TTL or sideband lifetime, so a created call that never attaches a
+sideband is not held against provider concurrency after call creation.
+
+For the public GA Realtime API's connection and session concepts, see the
+[OpenAI Realtime guide](https://developers.openai.com/api/docs/guides/realtime).
+
 OpenAI's current WebSocket service supports named `stream_id` lanes: requests on
 the same lane are FIFO, while different lanes may run concurrently. Aether's
 bridge currently exposes only the implicit default lane and deliberately

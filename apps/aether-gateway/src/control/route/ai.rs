@@ -35,6 +35,21 @@ pub(super) fn classify_ai_public_route(
             "openai:rerank",
             true,
         ))
+    } else if (method == http::Method::POST && normalized_path == "/v1/live")
+        || (method == http::Method::GET
+            && (normalized_path == "/v1/live" || normalized_path.starts_with("/v1/live/"))
+            && is_websocket_upgrade_request(headers))
+    {
+        // Codex Live is an experimental companion transport for an existing
+        // Responses mapping. It deliberately reuses the Responses permission
+        // surface while its wire protocol is handled by an independent relay.
+        Some(classified(
+            "ai_public",
+            "openai",
+            "live",
+            "openai:responses",
+            true,
+        ))
     } else if (method == http::Method::POST
         || (method == http::Method::GET
             && normalized_path == "/v1/responses"
@@ -289,6 +304,29 @@ mod tests {
     fn does_not_classify_plain_get_as_responses_websocket() {
         assert!(
             classify_ai_public_route(&Method::GET, "/v1/responses", &HeaderMap::new()).is_none()
+        );
+    }
+
+    #[test]
+    fn classifies_live_http_and_websocket_routes_as_responses_companions() {
+        let post = classify_ai_public_route(&Method::POST, "/v1/live", &HeaderMap::new())
+            .expect("Live WebRTC call creation should be an AI public route");
+        assert_eq!(post.route_kind, "live");
+        assert_eq!(post.auth_endpoint_signature, "openai:responses");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        for path in ["/v1/live", "/v1/live/rtc_opaque"] {
+            let route = classify_ai_public_route(&Method::GET, path, &headers)
+                .expect("Live WebSocket should be an AI public route");
+            assert_eq!(route.route_kind, "live");
+            assert_eq!(route.auth_endpoint_signature, "openai:responses");
+        }
+
+        assert!(
+            classify_ai_public_route(&Method::GET, "/v1/live/rtc_opaque", &HeaderMap::new())
+                .is_none()
         );
     }
 }

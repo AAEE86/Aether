@@ -22,6 +22,7 @@ use crate::ai_serving::AiExecutionDecision;
 use crate::execution_runtime::transport::{
     build_browser_wreq_client, build_request_headers, ExecutionTransportControls,
 };
+use crate::frontdoor_loop_guard::gateway_frontdoor_self_loop_guard_error;
 use crate::handlers::proxy::websocket::session::{
     WebSocketSessionLimits, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
 };
@@ -30,6 +31,7 @@ use crate::handlers::proxy::websocket::session::{
 pub(crate) struct UpstreamWebSocketErrorCodes {
     pub(crate) upstream_url_missing: &'static str,
     pub(crate) upstream_url_invalid: &'static str,
+    pub(crate) frontdoor_self_loop: &'static str,
     pub(crate) headers_invalid: &'static str,
     pub(crate) client_build_failed: &'static str,
     pub(crate) proxy_invalid: &'static str,
@@ -53,7 +55,11 @@ pub(crate) async fn connect_upstream_websocket(
         .upstream_url
         .as_deref()
         .ok_or(errors.upstream_url_missing)?;
-    let upstream_url = websocket_upstream_url(upstream_url, errors.upstream_url_invalid)?;
+    let upstream_url = guarded_websocket_upstream_url(
+        upstream_url,
+        errors.upstream_url_invalid,
+        errors.frontdoor_self_loop,
+    )?;
     let headers =
         websocket_handshake_headers(&decision.provider_request_headers, errors.headers_invalid)?;
     let client = build_websocket_client(decision, errors)?;
@@ -77,6 +83,18 @@ pub(crate) async fn connect_upstream_websocket(
         socket,
         response_headers,
     })
+}
+
+fn guarded_websocket_upstream_url(
+    raw: &str,
+    invalid_code: &'static str,
+    frontdoor_self_loop_code: &'static str,
+) -> Result<Url, &'static str> {
+    let upstream_url = websocket_upstream_url(raw, invalid_code)?;
+    if gateway_frontdoor_self_loop_guard_error(upstream_url.as_str()).is_some() {
+        return Err(frontdoor_self_loop_code);
+    }
+    Ok(upstream_url)
 }
 
 fn websocket_response_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
@@ -310,6 +328,19 @@ pub(crate) fn upstream_message_to_client(message: WreqWsMessage) -> AxumWsMessag
     }
 }
 
+pub(crate) fn client_message_to_upstream(message: AxumWsMessage) -> WreqWsMessage {
+    match message {
+        AxumWsMessage::Text(text) => WreqWsMessage::Text(text.to_string().into()),
+        AxumWsMessage::Binary(data) => WreqWsMessage::Binary(data),
+        AxumWsMessage::Ping(data) => WreqWsMessage::Ping(data),
+        AxumWsMessage::Pong(data) => WreqWsMessage::Pong(data),
+        AxumWsMessage::Close(frame) => WreqWsMessage::Close(frame.map(|frame| WreqCloseFrame {
+            code: frame.code.into(),
+            reason: frame.reason.to_string().into(),
+        })),
+    }
+}
+
 /// Builds a Responses WebSocket error event in the shape understood by the
 /// official client implementations.  The status is part of the event body,
 /// not the WebSocket handshake, because the connection is already upgraded.
@@ -467,11 +498,12 @@ pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_send, responses_websocket_error_event,
+        bounded_send, guarded_websocket_upstream_url, responses_websocket_error_event,
         responses_websocket_error_event_with_stream_id, websocket_handshake_headers,
         websocket_response_headers, websocket_upstream_url, WebSocketWriteError,
         RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
     };
+    use crate::frontdoor_loop_guard::configured_gateway_frontdoor_base_url;
     use axum::http::HeaderMap;
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -585,6 +617,39 @@ mod tests {
     #[test]
     fn rejects_upstream_url_with_credentials() {
         assert!(websocket_upstream_url("https://token@example.test/responses", "invalid").is_err());
+    }
+
+    #[test]
+    fn rejects_responses_websocket_frontdoor_self_loop_before_connecting() {
+        let base_url = configured_gateway_frontdoor_base_url();
+        let raw_url = format!("{base_url}/v1/responses");
+
+        assert_eq!(
+            guarded_websocket_upstream_url(
+                raw_url.as_str(),
+                "responses_upstream_url_invalid",
+                "responses_websocket_frontdoor_self_loop",
+            ),
+            Err("responses_websocket_frontdoor_self_loop")
+        );
+    }
+
+    #[test]
+    fn rejects_live_direct_and_sideband_frontdoor_self_loops_before_connecting() {
+        let base_url = configured_gateway_frontdoor_base_url();
+
+        for path in ["/v1/live", "/v1/live/rtc_test"] {
+            let raw_url = format!("{base_url}{path}");
+            assert_eq!(
+                guarded_websocket_upstream_url(
+                    raw_url.as_str(),
+                    "codex_live_upstream_url_invalid",
+                    "codex_live_websocket_frontdoor_self_loop",
+                ),
+                Err("codex_live_websocket_frontdoor_self_loop"),
+                "{path} must be rejected before an upstream handshake"
+            );
+        }
     }
 
     #[test]

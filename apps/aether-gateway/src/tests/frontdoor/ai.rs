@@ -30,10 +30,18 @@ use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogProvider,
 };
 use async_trait::async_trait;
+use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
+use axum::routing::get;
+use base64::Engine as _;
+use futures_util::SinkExt;
 use std::collections::HashMap;
 use std::future::pending;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::oneshot;
+use wreq::ws::message::Message as WreqWsMessage;
 
 fn codex_models_snapshot(
     api_key_id: &str,
@@ -1233,6 +1241,875 @@ async fn run_versioned_codex_model_cards_frontdoor_scenario() {
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
+}
+
+#[test]
+fn gateway_creates_bound_codex_live_oauth_calls_with_opaque_session_fields() {
+    super::run_frontdoor_async_test(
+        "codex-live-oauth-frontdoor",
+        run_codex_live_oauth_frontdoor_scenario(),
+    );
+}
+
+async fn run_codex_live_oauth_frontdoor_scenario() {
+    const PROVIDER_ID: &str = "provider-codex-live";
+    const ENDPOINT_ID: &str = "endpoint-provider-codex-live";
+    const UPSTREAM_KEY_ID: &str = "key-provider-codex-live";
+    const CLIENT_MODEL: &str = "live-future-alias";
+    const PROVIDER_MODEL: &str = "gpt-future-live";
+    const CALL_ID: &str = "rtc_frontdoor_live";
+
+    let mut row = sample_codex_models_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
+    row.key_allowed_models = Some(vec![PROVIDER_MODEL.to_string()]);
+    let candidate_repository =
+        Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
+            row,
+        ]));
+    let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
+        Some(hash_api_key("sk-codex-live")),
+        codex_models_snapshot("gateway-key-codex-live", "user-codex-live", &[CLIENT_MODEL]),
+    )]));
+
+    let mut provider = codex_catalog_provider(PROVIDER_ID);
+    provider.config = Some(json!({
+        "responses_websocket": {"enabled": true},
+        "codex": {"fingerprint_convergence_enabled": true}
+    }));
+    let mut endpoint = codex_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
+    endpoint.base_url = "https://chatgpt.com/backend-api/codex".to_string();
+    let mut upstream_key = codex_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
+    upstream_key.auth_type = "oauth".to_string();
+    upstream_key.encrypted_auth_config = Some(
+        encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            r#"{"account_id":"account-live-1","is_fedramp":true}"#,
+        )
+        .expect("Codex Live auth config should encrypt"),
+    );
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![upstream_key],
+    ));
+
+    let captured_plan = Arc::new(Mutex::new(None::<aether_contracts::ExecutionPlan>));
+    let captured_plan_for_runtime = Arc::clone(&captured_plan);
+    let execution_runtime = Router::new().route(
+        "/v1/execute/sync",
+        any(move |request: Request| {
+            let captured_plan_for_request = Arc::clone(&captured_plan_for_runtime);
+            async move {
+                let (_parts, body) = request.into_parts();
+                let raw_body = to_bytes(body, usize::MAX)
+                    .await
+                    .expect("Live execution runtime request body should read");
+                let plan: aether_contracts::ExecutionPlan = serde_json::from_slice(&raw_body)
+                    .expect("Live execution runtime plan should parse");
+                *captured_plan_for_request
+                    .lock()
+                    .expect("Live plan mutex should lock") = Some(plan.clone());
+                Json(ExecutionResult {
+                    request_id: plan.request_id,
+                    candidate_id: plan.candidate_id,
+                    status_code: 201,
+                    headers: std::collections::BTreeMap::from([
+                        ("Content-Type".to_string(), "application/sdp".to_string()),
+                        (
+                            "LOCATION".to_string(),
+                            format!("https://api.openai.com/v1/live/{CALL_ID}"),
+                        ),
+                    ]),
+                    response_observation: None,
+                    body: Some(ResponseBody {
+                        json_body: None,
+                        body_bytes_b64: Some(
+                            base64::engine::general_purpose::STANDARD
+                                .encode(b"v=0\r\no=upstream-answer"),
+                        ),
+                    }),
+                    telemetry: Some(ExecutionTelemetry {
+                        ttfb_ms: Some(1),
+                        elapsed_ms: Some(2),
+                        upstream_bytes: Some(24),
+                    }),
+                    error: None,
+                })
+            }
+        }),
+    );
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+    let state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_data_state_for_tests(
+            crate::data::GatewayDataState::with_minimal_candidate_selection_and_auth_for_tests(
+                candidate_repository,
+                auth_repository,
+            )
+            .attach_provider_catalog_repository_for_tests(provider_catalog_repository)
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        );
+    let gateway = build_router_with_state(state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let boundary = "aether-live-frontdoor";
+    let offer_sdp = "v=0\r\no=client-offer";
+    let session = json!({
+        "model": CLIENT_MODEL,
+        "instructions": "Keep this opaque",
+        "future_capability": {
+            "revision": 7,
+            "nested": [true, {"mode": "future"}]
+        }
+    });
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"sdp\"\r\nContent-Type: application/sdp\r\n\r\n{offer_sdp}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"session\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--{boundary}--\r\n",
+        session
+    );
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/v1/live"))
+        .header("authorization", "Bearer sk-codex-live")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header("session-id", "client-session-live")
+        .header("openai-alpha", "client-must-not-control-this")
+        .body(body)
+        .send()
+        .await
+        .expect("Codex Live call creation should complete");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let downstream_location = format!("/v1/live/{CALL_ID}");
+    assert_eq!(
+        response
+            .headers()
+            .get(http::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some(downstream_location.as_str())
+    );
+    assert_eq!(
+        response
+            .bytes()
+            .await
+            .expect("SDP answer should read")
+            .as_ref(),
+        b"v=0\r\no=upstream-answer"
+    );
+
+    let plan = captured_plan
+        .lock()
+        .expect("Live plan mutex should lock")
+        .clone()
+        .expect("Live call must reach the execution runtime");
+    let url = url::Url::parse(plan.url.as_str()).expect("Live call URL should parse");
+    assert_eq!(url.path(), "/backend-api/codex/realtime/calls");
+    assert_eq!(
+        url.query_pairs().collect::<HashMap<_, _>>(),
+        HashMap::from([
+            ("intent".into(), "quicksilver".into()),
+            ("architecture".into(), "avas".into()),
+        ])
+    );
+    assert_eq!(plan.method, "POST");
+    assert_eq!(plan.content_type.as_deref(), Some("application/json"));
+    assert!(!plan.stream);
+    assert!(plan.body.json_body.is_none());
+    let provider_body_bytes = base64::engine::general_purpose::STANDARD
+        .decode(
+            plan.body
+                .body_bytes_b64
+                .as_deref()
+                .expect("OAuth Live call must preserve the exact JSON wire bytes"),
+        )
+        .expect("OAuth Live JSON body should decode");
+    let provider_body: serde_json::Value = serde_json::from_slice(&provider_body_bytes)
+        .expect("OAuth Live call must use the JSON call contract");
+    assert_eq!(provider_body["sdp"], offer_sdp);
+    assert_eq!(provider_body["session"]["model"], PROVIDER_MODEL);
+    assert_eq!(
+        provider_body["session"]["future_capability"],
+        session["future_capability"]
+    );
+    assert_eq!(provider_body["session"]["instructions"], "Keep this opaque");
+    assert_eq!(
+        plan.headers.get("openai-alpha").map(String::as_str),
+        Some("quicksilver=v2")
+    );
+    assert_eq!(
+        plan.headers.get("originator").map(String::as_str),
+        Some("codex_cli_rs")
+    );
+    assert_eq!(
+        plan.headers.get("chatgpt-account-id").map(String::as_str),
+        Some("account-live-1")
+    );
+    assert_eq!(
+        plan.headers.get("x-openai-fedramp").map(String::as_str),
+        Some("true")
+    );
+    let converged_session = plan
+        .headers
+        .get("x-session-id")
+        .expect("Live must provide a converged session ID");
+    assert_ne!(converged_session, "client-session-live");
+    assert_eq!(plan.headers.get("thread-id"), Some(converged_session));
+    uuid::Uuid::parse_str(converged_session).expect("converged session ID must be a UUID");
+
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+}
+
+#[derive(Debug)]
+struct ObservedCodexLiveWebSocket {
+    request_target: String,
+    authorization: Option<String>,
+    alpha: Option<String>,
+    session_id: Option<String>,
+    initial_event: serde_json::Value,
+    event_after_turn_done: serde_json::Value,
+}
+
+#[test]
+fn gateway_relays_codex_live_api_key_websocket_opaquely() {
+    super::run_frontdoor_async_test(
+        "codex-live-api-key-websocket-frontdoor",
+        run_codex_live_api_key_websocket_frontdoor_scenario(),
+    );
+}
+
+async fn run_codex_live_api_key_websocket_frontdoor_scenario() {
+    const PROVIDER_ID: &str = "provider-codex-live-api-key";
+    const ENDPOINT_ID: &str = "endpoint-provider-codex-live-api-key";
+    const UPSTREAM_KEY_ID: &str = "key-provider-codex-live-api-key";
+    const CLIENT_MODEL: &str = "live-websocket-alias";
+    const PROVIDER_MODEL: &str = "gpt-future-live-websocket";
+
+    let (observed_tx, observed_rx) = oneshot::channel();
+    let upstream_state = Arc::new(Mutex::new(Some(observed_tx)));
+    let upstream = Router::new()
+        .route("/v1/live", get(mock_codex_live_websocket))
+        .with_state(upstream_state);
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+
+    let mut row = sample_codex_models_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
+    row.provider_name = "openai".to_string();
+    row.provider_type = "openai".to_string();
+    row.key_auth_type = "api_key".to_string();
+    row.key_allowed_models = Some(vec![PROVIDER_MODEL.to_string()]);
+    let candidate_repository =
+        Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
+            row,
+        ]));
+    let mut downstream_snapshot = codex_models_snapshot(
+        "gateway-key-codex-live-websocket",
+        "user-codex-live-websocket",
+        &[CLIENT_MODEL],
+    );
+    downstream_snapshot.user_allowed_providers = Some(vec!["openai".to_string()]);
+    downstream_snapshot.api_key_allowed_providers = Some(vec!["openai".to_string()]);
+    let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
+        Some(hash_api_key("sk-codex-live-websocket")),
+        downstream_snapshot,
+    )]));
+
+    let mut provider = codex_catalog_provider(PROVIDER_ID);
+    provider.provider_type = "openai".to_string();
+    provider.config = Some(json!({"responses_websocket": {"enabled": true}}));
+    let mut endpoint = codex_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
+    endpoint.base_url = format!("{upstream_url}/v1");
+    let mut upstream_key = codex_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
+    upstream_key.auth_type = "api_key".to_string();
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![upstream_key],
+    ));
+
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(
+            crate::data::GatewayDataState::with_minimal_candidate_selection_and_auth_for_tests(
+                candidate_repository,
+                auth_repository,
+            )
+            .attach_provider_catalog_repository_for_tests(provider_catalog_repository)
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        );
+    let gateway = build_router_with_state(state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let mut handshake_headers = HeaderMap::new();
+    handshake_headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer sk-codex-live-websocket"),
+    );
+    handshake_headers.insert(
+        http::HeaderName::from_static("x-session-id"),
+        http::HeaderValue::from_static("stable-live-session"),
+    );
+    handshake_headers.insert(
+        http::HeaderName::from_static("openai-alpha"),
+        http::HeaderValue::from_static("client-value-must-be-replaced"),
+    );
+    let invalid_model_response = wreq::Client::new()
+        .websocket(format!(
+            "{}/v1/live?model={CLIENT_MODEL}&model=second-model",
+            gateway_url.replacen("http://", "ws://", 1)
+        ))
+        .headers(handshake_headers.clone())
+        .send()
+        .await
+        .expect("invalid Live model handshake should return an HTTP response");
+    assert_eq!(invalid_model_response.status(), StatusCode::BAD_REQUEST);
+
+    let websocket_url = format!(
+        "{}/v1/live?foo=bar&model={CLIENT_MODEL}&trace=1",
+        gateway_url.replacen("http://", "ws://", 1)
+    );
+    let response = wreq::Client::new()
+        .websocket(websocket_url)
+        .headers(handshake_headers)
+        .send()
+        .await
+        .expect("Codex Live gateway WebSocket handshake should complete");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut socket = response
+        .into_websocket()
+        .await
+        .expect("Codex Live gateway response should upgrade");
+
+    let initial_event = json!({
+        "type": "session.update",
+        "session": {
+            "model": CLIENT_MODEL,
+            "instructions": "Relay this Live configuration"
+        },
+        "future_client_field": {
+            "opaque": true,
+            "revision": 9,
+            "nested": [1, {"mode": "future"}]
+        }
+    });
+    socket
+        .send(WreqWsMessage::text(initial_event.to_string()))
+        .await
+        .expect("initial Live session.update should send");
+
+    let future_event = receive_codex_live_json(&mut socket).await;
+    assert_eq!(
+        future_event,
+        json!({
+            "type": "future.live.event",
+            "future_capability": {"enabled": true, "revision": 11}
+        })
+    );
+    let turn_done = receive_codex_live_json(&mut socket).await;
+    assert_eq!(
+        turn_done,
+        json!({
+            "type": "turn.done",
+            "turn": {"id": "turn-live-1"},
+            "future_turn_field": "retained"
+        })
+    );
+
+    let event_after_turn_done = json!({
+        "type": "future.client.after_turn_done",
+        "future_payload": {"still_connected": true}
+    });
+    socket
+        .send(WreqWsMessage::text(event_after_turn_done.to_string()))
+        .await
+        .expect("Live socket should remain writable after turn.done");
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(2), observed_rx)
+        .await
+        .expect("mock upstream should observe the post-turn event before timeout")
+        .expect("mock upstream observation channel should remain open");
+    assert_eq!(
+        observed.request_target,
+        format!("/v1/live?model={PROVIDER_MODEL}")
+    );
+    assert_eq!(
+        observed.authorization.as_deref(),
+        Some("Bearer oauth-upstream-secret")
+    );
+    assert_eq!(observed.alpha.as_deref(), Some("quicksilver=v2"));
+    assert_eq!(observed.session_id.as_deref(), Some("stable-live-session"));
+    let mut expected_initial_event = initial_event;
+    expected_initial_event["session"]["model"] = json!(PROVIDER_MODEL);
+    assert_eq!(observed.initial_event, expected_initial_event);
+    assert_eq!(observed.event_after_turn_done, event_after_turn_done);
+
+    drop(socket);
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[derive(Debug)]
+struct ObservedCodexLiveSideband {
+    request_target: String,
+    authorization: Option<String>,
+    alpha: Option<String>,
+    session_id: Option<String>,
+    first_client_event: serde_json::Value,
+    session_update: serde_json::Value,
+}
+
+#[test]
+fn gateway_creates_and_relays_bound_codex_live_api_key_sideband() {
+    super::run_frontdoor_async_test(
+        "codex-live-api-key-sideband-frontdoor",
+        run_codex_live_api_key_sideband_frontdoor_scenario(),
+    );
+}
+
+async fn run_codex_live_api_key_sideband_frontdoor_scenario() {
+    const PROVIDER_ID: &str = "provider-codex-live-sideband";
+    const ENDPOINT_ID: &str = "endpoint-provider-codex-live-sideband";
+    const UPSTREAM_KEY_ID: &str = "key-provider-codex-live-sideband";
+    const CLIENT_MODEL: &str = "live-sideband-alias";
+    const PROVIDER_MODEL: &str = "gpt-future-live-sideband";
+    const CALL_ID: &str = "rtc_live_sideband_1";
+
+    let (sideband_observed_tx, sideband_observed_rx) = oneshot::channel();
+    let upstream_state = Arc::new(Mutex::new(Some(sideband_observed_tx)));
+    let upstream = Router::new()
+        .route(
+            "/v1/live/{call_id}",
+            get(mock_codex_live_sideband_websocket),
+        )
+        .with_state(upstream_state);
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+
+    let captured_plan = Arc::new(Mutex::new(None::<aether_contracts::ExecutionPlan>));
+    let captured_plan_for_runtime = Arc::clone(&captured_plan);
+    let upstream_location = format!("{upstream_url}/v1/live/{CALL_ID}");
+    let execution_runtime = Router::new().route(
+        "/v1/execute/sync",
+        any(move |request: Request| {
+            let captured_plan_for_request = Arc::clone(&captured_plan_for_runtime);
+            let upstream_location = upstream_location.clone();
+            async move {
+                let (_parts, body) = request.into_parts();
+                let raw_body = to_bytes(body, usize::MAX)
+                    .await
+                    .expect("Live API-key execution runtime body should read");
+                let plan: aether_contracts::ExecutionPlan = serde_json::from_slice(&raw_body)
+                    .expect("Live API-key execution plan should parse");
+                *captured_plan_for_request
+                    .lock()
+                    .expect("Live API-key plan mutex should lock") = Some(plan.clone());
+                Json(ExecutionResult {
+                    request_id: plan.request_id,
+                    candidate_id: plan.candidate_id,
+                    status_code: 201,
+                    headers: std::collections::BTreeMap::from([
+                        ("content-type".to_string(), "application/sdp".to_string()),
+                        ("location".to_string(), upstream_location),
+                        ("x-future-live-header".to_string(), "preserved".to_string()),
+                    ]),
+                    response_observation: None,
+                    body: Some(ResponseBody {
+                        json_body: None,
+                        body_bytes_b64: Some(
+                            base64::engine::general_purpose::STANDARD
+                                .encode(b"v=0\r\no=api-key-upstream-answer"),
+                        ),
+                    }),
+                    telemetry: Some(ExecutionTelemetry {
+                        ttfb_ms: Some(1),
+                        elapsed_ms: Some(2),
+                        upstream_bytes: Some(34),
+                    }),
+                    error: None,
+                })
+            }
+        }),
+    );
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+
+    let mut row = sample_codex_models_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
+    row.provider_name = "openai".to_string();
+    row.provider_type = "openai".to_string();
+    row.key_auth_type = "api_key".to_string();
+    row.key_allowed_models = Some(vec![PROVIDER_MODEL.to_string()]);
+    let candidate_repository =
+        Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
+            row,
+        ]));
+    let mut downstream_snapshot = codex_models_snapshot(
+        "gateway-key-codex-live-sideband",
+        "user-codex-live-sideband",
+        &[CLIENT_MODEL],
+    );
+    downstream_snapshot.user_allowed_providers = Some(vec!["openai".to_string()]);
+    downstream_snapshot.api_key_allowed_providers = Some(vec!["openai".to_string()]);
+    let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
+        Some(hash_api_key("sk-codex-live-sideband")),
+        downstream_snapshot,
+    )]));
+
+    let mut provider = codex_catalog_provider(PROVIDER_ID);
+    provider.provider_type = "openai".to_string();
+    provider.config = Some(json!({"responses_websocket": {"enabled": true}}));
+    let mut endpoint = codex_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
+    endpoint.base_url = format!("{upstream_url}/v1");
+    let mut upstream_key = codex_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
+    upstream_key.auth_type = "api_key".to_string();
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![upstream_key],
+    ));
+    let state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_data_state_for_tests(
+            crate::data::GatewayDataState::with_minimal_candidate_selection_and_auth_for_tests(
+                candidate_repository,
+                auth_repository,
+            )
+            .attach_provider_catalog_repository_for_tests(provider_catalog_repository)
+            .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        );
+    let gateway = build_router_with_state(state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let sideband_url = format!(
+        "{}/v1/live/{CALL_ID}",
+        gateway_url.replacen("http://", "ws://", 1)
+    );
+    let mut sideband_headers = HeaderMap::new();
+    sideband_headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer sk-codex-live-sideband"),
+    );
+    sideband_headers.insert(
+        http::HeaderName::from_static("x-session-id"),
+        http::HeaderValue::from_static("stable-live-sideband-session"),
+    );
+    let missing_binding_response = wreq::Client::new()
+        .websocket(sideband_url.clone())
+        .headers(sideband_headers.clone())
+        .send()
+        .await
+        .expect("missing Live sideband binding should return an HTTP response");
+    assert_eq!(missing_binding_response.status(), StatusCode::NOT_FOUND);
+
+    let boundary = "aether-live-api-key-sideband";
+    let offer_sdp = "v=0\r\no=api-key-client-offer";
+    let session = json!({
+        "model": CLIENT_MODEL,
+        "instructions": "Preserve this API-key Live session",
+        "future_session_capability": {
+            "revision": 13,
+            "nested": [true, {"mode": "opaque"}]
+        }
+    });
+    let multipart_body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"sdp\"\r\nContent-Type: application/sdp\r\n\r\n{offer_sdp}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"session\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--{boundary}--\r\n",
+        session
+    );
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/v1/live"))
+        .header("authorization", "Bearer sk-codex-live-sideband")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header("x-session-id", "stable-live-sideband-session")
+        .header("openai-alpha", "client-value-must-be-replaced")
+        .body(multipart_body)
+        .send()
+        .await
+        .expect("Codex Live API-key call creation should complete");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response
+            .headers()
+            .get(http::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some(format!("/v1/live/{CALL_ID}").as_str())
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-future-live-header")
+            .and_then(|value| value.to_str().ok()),
+        Some("preserved")
+    );
+    assert_eq!(
+        response
+            .bytes()
+            .await
+            .expect("Live API-key SDP answer should read")
+            .as_ref(),
+        b"v=0\r\no=api-key-upstream-answer"
+    );
+
+    let plan = captured_plan
+        .lock()
+        .expect("Live API-key plan mutex should lock")
+        .clone()
+        .expect("Live API-key call should reach execution runtime");
+    let plan_url = url::Url::parse(plan.url.as_str()).expect("Live API-key URL should parse");
+    assert_eq!(plan_url.path(), "/v1/live");
+    assert!(plan_url.query().is_none());
+    assert_eq!(plan.method, "POST");
+    assert!(!plan.stream);
+    assert!(plan
+        .content_type
+        .as_deref()
+        .is_some_and(|value| value.starts_with("multipart/form-data; boundary=")));
+    assert!(plan.body.json_body.is_none());
+    let provider_multipart = base64::engine::general_purpose::STANDARD
+        .decode(
+            plan.body
+                .body_bytes_b64
+                .as_deref()
+                .expect("API-key Live call should preserve multipart wire bytes"),
+        )
+        .expect("provider multipart body should decode");
+    let provider_multipart =
+        String::from_utf8(provider_multipart).expect("provider multipart should be UTF-8");
+    assert!(provider_multipart.contains(offer_sdp));
+    assert!(provider_multipart.contains(PROVIDER_MODEL));
+    assert!(!provider_multipart.contains(CLIENT_MODEL));
+    assert!(provider_multipart.contains("future_session_capability"));
+    assert_eq!(
+        plan.headers.get("authorization").map(String::as_str),
+        Some("Bearer oauth-upstream-secret")
+    );
+    assert_eq!(
+        plan.headers.get("openai-alpha").map(String::as_str),
+        Some("quicksilver=v2")
+    );
+    assert_eq!(
+        plan.headers.get("x-session-id").map(String::as_str),
+        Some("stable-live-sideband-session")
+    );
+    assert_eq!(
+        plan.headers.get("accept").map(String::as_str),
+        Some("application/sdp")
+    );
+
+    let sideband_response = wreq::Client::new()
+        .websocket(sideband_url)
+        .headers(sideband_headers.clone())
+        .send()
+        .await
+        .expect("Codex Live sideband handshake should complete");
+    assert_eq!(sideband_response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut sideband = sideband_response
+        .into_websocket()
+        .await
+        .expect("Codex Live sideband response should upgrade");
+
+    // The client deliberately sends nothing before this receive. If sideband
+    // incorrectly reused the direct-WebSocket session.update bootstrap, this
+    // event could not arrive.
+    let ready_event = receive_codex_live_json(&mut sideband).await;
+    assert_eq!(
+        ready_event,
+        json!({
+            "type": "future.sideband.ready",
+            "future_capability": {"opaque": true, "revision": 17}
+        })
+    );
+    let conflicting_response = wreq::Client::new()
+        .websocket(format!(
+            "{}/v1/live/{CALL_ID}",
+            gateway_url.replacen("http://", "ws://", 1)
+        ))
+        .headers(sideband_headers)
+        .send()
+        .await
+        .expect("duplicate Live sideband attachment should return an HTTP response");
+    assert_eq!(conflicting_response.status(), StatusCode::CONFLICT);
+
+    let opaque_command = json!({
+        "type": "future.sideband.command",
+        "future_payload": {"without_session_update": true}
+    });
+    sideband
+        .send(WreqWsMessage::text(opaque_command.to_string()))
+        .await
+        .expect("opaque sideband command should send without session.update");
+    let sideband_session_update = json!({
+        "type": "session.update",
+        "session": {
+            "model": "untrusted-client-model",
+            "future_session_field": {"opaque": true}
+        },
+        "future_event_field": [1, 2, 3]
+    });
+    sideband
+        .send(WreqWsMessage::text(sideband_session_update.to_string()))
+        .await
+        .expect("sideband session.update should send after an opaque frame");
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(2), sideband_observed_rx)
+        .await
+        .expect("mock sideband should observe the opaque command before timeout")
+        .expect("mock sideband observation channel should remain open");
+    assert_eq!(observed.request_target, format!("/v1/live/{CALL_ID}"));
+    assert_eq!(
+        observed.authorization.as_deref(),
+        Some("Bearer oauth-upstream-secret")
+    );
+    assert_eq!(observed.alpha.as_deref(), Some("quicksilver=v2"));
+    assert_eq!(
+        observed.session_id.as_deref(),
+        Some("stable-live-sideband-session")
+    );
+    assert_eq!(observed.first_client_event, opaque_command);
+    let mut expected_sideband_session_update = sideband_session_update;
+    expected_sideband_session_update["session"]["model"] = json!(PROVIDER_MODEL);
+    assert_eq!(observed.session_update, expected_sideband_session_update);
+
+    drop(sideband);
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+    upstream_handle.abort();
+}
+
+async fn mock_codex_live_sideband_websocket(
+    State(observed): State<Arc<Mutex<Option<oneshot::Sender<ObservedCodexLiveSideband>>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let request_target = uri.to_string();
+    let authorization = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let alpha = headers
+        .get("openai-alpha")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let session_id = headers
+        .get("x-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    ws.on_upgrade(move |mut socket| async move {
+        socket
+            .send(AxumWsMessage::Text(
+                json!({
+                    "type": "future.sideband.ready",
+                    "future_capability": {"opaque": true, "revision": 17}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("mock upstream sideband ready event should send");
+        let first_client_event = receive_axum_live_json(&mut socket).await;
+        let session_update = receive_axum_live_json(&mut socket).await;
+        let observation = ObservedCodexLiveSideband {
+            request_target,
+            authorization,
+            alpha,
+            session_id,
+            first_client_event,
+            session_update,
+        };
+        if let Some(sender) = observed
+            .lock()
+            .expect("mock sideband observation mutex should lock")
+            .take()
+        {
+            let _ = sender.send(observation);
+        }
+    })
+}
+
+async fn mock_codex_live_websocket(
+    State(observed): State<Arc<Mutex<Option<oneshot::Sender<ObservedCodexLiveWebSocket>>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let request_target = uri.to_string();
+    let authorization = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let alpha = headers
+        .get("openai-alpha")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let session_id = headers
+        .get("x-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    ws.on_upgrade(move |mut socket| async move {
+        let initial_event = receive_axum_live_json(&mut socket).await;
+        socket
+            .send(AxumWsMessage::Text(
+                json!({
+                    "type": "future.live.event",
+                    "future_capability": {"enabled": true, "revision": 11}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("mock upstream future event should send");
+        socket
+            .send(AxumWsMessage::Text(
+                json!({
+                    "type": "turn.done",
+                    "turn": {"id": "turn-live-1"},
+                    "future_turn_field": "retained"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("mock upstream turn.done should send");
+        let event_after_turn_done = receive_axum_live_json(&mut socket).await;
+        let observation = ObservedCodexLiveWebSocket {
+            request_target,
+            authorization,
+            alpha,
+            session_id,
+            initial_event,
+            event_after_turn_done,
+        };
+        if let Some(sender) = observed
+            .lock()
+            .expect("mock upstream observation mutex should lock")
+            .take()
+        {
+            let _ = sender.send(observation);
+        }
+    })
+}
+
+async fn receive_axum_live_json(socket: &mut WebSocket) -> serde_json::Value {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.recv())
+        .await
+        .expect("mock upstream should receive a Live event before timeout")
+        .expect("mock upstream socket should remain open")
+        .expect("mock upstream Live frame should be readable");
+    match message {
+        AxumWsMessage::Text(text) => {
+            serde_json::from_str(text.as_str()).expect("mock upstream Live event should be JSON")
+        }
+        other => panic!("mock upstream expected text Live event, got {other:?}"),
+    }
+}
+
+async fn receive_codex_live_json(socket: &mut wreq::ws::WebSocket) -> serde_json::Value {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.recv())
+        .await
+        .expect("Codex Live gateway should send an event before timeout")
+        .expect("Codex Live gateway socket should remain open")
+        .expect("Codex Live gateway frame should be readable");
+    match message {
+        WreqWsMessage::Text(text) => serde_json::from_str(text.as_str())
+            .expect("Codex Live gateway text event should be JSON"),
+        other => panic!("Codex Live gateway expected text event, got {other:?}"),
+    }
 }
 
 #[tokio::test]

@@ -29,6 +29,8 @@ mod turn;
 mod turn_state;
 mod upstream;
 
+pub(crate) use admission::ResponsesWebSocketTurnAdmission;
+
 use std::net::SocketAddr;
 
 use axum::body::Body;
