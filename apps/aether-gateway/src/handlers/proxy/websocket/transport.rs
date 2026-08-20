@@ -82,6 +82,7 @@ pub(crate) async fn connect_upstream_websocket(
 fn websocket_response_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
     headers
         .iter()
+        .filter(|(name, _)| websocket_response_header_is_safe_to_retain(name))
         .filter_map(|(name, value)| {
             value
                 .to_str()
@@ -89,6 +90,24 @@ fn websocket_response_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
                 .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect()
+}
+
+fn websocket_response_header_is_safe_to_retain(name: &HeaderName) -> bool {
+    !matches!(
+        name.as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "www-authenticate"
+            | "proxy-authenticate"
+            | "authentication-info"
+            | "proxy-authentication-info"
+            | "cookie"
+            | "set-cookie"
+            | "set-cookie2"
+            | "x-api-key"
+            | "api-key"
+            | "x-goog-api-key"
+    )
 }
 
 pub(crate) fn websocket_upstream_url(
@@ -300,7 +319,20 @@ pub(crate) fn responses_websocket_error_event(
     code: &str,
     message: &str,
 ) -> serde_json::Value {
-    json!({
+    responses_websocket_error_event_with_stream_id(status, error_type, code, message, None)
+}
+
+/// Builds a request-scoped Responses error. Callers must supply `stream_id`
+/// only after validating the protocol's named-lane grammar; untrusted or
+/// malformed identifiers must never be reflected into a provider event.
+pub(crate) fn responses_websocket_error_event_with_stream_id(
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+    stream_id: Option<&str>,
+) -> serde_json::Value {
+    let mut event = json!({
         "type": "error",
         "status": status,
         "error": {
@@ -308,7 +340,17 @@ pub(crate) fn responses_websocket_error_event(
             "code": code,
             "message": message,
         },
-    })
+    });
+    if let Some(stream_id) = stream_id {
+        event
+            .as_object_mut()
+            .expect("Responses error events are JSON objects")
+            .insert(
+                "stream_id".to_string(),
+                serde_json::Value::String(stream_id.to_string()),
+            );
+    }
+    event
 }
 
 pub(crate) async fn send_responses_websocket_error(
@@ -318,7 +360,49 @@ pub(crate) async fn send_responses_websocket_error(
     code: &str,
     message: &str,
 ) {
-    let event = responses_websocket_error_event(status, error_type, code, message);
+    send_responses_websocket_error_with_stream_id(
+        client_socket,
+        status,
+        error_type,
+        code,
+        message,
+        None,
+    )
+    .await;
+}
+
+/// Sends a standard invalid-request error with a bounded, server-owned
+/// parameter name. This is used for protocol fields such as
+/// `previous_response_id`; no untrusted value is reflected.
+pub(crate) async fn send_responses_websocket_error_with_param(
+    client_socket: &mut WebSocket,
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+    param: &'static str,
+) {
+    let mut event = responses_websocket_error_event(status, error_type, code, message);
+    event["error"]["param"] = serde_json::Value::String(param.to_string());
+    send_teardown_message(
+        client_socket
+            .send(AxumWsMessage::Text(event.to_string().into()))
+            .map_err(|_| ()),
+    )
+    .await;
+}
+
+pub(crate) async fn send_responses_websocket_error_with_stream_id(
+    client_socket: &mut WebSocket,
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+    stream_id: Option<&str>,
+) {
+    let event = responses_websocket_error_event_with_stream_id(
+        status, error_type, code, message, stream_id,
+    );
     send_teardown_message(
         client_socket
             .send(AxumWsMessage::Text(event.to_string().into()))
@@ -331,13 +415,41 @@ pub(crate) async fn send_gateway_error(client_socket: &mut WebSocket, code: &str
     send_gateway_error_with_status(client_socket, 400, code, message).await;
 }
 
+pub(crate) async fn send_gateway_error_with_stream_id(
+    client_socket: &mut WebSocket,
+    code: &str,
+    message: &str,
+    stream_id: Option<&str>,
+) {
+    send_gateway_error_with_status_and_stream_id(client_socket, 400, code, message, stream_id)
+        .await;
+}
+
 pub(crate) async fn send_gateway_error_with_status(
     client_socket: &mut WebSocket,
     status: u16,
     code: &str,
     message: &str,
 ) {
-    send_responses_websocket_error(client_socket, status, "gateway_error", code, message).await;
+    send_gateway_error_with_status_and_stream_id(client_socket, status, code, message, None).await;
+}
+
+pub(crate) async fn send_gateway_error_with_status_and_stream_id(
+    client_socket: &mut WebSocket,
+    status: u16,
+    code: &str,
+    message: &str,
+    stream_id: Option<&str>,
+) {
+    send_responses_websocket_error_with_stream_id(
+        client_socket,
+        status,
+        "gateway_error",
+        code,
+        message,
+        stream_id,
+    )
+    .await;
 }
 
 pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16, reason: &str) {
@@ -355,9 +467,12 @@ pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_send, responses_websocket_error_event, websocket_handshake_headers,
-        websocket_upstream_url, WebSocketWriteError, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+        bounded_send, responses_websocket_error_event,
+        responses_websocket_error_event_with_stream_id, websocket_handshake_headers,
+        websocket_response_headers, websocket_upstream_url, WebSocketWriteError,
+        RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
     };
+    use axum::http::HeaderMap;
     use std::collections::BTreeMap;
     use std::time::Duration;
 
@@ -392,6 +507,32 @@ mod tests {
     }
 
     #[test]
+    fn upstream_handshake_observability_drops_credential_bearing_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-codex-primary-used-percent", "10".parse().unwrap());
+        headers.insert("x-request-id", "request-123".parse().unwrap());
+        headers.insert("set-cookie", "session=secret".parse().unwrap());
+        headers.insert("www-authenticate", "Bearer secret".parse().unwrap());
+        headers.insert("authentication-info", "nextnonce=secret".parse().unwrap());
+
+        let retained = websocket_response_headers(&headers);
+
+        assert_eq!(
+            retained
+                .get("x-codex-primary-used-percent")
+                .map(String::as_str),
+            Some("10")
+        );
+        assert_eq!(
+            retained.get("x-request-id").map(String::as_str),
+            Some("request-123")
+        );
+        assert!(!retained.contains_key("set-cookie"));
+        assert!(!retained.contains_key("www-authenticate"));
+        assert!(!retained.contains_key("authentication-info"));
+    }
+
+    #[test]
     fn builds_a_client_compatible_responses_error_event() {
         let event = responses_websocket_error_event(
             400,
@@ -407,6 +548,24 @@ mod tests {
         assert_eq!(
             event["error"]["message"],
             "Previous response was not found."
+        );
+        assert!(event.get("stream_id").is_none());
+    }
+
+    #[test]
+    fn request_scoped_responses_errors_include_the_validated_named_stream() {
+        let event = responses_websocket_error_event_with_stream_id(
+            400,
+            "gateway_error",
+            "responses_websocket_named_stream_unsupported",
+            "Named streams are not supported.",
+            Some("main-lane_1.test"),
+        );
+
+        assert_eq!(event["stream_id"], "main-lane_1.test");
+        assert_eq!(
+            event["error"]["code"],
+            "responses_websocket_named_stream_unsupported"
         );
     }
 

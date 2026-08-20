@@ -364,6 +364,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             body_json,
             &input.auth_context,
             spec_metadata.api_format,
+            crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
             &attempt.candidate_id,
         )
         .await?;
@@ -593,18 +594,23 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         input.auth_context.api_key_id.as_str(),
     )
     .await?;
+    let reasoning_replay_policy = openai_responses_reasoning_replay_policy(
+        transport.provider.provider_type.as_str(),
+        transport.endpoint.base_url.as_str(),
+    );
     let redaction = resolve_provider_chat_pii_redaction(
         state,
         parts,
         body_json,
         &input.auth_context,
         spec_metadata.api_format,
+        reasoning_replay_policy,
         &attempt.candidate_id,
     )
     .await?;
     let body_json = redaction.body_json.as_ref();
     let mut provider_request_body =
-        match crate::ai_serving::planner::standard::build_standard_request_body_with_model_directives_and_request_headers(
+        match crate::ai_serving::planner::standard::build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
             body_json,
             spec_metadata.api_format,
             &prepared_candidate.mapped_model,
@@ -620,10 +626,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             Some(input.auth_context.api_key_id.as_str()),
             Some(effective_headers),
             false,
-            openai_responses_reasoning_replay_policy(
-                transport.provider.provider_type.as_str(),
-                transport.endpoint.base_url.as_str(),
-            ),
+            reasoning_replay_policy,
         ) {
             Some(body) => body,
             None => {
@@ -770,10 +773,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
                     ),
                 },
                 codex_model_capabilities.as_ref(),
-                openai_responses_reasoning_replay_policy(
-                    transport.provider.provider_type.as_str(),
-                    transport.endpoint.base_url.as_str(),
-                ),
+                reasoning_replay_policy,
             )
         {
             mark_skipped_local_standard_candidate_with_extra_data(

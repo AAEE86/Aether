@@ -73,6 +73,7 @@ pub use crate::formats::openai::{
         finalize_openai_provider_request,
         finalize_openai_provider_request_with_codex_model_capabilities,
         finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy,
+        finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation,
         validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
         OpenAiProviderRequestFinalization,
     },
@@ -188,6 +189,7 @@ pub use crate::formats::{
                 apply_codex_openai_responses_lite_header_with_capabilities,
                 apply_codex_openai_responses_special_body_edits,
                 apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities,
+                apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities,
                 apply_codex_openai_special_headers,
                 apply_openai_responses_compact_special_body_edits,
                 build_codex_model_catalog_metadata, parse_codex_auth_identity,
@@ -212,6 +214,7 @@ pub use crate::formats::{
         standard_matrix::{
             build_standard_request_body, build_standard_request_body_with_model_directives,
             build_standard_request_body_with_model_directives_and_request_headers,
+            build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy,
         },
         standard_normalize::{
             build_cross_format_openai_chat_request_body,

@@ -3162,7 +3162,7 @@ async fn provider_query_execute_standard_test_candidate(
         | "openai:rerank"
         | "jina:rerank" => {
             let Some(mut provider_request_body) =
-                crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers(
+                crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
                     &request_body,
                     client_api_format,
                     request_model,

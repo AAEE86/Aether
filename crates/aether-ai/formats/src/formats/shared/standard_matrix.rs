@@ -73,12 +73,41 @@ pub fn build_standard_request_body_with_model_directives(
         user_api_key_id,
         None,
         enable_model_directives,
-        crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_standard_request_body_with_model_directives_and_request_headers(
+    body_json: &Value,
+    client_api_format: &str,
+    mapped_model: &str,
+    provider_type: &str,
+    provider_api_format: &str,
+    request_path: &str,
+    upstream_is_stream: bool,
+    body_rules: Option<&Value>,
+    user_api_key_id: Option<&str>,
+    request_headers: Option<&http::HeaderMap>,
+    enable_model_directives: bool,
+) -> Option<Value> {
+    build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
+        body_json,
+        client_api_format,
+        mapped_model,
+        provider_type,
+        provider_api_format,
+        request_path,
+        upstream_is_stream,
+        body_rules,
+        user_api_key_id,
+        request_headers,
+        enable_model_directives,
+        crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
     body_json: &Value,
     client_api_format: &str,
     mapped_model: &str,
@@ -104,26 +133,29 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
         client_api_format,
         provider_api_format,
     );
-    // A same-family Responses hop is a wire-preserving route. Parsing through the
-    // canonical request model here would intentionally discard provider-owned
-    // input item fields (for example DeepSeek's id-less `reasoning_text` and
-    // future opaque capability fields), even though no format conversion is
-    // required. Keep the original object and only rewrite the routing model;
-    // the normal provider-contract and compatibility passes below still apply.
-    let mut provider_request_body =
-        if is_same_openai_responses_family(source_api_format.as_ref(), provider_api_format) {
-            let mut object = body_json.as_object()?.clone();
-            object.insert("model".to_string(), Value::String(mapped_model.to_string()));
-            Value::Object(object)
-        } else {
-            convert_request(
-                source_api_format.as_ref(),
-                provider_api_format,
-                body_json,
-                &format_context,
-            )
-            .ok()?
-        };
+    // DeepSeek's Responses continuation state is opaque. Parsing a same-wire-format
+    // request through the canonical model would discard its id-less `reasoning_text`
+    // items and future provider-owned fields even though no conversion is required.
+    // Keep that provider-specific route wire-preserving, while retaining canonical
+    // normalization for ordinary OpenAI Responses and for Responses/Compact
+    // cross-format conversions.
+    let mut provider_request_body = if is_wire_preserving_deepseek_responses_hop(
+        source_api_format.as_ref(),
+        provider_api_format,
+        reasoning_replay_policy,
+    ) {
+        let mut object = body_json.as_object()?.clone();
+        object.insert("model".to_string(), Value::String(mapped_model.to_string()));
+        Value::Object(object)
+    } else {
+        convert_request(
+            source_api_format.as_ref(),
+            provider_api_format,
+            body_json,
+            &format_context,
+        )
+        .ok()?
+    };
 
     if enable_model_directives {
         apply_model_directive_overrides_from_request(
@@ -192,14 +224,19 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers(
     Some(provider_request_body)
 }
 
-fn is_same_openai_responses_family(source_api_format: &str, provider_api_format: &str) -> bool {
-    matches!(
-        aether_ai_formats::normalize_api_format_alias(source_api_format).as_str(),
-        "openai:responses" | "openai:responses:compact"
-    ) && matches!(
-        aether_ai_formats::normalize_api_format_alias(provider_api_format).as_str(),
-        "openai:responses" | "openai:responses:compact"
-    )
+fn is_wire_preserving_deepseek_responses_hop(
+    source_api_format: &str,
+    provider_api_format: &str,
+    reasoning_replay_policy: crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy,
+) -> bool {
+    if reasoning_replay_policy
+        != crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+    {
+        return false;
+    }
+    let source_api_format = aether_ai_formats::normalize_api_format_alias(source_api_format);
+    let provider_api_format = aether_ai_formats::normalize_api_format_alias(provider_api_format);
+    source_api_format == "openai:responses" && source_api_format == provider_api_format
 }
 
 fn compatible_source_format_for_standard_request<'a>(
@@ -378,7 +415,7 @@ mod tests {
     use super::{
         build_standard_request_body, build_standard_request_body_from_canonical,
         build_standard_request_body_with_model_directives,
-        build_standard_request_body_with_model_directives_and_request_headers,
+        build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy,
         normalize_standard_request_to_openai_chat_request,
     };
     use crate::formats::openai::responses::OpenAiResponsesReasoningReplayPolicy;
@@ -549,7 +586,7 @@ mod tests {
             "future_request_field": {"preserve": true}
         });
 
-        let preserved = build_standard_request_body_with_model_directives_and_request_headers(
+        let preserved = build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
             &request,
             "openai:responses",
             "deepseek-v4-flash",
@@ -580,7 +617,7 @@ mod tests {
             "dynamic"
         );
 
-        let strict = build_standard_request_body_with_model_directives_and_request_headers(
+        let strict = build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
             &request,
             "openai:responses",
             "deepseek-v4-flash",
@@ -603,6 +640,32 @@ mod tests {
                 .filter(|item| item["type"] == "reasoning")
                 .count(),
             0
+        );
+
+        let compact = build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
+            &request,
+            "openai:responses:compact",
+            "deepseek-v4-flash",
+            "custom",
+            "openai:responses:compact",
+            "/v1/responses/compact",
+            false,
+            None,
+            None,
+            None,
+            false,
+            OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        )
+        .expect("Compact body should continue through canonical normalization");
+        assert_eq!(
+            compact["input"]
+                .as_array()
+                .expect("compact input array")
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            0,
+            "compact must not use the DeepSeek opaque replay policy"
         );
     }
 

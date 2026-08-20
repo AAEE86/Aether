@@ -63,6 +63,20 @@ pub fn strip_incompatible_openai_responses_reasoning_items_with_policy(
     if !aether_ai_formats::is_openai_responses_family_format(provider_api_format) {
         return 0;
     }
+    // DeepSeek's id-less opaque state is valid only on the normal Responses
+    // continuation contract. Both the legacy Compact endpoint and the current
+    // `compaction_trigger` operation must retain the strict OpenAI item-id
+    // replay rules even when the same provider key serves ordinary Responses.
+    let normal_responses =
+        aether_ai_formats::normalize_api_format_alias(provider_api_format) == "openai:responses";
+    let compact_operation = openai_responses_request_operation(provider_api_format, body).is_some();
+    let policy = if policy == OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+        && (!normal_responses || compact_operation)
+    {
+        OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds
+    } else {
+        policy
+    };
     let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return 0;
     };
@@ -121,10 +135,7 @@ fn deepseek_opaque_reasoning_item_is_replayable(object: &serde_json::Map<String,
             .is_some_and(|content| {
                 content.iter().any(|part| {
                     part.get("type").and_then(Value::as_str) == Some("reasoning_text")
-                        && part
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .is_some_and(|text| !text.is_empty())
+                        && part.get("text").is_some_and(Value::is_string)
                 })
             });
     has_encrypted_content && has_reasoning_text
@@ -329,6 +340,74 @@ mod tests {
             2
         );
         assert_eq!(body["input"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn deepseek_policy_preserves_empty_reasoning_text_with_opaque_state() {
+        let mut body = json!({
+            "input": [{
+                "type": "reasoning",
+                "encrypted_content": "opaque-state",
+                "content": [{"type": "reasoning_text", "text": ""}],
+                "future_capability": {"preserve": true}
+            }]
+        });
+
+        assert_eq!(
+            strip_incompatible_openai_responses_reasoning_items_with_policy(
+                &mut body,
+                "openai:responses",
+                OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            ),
+            0
+        );
+        assert_eq!(body["input"][0]["content"][0]["text"], "");
+        assert_eq!(body["input"][0]["future_capability"]["preserve"], true);
+    }
+
+    #[test]
+    fn deepseek_policy_rejects_non_string_reasoning_text() {
+        let mut body = json!({
+            "input": [{
+                "type": "reasoning",
+                "encrypted_content": "opaque-state",
+                "content": [{"type": "reasoning_text", "text": {"not": "text"}}]
+            }]
+        });
+
+        assert_eq!(
+            strip_incompatible_openai_responses_reasoning_items_with_policy(
+                &mut body,
+                "openai:responses",
+                OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            ),
+            1
+        );
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn deepseek_policy_keeps_strict_replay_for_compaction_trigger_operation() {
+        let mut body = json!({
+            "input": [
+                {
+                    "type": "reasoning",
+                    "encrypted_content": "opaque-state",
+                    "content": [{"type": "reasoning_text", "text": "thinking"}]
+                },
+                {"type": "compaction_trigger"}
+            ]
+        });
+
+        assert_eq!(
+            strip_incompatible_openai_responses_reasoning_items_with_policy(
+                &mut body,
+                "openai:responses",
+                OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            ),
+            1
+        );
+        assert_eq!(body["input"], json!([{"type": "compaction_trigger"}]));
     }
 
     #[test]

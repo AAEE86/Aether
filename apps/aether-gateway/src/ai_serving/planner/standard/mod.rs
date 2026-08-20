@@ -33,6 +33,7 @@ pub(crate) use self::normalize::{
     build_cross_format_openai_responses_upstream_url, build_local_openai_chat_request_body,
     build_local_openai_chat_upstream_url, build_local_openai_responses_request_body,
     build_local_openai_responses_request_body_with_codex_model_capabilities,
+    build_local_openai_responses_request_body_with_codex_model_capabilities_for_websocket_continuation,
     build_local_openai_responses_upstream_url, validate_final_openai_provider_request,
 };
 pub(crate) use self::openai::{
@@ -64,7 +65,7 @@ pub(crate) use crate::ai_serving::{
 };
 pub(crate) use crate::ai_serving::{
     build_standard_request_body, build_standard_request_body_with_model_directives,
-    build_standard_request_body_with_model_directives_and_request_headers,
+    build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy,
     convert_openai_chat_request_to_claude_request, convert_openai_chat_request_to_gemini_request,
     convert_openai_chat_request_to_openai_responses_request, extract_openai_text_content,
     normalize_openai_responses_request_to_openai_chat_request, parse_openai_tool_result_content,

@@ -31,6 +31,7 @@ use crate::ai_serving::planner::standard::{
     build_cross_format_openai_responses_request_body_with_codex_model_capabilities,
     build_cross_format_openai_responses_upstream_url,
     build_local_openai_responses_request_body_with_codex_model_capabilities,
+    build_local_openai_responses_request_body_with_codex_model_capabilities_for_websocket_continuation,
     build_local_openai_responses_upstream_url, codex_model_capabilities_for_transport,
     openai_provider_request_contract_failure_extra_data, openai_responses_reasoning_replay_policy,
     request_body_build_failure_extra_data, request_conversion_failure_extra_data,
@@ -203,6 +204,34 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
     candidate_index: u32,
     candidate_id: &str,
     spec: LocalOpenAiResponsesSpec,
+) -> Result<Option<LocalOpenAiResponsesCandidatePayloadParts>, GatewayError> {
+    resolve_local_openai_responses_candidate_payload_parts_with_websocket_mode(
+        state,
+        parts,
+        trace_id,
+        body_json,
+        input,
+        eligible,
+        candidate_index,
+        candidate_id,
+        spec,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts_with_websocket_mode(
+    state: &AppState,
+    parts: &http::request::Parts,
+    trace_id: &str,
+    body_json: &serde_json::Value,
+    input: &LocalOpenAiResponsesDecisionInput,
+    eligible: &EligibleLocalExecutionCandidate,
+    candidate_index: u32,
+    candidate_id: &str,
+    spec: LocalOpenAiResponsesSpec,
+    websocket_continuation: bool,
 ) -> Result<Option<LocalOpenAiResponsesCandidatePayloadParts>, GatewayError> {
     let spec_metadata = local_openai_responses_spec_metadata(spec);
     let client_api_format = spec_metadata.api_format.trim().to_ascii_lowercase();
@@ -405,12 +434,17 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
         input.auth_context.api_key_id.as_str(),
     )
     .await?;
+    let reasoning_replay_policy = openai_responses_reasoning_replay_policy(
+        transport.provider.provider_type.as_str(),
+        transport.endpoint.base_url.as_str(),
+    );
     let redaction = resolve_provider_chat_pii_redaction(
         state,
         parts,
         body_json,
         &input.auth_context,
         spec_metadata.api_format,
+        reasoning_replay_policy,
         candidate_id,
     )
     .await?;
@@ -437,58 +471,75 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
         mapped_model.as_str(),
         source_model,
     );
-    let Some(mut base_provider_request_body) =
-        (if is_grok && is_grok_text_provider_api_format(provider_api_format) {
-            build_local_openai_responses_request_body_with_codex_model_capabilities(
+    let Some(mut base_provider_request_body) = (if is_grok
+        && is_grok_text_provider_api_format(provider_api_format)
+    {
+        build_local_openai_responses_request_body_with_codex_model_capabilities(
+            body_json,
+            &mapped_model,
+            upstream_is_stream,
+            force_body_stream_field,
+            transport.provider.provider_type.as_str(),
+            spec_metadata.api_format,
+            transport.endpoint.body_rules.as_ref(),
+            effective_headers,
+            codex_model_capabilities.as_ref(),
+            false,
+        )
+    } else if needs_bidirectional_conversion {
+        build_cross_format_openai_responses_request_body_with_codex_model_capabilities(
+            body_json,
+            &mapped_model,
+            spec_metadata.api_format,
+            provider_api_format,
+            upstream_is_stream,
+            force_body_stream_field,
+            transport.provider.provider_type.as_str(),
+            if is_kiro_claude_cli || is_windsurf_cascade {
+                None
+            } else {
+                transport.endpoint.body_rules.as_ref()
+            },
+            effective_headers,
+            Some(input.auth_context.api_key_id.as_str()),
+            codex_model_capabilities.as_ref(),
+            false,
+        )
+    } else if websocket_continuation {
+        build_local_openai_responses_request_body_with_codex_model_capabilities_for_websocket_continuation(
                 body_json,
                 &mapped_model,
                 upstream_is_stream,
                 force_body_stream_field,
                 transport.provider.provider_type.as_str(),
-                spec_metadata.api_format,
-                transport.endpoint.body_rules.as_ref(),
-                effective_headers,
-                codex_model_capabilities.as_ref(),
-                false,
-            )
-        } else if needs_bidirectional_conversion {
-            build_cross_format_openai_responses_request_body_with_codex_model_capabilities(
-                body_json,
-                &mapped_model,
-                spec_metadata.api_format,
                 provider_api_format,
-                upstream_is_stream,
-                force_body_stream_field,
-                transport.provider.provider_type.as_str(),
                 if is_kiro_claude_cli || is_windsurf_cascade {
                     None
                 } else {
                     transport.endpoint.body_rules.as_ref()
                 },
                 effective_headers,
-                Some(input.auth_context.api_key_id.as_str()),
                 codex_model_capabilities.as_ref(),
                 false,
             )
-        } else {
-            build_local_openai_responses_request_body_with_codex_model_capabilities(
-                body_json,
-                &mapped_model,
-                upstream_is_stream,
-                force_body_stream_field,
-                transport.provider.provider_type.as_str(),
-                provider_api_format,
-                if is_kiro_claude_cli || is_windsurf_cascade {
-                    None
-                } else {
-                    transport.endpoint.body_rules.as_ref()
-                },
-                effective_headers,
-                codex_model_capabilities.as_ref(),
-                false,
-            )
-        })
-    else {
+    } else {
+        build_local_openai_responses_request_body_with_codex_model_capabilities(
+            body_json,
+            &mapped_model,
+            upstream_is_stream,
+            force_body_stream_field,
+            transport.provider.provider_type.as_str(),
+            provider_api_format,
+            if is_kiro_claude_cli || is_windsurf_cascade {
+                None
+            } else {
+                transport.endpoint.body_rules.as_ref()
+            },
+            effective_headers,
+            codex_model_capabilities.as_ref(),
+            false,
+        )
+    }) else {
         mark_skipped_local_openai_responses_candidate_with_extra_data(
             state,
             input,
@@ -531,29 +582,35 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
         provider_api_format,
         Some(body_json),
     );
-    if let Err(violation) =
+    let finalization = crate::ai_serving::OpenAiProviderRequestFinalization {
+        source_api_format: spec_metadata.api_format,
+        provider_api_format,
+        provider_type: transport.provider.provider_type.as_str(),
+        provider_model: mapped_model.as_str(),
+        source_model,
+        body_rules: transport.endpoint.body_rules.as_ref(),
+        upstream_is_stream,
+        require_body_stream_field: request_requires_body_stream_field(
+            body_json,
+            force_body_stream_field,
+        ),
+    };
+    let finalization_result = if websocket_continuation {
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+            &mut base_provider_request_body,
+            finalization,
+            codex_model_capabilities.as_ref(),
+            reasoning_replay_policy,
+        )
+    } else {
         crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
             &mut base_provider_request_body,
-            crate::ai_serving::OpenAiProviderRequestFinalization {
-                source_api_format: spec_metadata.api_format,
-                provider_api_format,
-                provider_type: transport.provider.provider_type.as_str(),
-                provider_model: mapped_model.as_str(),
-                source_model,
-                body_rules: transport.endpoint.body_rules.as_ref(),
-                upstream_is_stream,
-                require_body_stream_field: request_requires_body_stream_field(
-                    body_json,
-                    force_body_stream_field,
-                ),
-            },
+            finalization,
             codex_model_capabilities.as_ref(),
-            openai_responses_reasoning_replay_policy(
-                transport.provider.provider_type.as_str(),
-                transport.endpoint.base_url.as_str(),
-            ),
+            reasoning_replay_policy,
         )
-    {
+    };
+    if let Err(violation) = finalization_result {
         mark_skipped_local_openai_responses_candidate_with_extra_data(
             state,
             input,

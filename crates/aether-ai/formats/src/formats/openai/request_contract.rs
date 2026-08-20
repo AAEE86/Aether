@@ -54,6 +54,37 @@ pub fn finalize_openai_provider_request_with_codex_model_capabilities_and_reason
     model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
     reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
 ) -> Result<(), OpenAiProviderRequestContractViolation> {
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_inner(
+        body,
+        finalization,
+        model_capabilities,
+        reasoning_replay_policy,
+        false,
+    )
+}
+
+pub fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+    body: &mut Value,
+    finalization: OpenAiProviderRequestFinalization<'_>,
+    model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
+    reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
+) -> Result<(), OpenAiProviderRequestContractViolation> {
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_inner(
+        body,
+        finalization,
+        model_capabilities,
+        reasoning_replay_policy,
+        true,
+    )
+}
+
+fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_inner(
+    body: &mut Value,
+    finalization: OpenAiProviderRequestFinalization<'_>,
+    model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
+    reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
+    websocket_continuation: bool,
+) -> Result<(), OpenAiProviderRequestContractViolation> {
     let is_codex_reasoning_endpoint = finalization
         .provider_type
         .trim()
@@ -73,15 +104,27 @@ pub fn finalize_openai_provider_request_with_codex_model_capabilities_and_reason
         .flatten();
     match crate::normalize_api_format_alias(finalization.source_api_format).as_str() {
         "openai:responses" | "openai:responses:compact" => {
-            super::responses::codex::apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities(
-                body,
-                finalization.provider_type,
-                finalization.provider_api_format,
-                finalization.provider_model,
-                finalization.source_model,
-                model_capabilities,
-                finalization.body_rules,
-            );
+            if websocket_continuation {
+                super::responses::codex::apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities(
+                    body,
+                    finalization.provider_type,
+                    finalization.provider_api_format,
+                    finalization.provider_model,
+                    finalization.source_model,
+                    model_capabilities,
+                    finalization.body_rules,
+                );
+            } else {
+                super::responses::codex::apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities(
+                    body,
+                    finalization.provider_type,
+                    finalization.provider_api_format,
+                    finalization.provider_model,
+                    finalization.source_model,
+                    model_capabilities,
+                    finalization.body_rules,
+                );
+            }
         }
         _ => {
             super::responses::codex::apply_codex_openai_responses_chat_body_edits_with_source_model_and_capabilities(

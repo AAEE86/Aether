@@ -180,12 +180,17 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
             }
         };
     let effective_headers = input.effective_headers(&parts.headers);
+    let reasoning_replay_policy = openai_responses_reasoning_replay_policy(
+        prepared.transport.provider.provider_type.as_str(),
+        prepared.transport.endpoint.base_url.as_str(),
+    );
     let redaction = resolve_provider_chat_pii_redaction(
         state,
         parts,
         body_json,
         &input.auth_context,
         spec.api_format,
+        reasoning_replay_policy,
         &attempt.candidate_id,
     )
     .await?;
@@ -205,10 +210,7 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
             prepared.kiro_auth.as_ref(),
             prepared.is_claude_code,
             false,
-            openai_responses_reasoning_replay_policy(
-                prepared.transport.provider.provider_type.as_str(),
-                prepared.transport.endpoint.base_url.as_str(),
-            ),
+            reasoning_replay_policy,
         )
     else {
         mark_skipped_local_same_format_provider_candidate_with_extra_data(
@@ -289,10 +291,7 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
                 ),
             },
             codex_model_capabilities.as_ref(),
-            openai_responses_reasoning_replay_policy(
-                transport.provider.provider_type.as_str(),
-                transport.endpoint.base_url.as_str(),
-            ),
+            reasoning_replay_policy,
         )
     {
         mark_skipped_local_same_format_provider_candidate_with_extra_data(

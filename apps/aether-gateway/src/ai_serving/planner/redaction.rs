@@ -67,6 +67,7 @@ pub(crate) async fn resolve_provider_chat_pii_redaction<'a>(
     body_json: &'a Value,
     auth_context: &ExecutionRuntimeAuthContext,
     client_api_format: &str,
+    reasoning_replay_policy: crate::ai_serving::OpenAiResponsesReasoningReplayPolicy,
     candidate_id: &str,
 ) -> Result<ProviderRequestRedaction<'a>, GatewayError> {
     let Some(format) = ChatPiiRedactionRequestFormat::from_api_format(client_api_format) else {
@@ -75,7 +76,7 @@ pub(crate) async fn resolve_provider_chat_pii_redaction<'a>(
     let Some(slot) = parts.extensions.get::<RedactionSessionSlot>() else {
         return Ok(ProviderRequestRedaction::disabled(body_json));
     };
-    let request_cache_key = request_redaction_cache_key(format, body_json);
+    let request_cache_key = request_redaction_cache_key(format, reasoning_replay_policy, body_json);
     if let Some(cached) = slot.cached_request_redaction(&request_cache_key) {
         crate::stage_metrics::record_chat_pii_redaction_request_cache_hit();
         observe_gateway_stage_ms("chat_pii_redaction_request_cache_hit", 0);
@@ -132,7 +133,7 @@ pub(crate) async fn resolve_provider_chat_pii_redaction<'a>(
         body_json,
         format,
         build_redaction_session_config(hmac_key, &runtime_config, now_unix_secs),
-        MaskChatRequestOptions::runtime(),
+        MaskChatRequestOptions::runtime().with_reasoning_replay_policy(reasoning_replay_policy),
         Some(&cache),
     )
     .await
@@ -165,8 +166,16 @@ pub(crate) async fn resolve_provider_chat_pii_redaction<'a>(
     })
 }
 
-fn request_redaction_cache_key(format: ChatPiiRedactionRequestFormat, body_json: &Value) -> String {
-    format!("{format:?}:{:p}", body_json)
+fn request_redaction_cache_key(
+    format: ChatPiiRedactionRequestFormat,
+    reasoning_replay_policy: crate::ai_serving::OpenAiResponsesReasoningReplayPolicy,
+    body_json: &Value,
+) -> String {
+    // A request may be attempted against providers with different replay
+    // contracts. Reusing a cached DeepSeek opaque decision for an ordinary
+    // Responses candidate (or vice versa) would either bypass masking or
+    // corrupt provider-owned continuation state.
+    format!("{format:?}:{reasoning_replay_policy:?}:{:p}", body_json)
 }
 
 fn provider_redaction_from_cached<'a>(
@@ -216,7 +225,15 @@ async fn resolve_chat_pii_redaction_feature_settings(
 }
 
 fn redaction_mask_error_to_gateway_error(error: RedactionMaskError) -> GatewayError {
-    match error {}
+    match error {
+        RedactionMaskError::SensitiveOpaqueReasoningState => {
+            warn!("gateway rejected provider-bound reasoning state containing sensitive text");
+            GatewayError::Client {
+                status: http::StatusCode::BAD_REQUEST,
+                message: "provider-bound reasoning state contains sensitive text and cannot be safely replayed while chat PII redaction is enabled".to_string(),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

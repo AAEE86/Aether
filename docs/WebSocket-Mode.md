@@ -4,6 +4,16 @@ The Responses API supports a WebSocket mode for long-running, tool-call-heavy wo
 
 WebSocket mode is compatible with both Zero Data Retention (ZDR) and `store=false`.
 
+OpenAI's current WebSocket service supports named `stream_id` lanes: requests on
+the same lane are FIFO, while different lanes may run concurrently. Aether's
+bridge currently exposes only the implicit default lane and deliberately
+rejects `response.create.stream_id` until per-lane binding, ordering, timeout,
+usage, and error routing are implemented end to end. Use separate WebSocket
+connections for parallel runs through Aether. A syntactically valid named
+`stream_id` is rejected with `responses_websocket_named_stream_unsupported`;
+the error event echoes the validated ID so the client can associate the error
+with its attempted lane. Invalid or untrusted IDs are not echoed.
+
 ## Why use WebSocket mode
 
 WebSocket mode is most useful when a workflow involves many model-tool round trips (for example, agentic coding or orchestration loops with repeated tool calls).
@@ -86,14 +96,68 @@ ws.send(
 
 WebSocket mode uses the same `previous_response_id` chaining semantics as HTTP mode, but it adds a lower-latency continuation path on the active socket.
 
-On an active WebSocket connection, the service keeps one previous-response state in a connection-local in-memory cache (the most recent response). Continuing from that most recent response is fast because the service can reuse connection-local state. Because the previous-response state is retained only in memory and is not written to disk, you can use WebSocket mode in a way that is compatible with `store=false` and Zero Data Retention (ZDR).
+On an active Aether WebSocket connection, the selected upstream keeps the
+previous-response state for the single default lane in its connection-local
+cache. Continuing from that most recent response is fast because the service
+can reuse connection-local state. Because the previous-response state is
+retained only in memory and is not written to disk, you can use WebSocket mode
+in a way that is compatible with `store=false` and Zero Data Retention (ZDR).
 
-If a `previous_response_id` is not in the in-memory cache, behavior depends on whether you store responses:
+If a `previous_response_id` is not in the upstream connection's in-memory
+cache, behavior depends on whether the upstream stored the response:
 
-- With `store=true`, the service may hydrate older response IDs from persisted state when available. Continuation can still work, but it usually loses the in-memory latency benefit.
+- With `store=true`, the upstream service may hydrate older response IDs from its persisted state when available. Continuation can still work, but it usually loses the in-memory latency benefit.
 - With `store=false` (including ZDR), there is no persisted fallback. If the ID is uncached, the request returns `previous_response_not_found`.
 
-If a turn fails (`4xx` or `5xx`), the service evicts the referenced `previous_response_id` from the connection-local cache. This prevents reusing stale cached state for that failed continuation.
+For a new downstream WebSocket connection, Aether also has to prove that the
+response belongs to the currently authenticated user/API key and to the exact
+provider endpoint, key, credential generation, transport, adapter, model, and
+normalization contract. Aether records this ownership only when the effective
+provider `response.create`, after Aether's body rules and framing, explicitly
+has `store=true` and a successful
+`response.completed`, `response.done`, or non-error `response.incomplete`
+terminal supplies a valid response ID. `store=false`, an omitted/overridden
+`store`, failures, cancellations, malformed IDs, and ZDR turns never create
+this registry state. This explicit-true rule is intentionally conservative:
+Aether does not infer a provider default for an omitted `store` field.
+
+The RuntimeState key contains a SHA-256 digest over length-delimited live
+`user_id`, `api_key_id`, and the opaque response ID; raw response IDs and
+credentials are not stored in keys or values. Records expire after 24 hours,
+are capped at the 1,024 most recently registered IDs per user/API-key pair,
+and are bounded in serialized size. The registry stores ownership/routing
+proof and contract digests only; it does not store response contents and is
+not a replacement for the upstream's `store=true` persistence. A registry
+write failure does not turn a successful provider response into a failure, so
+that terminal can reach the client but cannot later resume on a new socket.
+
+With the Redis RuntimeState backend, ownership is shared across gateway
+instances for the record TTL, subject to that Redis deployment's own
+availability and persistence configuration. The memory backend is
+process-local, is not shared between instances, and loses the registry on
+restart. Expiry, per-principal eviction, a RuntimeState outage, or a memory
+backend restart causes the first continuation on a new connection to fail
+closed with `previous_response_not_found`, even if the upstream might still
+retain the response. Aether never falls back to the ordinary scheduler for
+such a miss and never sends the opaque response ID to a different provider or
+key.
+
+PII-redaction restore mappings intentionally remain connection-local and are
+not persisted. If a stored response chain contains Aether PII sentinels, Aether
+rejects cross-connection continuation rather than risk exposing those
+sentinels without the original restore mapping. Start a new response with the
+complete required context in that case.
+
+If a continuation on the same lane fails (`4xx` or `5xx`), the service evicts
+the referenced `previous_response_id` from the connection-local cache. Aether
+only supports the implicit default lane, so this same-lane rule applies to all
+continuations it currently accepts. The upstream service preserves a shared
+parent when a cross-lane fork fails, but Aether does not yet expose that named
+lane behavior.
+
+The continuation must keep the model selected for the response chain. Aether
+rejects a model change with status `409` and code
+`responses_continuation_model_change_unsupported`.
 
 ## Compaction and creating new responses
 
@@ -105,7 +169,7 @@ When you enable server-side compaction (`context_management` with `compact_thres
 
 ### Standalone `/responses/compact`
 
-The standalone [`/responses/compact` endpoint](https://developers.openai.com/api/docs/api-reference/responses/compact) returns a new compacted input window, not a response ID. After compaction, create a new response on your WebSocket connection using the compacted window as `input` (plus the next user/tool items).
+The standalone [`/responses/compact` endpoint](https://developers.openai.com/api/reference/resources/responses/methods/compact) returns a new compacted input window, not a response ID. After compaction, create a new response on your WebSocket connection using the compacted window as `input` (plus the next user/tool items).
 
 Start a new chain by omitting `previous_response_id` or setting it to `null`. Pass the compacted output as-is; do not prune the returned window.
 
@@ -141,8 +205,9 @@ ws.send(
 ## Connection behavior and limits
 
 - Server events and ordering match the existing Responses streaming event model.
-- A single WebSocket connection can receive multiple `response.create` messages, but it runs them sequentially (one in-flight response at a time).
-- No multiplexing support today. Use multiple connections if you need parallel runs.
+- A single Aether WebSocket connection can receive multiple `response.create` messages over its lifetime, but the client must wait for a terminal event before sending the next one. Aether does not queue overlapping creates and returns `response_already_in_progress` while a turn is active.
+- Named `stream_id` multiplexing is not exposed by Aether yet. Use multiple connections if you need parallel runs.
+- The upstream OpenAI service allows at most 16 active/in-flight responses on one connection; additional `response.create` events are queued. It also allows at most 32 distinct named `stream_id` values per connection, and the implicit default lane does not count toward that 32-lane limit. These describe upstream multiplexing limits, not capabilities exposed by Aether's current single-lane bridge.
 - Connection duration is limited to 60 minutes. Reconnect when the limit is reached.
 - Aether binds each upstream WebSocket to one selected provider key. A provider must explicitly enable the standard Responses WebSocket capability and expose an `openai:responses` endpoint before it is eligible for this bridge.
 - The Codex adapter additionally watches Codex quota events. A `usage_limit_reached` terminal error immediately marks the bound account unavailable. If the client has not received a standard `response.*` event and the request has no `previous_response_id`, Aether retries that one turn once on another eligible key without closing the public socket.
@@ -151,10 +216,11 @@ ws.send(
 
 ## Reconnect and recover
 
-When a connection closes (or hits the 60-minute limit), open a new WebSocket connection and continue with one of these patterns:
+When a connection closes (or hits the 60-minute limit), open a new WebSocket
+connection and continue with one of these patterns:
 
-1. If your prior response is persisted (`store=true`) and you have a valid response ID, continue with `previous_response_id` and new input items.
-2. If you cannot continue the chain (for example, `store=false`/ZDR or `previous_response_not_found`), start a new response by setting `previous_response_id` to `null` (or omitting it) and send the full input context for the next turn.
+1. If the prior response is persisted (`store=true`) and its response ID remains valid, continue with `previous_response_id` and only the new input items.
+2. If the chain cannot be hydrated (for example, `store=false`/ZDR or `previous_response_not_found`), start a new response by setting `previous_response_id` to `null` (or omitting it) and send the complete input context needed for the next turn.
 3. If you compacted context with `/responses/compact`, use the returned compacted window as the base `input` for that new response, then append the latest user/tool items.
 
 ## Errors to handle
@@ -166,6 +232,7 @@ When a connection closes (or hits the 60-minute limit), open a new WebSocket con
   "type": "error",
   "status": 400,
   "error": {
+    "type": "invalid_request_error",
     "code": "previous_response_not_found",
     "message": "Previous response with id 'resp_abc' not found.",
     "param": "previous_response_id"
@@ -191,4 +258,5 @@ When a connection closes (or hits the 60-minute limit), open a new WebSocket con
 
 - [Conversation state](https://developers.openai.com/api/docs/guides/conversation-state)
 - [Streaming API responses](https://developers.openai.com/api/docs/guides/streaming-responses)
-- [Responses streaming events reference](https://developers.openai.com/api/docs/api-reference/responses-streaming)
+- [Responses streaming events reference](https://developers.openai.com/api/reference/resources/responses)
+- [Responses WebSocket events reference](https://developers.openai.com/api/reference/resources/responses/websocket-events)

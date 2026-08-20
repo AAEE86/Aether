@@ -2189,6 +2189,44 @@ mod tests {
     }
 
     #[test]
+    fn same_format_compact_keeps_strict_reasoning_replay_under_deepseek_policy() {
+        let request_body = json!({
+            "model": "deepseek-v4-flash",
+            "input": [{
+                "type": "reasoning",
+                "encrypted_content": "opaque-deepseek-state",
+                "content": [{"type": "reasoning_text", "text": "thinking"}]
+            }]
+        });
+        let output = build_same_format_provider_request_body_with_compatibility_report_and_reasoning_replay_policy(
+            SameFormatProviderRequestBodyInput {
+                body_json: &request_body,
+                mapped_model: "deepseek-v4-flash",
+                client_api_format: "openai:responses:compact",
+                provider_api_format: "openai:responses:compact",
+                source_model: Some("deepseek-v4-flash"),
+                family: SameFormatProviderFamily::Standard,
+                body_rules: None,
+                request_headers: None,
+                upstream_is_stream: false,
+                force_body_stream_field: false,
+                kiro_auth_config: None,
+                is_claude_code: false,
+                enable_model_directives: false,
+            },
+            aether_ai_formats::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        )
+        .expect("Compact body should keep the strict OpenAI replay contract");
+
+        assert_eq!(output.body["input"].as_array().map(Vec::len), Some(0));
+        assert!(output.compatibility_edits.iter().any(|edit| {
+            edit.field == "input[].id"
+                && edit.action
+                    == SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite
+        }));
+    }
+
+    #[test]
     fn same_format_stream_policy_wins_after_body_rules() {
         let body_rules = json!([
             {"action":"set","path":"stream","value":true}

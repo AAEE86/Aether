@@ -40,11 +40,13 @@ pub use formats::openai::request_contract::{
     finalize_openai_provider_request,
     finalize_openai_provider_request_with_codex_model_capabilities,
     finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy,
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation,
     validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
     OpenAiProviderRequestFinalization,
 };
 pub use formats::openai::responses::codex::{
-    build_codex_model_catalog_metadata, bundled_codex_model_cards, effective_codex_model_cards,
+    build_codex_model_catalog_metadata, bundled_codex_model_cards,
+    codex_responses_lite_tool_is_client_executed, effective_codex_model_cards,
     parse_codex_auth_identity, project_codex_catalog_model_card,
     resolve_codex_responses_model_capabilities, CodexAuthIdentity, CodexResponsesModelCapabilities,
     CODEX_CLIENT_ORIGINATOR, CODEX_CLIENT_USER_AGENT, CODEX_CLIENT_VERSION,
