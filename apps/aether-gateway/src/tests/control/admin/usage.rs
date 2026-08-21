@@ -13,7 +13,7 @@ use aether_data_contracts::repository::candidates::{
     RequestCandidateStatus, StoredRequestCandidate,
 };
 use aether_data_contracts::repository::usage::{StoredRequestUsageAudit, UsageBodyCaptureState};
-use axum::body::{Body, Bytes};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::routing::{any, get, post};
 use axum::{extract::Request, Router};
 use http::{HeaderMap, HeaderValue, StatusCode};
@@ -2171,6 +2171,82 @@ async fn gateway_handles_admin_usage_detail_locally_with_trusted_admin_principal
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_admin_usage_detail_preserves_live_websocket_session_metadata() {
+    let live_session = json!({
+        "schema_version": "1",
+        "transport": "websocket",
+        "mode": "direct",
+        "state": "closed",
+        "client_frames": 3,
+        "upstream_frames": 5,
+    });
+    let realtime_session = json!({
+        "schema_version": "1",
+        "transport": "websocket",
+        "usage_state": "authoritative",
+        "input_audio_tokens": 11,
+        "output_audio_tokens": 6,
+    });
+    let mut usage = sample_usage_row(
+        "usage-live-detail",
+        "req-live-detail",
+        None,
+        None,
+        None,
+        "OpenAI",
+        "gpt-live",
+        "completed",
+        0,
+        0,
+        0.0,
+        0.0,
+        DAY_1_UNIX_SECS,
+    );
+    usage.request_type = Some("live".to_string());
+    usage.api_format = Some("codex:live".to_string());
+    usage.api_family = Some("codex".to_string());
+    usage.endpoint_kind = Some("live".to_string());
+    usage.endpoint_api_format = Some("codex:live".to_string());
+    usage.provider_api_family = Some("codex".to_string());
+    usage.provider_endpoint_kind = Some("live".to_string());
+    usage.is_stream = true;
+    usage.request_metadata = Some(json!({
+        "websocket_mode": true,
+        "websocket_transport": "codex_live_direct",
+        "usage_available": false,
+        "usage_pricing_available": false,
+        "live_session": live_session,
+        "realtime_session": realtime_session,
+    }));
+
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(Arc::new(
+            InMemoryUsageReadRepository::seed(vec![usage]),
+        )));
+    let response = local_admin_usage_response(
+        &state,
+        http::Method::GET,
+        "/api/admin/usage/usage-live-detail?include_bodies=false",
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("usage detail body should be readable");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&body).expect("usage detail body should be JSON");
+    assert_eq!(payload["is_websocket"], true);
+    assert_eq!(payload["websocket_transport"], "codex_live_direct");
+    assert_eq!(payload["live_session"], live_session);
+    assert_eq!(payload["realtime_session"], realtime_session);
+    assert_eq!(payload["metadata"]["live_session"], live_session);
+    assert_eq!(payload["metadata"]["realtime_session"], realtime_session);
 }
 
 #[tokio::test]

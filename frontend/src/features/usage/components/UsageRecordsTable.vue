@@ -150,13 +150,13 @@
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__all__">
-              全部状态
+              全部类型
             </SelectItem>
             <SelectItem value="stream">
-              流式
+              HTTP 流式
             </SelectItem>
             <SelectItem value="standard">
-              标准
+              HTTP 标准
             </SelectItem>
             <SelectItem value="websocket">
               WebSocket (WS)
@@ -287,7 +287,7 @@
                 :title="getWebSocketTransportTitle(record)"
                 class="whitespace-nowrap border-sky-500/50 text-sky-600 dark:text-sky-400 text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
               >
-                {{ getWebSocketTransportLabel(record) }}
+                WS
               </Badge>
               <Badge
                 v-else-if="getStreamModeSegments(record).hasConversion"
@@ -878,7 +878,7 @@
               :title="getWebSocketTransportTitle(record)"
               class="whitespace-nowrap border-sky-500/50 text-sky-600 dark:text-sky-400"
             >
-              {{ getWebSocketTransportLabel(record) }}
+              WS
             </Badge>
             <Badge
               v-else-if="getStreamModeSegments(record).hasConversion"
@@ -1116,10 +1116,7 @@ import { API_FORMAT_ORDER, formatApiFormat } from '@/api/endpoints/types/api-for
 import { formatClientFamily } from '@/features/usage/utils/clientFamily'
 import { formatServiceTierFact } from '../utils/service-tier'
 import { isCyberPolicyError } from '../utils/cyberError'
-import {
-  formatUsageWebSocketTransportLabel as getWebSocketTransportLabel,
-  formatUsageWebSocketTransportTitle as getWebSocketTransportTitle,
-} from '../utils/websocketTransport'
+import { formatUsageWebSocketTransportTitle as getWebSocketTransportTitle } from '../utils/websocketTransport'
 import type { DateRangeParams, UsageRecord } from '../types'
 import { MultiSelect, TimeRangePicker } from '@/components/common'
 import type { MultiSelectOption } from '@/components/common/MultiSelect.vue'
@@ -1364,9 +1361,9 @@ const apiFormatFilterOptions = computed<FilterOption[]>(() => [
 ])
 
 const statusFilterOptions: FilterOption[] = [
-  { value: '__all__', label: '全部状态' },
-  { value: 'stream', label: '流式' },
-  { value: 'standard', label: '标准' },
+  { value: '__all__', label: '全部类型' },
+  { value: 'stream', label: 'HTTP 流式' },
+  { value: 'standard', label: 'HTTP 标准' },
   { value: 'websocket', label: 'WebSocket (WS)' },
   { value: 'active', label: '活跃' },
   { value: 'failed', label: '失败' },
@@ -1620,7 +1617,7 @@ function getApiFormatTooltip(record: UsageRecord): string {
     return `用户请求格式: ${displayFormat}\n端点原生格式: ${endpointDisplayFormat}\n${conversionType}`
   }
 
-  return record.api_format
+  return displayFormat
 }
 
 // 获取实际使用的模型（优先 target_model，其次列表接口下发的 model_version）

@@ -61,11 +61,11 @@ describe('api format display helpers', () => {
     expect(apiFormatPermissionCovers('openai:responses:compact', 'openai:responses')).toBe(false)
   })
 
-  it('keeps public Realtime and private Codex Live formats distinct', () => {
+  it('presents the private Codex Live protocol as OpenAI Live while keeping formats distinct', () => {
     expect(formatApiFormat(API_FORMATS.OPENAI_REALTIME)).toBe('OpenAI Realtime')
     expect(formatApiFormatShort(API_FORMATS.OPENAI_REALTIME)).toBe('ORT')
-    expect(formatApiFormat(API_FORMATS.CODEX_LIVE)).toBe('Codex Live')
-    expect(formatApiFormatShort(API_FORMATS.CODEX_LIVE)).toBe('CL')
+    expect(formatApiFormat(API_FORMATS.CODEX_LIVE)).toBe('OpenAI Live')
+    expect(formatApiFormatShort(API_FORMATS.CODEX_LIVE)).toBe('OL')
     expect(apiFormatPermissionCovers('openai:realtime', 'openai:realtime')).toBe(true)
     expect(apiFormatPermissionCovers('codex:live', 'codex:live')).toBe(true)
     expect(apiFormatPermissionCovers('openai:responses', 'openai:realtime')).toBe(false)

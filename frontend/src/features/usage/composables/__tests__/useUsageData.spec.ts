@@ -143,11 +143,12 @@ describe('useUsageData', () => {
 
     await loadRecords(
       { page: 2, pageSize: 20 },
-      { status: 'websocket' },
+      { api_format: 'codex:live', status: 'websocket' },
       { preset: 'today', tz_offset_minutes: 0 },
     )
 
     expect(meGetUsageMock).toHaveBeenCalledWith(expect.objectContaining({
+      api_format: 'codex:live',
       status: 'websocket',
       limit: 20,
       offset: 20,

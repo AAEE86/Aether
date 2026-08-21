@@ -42,12 +42,14 @@
                 <Badge
                   v-if="detail?.status_code === 200"
                   variant="success"
+                  data-request-lifecycle-status
                 >
                   {{ detail.status_code }}
                 </Badge>
                 <Badge
                   v-else-if="detail"
                   variant="destructive"
+                  data-request-lifecycle-status
                 >
                   {{ detail.status_code }}
                 </Badge>
@@ -58,27 +60,29 @@
                   :title="formatUsageWebSocketTransportTitle(detail)"
                   class="border-sky-500/50 text-xs text-sky-600 dark:text-sky-400"
                 >
-                  {{ formatUsageWebSocketTransportLabel(detail) }}
+                  WS
                 </Badge>
                 <Badge
                   v-else-if="detail && resolveUsageStreamLabelSegments(detail).hasConversion"
+                  data-usage-transport="http"
                   :variant="streamBadgeVariant(resolveUsageStreamLabelSegments(detail).client === '流式')"
                   :class="streamBadgeVariant(resolveUsageStreamLabelSegments(detail).client === '流式') === 'secondary'
                     ? 'text-xs inline-flex items-center gap-1'
                     : 'text-xs inline-flex items-center gap-1 border-border/60 text-muted-foreground'"
                 >
-                  <span>{{ resolveUsageStreamLabelSegments(detail).client }}</span>
+                  <span>HTTP {{ resolveUsageStreamLabelSegments(detail).client }}</span>
                   <span class="opacity-60">→</span>
-                  <span>{{ resolveUsageStreamLabelSegments(detail).upstream }}</span>
+                  <span>HTTP {{ resolveUsageStreamLabelSegments(detail).upstream }}</span>
                 </Badge>
                 <Badge
                   v-else-if="detail"
+                  data-usage-transport="http"
                   :variant="streamBadgeVariant(isUsageUpstreamStream(detail))"
                   :class="streamBadgeVariant(isUsageUpstreamStream(detail)) === 'secondary'
                     ? 'text-xs'
                     : 'text-xs border-border/60 text-muted-foreground'"
                 >
-                  {{ formatUsageStreamLabel(detail) }}
+                  HTTP {{ formatUsageStreamLabel(detail) }}
                 </Badge>
               </div>
               <div class="flex items-center gap-1 shrink-0">
@@ -905,10 +909,7 @@ import {
   resolveDisplayRequestStatus,
   resolveUsageStreamLabelSegments,
 } from '../utils/status'
-import {
-  formatUsageWebSocketTransportLabel,
-  formatUsageWebSocketTransportTitle,
-} from '../utils/websocketTransport'
+import { formatUsageWebSocketTransportTitle } from '../utils/websocketTransport'
 import { isCyberPolicyError } from '../utils/cyberError'
 import {
   mergeUsageRecordErrorMessage,

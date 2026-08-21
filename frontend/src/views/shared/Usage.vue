@@ -170,6 +170,11 @@ import {
   normalizeRequestStatus,
   resolveDisplayRequestStatus,
 } from '@/features/usage/utils/status'
+import { matchesUsageRecordSearch } from '@/features/usage/utils/recordSearch'
+import {
+  isUserLocalOnlyRecordStatus,
+  shouldUseServerUserRecordFilters,
+} from '@/features/usage/utils/recordFilterPolicy'
 import type { DateRangeParams, FilterStatusValue, RequestStatus, UsageRecord } from '@/features/usage/types'
 import type { UserOption } from '@/features/usage/components/UsageRecordsTable.vue'
 import { log } from '@/utils/logger'
@@ -390,6 +395,10 @@ const filteredRecords = computed(() => {
     : [...currentRecords.value]
 
   if (!isAdminPage.value) {
+    if (isUserLocalOnlyRecordStatus(filterStatus.value) && filterSearch.value.trim()) {
+      records = records.filter(record => matchesUsageRecordSearch(record, filterSearch.value))
+    }
+
     if (filterModel.value !== '__all__') {
       records = records.filter(record => record.model === filterModel.value)
     }
@@ -840,9 +849,21 @@ onUnmounted(() => {
   stopGlobalAutoRefresh()
 })
 
-// 用户页面的前端分页（后端一次性返回所有记录，前端分页+筛选）
+// Retry/fallback are derived from the locally loaded records and are not accepted by the
+// normal-user records API. Keep those statuses entirely local, including when combined with
+// search/API-format filters, so an unsupported status never produces a misleading server total.
+// 普通用户的 API 格式/传输类型/搜索筛选由后端执行，避免只筛选当前已加载页。
+// 模型及后端不支持的 retry/fallback 筛选仍保持现有的本地分页语义。
+const userUsesServerRecordFilters = computed(() => !isAdminPage.value && (
+  shouldUseServerUserRecordFilters({
+    search: filterSearch.value,
+    apiFormat: filterApiFormat.value,
+    status: filterStatus.value,
+  })
+))
+
 const paginatedRecords = computed(() => {
-  if (!isAdminPage.value) {
+  if (!isAdminPage.value && !userUsesServerRecordFilters.value) {
     const start = (currentPage.value - 1) * pageSize.value
     const end = start + pageSize.value
     return filteredRecords.value.slice(start, end)
@@ -852,7 +873,7 @@ const paginatedRecords = computed(() => {
 
 // 用户页面使用前端筛选后的总数，管理员页面使用后端返回的总数
 const effectiveTotalRecords = computed(() => {
-  if (!isAdminPage.value) {
+  if (!isAdminPage.value && !userUsesServerRecordFilters.value) {
     return filteredRecords.value.length
   }
   return totalRecords.value
@@ -930,26 +951,26 @@ async function handleTimeRangeChange(value: DateRangeParams) {
     return
   }
   await loadStats(timeRange.value)
-  // 用户页面：loadStats 已包含记录加载
+  if (userUsesServerRecordFilters.value) {
+    await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  }
 }
 
 // 处理分页变化
 async function handlePageChange(page: number) {
   currentPage.value = page
-  if (isAdminPage.value) {
+  if (isAdminPage.value || userUsesServerRecordFilters.value) {
     await loadRecords({ page, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
   }
-  // 用户页面使用前端分页，无需重新请求
 }
 
 // 处理每页大小变化
 async function handlePageSizeChange(size: number) {
   pageSize.value = size
   currentPage.value = 1  // 重置到第一页
-  if (isAdminPage.value) {
+  if (isAdminPage.value || userUsesServerRecordFilters.value) {
     await loadRecords({ page: 1, pageSize: size }, getCurrentFilters(), timeRange.value)
   }
-  // 用户页面使用前端分页，无需重新请求
 }
 
 // 获取当前筛选参数
@@ -973,9 +994,11 @@ async function handleFilterSearchChange(value: string) {
 
   if (isAdminPage.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  } else if (userUsesServerRecordFilters.value) {
+    await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  } else {
+    await loadStats(timeRange.value)
   }
-  // 用户页面：search 需要重新从后端拉取数据（后端支持 search 参数）
-  // 但通过 filteredRecords 做前端过滤已覆盖，无需额外请求
 }
 
 async function handleFilterUserChange(value: string) {
@@ -1012,8 +1035,10 @@ async function handleFilterApiFormatChange(value: string) {
   filterApiFormat.value = value
   currentPage.value = 1
 
-  if (isAdminPage.value) {
+  if (isAdminPage.value || userUsesServerRecordFilters.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -1021,8 +1046,10 @@ async function handleFilterStatusChange(value: string) {
   filterStatus.value = value as FilterStatusValue
   currentPage.value = 1
 
-  if (isAdminPage.value) {
+  if (isAdminPage.value || userUsesServerRecordFilters.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -1041,7 +1068,7 @@ async function refreshData() {
   if (refreshInFlight) return refreshInFlight
 
   refreshInFlight = (async () => {
-    if (isAdminPage.value) {
+    if (isAdminPage.value || userUsesServerRecordFilters.value) {
       await loadRecords(
         { page: currentPage.value, pageSize: pageSize.value },
         getCurrentFilters(),
@@ -1051,7 +1078,6 @@ async function refreshData() {
     }
 
     await loadStats(timeRange.value)
-    // 用户页面：loadStats 已包含记录加载
   })()
 
   try {
