@@ -1,11 +1,12 @@
 //! Opaque direct and WebRTC-sideband WebSocket relay for Codex Live.
 
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
 use axum::http::StatusCode;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 use wreq::ws::message::Message as WreqWsMessage;
@@ -16,16 +17,20 @@ use crate::handlers::proxy::websocket::ingress::{
 };
 use crate::handlers::proxy::websocket::responses::ResponsesWebSocketTurnAdmission;
 use crate::handlers::proxy::websocket::session::{
-    wait_for_optional_deadline, CLOSE_INTERNAL_ERROR, CLOSE_POLICY_VIOLATION, CLOSE_TRY_AGAIN,
+    wait_for_optional_deadline, CLOSE_POLICY_VIOLATION, CLOSE_TRY_AGAIN,
     LIVE_WEBSOCKET_SESSION_LIMITS, WEBSOCKET_LOG_TRANSPORT,
 };
 use crate::handlers::proxy::websocket::transport::{
     client_message_to_upstream, close_client_socket, close_upstream_socket,
     connect_upstream_websocket, send_client_message, send_upstream_message,
-    upstream_message_to_client, UpstreamWebSocketErrorCodes,
+    upstream_message_to_client, websocket_relay_frame_queue, UpstreamWebSocketErrorCodes,
+    WebSocketRelayPumpControl, WebSocketRelayQueueError, WebSocketWriteError,
 };
 use crate::{AppState, GatewayError};
 
+use super::audit::{
+    LiveAuditTransport, LiveSessionAudit, LiveSessionDisposition, LiveSessionTerminal,
+};
 use super::live_usage_accounting_is_safe;
 use super::planner::{
     build_live_stream_admission_attempt, direct_live_websocket_url, live_sideband_url,
@@ -70,72 +75,85 @@ enum LiveRelayAdmissionError {
     Gateway(GatewayError),
 }
 
+struct LiveRelayAdmission {
+    capacity: ResponsesWebSocketTurnAdmission,
+    audit: LiveSessionAudit,
+}
+
+struct LiveRelayAdmissionFailure {
+    error: LiveRelayAdmissionError,
+    audit: Option<LiveSessionAudit>,
+}
+
 impl LiveRelayAdmissionError {
-    fn kind(&self) -> &'static str {
+    fn status(&self) -> StatusCode {
         match self {
-            Self::PlanUnavailable => "plan_unavailable",
-            Self::BalanceRejected => "balance_rejected",
-            Self::Gateway(error) => gateway_error_kind(error),
+            Self::PlanUnavailable => StatusCode::BAD_GATEWAY,
+            Self::BalanceRejected | Self::Gateway(GatewayError::AdmissionTimeout { .. }) => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+            Self::Gateway(GatewayError::Client { status, .. }) => *status,
+            Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => {
+                StatusCode::GATEWAY_TIMEOUT
+            }
+            Self::Gateway(GatewayError::UpstreamUnavailable { .. })
+            | Self::Gateway(GatewayError::ControlUnavailable { .. }) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            Self::Gateway(GatewayError::Internal(_)) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
-    fn response(&self) -> (u16, &'static str, &'static str, u16, &'static str) {
+    fn client_message(&self) -> &'static str {
         match self {
-            Self::PlanUnavailable => (
-                502,
-                "codex_live_admission_plan_unavailable",
-                "Codex Live provider admission could not be prepared",
-                CLOSE_INTERNAL_ERROR,
-                "Live admission plan unavailable",
-            ),
-            Self::BalanceRejected => (
-                429,
-                "codex_live_balance_rejected",
-                "Codex Live request capacity is unavailable",
-                CLOSE_POLICY_VIOLATION,
-                "Live request capacity unavailable",
-            ),
-            Self::Gateway(GatewayError::AdmissionTimeout { .. }) => (
-                429,
-                "codex_live_admission_timeout",
-                "Gateway capacity is busy; retry this Live connection",
-                CLOSE_TRY_AGAIN,
-                "Live admission timeout",
-            ),
-            Self::Gateway(GatewayError::Client { status, .. }) => (
-                status.as_u16(),
-                "codex_live_request_rejected",
-                "Codex Live request was not allowed",
-                CLOSE_POLICY_VIOLATION,
-                "Live request rejected",
-            ),
-            Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => (
-                504,
-                "codex_live_admission_planning_timeout",
-                "Codex Live admission planning timed out",
-                CLOSE_TRY_AGAIN,
-                "Live admission planning timeout",
-            ),
-            Self::Gateway(_) => (
-                500,
-                "codex_live_admission_failed",
-                "Gateway could not admit this Codex Live connection",
-                CLOSE_INTERNAL_ERROR,
-                "Live admission failed",
-            ),
+            Self::PlanUnavailable => "Codex Live provider admission could not be prepared",
+            Self::BalanceRejected => "Codex Live request capacity is unavailable",
+            Self::Gateway(GatewayError::AdmissionTimeout { .. }) => {
+                "Gateway capacity is busy; retry this Live connection"
+            }
+            Self::Gateway(GatewayError::Client { .. }) => "Codex Live request was not allowed",
+            Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => {
+                "Codex Live admission planning timed out"
+            }
+            Self::Gateway(_) => "Gateway could not admit this Codex Live connection",
+        }
+    }
+
+    fn termination(&self) -> &'static str {
+        match self {
+            Self::PlanUnavailable => "admission_plan_unavailable",
+            Self::BalanceRejected => "balance_rejected",
+            Self::Gateway(GatewayError::AdmissionTimeout { .. }) => "admission_timeout",
+            Self::Gateway(GatewayError::Client { .. }) => "request_rejected",
+            Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => {
+                "admission_planning_timeout"
+            }
+            Self::Gateway(GatewayError::UpstreamUnavailable { .. }) => "upstream_unavailable",
+            Self::Gateway(GatewayError::ControlUnavailable { .. }) => "control_unavailable",
+            Self::Gateway(GatewayError::Internal(_)) => "admission_failed",
         }
     }
 }
 
 pub(super) enum PreparedLiveWebSocket {
-    Direct { client_model: String },
+    Direct(PreparedLiveRelay),
     Sideband(PreparedLiveSideband),
 }
 
+pub(super) struct PreparedLiveRelay {
+    upstream: wreq::ws::WebSocket,
+    admission: ResponsesWebSocketTurnAdmission,
+    audit: LiveSessionAudit,
+    pool_lease: LivePoolLeaseGuard,
+    provider_id: String,
+    endpoint_id: String,
+    key_id: String,
+    provider_model: String,
+}
+
 pub(super) struct PreparedLiveSideband {
-    call_id: String,
-    binding: LiveCallBinding,
-    lease: LiveSidebandLease,
+    relay: PreparedLiveRelay,
+    sideband_lease: LiveSidebandLease,
 }
 
 pub(super) struct LiveWebSocketPreflightRejection {
@@ -167,33 +185,52 @@ pub(super) async fn prepare_live_websocket(
             trace_id = %context.trace_id,
             "Codex Live rejected a finite-balance principal before WebSocket upgrade because Frameless usage is unavailable"
         );
-        return Err(LiveWebSocketPreflightRejection {
-            status: StatusCode::NOT_IMPLEMENTED,
-            message: "Codex Live is unavailable for finite-balance keys until Frameless usage settlement is supported",
-        });
+        return Err(preflight_rejection(
+            context,
+            "unknown",
+            StatusCode::NOT_IMPLEMENTED,
+            "usage_settlement_unavailable",
+            "Codex Live is unavailable for finite-balance keys until Frameless usage settlement is supported",
+        ));
     }
     if context.uri.path() == "/v1/live" {
-        let client_model = direct_model_from_query(context.uri.query()).map_err(|error| {
-            LiveWebSocketPreflightRejection {
-                status: error.status_code(),
-                message: error.client_message(),
+        let client_model = match direct_model_from_query(context.uri.query()) {
+            Ok(model) => model,
+            Err(error) => {
+                return Err(preflight_rejection(
+                    context,
+                    "direct",
+                    error.status_code(),
+                    error.code(),
+                    error.client_message(),
+                ));
             }
-        })?;
-        return Ok(PreparedLiveWebSocket::Direct { client_model });
+        };
+        return prepare_direct_live_websocket(state, context, client_model.as_str())
+            .await
+            .map(PreparedLiveWebSocket::Direct);
     }
-    let call_id =
-        call_id_from_path(context.uri.path()).map_err(|error| LiveWebSocketPreflightRejection {
-            status: error.status_code(),
-            message: error.client_message(),
-        })?;
-    let auth = context
-        .decision
-        .auth_context
-        .as_ref()
-        .ok_or(LiveWebSocketPreflightRejection {
-            status: StatusCode::UNAUTHORIZED,
-            message: "Authentication required",
-        })?;
+    let call_id = match call_id_from_path(context.uri.path()) {
+        Ok(call_id) => call_id,
+        Err(error) => {
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                error.status_code(),
+                error.code(),
+                error.client_message(),
+            ));
+        }
+    };
+    let Some(auth) = context.decision.auth_context.as_ref() else {
+        return Err(preflight_rejection(
+            context,
+            "sideband",
+            StatusCode::UNAUTHORIZED,
+            "authentication_required",
+            "Authentication required",
+        ));
+    };
     let registry = LiveCallRegistry::new(std::sync::Arc::clone(&state.runtime_state));
     let lookup = tokio::time::timeout(
         SIDEBAND_LOOKUP_TIMEOUT,
@@ -216,10 +253,13 @@ pub(super) async fn prepare_live_websocket(
                 trace_id = %context.trace_id,
                 "Codex Live sideband binding was not found"
             );
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::NOT_FOUND,
-                message: "Codex Live call binding was not found",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::NOT_FOUND,
+                "sideband_binding_missing",
+                "Codex Live call binding was not found",
+            ));
         }
         Ok(Ok(LiveCallLookup::Expired)) => {
             info!(
@@ -231,26 +271,236 @@ pub(super) async fn prepare_live_websocket(
                 trace_id = %context.trace_id,
                 "Codex Live sideband binding has expired"
             );
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::GONE,
-                message: "Codex Live call binding has expired",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::GONE,
+                "sideband_binding_expired",
+                "Codex Live call binding has expired",
+            ));
         }
         Ok(Err(error)) => {
             log_registry_error(context, &error);
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: "Codex Live sideband binding is temporarily unavailable",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sideband_binding_unavailable",
+                "Codex Live sideband binding is temporarily unavailable",
+            ));
         }
         Err(_) => {
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: "Timed out loading the Codex Live sideband binding",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sideband_binding_lookup_timeout",
+                "Timed out loading the Codex Live sideband binding",
+            ));
         }
     };
-    let lease = match tokio::time::timeout(
+    prepare_sideband_live_websocket(state, context, call_id, binding)
+        .await
+        .map(PreparedLiveWebSocket::Sideband)
+}
+
+async fn prepare_direct_live_websocket(
+    state: &AppState,
+    context: &WebSocketRequestContext,
+    client_model: &str,
+) -> Result<PreparedLiveRelay, LiveWebSocketPreflightRejection> {
+    let started_at = Instant::now();
+    let candidate = match plan_live_candidate(
+        state,
+        context.trace_id.as_str(),
+        &context.decision,
+        &context.headers,
+        &context.remote_addr,
+        client_model,
+        None,
+    )
+    .await
+    {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => {
+            return Err(preflight_rejection(
+                context,
+                "direct",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "candidate_unavailable",
+                "No eligible Codex Live provider mapping is available",
+            ));
+        }
+        Err(error) => {
+            warn!(
+                target: LIVE_LOG_TARGET,
+                event_name = "codex_live_planning_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                mode = "direct",
+                error_kind = gateway_error_kind(&error),
+                "Codex Live direct candidate planning failed"
+            );
+            return Err(preflight_rejection(
+                context,
+                "direct",
+                gateway_error_status(&error),
+                "planning_failed",
+                "Codex Live provider planning failed",
+            ));
+        }
+    };
+    let pool_lease = LivePoolLeaseGuard::new(state, &candidate);
+    let upstream_url = match direct_live_websocket_url(&candidate) {
+        Ok(url) => url,
+        Err(error) => {
+            pool_lease.release().await;
+            return Err(preflight_rejection(
+                context,
+                "direct",
+                error.status_code(),
+                error.code(),
+                error.client_message(),
+            ));
+        }
+    };
+    let LiveRelayAdmission {
+        capacity: admission,
+        audit,
+    } = match acquire_live_relay_admission(
+        state,
+        context,
+        &candidate,
+        upstream_url.clone(),
+        LiveAuditTransport::DirectWebSocket,
+    )
+    .await
+    {
+        Ok(admission) => admission,
+        Err(failure) => {
+            pool_lease.release().await;
+            let status = failure.error.status();
+            let termination = failure.error.termination();
+            return Err(audited_preflight_rejection(
+                state,
+                context,
+                "direct",
+                status,
+                termination,
+                failure.error.client_message(),
+                started_at,
+                failure.audit,
+            )
+            .await);
+        }
+    };
+    let provider_id = candidate.execution.provider_id.clone().unwrap_or_default();
+    let endpoint_id = candidate.execution.endpoint_id.clone().unwrap_or_default();
+    let key_id = candidate.execution.key_id.clone().unwrap_or_default();
+    let provider_model = candidate.provider_model.clone();
+    if !pool_lease.is_healthy() {
+        admission.release().await;
+        pool_lease.release().await;
+        return Err(audited_preflight_rejection(
+            state,
+            context,
+            "direct",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pool_key_lease_lost",
+            "Codex Live provider ownership was lost",
+            started_at,
+            Some(audit),
+        )
+        .await);
+    }
+    let mut execution = candidate.execution;
+    execution.upstream_url = Some(upstream_url);
+    let mut upstream = match connect_upstream_websocket(
+        &execution,
+        LIVE_WEBSOCKET_SESSION_LIMITS,
+        LIVE_UPSTREAM_ERRORS,
+    )
+    .await
+    {
+        Ok(connection) => connection.socket,
+        Err(error_code) => {
+            warn!(
+                target: LIVE_LOG_TARGET,
+                event_name = "codex_live_upstream_connect_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                provider_id = %provider_id,
+                endpoint_id = %endpoint_id,
+                key_id = %key_id,
+                mode = "direct",
+                error_code,
+                "Codex Live direct upstream connection failed"
+            );
+            admission.release().await;
+            pool_lease.release().await;
+            return Err(audited_preflight_rejection(
+                state,
+                context,
+                "direct",
+                StatusCode::BAD_GATEWAY,
+                "upstream_connect_failed",
+                "Codex Live upstream WebSocket connection failed",
+                started_at,
+                Some(audit),
+            )
+            .await);
+        }
+    };
+    if !pool_lease.is_healthy() {
+        close_upstream_socket(&mut upstream, None).await;
+        admission.release().await;
+        pool_lease.release().await;
+        return Err(audited_preflight_rejection(
+            state,
+            context,
+            "direct",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pool_key_lease_lost",
+            "Codex Live provider ownership was lost",
+            started_at,
+            Some(audit),
+        )
+        .await);
+    }
+    Ok(PreparedLiveRelay {
+        upstream,
+        admission,
+        audit,
+        pool_lease,
+        provider_id,
+        endpoint_id,
+        key_id,
+        provider_model,
+    })
+}
+
+async fn prepare_sideband_live_websocket(
+    state: &AppState,
+    context: &WebSocketRequestContext,
+    call_id: String,
+    binding: LiveCallBinding,
+) -> Result<PreparedLiveSideband, LiveWebSocketPreflightRejection> {
+    let started_at = Instant::now();
+    let Some(auth) = context.decision.auth_context.as_ref() else {
+        return Err(preflight_rejection(
+            context,
+            "sideband",
+            StatusCode::UNAUTHORIZED,
+            "authentication_required",
+            "Authentication required",
+        ));
+    };
+    let registry = LiveCallRegistry::new(std::sync::Arc::clone(&state.runtime_state));
+    let mut sideband_lease = match tokio::time::timeout(
         SIDEBAND_LOOKUP_TIMEOUT,
         registry.acquire_sideband_attachment(
             auth.user_id.as_str(),
@@ -274,30 +524,275 @@ pub(super) async fn prepare_live_websocket(
                 key_id = %binding.pinned_candidate().key_id(),
                 "Codex Live call already has an active sideband attachment"
             );
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::CONFLICT,
-                message: "Codex Live call already has an active sideband connection",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::CONFLICT,
+                "sideband_attachment_conflict",
+                "Codex Live call already has an active sideband connection",
+            ));
         }
         Ok(Err(error)) => {
             log_sideband_lease_error(context, &error, "acquire");
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: "Codex Live sideband ownership is temporarily unavailable",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sideband_attachment_unavailable",
+                "Codex Live sideband ownership is temporarily unavailable",
+            ));
         }
         Err(_) => {
-            return Err(LiveWebSocketPreflightRejection {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: "Timed out acquiring Codex Live sideband ownership",
-            });
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sideband_attachment_timeout",
+                "Timed out acquiring Codex Live sideband ownership",
+            ));
         }
     };
-    Ok(PreparedLiveWebSocket::Sideband(PreparedLiveSideband {
-        call_id,
-        binding,
-        lease,
-    }))
+
+    let planned_candidate = while_sideband_lease_healthy(
+        &sideband_lease,
+        plan_live_candidate(
+            state,
+            context.trace_id.as_str(),
+            &context.decision,
+            &context.headers,
+            &context.remote_addr,
+            binding.client_model(),
+            Some(binding.pinned_candidate()),
+        ),
+    )
+    .await;
+    let candidate = match planned_candidate {
+        Err(loss) => {
+            release_sideband_lease(&mut sideband_lease, context).await;
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                sideband_loss_termination(loss),
+                sideband_loss_message(loss),
+            ));
+        }
+        Ok(Ok(Some(candidate))) if binding.matches_candidate(&candidate) => candidate,
+        Ok(Ok(Some(candidate))) => {
+            crate::orchestration::release_pool_key_lease_from_report_context(
+                state,
+                candidate.execution.report_context.as_ref(),
+            )
+            .await;
+            release_sideband_lease(&mut sideband_lease, context).await;
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::GONE,
+                "sideband_binding_changed",
+                "Codex Live call provider binding is no longer valid",
+            ));
+        }
+        Ok(Ok(None)) => {
+            release_sideband_lease(&mut sideband_lease, context).await;
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::GONE,
+                "sideband_binding_disabled",
+                "Codex Live call provider key or model is no longer available",
+            ));
+        }
+        Ok(Err(error)) => {
+            warn!(
+                target: LIVE_LOG_TARGET,
+                event_name = "codex_live_sideband_planning_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                error_kind = gateway_error_kind(&error),
+                "Codex Live sideband pinned candidate validation failed"
+            );
+            release_sideband_lease(&mut sideband_lease, context).await;
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                gateway_error_status(&error),
+                "planning_failed",
+                "Codex Live provider validation failed",
+            ));
+        }
+    };
+    let pool_lease = LivePoolLeaseGuard::new(state, &candidate);
+    let upstream_url = match live_sideband_url(&candidate, call_id.as_str()) {
+        Ok(url) => url,
+        Err(error) => {
+            release_sideband_lease(&mut sideband_lease, context).await;
+            pool_lease.release().await;
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                error.status_code(),
+                error.code(),
+                error.client_message(),
+            ));
+        }
+    };
+    let admission_result = while_sideband_lease_healthy(
+        &sideband_lease,
+        acquire_live_relay_admission(
+            state,
+            context,
+            &candidate,
+            upstream_url.clone(),
+            LiveAuditTransport::Sideband,
+        ),
+    )
+    .await;
+    let LiveRelayAdmission {
+        capacity: admission,
+        audit,
+    } = match admission_result {
+        Err(loss) => {
+            release_sideband_lease(&mut sideband_lease, context).await;
+            pool_lease.release().await;
+            return Err(preflight_rejection(
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                sideband_loss_termination(loss),
+                sideband_loss_message(loss),
+            ));
+        }
+        Ok(Ok(admission)) => admission,
+        Ok(Err(failure)) => {
+            release_sideband_lease(&mut sideband_lease, context).await;
+            pool_lease.release().await;
+            let status = failure.error.status();
+            let termination = failure.error.termination();
+            return Err(audited_preflight_rejection(
+                state,
+                context,
+                "sideband",
+                status,
+                termination,
+                failure.error.client_message(),
+                started_at,
+                failure.audit,
+            )
+            .await);
+        }
+    };
+    let provider_id = candidate.execution.provider_id.clone().unwrap_or_default();
+    let endpoint_id = candidate.execution.endpoint_id.clone().unwrap_or_default();
+    let key_id = candidate.execution.key_id.clone().unwrap_or_default();
+    let provider_model = candidate.provider_model.clone();
+    if !pool_lease.is_healthy() {
+        admission.release().await;
+        release_sideband_lease(&mut sideband_lease, context).await;
+        pool_lease.release().await;
+        return Err(audited_preflight_rejection(
+            state,
+            context,
+            "sideband",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pool_key_lease_lost",
+            "Codex Live provider ownership was lost",
+            started_at,
+            Some(audit),
+        )
+        .await);
+    }
+    let mut execution = candidate.execution;
+    execution.upstream_url = Some(upstream_url);
+    let upstream_connection = while_sideband_lease_healthy(
+        &sideband_lease,
+        connect_upstream_websocket(
+            &execution,
+            LIVE_WEBSOCKET_SESSION_LIMITS,
+            LIVE_UPSTREAM_ERRORS,
+        ),
+    )
+    .await;
+    let mut upstream = match upstream_connection {
+        Err(loss) => {
+            release_sideband_lease(&mut sideband_lease, context).await;
+            admission.release().await;
+            pool_lease.release().await;
+            return Err(audited_preflight_rejection(
+                state,
+                context,
+                "sideband",
+                StatusCode::SERVICE_UNAVAILABLE,
+                sideband_loss_termination(loss),
+                sideband_loss_message(loss),
+                started_at,
+                Some(audit),
+            )
+            .await);
+        }
+        Ok(Ok(connection)) => connection.socket,
+        Ok(Err(error_code)) => {
+            warn!(
+                target: LIVE_LOG_TARGET,
+                event_name = "codex_live_sideband_connect_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                provider_id = %provider_id,
+                endpoint_id = %endpoint_id,
+                key_id = %key_id,
+                error_code,
+                "Codex Live sideband upstream connection failed"
+            );
+            release_sideband_lease(&mut sideband_lease, context).await;
+            admission.release().await;
+            pool_lease.release().await;
+            return Err(audited_preflight_rejection(
+                state,
+                context,
+                "sideband",
+                StatusCode::BAD_GATEWAY,
+                "upstream_connect_failed",
+                "Codex Live sideband connection failed",
+                started_at,
+                Some(audit),
+            )
+            .await);
+        }
+    };
+    if !pool_lease.is_healthy() {
+        close_upstream_socket(&mut upstream, None).await;
+        admission.release().await;
+        release_sideband_lease(&mut sideband_lease, context).await;
+        pool_lease.release().await;
+        return Err(audited_preflight_rejection(
+            state,
+            context,
+            "sideband",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pool_key_lease_lost",
+            "Codex Live provider ownership was lost",
+            started_at,
+            Some(audit),
+        )
+        .await);
+    }
+    Ok(PreparedLiveSideband {
+        relay: PreparedLiveRelay {
+            upstream,
+            admission,
+            audit,
+            pool_lease,
+            provider_id,
+            endpoint_id,
+            key_id,
+            provider_model,
+        },
+        sideband_lease,
+    })
 }
 
 pub(super) async fn run_live_websocket(
@@ -309,8 +804,8 @@ pub(super) async fn run_live_websocket(
     let connection_log = WebSocketConnectionLog::new(&context, LIVE_CONNECTION_LOG_SPEC);
     connection_log.log_opened();
     match prepared {
-        PreparedLiveWebSocket::Direct { client_model } => {
-            run_direct(&mut client_socket, &state, &context, client_model).await
+        PreparedLiveWebSocket::Direct(prepared) => {
+            run_direct(&mut client_socket, &state, &context, prepared).await
         }
         PreparedLiveWebSocket::Sideband(prepared) => {
             run_sideband(&mut client_socket, &state, &context, prepared).await
@@ -322,15 +817,37 @@ async fn run_direct(
     client_socket: &mut WebSocket,
     state: &AppState,
     context: &WebSocketRequestContext,
-    client_model: String,
+    prepared: PreparedLiveRelay,
 ) {
-    if !live_usage_accounting_is_safe(&context.decision) {
-        reject_finite_balance_live(client_socket, context).await;
-        return;
-    }
+    let session_started_at = Instant::now();
+    let PreparedLiveRelay {
+        mut upstream,
+        admission,
+        audit,
+        pool_lease,
+        provider_id,
+        endpoint_id,
+        key_id,
+        provider_model,
+    } = prepared;
     let initial = match read_initial_session_update(client_socket).await {
         Ok(Some(initial)) => initial,
-        Ok(None) => return,
+        Ok(None) => {
+            close_upstream_socket(&mut upstream, None).await;
+            admission.release().await;
+            pool_lease.release().await;
+            audit
+                .finish(
+                    state,
+                    live_terminal_from_relay(
+                        "client_closed",
+                        elapsed_ms(session_started_at),
+                        RelayStats::default(),
+                    ),
+                )
+                .await;
+            return;
+        }
         Err(error) => {
             send_live_error(
                 client_socket,
@@ -349,158 +866,44 @@ async fn run_direct(
                 "invalid initial Live event",
             )
             .await;
-            return;
-        }
-    };
-    let candidate = match plan_live_candidate(
-        state,
-        context.trace_id.as_str(),
-        &context.decision,
-        &context.headers,
-        &context.remote_addr,
-        client_model.as_str(),
-        None,
-    )
-    .await
-    {
-        Ok(Some(candidate)) => candidate,
-        Ok(None) => {
-            send_live_error(
-                client_socket,
-                503,
-                "codex_live_candidate_unavailable",
-                "No eligible Codex Live provider mapping is available",
-            )
-            .await;
-            close_client_socket(client_socket, CLOSE_TRY_AGAIN, "Live provider unavailable").await;
-            return;
-        }
-        Err(error) => {
-            warn!(
-                target: LIVE_LOG_TARGET,
-                event_name = "codex_live_planning_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                error_kind = gateway_error_kind(&error),
-                "Codex Live direct candidate planning failed"
-            );
-            send_live_error(
-                client_socket,
-                500,
-                "codex_live_planning_failed",
-                "Codex Live provider planning failed",
-            )
-            .await;
-            close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, "Live planning failed").await;
-            return;
-        }
-    };
-    let lease = LivePoolLeaseGuard::new(state, &candidate);
-    let upstream_url = match direct_live_websocket_url(&candidate) {
-        Ok(url) => url,
-        Err(error) => {
-            lease.release().await;
-            send_live_error(
-                client_socket,
-                error.status_code().as_u16(),
-                error.code(),
-                error.client_message(),
-            )
-            .await;
-            close_client_socket(
-                client_socket,
-                CLOSE_POLICY_VIOLATION,
-                "Live auth unsupported",
-            )
-            .await;
-            return;
-        }
-    };
-    let admission = match acquire_live_relay_admission(
-        state,
-        context,
-        &candidate,
-        upstream_url.clone(),
-    )
-    .await
-    {
-        Ok(admission) => admission,
-        Err(error) => {
-            lease.release().await;
-            reject_live_relay_admission(client_socket, context, "direct", &error).await;
-            return;
-        }
-    };
-    let provider_id = candidate.execution.provider_id.clone().unwrap_or_default();
-    let endpoint_id = candidate.execution.endpoint_id.clone().unwrap_or_default();
-    let key_id = candidate.execution.key_id.clone().unwrap_or_default();
-    let provider_model = candidate.provider_model.clone();
-    if !lease.is_healthy() {
-        admission.release().await;
-        lease.release().await;
-        reject_lost_pool_lease(
-            client_socket,
-            context,
-            "direct",
-            provider_id.as_str(),
-            endpoint_id.as_str(),
-            key_id.as_str(),
-        )
-        .await;
-        return;
-    }
-    let mut execution = candidate.execution;
-    execution.upstream_url = Some(upstream_url);
-    let mut upstream = match connect_upstream_websocket(
-        &execution,
-        LIVE_WEBSOCKET_SESSION_LIMITS,
-        LIVE_UPSTREAM_ERRORS,
-    )
-    .await
-    {
-        Ok(connection) => connection.socket,
-        Err(error_code) => {
-            warn!(
-                target: LIVE_LOG_TARGET,
-                event_name = "codex_live_upstream_connect_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                provider_id = %provider_id,
-                endpoint_id = %endpoint_id,
-                key_id = %key_id,
-                error_code,
-                "Codex Live direct upstream connection failed"
-            );
+            close_upstream_socket(&mut upstream, None).await;
             admission.release().await;
-            lease.release().await;
-            send_live_error(
-                client_socket,
-                502,
-                error_code,
-                "Codex Live upstream WebSocket connection failed",
-            )
-            .await;
-            close_client_socket(client_socket, CLOSE_TRY_AGAIN, "Live upstream unavailable").await;
+            pool_lease.release().await;
+            audit
+                .finish(
+                    state,
+                    LiveSessionTerminal::failure(
+                        error.status_code().as_u16(),
+                        error.code(),
+                        elapsed_ms(session_started_at),
+                    ),
+                )
+                .await;
             return;
         }
     };
     let initial =
         rewrite_live_session_model(initial.as_str(), provider_model.as_str()).unwrap_or(initial);
+    let initial_bytes = initial.len() as u64;
     if send_upstream_message(&mut upstream, WreqWsMessage::Text(initial.into()))
         .await
         .is_err()
     {
         close_upstream_socket(&mut upstream, None).await;
         admission.release().await;
-        lease.release().await;
+        pool_lease.release().await;
         close_client_socket(client_socket, CLOSE_TRY_AGAIN, "Live upstream write failed").await;
+        let mut terminal = LiveSessionTerminal::failure(
+            502,
+            "initial_upstream_write_failed",
+            elapsed_ms(session_started_at),
+        );
+        terminal.client_frames = 1;
+        terminal.client_bytes = initial_bytes;
+        audit.finish(state, terminal).await;
         return;
     }
-    relay_live(
+    let terminal = relay_live(
         client_socket,
         &mut upstream,
         context,
@@ -509,13 +912,27 @@ async fn run_direct(
         endpoint_id.as_str(),
         key_id.as_str(),
         provider_model.as_str(),
-        &lease,
+        &pool_lease,
         None,
+        RelayStats {
+            client_frames: 1,
+            client_bytes: initial_bytes,
+            ..RelayStats::default()
+        },
+        session_started_at,
     )
     .await;
+    let close_client = matches!(
+        terminal.termination,
+        "connection_duration_limit" | "connection_admission_lost"
+    );
     close_upstream_socket(&mut upstream, None).await;
     admission.release().await;
-    lease.release().await;
+    pool_lease.release().await;
+    if close_client {
+        close_client_socket(client_socket, CLOSE_TRY_AGAIN, terminal.termination).await;
+    }
+    audit.finish(state, terminal).await;
 }
 
 async fn run_sideband(
@@ -525,212 +942,23 @@ async fn run_sideband(
     prepared: PreparedLiveSideband,
 ) {
     let PreparedLiveSideband {
-        call_id,
-        binding,
-        lease: mut sideband_lease,
+        relay:
+            PreparedLiveRelay {
+                mut upstream,
+                admission,
+                audit,
+                pool_lease,
+                provider_id,
+                endpoint_id,
+                key_id,
+                provider_model,
+            },
+        mut sideband_lease,
     } = prepared;
-    let planned_candidate = match while_sideband_lease_healthy(
-        &sideband_lease,
-        plan_live_candidate(
-            state,
-            context.trace_id.as_str(),
-            &context.decision,
-            &context.headers,
-            &context.remote_addr,
-            binding.client_model(),
-            Some(binding.pinned_candidate()),
-        ),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(loss) => {
-            reject_sideband_lease_loss(client_socket, context, loss).await;
-            release_sideband_lease(&mut sideband_lease, context).await;
-            return;
-        }
-    };
-    let candidate = match planned_candidate {
-        Ok(Some(candidate)) if binding.matches_candidate(&candidate) => candidate,
-        Ok(Some(candidate)) => {
-            crate::orchestration::release_pool_key_lease_from_report_context(
-                state,
-                candidate.execution.report_context.as_ref(),
-            )
-            .await;
-            release_sideband_lease(&mut sideband_lease, context).await;
-            send_live_error(
-                client_socket,
-                410,
-                "codex_live_binding_changed",
-                "Codex Live call provider binding is no longer valid",
-            )
-            .await;
-            close_client_socket(
-                client_socket,
-                CLOSE_POLICY_VIOLATION,
-                "Live binding changed",
-            )
-            .await;
-            return;
-        }
-        Ok(None) => {
-            release_sideband_lease(&mut sideband_lease, context).await;
-            send_live_error(
-                client_socket,
-                410,
-                "codex_live_binding_disabled",
-                "Codex Live call provider key or model is no longer available",
-            )
-            .await;
-            close_client_socket(
-                client_socket,
-                CLOSE_POLICY_VIOLATION,
-                "Live binding disabled",
-            )
-            .await;
-            return;
-        }
-        Err(error) => {
-            release_sideband_lease(&mut sideband_lease, context).await;
-            warn!(
-                target: LIVE_LOG_TARGET,
-                event_name = "codex_live_sideband_planning_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                error_kind = gateway_error_kind(&error),
-                "Codex Live sideband pinned candidate validation failed"
-            );
-            send_live_error(
-                client_socket,
-                500,
-                "codex_live_planning_failed",
-                "Codex Live provider validation failed",
-            )
-            .await;
-            close_client_socket(client_socket, CLOSE_INTERNAL_ERROR, "Live planning failed").await;
-            return;
-        }
-    };
-    let pool_lease = LivePoolLeaseGuard::new(state, &candidate);
-    let upstream_url = match live_sideband_url(&candidate, call_id.as_str()) {
-        Ok(url) => url,
-        Err(error) => {
-            release_sideband_lease(&mut sideband_lease, context).await;
-            pool_lease.release().await;
-            send_live_error(
-                client_socket,
-                error.status_code().as_u16(),
-                error.code(),
-                error.client_message(),
-            )
-            .await;
-            close_client_socket(
-                client_socket,
-                CLOSE_POLICY_VIOLATION,
-                "invalid Live sideband",
-            )
-            .await;
-            return;
-        }
-    };
-    let admission = match while_sideband_lease_healthy(
-        &sideband_lease,
-        acquire_live_relay_admission(state, context, &candidate, upstream_url.clone()),
-    )
-    .await
-    {
-        Err(loss) => {
-            reject_sideband_lease_loss(client_socket, context, loss).await;
-            release_sideband_lease(&mut sideband_lease, context).await;
-            pool_lease.release().await;
-            return;
-        }
-        Ok(result) => match result {
-            Ok(admission) => admission,
-            Err(error) => {
-                release_sideband_lease(&mut sideband_lease, context).await;
-                pool_lease.release().await;
-                reject_live_relay_admission(client_socket, context, "sideband", &error).await;
-                return;
-            }
-        },
-    };
-    let provider_id = candidate.execution.provider_id.clone().unwrap_or_default();
-    let endpoint_id = candidate.execution.endpoint_id.clone().unwrap_or_default();
-    let key_id = candidate.execution.key_id.clone().unwrap_or_default();
-    let provider_model = candidate.provider_model.clone();
-    if !pool_lease.is_healthy() {
-        admission.release().await;
-        release_sideband_lease(&mut sideband_lease, context).await;
-        pool_lease.release().await;
-        reject_lost_pool_lease(
-            client_socket,
-            context,
-            "sideband",
-            provider_id.as_str(),
-            endpoint_id.as_str(),
-            key_id.as_str(),
-        )
-        .await;
-        return;
-    }
-    let mut execution = candidate.execution;
-    execution.upstream_url = Some(upstream_url);
-    let upstream_connection = match while_sideband_lease_healthy(
-        &sideband_lease,
-        connect_upstream_websocket(
-            &execution,
-            LIVE_WEBSOCKET_SESSION_LIMITS,
-            LIVE_UPSTREAM_ERRORS,
-        ),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(loss) => {
-            reject_sideband_lease_loss(client_socket, context, loss).await;
-            release_sideband_lease(&mut sideband_lease, context).await;
-            admission.release().await;
-            pool_lease.release().await;
-            return;
-        }
-    };
-    let mut upstream = match upstream_connection {
-        Ok(connection) => connection.socket,
-        Err(error_code) => {
-            warn!(
-                target: LIVE_LOG_TARGET,
-                event_name = "codex_live_sideband_connect_failed",
-                log_type = "ops",
-                transport = WEBSOCKET_LOG_TRANSPORT,
-                websocket = true,
-                trace_id = %context.trace_id,
-                provider_id = %provider_id,
-                endpoint_id = %endpoint_id,
-                key_id = %key_id,
-                error_code,
-                "Codex Live sideband upstream connection failed"
-            );
-            release_sideband_lease(&mut sideband_lease, context).await;
-            admission.release().await;
-            pool_lease.release().await;
-            send_live_error(
-                client_socket,
-                502,
-                error_code,
-                "Codex Live sideband connection failed",
-            )
-            .await;
-            close_client_socket(client_socket, CLOSE_TRY_AGAIN, "Live sideband unavailable").await;
-            return;
-        }
-    };
     // A sideband attaches to an already-created WebRTC session. Sending a
     // second synthetic `session.update` here would corrupt the protocol.
-    relay_live(
+    let session_started_at = Instant::now();
+    let terminal = relay_live(
         client_socket,
         &mut upstream,
         context,
@@ -741,12 +969,22 @@ async fn run_sideband(
         provider_model.as_str(),
         &pool_lease,
         Some(&sideband_lease),
+        RelayStats::default(),
+        session_started_at,
     )
     .await;
+    let close_client = matches!(
+        terminal.termination,
+        "connection_duration_limit" | "connection_admission_lost"
+    );
     close_upstream_socket(&mut upstream, None).await;
     release_sideband_lease(&mut sideband_lease, context).await;
     admission.release().await;
     pool_lease.release().await;
+    if close_client {
+        close_client_socket(client_socket, CLOSE_TRY_AGAIN, terminal.termination).await;
+    }
+    audit.finish(state, terminal).await;
 }
 
 async fn acquire_live_relay_admission(
@@ -754,83 +992,103 @@ async fn acquire_live_relay_admission(
     context: &WebSocketRequestContext,
     candidate: &PlannedLiveCandidate,
     upstream_url: String,
-) -> Result<ResponsesWebSocketTurnAdmission, LiveRelayAdmissionError> {
-    let Some(attempt) = build_live_stream_admission_attempt(
+    transport: LiveAuditTransport,
+) -> Result<LiveRelayAdmission, LiveRelayAdmissionFailure> {
+    let attempt = match build_live_stream_admission_attempt(
         candidate,
         &context.headers,
         &context.remote_addr,
         upstream_url,
-    )
-    .map_err(LiveRelayAdmissionError::Gateway)?
-    else {
-        return Err(LiveRelayAdmissionError::PlanUnavailable);
+    ) {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
+            return Err(LiveRelayAdmissionFailure {
+                error: LiveRelayAdmissionError::PlanUnavailable,
+                audit: None,
+            });
+        }
+        Err(error) => {
+            return Err(LiveRelayAdmissionFailure {
+                error: LiveRelayAdmissionError::Gateway(error),
+                audit: None,
+            });
+        }
     };
-    if execution_plan_balance_capacity_rejection(
+    let audit = LiveSessionAudit::from_attempt(&attempt, transport);
+    let balance_rejection = execution_plan_balance_capacity_rejection(
         state,
         &context.decision,
         &attempt.plan,
         attempt.report_context.as_ref(),
     )
-    .await
-    .map_err(LiveRelayAdmissionError::Gateway)?
-    .is_some()
-    {
-        return Err(LiveRelayAdmissionError::BalanceRejected);
+    .await;
+    match balance_rejection {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return Err(LiveRelayAdmissionFailure {
+                error: LiveRelayAdmissionError::BalanceRejected,
+                audit: Some(audit),
+            });
+        }
+        Err(error) => {
+            return Err(LiveRelayAdmissionFailure {
+                error: LiveRelayAdmissionError::Gateway(error),
+                audit: Some(audit),
+            });
+        }
     }
-    ResponsesWebSocketTurnAdmission::acquire(state, &attempt.plan, context.trace_id.as_str())
+    match ResponsesWebSocketTurnAdmission::acquire(state, &attempt.plan, context.trace_id.as_str())
         .await
-        .map_err(LiveRelayAdmissionError::Gateway)
+    {
+        Ok(capacity) => Ok(LiveRelayAdmission { capacity, audit }),
+        Err(error) => Err(LiveRelayAdmissionFailure {
+            error: LiveRelayAdmissionError::Gateway(error),
+            audit: Some(audit),
+        }),
+    }
 }
 
-async fn reject_finite_balance_live(
-    client_socket: &mut WebSocket,
-    context: &WebSocketRequestContext,
-) {
-    warn!(
-        target: LIVE_LOG_TARGET,
-        event_name = "codex_live_usage_accounting_unsafe",
-        log_type = "ops",
-        transport = WEBSOCKET_LOG_TRANSPORT,
-        websocket = true,
-        trace_id = %context.trace_id,
-        "Codex Live rejected a finite-balance principal because Frameless usage is unavailable"
-    );
-    send_live_error(
-        client_socket,
-        501,
-        "codex_live_usage_settlement_unavailable",
-        "Codex Live is unavailable for finite-balance keys until Frameless usage settlement is supported",
-    )
-    .await;
-    close_client_socket(
-        client_socket,
-        CLOSE_POLICY_VIOLATION,
-        "Live usage settlement unavailable",
-    )
-    .await;
-}
-
-async fn reject_live_relay_admission(
-    client_socket: &mut WebSocket,
+async fn audited_preflight_rejection(
+    state: &AppState,
     context: &WebSocketRequestContext,
     mode: &'static str,
-    error: &LiveRelayAdmissionError,
-) {
-    let (status, code, message, close_code, close_reason) = error.response();
+    status: StatusCode,
+    termination: &'static str,
+    message: &'static str,
+    started_at: Instant,
+    audit: Option<LiveSessionAudit>,
+) -> LiveWebSocketPreflightRejection {
+    if let Some(audit) = audit {
+        audit
+            .finish(
+                state,
+                LiveSessionTerminal::failure(status.as_u16(), termination, elapsed_ms(started_at)),
+            )
+            .await;
+    }
+    preflight_rejection(context, mode, status, termination, message)
+}
+
+fn preflight_rejection(
+    context: &WebSocketRequestContext,
+    mode: &'static str,
+    status: StatusCode,
+    termination: &'static str,
+    message: &'static str,
+) -> LiveWebSocketPreflightRejection {
     warn!(
         target: LIVE_LOG_TARGET,
-        event_name = "codex_live_relay_admission_failed",
-        log_type = "ops",
+        event_name = "codex_live_websocket_preflight_rejected",
+        log_type = "event",
         transport = WEBSOCKET_LOG_TRANSPORT,
         websocket = true,
         trace_id = %context.trace_id,
         mode,
-        status,
-        error_kind = error.kind(),
-        "Codex Live relay admission failed"
+        status_code = status.as_u16(),
+        termination,
+        "Codex Live WebSocket preflight rejected the HTTP upgrade"
     );
-    send_live_error(client_socket, status, code, message).await;
-    close_client_socket(client_socket, close_code, close_reason).await;
+    LiveWebSocketPreflightRejection { status, message }
 }
 
 fn gateway_error_kind(error: &GatewayError) -> &'static str {
@@ -842,6 +1100,38 @@ fn gateway_error_kind(error: &GatewayError) -> &'static str {
         GatewayError::Client { .. } => "client_error",
         GatewayError::Internal(_) => "internal_error",
     }
+}
+
+fn gateway_error_status(error: &GatewayError) -> StatusCode {
+    match error {
+        GatewayError::UpstreamUnavailable { .. } | GatewayError::ControlUnavailable { .. } => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        GatewayError::LocalExecutionPlanningTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+        GatewayError::AdmissionTimeout { .. } => StatusCode::TOO_MANY_REQUESTS,
+        GatewayError::Client { status, .. } => *status,
+        GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+const fn sideband_loss_termination(loss: LiveSidebandLeaseLoss) -> &'static str {
+    match loss {
+        LiveSidebandLeaseLoss::OwnershipLost => "sideband_attachment_lease_lost",
+        LiveSidebandLeaseLoss::StorageUnavailable => "sideband_attachment_lease_renewal_failed",
+    }
+}
+
+const fn sideband_loss_message(loss: LiveSidebandLeaseLoss) -> &'static str {
+    match loss {
+        LiveSidebandLeaseLoss::OwnershipLost => "Codex Live sideband ownership was lost",
+        LiveSidebandLeaseLoss::StorageUnavailable => {
+            "Codex Live sideband ownership could not be renewed"
+        }
+    }
+}
+
+fn elapsed_ms(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 async fn reject_lost_pool_lease(
@@ -917,12 +1207,13 @@ async fn read_initial_session_update(
     .map_err(|_| super::protocol::LiveProtocolError::InitialSessionUpdateTimeout)?
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct RelayStats {
     client_frames: u64,
     client_bytes: u64,
     upstream_frames: u64,
     upstream_bytes: u64,
+    first_upstream_frame_ms: Option<u64>,
 }
 
 async fn relay_live(
@@ -936,83 +1227,272 @@ async fn relay_live(
     provider_model: &str,
     pool_lease: &LivePoolLeaseGuard,
     sideband_lease: Option<&LiveSidebandLease>,
-) {
-    let started_at = Instant::now();
-    let connection_deadline =
-        tokio::time::sleep(LIVE_WEBSOCKET_SESSION_LIMITS.max_connection_duration);
+    stats: RelayStats,
+    started_at: Instant,
+) -> LiveSessionTerminal {
+    let connection_deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(
+        started_at + LIVE_WEBSOCKET_SESSION_LIMITS.max_connection_duration,
+    ));
     tokio::pin!(connection_deadline);
-    let mut close_deadline = None;
     let mut pool_lease_health = tokio::time::interval(Duration::from_secs(1));
     pool_lease_health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut stats = RelayStats::default();
-    let termination = loop {
-        tokio::select! {
-            _ = &mut connection_deadline => break "connection_duration_limit",
-            _ = wait_for_connection_permit_loss(context.websocket_connection_permit.as_ref()) => {
-                break "connection_admission_lost";
-            }
-            _ = pool_lease_health.tick() => {
-                if !pool_lease.is_healthy() {
-                    reject_lost_pool_lease(
-                        client_socket,
-                        context,
-                        mode,
-                        provider_id,
-                        endpoint_id,
-                        key_id,
-                    )
-                    .await;
-                    break "pool_key_lease_lost";
-                }
-            }
-            _ = wait_for_optional_deadline(close_deadline) => break "session_close_drain_timeout",
-            loss = wait_for_sideband_lease_loss(sideband_lease) => {
-                reject_sideband_lease_loss(client_socket, context, loss).await;
-                break match loss {
-                    LiveSidebandLeaseLoss::OwnershipLost => "sideband_attachment_lease_lost",
-                    LiveSidebandLeaseLoss::StorageUnavailable => {
-                        "sideband_attachment_lease_renewal_failed"
+    let stats = Arc::new(Mutex::new(stats));
+    let session_close = Arc::new(tokio::sync::Notify::new());
+    let relay_control = WebSocketRelayPumpControl::new();
+
+    let termination = {
+        let (mut client_write, mut client_read) = (&mut *client_socket).split();
+        let (mut upstream_write, mut upstream_read) = (&mut *upstream).split();
+
+        let client_to_upstream = {
+            let control = relay_control.clone();
+            let stats = Arc::clone(&stats);
+            let session_close = Arc::clone(&session_close);
+            async move {
+                let (queue_tx, mut queue_rx) = websocket_relay_frame_queue();
+                let reader_control = control.clone();
+                let reader = async move {
+                    loop {
+                        let client = tokio::select! {
+                            biased;
+                            _ = reader_control.cancelled() => return "relay_cancelled",
+                            client = client_read.next() => client,
+                        };
+                        let Some(client) = client else {
+                            return "client_closed";
+                        };
+                        let Ok(client) = client else {
+                            return "client_read_failed";
+                        };
+                        let (bytes, is_close, is_session_close) = client_frame_metadata(&client);
+                        {
+                            let mut stats = stats
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            stats.client_frames = stats.client_frames.saturating_add(1);
+                            stats.client_bytes = stats.client_bytes.saturating_add(bytes as u64);
+                        }
+                        let client = match client {
+                            AxumWsMessage::Text(text) => {
+                                rewrite_live_session_model(text.as_str(), provider_model)
+                                    .map_or(AxumWsMessage::Text(text), |rewritten| {
+                                        AxumWsMessage::Text(rewritten.into())
+                                    })
+                            }
+                            other => other,
+                        };
+                        match reader_control
+                            .enqueue(&queue_tx, client_message_to_upstream(client))
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(WebSocketRelayQueueError::Cancelled) => {
+                                return "relay_cancelled";
+                            }
+                            Err(WebSocketRelayQueueError::Closed) => {
+                                return "upstream_write_failed";
+                            }
+                        }
+                        if is_session_close {
+                            session_close.notify_one();
+                        }
+                        if is_close {
+                            return "client_close_frame";
+                        }
                     }
                 };
-            }
-            client = client_socket.next() => {
-                let Some(client) = client else { break "client_closed"; };
-                let Ok(client) = client else { break "client_read_failed"; };
-                let (bytes, is_close, is_session_close) = client_frame_metadata(&client);
-                stats.client_frames = stats.client_frames.saturating_add(1);
-                stats.client_bytes = stats.client_bytes.saturating_add(bytes as u64);
-                let client = match client {
-                    AxumWsMessage::Text(text) => rewrite_live_session_model(
-                        text.as_str(),
-                        provider_model,
-                    )
-                    .map_or(AxumWsMessage::Text(text), |rewritten| {
-                        AxumWsMessage::Text(rewritten.into())
-                    }),
-                    other => other,
+
+                let writer_control = control;
+                let writer = async move {
+                    loop {
+                        let message = tokio::select! {
+                            biased;
+                            _ = writer_control.cancelled() => return None,
+                            message = queue_rx.recv() => message,
+                        };
+                        let Some(message) = message else {
+                            return None;
+                        };
+                        let result = writer_control
+                            .send(async { upstream_write.send(message).await.map_err(|_| ()) })
+                            .await;
+                        match result {
+                            Ok(()) => {}
+                            Err(WebSocketWriteError::Cancelled) => return None,
+                            Err(_) => return Some("upstream_write_failed"),
+                        }
+                    }
                 };
-                let upstream_message = client_message_to_upstream(client);
-                if send_upstream_message(upstream, upstream_message).await.is_err() {
-                    break "upstream_write_failed";
+
+                tokio::pin!(reader, writer);
+                tokio::select! {
+                    reader_exit = &mut reader => {
+                        writer.await.unwrap_or(reader_exit)
+                    }
+                    writer_exit = &mut writer => {
+                        match writer_exit {
+                            Some(writer_exit) => writer_exit,
+                            None => reader.await,
+                        }
+                    }
                 }
-                if is_session_close {
+            }
+        };
+
+        let upstream_to_client = {
+            let control = relay_control.clone();
+            let stats = Arc::clone(&stats);
+            async move {
+                let (queue_tx, mut queue_rx) = websocket_relay_frame_queue();
+                let reader_control = control.clone();
+                let reader = async move {
+                    loop {
+                        let provider = tokio::select! {
+                            biased;
+                            _ = reader_control.cancelled() => return "relay_cancelled",
+                            provider = upstream_read.next() => provider,
+                        };
+                        let Some(provider) = provider else {
+                            return "upstream_closed";
+                        };
+                        let Ok(provider) = provider else {
+                            return "upstream_read_failed";
+                        };
+                        let (bytes, is_close) = upstream_frame_metadata(&provider);
+                        {
+                            let mut stats = stats
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            stats.first_upstream_frame_ms.get_or_insert_with(|| {
+                                started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+                            });
+                            stats.upstream_frames = stats.upstream_frames.saturating_add(1);
+                            stats.upstream_bytes =
+                                stats.upstream_bytes.saturating_add(bytes as u64);
+                        }
+                        match reader_control
+                            .enqueue(&queue_tx, upstream_message_to_client(provider))
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(WebSocketRelayQueueError::Cancelled) => {
+                                return "relay_cancelled";
+                            }
+                            Err(WebSocketRelayQueueError::Closed) => {
+                                return "client_write_failed";
+                            }
+                        }
+                        if is_close {
+                            return "upstream_close_frame";
+                        }
+                    }
+                };
+
+                let writer_control = control;
+                let writer = async move {
+                    loop {
+                        let message = tokio::select! {
+                            biased;
+                            _ = writer_control.cancelled() => return None,
+                            message = queue_rx.recv() => message,
+                        };
+                        let Some(message) = message else {
+                            return None;
+                        };
+                        let result = writer_control
+                            .send(async { client_write.send(message).await.map_err(|_| ()) })
+                            .await;
+                        match result {
+                            Ok(()) => {}
+                            Err(WebSocketWriteError::Cancelled) => return None,
+                            Err(_) => return Some("client_write_failed"),
+                        }
+                    }
+                };
+
+                tokio::pin!(reader, writer);
+                tokio::select! {
+                    reader_exit = &mut reader => {
+                        writer.await.unwrap_or(reader_exit)
+                    }
+                    writer_exit = &mut writer => {
+                        match writer_exit {
+                            Some(writer_exit) => writer_exit,
+                            None => reader.await,
+                        }
+                    }
+                }
+            }
+        };
+
+        tokio::pin!(client_to_upstream, upstream_to_client);
+        let mut close_deadline = None;
+        let termination = loop {
+            tokio::select! {
+                termination = &mut client_to_upstream => break termination,
+                termination = &mut upstream_to_client => break termination,
+                _ = &mut connection_deadline => break "connection_duration_limit",
+                _ = wait_for_connection_permit_loss(context.websocket_connection_permit.as_ref()) => {
+                    break "connection_admission_lost";
+                }
+                _ = pool_lease_health.tick() => {
+                    if !pool_lease.is_healthy() {
+                        break "pool_key_lease_lost";
+                    }
+                }
+                _ = session_close.notified(), if close_deadline.is_none() => {
                     close_deadline = Some(Instant::now() + SESSION_CLOSE_DRAIN_TIMEOUT);
                 }
-                if is_close { break "client_close_frame"; }
-            }
-            provider = upstream.next() => {
-                let Some(provider) = provider else { break "upstream_closed"; };
-                let Ok(provider) = provider else { break "upstream_read_failed"; };
-                let (bytes, is_close) = upstream_frame_metadata(&provider);
-                stats.upstream_frames = stats.upstream_frames.saturating_add(1);
-                stats.upstream_bytes = stats.upstream_bytes.saturating_add(bytes as u64);
-                if send_client_message(client_socket, upstream_message_to_client(provider)).await.is_err() {
-                    break "client_write_failed";
+                _ = wait_for_optional_deadline(close_deadline) => {
+                    break "session_close_drain_timeout";
                 }
-                if is_close { break "upstream_close_frame"; }
+                loss = wait_for_sideband_lease_loss(sideband_lease) => {
+                    break match loss {
+                        LiveSidebandLeaseLoss::OwnershipLost => "sideband_attachment_lease_lost",
+                        LiveSidebandLeaseLoss::StorageUnavailable => {
+                            "sideband_attachment_lease_renewal_failed"
+                        }
+                    };
+                }
             }
-        }
+        };
+        relay_control.cancel();
+        termination
     };
+    match termination {
+        "pool_key_lease_lost" => {
+            reject_lost_pool_lease(
+                client_socket,
+                context,
+                mode,
+                provider_id,
+                endpoint_id,
+                key_id,
+            )
+            .await;
+        }
+        "sideband_attachment_lease_lost" => {
+            reject_sideband_lease_loss(
+                client_socket,
+                context,
+                LiveSidebandLeaseLoss::OwnershipLost,
+            )
+            .await;
+        }
+        "sideband_attachment_lease_renewal_failed" => {
+            reject_sideband_lease_loss(
+                client_socket,
+                context,
+                LiveSidebandLeaseLoss::StorageUnavailable,
+            )
+            .await;
+        }
+        _ => {}
+    }
+    let stats = *stats
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     info!(
         target: LIVE_LOG_TARGET,
         event_name = "codex_live_relay_finished",
@@ -1029,10 +1509,46 @@ async fn relay_live(
         client_bytes = stats.client_bytes,
         upstream_frames = stats.upstream_frames,
         upstream_bytes = stats.upstream_bytes,
-        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        elapsed_ms,
         usage_unavailable = true,
         "Codex Live opaque relay finished"
     );
+    live_terminal_from_relay(termination, elapsed_ms, stats)
+}
+
+fn live_terminal_from_relay(
+    termination: &'static str,
+    elapsed_ms: u64,
+    stats: RelayStats,
+) -> LiveSessionTerminal {
+    let (disposition, status_code) = match termination {
+        "client_close_frame" | "upstream_close_frame" | "session_close_drain_timeout" => {
+            (LiveSessionDisposition::Completed, 200)
+        }
+        "client_closed"
+        | "client_read_failed"
+        | "client_write_failed"
+        | "connection_duration_limit" => (LiveSessionDisposition::Cancelled, 499),
+        "pool_key_lease_lost"
+        | "connection_admission_lost"
+        | "sideband_attachment_lease_lost"
+        | "sideband_attachment_lease_renewal_failed" => (LiveSessionDisposition::Failed, 503),
+        "upstream_closed" | "upstream_read_failed" | "upstream_write_failed" => {
+            (LiveSessionDisposition::Failed, 502)
+        }
+        _ => (LiveSessionDisposition::Failed, 500),
+    };
+    LiveSessionTerminal {
+        disposition,
+        status_code,
+        termination,
+        elapsed_ms,
+        first_upstream_frame_ms: stats.first_upstream_frame_ms,
+        client_frames: stats.client_frames,
+        client_bytes: stats.client_bytes,
+        upstream_frames: stats.upstream_frames,
+        upstream_bytes: stats.upstream_bytes,
+    }
 }
 
 async fn while_sideband_lease_healthy<T, F>(

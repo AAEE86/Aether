@@ -5,6 +5,7 @@
 //! Keeping it in an independent module prevents a `session.update` frame from
 //! ever entering the Responses `response.create` state machine.
 
+mod audit;
 mod http;
 mod planner;
 mod protocol;

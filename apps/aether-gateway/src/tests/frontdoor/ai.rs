@@ -1,6 +1,7 @@
 use super::{
-    hash_api_key, sample_models_candidate_row, unrestricted_models_snapshot,
-    InMemoryAuthApiKeySnapshotRepository, InMemoryMinimalCandidateSelectionReadRepository,
+    hash_api_key, sample_endpoint, sample_key, sample_models_candidate_row, sample_provider,
+    unrestricted_models_snapshot, InMemoryAuthApiKeySnapshotRepository,
+    InMemoryMinimalCandidateSelectionReadRepository, InMemoryRequestCandidateRepository,
     InMemoryVideoTaskRepository, StoredAuthApiKeySnapshot, UpsertVideoTask, VideoTaskLookupKey,
     VideoTaskReadRepository, VideoTaskStatus, VideoTaskWriteRepository, DEVELOPMENT_ENCRYPTION_KEY,
 };
@@ -15,6 +16,7 @@ use aether_contracts::{ExecutionResult, ExecutionTelemetry, ResponseBody};
 use aether_crypto::encrypt_python_fernet_plaintext;
 use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
+use aether_data::repository::usage::InMemoryUsageReadRepository;
 use aether_data::DataLayerError;
 use aether_data_contracts::repository::auth::AuthApiKeyWriteRepository;
 use aether_data_contracts::repository::candidate_selection::{
@@ -29,6 +31,7 @@ use aether_data_contracts::repository::provider_catalog::{
     ProviderCatalogReadRepository, StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
     StoredProviderCatalogProvider,
 };
+use aether_data_contracts::repository::usage::{UsageAuditListQuery, UsageReadRepository};
 use async_trait::async_trait;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -74,6 +77,17 @@ fn codex_models_snapshot(
     .expect("Codex models auth snapshot should build")
 }
 
+fn codex_live_snapshot(
+    api_key_id: &str,
+    user_id: &str,
+    allowed_models: &[&str],
+) -> StoredAuthApiKeySnapshot {
+    let mut snapshot = codex_models_snapshot(api_key_id, user_id, allowed_models);
+    snapshot.user_allowed_api_formats = Some(vec!["codex:live".to_string()]);
+    snapshot.api_key_allowed_api_formats = Some(vec!["codex:live".to_string()]);
+    snapshot
+}
+
 fn sample_codex_models_candidate_row(
     provider_id: &str,
     global_model_name: &str,
@@ -98,6 +112,25 @@ fn sample_codex_models_candidate_row(
             operations: None,
         },
     ]);
+    row
+}
+
+fn sample_codex_live_candidate_row(
+    provider_id: &str,
+    global_model_name: &str,
+    source_model_name: &str,
+) -> StoredMinimalCandidateSelectionRow {
+    let mut row =
+        sample_codex_models_candidate_row(provider_id, global_model_name, source_model_name);
+    row.endpoint_api_format = "codex:live".to_string();
+    row.endpoint_api_family = Some("codex".to_string());
+    row.endpoint_kind = Some("live".to_string());
+    row.key_api_formats = Some(vec!["codex:live".to_string()]);
+    if let Some(mappings) = row.model_provider_model_mappings.as_mut() {
+        for mapping in mappings {
+            mapping.api_formats = Some(vec!["codex:live".to_string()]);
+        }
+    }
     row
 }
 
@@ -170,6 +203,32 @@ fn codex_catalog_endpoint(provider_id: &str, endpoint_id: &str) -> StoredProvide
     .expect("Codex endpoint transport should build")
 }
 
+fn codex_live_catalog_endpoint(
+    provider_id: &str,
+    endpoint_id: &str,
+) -> StoredProviderCatalogEndpoint {
+    StoredProviderCatalogEndpoint::new(
+        endpoint_id.to_string(),
+        provider_id.to_string(),
+        "codex:live".to_string(),
+        Some("codex".to_string()),
+        Some("live".to_string()),
+        true,
+    )
+    .expect("Codex Live endpoint should build")
+    .with_transport_fields(
+        "https://chatgpt.example/backend-api/codex".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("Codex Live endpoint transport should build")
+}
+
 fn codex_catalog_key(
     provider_id: &str,
     key_id: &str,
@@ -201,6 +260,16 @@ fn codex_catalog_key(
     key.locked_models = Some(json!(["manual-locked-model"]));
     key.model_include_patterns = Some(json!(["gpt-future-*"]));
     key.model_exclude_patterns = Some(json!(["gpt-future-denied"]));
+    key
+}
+
+fn codex_live_catalog_key(
+    provider_id: &str,
+    key_id: &str,
+    allowed_models: &[&str],
+) -> StoredProviderCatalogKey {
+    let mut key = codex_catalog_key(provider_id, key_id, allowed_models);
+    key.api_formats = Some(json!(["codex:live"]));
     key
 }
 
@@ -1243,6 +1312,401 @@ async fn run_versioned_codex_model_cards_frontdoor_scenario() {
     execution_runtime_handle.abort();
 }
 
+#[derive(Debug)]
+struct ObservedOpenAiRealtimeWebSocket {
+    request_target: String,
+    authorization: Option<String>,
+    route_header: Option<String>,
+    session_update: serde_json::Value,
+    audio_append: serde_json::Value,
+    binary_frame: Vec<u8>,
+}
+
+#[test]
+fn gateway_relays_openai_realtime_audio_and_future_events_opaquely() {
+    super::run_frontdoor_async_test(
+        "openai-realtime-websocket-frontdoor",
+        run_openai_realtime_websocket_frontdoor_scenario(),
+    );
+}
+
+async fn run_openai_realtime_websocket_frontdoor_scenario() {
+    const PROVIDER_ID: &str = "provider-openai-realtime";
+    const ENDPOINT_ID: &str = "endpoint-provider-openai-realtime";
+    const UPSTREAM_KEY_ID: &str = "key-provider-openai-realtime";
+    const CLIENT_MODEL: &str = "realtime-client-alias";
+    const PROVIDER_MODEL: &str = "gpt-realtime-future";
+
+    let (observed_tx, observed_rx) = oneshot::channel();
+    let upstream_state = Arc::new(Mutex::new(Some(observed_tx)));
+    let upstream = Router::new()
+        .route("/v1/realtime", get(mock_openai_realtime_websocket))
+        .with_state(upstream_state);
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+
+    let mut row =
+        sample_models_candidate_row(PROVIDER_ID, "openai", "openai:realtime", CLIENT_MODEL, 10);
+    row.endpoint_api_family = Some("openai".to_string());
+    row.endpoint_kind = Some("realtime".to_string());
+    row.key_allowed_models = Some(vec![PROVIDER_MODEL.to_string()]);
+    row.model_provider_model_name = PROVIDER_MODEL.to_string();
+    row.model_provider_model_mappings = Some(vec![
+        aether_data_contracts::repository::candidate_selection::StoredProviderModelMapping {
+            name: PROVIDER_MODEL.to_string(),
+            priority: 1,
+            api_formats: Some(vec!["openai:realtime".to_string()]),
+            endpoint_ids: None,
+            operations: None,
+        },
+    ]);
+    let candidate_repository =
+        Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
+            row,
+        ]));
+
+    let mut downstream_snapshot =
+        unrestricted_models_snapshot("gateway-key-openai-realtime", "user-openai-realtime");
+    downstream_snapshot.user_allowed_providers = Some(vec!["openai".to_string()]);
+    downstream_snapshot.api_key_allowed_providers = Some(vec!["openai".to_string()]);
+    downstream_snapshot.user_allowed_api_formats = Some(vec!["openai:realtime".to_string()]);
+    downstream_snapshot.api_key_allowed_api_formats = Some(vec!["openai:realtime".to_string()]);
+    downstream_snapshot.user_allowed_models = Some(vec![CLIENT_MODEL.to_string()]);
+    downstream_snapshot.api_key_allowed_models = Some(vec![CLIENT_MODEL.to_string()]);
+    let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
+        Some(hash_api_key("sk-openai-realtime")),
+        downstream_snapshot,
+    )]));
+
+    let provider = sample_provider(PROVIDER_ID, "openai", 10);
+    let mut endpoint = sample_endpoint(
+        ENDPOINT_ID,
+        PROVIDER_ID,
+        "openai:realtime",
+        format!("{upstream_url}/v1").as_str(),
+    );
+    endpoint.api_family = Some("openai".to_string());
+    endpoint.endpoint_kind = Some("realtime".to_string());
+    endpoint.header_rules = Some(json!([
+        {"action": "set", "key": "x-upstream-realtime-route", "value": "opaque"}
+    ]));
+    let mut upstream_key = sample_key(
+        UPSTREAM_KEY_ID,
+        PROVIDER_ID,
+        "openai:realtime",
+        "realtime-upstream-secret",
+    );
+    upstream_key.allowed_models = Some(json!([PROVIDER_MODEL]));
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![upstream_key],
+    ));
+    let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(
+            crate::data::GatewayDataState::with_auth_candidate_selection_provider_catalog_request_candidates_and_usage_for_tests(
+                auth_repository,
+                candidate_repository,
+                provider_catalog_repository,
+                request_candidate_repository,
+                Arc::clone(&usage_repository),
+                DEVELOPMENT_ENCRYPTION_KEY,
+            ),
+        )
+        .with_usage_runtime_for_tests(crate::usage::UsageRuntimeConfig {
+            enabled: true,
+            ..crate::usage::UsageRuntimeConfig::default()
+        });
+    let gateway = build_router_with_state(state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let mut handshake_headers = HeaderMap::new();
+    handshake_headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer sk-openai-realtime"),
+    );
+    let invalid_model_response = wreq::Client::new()
+        .websocket(format!(
+            "{}/v1/realtime?model={CLIENT_MODEL}&model=duplicate",
+            gateway_url.replacen("http://", "ws://", 1)
+        ))
+        .headers(handshake_headers.clone())
+        .send()
+        .await
+        .expect("invalid Realtime model query should return an HTTP response");
+    assert_eq!(invalid_model_response.status(), StatusCode::BAD_REQUEST);
+
+    let rejected_upstream_response = wreq::Client::new()
+        .websocket(format!(
+            "{}/v1/realtime?upstream_reject=1&model={CLIENT_MODEL}",
+            gateway_url.replacen("http://", "ws://", 1)
+        ))
+        .headers(handshake_headers.clone())
+        .send()
+        .await
+        .expect("rejected upstream Realtime handshake should stay an HTTP response");
+    assert_eq!(rejected_upstream_response.status(), StatusCode::BAD_GATEWAY);
+
+    let response = wreq::Client::new()
+        .websocket(format!(
+            "{}/v1/realtime?trace=opaque&model={CLIENT_MODEL}",
+            gateway_url.replacen("http://", "ws://", 1)
+        ))
+        .headers(handshake_headers)
+        .send()
+        .await
+        .expect("Realtime gateway WebSocket handshake should complete");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut socket = response
+        .into_websocket()
+        .await
+        .expect("Realtime gateway response should upgrade");
+
+    let session_update = json!({
+        "type": "session.update",
+        "session": {
+            "modalities": ["audio", "text"],
+            "future_session_capability": {"opaque": true, "revision": 23}
+        },
+        "future_event_field": [1, {"nested": true}]
+    });
+    let audio_append = json!({
+        "type": "input_audio_buffer.append",
+        "audio": "AQIDBA==",
+        "future_audio_field": {"codec_revision": 7}
+    });
+    socket
+        .send(WreqWsMessage::Text(session_update.to_string().into()))
+        .await
+        .expect("Realtime session.update should send");
+    socket
+        .send(WreqWsMessage::Text(audio_append.to_string().into()))
+        .await
+        .expect("Realtime audio append should send");
+    socket
+        .send(WreqWsMessage::Binary(vec![0, 1, 2, 255].into()))
+        .await
+        .expect("Realtime binary frame should send");
+
+    let audio_delta = receive_realtime_message(&mut socket).await;
+    let WreqWsMessage::Text(audio_delta) = audio_delta else {
+        panic!("Realtime audio delta should remain a text frame");
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(audio_delta.as_str())
+            .expect("Realtime audio delta should remain valid JSON"),
+        json!({
+            "type": "response.audio.delta",
+            "delta": "BQYHCA==",
+            "future_server_field": {"opaque": true, "revision": 29}
+        })
+    );
+    match receive_realtime_message(&mut socket).await {
+        WreqWsMessage::Binary(data) => assert_eq!(data.as_ref(), &[9, 8, 7]),
+        other => panic!("Realtime binary response changed frame type: {other:?}"),
+    }
+    let response_done = receive_realtime_message(&mut socket).await;
+    let WreqWsMessage::Text(response_done) = response_done else {
+        panic!("Realtime response.done should remain a text frame");
+    };
+    let response_done: serde_json::Value = serde_json::from_str(response_done.as_str())
+        .expect("Realtime response.done should remain valid JSON");
+    assert_eq!(response_done["type"], "response.done");
+    assert_eq!(response_done["future_done_field"]["opaque"], true);
+    assert_eq!(response_done["response"]["usage"]["input_tokens"], 12);
+    assert_eq!(
+        response_done["response"]["usage"]["output_token_details"]["audio_tokens"],
+        3
+    );
+    match receive_realtime_message(&mut socket).await {
+        WreqWsMessage::Close(_) => {}
+        other => panic!("Realtime upstream close changed frame type: {other:?}"),
+    }
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(2), observed_rx)
+        .await
+        .expect("mock Realtime upstream should report before timeout")
+        .expect("mock Realtime observation channel should remain open");
+    assert_eq!(
+        observed.request_target,
+        format!("/v1/realtime?trace=opaque&model={PROVIDER_MODEL}")
+    );
+    assert_eq!(
+        observed.authorization.as_deref(),
+        Some("Bearer realtime-upstream-secret")
+    );
+    assert_eq!(observed.route_header.as_deref(), Some("opaque"));
+    assert_eq!(observed.session_update, session_update);
+    assert_eq!(observed.audio_append, audio_append);
+    assert_eq!(observed.binary_frame, vec![0, 1, 2, 255]);
+
+    let realtime_usage = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let records = usage_repository
+                .list_usage_audits(&UsageAuditListQuery::default())
+                .await
+                .expect("Realtime usage audit list should load");
+            if let Some(record) = records
+                .into_iter()
+                .find(|record| record.request_type.as_deref() == Some("realtime"))
+            {
+                break record;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Realtime session usage audit should be persisted before timeout");
+    assert_eq!(realtime_usage.status, "completed");
+    assert_eq!(
+        realtime_usage.api_format.as_deref(),
+        Some("openai:realtime")
+    );
+    assert_eq!(
+        realtime_usage.endpoint_api_format.as_deref(),
+        Some("openai:realtime")
+    );
+    assert!(realtime_usage.is_websocket());
+    assert_eq!(
+        realtime_usage.websocket_transport(),
+        Some("openai_realtime")
+    );
+    assert!(realtime_usage.usage_available());
+    assert!(!realtime_usage.usage_pricing_available());
+    assert_eq!(realtime_usage.billing_status, "void");
+    assert_eq!(realtime_usage.input_tokens, 12);
+    assert_eq!(realtime_usage.output_tokens, 7);
+    assert_eq!(realtime_usage.total_tokens, 19);
+    assert_eq!(realtime_usage.cache_read_input_tokens, 4);
+    assert_eq!(realtime_usage.total_cost_usd, 0.0);
+    assert_eq!(realtime_usage.actual_total_cost_usd, 0.0);
+    let realtime_metadata = realtime_usage
+        .request_metadata
+        .as_ref()
+        .expect("Realtime usage metadata should be present");
+    assert_eq!(
+        realtime_metadata["realtime_session"]["usage_scope"],
+        "response_done"
+    );
+    assert_eq!(
+        realtime_metadata["realtime_session"]["input_audio_tokens"],
+        5
+    );
+    assert_eq!(
+        realtime_metadata["realtime_session"]["output_audio_tokens"],
+        3
+    );
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+async fn mock_openai_realtime_websocket(
+    State(observed): State<Arc<Mutex<Option<oneshot::Sender<ObservedOpenAiRealtimeWebSocket>>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
+    if uri.query().is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .any(|(name, value)| name == "upstream_reject" && value == "1")
+    }) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let request_target = uri.to_string();
+    let authorization = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let route_header = headers
+        .get("x-upstream-realtime-route")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    ws.on_upgrade(move |mut socket| async move {
+        let session_update = receive_axum_live_json(&mut socket).await;
+        let audio_append = receive_axum_live_json(&mut socket).await;
+        let binary_frame =
+            match tokio::time::timeout(std::time::Duration::from_secs(2), socket.recv())
+                .await
+                .expect("mock Realtime upstream should receive binary frame before timeout")
+                .expect("mock Realtime upstream should remain open")
+                .expect("mock Realtime binary frame should be readable")
+            {
+                AxumWsMessage::Binary(data) => data.to_vec(),
+                other => panic!("mock Realtime upstream expected binary frame, got {other:?}"),
+            };
+
+        socket
+            .send(AxumWsMessage::Text(
+                json!({
+                    "type": "response.audio.delta",
+                    "delta": "BQYHCA==",
+                    "future_server_field": {"opaque": true, "revision": 29}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("mock Realtime audio delta should send");
+        socket
+            .send(AxumWsMessage::Binary(vec![9, 8, 7].into()))
+            .await
+            .expect("mock Realtime binary response should send");
+        socket
+            .send(AxumWsMessage::Text(
+                json!({
+                    "type": "response.done",
+                    "future_done_field": {"opaque": true},
+                    "response": {
+                        "id": "resp_realtime_frontdoor",
+                        "usage": {
+                            "input_tokens": 12,
+                            "output_tokens": 7,
+                            "total_tokens": 19,
+                            "input_token_details": {"cached_tokens": 4, "audio_tokens": 5},
+                            "output_token_details": {"audio_tokens": 3}
+                        }
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("mock Realtime response.done should send");
+        socket
+            .send(AxumWsMessage::Close(None))
+            .await
+            .expect("mock Realtime close should send");
+
+        if let Some(sender) = observed
+            .lock()
+            .expect("mock Realtime observation mutex should lock")
+            .take()
+        {
+            let _ = sender.send(ObservedOpenAiRealtimeWebSocket {
+                request_target,
+                authorization,
+                route_header,
+                session_update,
+                audio_append,
+                binary_frame,
+            });
+        }
+    })
+    .into_response()
+}
+
+async fn receive_realtime_message(socket: &mut wreq::ws::WebSocket) -> WreqWsMessage {
+    tokio::time::timeout(std::time::Duration::from_secs(2), socket.recv())
+        .await
+        .expect("Realtime gateway should send a frame before timeout")
+        .expect("Realtime gateway socket should remain open")
+        .expect("Realtime gateway frame should be readable")
+}
+
 #[test]
 fn gateway_creates_bound_codex_live_oauth_calls_with_opaque_session_fields() {
     super::run_frontdoor_async_test(
@@ -1259,7 +1723,7 @@ async fn run_codex_live_oauth_frontdoor_scenario() {
     const PROVIDER_MODEL: &str = "gpt-future-live";
     const CALL_ID: &str = "rtc_frontdoor_live";
 
-    let mut row = sample_codex_models_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
+    let mut row = sample_codex_live_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
     row.key_allowed_models = Some(vec![PROVIDER_MODEL.to_string()]);
     let candidate_repository =
         Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
@@ -1267,7 +1731,7 @@ async fn run_codex_live_oauth_frontdoor_scenario() {
         ]));
     let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
         Some(hash_api_key("sk-codex-live")),
-        codex_models_snapshot("gateway-key-codex-live", "user-codex-live", &[CLIENT_MODEL]),
+        codex_live_snapshot("gateway-key-codex-live", "user-codex-live", &[CLIENT_MODEL]),
     )]));
 
     let mut provider = codex_catalog_provider(PROVIDER_ID);
@@ -1275,9 +1739,9 @@ async fn run_codex_live_oauth_frontdoor_scenario() {
         "responses_websocket": {"enabled": true},
         "codex": {"fingerprint_convergence_enabled": true}
     }));
-    let mut endpoint = codex_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
+    let mut endpoint = codex_live_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
     endpoint.base_url = "https://chatgpt.com/backend-api/codex".to_string();
-    let mut upstream_key = codex_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
+    let mut upstream_key = codex_live_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
     upstream_key.auth_type = "oauth".to_string();
     upstream_key.encrypted_auth_config = Some(
         encrypt_python_fernet_plaintext(
@@ -1490,7 +1954,7 @@ async fn run_codex_live_api_key_websocket_frontdoor_scenario() {
         .with_state(upstream_state);
     let (upstream_url, upstream_handle) = start_server(upstream).await;
 
-    let mut row = sample_codex_models_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
+    let mut row = sample_codex_live_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
     row.provider_name = "openai".to_string();
     row.provider_type = "openai".to_string();
     row.key_auth_type = "api_key".to_string();
@@ -1499,7 +1963,7 @@ async fn run_codex_live_api_key_websocket_frontdoor_scenario() {
         Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
             row,
         ]));
-    let mut downstream_snapshot = codex_models_snapshot(
+    let mut downstream_snapshot = codex_live_snapshot(
         "gateway-key-codex-live-websocket",
         "user-codex-live-websocket",
         &[CLIENT_MODEL],
@@ -1514,9 +1978,9 @@ async fn run_codex_live_api_key_websocket_frontdoor_scenario() {
     let mut provider = codex_catalog_provider(PROVIDER_ID);
     provider.provider_type = "openai".to_string();
     provider.config = Some(json!({"responses_websocket": {"enabled": true}}));
-    let mut endpoint = codex_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
+    let mut endpoint = codex_live_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
     endpoint.base_url = format!("{upstream_url}/v1");
-    let mut upstream_key = codex_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
+    let mut upstream_key = codex_live_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
     upstream_key.auth_type = "api_key".to_string();
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![provider],
@@ -1728,7 +2192,7 @@ async fn run_codex_live_api_key_sideband_frontdoor_scenario() {
     );
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
 
-    let mut row = sample_codex_models_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
+    let mut row = sample_codex_live_candidate_row(PROVIDER_ID, CLIENT_MODEL, PROVIDER_MODEL);
     row.provider_name = "openai".to_string();
     row.provider_type = "openai".to_string();
     row.key_auth_type = "api_key".to_string();
@@ -1737,7 +2201,7 @@ async fn run_codex_live_api_key_sideband_frontdoor_scenario() {
         Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
             row,
         ]));
-    let mut downstream_snapshot = codex_models_snapshot(
+    let mut downstream_snapshot = codex_live_snapshot(
         "gateway-key-codex-live-sideband",
         "user-codex-live-sideband",
         &[CLIENT_MODEL],
@@ -1752,9 +2216,9 @@ async fn run_codex_live_api_key_sideband_frontdoor_scenario() {
     let mut provider = codex_catalog_provider(PROVIDER_ID);
     provider.provider_type = "openai".to_string();
     provider.config = Some(json!({"responses_websocket": {"enabled": true}}));
-    let mut endpoint = codex_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
+    let mut endpoint = codex_live_catalog_endpoint(PROVIDER_ID, ENDPOINT_ID);
     endpoint.base_url = format!("{upstream_url}/v1");
-    let mut upstream_key = codex_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
+    let mut upstream_key = codex_live_catalog_key(PROVIDER_ID, UPSTREAM_KEY_ID, &[PROVIDER_MODEL]);
     upstream_key.auth_type = "api_key".to_string();
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![provider],
