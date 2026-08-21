@@ -807,7 +807,7 @@ const ADMIN_API_FORMAT_DEFINITIONS: &[AdminApiFormatDefinition] = &[
     },
     AdminApiFormatDefinition {
         value: "codex:live",
-        label: "Codex Live",
+        label: "OpenAI Live",
         default_path: "/v1/live",
         aliases: &["codex_live", "live"],
     },
@@ -3146,7 +3146,7 @@ mod tests {
         let live = formats
             .iter()
             .find(|format| format["value"] == "codex:live")
-            .expect("Codex Live format should be registered");
+            .expect("OpenAI Live format should be registered");
 
         assert_eq!(realtime["label"], "OpenAI Realtime");
         assert_eq!(realtime["default_path"], "/v1/realtime");
@@ -3154,7 +3154,7 @@ mod tests {
             realtime["aliases"],
             serde_json::json!(["openai_realtime", "realtime"])
         );
-        assert_eq!(live["label"], "Codex Live");
+        assert_eq!(live["label"], "OpenAI Live");
         assert_eq!(live["default_path"], "/v1/live");
         assert_eq!(live["aliases"], serde_json::json!(["codex_live", "live"]));
     }

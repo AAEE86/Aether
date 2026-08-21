@@ -113,7 +113,7 @@ function buildFastTierDetail(): RequestDetail {
 }
 
 describe('RequestDetailDrawer settlement pricing', () => {
-  it('labels an unmetered Codex Live WebSocket detail without rendering zero usage as billing', async () => {
+  it('labels an unmetered OpenAI Live WebSocket detail without rendering zero usage as billing', async () => {
     apiMocks.getRequestDetail.mockResolvedValue({
       ...buildEmbeddingDetail(),
       id: 'usage-live-ws-1',
@@ -152,8 +152,11 @@ describe('RequestDetailDrawer settlement pricing', () => {
 
     await vi.waitFor(() => {
       const transport = document.body.querySelector<HTMLElement>('[data-usage-transport="websocket"]')
-      expect(transport?.textContent?.trim()).toBe('Live WS')
-      expect(transport?.title).toBe('Codex Live Sideband WebSocket')
+      expect(transport?.textContent?.trim()).toBe('WS')
+      expect(transport?.title).toBe('OpenAI Live Sideband WebSocket')
+      expect(document.body.querySelector('[data-usage-transport="http"]')).toBeNull()
+      expect(document.body.querySelector('[data-request-lifecycle-status]')?.textContent?.trim())
+        .toBe('200')
       expect(document.body.querySelector('[data-request-detail-usage-unavailable]')).not.toBeNull()
     })
 
@@ -198,6 +201,8 @@ describe('RequestDetailDrawer settlement pricing', () => {
     await nextTick()
 
     await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-usage-transport="http"]')?.textContent?.trim())
+        .toBe('HTTP 流式')
       expect(document.body.textContent).toContain('10.12s / 10.63s')
       expect(document.body.textContent).toContain('95.1tps')
       expect(document.body.textContent).not.toContain('98.8tps')
@@ -228,6 +233,8 @@ describe('RequestDetailDrawer settlement pricing', () => {
     await nextTick()
 
     await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-usage-transport="http"]')?.textContent?.trim())
+        .toBe('HTTP 标准')
       expect(document.body.textContent).toContain('输入 $0.1/M')
       expect(document.body.textContent).toContain('输出 -')
     })

@@ -3110,6 +3110,21 @@ fn usage_sql_reads_http_audits_for_single_record_fetches() {
 }
 
 #[test]
+fn usage_sql_single_record_fetches_preserve_full_request_metadata() {
+    for sql in [super::FIND_BY_REQUEST_ID_SQL, super::FIND_BY_ID_SQL] {
+        assert!(
+            sql.contains("\n  \"usage\".request_metadata,\n"),
+            "single-record usage detail queries must preserve the full request metadata, \
+             including WebSocket and Live session summaries"
+        );
+        assert!(
+            !sql.contains("END AS request_metadata"),
+            "bounded list metadata projection must not leak into detail queries"
+        );
+    }
+}
+
+#[test]
 fn usage_sql_reads_routing_snapshots_for_single_record_fetches() {
     assert!(super::FIND_BY_REQUEST_ID_SQL.contains("LEFT JOIN usage_routing_snapshots"));
     assert!(super::FIND_BY_ID_SQL.contains("LEFT JOIN usage_routing_snapshots"));
@@ -3238,6 +3253,42 @@ fn usage_sql_uses_json_null_placeholders_for_usage_payload_columns() {
     }
     assert!(!super::LIST_USAGE_AUDITS_PREFIX.contains("NULL::jsonb"));
     assert!(!super::LIST_RECENT_USAGE_AUDITS_PREFIX.contains("NULL::jsonb"));
+}
+
+#[test]
+fn usage_sql_list_queries_project_bounded_live_and_realtime_metadata() {
+    for sql in [
+        super::LIST_USAGE_AUDITS_PREFIX,
+        super::LIST_RECENT_USAGE_AUDITS_PREFIX,
+    ] {
+        assert!(sql.contains("'websocket_transport'"));
+        assert!(
+            sql.contains("NULLIF(BTRIM(\"usage\".request_metadata->>'websocket_transport'), '')")
+        );
+
+        for key in ["usage_available", "usage_pricing_available"] {
+            assert!(sql.contains(format!("'{key}'").as_str()));
+            assert!(sql.contains(
+                format!("WHEN (\"usage\".request_metadata->>'{key}') IN ('true', 'false')")
+                    .as_str()
+            ));
+            assert!(sql.contains(
+                format!("THEN (\"usage\".request_metadata->>'{key}')::boolean").as_str()
+            ));
+        }
+
+        for key in ["live_session", "realtime_session"] {
+            assert!(sql.contains(format!("'{key}'").as_str()));
+            assert!(sql.contains(
+                format!("WHEN json_typeof(\"usage\".request_metadata->'{key}') = 'object'")
+                    .as_str()
+            ));
+            assert!(sql.contains(format!("THEN \"usage\".request_metadata->'{key}'").as_str()));
+        }
+
+        assert!(sql.contains("END AS request_metadata"));
+        assert!(!sql.contains("\n  \"usage\".request_metadata,\n"));
+    }
 }
 
 #[test]

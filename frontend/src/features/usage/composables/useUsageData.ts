@@ -393,6 +393,9 @@ export function useUsageData(options: UseUsageDataOptions) {
       if (filters?.status) {
         params.status = filters.status
       }
+      if (filters?.api_format) {
+        params.api_format = filters.api_format
+      }
 
       if (isAdminPage.value) {
         // 管理员页面：使用管理员 API
@@ -404,9 +407,6 @@ export function useUsageData(options: UseUsageDataOptions) {
         }
         if (filters?.provider) {
           params.provider = filters.provider
-        }
-        if (filters?.api_format) {
-          params.api_format = filters.api_format
         }
         if (filters?.client_family) {
           params.client_family = filters.client_family

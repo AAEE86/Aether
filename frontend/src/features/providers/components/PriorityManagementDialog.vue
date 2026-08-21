@@ -478,6 +478,7 @@ import {
   groupApiFormats,
   parseApiFormat,
   API_FORMAT_KIND_LABELS,
+  formatApiFormat,
   formatApiFormatShort,
   normalizeApiFormatAlias,
 } from '@/api/endpoints/types/api-format'
@@ -573,7 +574,7 @@ function poolKeySummary(key: KeyWithMeta): string {
 }
 
 function emptyFormatKeyText(format: string): string {
-  return legacyT(`暂无 ${format} 格式的 Key`)
+  return legacyT(`暂无 ${formatApiFormat(format)} 格式的 Key`)
 }
 
 function localizedApiError(error: unknown, fallback: string): string {

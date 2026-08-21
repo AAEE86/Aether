@@ -257,6 +257,8 @@ export interface RequestDetail {
   usage_pricing_available?: boolean
   input_audio_tokens?: number | null
   output_audio_tokens?: number | null
+  live_session?: Record<string, unknown> | null
+  realtime_session?: Record<string, unknown> | null
   upstream_is_stream?: boolean
   client_requested_stream?: boolean
   client_is_stream?: boolean

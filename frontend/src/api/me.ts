@@ -343,6 +343,7 @@ export const meApi = {
     timezone?: string
     tz_offset_minutes?: number
     search?: string  // 通用搜索：密钥名、模型名
+    api_format?: string
     status?: string
     limit?: number
     offset?: number

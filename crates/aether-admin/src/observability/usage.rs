@@ -7,7 +7,10 @@ use aether_billing::{
 use aether_data::repository::users::StoredUserSummary;
 use aether_data_contracts::repository::{
     provider_catalog::{StoredProviderCatalogEndpoint, StoredProviderCatalogProvider},
-    usage::{StoredRequestUsageAudit, StoredUsageAuditSummary, UsageBodyField},
+    usage::{
+        StoredRequestUsageAudit, StoredUsageAuditSummary, UsageBodyField,
+        LIVE_SESSION_METADATA_KEY, REALTIME_SESSION_METADATA_KEY,
+    },
 };
 use axum::{
     body::Body,
@@ -2472,6 +2475,16 @@ pub fn build_admin_usage_detail_payload(
         admin_usage_strip_settlement_metadata(object);
         admin_usage_strip_trace_metadata(object);
     }
+    let live_session = metadata
+        .as_object()
+        .and_then(|object| object.get(LIVE_SESSION_METADATA_KEY))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let realtime_session = metadata
+        .as_object()
+        .and_then(|object| object.get(REALTIME_SESSION_METADATA_KEY))
+        .cloned()
+        .unwrap_or(Value::Null);
     payload["user"] = match item.user_id.as_ref() {
         Some(user_id) => json!({
             "id": user_id,
@@ -2502,6 +2515,11 @@ pub fn build_admin_usage_detail_payload(
     payload["client_response_headers"] =
         item.client_response_headers.clone().unwrap_or(Value::Null);
     payload["metadata"] = metadata;
+    // Session summaries are also first-class detail fields. Keep the original
+    // values in `metadata` for backward compatibility while making the detail
+    // contract independent from the generic metadata viewer.
+    payload[LIVE_SESSION_METADATA_KEY] = live_session;
+    payload[REALTIME_SESSION_METADATA_KEY] = realtime_session;
     payload["routing"] = admin_usage_routing_json(item, provider_key_name);
     payload["body_capture"] = admin_usage_body_capture_json(item);
     payload["settlement"] = admin_usage_settlement_json(item);
@@ -2769,6 +2787,59 @@ mod tests {
         assert!(admin_usage_matches_status(&item, Some("WS")));
         assert!(!admin_usage_matches_status(&item, Some("standard")));
         assert!(!admin_usage_matches_status(&item, Some("stream")));
+    }
+
+    #[test]
+    fn admin_usage_detail_preserves_websocket_and_session_metadata() {
+        let live_session = json!({
+            "schema_version": "1",
+            "transport": "websocket",
+            "mode": "direct",
+            "state": "closed",
+            "client_frames": 4,
+            "upstream_frames": 8,
+        });
+        let realtime_session = json!({
+            "schema_version": "1",
+            "transport": "websocket",
+            "usage_state": "authoritative",
+            "input_audio_tokens": 7,
+            "output_audio_tokens": 3,
+        });
+        let item = StoredRequestUsageAudit {
+            request_type: Some("live".to_string()),
+            api_format: Some("codex:live".to_string()),
+            endpoint_api_format: Some("codex:live".to_string()),
+            is_stream: true,
+            request_metadata: Some(json!({
+                "websocket_mode": true,
+                "websocket_transport": "codex_live_direct",
+                "usage_available": false,
+                "usage_pricing_available": false,
+                "live_session": live_session,
+                "realtime_session": realtime_session,
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let payload = build_admin_usage_detail_payload(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+            false,
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(payload["is_websocket"], true);
+        assert_eq!(payload["websocket_transport"], "codex_live_direct");
+        assert_eq!(payload["live_session"], live_session);
+        assert_eq!(payload["realtime_session"], realtime_session);
+        assert_eq!(payload["metadata"]["live_session"], live_session);
+        assert_eq!(payload["metadata"]["realtime_session"], realtime_session);
     }
 
     #[test]
