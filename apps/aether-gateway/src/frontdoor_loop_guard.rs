@@ -42,6 +42,7 @@ pub(crate) fn frontdoor_self_loop_public_ai_path(path: &str) -> bool {
             | "/v1/responses"
             | "/v1/responses/compact"
             | "/v1/realtime"
+            | "/v1/realtime/calls"
             | "/v1/live"
             | "/v1/alpha/search"
             | "/v1beta/files"
@@ -154,6 +155,7 @@ mod tests {
     #[test]
     fn realtime_is_protected_from_frontdoor_self_loops() {
         assert!(frontdoor_self_loop_public_ai_path("/v1/realtime"));
+        assert!(frontdoor_self_loop_public_ai_path("/v1/realtime/calls"));
         assert!(gateway_frontdoor_self_loop_guard_matches_with_port(
             8084,
             "ws://127.0.0.1:8084/v1/realtime?model=gpt-realtime"

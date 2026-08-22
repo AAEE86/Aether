@@ -26,18 +26,21 @@ use crate::handlers::proxy::websocket::transport::{
     upstream_message_to_client, websocket_relay_frame_queue, UpstreamWebSocketErrorCodes,
     WebSocketRelayPumpControl, WebSocketRelayQueueError, WebSocketWriteError,
 };
-use crate::{AppState, GatewayError};
+use crate::{AppState, GatewayError, LocalExecutionRuntimeMissDiagnostic};
 
 use super::audit::{
     LiveAuditTransport, LiveSessionAudit, LiveSessionDisposition, LiveSessionTerminal,
 };
 use super::live_usage_accounting_is_safe;
 use super::planner::{
-    build_live_stream_admission_attempt, direct_live_websocket_url, live_sideband_url,
-    plan_live_candidate, LivePoolLeaseGuard, PlannedLiveCandidate,
+    build_live_stream_admission_attempt, direct_live_websocket_url_for_dialect, live_sideband_url,
+    plan_live_candidate, LiveCandidatePlanningOutcome, LivePoolLeaseGuard, PlannedLiveCandidate,
 };
 use super::protocol::{
-    call_id_from_path, direct_model_from_query, event_type, validate_initial_session_update,
+    direct_model_from_query, direct_realtime_model_from_query, direct_realtime_v2_model_from_query,
+    event_type, realtime_sideband_query_has_call_id, realtime_v2_request_is_codex,
+    sideband_call_from_request, validate_initial_session_update, LiveRouteDialect,
+    LEGACY_LIVE_CALL_PATH, REALTIME_SIDEBAND_PATH,
 };
 use super::registry::{
     LiveCallBinding, LiveCallLookup, LiveCallRegistry, LiveCallRegistryError, LiveSidebandLease,
@@ -158,7 +161,9 @@ pub(super) struct PreparedLiveSideband {
 
 pub(super) struct LiveWebSocketPreflightRejection {
     status: StatusCode,
+    termination: &'static str,
     message: &'static str,
+    audit_persisted: bool,
 }
 
 impl LiveWebSocketPreflightRejection {
@@ -168,6 +173,14 @@ impl LiveWebSocketPreflightRejection {
 
     pub(super) const fn message(&self) -> &'static str {
         self.message
+    }
+
+    pub(super) const fn termination(&self) -> &'static str {
+        self.termination
+    }
+
+    pub(super) const fn audit_persisted(&self) -> bool {
+        self.audit_persisted
     }
 }
 
@@ -193,7 +206,7 @@ pub(super) async fn prepare_live_websocket(
             "Codex Live is unavailable for finite-balance keys until Frameless usage settlement is supported",
         ));
     }
-    if context.uri.path() == "/v1/live" {
+    if context.uri.path() == LEGACY_LIVE_CALL_PATH {
         let client_model = match direct_model_from_query(context.uri.query()) {
             Ok(model) => model,
             Err(error) => {
@@ -206,22 +219,70 @@ pub(super) async fn prepare_live_websocket(
                 ));
             }
         };
-        return prepare_direct_live_websocket(state, context, client_model.as_str())
+        return prepare_direct_live_websocket(
+            state,
+            context,
+            client_model.as_str(),
+            LiveRouteDialect::LegacyLive,
+        )
+        .await
+        .map(PreparedLiveWebSocket::Direct);
+    }
+    // Codex Realtime V1 uses the OpenAI `/v1/realtime` path with
+    // `intent=quicksilver&model=...`; the current default V2 omits `intent`
+    // and is identified by the first-party Codex originator header.  A
+    // call_id on that path is a WebRTC sideband attachment and must continue
+    // through the registry branch below.
+    if context.uri.path() == REALTIME_SIDEBAND_PATH
+        && !realtime_sideband_query_has_call_id(context.uri.query())
+    {
+        let (client_model, dialect) = match direct_realtime_model_from_query(context.uri.query()) {
+            Ok(model) => (model, LiveRouteDialect::Realtime),
+            Err(_v1_error)
+                if realtime_v2_request_is_codex(context.uri.query(), &context.headers) =>
+            {
+                match direct_realtime_v2_model_from_query(context.uri.query()) {
+                    Ok(model) => (model, LiveRouteDialect::RealtimeV2),
+                    Err(error) => {
+                        return Err(preflight_rejection(
+                            context,
+                            "direct",
+                            error.status_code(),
+                            error.code(),
+                            error.client_message(),
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                // Preserve the V1 error (notably InvalidLiveIntent) for
+                // ordinary Realtime callers and malformed Codex V1 queries.
+                return Err(preflight_rejection(
+                    context,
+                    "direct",
+                    error.status_code(),
+                    error.code(),
+                    error.client_message(),
+                ));
+            }
+        };
+        return prepare_direct_live_websocket(state, context, client_model.as_str(), dialect)
             .await
             .map(PreparedLiveWebSocket::Direct);
     }
-    let call_id = match call_id_from_path(context.uri.path()) {
-        Ok(call_id) => call_id,
-        Err(error) => {
-            return Err(preflight_rejection(
-                context,
-                "sideband",
-                error.status_code(),
-                error.code(),
-                error.client_message(),
-            ));
-        }
-    };
+    let (dialect, call_id) =
+        match sideband_call_from_request(context.uri.path(), context.uri.query()) {
+            Ok(sideband) => sideband,
+            Err(error) => {
+                return Err(preflight_rejection(
+                    context,
+                    "sideband",
+                    error.status_code(),
+                    error.code(),
+                    error.client_message(),
+                ));
+            }
+        };
     let Some(auth) = context.decision.auth_context.as_ref() else {
         return Err(preflight_rejection(
             context,
@@ -299,7 +360,7 @@ pub(super) async fn prepare_live_websocket(
             ));
         }
     };
-    prepare_sideband_live_websocket(state, context, call_id, binding)
+    prepare_sideband_live_websocket(state, context, call_id, binding, dialect)
         .await
         .map(PreparedLiveWebSocket::Sideband)
 }
@@ -308,6 +369,7 @@ async fn prepare_direct_live_websocket(
     state: &AppState,
     context: &WebSocketRequestContext,
     client_model: &str,
+    dialect: LiveRouteDialect,
 ) -> Result<PreparedLiveRelay, LiveWebSocketPreflightRejection> {
     let started_at = Instant::now();
     let candidate = match plan_live_candidate(
@@ -317,12 +379,20 @@ async fn prepare_direct_live_websocket(
         &context.headers,
         &context.remote_addr,
         client_model,
+        dialect,
         None,
     )
     .await
     {
-        Ok(Some(candidate)) => candidate,
-        Ok(None) => {
+        Ok(LiveCandidatePlanningOutcome {
+            candidate: Some(candidate),
+            ..
+        }) => candidate,
+        Ok(LiveCandidatePlanningOutcome {
+            candidate: None,
+            runtime_miss,
+        }) => {
+            log_live_candidate_unavailable(context, "direct", client_model, runtime_miss.as_ref());
             return Err(preflight_rejection(
                 context,
                 "direct",
@@ -353,7 +423,7 @@ async fn prepare_direct_live_websocket(
         }
     };
     let pool_lease = LivePoolLeaseGuard::new(state, &candidate);
-    let upstream_url = match direct_live_websocket_url(&candidate) {
+    let upstream_url = match direct_live_websocket_url_for_dialect(&candidate, dialect) {
         Ok(url) => url,
         Err(error) => {
             pool_lease.release().await;
@@ -488,6 +558,7 @@ async fn prepare_sideband_live_websocket(
     context: &WebSocketRequestContext,
     call_id: String,
     binding: LiveCallBinding,
+    dialect: LiveRouteDialect,
 ) -> Result<PreparedLiveSideband, LiveWebSocketPreflightRejection> {
     let started_at = Instant::now();
     let Some(auth) = context.decision.auth_context.as_ref() else {
@@ -562,6 +633,7 @@ async fn prepare_sideband_live_websocket(
             &context.headers,
             &context.remote_addr,
             binding.client_model(),
+            dialect,
             Some(binding.pinned_candidate()),
         ),
     )
@@ -577,8 +649,14 @@ async fn prepare_sideband_live_websocket(
                 sideband_loss_message(loss),
             ));
         }
-        Ok(Ok(Some(candidate))) if binding.matches_candidate(&candidate) => candidate,
-        Ok(Ok(Some(candidate))) => {
+        Ok(Ok(LiveCandidatePlanningOutcome {
+            candidate: Some(candidate),
+            ..
+        })) if binding.matches_candidate(&candidate) => candidate,
+        Ok(Ok(LiveCandidatePlanningOutcome {
+            candidate: Some(candidate),
+            ..
+        })) => {
             crate::orchestration::release_pool_key_lease_from_report_context(
                 state,
                 candidate.execution.report_context.as_ref(),
@@ -593,7 +671,16 @@ async fn prepare_sideband_live_websocket(
                 "Codex Live call provider binding is no longer valid",
             ));
         }
-        Ok(Ok(None)) => {
+        Ok(Ok(LiveCandidatePlanningOutcome {
+            candidate: None,
+            runtime_miss,
+        })) => {
+            log_live_candidate_unavailable(
+                context,
+                "sideband",
+                binding.client_model(),
+                runtime_miss.as_ref(),
+            );
             release_sideband_lease(&mut sideband_lease, context).await;
             return Err(preflight_rejection(
                 context,
@@ -625,7 +712,7 @@ async fn prepare_sideband_live_websocket(
         }
     };
     let pool_lease = LivePoolLeaseGuard::new(state, &candidate);
-    let upstream_url = match live_sideband_url(&candidate, call_id.as_str()) {
+    let upstream_url = match live_sideband_url(&candidate, call_id.as_str(), dialect) {
         Ok(url) => url,
         Err(error) => {
             release_sideband_lease(&mut sideband_lease, context).await;
@@ -1058,6 +1145,7 @@ async fn audited_preflight_rejection(
     started_at: Instant,
     audit: Option<LiveSessionAudit>,
 ) -> LiveWebSocketPreflightRejection {
+    let audit_persisted = audit.is_some();
     if let Some(audit) = audit {
         audit
             .finish(
@@ -1066,7 +1154,9 @@ async fn audited_preflight_rejection(
             )
             .await;
     }
-    preflight_rejection(context, mode, status, termination, message)
+    let mut rejection = preflight_rejection(context, mode, status, termination, message);
+    rejection.audit_persisted = audit_persisted;
+    rejection
 }
 
 fn preflight_rejection(
@@ -1088,7 +1178,43 @@ fn preflight_rejection(
         termination,
         "Codex Live WebSocket preflight rejected the HTTP upgrade"
     );
-    LiveWebSocketPreflightRejection { status, message }
+    LiveWebSocketPreflightRejection {
+        status,
+        termination,
+        message,
+        audit_persisted: false,
+    }
+}
+
+fn log_live_candidate_unavailable(
+    context: &WebSocketRequestContext,
+    mode: &'static str,
+    client_model: &str,
+    runtime_miss: Option<&LocalExecutionRuntimeMissDiagnostic>,
+) {
+    warn!(
+        target: LIVE_LOG_TARGET,
+        event_name = "codex_live_candidate_unavailable",
+        log_type = "ops",
+        transport = WEBSOCKET_LOG_TRANSPORT,
+        websocket = true,
+        trace_id = %context.trace_id,
+        mode,
+        client_model,
+        runtime_miss_reason = runtime_miss
+            .map(|diagnostic| diagnostic.reason.as_str())
+            .unwrap_or("unknown"),
+        candidate_count = runtime_miss
+            .and_then(|diagnostic| diagnostic.candidate_count)
+            .unwrap_or(0),
+        skipped_candidate_count = runtime_miss
+            .and_then(|diagnostic| diagnostic.skipped_candidate_count)
+            .unwrap_or(0),
+        skip_reasons = runtime_miss
+            .and_then(|diagnostic| diagnostic.skip_reasons_summary())
+            .unwrap_or_default(),
+        "Codex Live request has no eligible provider mapping"
+    );
 }
 
 fn gateway_error_kind(error: &GatewayError) -> &'static str {

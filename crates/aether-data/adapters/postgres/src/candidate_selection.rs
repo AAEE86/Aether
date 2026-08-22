@@ -978,7 +978,7 @@ const PROVIDER_MODEL_MAPPING_API_FORMAT_MATCH_SQL: &str = r#"(
   OR (
     LOWER(BTRIM(p.provider_type)) = 'codex'
     AND LOWER($4) = 'codex:live'
-    AND LOWER(BTRIM(fmt.value)) = 'openai:responses'
+    AND LOWER(BTRIM(fmt.value)) IN ('openai:responses', '/v1/responses')
   )
 )"#;
 
@@ -1514,7 +1514,8 @@ mod tests {
     };
     use crate::{PostgresPoolConfig, PostgresPoolFactory};
     use aether_data_contracts::repository::candidate_selection::{
-        StoredPoolKeyCandidateOrder, StoredProviderModelMapping,
+        provider_model_mapping_api_format_covers, StoredPoolKeyCandidateOrder,
+        StoredProviderModelMapping,
     };
 
     #[tokio::test]
@@ -1606,10 +1607,24 @@ mod tests {
         assert!(!sql.contains(PROVIDER_MODEL_MAPPING_API_FORMAT_MATCH_MARKER));
         assert!(compatibility.contains("LOWER(BTRIM(p.provider_type)) = 'codex'"));
         assert!(compatibility.contains("LOWER($4) = 'codex:live'"));
-        assert!(compatibility.contains("LOWER(BTRIM(fmt.value)) = 'openai:responses'"));
+        for legacy_responses_alias in ["openai:responses", "/v1/responses"] {
+            assert!(provider_model_mapping_api_format_covers(
+                "codex",
+                legacy_responses_alias,
+                "codex:live"
+            ));
+            assert!(compatibility.contains(&format!("'{legacy_responses_alias}'")));
+        }
         assert!(!LIST_FOR_EXACT_API_FORMAT_SQL.contains(compatibility));
         assert!(!LIST_FOR_EXACT_API_FORMAT_AND_GLOBAL_MODEL_SQL.contains(compatibility));
         assert!(!LIST_POOL_KEYS_FOR_GROUP_SQL.contains(compatibility));
+        for permission_sql in [
+            LIST_FOR_EXACT_API_FORMAT_SQL,
+            LIST_FOR_EXACT_API_FORMAT_AND_GLOBAL_MODEL_SQL,
+            LIST_POOL_KEYS_FOR_GROUP_SQL,
+        ] {
+            assert!(!permission_sql.contains("'/v1/responses'"));
+        }
     }
 
     #[test]

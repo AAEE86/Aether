@@ -59,13 +59,25 @@ pub(crate) async fn live_websocket(
     {
         AuthenticatedAiWebSocketUpgradePreparation::Rejected(response) => Ok(response),
         AuthenticatedAiWebSocketUpgradePreparation::Ready(prepared) => {
-            let live =
-                match session::prepare_live_websocket(prepared.state(), prepared.context()).await {
-                    Ok(live) => live,
-                    Err(rejection) => {
-                        return prepared.rejection_response(rejection.status(), rejection.message())
+            let live = match session::prepare_live_websocket(prepared.state(), prepared.context())
+                .await
+            {
+                Ok(live) => live,
+                Err(rejection) => {
+                    if !rejection.audit_persisted() {
+                        audit::record_live_websocket_preflight_failure(
+                            prepared.state(),
+                            &prepared.context().decision,
+                            prepared.context().trace_id.as_str(),
+                            prepared.context().uri.path(),
+                            prepared.context().uri.query(),
+                            rejection.status(),
+                            rejection.termination(),
+                        );
                     }
-                };
+                    return prepared.rejection_response(rejection.status(), rejection.message());
+                }
+            };
             Ok(prepared.into_response_with(
                 ws,
                 LIVE_WEBSOCKET_SESSION_LIMITS,

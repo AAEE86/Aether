@@ -127,8 +127,9 @@ pub fn resolve_execution_runtime_stream_plan_kind_with_client_surface(
 
     if route_family == Some("codex")
         && route_kind == Some("live")
-        && ((*method == Method::GET && (path == "/v1/live" || path.starts_with("/v1/live/")))
-            || (*method == Method::POST && path == "/v1/live"))
+        && ((*method == Method::GET
+            && (path == "/v1/live" || path.starts_with("/v1/live/") || path == "/v1/realtime"))
+            || (*method == Method::POST && matches!(path, "/v1/live" | "/v1/realtime/calls")))
     {
         return Some(CODEX_LIVE_STREAM_PLAN_KIND);
     }
@@ -471,12 +472,40 @@ pub fn sanitize_request_path_and_query(path: &str, query: Option<&str>) -> Optio
 
     let sanitized_path = sanitize_request_path(path)?;
     let sanitized_query = query
-        .and_then(sanitize_request_query_string)
-        .or_else(|| embedded_query.and_then(sanitize_request_query_string));
+        .and_then(|query| sanitize_request_query_string_for_path(path, query))
+        .or_else(|| {
+            embedded_query.and_then(|query| sanitize_request_query_string_for_path(path, query))
+        });
     Some(match sanitized_query {
         Some(query) => format!("{sanitized_path}?{query}"),
         None => sanitized_path,
     })
+}
+
+fn sanitize_request_query_string_for_path(path: &str, query: &str) -> Option<String> {
+    if path != "/v1/realtime" {
+        return sanitize_request_query_string(query);
+    }
+
+    let query = query.trim().trim_start_matches('?').trim();
+    if query.is_empty() {
+        return None;
+    }
+
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    let mut redacted_call_id = false;
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        if key.eq_ignore_ascii_case("call_id") {
+            if !value.trim().is_empty() && !redacted_call_id {
+                serializer.append_pair("call_id", "{call_id}");
+                redacted_call_id = true;
+            }
+        } else if request_query_key_is_safe_to_trace(key.as_ref()) {
+            serializer.append_pair(key.as_ref(), value.as_ref());
+        }
+    }
+    let sanitized = serializer.finish();
+    (!sanitized.is_empty()).then_some(sanitized)
 }
 
 fn request_query_key_is_safe_to_trace(key: &str) -> bool {
@@ -699,8 +728,10 @@ mod tests {
     fn resolves_codex_live_call_create_and_websocket_routes() {
         for (method, path) in [
             (Method::POST, "/v1/live"),
+            (Method::POST, "/v1/realtime/calls"),
             (Method::GET, "/v1/live"),
             (Method::GET, "/v1/live/rtc_opaque"),
+            (Method::GET, "/v1/realtime"),
         ] {
             assert_eq!(
                 resolve_execution_runtime_stream_plan_kind(
@@ -972,6 +1003,22 @@ mod tests {
             )
             .as_deref(),
             Some("/v1/realtime?model=gpt-realtime-2.1")
+        );
+        assert_eq!(
+            sanitize_request_path_and_query(
+                "/v1/realtime?intent=quicksilver&call_id=rtc_secret_opaque&model=gpt-realtime-1.5&api_key=secret",
+                None
+            )
+            .as_deref(),
+            Some("/v1/realtime?call_id=%7Bcall_id%7D&model=gpt-realtime-1.5")
+        );
+        assert_eq!(
+            sanitize_request_path_and_query(
+                "/v1/realtime?c%61ll_id=rtc_secret_encoded&call_id=rtc_duplicate",
+                None
+            )
+            .as_deref(),
+            Some("/v1/realtime?call_id=%7Bcall_id%7D")
         );
     }
 

@@ -4,7 +4,7 @@
 //! only bounded identifiers, multipart framing and the first `session.update`
 //! check; it intentionally does not copy the evolving Codex event schema.
 
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use serde_json::Value;
 
 const MAX_MODEL_BYTES: usize = 256;
@@ -14,6 +14,41 @@ const MAX_MULTIPART_BODY_BYTES: usize = 1024 * 1024;
 const MAX_SDP_BYTES: usize = 512 * 1024;
 const MAX_SESSION_BYTES: usize = 256 * 1024;
 const MAX_PART_HEADERS_BYTES: usize = 8 * 1024;
+
+pub(super) const LEGACY_LIVE_CALL_PATH: &str = "/v1/live";
+pub(super) const REALTIME_CALLS_PATH: &str = "/v1/realtime/calls";
+pub(super) const REALTIME_SIDEBAND_PATH: &str = "/v1/realtime";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LiveRouteDialect {
+    LegacyLive,
+    Realtime,
+    /// OpenAI Realtime v2, which is the current Codex default.  Unlike the
+    /// legacy Codex realtime dialect it deliberately omits the
+    /// `intent=quicksilver` query selector and `openai-alpha` header.
+    RealtimeV2,
+}
+
+impl LiveRouteDialect {
+    pub(super) fn from_call_create_path(path: &str) -> Option<Self> {
+        match path {
+            LEGACY_LIVE_CALL_PATH => Some(Self::LegacyLive),
+            REALTIME_CALLS_PATH => Some(Self::Realtime),
+            _ => None,
+        }
+    }
+
+    pub(super) fn downstream_location(self, call_id: &str) -> String {
+        match self {
+            Self::LegacyLive => format!("{LEGACY_LIVE_CALL_PATH}/{call_id}"),
+            Self::Realtime => format!("{REALTIME_CALLS_PATH}/{call_id}"),
+            // V2 does not create WebRTC calls through this route today (Codex
+            // pins AVAS call creation to V1).  Keep a valid sideband location
+            // for defensive callers rather than synthesising a new path.
+            Self::RealtimeV2 => format!("{REALTIME_SIDEBAND_PATH}?call_id={call_id}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(super) enum LiveProtocolError {
@@ -27,6 +62,10 @@ pub(super) enum LiveProtocolError {
     OauthUpstreamUnsupported,
     #[error("invalid Live model query")]
     InvalidModelQuery,
+    #[error("invalid Live websocket intent")]
+    InvalidLiveIntent,
+    #[error("invalid Live WebRTC architecture")]
+    InvalidLiveArchitecture,
     #[error("invalid Live model")]
     InvalidModel,
     #[error("invalid Live call ID")]
@@ -92,6 +131,8 @@ impl LiveProtocolError {
             Self::OauthDirectWebSocketUnsupported => "codex_live_oauth_direct_unsupported",
             Self::OauthUpstreamUnsupported => "codex_live_oauth_upstream_unsupported",
             Self::InvalidModelQuery => "codex_live_model_query_invalid",
+            Self::InvalidLiveIntent => "codex_live_intent_invalid",
+            Self::InvalidLiveArchitecture => "codex_live_architecture_invalid",
             Self::InvalidModel => "codex_live_model_invalid",
             Self::InvalidCallId => "codex_live_call_id_invalid",
             Self::UnsupportedMediaType => "codex_live_media_type_unsupported",
@@ -128,6 +169,12 @@ impl LiveProtocolError {
             }
             Self::InvalidModelQuery => {
                 "Codex Live WebSocket requires exactly one model query parameter"
+            }
+            Self::InvalidLiveIntent => {
+                "Codex Live WebSocket requires intent=quicksilver"
+            }
+            Self::InvalidLiveArchitecture => {
+                "Codex Live WebRTC call creation requires architecture=avas"
             }
             Self::InvalidModel => {
                 "Codex Live model must be a non-empty identifier no longer than 256 bytes"
@@ -205,6 +252,42 @@ pub(super) fn validate_call_id(call_id: &str) -> Result<(), LiveProtocolError> {
     Ok(())
 }
 
+/// Validate the current Codex AVAS WebRTC call-create selector.
+///
+/// The shared `/v1/realtime/calls` route is selected as Codex Live by its
+/// unique quicksilver intent. Require the accompanying architecture here so a
+/// malformed client request is rejected instead of being silently rewritten
+/// into a different upstream transport contract. Unknown non-sensitive query
+/// fields remain opaque for forward compatibility.
+pub(super) fn validate_realtime_call_create_query(
+    query: Option<&str>,
+) -> Result<(), LiveProtocolError> {
+    let mut intent_seen = false;
+    let mut architecture_seen = false;
+    for (name, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("intent") {
+            if intent_seen || !value.eq_ignore_ascii_case("quicksilver") {
+                return Err(LiveProtocolError::InvalidLiveIntent);
+            }
+            intent_seen = true;
+        } else if name.eq_ignore_ascii_case("architecture") {
+            if architecture_seen || !value.eq_ignore_ascii_case("avas") {
+                return Err(LiveProtocolError::InvalidLiveArchitecture);
+            }
+            architecture_seen = true;
+        } else if live_query_parameter_is_sensitive(name.as_ref()) {
+            return Err(LiveProtocolError::InvalidModelQuery);
+        }
+    }
+    if !intent_seen {
+        return Err(LiveProtocolError::InvalidLiveIntent);
+    }
+    if !architecture_seen {
+        return Err(LiveProtocolError::InvalidLiveArchitecture);
+    }
+    Ok(())
+}
+
 fn is_live_call_id_segment(call_id: &str) -> bool {
     if validate_call_id(call_id).is_err() {
         return false;
@@ -245,6 +328,89 @@ pub(super) fn direct_model_from_query(query: Option<&str>) -> Result<String, Liv
     model.ok_or(LiveProtocolError::InvalidModelQuery)
 }
 
+/// Parse the standalone Codex realtime WebSocket query shape.
+///
+/// Current Codex clients use `/v1/realtime?intent=quicksilver&model=...` for
+/// the direct WebSocket transport.  The same path is also used by OpenAI's
+/// ordinary Realtime API, so the intent marker is part of the trust boundary:
+/// callers must not be able to select the Codex Live planner merely by
+/// choosing a model name.
+pub(super) fn direct_realtime_model_from_query(
+    query: Option<&str>,
+) -> Result<String, LiveProtocolError> {
+    let mut intent_seen = false;
+    for (name, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("intent") {
+            if intent_seen || !value.eq_ignore_ascii_case("quicksilver") {
+                return Err(LiveProtocolError::InvalidLiveIntent);
+            }
+            intent_seen = true;
+        }
+    }
+    if !intent_seen {
+        return Err(LiveProtocolError::InvalidLiveIntent);
+    }
+    direct_model_from_query(query)
+}
+
+/// Parse the Codex Realtime v2 direct WebSocket query shape.
+///
+/// Realtime v2 intentionally has no `intent` marker.  The caller must use the
+/// Codex originator header as the additional trust-boundary discriminator
+/// before invoking this parser; this function only validates the query itself.
+pub(super) fn direct_realtime_v2_model_from_query(
+    query: Option<&str>,
+) -> Result<String, LiveProtocolError> {
+    for (name, _) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("intent") {
+            return Err(LiveProtocolError::InvalidLiveIntent);
+        }
+        // A call_id identifies a WebRTC sideband socket, not a standalone
+        // v2 conversation.  Reject it here as well as at the session branch
+        // so this parser cannot accidentally be reused as a direct route.
+        if name.eq_ignore_ascii_case("call_id") {
+            return Err(LiveProtocolError::InvalidModelQuery);
+        }
+    }
+    direct_model_from_query(query)
+}
+
+/// Return whether the request carries a first-party Codex originator.
+///
+/// The default Codex CLI sends `codex_cli_rs` (optionally with a version),
+/// while Desktop/Web/Mobile use their stable `codex_work_*` values.  Keep the
+/// allowlist narrow so a normal OpenAI Realtime v2 socket is not routed into
+/// the Codex Live planner merely because it has a `model` query parameter.
+pub(super) fn is_codex_realtime_originator(headers: &HeaderMap) -> bool {
+    let Some(originator) = headers
+        .get("originator")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    originator.split_whitespace().next().is_some_and(|value| {
+        value.eq_ignore_ascii_case("codex_cli_rs")
+            || value.to_ascii_lowercase().starts_with("codex_cli_rs/")
+            || value.eq_ignore_ascii_case("codex_work_desktop")
+            || value.eq_ignore_ascii_case("codex_work_web")
+            || value.eq_ignore_ascii_case("codex_work_mobile")
+    })
+}
+
+/// Query + header discriminator for a Codex Realtime v2 direct socket.
+pub(super) fn realtime_v2_request_is_codex(query: Option<&str>, headers: &HeaderMap) -> bool {
+    let mut has_model = false;
+    for (name, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("intent") || name.eq_ignore_ascii_case("call_id") {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("model") && !value.trim().is_empty() {
+            has_model = true;
+        }
+    }
+    has_model && is_codex_realtime_originator(headers)
+}
+
 fn live_query_parameter_is_sensitive(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -273,6 +439,38 @@ pub(super) fn call_id_from_path(path: &str) -> Result<String, LiveProtocolError>
     }
     validate_call_id(call_id)?;
     Ok(call_id.to_string())
+}
+
+pub(super) fn realtime_sideband_query_has_call_id(query: Option<&str>) -> bool {
+    url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .any(|(name, _)| name.eq_ignore_ascii_case("call_id"))
+}
+
+pub(super) fn sideband_call_from_request(
+    path: &str,
+    query: Option<&str>,
+) -> Result<(LiveRouteDialect, String), LiveProtocolError> {
+    if path != REALTIME_SIDEBAND_PATH {
+        return call_id_from_path(path).map(|call_id| (LiveRouteDialect::LegacyLive, call_id));
+    }
+
+    let mut call_id = None;
+    for (name, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("call_id") {
+            if call_id.is_some() {
+                return Err(LiveProtocolError::InvalidCallId);
+            }
+            validate_call_id(value.as_ref())?;
+            call_id = Some(value.into_owned());
+            continue;
+        }
+        if live_query_parameter_is_sensitive(name.as_ref()) {
+            return Err(LiveProtocolError::InvalidCallId);
+        }
+    }
+    call_id
+        .map(|call_id| (LiveRouteDialect::Realtime, call_id))
+        .ok_or(LiveProtocolError::InvalidCallId)
 }
 
 pub(super) fn validate_initial_session_update(raw: &str) -> Result<(), LiveProtocolError> {
@@ -376,19 +574,37 @@ pub(super) fn extract_call_id_from_location(location: &str) -> Result<String, Li
         return Err(LiveProtocolError::InvalidCallLocation);
     }
     let path = if let Ok(url) = url::Url::parse(location) {
+        if url.fragment().is_some() {
+            return Err(LiveProtocolError::InvalidCallLocation);
+        }
         url.path().to_string()
     } else {
+        if !location.starts_with('/') || location.contains('#') {
+            return Err(LiveProtocolError::InvalidCallLocation);
+        }
         location
             .split_once('?')
             .map_or(location, |(path, _)| path)
             .to_string()
     };
-    let call_id = path
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let (call_id, resource) = segments
+        .split_last()
         .ok_or(LiveProtocolError::InvalidCallLocation)?;
+    let valid_resource = matches!(
+        resource,
+        ["v1", "live"]
+            | ["v1", "realtime", "calls"]
+            | ["v1", "realtime", "calls", "calls"]
+            | ["backend-api", "codex", "realtime", "calls"]
+            | ["backend-api", "codex", "realtime", "calls", "calls"]
+    );
+    if !valid_resource {
+        return Err(LiveProtocolError::InvalidCallLocation);
+    }
     if !is_live_call_id_segment(call_id) {
         return Err(LiveProtocolError::InvalidCallLocation);
     }
@@ -594,6 +810,136 @@ mod tests {
     }
 
     #[test]
+    fn direct_realtime_query_requires_quicksilver_and_preserves_model_validation() {
+        assert_eq!(
+            direct_realtime_model_from_query(Some(
+                "intent=quicksilver&model=gpt-realtime%2Ffuture&client=codex",
+            ))
+            .unwrap(),
+            "gpt-realtime/future"
+        );
+        assert_eq!(
+            direct_realtime_model_from_query(Some("INTENT=QUICKSILVER&model=gpt-live")).unwrap(),
+            "gpt-live"
+        );
+
+        for query in [
+            None,
+            Some("model=gpt-live"),
+            Some("intent=other&model=gpt-live"),
+            Some("intent=quicksilver&intent=quicksilver&model=gpt-live"),
+            Some("intent=quicksilver&intent=other&model=gpt-live"),
+        ] {
+            assert_eq!(
+                direct_realtime_model_from_query(query),
+                Err(LiveProtocolError::InvalidLiveIntent),
+                "query should not select Codex Live: {query:?}"
+            );
+        }
+        assert_eq!(
+            direct_realtime_model_from_query(Some("intent=quicksilver&model=a&MODEL=b")),
+            Err(LiveProtocolError::InvalidModelQuery)
+        );
+        assert_eq!(
+            direct_realtime_model_from_query(Some(
+                "intent=quicksilver&model=gpt-live&token=secret"
+            )),
+            Err(LiveProtocolError::InvalidModelQuery)
+        );
+    }
+
+    #[test]
+    fn realtime_call_create_requires_unique_quicksilver_avas_selectors() {
+        assert_eq!(
+            validate_realtime_call_create_query(Some(
+                "intent=quicksilver&architecture=avas&future_hint=opaque"
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            validate_realtime_call_create_query(Some("architecture=avas")),
+            Err(LiveProtocolError::InvalidLiveIntent)
+        );
+        for query in [
+            "intent=other&architecture=avas",
+            "intent=quicksilver&intent=quicksilver&architecture=avas",
+        ] {
+            assert_eq!(
+                validate_realtime_call_create_query(Some(query)),
+                Err(LiveProtocolError::InvalidLiveIntent)
+            );
+        }
+        for query in [
+            "intent=quicksilver",
+            "intent=quicksilver&architecture=other",
+            "intent=quicksilver&architecture=avas&ARCHITECTURE=avas",
+        ] {
+            assert_eq!(
+                validate_realtime_call_create_query(Some(query)),
+                Err(LiveProtocolError::InvalidLiveArchitecture)
+            );
+        }
+        assert_eq!(
+            validate_realtime_call_create_query(Some(
+                "intent=quicksilver&architecture=avas&access_token=secret"
+            )),
+            Err(LiveProtocolError::InvalidModelQuery)
+        );
+    }
+
+    #[test]
+    fn direct_realtime_v2_query_omits_intent_and_rejects_sideband_selectors() {
+        assert_eq!(
+            direct_realtime_v2_model_from_query(Some("model=gpt-realtime%2Ffuture&client=codex"))
+                .unwrap(),
+            "gpt-realtime/future"
+        );
+        for query in [
+            None,
+            Some("intent=quicksilver&model=gpt-live"),
+            Some("intent=other&model=gpt-live"),
+            Some("model=gpt-live&call_id=rtc_1"),
+            Some("model=a&MODEL=b"),
+            Some("model=gpt-live&token=secret"),
+        ] {
+            assert!(
+                direct_realtime_v2_model_from_query(query).is_err(),
+                "v2 query should be rejected: {query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn realtime_v2_request_requires_a_codex_originator() {
+        let mut codex = HeaderMap::new();
+        codex.insert("originator", "codex_work_desktop".parse().unwrap());
+        assert!(realtime_v2_request_is_codex(
+            Some("model=gpt-realtime-1.5"),
+            &codex
+        ));
+        codex.insert("originator", "codex_cli_rs/0.145.2".parse().unwrap());
+        assert!(realtime_v2_request_is_codex(
+            Some("model=gpt-realtime-1.5"),
+            &codex
+        ));
+        for (query, originator) in [
+            ("model=gpt-realtime-1.5", "openai-python"),
+            (
+                "intent=quicksilver&model=gpt-realtime-1.5",
+                "codex_work_desktop",
+            ),
+            ("model=gpt-realtime-1.5&call_id=rtc_1", "codex_work_desktop"),
+            ("model=gpt-realtime-1.5", ""),
+        ] {
+            let mut headers = HeaderMap::new();
+            if !originator.is_empty() {
+                headers.insert("originator", originator.parse().unwrap());
+            }
+            assert!(!realtime_v2_request_is_codex(Some(query), &headers));
+        }
+    }
+
+    #[test]
     fn direct_protocol_starts_with_session_update_not_response_create() {
         let opaque = r#"{"type":"session.update","session":{"future_capability":{"version":2}},"future_event_field":[1,2,3]}"#;
         validate_initial_session_update(opaque).unwrap();
@@ -733,6 +1079,9 @@ mod tests {
         for location in [
             "https://api.openai.com/v1/live/rtc_abc-123",
             "/v1/live/550e8400-e29b-41d4-a716-446655440000",
+            "/v1/realtime/calls/rtc_current",
+            "https://chatgpt.com/backend-api/codex/realtime/calls/rtc_backend",
+            "/v1/realtime/calls/calls/rtc_forwarded",
         ] {
             assert!(extract_call_id_from_location(location).is_ok());
         }
@@ -740,7 +1089,13 @@ mod tests {
             extract_call_id_from_location("/v1/live/rtc%2Fescape"),
             Err(LiveProtocolError::InvalidCallLocation)
         );
-        for location in ["/v1/live", "/v1/live/not-a-call-id"] {
+        for location in [
+            "/v1/live",
+            "/v1/live/not-a-call-id",
+            "/unrelated/rtc_opaque",
+            "?call_id=rtc_query_only",
+            "/v1/realtime/calls/rtc_valid#fragment",
+        ] {
             assert_eq!(
                 extract_call_id_from_location(location),
                 Err(LiveProtocolError::InvalidCallLocation)
@@ -749,6 +1104,52 @@ mod tests {
         for dot_segment in [".", ".."] {
             assert_eq!(
                 validate_call_id(dot_segment),
+                Err(LiveProtocolError::InvalidCallId)
+            );
+        }
+    }
+
+    #[test]
+    fn recognizes_call_create_and_sideband_route_dialects() {
+        assert_eq!(
+            LiveRouteDialect::from_call_create_path("/v1/live"),
+            Some(LiveRouteDialect::LegacyLive)
+        );
+        assert_eq!(
+            LiveRouteDialect::from_call_create_path("/v1/realtime/calls"),
+            Some(LiveRouteDialect::Realtime)
+        );
+        assert_eq!(
+            LiveRouteDialect::from_call_create_path("/v1/realtime"),
+            None
+        );
+        assert_eq!(
+            sideband_call_from_request("/v1/live/rtc_legacy", None),
+            Ok((LiveRouteDialect::LegacyLive, "rtc_legacy".to_string()))
+        );
+        assert_eq!(
+            sideband_call_from_request(
+                "/v1/realtime",
+                Some("intent=quicksilver&call_id=rtc_current")
+            ),
+            Ok((LiveRouteDialect::Realtime, "rtc_current".to_string()))
+        );
+    }
+
+    #[test]
+    fn realtime_sideband_query_rejects_ambiguous_or_sensitive_call_ids() {
+        assert!(realtime_sideband_query_has_call_id(Some("call_id=")));
+        assert!(realtime_sideband_query_has_call_id(Some(
+            "CALL_ID=rtc_one&call_id=rtc_two"
+        )));
+        for query in [
+            "call_id=",
+            "call_id=rtc_one&call_id=rtc_two",
+            "call_id=rtc_valid&token=secret",
+            "model=gpt-realtime",
+        ] {
+            assert_eq!(
+                sideband_call_from_request("/v1/realtime", Some(query)),
                 Err(LiveProtocolError::InvalidCallId)
             );
         }
