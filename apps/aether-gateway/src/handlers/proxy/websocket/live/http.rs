@@ -1060,13 +1060,28 @@ mod tests {
 
     #[tokio::test]
     async fn codex_realtime_call_remains_on_the_live_handler() {
-        let decision = GatewayControlDecision::synthetic(
+        let mut decision = GatewayControlDecision::synthetic(
             "/v1/realtime/calls",
             Some("ai_public".to_string()),
             Some("codex".to_string()),
             Some("live".to_string()),
             Some("codex:live".to_string()),
         );
+        decision.auth_context = Some(GatewayControlAuthContext {
+            user_id: "user-codex-realtime".to_string(),
+            api_key_id: "key-codex-realtime".to_string(),
+            username: Some("codex-realtime".to_string()),
+            api_key_name: Some("codex-realtime".to_string()),
+            balance_remaining: None,
+            access_allowed: true,
+            user_rate_limit: None,
+            api_key_rate_limit: None,
+            api_key_is_standalone: true,
+            admin_bypass_limits: false,
+            local_rejection: None,
+            allowed_models: None,
+            ip_rules: None,
+        });
         let request_context = GatewayPublicRequestContext {
             trace_id: "trace-codex-realtime-call".to_string(),
             request_method: http::Method::POST,
