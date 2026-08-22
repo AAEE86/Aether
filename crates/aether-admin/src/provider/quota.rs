@@ -10,6 +10,9 @@ const OAUTH_REFRESH_FAILED_PREFIX: &str = "[REFRESH_FAILED] ";
 const OAUTH_EXPIRED_PREFIX: &str = "[OAUTH_EXPIRED] ";
 const OAUTH_REQUEST_FAILED_PREFIX: &str = "[REQUEST_FAILED] ";
 const CODEX_SPARK_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
+const CODEX_ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";
+const CODEX_HEADER_PREFIX: &str = "x-codex-";
+const CODEX_LIMIT_NAME_HEADER_SUFFIX: &str = "-limit-name";
 
 pub fn provider_auto_remove_banned_keys(config: Option<&serde_json::Value>) -> bool {
     config
@@ -2538,6 +2541,48 @@ pub fn parse_codex_backend_me_response(
     Some(serde_json::Value::Object(result))
 }
 
+/// Lists the named per-model limits the response headers announce, as `(feature, limit_name)`.
+///
+/// `feature` is the header segment that carries the limit's windows
+/// (`x-codex-bengalfox-primary-used-percent`), and matches the `metered_feature` reported by
+/// `wham/usage` minus its `codex_` prefix.
+fn codex_named_limit_headers(normalized: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    normalized
+        .iter()
+        .filter_map(|(key, value)| {
+            let feature = key
+                .strip_prefix(CODEX_HEADER_PREFIX)?
+                .strip_suffix(CODEX_LIMIT_NAME_HEADER_SUFFIX)?;
+            let limit_name = value.trim();
+            (!feature.is_empty() && !limit_name.is_empty())
+                .then(|| (feature.to_string(), limit_name.to_string()))
+        })
+        .collect()
+}
+
+/// Whether one of the announced named limits owns the unprefixed `x-codex-primary/secondary-*`
+/// windows.
+///
+/// `x-codex-active-limit` names the metered feature this request was billed against, and reports
+/// the plan's own limit as `premium`, which matches no announced feature. The account therefore
+/// keeps the unprefixed windows unless the active limit is one of the named ones.
+fn codex_named_limit_owns_unprefixed_windows(
+    normalized: &BTreeMap<String, String>,
+    named_limits: &[(String, String)],
+) -> bool {
+    let Some(active_limit) = normalized
+        .get(CODEX_ACTIVE_LIMIT_HEADER)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    named_limits.iter().any(|(feature, _)| {
+        active_limit.eq_ignore_ascii_case(feature)
+            || active_limit.eq_ignore_ascii_case(&format!("codex_{feature}"))
+    })
+}
+
 pub fn parse_codex_usage_headers(
     headers: &BTreeMap<String, String>,
     updated_at_unix_secs: u64,
@@ -2597,28 +2642,52 @@ pub fn parse_codex_usage_headers(
         object
     };
 
-    let primary_window = read_window("primary");
-    let secondary_window = read_window("secondary");
-    let use_paid_windows =
-        codex_window_has_active_limit(&secondary_window) && plan_type.as_deref() != Some("free");
-    if use_paid_windows {
-        codex_write_window(&mut result, &secondary_window, "primary");
-        codex_write_window(&mut result, &primary_window, "secondary");
-    } else {
-        codex_write_window(&mut result, &primary_window, "primary");
-        if codex_window_is_explicitly_disabled(&secondary_window) {
-            codex_write_disabled_window(&mut result, "secondary");
+    // Every named limit is announced by its own `x-codex-<feature>-limit-name` header and carries
+    // its windows under the same `<feature>` prefix, so the header set describes itself.
+    let named_limits = codex_named_limit_headers(&normalized);
+    for (feature, limit_name) in &named_limits {
+        if limit_name != CODEX_SPARK_LIMIT_NAME {
+            continue;
+        }
+        let spark_primary_window = read_window(&format!("{feature}-primary"));
+        if !spark_primary_window.is_empty() {
+            codex_write_window(&mut result, &spark_primary_window, "spark_primary");
+        }
+        let spark_secondary_window = read_window(&format!("{feature}-secondary"));
+        if !spark_secondary_window.is_empty() {
+            codex_write_window(&mut result, &spark_secondary_window, "spark_secondary");
         }
     }
 
-    if let Some(value) = normalized
-        .get("x-codex-primary-over-secondary-limit-percent")
-        .and_then(|value| value.parse::<f64>().ok())
-    {
-        result.insert(
-            "primary_over_secondary_limit_percent".to_string(),
-            json!(value),
-        );
+    // The unprefixed windows describe whichever limit governed this request, not the account:
+    // on a request metered against a named limit they repeat that limit's windows verbatim.
+    // `x-codex-active-limit` is the only thing that tells the two apart, so an account window is
+    // only claimed when no named limit owns the unprefixed set. Upstreams that do not send the
+    // header keep the previous behaviour.
+    if !codex_named_limit_owns_unprefixed_windows(&normalized, &named_limits) {
+        let primary_window = read_window("primary");
+        let secondary_window = read_window("secondary");
+        let use_paid_windows = codex_window_has_active_limit(&secondary_window)
+            && plan_type.as_deref() != Some("free");
+        if use_paid_windows {
+            codex_write_window(&mut result, &secondary_window, "primary");
+            codex_write_window(&mut result, &primary_window, "secondary");
+        } else {
+            codex_write_window(&mut result, &primary_window, "primary");
+            if codex_window_is_explicitly_disabled(&secondary_window) {
+                codex_write_disabled_window(&mut result, "secondary");
+            }
+        }
+
+        if let Some(value) = normalized
+            .get("x-codex-primary-over-secondary-limit-percent")
+            .and_then(|value| value.parse::<f64>().ok())
+        {
+            result.insert(
+                "primary_over_secondary_limit_percent".to_string(),
+                json!(value),
+            );
+        }
     }
     if let Some(value) = normalized
         .get("x-codex-credits-has-credits")
@@ -5356,6 +5425,223 @@ mod tests {
         assert!(!should_auto_remove_structured_reason(Some(
             "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已失效"
         )));
+    }
+
+    /// Header set captured from a `gpt-5.6-sol` response: the request was metered against the
+    /// plan's own limit, so the unprefixed windows are the account's and the Spark limit is
+    /// announced separately.
+    fn codex_premium_response_headers() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("x-codex-plan-type".to_string(), "pro".to_string()),
+            ("x-codex-active-limit".to_string(), "premium".to_string()),
+            ("x-codex-primary-used-percent".to_string(), "50".to_string()),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-primary-reset-at".to_string(),
+                "1787801347".to_string(),
+            ),
+            (
+                "x-codex-secondary-used-percent".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "x-codex-secondary-window-minutes".to_string(),
+                "0".to_string(),
+            ),
+            ("x-codex-secondary-reset-at".to_string(), "".to_string()),
+            (
+                "x-codex-secondary-reset-after-seconds".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-limit-name".to_string(),
+                "GPT-5.3-Codex-Spark".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-used-percent".to_string(),
+                "17".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-reset-at".to_string(),
+                "1787410252".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-used-percent".to_string(),
+                "8".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-reset-at".to_string(),
+                "1787833868".to_string(),
+            ),
+        ])
+    }
+
+    /// Header set captured from a `gpt-5.3-codex-spark` response three seconds later on the same
+    /// key: the unprefixed windows now repeat the Spark limit verbatim, and only
+    /// `x-codex-active-limit` says so.
+    fn codex_spark_response_headers() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("x-codex-plan-type".to_string(), "pro".to_string()),
+            (
+                "x-codex-active-limit".to_string(),
+                "codex_bengalfox".to_string(),
+            ),
+            ("x-codex-primary-used-percent".to_string(), "22".to_string()),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "x-codex-primary-reset-at".to_string(),
+                "1787410252".to_string(),
+            ),
+            (
+                "x-codex-secondary-used-percent".to_string(),
+                "11".to_string(),
+            ),
+            (
+                "x-codex-secondary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-secondary-reset-at".to_string(),
+                "1787833868".to_string(),
+            ),
+            (
+                "x-codex-secondary-reset-after-seconds".to_string(),
+                "424336".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-limit-name".to_string(),
+                "GPT-5.3-Codex-Spark".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-used-percent".to_string(),
+                "22".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-reset-at".to_string(),
+                "1787410252".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-used-percent".to_string(),
+                "11".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-reset-at".to_string(),
+                "1787833868".to_string(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn codex_usage_headers_keep_the_account_window_when_the_plan_limit_is_active() {
+        let parsed = parse_codex_usage_headers(&codex_premium_response_headers(), 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(50.0)));
+        assert_eq!(
+            parsed.get("primary_window_minutes"),
+            Some(&json!(10_080u64))
+        );
+        assert_eq!(
+            parsed.get("primary_reset_at"),
+            Some(&json!(1_787_801_347u64))
+        );
+        assert_eq!(parsed.get("secondary_window_minutes"), Some(&json!(0u64)));
+    }
+
+    #[test]
+    fn codex_usage_headers_capture_named_limit_windows_alongside_the_account_window() {
+        let parsed = parse_codex_usage_headers(&codex_premium_response_headers(), 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(17.0)));
+        assert_eq!(
+            parsed.get("spark_primary_window_minutes"),
+            Some(&json!(300u64))
+        );
+        assert_eq!(
+            parsed.get("spark_primary_reset_at"),
+            Some(&json!(1_787_410_252u64))
+        );
+        assert_eq!(
+            parsed.get("spark_secondary_used_percent"),
+            Some(&json!(8.0))
+        );
+        assert_eq!(
+            parsed.get("spark_secondary_window_minutes"),
+            Some(&json!(10_080u64))
+        );
+    }
+
+    #[test]
+    fn codex_usage_headers_keep_model_scoped_windows_out_of_the_account_family() {
+        let parsed = parse_codex_usage_headers(&codex_spark_response_headers(), 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        // Without this the paid-window swap promotes the Spark weekly window into the account's
+        // own weekly slot, which is what the scheduler reads.
+        assert!(
+            parsed.get("primary_used_percent").is_none(),
+            "the Spark limit governed this request, so it must not claim the account window: {parsed}"
+        );
+        assert!(parsed.get("primary_window_minutes").is_none());
+        assert!(parsed.get("primary_reset_at").is_none());
+        assert!(parsed.get("secondary_used_percent").is_none());
+        assert!(parsed.get("primary_over_secondary_limit_percent").is_none());
+
+        assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(22.0)));
+        assert_eq!(
+            parsed.get("spark_secondary_used_percent"),
+            Some(&json!(11.0))
+        );
+        assert_eq!(parsed.get("plan_type"), Some(&json!("pro")));
+    }
+
+    #[test]
+    fn codex_usage_headers_without_an_active_limit_still_fill_the_account_window() {
+        let mut headers = codex_premium_response_headers();
+        headers.remove("x-codex-active-limit");
+
+        let parsed = parse_codex_usage_headers(&headers, 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(50.0)));
+        assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(17.0)));
+    }
+
+    #[test]
+    fn codex_usage_headers_ignore_an_active_limit_that_matches_no_announced_family() {
+        let mut headers = codex_premium_response_headers();
+        headers.insert(
+            "x-codex-active-limit".to_string(),
+            "codex_unknown_feature".to_string(),
+        );
+
+        let parsed = parse_codex_usage_headers(&headers, 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(50.0)));
     }
 
     #[test]
