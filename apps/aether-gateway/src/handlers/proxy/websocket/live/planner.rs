@@ -24,11 +24,13 @@ use crate::ai_serving::{
 use crate::control::GatewayControlDecision;
 use crate::headers::request_origin_from_headers_and_remote_addr;
 use crate::privacy::RedactionSessionSlot;
+use crate::state::LocalExecutionRuntimeMissDiagnostic;
 use crate::{AppState, GatewayError};
 
-use super::protocol::{validate_model, LiveProtocolError};
+use super::protocol::{validate_model, LiveProtocolError, LiveRouteDialect};
 
-pub(super) const LIVE_ALPHA_HEADER_VALUE: &str = "quicksilver=v2";
+pub(super) const LEGACY_LIVE_ALPHA_HEADER_VALUE: &str = "quicksilver=v2";
+pub(super) const REALTIME_LIVE_ALPHA_HEADER_VALUE: &str = "quicksilver=v1";
 const CHATGPT_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const CHATGPT_FEDRAMP_HEADER: &str = "x-openai-fedramp";
 const CHATGPT_SESSION_ID_HEADER: &str = "x-session-id";
@@ -54,6 +56,50 @@ pub(super) struct PlannedLiveCandidate {
     /// identity. It deliberately excludes bearer tokens so an OAuth refresh
     /// does not invalidate an in-flight WebRTC call.
     pub(super) routing_fingerprint: String,
+}
+
+#[derive(Debug)]
+pub(super) struct LiveCandidatePlanningOutcome {
+    pub(super) candidate: Option<PlannedLiveCandidate>,
+    pub(super) runtime_miss: Option<LocalExecutionRuntimeMissDiagnostic>,
+}
+
+/// Owns the request-scoped runtime-miss entry while Live planning is in
+/// progress. The ordinary HTTP proxy consumes this entry after planning, but
+/// Live has three specialized call sites and pinned sideband planning can be
+/// cancelled when its attachment lease is lost. Clearing from `Drop` makes
+/// that cancellation path safe as well as ordinary errors and early returns.
+struct LiveRuntimeMissDiagnosticGuard<'a> {
+    state: &'a AppState,
+    trace_id: &'a str,
+    armed: bool,
+}
+
+impl<'a> LiveRuntimeMissDiagnosticGuard<'a> {
+    fn new(state: &'a AppState, trace_id: &'a str) -> Self {
+        Self {
+            state,
+            trace_id,
+            armed: true,
+        }
+    }
+
+    fn take(mut self) -> Option<LocalExecutionRuntimeMissDiagnostic> {
+        let diagnostic = self
+            .state
+            .take_local_execution_runtime_miss_diagnostic(self.trace_id);
+        self.armed = false;
+        diagnostic
+    }
+}
+
+impl Drop for LiveRuntimeMissDiagnosticGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state
+                .clear_local_execution_runtime_miss_diagnostic(self.trace_id);
+        }
+    }
 }
 
 /// Cancellation-safe owner for the scheduler's distributed pool-key lease.
@@ -148,6 +194,35 @@ pub(super) async fn plan_live_candidate(
     headers: &HeaderMap,
     remote_addr: &SocketAddr,
     client_model: &str,
+    dialect: LiveRouteDialect,
+    pinned_candidate: Option<&ResponsesWebSocketPinnedCandidate>,
+) -> Result<LiveCandidatePlanningOutcome, GatewayError> {
+    let diagnostic_guard = LiveRuntimeMissDiagnosticGuard::new(state, trace_id);
+    let candidate = plan_live_candidate_inner(
+        state,
+        trace_id,
+        decision,
+        headers,
+        remote_addr,
+        client_model,
+        dialect,
+        pinned_candidate,
+    )
+    .await?;
+    Ok(LiveCandidatePlanningOutcome {
+        candidate,
+        runtime_miss: diagnostic_guard.take(),
+    })
+}
+
+async fn plan_live_candidate_inner(
+    state: &AppState,
+    trace_id: &str,
+    decision: &GatewayControlDecision,
+    headers: &HeaderMap,
+    remote_addr: &SocketAddr,
+    client_model: &str,
+    dialect: LiveRouteDialect,
     pinned_candidate: Option<&ResponsesWebSocketPinnedCandidate>,
 ) -> Result<Option<PlannedLiveCandidate>, GatewayError> {
     if validate_model(client_model).is_err() || client_model.len() > MAX_LIVE_MODEL_BYTES {
@@ -247,7 +322,7 @@ pub(super) async fn plan_live_candidate(
         .await;
         return Ok(None);
     };
-    apply_live_headers(&mut execution.provider_request_headers, trace_id);
+    apply_live_headers(&mut execution.provider_request_headers, trace_id, dialect);
     let routing_fingerprint =
         match live_routing_fingerprint(&execution, effective_auth_type.as_str(), auth_mode) {
             Ok(fingerprint) => fingerprint,
@@ -273,20 +348,91 @@ pub(super) async fn plan_live_candidate(
 pub(super) fn direct_live_websocket_url(
     candidate: &PlannedLiveCandidate,
 ) -> Result<String, LiveProtocolError> {
+    direct_live_websocket_url_for_dialect(candidate, LiveRouteDialect::LegacyLive)
+}
+
+pub(super) fn direct_live_websocket_url_for_dialect(
+    candidate: &PlannedLiveCandidate,
+    dialect: LiveRouteDialect,
+) -> Result<String, LiveProtocolError> {
     if candidate.auth_mode == LiveAuthMode::ChatGptOauth {
         return Err(LiveProtocolError::OauthDirectWebSocketUnsupported);
     }
-    replace_live_suffix(
-        candidate.execution.upstream_url.as_deref(),
-        &["live"],
-        Some(("model", candidate.provider_model.as_str())),
-    )
+    match dialect {
+        LiveRouteDialect::LegacyLive => replace_live_suffix(
+            candidate.execution.upstream_url.as_deref(),
+            &["live"],
+            Some(("model", candidate.provider_model.as_str())),
+        ),
+        LiveRouteDialect::Realtime => {
+            // The endpoint is planned using the canonical codex:live `/live`
+            // URL.  Direct Codex WebSocket clients use `/realtime` instead,
+            // with the quicksilver intent and mapped provider model in the
+            // query string.  Keep endpoint-owned query parameters while
+            // replacing any duplicate transport selectors.
+            let raw = replace_live_suffix(
+                candidate.execution.upstream_url.as_deref(),
+                &["realtime"],
+                None,
+            )?;
+            let mut url =
+                Url::parse(raw.as_str()).map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?;
+            replace_url_query_pair(&mut url, "intent", "quicksilver");
+            replace_url_query_pair(&mut url, "model", candidate.provider_model.as_str());
+            Ok(url.to_string())
+        }
+        LiveRouteDialect::RealtimeV2 => {
+            // Realtime v2 is the current Codex default. It intentionally
+            // omits the v1 quicksilver intent marker; remove any stale or
+            // duplicate endpoint-owned intent before adding the mapped model.
+            let raw = replace_live_suffix(
+                candidate.execution.upstream_url.as_deref(),
+                &["realtime"],
+                None,
+            )?;
+            let mut url =
+                Url::parse(raw.as_str()).map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?;
+            remove_url_query_pair(&mut url, "intent");
+            replace_url_query_pair(&mut url, "model", candidate.provider_model.as_str());
+            Ok(url.to_string())
+        }
+    }
 }
 
-pub(super) fn live_call_url(candidate: &PlannedLiveCandidate) -> Result<String, LiveProtocolError> {
+pub(super) fn live_call_url(
+    candidate: &PlannedLiveCandidate,
+    dialect: LiveRouteDialect,
+) -> Result<String, LiveProtocolError> {
+    if dialect == LiveRouteDialect::RealtimeV2 {
+        // Codex pins AVAS/WebRTC call creation to Realtime v1. Realtime v2 is
+        // a direct WebSocket transport and has no call-create exchange.
+        return Err(LiveProtocolError::InvalidCallLocation);
+    }
     match candidate.auth_mode {
         LiveAuthMode::ApiKey => {
-            replace_live_suffix(candidate.execution.upstream_url.as_deref(), &["live"], None)
+            let raw = replace_live_suffix(
+                candidate.execution.upstream_url.as_deref(),
+                match dialect {
+                    LiveRouteDialect::LegacyLive => &["live"],
+                    LiveRouteDialect::Realtime => &["realtime", "calls"],
+                    LiveRouteDialect::RealtimeV2 => unreachable!("handled above"),
+                },
+                None,
+            )?;
+            if dialect == LiveRouteDialect::LegacyLive {
+                return Ok(raw);
+            }
+
+            // Current Codex creates AVAS calls with these two transport
+            // selectors. The scheduler intentionally plans against a synthetic
+            // body and fixed URI, so reconstruct them here rather than trusting
+            // arbitrary downstream query parameters. Replacement is
+            // case-insensitive and preserves endpoint-owned query parameters.
+            let mut url =
+                Url::parse(raw.as_str()).map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?;
+            replace_url_query_pair(&mut url, "intent", "quicksilver");
+            replace_url_query_pair(&mut url, "architecture", "avas");
+            Ok(url.to_string())
         }
         LiveAuthMode::ChatGptOauth => {
             let source =
@@ -309,20 +455,77 @@ pub(super) fn live_call_url(candidate: &PlannedLiveCandidate) -> Result<String, 
 pub(super) fn live_sideband_url(
     candidate: &PlannedLiveCandidate,
     call_id: &str,
+    dialect: LiveRouteDialect,
 ) -> Result<String, LiveProtocolError> {
     super::protocol::validate_call_id(call_id)?;
     match candidate.auth_mode {
-        LiveAuthMode::ApiKey => replace_live_suffix(
-            candidate.execution.upstream_url.as_deref(),
-            &["live", call_id],
-            None,
-        ),
+        LiveAuthMode::ApiKey => match dialect {
+            LiveRouteDialect::LegacyLive => replace_live_suffix(
+                candidate.execution.upstream_url.as_deref(),
+                &["live", call_id],
+                None,
+            ),
+            LiveRouteDialect::Realtime => {
+                // AVAS sideband sockets use the same Codex quicksilver
+                // discriminator as the call-creation and direct websocket
+                // paths.  Keep endpoint-owned query parameters, but replace
+                // any stale/duplicate transport selectors so the upstream
+                // receives exactly one `intent=quicksilver` and `call_id`.
+                let raw = replace_live_suffix(
+                    candidate.execution.upstream_url.as_deref(),
+                    &["realtime"],
+                    None,
+                )?;
+                let mut url =
+                    Url::parse(raw.as_str()).map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?;
+                replace_url_query_pair(&mut url, "intent", "quicksilver");
+                replace_url_query_pair(&mut url, "call_id", call_id);
+                Ok(url.to_string())
+            }
+            LiveRouteDialect::RealtimeV2 => {
+                // V2 sideband joins (if used by a future client) carry only
+                // the call id; unlike V1 they must not include quicksilver.
+                let raw = replace_live_suffix(
+                    candidate.execution.upstream_url.as_deref(),
+                    &["realtime"],
+                    None,
+                )?;
+                let mut url =
+                    Url::parse(raw.as_str()).map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?;
+                remove_url_query_pair(&mut url, "intent");
+                replace_url_query_pair(&mut url, "call_id", call_id);
+                Ok(url.to_string())
+            }
+        },
         // The Codex ChatGPT call creation endpoint returns an OpenAI Realtime
         // call ID. Current Codex connects its sideband to this API origin even
         // when call creation used the ChatGPT OAuth backend.
         LiveAuthMode::ChatGptOauth => {
             validated_official_chatgpt_url(candidate.execution.upstream_url.as_deref())?;
-            Ok(format!("https://api.openai.com/v1/live/{call_id}"))
+            let mut url = Url::parse("https://api.openai.com/v1/live")
+                .map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?;
+            // The sideband intentionally crosses from the official ChatGPT
+            // backend to the OpenAI API origin. Do not copy backend query
+            // parameters across that boundary; only the transport selectors
+            // constructed below are valid on the sideband origin.
+            match dialect {
+                LiveRouteDialect::LegacyLive => {
+                    url.path_segments_mut()
+                        .map_err(|_| LiveProtocolError::InvalidUpstreamUrl)?
+                        .push(call_id);
+                }
+                LiveRouteDialect::Realtime => {
+                    url.set_path("/v1/realtime");
+                    replace_url_query_pair(&mut url, "intent", "quicksilver");
+                    replace_url_query_pair(&mut url, "call_id", call_id);
+                }
+                LiveRouteDialect::RealtimeV2 => {
+                    url.set_path("/v1/realtime");
+                    remove_url_query_pair(&mut url, "intent");
+                    replace_url_query_pair(&mut url, "call_id", call_id);
+                }
+            }
+            Ok(url.to_string())
         }
     }
 }
@@ -330,8 +533,18 @@ pub(super) fn live_sideband_url(
 pub(super) fn apply_live_headers(
     headers: &mut std::collections::BTreeMap<String, String>,
     seed: &str,
+    dialect: LiveRouteDialect,
 ) {
-    replace_header(headers, "openai-alpha", LIVE_ALPHA_HEADER_VALUE);
+    let alpha = match dialect {
+        LiveRouteDialect::LegacyLive => LEGACY_LIVE_ALPHA_HEADER_VALUE,
+        LiveRouteDialect::Realtime => REALTIME_LIVE_ALPHA_HEADER_VALUE,
+        LiveRouteDialect::RealtimeV2 => "",
+    };
+    if dialect == LiveRouteDialect::RealtimeV2 {
+        headers.retain(|name, _| !name.eq_ignore_ascii_case("openai-alpha"));
+    } else {
+        replace_header(headers, "openai-alpha", alpha);
+    }
     let session_id = find_header(headers, "x-session-id")
         .or_else(|| find_header(headers, "thread-id"))
         .or_else(|| find_header(headers, "session-id"))
@@ -489,6 +702,11 @@ fn replace_live_suffix(
 }
 
 fn replace_url_query_pair(url: &mut Url, name: &str, value: &str) {
+    remove_url_query_pair(url, name);
+    url.query_pairs_mut().append_pair(name, value);
+}
+
+fn remove_url_query_pair(url: &mut Url, name: &str) {
     let retained = url
         .query_pairs()
         .filter(|(candidate, _)| !candidate.eq_ignore_ascii_case(name))
@@ -499,7 +717,6 @@ fn replace_url_query_pair(url: &mut Url, name: &str, value: &str) {
     for (key, value) in retained {
         query.append_pair(key.as_str(), value.as_str());
     }
-    query.append_pair(name, value);
 }
 
 fn canonical_live_route_query(url: &Url) -> String {
@@ -636,6 +853,55 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn live_runtime_miss_guard_returns_and_removes_the_diagnostic() {
+        let state = AppState::new().expect("gateway state should build");
+        let trace_id = "trace-live-planner-diagnostic";
+        let expected = LocalExecutionRuntimeMissDiagnostic {
+            reason: "no_eligible_candidate".to_string(),
+            candidate_count: Some(2),
+            ..Default::default()
+        };
+        state.set_local_execution_runtime_miss_diagnostic(trace_id, expected.clone());
+
+        let diagnostic = LiveRuntimeMissDiagnosticGuard::new(&state, trace_id).take();
+
+        assert_eq!(diagnostic, Some(expected));
+        assert!(state
+            .take_local_execution_runtime_miss_diagnostic(trace_id)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelling_live_planning_clears_the_runtime_miss_diagnostic() {
+        let state = AppState::new().expect("gateway state should build");
+        let trace_id = "trace-live-planner-cancelled";
+        state.set_local_execution_runtime_miss_diagnostic(
+            trace_id,
+            LocalExecutionRuntimeMissDiagnostic {
+                reason: "planning_started".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let task_state = state.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _guard = LiveRuntimeMissDiagnosticGuard::new(&task_state, trace_id);
+            let _ = ready_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        ready_rx
+            .await
+            .expect("planning task should install its diagnostic guard");
+        task.abort();
+        let _ = task.await;
+
+        assert!(state
+            .take_local_execution_runtime_miss_diagnostic(trace_id)
+            .is_none());
+    }
 
     fn candidate(url: &str, auth_mode: LiveAuthMode) -> PlannedLiveCandidate {
         let execution: AiExecutionDecision = serde_json::from_value(json!({
@@ -794,12 +1060,165 @@ mod tests {
         );
         assert!(!direct.as_str().contains("global-model"));
         assert_eq!(
-            live_call_url(&candidate).unwrap(),
+            live_call_url(&candidate, LiveRouteDialect::LegacyLive).unwrap(),
             "https://api.example.test/v1/live?api-version=2026-08-01&model=stale&MODEL=duplicate"
         );
         assert_eq!(
-            live_sideband_url(&candidate, "rtc_abc-123").unwrap(),
+            live_sideband_url(&candidate, "rtc_abc-123", LiveRouteDialect::LegacyLive).unwrap(),
             "https://api.example.test/v1/live/rtc_abc-123?api-version=2026-08-01&model=stale&MODEL=duplicate"
+        );
+        assert_eq!(
+            live_call_url(&candidate, LiveRouteDialect::Realtime).unwrap(),
+            "https://api.example.test/v1/realtime/calls?api-version=2026-08-01&model=stale&MODEL=duplicate&intent=quicksilver&architecture=avas"
+        );
+        assert_eq!(
+            live_sideband_url(&candidate, "rtc_abc-123", LiveRouteDialect::Realtime).unwrap(),
+            "https://api.example.test/v1/realtime?api-version=2026-08-01&model=stale&MODEL=duplicate&intent=quicksilver&call_id=rtc_abc-123"
+        );
+    }
+
+    #[test]
+    fn derives_direct_realtime_websocket_url_with_mapped_model_and_intent() {
+        let mut candidate = candidate(
+            "https://api.example.test/v1/live?api-version=2026-08-01&intent=stale&INTENT=duplicate&model=stale&MODEL=duplicate&deployment=primary",
+            LiveAuthMode::ApiKey,
+        );
+        candidate.provider_model = "upstream/model + future".to_string();
+        let direct = Url::parse(
+            direct_live_websocket_url_for_dialect(&candidate, LiveRouteDialect::Realtime)
+                .expect("direct Realtime URL should build")
+                .as_str(),
+        )
+        .expect("direct Realtime URL should parse");
+        assert_eq!(direct.path(), "/v1/realtime");
+        assert_eq!(
+            direct.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("api-version".into(), "2026-08-01".into()),
+                ("deployment".into(), "primary".into()),
+                ("intent".into(), "quicksilver".into()),
+                ("model".into(), "upstream/model + future".into()),
+            ]
+        );
+        assert_eq!(
+            direct
+                .query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("intent"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            direct
+                .query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("model"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn derives_direct_realtime_v2_websocket_url_without_intent() {
+        let mut candidate = candidate(
+            "https://api.example.test/v1/live?api-version=2026-08-01&intent=stale&INTENT=duplicate&model=stale&MODEL=duplicate&deployment=primary",
+            LiveAuthMode::ApiKey,
+        );
+        candidate.provider_model = "upstream/model + future".to_string();
+        let direct = Url::parse(
+            direct_live_websocket_url_for_dialect(&candidate, LiveRouteDialect::RealtimeV2)
+                .expect("direct Realtime v2 URL should build")
+                .as_str(),
+        )
+        .expect("direct Realtime v2 URL should parse");
+        assert_eq!(direct.path(), "/v1/realtime");
+        assert_eq!(
+            direct.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("api-version".into(), "2026-08-01".into()),
+                ("deployment".into(), "primary".into()),
+                ("model".into(), "upstream/model + future".into()),
+            ]
+        );
+        assert_eq!(
+            direct
+                .query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("intent"))
+                .count(),
+            0
+        );
+        assert_eq!(
+            direct
+                .query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("model"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn realtime_api_key_call_url_replaces_duplicate_transport_selectors() {
+        let candidate = candidate(
+            "https://api.example.test/v1/live?intent=stale&INTENT=duplicate&architecture=stale&ARCHITECTURE=duplicate&deployment=primary",
+            LiveAuthMode::ApiKey,
+        );
+        let url = Url::parse(
+            live_call_url(&candidate, LiveRouteDialect::Realtime)
+                .expect("Realtime API-key call URL should build")
+                .as_str(),
+        )
+        .expect("Realtime API-key call URL should parse");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("deployment".into(), "primary".into()),
+                ("intent".into(), "quicksilver".into()),
+                ("architecture".into(), "avas".into()),
+            ]
+        );
+        assert_eq!(
+            url.query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("intent"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            url.query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("architecture"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn realtime_sideband_url_replaces_duplicate_transport_selectors() {
+        let candidate = candidate(
+            "https://api.example.test/v1/live?trace=1&intent=stale&INTENT=duplicate&call_id=old&CALL_ID=duplicate",
+            LiveAuthMode::ApiKey,
+        );
+        let url = Url::parse(
+            live_sideband_url(&candidate, "rtc_current", LiveRouteDialect::Realtime)
+                .expect("Realtime sideband URL should build")
+                .as_str(),
+        )
+        .expect("Realtime sideband URL should parse");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("trace".into(), "1".into()),
+                ("intent".into(), "quicksilver".into()),
+                ("call_id".into(), "rtc_current".into()),
+            ]
+        );
+        assert_eq!(
+            url.query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("intent"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            url.query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("call_id"))
+                .count(),
+            1
         );
     }
 
@@ -809,7 +1228,12 @@ mod tests {
             "https://chatgpt.com/backend-api/codex/live?api-version=2026-08-01&intent=stale&INTENT=duplicate&architecture=stale&ARCHITECTURE=duplicate",
             LiveAuthMode::ChatGptOauth,
         );
-        let call = Url::parse(live_call_url(&candidate).unwrap().as_str()).unwrap();
+        let call = Url::parse(
+            live_call_url(&candidate, LiveRouteDialect::Realtime)
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
         assert_eq!(call.path(), "/backend-api/codex/realtime/calls");
         assert_eq!(
             call.query_pairs().collect::<Vec<_>>(),
@@ -832,12 +1256,52 @@ mod tests {
             1
         );
         assert_eq!(
-            live_sideband_url(&candidate, "rtc_call_1").unwrap(),
+            live_sideband_url(&candidate, "rtc_call_1", LiveRouteDialect::LegacyLive).unwrap(),
             "https://api.openai.com/v1/live/rtc_call_1"
+        );
+        assert_eq!(
+            live_sideband_url(&candidate, "rtc_call_1", LiveRouteDialect::Realtime).unwrap(),
+            "https://api.openai.com/v1/realtime?intent=quicksilver&call_id=rtc_call_1"
+        );
+        let oauth_sideband = Url::parse(
+            live_sideband_url(&candidate, "rtc_call_1", LiveRouteDialect::Realtime)
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
+        assert_eq!(
+            oauth_sideband
+                .query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("intent"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            oauth_sideband
+                .query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("call_id"))
+                .count(),
+            1
         );
         assert_eq!(
             direct_live_websocket_url(&candidate),
             Err(LiveProtocolError::OauthDirectWebSocketUnsupported)
+        );
+    }
+
+    #[test]
+    fn chatgpt_oauth_sideband_does_not_copy_cross_origin_query() {
+        let candidate = candidate(
+            "https://chatgpt.com/backend-api/codex/live?api-version=2026-08-01&deployment=backend-only&access_token=must-not-cross-origin&X-Api-Key=must-not-cross-origin",
+            LiveAuthMode::ChatGptOauth,
+        );
+        assert_eq!(
+            live_sideband_url(&candidate, "rtc_call_1", LiveRouteDialect::LegacyLive).unwrap(),
+            "https://api.openai.com/v1/live/rtc_call_1"
+        );
+        assert_eq!(
+            live_sideband_url(&candidate, "rtc_call_1", LiveRouteDialect::Realtime).unwrap(),
+            "https://api.openai.com/v1/realtime?intent=quicksilver&call_id=rtc_call_1"
         );
     }
 
@@ -848,11 +1312,11 @@ mod tests {
             LiveAuthMode::ChatGptOauth,
         );
         assert_eq!(
-            live_call_url(&candidate),
+            live_call_url(&candidate, LiveRouteDialect::Realtime),
             Err(LiveProtocolError::OauthUpstreamUnsupported)
         );
         assert_eq!(
-            live_sideband_url(&candidate, "rtc_custom_backend"),
+            live_sideband_url(&candidate, "rtc_custom_backend", LiveRouteDialect::Realtime),
             Err(LiveProtocolError::OauthUpstreamUnsupported)
         );
         assert_eq!(
@@ -973,15 +1437,15 @@ mod tests {
     }
 
     #[test]
-    fn live_headers_force_quicksilver_and_preserve_a_stable_session_identity() {
+    fn live_headers_force_the_route_dialect_and_preserve_a_stable_session_identity() {
         let mut headers = BTreeMap::from([
             ("OpenAI-Alpha".to_string(), "wrong".to_string()),
             ("thread-id".to_string(), "thread-stable".to_string()),
         ]);
-        apply_live_headers(&mut headers, "trace-fallback");
+        apply_live_headers(&mut headers, "trace-fallback", LiveRouteDialect::Realtime);
         assert_eq!(
             headers.get("openai-alpha").map(String::as_str),
-            Some(LIVE_ALPHA_HEADER_VALUE)
+            Some(REALTIME_LIVE_ALPHA_HEADER_VALUE)
         );
         assert_eq!(
             headers.get("x-session-id").map(String::as_str),
@@ -999,7 +1463,17 @@ mod tests {
             ("Session-Id".to_string(), "legacy-stable".to_string()),
             ("chatgpt-account-id".to_string(), "account-1".to_string()),
         ]);
-        apply_live_headers(&mut legacy_session_header, "trace-fallback");
+        apply_live_headers(
+            &mut legacy_session_header,
+            "trace-fallback",
+            LiveRouteDialect::LegacyLive,
+        );
+        assert_eq!(
+            legacy_session_header
+                .get("openai-alpha")
+                .map(String::as_str),
+            Some(LEGACY_LIVE_ALPHA_HEADER_VALUE)
+        );
         assert_eq!(
             legacy_session_header
                 .get("x-session-id")
@@ -1011,6 +1485,23 @@ mod tests {
                 .get("chatgpt-account-id")
                 .map(String::as_str),
             Some("account-1")
+        );
+
+        let mut v2_headers = BTreeMap::from([
+            ("OpenAI-Alpha".to_string(), "stale".to_string()),
+            ("thread-id".to_string(), "v2-thread".to_string()),
+        ]);
+        apply_live_headers(
+            &mut v2_headers,
+            "trace-fallback",
+            LiveRouteDialect::RealtimeV2,
+        );
+        assert!(v2_headers
+            .keys()
+            .all(|name| !name.eq_ignore_ascii_case("openai-alpha")));
+        assert_eq!(
+            v2_headers.get("x-session-id").map(String::as_str),
+            Some("v2-thread")
         );
     }
 
@@ -1027,11 +1518,11 @@ mod tests {
             LiveAuthMode::ApiKey,
         );
         assert_eq!(
-            live_call_url(&wrong_suffix),
+            live_call_url(&wrong_suffix, LiveRouteDialect::LegacyLive),
             Err(LiveProtocolError::InvalidUpstreamUrl)
         );
         assert_eq!(
-            live_sideband_url(&wrong_suffix, "rtc/escape"),
+            live_sideband_url(&wrong_suffix, "rtc/escape", LiveRouteDialect::LegacyLive),
             Err(LiveProtocolError::InvalidCallId)
         );
 
@@ -1044,7 +1535,7 @@ mod tests {
             Err(LiveProtocolError::InvalidUpstreamUrl)
         );
         assert_eq!(
-            live_call_url(&fragment),
+            live_call_url(&fragment, LiveRouteDialect::LegacyLive),
             Err(LiveProtocolError::InvalidUpstreamUrl)
         );
 

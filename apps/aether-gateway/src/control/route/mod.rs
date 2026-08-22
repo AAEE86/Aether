@@ -212,7 +212,7 @@ pub(crate) fn classify_control_route(
     .or_else(|| oauth::classify_oauth_route(method, &normalized_path))
     .or_else(|| admin::classify_admin_route(method, &normalized_path))
     .or_else(|| internal::classify_internal_route(method, &normalized_path))
-    .or_else(|| ai::classify_ai_public_route(method, &normalized_path, headers))?;
+    .or_else(|| ai::classify_ai_public_route(method, &normalized_path, uri.query(), headers))?;
 
     let mut decision = classified.into_decision(normalized_path);
     if let Some(signature) = decision.auth_endpoint_signature.as_deref() {

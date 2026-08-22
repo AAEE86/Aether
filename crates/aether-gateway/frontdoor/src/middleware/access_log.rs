@@ -254,6 +254,12 @@ mod tests {
             ),
             "/v1/realtime?model=gpt-realtime-2.1"
         );
+        assert_eq!(
+            sanitize_access_log_path(
+                "/v1/realtime?intent=quicksilver&call_id=rtc_secret_opaque&model=gpt-realtime-1.5&api_key=secret"
+            ),
+            "/v1/realtime?call_id=%7Bcall_id%7D&model=gpt-realtime-1.5"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

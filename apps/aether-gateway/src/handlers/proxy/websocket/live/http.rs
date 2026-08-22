@@ -22,10 +22,16 @@ use crate::execution_runtime::execute_execution_runtime_sync_plan_with_report_co
 use crate::handlers::proxy::websocket::responses::ResponsesWebSocketTurnAdmission;
 use crate::{AppState, GatewayError};
 
-use super::audit::mark_live_call_create_report_context;
+use super::audit::{
+    mark_live_call_create_report_context, LiveCallCreateAuditGuard,
+    LIVE_CALL_CANDIDATE_UNAVAILABLE_MESSAGE,
+};
 use super::live_usage_accounting_is_safe;
 use super::planner::{live_call_url, plan_live_candidate, LiveAuthMode, LivePoolLeaseGuard};
-use super::protocol::{build_live_multipart, extract_call_id_from_location, parse_live_multipart};
+use super::protocol::{
+    build_live_multipart, extract_call_id_from_location, parse_live_multipart, validate_model,
+    validate_realtime_call_create_query, LiveRouteDialect,
+};
 use super::registry::{LiveCallBinding, LiveCallRegistry};
 
 const MAX_LIVE_HTTP_BODY_BYTES: usize = 1024 * 1024;
@@ -37,36 +43,98 @@ pub(crate) async fn maybe_handle_live_http(
     body: Option<&Bytes>,
     remote_addr: &SocketAddr,
 ) -> Result<Option<Response<Body>>, GatewayError> {
-    if parts.method != http::Method::POST || request_context.request_path != "/v1/live" {
+    let Some(dialect) = LiveRouteDialect::from_call_create_path(&request_context.request_path)
+    else {
+        return Ok(None);
+    };
+    if parts.method != http::Method::POST {
         return Ok(None);
     }
+    // `/v1/realtime/calls` is shared with the ordinary OpenAI Realtime API.
+    // The control-plane route classifier is the authority that distinguishes
+    // Codex AVAS (`intent=quicksilver`) from a normal Realtime call.  Do not
+    // let this path-only specialized hook steal an `openai:realtime` request
+    // after classification has deliberately kept it on the generic proxy.
+    if dialect == LiveRouteDialect::Realtime
+        && !request_context
+            .control_decision
+            .as_ref()
+            .and_then(|decision| decision.auth_endpoint_signature.as_deref())
+            .is_some_and(|format| format.eq_ignore_ascii_case("codex:live"))
+    {
+        return Ok(None);
+    }
+    Box::pin(handle_live_http(
+        state,
+        request_context,
+        parts,
+        body,
+        remote_addr,
+        dialect,
+    ))
+    .await
+}
+
+async fn handle_live_http(
+    state: &AppState,
+    request_context: &GatewayPublicRequestContext,
+    parts: &http::request::Parts,
+    body: Option<&Bytes>,
+    remote_addr: &SocketAddr,
+    dialect: LiveRouteDialect,
+) -> Result<Option<Response<Body>>, GatewayError> {
+    let mut call_audit = LiveCallCreateAuditGuard::new(
+        state,
+        request_context.control_decision.as_ref(),
+        request_context.trace_id.as_str(),
+        request_context.request_path.as_str(),
+    );
+    if dialect == LiveRouteDialect::Realtime {
+        if let Err(error) = validate_realtime_call_create_query(parts.uri.query()) {
+            return audited_local_live_error(
+                &mut call_audit,
+                request_context,
+                error.status_code(),
+                error.client_message(),
+                error.code(),
+            );
+        }
+    }
     let Some(control_decision) = request_context.control_decision.as_ref() else {
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::NOT_FOUND,
             "Codex Live route is unavailable",
-        )?));
+            "route_unavailable",
+        );
     };
     if !live_usage_accounting_is_safe(control_decision) {
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::NOT_IMPLEMENTED,
             "Codex Live is unavailable for finite-balance keys until Frameless usage settlement is supported",
-        )?));
+            "finite_balance_unsupported",
+        );
     }
     let Some(body) = body else {
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::BAD_REQUEST,
             "Codex Live requires a multipart WebRTC offer",
-        )?));
+            "request_body_missing",
+        );
     };
     if body.len() > MAX_LIVE_HTTP_BODY_BYTES {
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::PAYLOAD_TOO_LARGE,
             "Codex Live WebRTC offer exceeds the 1 MiB limit",
-        )?));
+            "request_body_too_large",
+        );
     }
     let content_type = parts
         .headers
@@ -76,11 +144,13 @@ pub(crate) async fn maybe_handle_live_http(
     let offer = match parse_live_multipart(content_type, body.as_ref()) {
         Ok(offer) => offer,
         Err(error) => {
-            return Ok(Some(local_live_error(
+            return audited_local_live_error(
+                &mut call_audit,
                 request_context,
                 error.status_code(),
                 error.client_message(),
-            )?))
+                "multipart_parse_failed",
+            )
         }
     };
     let Some(client_model) = offer
@@ -88,29 +158,86 @@ pub(crate) async fn maybe_handle_live_http(
         .get("model")
         .and_then(serde_json::Value::as_str)
     else {
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::BAD_REQUEST,
             "Codex Live session.model must be a non-empty model identifier",
-        )?));
+            "model_missing",
+        );
     };
+    if validate_model(client_model).is_err() {
+        return audited_local_live_error(
+            &mut call_audit,
+            request_context,
+            StatusCode::BAD_REQUEST,
+            "Codex Live session.model must be a valid model identifier",
+            "model_invalid",
+        );
+    }
+    call_audit.set_validated_client_model(client_model);
 
-    let Some(mut candidate) = plan_live_candidate(
+    let planning = match plan_live_candidate(
         state,
         request_context.trace_id.as_str(),
         control_decision,
         &parts.headers,
         remote_addr,
         client_model,
+        dialect,
         None,
     )
-    .await?
-    else {
-        return Ok(Some(local_live_error(
+    .await
+    {
+        Ok(planning) => planning,
+        Err(error) => {
+            call_audit.fail(gateway_error_status(&error), "planning_failed");
+            return Err(error);
+        }
+    };
+    call_audit.set_runtime_miss(planning.runtime_miss.clone());
+    let runtime_miss = planning.runtime_miss;
+    let Some(mut candidate) = planning.candidate else {
+        let auth_context = control_decision.auth_context.as_ref();
+        warn!(
+            event_name = "codex_live_call_candidate_unavailable",
+            log_type = "ops",
+            trace_id = %request_context.trace_id,
+            transport = "webrtc",
+            mode = "call_create",
+            status_code = StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            client_model,
+            user_id = auth_context
+                .map(|auth| auth.user_id.as_str())
+                .unwrap_or("-"),
+            api_key_id = auth_context
+                .map(|auth| auth.api_key_id.as_str())
+                .unwrap_or("-"),
+            runtime_miss_reason = runtime_miss
+                .as_ref()
+                .map(|diagnostic| diagnostic.reason.as_str())
+                .unwrap_or("unknown"),
+            candidate_count = runtime_miss
+                .as_ref()
+                .and_then(|diagnostic| diagnostic.candidate_count)
+                .unwrap_or(0),
+            skipped_candidate_count = runtime_miss
+                .as_ref()
+                .and_then(|diagnostic| diagnostic.skipped_candidate_count)
+                .unwrap_or(0),
+            skip_reasons = runtime_miss
+                .as_ref()
+                .and_then(|diagnostic| diagnostic.skip_reasons_summary())
+                .unwrap_or_default(),
+            "Codex Live call creation has no eligible provider mapping"
+        );
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
-            StatusCode::BAD_GATEWAY,
-            "No eligible Codex Live provider mapping is available",
-        )?));
+            StatusCode::SERVICE_UNAVAILABLE,
+            LIVE_CALL_CANDIDATE_UNAVAILABLE_MESSAGE,
+            "candidate_unavailable",
+        );
     };
     let lease = LivePoolLeaseGuard::new(state, &candidate);
     let binding = LiveCallBinding::from_candidate(&candidate);
@@ -122,20 +249,32 @@ pub(crate) async fn maybe_handle_live_http(
             "model".to_string(),
             serde_json::Value::String(candidate.provider_model.clone()),
         );
-    let upstream_url = match live_call_url(&candidate) {
+    let upstream_url = match live_call_url(&candidate, dialect) {
         Ok(url) => url,
         Err(error) => {
             lease.release().await;
-            return Ok(Some(local_live_error(
+            return audited_local_live_error(
+                &mut call_audit,
                 request_context,
                 error.status_code(),
                 error.client_message(),
-            )?));
+                "upstream_url_invalid",
+            );
         }
     };
 
-    let (provider_content_type, provider_body_base64) =
-        build_live_call_provider_body(candidate.auth_mode, offer.sdp.as_str(), &provider_session)?;
+    let (provider_content_type, provider_body_base64) = match build_live_call_provider_body(
+        candidate.auth_mode,
+        offer.sdp.as_str(),
+        &provider_session,
+    ) {
+        Ok(body) => body,
+        Err(error) => {
+            lease.release().await;
+            call_audit.fail(gateway_error_status(&error), "provider_body_build_failed");
+            return Err(error);
+        }
+    };
     // The standard plan builder requires a JSON body marker even when the exact wire body is
     // carried as bytes. Keep only the mapped model here: retaining the SDP/session projection in
     // the decision would unnecessarily widen the surface for future logging or report changes.
@@ -159,41 +298,84 @@ pub(crate) async fn maybe_handle_live_http(
             .to_string(),
     );
 
-    let Some(mut attempt) =
-        build_standard_sync_plan_from_decision(parts, &provider_body_marker, candidate.execution)?
-    else {
-        lease.release().await;
-        return Ok(Some(local_live_error(
-            request_context,
-            StatusCode::BAD_GATEWAY,
-            "Codex Live provider request could not be built",
-        )?));
+    let mut attempt = match build_standard_sync_plan_from_decision(
+        parts,
+        &provider_body_marker,
+        candidate.execution,
+    ) {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
+            lease.release().await;
+            return audited_local_live_error(
+                &mut call_audit,
+                request_context,
+                StatusCode::BAD_GATEWAY,
+                "Codex Live provider request could not be built",
+                "provider_plan_unavailable",
+            );
+        }
+        Err(error) => {
+            lease.release().await;
+            call_audit.fail(gateway_error_status(&error), "provider_plan_build_failed");
+            return Err(error);
+        }
     };
     // The synchronous SDP exchange has an ordinary request lifecycle, but it
     // does not contain the media leg's token/cost usage. Keep the existing row
     // while making that boundary explicit and non-billable.
     mark_live_call_create_report_context(&mut attempt.report_context);
-    if let Some(rejection) = execution_plan_balance_capacity_rejection(
+    call_audit.bind_attempt(&attempt);
+    let balance_rejection = match execution_plan_balance_capacity_rejection(
         state,
         control_decision,
         &attempt.plan,
         attempt.report_context.as_ref(),
     )
-    .await?
+    .await
     {
+        Ok(rejection) => rejection,
+        Err(error) => {
+            lease.release().await;
+            call_audit.fail(
+                gateway_error_status(&error),
+                "balance_capacity_check_failed",
+            );
+            return Err(error);
+        }
+    };
+    if let Some(rejection) = balance_rejection {
         lease.release().await;
-        return Ok(Some(build_local_auth_rejection_response(
+        let response = match build_local_auth_rejection_response(
             request_context.trace_id.as_str(),
             Some(control_decision),
             &rejection,
-        )?));
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                call_audit.fail(
+                    gateway_error_status(&error),
+                    "downstream_response_build_failed",
+                );
+                return Err(error);
+            }
+        };
+        call_audit.fail(response.status(), "balance_capacity_rejected");
+        return Ok(Some(response));
     }
-    let admission = ResponsesWebSocketTurnAdmission::acquire(
+    let admission = match ResponsesWebSocketTurnAdmission::acquire(
         state,
         &attempt.plan,
         request_context.trace_id.as_str(),
     )
-    .await?;
+    .await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            lease.release().await;
+            call_audit.fail(gateway_error_status(&error), "admission_failed");
+            return Err(error);
+        }
+    };
     let result = execute_execution_runtime_sync_plan_with_report_context(
         state,
         Some(request_context.trace_id.as_str()),
@@ -208,9 +390,21 @@ pub(crate) async fn maybe_handle_live_http(
     admission.release().await;
     let pool_lease_healthy = lease.is_healthy();
     lease.release().await;
-    let result = result?;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            call_audit.fail(gateway_error_status(&error), "upstream_execute_failed");
+            return Err(error);
+        }
+    };
     if !(200..300).contains(&result.status_code) {
-        let response_body = execution_result_body(&result)?;
+        let response_body = match execution_result_body(&result) {
+            Ok(body) => body,
+            Err(error) => {
+                call_audit.fail(StatusCode::BAD_GATEWAY, "upstream_error_body_unavailable");
+                return Err(error);
+            }
+        };
         let downstream_headers =
             sanitized_live_response_headers(&result.headers, response_body.preserves_wire_encoding);
         warn!(
@@ -224,13 +418,24 @@ pub(crate) async fn maybe_handle_live_http(
             elapsed_ms = result.telemetry.as_ref().and_then(|value| value.elapsed_ms),
             "Codex Live call creation failed upstream"
         );
-        return Ok(Some(build_client_response_from_parts(
+        let response = match build_client_response_from_parts(
             result.status_code,
             &downstream_headers,
             Body::from(response_body.bytes),
             request_context.trace_id.as_str(),
             Some(control_decision),
-        )?));
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                call_audit.fail(
+                    gateway_error_status(&error),
+                    "downstream_response_build_failed",
+                );
+                return Err(error);
+            }
+        };
+        call_audit.fail(response.status(), "upstream_rejected");
+        return Ok(Some(response));
     }
     if !pool_lease_healthy {
         warn_live_call_orphaned(
@@ -240,11 +445,13 @@ pub(crate) async fn maybe_handle_live_http(
             "pool_lease_lost",
             None,
         );
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::SERVICE_UNAVAILABLE,
             "Codex Live provider lease expired during call creation",
-        )?));
+            "pool_lease_lost",
+        );
     }
     let response_body = match execution_result_body(&result) {
         Ok(body) => body,
@@ -256,6 +463,7 @@ pub(crate) async fn maybe_handle_live_http(
                 "response_body_unavailable",
                 None,
             );
+            call_audit.fail(StatusCode::BAD_GATEWAY, "response_body_unavailable");
             return Err(error);
         }
     };
@@ -267,11 +475,13 @@ pub(crate) async fn maybe_handle_live_http(
             "location_missing",
             None,
         );
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::BAD_GATEWAY,
             "Codex Live upstream response did not include a call location",
-        )?));
+            "location_missing",
+        );
     };
     let call_id = match extract_call_id_from_location(location) {
         Ok(call_id) => call_id,
@@ -283,11 +493,13 @@ pub(crate) async fn maybe_handle_live_http(
                 "location_invalid",
                 Some(error.code()),
             );
-            return Ok(Some(local_live_error(
+            return audited_local_live_error(
+                &mut call_audit,
                 request_context,
                 StatusCode::BAD_GATEWAY,
                 error.client_message(),
-            )?));
+                "location_invalid",
+            );
         }
     };
     let Some(auth_context) = control_decision.auth_context.as_ref() else {
@@ -298,11 +510,13 @@ pub(crate) async fn maybe_handle_live_http(
             "auth_context_missing",
             None,
         );
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::UNAUTHORIZED,
             "Codex Live requires an authenticated gateway API key",
-        )?));
+            "auth_context_missing",
+        );
     };
     let registry = LiveCallRegistry::new(std::sync::Arc::clone(&state.runtime_state));
     if let Err(error) = registry
@@ -321,11 +535,13 @@ pub(crate) async fn maybe_handle_live_http(
             "binding_failed",
             Some(error.kind()),
         );
-        return Ok(Some(local_live_error(
+        return audited_local_live_error(
+            &mut call_audit,
             request_context,
             StatusCode::SERVICE_UNAVAILABLE,
             "Codex Live sideband binding is temporarily unavailable",
-        )?));
+            "binding_failed",
+        );
     }
     info!(
         event_name = "codex_live_call_created",
@@ -340,10 +556,10 @@ pub(crate) async fn maybe_handle_live_http(
         usage_unavailable = true,
         "Codex Live created a bound WebRTC call"
     );
-    let downstream_location = format!("/v1/live/{call_id}");
+    let downstream_location = dialect.downstream_location(call_id.as_str());
     let downstream_headers =
         sanitized_live_response_headers(&result.headers, response_body.preserves_wire_encoding);
-    Ok(Some(build_client_response_from_parts_with_mutator(
+    let response = match build_client_response_from_parts_with_mutator(
         result.status_code,
         &downstream_headers,
         Body::from(response_body.bytes),
@@ -357,7 +573,58 @@ pub(crate) async fn maybe_handle_live_http(
             );
             Ok(())
         },
-    )?))
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            warn_live_call_orphaned(
+                request_context,
+                &attempt.plan,
+                &result,
+                "downstream_response_build_failed",
+                None,
+            );
+            call_audit.fail(
+                gateway_error_status(&error),
+                "downstream_response_build_failed",
+            );
+            return Err(error);
+        }
+    };
+    call_audit.complete(response.status().as_u16(), "call_created");
+    Ok(Some(response))
+}
+
+fn gateway_error_status(error: &GatewayError) -> StatusCode {
+    match error {
+        GatewayError::UpstreamUnavailable { .. } | GatewayError::ControlUnavailable { .. } => {
+            StatusCode::BAD_GATEWAY
+        }
+        GatewayError::LocalExecutionPlanningTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+        GatewayError::AdmissionTimeout { .. } => StatusCode::TOO_MANY_REQUESTS,
+        GatewayError::Client { status, .. } => *status,
+        GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn audited_local_live_error(
+    audit: &mut LiveCallCreateAuditGuard,
+    request_context: &GatewayPublicRequestContext,
+    status: StatusCode,
+    message: &str,
+    termination: &'static str,
+) -> Result<Option<Response<Body>>, GatewayError> {
+    let response = match local_live_error(request_context, status, message) {
+        Ok(response) => response,
+        Err(error) => {
+            audit.fail(
+                gateway_error_status(&error),
+                "downstream_response_build_failed",
+            );
+            return Err(error);
+        }
+    };
+    audit.fail(response.status(), termination);
+    Ok(Some(response))
 }
 
 fn local_live_error(
@@ -368,7 +635,7 @@ fn local_live_error(
     build_local_http_error_response_with_request_path(
         request_context.trace_id.as_str(),
         request_context.control_decision.as_ref(),
-        Some("/v1/live"),
+        Some(request_context.request_path.as_str()),
         status,
         message,
     )
@@ -497,12 +764,56 @@ fn execution_result_body(result: &ExecutionResult) -> Result<LiveResponseBody, G
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use aether_contracts::{ExecutionPlan, ExecutionResult, ResponseBody};
+    use aether_data::repository::usage::InMemoryUsageReadRepository;
+    use aether_data_contracts::repository::usage::UsageReadRepository;
     use axum::body::to_bytes;
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::prelude::*;
 
     use crate::control::{GatewayControlAuthContext, GatewayControlDecision};
 
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct SharedLogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedLogBuffer {
+        fn lines(&self) -> Vec<serde_json::Value> {
+            String::from_utf8(self.0.lock().expect("log buffer should lock").clone())
+                .expect("logs should be valid UTF-8")
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str(line).expect("log line should be valid JSON"))
+                .collect()
+        }
+    }
+
+    impl std::io::Write for SharedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer should lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for SharedLogBuffer {
+        type Writer = SharedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedLogWriter(Arc::clone(&self.0))
+        }
+    }
 
     #[test]
     fn preserved_wire_bytes_win_over_the_json_projection() {
@@ -680,6 +991,112 @@ mod tests {
         );
     }
 
+    #[test]
+    fn live_http_handler_future_stays_stack_bounded() {
+        let state = AppState::new().expect("gateway state should build");
+        let request_context = GatewayPublicRequestContext {
+            trace_id: "trace-live-future-size".to_string(),
+            request_method: http::Method::POST,
+            request_path: "/v1/live".to_string(),
+            request_query_string: None,
+            request_content_type: None,
+            host_header: None,
+            control_decision: None,
+        };
+        let (parts, _) = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/live")
+            .body(())
+            .expect("request should build")
+            .into_parts();
+        let remote_addr = "127.0.0.1:65002"
+            .parse()
+            .expect("remote address should parse");
+        let future = maybe_handle_live_http(&state, &request_context, &parts, None, &remote_addr);
+        let future_size = std::mem::size_of_val(&future);
+        assert!(
+            future_size <= 4 * 1024,
+            "Live HTTP handler future grew to {future_size} bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_openai_realtime_call_is_not_intercepted_by_codex_live() {
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/realtime/calls",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("realtime".to_string()),
+            Some("openai:realtime".to_string()),
+        );
+        let request_context = GatewayPublicRequestContext {
+            trace_id: "trace-ordinary-realtime-call".to_string(),
+            request_method: http::Method::POST,
+            request_path: "/v1/realtime/calls".to_string(),
+            request_query_string: None,
+            request_content_type: Some("application/sdp".to_string()),
+            host_header: None,
+            control_decision: Some(decision),
+        };
+        let (parts, _) = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/realtime/calls")
+            .body(())
+            .expect("request should build")
+            .into_parts();
+
+        let response = maybe_handle_live_http(
+            &AppState::new().expect("gateway state should build"),
+            &request_context,
+            &parts,
+            None,
+            &"127.0.0.1:65003".parse().unwrap(),
+        )
+        .await
+        .expect("ordinary Realtime hook check should succeed");
+
+        assert!(response.is_none());
+    }
+
+    #[tokio::test]
+    async fn codex_realtime_call_remains_on_the_live_handler() {
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/realtime/calls",
+            Some("ai_public".to_string()),
+            Some("codex".to_string()),
+            Some("live".to_string()),
+            Some("codex:live".to_string()),
+        );
+        let request_context = GatewayPublicRequestContext {
+            trace_id: "trace-codex-realtime-call".to_string(),
+            request_method: http::Method::POST,
+            request_path: "/v1/realtime/calls".to_string(),
+            request_query_string: Some("intent=quicksilver&architecture=avas".to_string()),
+            request_content_type: Some("multipart/form-data".to_string()),
+            host_header: None,
+            control_decision: Some(decision),
+        };
+        let (parts, _) = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/realtime/calls?intent=quicksilver&architecture=avas")
+            .body(())
+            .expect("request should build")
+            .into_parts();
+
+        let response = maybe_handle_live_http(
+            &AppState::new().expect("gateway state should build"),
+            &request_context,
+            &parts,
+            None,
+            &"127.0.0.1:65004".parse().unwrap(),
+        )
+        .await
+        .expect("Codex Realtime hook check should succeed")
+        .expect("Codex Realtime call must stay on the Live handler");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn finite_balance_post_live_fails_before_parsing_or_upstream_execution() {
         let mut decision = GatewayControlDecision::synthetic(
@@ -732,5 +1149,164 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(String::from_utf8_lossy(body.as_ref()).contains("finite-balance"));
+    }
+
+    #[tokio::test]
+    async fn post_live_without_a_candidate_returns_service_unavailable_and_clears_diagnostic() {
+        let log_buffer = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(log_buffer.clone())
+                .with_filter(LevelFilter::WARN),
+        );
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+        let mut decision = GatewayControlDecision::synthetic(
+            "/v1/live",
+            Some("ai_public".to_string()),
+            Some("codex".to_string()),
+            Some("live".to_string()),
+            Some("codex:live".to_string()),
+        );
+        decision.auth_context = Some(GatewayControlAuthContext {
+            user_id: "user-live-unmapped".to_string(),
+            api_key_id: "key-live-unmapped".to_string(),
+            username: Some("unmapped".to_string()),
+            api_key_name: Some("unmapped".to_string()),
+            balance_remaining: None,
+            access_allowed: true,
+            user_rate_limit: None,
+            api_key_rate_limit: None,
+            api_key_is_standalone: true,
+            admin_bypass_limits: false,
+            local_rejection: None,
+            allowed_models: None,
+            ip_rules: None,
+        });
+        let request_context = GatewayPublicRequestContext {
+            trace_id: "trace-live-unmapped".to_string(),
+            request_method: http::Method::POST,
+            request_path: "/v1/live".to_string(),
+            request_query_string: None,
+            request_content_type: Some("multipart/form-data".to_string()),
+            host_header: None,
+            control_decision: Some(decision),
+        };
+        let (content_type, body) = build_live_multipart(
+            "v=0\r\no=unmapped-live-offer",
+            &json!({"model": "gpt-live-unmapped"}),
+        );
+        let (parts, _) = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/live")
+            .header(http::header::CONTENT_TYPE, content_type)
+            .body(())
+            .unwrap()
+            .into_parts();
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let state = AppState::new()
+            .expect("gateway state should build")
+            .with_usage_data_repository_for_tests(Arc::clone(&usage_repository))
+            .with_usage_runtime_for_tests(crate::usage::UsageRuntimeConfig {
+                enabled: true,
+                ..crate::usage::UsageRuntimeConfig::default()
+            });
+        state.set_local_execution_runtime_miss_diagnostic(
+            request_context.trace_id.as_str(),
+            crate::LocalExecutionRuntimeMissDiagnostic {
+                reason: "test_sentinel".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let response = maybe_handle_live_http(
+            &state,
+            &request_context,
+            &parts,
+            Some(&Bytes::from(body)),
+            &"127.0.0.1:65001".parse().unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("Live HTTP route must reject an unmapped model locally");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::constants::TRACE_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(request_context.trace_id.as_str())
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(body.as_ref())
+            .contains("No eligible Codex Live provider mapping is available"));
+        assert!(state
+            .take_local_execution_runtime_miss_diagnostic(request_context.trace_id.as_str())
+            .is_none());
+
+        let usage = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(usage) = usage_repository
+                    .find_by_request_id(request_context.trace_id.as_str())
+                    .await
+                    .expect("Live preflight usage read should succeed")
+                {
+                    break usage;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Live preflight rejection should persist a usage row before timeout");
+        assert_eq!(usage.status, "failed");
+        assert_eq!(usage.billing_status, "void");
+        assert_eq!(usage.status_code, Some(503));
+        assert_eq!(usage.request_type.as_deref(), Some("live"));
+        assert_eq!(usage.api_format.as_deref(), Some("codex:live"));
+        assert_eq!(usage.model, "gpt-live-unmapped");
+        assert!(!usage.is_stream);
+        assert!(!usage.is_websocket());
+        assert_eq!(usage.websocket_transport(), None);
+        assert!(!usage.usage_available());
+        assert!(!usage.usage_pricing_available());
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+        assert_eq!(usage.total_cost_usd, 0.0);
+        assert_eq!(usage.actual_total_cost_usd, 0.0);
+        assert!(usage.request_headers.is_none());
+        assert!(usage.request_body.is_none());
+        assert!(usage.provider_request_headers.is_none());
+        assert!(usage.provider_request_body.is_none());
+        assert!(!serde_json::to_string(&usage)
+            .expect("usage should serialize")
+            .contains("unmapped-live-offer"));
+
+        let logs = log_buffer.lines();
+        let unavailable = logs
+            .iter()
+            .find(|entry| entry["event_name"] == "codex_live_call_candidate_unavailable")
+            .expect("candidate miss should emit a dedicated structured log");
+        assert_eq!(unavailable["status_code"], 503);
+        assert_eq!(unavailable["client_model"], "gpt-live-unmapped");
+        assert_eq!(unavailable["user_id"], "user-live-unmapped");
+        assert_eq!(unavailable["api_key_id"], "key-live-unmapped");
+        assert_eq!(unavailable["transport"], "webrtc");
+        assert_eq!(unavailable["mode"], "call_create");
+        assert!(!serde_json::to_string(&logs)
+            .expect("logs should serialize")
+            .contains("unmapped-live-offer"));
     }
 }
