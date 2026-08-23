@@ -2167,18 +2167,24 @@ fn parse_codex_websocket_usage_limit_error(
             result.insert("plan_type".to_string(), json!(plan_type));
         }
     }
-    if !result.contains_key("primary_reset_at") {
-        if let Some(reset_at) = error.get("resets_at").and_then(coerce_json_u64) {
-            result.insert("primary_reset_at".to_string(), json!(reset_at));
+    // `resets_at` describes whichever limit rejected the request. When a named per-model limit
+    // owned the window headers it owns this timing too, so backfilling it into the account slot
+    // would put a model window's reset on the account's own quota.
+    if codex_headers_carry_account_windows(&headers) {
+        if !result.contains_key("primary_reset_at") {
+            if let Some(reset_at) = error.get("resets_at").and_then(coerce_json_u64) {
+                result.insert("primary_reset_at".to_string(), json!(reset_at));
+            }
         }
-    }
-    if !result.contains_key("primary_reset_after_seconds") {
-        if let Some(reset_after_seconds) = error.get("resets_in_seconds").and_then(coerce_json_u64)
-        {
-            result.insert(
-                "primary_reset_after_seconds".to_string(),
-                json!(reset_after_seconds),
-            );
+        if !result.contains_key("primary_reset_after_seconds") {
+            if let Some(reset_after_seconds) =
+                error.get("resets_in_seconds").and_then(coerce_json_u64)
+            {
+                result.insert(
+                    "primary_reset_after_seconds".to_string(),
+                    json!(reset_after_seconds),
+                );
+            }
         }
     }
 
@@ -2541,6 +2547,23 @@ pub fn parse_codex_backend_me_response(
     Some(serde_json::Value::Object(result))
 }
 
+fn codex_normalized_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect()
+}
+
+/// Whether the account's own quota windows can be read from these headers' unprefixed fields.
+///
+/// False when a named per-model limit governed the request: the unprefixed fields — and any reset
+/// timing reported alongside them — then describe that limit instead.
+fn codex_headers_carry_account_windows(headers: &BTreeMap<String, String>) -> bool {
+    let normalized = codex_normalized_headers(headers);
+    let named_limits = codex_named_limit_headers(&normalized);
+    !codex_named_limit_owns_unprefixed_windows(&normalized, &named_limits)
+}
+
 /// Lists the named per-model limits the response headers announce, as `(feature, limit_name)`.
 ///
 /// `feature` is the header segment that carries the limit's windows
@@ -2588,11 +2611,11 @@ pub fn parse_codex_usage_headers(
     updated_at_unix_secs: u64,
 ) -> Option<serde_json::Value> {
     let mut result = serde_json::Map::new();
-    let normalized = headers
-        .iter()
-        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim().to_string()))
-        .collect::<BTreeMap<_, _>>();
-    if !normalized.keys().any(|key| key.starts_with("x-codex-")) {
+    let normalized = codex_normalized_headers(headers);
+    if !normalized
+        .keys()
+        .any(|key| key.starts_with(CODEX_HEADER_PREFIX))
+    {
         return None;
     }
 
@@ -5925,6 +5948,45 @@ mod tests {
             Some(&json!(1_787_274_385u64))
         );
         assert!(codex_rate_limit_metadata_exhausted(&parsed));
+    }
+
+    #[test]
+    fn codex_usage_limit_error_does_not_backfill_a_model_scoped_reset_into_the_account() {
+        let parsed = parse_codex_websocket_rate_limits_response(
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "pro",
+                    "resets_at": 1_787_430_252u64,
+                    "resets_in_seconds": 20_722u64,
+                },
+                "status_code": 429,
+                "headers": {
+                    "X-Codex-Plan-Type": "pro",
+                    "X-Codex-Active-Limit": "codex_bengalfox",
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "300",
+                    "X-Codex-Primary-Reset-At": "1787430252",
+                    "X-Codex-Bengalfox-Limit-Name": "GPT-5.3-Codex-Spark",
+                    "X-Codex-Bengalfox-Primary-Used-Percent": "100",
+                    "X-Codex-Bengalfox-Primary-Window-Minutes": "300",
+                    "X-Codex-Bengalfox-Primary-Reset-At": "1787430252",
+                },
+            }),
+            1_787_409_530,
+        )
+        .expect("Codex usage-limit error should parse as quota metadata");
+
+        assert!(
+            parsed.get("primary_reset_at").is_none(),
+            "the Spark limit rejected this request, so its reset timing must not claim the account window: {parsed}"
+        );
+        assert!(parsed.get("primary_reset_after_seconds").is_none());
+        assert_eq!(
+            parsed.get("spark_primary_reset_at"),
+            Some(&json!(1_787_430_252u64))
+        );
     }
 
     #[test]
