@@ -3279,7 +3279,14 @@ fn maybe_build_implicit_sync_finalize_outcome(
     body_base64: &Option<String>,
     telemetry: &Option<ExecutionTelemetry>,
 ) -> Result<Option<ImplicitSyncFinalizeOutcome>, GatewayError> {
-    if status_code >= 400 || body_json.is_some() || body_base64.is_none() {
+    let needs_conversion = report_context
+        .as_ref()
+        .and_then(|value| value.get("needs_conversion"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let has_captured_stream_body = body_json.is_none() && body_base64.is_some();
+    let has_cross_format_sync_body = needs_conversion && body_json.is_some();
+    if status_code >= 400 || (!has_captured_stream_body && !has_cross_format_sync_body) {
         return Ok(None);
     }
 
@@ -3459,6 +3466,137 @@ mod tests {
             Some("openai:chat".to_string()),
         )
         .with_execution_runtime_candidate(true)
+    }
+
+    #[tokio::test]
+    async fn implicit_sync_finalize_converts_chat_json_to_namespaced_responses() {
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/responses",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("responses".to_string()),
+            Some("openai:responses".to_string()),
+        )
+        .with_execution_runtime_candidate(true);
+        let report_context = Some(json!({
+            "provider_api_format": "openai:chat",
+            "client_api_format": "openai:responses",
+            "needs_conversion": true,
+            "mapped_model": "qwen-upstream",
+            "original_request_body": {
+                "model": "qwen",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__vulnerability_report",
+                    "description": "reporting tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "vulnerability_report",
+                        "description": "write the confirmed report",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "report_path": {"type": "string"}
+                            },
+                            "required": ["report_path"]
+                        },
+                        "strict": true
+                    }]
+                }]
+            }
+        }));
+        let provider_body = Some(json!({
+            "id": "chatcmpl_namespace_sync",
+            "object": "chat.completion",
+            "created": 1_777_777_777,
+            "model": "qwen-upstream",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_report_1",
+                        "type": "function",
+                        "function": {
+                            "name": "vulnerability_report",
+                            "arguments": "{\"report_path\":\"reports/sql-001-c1.md\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14
+            }
+        }));
+
+        let implicit = maybe_build_implicit_sync_finalize_outcome(
+            "trace-namespace-sync",
+            &decision,
+            "openai_responses_sync",
+            &report_context,
+            StatusCode::OK.as_u16(),
+            &BTreeMap::from([("content-type".to_string(), "application/json".to_string())]),
+            &provider_body,
+            &None,
+            &None,
+        )
+        .expect("cross-format sync JSON finalize should not error")
+        .expect("cross-format sync JSON should be finalized");
+        let response_body = axum::body::to_bytes(implicit.outcome.response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let response_json: Value =
+            serde_json::from_slice(&response_body).expect("response body should be JSON");
+
+        assert_eq!(response_json["object"], "response");
+        assert!(response_json.get("choices").is_none());
+        assert_eq!(response_json["output"][0]["type"], "function_call");
+        assert_eq!(response_json["output"][0]["name"], "vulnerability_report");
+        assert_eq!(
+            response_json["output"][0]["namespace"],
+            "mcp__vulnerability_report"
+        );
+        assert_eq!(response_json["output"][0]["call_id"], "call_report_1");
+    }
+
+    #[test]
+    fn implicit_sync_finalize_leaves_same_format_json_on_passthrough_path() {
+        let report_context = Some(json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "needs_conversion": false
+        }));
+        let body_json = Some(json!({
+            "id": "resp_same_format",
+            "object": "response",
+            "status": "completed",
+            "output": []
+        }));
+
+        let outcome = maybe_build_implicit_sync_finalize_outcome(
+            "trace-same-format-sync",
+            &GatewayControlDecision::synthetic(
+                "/v1/responses",
+                Some("ai_public".to_string()),
+                Some("openai".to_string()),
+                Some("responses".to_string()),
+                Some("openai:responses".to_string()),
+            ),
+            "openai_responses_sync",
+            &report_context,
+            StatusCode::OK.as_u16(),
+            &BTreeMap::new(),
+            &body_json,
+            &None,
+            &None,
+        )
+        .expect("same-format sync JSON guard should not error");
+
+        assert!(outcome.is_none());
     }
 
     #[tokio::test]

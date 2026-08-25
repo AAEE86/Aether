@@ -118,12 +118,14 @@ pub fn maybe_bridge_standard_sync_json_to_stream(
             openai_responses_terminal_event_type(&openai_responses_response)
                 .unwrap_or("response.completed"),
             provider_actual_service_tier.as_deref(),
+            &bridge_context,
         )?
     } else {
         emit_client_stream_from_canonical_frames(
             canonical_frames,
             client_api_format.as_str(),
             provider_actual_service_tier.as_deref(),
+            &bridge_context,
         )?
     };
 
@@ -167,6 +169,7 @@ fn bridge_openai_responses_same_family_sync_json_to_stream(
         response,
         terminal_event_type,
         provider_actual_service_tier_from_sync_response(response, provider_api_format).as_deref(),
+        report_context,
     )?;
 
     Ok(Some(SyncToStreamBridgeOutcome {
@@ -1046,6 +1049,7 @@ fn emit_client_stream_from_canonical_frames(
     canonical_frames: Vec<CanonicalStreamFrame>,
     client_api_format: &str,
     provider_actual_service_tier: Option<&str>,
+    report_context: &Value,
 ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
     match client_api_format {
         "openai:chat" => {
@@ -1054,7 +1058,7 @@ fn emit_client_stream_from_canonical_frames(
             emit_with_openai_chat_emitter(&mut emitter, canonical_frames)
         }
         "openai:responses" | "openai:responses:compact" => {
-            let mut emitter = OpenAIResponsesClientEmitter::default();
+            let mut emitter = OpenAIResponsesClientEmitter::with_report_context(report_context);
             emitter.set_actual_service_tier(provider_actual_service_tier);
             emit_with_openai_responses_emitter(&mut emitter, canonical_frames)
         }
@@ -1115,8 +1119,9 @@ fn emit_openai_responses_stream_with_authoritative_terminal(
     authoritative_response: &Value,
     terminal_event_type: &'static str,
     provider_actual_service_tier: Option<&str>,
+    report_context: &Value,
 ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
-    let mut emitter = OpenAIResponsesClientEmitter::default();
+    let mut emitter = OpenAIResponsesClientEmitter::with_report_context(report_context);
     emitter.set_actual_service_tier(provider_actual_service_tier);
     let mut output = Vec::new();
     for frame in canonical_frames {
@@ -1316,6 +1321,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{maybe_bridge_standard_sync_json_to_stream, standardized_usage_from_openai_usage};
+    use crate::formats::openai::namespace::NamespaceToolAliases;
 
     fn utf8(bytes: Vec<u8>) -> String {
         String::from_utf8(bytes).expect("utf8 should decode")
@@ -1378,6 +1384,88 @@ mod tests {
             .storage_key
             .starts_with("ai:responses:history:v1:"));
         assert!(history_record.payload.contains("resp_sync_history_1"));
+    }
+
+    #[test]
+    fn chat_sync_bridge_restores_namespaced_responses_tool_identity() {
+        let report_context = json!({
+            "provider_api_format": "openai:chat",
+            "client_api_format": "openai:responses",
+            "needs_conversion": true,
+            "original_request_body": {
+                "model": "qwen",
+                "input": "write the report",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "vulnerability_report",
+                        "parameters": {"type": "object"}
+                    },
+                    {
+                        "type": "namespace",
+                        "name": "mcp__vulnerability_report",
+                        "description": "Reporting tools",
+                        "tools": [{
+                            "type": "function",
+                            "name": "vulnerability_report",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"report_path": {"type": "string"}}
+                            }
+                        }]
+                    }
+                ]
+            }
+        });
+        let aliases = NamespaceToolAliases::from_report_context(&report_context);
+        let chat_name = aliases
+            .chat_name("mcp__vulnerability_report", "vulnerability_report")
+            .expect("namespace alias");
+        let outcome = maybe_bridge_standard_sync_json_to_stream(
+            &json!({
+                "id": "chatcmpl_namespace_sync_1",
+                "object": "chat.completion",
+                "model": "qwen",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_namespace_sync_1",
+                            "type": "function",
+                            "function": {
+                                "name": chat_name,
+                                "arguments": "{\"report_path\":\"reports/finding.md\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }),
+            "openai:chat",
+            "openai:responses",
+            Some(&report_context),
+        )
+        .expect("bridge should succeed")
+        .expect("bridge should produce SSE");
+
+        let body = utf8(outcome.sse_body);
+        let events = json_sse_events(&body);
+        let done = events
+            .iter()
+            .find(|event| event["type"] == "response.output_item.done")
+            .expect("function call should complete");
+        assert_eq!(done["item"]["name"], "vulnerability_report");
+        assert_eq!(done["item"]["namespace"], "mcp__vulnerability_report");
+        let completed = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .expect("response should complete");
+        assert_eq!(
+            completed["response"]["output"][0]["namespace"],
+            "mcp__vulnerability_report"
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 
+use crate::formats::openai::namespace::NamespaceToolAliases;
 use crate::formats::{
     aliyun,
     claude::messages as claude_messages,
@@ -180,7 +181,7 @@ fn validate_runtime_request_conversion(
     source: FormatId,
     target: FormatId,
     body: &Value,
-    _request: &CanonicalRequest,
+    request: &CanonicalRequest,
     mapped_model: Option<&str>,
 ) -> Result<(), FormatError> {
     validate_openai_cross_format_store(source, target, body)?;
@@ -188,6 +189,7 @@ fn validate_runtime_request_conversion(
     validate_openai_reasoning_effort(source, target, body, mapped_model)?;
     validate_openai_responses_cross_format_input(source, target, body)?;
     validate_openai_responses_runtime_reasoning(source, target, body)?;
+    validate_openai_responses_namespace_tools_to_chat(source, target, request)?;
     if matches!(source, FormatId::OpenAiChat)
         && matches!(
             target,
@@ -1277,8 +1279,11 @@ fn validate_cross_format_request_extensions(
     target: FormatId,
     request: &CanonicalRequest,
 ) -> Result<(), FormatError> {
+    validate_openai_responses_namespace_tools_to_chat(source, target, request)?;
     validate_request_content_has_no_unknown_blocks(source, target, request)?;
-    validate_request_extension_namespace(source, target, "request", &request.extensions)?;
+    let namespace_aliases = NamespaceToolAliases::from_canonical_tools(&request.tools);
+    let request_extensions = mapped_namespace_request_extensions(source, target, request);
+    validate_request_extension_namespace(source, target, "request", &request_extensions)?;
     for instruction in &request.instructions {
         validate_request_extension_namespace(
             source,
@@ -1296,7 +1301,6 @@ fn validate_cross_format_request_extensions(
                 | CanonicalContentBlock::Image { extensions, .. }
                 | CanonicalContentBlock::File { extensions, .. }
                 | CanonicalContentBlock::Audio { extensions, .. }
-                | CanonicalContentBlock::ToolUse { extensions, .. }
                 | CanonicalContentBlock::ToolResult { extensions, .. }
                 | CanonicalContentBlock::Unknown { extensions, .. } => {
                     validate_request_extension_namespace(
@@ -1306,10 +1310,37 @@ fn validate_cross_format_request_extensions(
                         extensions,
                     )?;
                 }
+                CanonicalContentBlock::ToolUse {
+                    name, extensions, ..
+                } => {
+                    let extensions = mapped_namespace_tool_use_extensions(
+                        source,
+                        target,
+                        name,
+                        extensions,
+                        &namespace_aliases,
+                    )?;
+                    validate_request_extension_namespace(
+                        source,
+                        target,
+                        "messages[].content[]",
+                        &extensions,
+                    )?;
+                }
             }
         }
     }
-    for tool in &request.tools {
+    for (tool_index, tool) in request.tools.iter().enumerate() {
+        if matches!(
+            source,
+            FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
+        ) && target == FormatId::OpenAiChat
+            && namespace_aliases.is_representable_namespace_tool(tool_index)
+        {
+            // The namespace adapter has already audited the complete raw parent and every child.
+            // Do not broadly allow these provider-extension keys for unrelated tool types.
+            continue;
+        }
         validate_request_extension_namespace(source, target, "tools[]", &tool.extensions)?;
     }
     if let Some(thinking) = &request.thinking {
@@ -1324,6 +1355,100 @@ fn validate_cross_format_request_extensions(
         )?;
     }
     Ok(())
+}
+
+fn mapped_namespace_request_extensions(
+    source: FormatId,
+    target: FormatId,
+    request: &CanonicalRequest,
+) -> std::collections::BTreeMap<String, Value> {
+    let mut mapped = request.extensions.clone();
+    if !matches!(
+        source,
+        FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
+    ) || target != FormatId::OpenAiChat
+        || !openai_chat::request::raw_tool_choice_extension_is_representable_for_openai_chat(
+            request,
+        )
+    {
+        return mapped;
+    }
+
+    for provider_namespace in ["openai_responses", "openai_cli"] {
+        let should_remove_namespace = mapped
+            .get_mut(provider_namespace)
+            .and_then(Value::as_object_mut)
+            .is_some_and(|fields| {
+                fields.remove("tool_choice");
+                fields.is_empty()
+            });
+        if should_remove_namespace {
+            mapped.remove(provider_namespace);
+        }
+    }
+    mapped
+}
+
+fn mapped_namespace_tool_use_extensions(
+    source: FormatId,
+    target: FormatId,
+    name: &str,
+    extensions: &std::collections::BTreeMap<String, Value>,
+    aliases: &NamespaceToolAliases,
+) -> Result<std::collections::BTreeMap<String, Value>, FormatError> {
+    if !matches!(
+        source,
+        FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
+    ) || target != FormatId::OpenAiChat
+    {
+        return Ok(extensions.clone());
+    }
+
+    let mut mapped = extensions.clone();
+    for provider_namespace in ["openai_responses", "openai_cli"] {
+        let Some(provider_fields) = mapped
+            .get_mut(provider_namespace)
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let Some(namespace) = provider_fields.get("namespace") else {
+            continue;
+        };
+        let Some(namespace) = namespace
+            .as_str()
+            .map(str::trim)
+            .filter(|namespace| !namespace.is_empty())
+        else {
+            return Err(FormatError::LossyConversionBlocked {
+                source_format: source.as_str().to_string(),
+                target_format: target.as_str().to_string(),
+                field: format!("messages[].content[].{provider_namespace}.namespace"),
+                reason: "Responses namespace tool call has an invalid namespace identity"
+                    .to_string(),
+            });
+        };
+        if aliases.chat_name(namespace, name).is_none() {
+            return Err(FormatError::LossyConversionBlocked {
+                source_format: source.as_str().to_string(),
+                target_format: target.as_str().to_string(),
+                field: format!("messages[].content[].{provider_namespace}.namespace"),
+                reason: "Responses namespace tool call does not match an expanded namespace child"
+                    .to_string(),
+            });
+        }
+        provider_fields.remove("namespace");
+        // Responses item IDs are distinct from executable call IDs, but Chat
+        // has only the latter. A completed history item is fully represented
+        // by the assistant tool call itself, so these transport/completion
+        // sidecars can be discarded after the namespace identity is proven.
+        provider_fields.remove("item_id");
+        if provider_fields.get("status").and_then(Value::as_str) == Some("completed") {
+            provider_fields.remove("status");
+        }
+    }
+    mapped.retain(|_, value| value.as_object().is_none_or(|object| !object.is_empty()));
+    Ok(mapped)
 }
 
 fn validate_request_content_has_no_unknown_blocks(
@@ -2383,6 +2508,11 @@ fn validate_openai_responses_to_chat(
     body: &Value,
     request: &CanonicalRequest,
 ) -> Result<(), FormatError> {
+    validate_openai_responses_namespace_tools_to_chat(
+        FormatId::OpenAiResponses,
+        FormatId::OpenAiChat,
+        request,
+    )?;
     let Some(object) = body.as_object() else {
         return Ok(());
     };
@@ -2428,7 +2558,7 @@ fn validate_openai_responses_to_chat(
                 .unwrap_or("function")
                 .trim()
                 .to_ascii_lowercase();
-            if tool_type != "function" {
+            if !matches!(tool_type.as_str(), "function" | "namespace") {
                 return Err(FormatError::LossyConversionBlocked {
                     source_format: FormatId::OpenAiResponses.as_str().to_string(),
                     target_format: FormatId::OpenAiChat.as_str().to_string(),
@@ -2444,6 +2574,36 @@ fn validate_openai_responses_to_chat(
             field: "tools[].function.name".to_string(),
             reason: "OpenAI Chat function tools require a non-empty name".to_string(),
         });
+    }
+    Ok(())
+}
+
+fn validate_openai_responses_namespace_tools_to_chat(
+    source: FormatId,
+    target: FormatId,
+    request: &CanonicalRequest,
+) -> Result<(), FormatError> {
+    if !matches!(
+        source,
+        FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
+    ) || target != FormatId::OpenAiChat
+    {
+        return Ok(());
+    }
+
+    let aliases = NamespaceToolAliases::from_canonical_tools(&request.tools);
+    for (tool_index, _) in request.tools.iter().enumerate() {
+        if aliases.is_namespace_tool(tool_index)
+            && !aliases.is_representable_namespace_tool(tool_index)
+        {
+            return Err(FormatError::LossyConversionBlocked {
+                source_format: source.as_str().to_string(),
+                target_format: target.as_str().to_string(),
+                field: format!("tools[{tool_index}]"),
+                reason: "Responses namespace tool cannot be losslessly expanded into OpenAI Chat function tools"
+                    .to_string(),
+            });
+        }
     }
     Ok(())
 }
@@ -3210,7 +3370,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        convert_request, convert_request_pure, convert_request_pure_with_context,
+        convert_request, convert_request_pure, convert_request_pure_with_context, convert_response,
         convert_response_pure, FormatContext, FormatError,
     };
     use crate::formats::id::FormatId;
@@ -3318,6 +3478,479 @@ mod tests {
             .value;
 
         assert_eq!(converted["tools"][0]["function"]["strict"], false);
+    }
+
+    #[test]
+    fn responses_namespace_tool_is_audited_consistently_for_pure_and_runtime_chat_conversion() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [{"role": "user", "content": "validate the finding"}],
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__vulnerability_report",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "vulnerability_report",
+                    "description": "Create the confirmed vulnerability report",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "report_path": {"type": "string"},
+                            "markdown": {"type": "string"}
+                        },
+                        "required": ["report_path", "markdown"],
+                        "additionalProperties": false
+                    },
+                    "strict": true
+                }]
+            }],
+            "tool_choice": "auto"
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("representable namespace should pass pure validation")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("representable namespace should pass runtime validation");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(pure["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(pure["tools"][0]["function"]["name"], "vulnerability_report");
+        assert_eq!(
+            pure["tools"][0]["function"]["description"],
+            "Create the confirmed vulnerability report"
+        );
+        assert_eq!(
+            pure["tools"][0]["function"]["parameters"],
+            body["tools"][0]["tools"][0]["parameters"]
+        );
+        assert_eq!(pure["tools"][0]["function"]["strict"], true);
+        assert_eq!(pure["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn responses_namespace_allowed_tools_and_nullable_schema_match_for_pure_and_runtime() {
+        let long_name = format!("write_report_{}", "x".repeat(80));
+        let body = json!({
+            "model": "gpt-source",
+            "input": "validate the finding",
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "function",
+                    "name": long_name,
+                    "description": null,
+                    "parameters": null,
+                    "strict": null
+                }]
+            }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": long_name}]
+            }
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("allowed namespace tool choice should pass pure validation")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("allowed namespace tool choice should pass runtime validation");
+
+        assert_eq!(pure, runtime);
+        let definition = &pure["tools"][0]["function"];
+        let definition_alias = definition["name"].as_str().expect("definition alias");
+        let choice_alias = pure["tool_choice"]["allowed_tools"]["tools"][0]["function"]["name"]
+            .as_str()
+            .expect("choice alias");
+        assert_eq!(choice_alias, definition_alias);
+        assert!(definition_alias.len() <= 64);
+        assert!(definition.get("description").is_none());
+        assert!(definition.get("parameters").is_none());
+        assert!(definition["strict"].is_null());
+    }
+
+    #[test]
+    fn responses_namespace_allowed_tools_fails_closed_when_child_name_is_ambiguous() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": "validate the finding",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "first",
+                    "description": "First tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "write_report",
+                        "parameters": {"type": "object"}
+                    }]
+                },
+                {
+                    "type": "namespace",
+                    "name": "second",
+                    "description": "Second tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "write_report",
+                        "parameters": {"type": "object"}
+                    }]
+                }
+            ],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": "write_report"}]
+            }
+        });
+
+        assert!(convert_request_pure("openai:responses", "openai:chat", &body).is_err());
+        assert!(convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn runtime_chat_response_restores_namespaced_tool_identity_from_request_context() {
+        let original_request = json!({
+            "model": "qwen",
+            "input": "write the report",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "vulnerability_report",
+                    "parameters": {"type": "object"}
+                },
+                {
+                    "type": "namespace",
+                    "name": "mcp__vulnerability_report",
+                    "description": "Reporting tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "vulnerability_report",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"report_path": {"type": "string"}},
+                            "required": ["report_path"]
+                        },
+                        "strict": true
+                    }]
+                }
+            ]
+        });
+        let chat_request = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &original_request,
+            &FormatContext::default(),
+        )
+        .expect("namespace request should convert to Chat");
+        let alias = chat_request["tools"][1]["function"]["name"]
+            .as_str()
+            .expect("namespace child should have a Chat alias");
+        assert_ne!(alias, "vulnerability_report");
+
+        let provider_response = json!({
+            "id": "chatcmpl_namespace_sync",
+            "object": "chat.completion",
+            "model": "qwen",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_report",
+                        "type": "function",
+                        "function": {
+                            "name": alias,
+                            "arguments": "{\"report_path\":\"reports/sql-001.md\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let context = FormatContext::default().with_report_context(json!({
+            "provider_api_format": "openai:chat",
+            "client_api_format": "openai:responses",
+            "original_request_body": original_request
+        }));
+
+        let response = convert_response(
+            "openai:chat",
+            "openai:responses",
+            &provider_response,
+            &context,
+        )
+        .expect("Chat response should convert back to Responses");
+        let call = &response["output"][0];
+        assert_eq!(response["object"], "response");
+        assert_eq!(call["type"], "function_call");
+        assert_eq!(call["name"], "vulnerability_report");
+        assert_eq!(call["namespace"], "mcp__vulnerability_report");
+        assert_eq!(call["call_id"], "call_report");
+    }
+
+    #[test]
+    fn responses_namespace_history_uses_the_same_chat_alias_as_the_definition() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [
+                {
+                    "type": "function_call",
+                    "id": "fc_report",
+                    "call_id": "call_report",
+                    "namespace": "mcp__reports",
+                    "name": "write_report",
+                    "arguments": "{\"report_path\":\"reports/finding.md\"}",
+                    "status": "completed"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_report",
+                    "output": "created"
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "write_report",
+                    "description": "An ordinary function",
+                    "parameters": {"type": "object"}
+                },
+                {
+                    "type": "namespace",
+                    "name": "mcp__reports",
+                    "description": "Reporting tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "write_report",
+                        "description": "Create a report file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"report_path": {"type": "string"}},
+                            "required": ["report_path"]
+                        }
+                    }]
+                }
+            ],
+            "tool_choice": "auto"
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("namespace history should pass pure validation")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("namespace history should pass runtime validation");
+
+        assert_eq!(pure, runtime);
+        let alias = pure["tools"][1]["function"]["name"]
+            .as_str()
+            .expect("namespace alias");
+        assert_ne!(alias, "write_report");
+        assert_eq!(
+            pure["messages"][0]["tool_calls"][0]["function"]["name"],
+            alias
+        );
+        assert_eq!(pure["messages"][0]["tool_calls"][0]["id"], "call_report");
+        assert!(pure["messages"][0]["tool_calls"][0].get("status").is_none());
+        assert_eq!(pure["messages"][1]["tool_call_id"], "call_report");
+    }
+
+    #[test]
+    fn responses_namespace_history_rejects_non_completed_status_for_chat() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [{
+                "type": "function_call",
+                "id": "fc_report",
+                "call_id": "call_report",
+                "namespace": "mcp__reports",
+                "name": "write_report",
+                "arguments": "{}",
+                "status": "in_progress"
+            }],
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "write_report",
+                    "parameters": {"type": "object"}
+                }]
+            }]
+        });
+
+        assert!(convert_request_pure("openai:responses", "openai:chat", &body).is_err());
+        assert!(convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn responses_namespace_history_rejects_unknown_sidecars_for_pure_and_runtime() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [{
+                "type": "function_call",
+                "id": "fc_report",
+                "call_id": "call_report",
+                "namespace": "mcp__reports",
+                "name": "write_report",
+                "arguments": "{}",
+                "status": "completed",
+                "future_call_semantics": {"owner": "future-semantic-owner"}
+            }],
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "write_report",
+                    "parameters": {"type": "object"}
+                }]
+            }]
+        });
+
+        assert!(convert_request_pure("openai:responses", "openai:chat", &body).is_err());
+        assert!(convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn responses_namespace_same_format_preserves_the_raw_contract() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": "look up the customer",
+            "tools": [{
+                "type": "namespace",
+                "name": "crm",
+                "description": "CRM tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "get_customer",
+                    "description": "Fetch a customer",
+                    "defer_loading": true,
+                    "parameters": {"type": "object"},
+                    "output_schema": {"type": "object"}
+                }]
+            }]
+        });
+
+        let converted = convert_request_pure("openai:responses", "openai:responses", &body)
+            .expect("same-format namespace request should remain transparent")
+            .value;
+
+        assert_eq!(converted["tools"], body["tools"]);
+        assert_eq!(converted["tools"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn responses_namespace_tool_validation_fails_closed_for_unrepresentable_children() {
+        let cases = [
+            json!({
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "custom",
+                    "name": "write_report",
+                    "description": "custom child"
+                }]
+            }),
+            json!({
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "write_report",
+                    "parameters": {"type": "object", "properties": {}},
+                    "future_child_field": {"cannot": "preserve"}
+                }]
+            }),
+            json!({
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "future_namespace_field": true,
+                "tools": [{
+                    "type": "function",
+                    "name": "write_report",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }),
+            json!({
+                "type": "namespace",
+                "name": "mcp__reports",
+                "description": "Reporting tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "write_report",
+                    "parameters": "not-a-schema-object"
+                }]
+            }),
+        ];
+
+        for namespace_tool in cases {
+            let body = json!({
+                "model": "gpt-source",
+                "input": "hello",
+                "tools": [namespace_tool]
+            });
+
+            let pure_error = convert_request_pure("openai:responses", "openai:chat", &body)
+                .expect_err("pure conversion must reject an unrepresentable namespace");
+            let runtime_error = convert_request(
+                "openai:responses",
+                "openai:chat",
+                &body,
+                &FormatContext::default(),
+            )
+            .expect_err("runtime conversion must reject an unrepresentable namespace");
+
+            for error in [pure_error, runtime_error] {
+                assert!(matches!(
+                    error,
+                    FormatError::LossyConversionBlocked { ref field, .. }
+                        if field == "tools[0]"
+                ));
+            }
+        }
     }
 
     #[test]
