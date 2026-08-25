@@ -628,6 +628,10 @@ const CODEX_QUOTA_WINDOW_SUFFIXES: &[&str] = &[
     "window_minutes",
 ];
 const CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS: u64 = 30;
+// Header and WHAM observations for the same active limit can be a few requests apart. Keep the
+// historical-contamination fingerprint tolerant of that small movement, but require a close
+// usage match so coincidentally aligned account and Spark reset deadlines are not enough.
+const CODEX_QUOTA_CONTAMINATION_USAGE_TOLERANCE_PERCENT: f64 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexQuotaWindowCoverage {
@@ -1170,6 +1174,41 @@ fn codex_quota_same_window_identity(
     }
 }
 
+fn codex_quota_same_window_generation(
+    left: &CodexQuotaWindowObservation,
+    right: &CodexQuotaWindowObservation,
+) -> bool {
+    codex_quota_same_window_duration(left, right)
+        && left
+            .deadline
+            .zip(right.deadline)
+            .is_some_and(|(left, right)| {
+                left.abs_diff(right) <= CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS
+            })
+}
+
+fn codex_quota_same_contamination_fingerprint(
+    account: &CodexQuotaWindowObservation,
+    spark: &CodexQuotaWindowObservation,
+) -> bool {
+    codex_quota_same_window_generation(account, spark)
+        && account
+            .used_percent()
+            .zip(spark.used_percent())
+            .is_some_and(|(account, spark)| {
+                (account - spark).abs() <= CODEX_QUOTA_CONTAMINATION_USAGE_TOLERANCE_PERCENT
+            })
+}
+
+fn codex_quota_same_window_duration(
+    left: &CodexQuotaWindowObservation,
+    right: &CodexQuotaWindowObservation,
+) -> bool {
+    left.window_minutes
+        .zip(right.window_minutes)
+        .is_some_and(|(left, right)| left > 0 && left == right)
+}
+
 fn codex_quota_merge_same_window(
     current: &CodexQuotaWindowObservation,
     incoming: &CodexQuotaWindowObservation,
@@ -1597,6 +1636,31 @@ fn codex_quota_apply_family(
     let stale_family = !reset_baseline
         && codex_quota_request_order_is_stale(context.request_order(), stored_watermark);
     let window_matches = (!reset_baseline).then(|| codex_quota_match_windows(&current, &incoming));
+    // A full wham snapshot reports the account and named model families together. Older
+    // releases could copy the active Spark window into the account slot, after which its later
+    // deadline made the normal monotonic merge reject the real account window forever. Keep the
+    // conservative deadline rule unless both the stored Spark family and this authoritative
+    // response prove that the stored account generation is actually a Spark generation.
+    let incoming_spark = if family == CodexQuotaWindowFamily::Account
+        && context.coverage == CodexQuotaWindowCoverage::FullSnapshot
+    {
+        codex_quota_read_family_windows(
+            incoming_object,
+            CodexQuotaWindowFamily::Spark,
+            Some(context.observed_at_unix_secs),
+        )
+    } else {
+        Vec::new()
+    };
+    let current_spark = if !incoming_spark.is_empty() {
+        codex_quota_read_family_windows(
+            current_object,
+            CodexQuotaWindowFamily::Spark,
+            current_observed_at,
+        )
+    } else {
+        Vec::new()
+    };
     let mut next = if reset_baseline || (authoritative && !stale_family) {
         Vec::new()
     } else {
@@ -1624,7 +1688,25 @@ fn codex_quota_apply_family(
             }
             continue;
         };
-        let mut merged_window = if stale_family {
+        let repairs_model_scoped_account_window = !stale_family
+            && codex_quota_same_window_duration(&current[current_index], incoming_window)
+            && current[current_index]
+                .deadline
+                .zip(incoming_window.deadline)
+                .is_some_and(|(current, incoming)| {
+                    incoming.saturating_add(CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS) < current
+                })
+            && current_spark.iter().any(|spark_window| {
+                codex_quota_same_contamination_fingerprint(&current[current_index], spark_window)
+            })
+            && incoming_spark.iter().any(|spark_window| {
+                codex_quota_same_contamination_fingerprint(&current[current_index], spark_window)
+            });
+        let mut merged_window = if repairs_model_scoped_account_window {
+            let mut accepted = incoming_window.clone();
+            accepted.persist_deadline();
+            accepted
+        } else if stale_family {
             codex_quota_merge_stale_same_window_usage(&current[current_index], incoming_window)
         } else {
             codex_quota_merge_same_window(&current[current_index], incoming_window)
@@ -1682,6 +1764,10 @@ fn codex_quota_semantic_metadata(
         .collect()
 }
 
+fn codex_quota_is_account_status_key(key: &str) -> bool {
+    matches!(key, "allowed" | "limit_reached")
+}
+
 /// Merge a parsed Codex quota observation into the stored flat metadata.
 ///
 /// Positive `window_minutes` values identify windows independently of the
@@ -1732,6 +1818,7 @@ pub fn merge_codex_quota_metadata_snapshot(
     .max();
     let has_incoming_metadata = incoming_object.keys().any(|key| {
         key != "updated_at"
+            && !codex_quota_is_account_status_key(key)
             && !codex_quota_is_request_order_key(key)
             && !codex_quota_is_reset_fence_key(key)
             && !codex_quota_is_window_key(key)
@@ -1748,6 +1835,7 @@ pub fn merge_codex_quota_metadata_snapshot(
     if has_incoming_metadata && !stale_metadata {
         for (key, value) in incoming_object {
             if key == "updated_at"
+                || codex_quota_is_account_status_key(key)
                 || codex_quota_is_request_order_key(key)
                 || codex_quota_is_reset_fence_key(key)
                 || codex_quota_is_window_key(key)
@@ -1763,6 +1851,44 @@ pub fn merge_codex_quota_metadata_snapshot(
                 &mut merged,
                 CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY,
                 CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY,
+                incoming_order,
+            );
+        }
+    }
+
+    // `allowed` and `limit_reached` describe the account family in WHAM and account-scoped
+    // WebSocket observations. A newer Spark-only patch must not make those account signals look
+    // stale, so order them against the account watermark rather than the newest watermark from
+    // any quota family.
+    let has_incoming_account_status = incoming_object
+        .keys()
+        .any(|key| codex_quota_is_account_status_key(key));
+    let stored_account_watermark = codex_quota_read_request_order(
+        &current_object,
+        CodexQuotaWindowFamily::Account.watermark_key(),
+        CodexQuotaWindowFamily::Account.watermark_id_key(),
+    );
+    let stale_account_status = has_incoming_account_status
+        && (codex_quota_request_order_is_stale(context.request_order(), stored_account_watermark)
+            || !codex_quota_observation_matches_reset_generation(&current_object, context)
+            || (codex_quota_account_reset_generation(Some(&serde_json::Value::Object(
+                current_object.clone(),
+            ))) == 0
+                && codex_quota_account_reset_fence(&current_object)
+                    .is_some_and(|fence| codex_quota_reset_fence_blocks(fence, context))));
+    if has_incoming_account_status && !stale_account_status {
+        for key in ["allowed", "limit_reached"] {
+            if let Some(value) = incoming_object.get(key) {
+                merged.insert(key.to_string(), value.clone());
+            }
+        }
+        if let Some(incoming_order) = context.request_order().filter(|incoming| {
+            codex_quota_request_order_is_newer(*incoming, stored_account_watermark)
+        }) {
+            codex_quota_write_request_order(
+                &mut merged,
+                CodexQuotaWindowFamily::Account.watermark_key(),
+                CodexQuotaWindowFamily::Account.watermark_id_key(),
                 incoming_order,
             );
         }
@@ -1958,6 +2084,12 @@ pub fn parse_codex_wham_usage_response(
         .and_then(serde_json::Value::as_object)
         .cloned()
         .unwrap_or_default();
+    if let Some(allowed) = rate_limit.get("allowed").and_then(coerce_json_bool) {
+        result.insert("allowed".to_string(), json!(allowed));
+    }
+    if let Some(limit_reached) = rate_limit.get("limit_reached").and_then(coerce_json_bool) {
+        result.insert("limit_reached".to_string(), json!(limit_reached));
+    }
     let primary_window = rate_limit
         .get("primary_window")
         .and_then(serde_json::Value::as_object)
@@ -2046,6 +2178,74 @@ pub fn parse_codex_websocket_rate_limits_response(
     latest
 }
 
+fn codex_websocket_usage_limit_error(
+    value: &serde_json::Value,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let root = value.as_object()?;
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
+    }
+    let status_code = root
+        .get("status_code")
+        .or_else(|| root.get("status"))
+        .and_then(coerce_json_u64);
+    if status_code != Some(429) {
+        return None;
+    }
+    let error = root.get("error").and_then(serde_json::Value::as_object)?;
+    (error.get("type").and_then(serde_json::Value::as_str) == Some("usage_limit_reached"))
+        .then_some(error)
+}
+
+/// Returns whether a Codex WebSocket response contains the terminal quota error for the limit
+/// used by this request. This is intentionally request-scoped: callers must not interpret it as
+/// proof that the account-wide Codex quota is exhausted.
+pub fn codex_websocket_response_has_usage_limit_error(value: &serde_json::Value) -> bool {
+    codex_websocket_usage_limit_error(value).is_some()
+        || value
+            .get("chunks")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|chunks| {
+                chunks
+                    .iter()
+                    .any(|chunk| codex_websocket_usage_limit_error(chunk).is_some())
+            })
+}
+
+/// Reads the reset deadline attached to the latest terminal quota error in a Codex WebSocket
+/// response. The error body follows the active limit, so this is suitable for a current-turn
+/// retry exclusion even when that limit is model-scoped.
+pub fn codex_websocket_usage_limit_reset_at(
+    value: &serde_json::Value,
+    observed_at_unix_secs: u64,
+) -> Option<u64> {
+    let read_reset = |event: &serde_json::Value| {
+        let error = codex_websocket_usage_limit_error(event)?;
+        error
+            .get("resets_at")
+            .and_then(coerce_json_u64)
+            .or_else(|| {
+                error
+                    .get("resets_in_seconds")
+                    .and_then(coerce_json_u64)
+                    .map(|seconds| observed_at_unix_secs.saturating_add(seconds))
+            })
+    };
+
+    let mut latest = read_reset(value);
+    for chunk in value
+        .get("chunks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if codex_websocket_usage_limit_error(chunk).is_some() {
+            latest = read_reset(chunk);
+        }
+    }
+    latest
+}
+
 fn parse_codex_websocket_quota_event(
     value: &serde_json::Value,
     updated_at_unix_secs: u64,
@@ -2125,20 +2325,7 @@ fn parse_codex_websocket_usage_limit_error(
     updated_at_unix_secs: u64,
 ) -> Option<serde_json::Value> {
     let root = value.as_object()?;
-    if root.get("type").and_then(serde_json::Value::as_str) != Some("error") {
-        return None;
-    }
-    let status_code = root
-        .get("status_code")
-        .or_else(|| root.get("status"))
-        .and_then(coerce_json_u64);
-    if status_code != Some(429) {
-        return None;
-    }
-    let error = root.get("error").and_then(serde_json::Value::as_object)?;
-    if error.get("type").and_then(serde_json::Value::as_str) != Some("usage_limit_reached") {
-        return None;
-    }
+    let error = codex_websocket_usage_limit_error(value)?;
 
     let headers = root
         .get("headers")
@@ -2157,6 +2344,7 @@ fn parse_codex_websocket_usage_limit_error(
     let mut result = parse_codex_usage_headers(&headers, updated_at_unix_secs)
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
+    let account_scoped = codex_headers_carry_account_windows(&headers);
 
     if !result.contains_key("plan_type") {
         if let Some(plan_type) = error
@@ -2170,7 +2358,7 @@ fn parse_codex_websocket_usage_limit_error(
     // `resets_at` describes whichever limit rejected the request. When a named per-model limit
     // owned the window headers it owns this timing too, so backfilling it into the account slot
     // would put a model window's reset on the account's own quota.
-    if codex_headers_carry_account_windows(&headers) {
+    if account_scoped {
         if !result.contains_key("primary_reset_at") {
             if let Some(reset_at) = error.get("resets_at").and_then(coerce_json_u64) {
                 result.insert("primary_reset_at".to_string(), json!(reset_at));
@@ -2188,10 +2376,14 @@ fn parse_codex_websocket_usage_limit_error(
         }
     }
 
-    // `usage_limit_reached` is a definitive, account-wide terminal signal.
-    // Preserve that fact even if an intermediary strips some Codex headers.
-    result.insert("allowed".to_string(), json!(false));
-    result.insert("limit_reached".to_string(), json!(true));
+    // `usage_limit_reached` is terminal for the active limit. Only project it onto the account
+    // when the unprefixed headers belong to the account; a named model limit (for example Spark)
+    // must not make every Codex model on the credential look exhausted. With no ownership headers
+    // the legacy account-wide fallback remains intact.
+    if account_scoped {
+        result.insert("allowed".to_string(), json!(false));
+        result.insert("limit_reached".to_string(), json!(true));
+    }
     result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
     Some(serde_json::Value::Object(result))
 }
@@ -3635,6 +3827,7 @@ mod tests {
     use super::{
         codex_build_invalid_state, codex_oauth_success_request_order_is_stale,
         codex_rate_limit_metadata_exhausted, codex_runtime_invalid_reason,
+        codex_websocket_response_has_usage_limit_error, codex_websocket_usage_limit_reset_at,
         extract_execution_error_detail, merge_codex_quota_metadata_snapshot,
         normalize_codex_reset_credit_consume_outcome, parse_antigravity_usage_response,
         parse_chatgpt_web_conversation_init_response, parse_codex_backend_me_response,
@@ -4027,6 +4220,256 @@ mod tests {
         assert_eq!(outcome.metadata["primary_used_percent"], json!(2.0));
         assert_eq!(outcome.metadata["primary_reset_at"], json!(20_000u64));
         assert_eq!(outcome.metadata["updated_at"], json!(101u64));
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_repairs_account_window_copied_from_spark() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            // Adjacent runtime and WHAM observations can move slightly while still proving
+            // that the account window was copied from this Spark generation.
+            "spark_secondary_used_percent": 30.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = parse_codex_wham_usage_response(
+            &json!({
+                "plan_type": "pro",
+                "rate_limit": {
+                    "allowed": false,
+                    "limit_reached": true,
+                    "primary_window": {
+                        "limit_window_seconds": 604_800u64,
+                        "used_percent": 100.0,
+                        "reset_at": 1_788_137_653u64
+                    },
+                    "secondary_window": null
+                },
+                "additional_rate_limits": [{
+                    "limit_name": "GPT-5.3-Codex-Spark",
+                    "metered_feature": "codex_bengalfox",
+                    "rate_limit": {
+                        "primary_window": {
+                            "limit_window_seconds": 18_000u64,
+                            "used_percent": 0.0
+                        },
+                        "secondary_window": {
+                            "limit_window_seconds": 604_800u64,
+                            "used_percent": 32.0,
+                            "reset_at": 1_788_153_238u64
+                        }
+                    }
+                }]
+            }),
+            110,
+        )
+        .expect("production-shaped WHAM response should parse");
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(100.0));
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(10_080u64));
+        assert_eq!(outcome.metadata["allowed"], json!(false));
+        assert_eq!(outcome.metadata["limit_reached"], json!(true));
+        assert!(codex_rate_limit_metadata_exhausted(&outcome.metadata));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_137_653u64)
+        );
+        assert_eq!(outcome.metadata["spark_primary_used_percent"], json!(0.0));
+        assert_eq!(
+            outcome.metadata["spark_secondary_used_percent"],
+            json!(32.0)
+        );
+        assert_eq!(
+            outcome.metadata["spark_secondary_reset_at"],
+            json!(1_788_153_238u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_rejects_deadline_only_contamination_fingerprint() {
+        let current = json!({
+            "primary_used_percent": 72.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(72.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_does_not_replace_unrelated_later_account_generation() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 33.0,
+            "spark_secondary_reset_at": 1_788_190_000u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(32.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_requires_stored_spark_contamination_fingerprint() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_190_000u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(32.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_without_account_duration_cannot_repair_account_window() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "spark_secondary_used_percent": 33.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(32.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_stale_full_snapshot_cannot_repair_account_window_copied_from_spark() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 31.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 120_000u64,
+            "spark_quota_request_started_at_unix_ms": 120_000u64,
+            "updated_at": 100u64
+        });
+        let stale_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 31.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &stale_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
     }
 
     #[test]
@@ -4980,6 +5423,86 @@ mod tests {
     }
 
     #[test]
+    fn codex_account_status_ignores_a_newer_spark_only_watermark() {
+        let current = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 40.0,
+            "spark_secondary_reset_at": 30_000u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 200_000u64,
+            "updated_at": 200u64
+        });
+        let wham = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 40.0,
+            "spark_secondary_reset_at": 30_000u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &wham,
+            210,
+            150_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(99.0));
+        assert_eq!(outcome.metadata["allowed"], json!(false));
+        assert_eq!(outcome.metadata["limit_reached"], json!(true));
+        assert!(codex_rate_limit_metadata_exhausted(&outcome.metadata));
+        assert_eq!(
+            outcome.metadata["account_quota_request_started_at_unix_ms"],
+            json!(150_000u64)
+        );
+        assert_eq!(
+            outcome.metadata["spark_quota_request_started_at_unix_ms"],
+            json!(200_000u64)
+        );
+    }
+
+    #[test]
+    fn stale_codex_account_status_cannot_override_newer_account_signal() {
+        let current = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 200_000u64,
+            "updated_at": 200u64
+        });
+        let stale = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &stale,
+            210,
+            150_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
     fn execution_error_detail_preserves_structured_code_and_message() {
         let result = ExecutionResult {
             request_id: "quota-agent-identity".to_string(),
@@ -5673,6 +6196,8 @@ mod tests {
             &json!({
                 "plan_type": "plus",
                 "rate_limit": {
+                    "allowed": false,
+                    "limit_reached": true,
                     "primary_window": {
                         "used_percent": 25.0,
                         "reset_after_seconds": 604800,
@@ -5707,6 +6232,8 @@ mod tests {
         )
         .expect("codex wham usage should parse");
 
+        assert_eq!(parsed.get("allowed"), Some(&json!(false)));
+        assert_eq!(parsed.get("limit_reached"), Some(&json!(true)));
         assert_eq!(parsed.get("primary_used_percent"), Some(&json!(10.0)));
         assert_eq!(parsed.get("secondary_used_percent"), Some(&json!(25.0)));
         assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(40.0)));
@@ -5952,31 +6479,29 @@ mod tests {
 
     #[test]
     fn codex_usage_limit_error_does_not_backfill_a_model_scoped_reset_into_the_account() {
-        let parsed = parse_codex_websocket_rate_limits_response(
-            &json!({
-                "type": "error",
-                "error": {
-                    "type": "usage_limit_reached",
-                    "plan_type": "pro",
-                    "resets_at": 1_787_430_252u64,
-                    "resets_in_seconds": 20_722u64,
-                },
-                "status_code": 429,
-                "headers": {
-                    "X-Codex-Plan-Type": "pro",
-                    "X-Codex-Active-Limit": "codex_bengalfox",
-                    "X-Codex-Primary-Used-Percent": "100",
-                    "X-Codex-Primary-Window-Minutes": "300",
-                    "X-Codex-Primary-Reset-At": "1787430252",
-                    "X-Codex-Bengalfox-Limit-Name": "GPT-5.3-Codex-Spark",
-                    "X-Codex-Bengalfox-Primary-Used-Percent": "100",
-                    "X-Codex-Bengalfox-Primary-Window-Minutes": "300",
-                    "X-Codex-Bengalfox-Primary-Reset-At": "1787430252",
-                },
-            }),
-            1_787_409_530,
-        )
-        .expect("Codex usage-limit error should parse as quota metadata");
+        let event = json!({
+            "type": "error",
+            "error": {
+                "type": "usage_limit_reached",
+                "plan_type": "pro",
+                "resets_at": 1_787_430_252u64,
+                "resets_in_seconds": 20_722u64,
+            },
+            "status_code": 429,
+            "headers": {
+                "X-Codex-Plan-Type": "pro",
+                "X-Codex-Active-Limit": "codex_bengalfox",
+                "X-Codex-Primary-Used-Percent": "100",
+                "X-Codex-Primary-Window-Minutes": "300",
+                "X-Codex-Primary-Reset-At": "1787430252",
+                "X-Codex-Bengalfox-Limit-Name": "GPT-5.3-Codex-Spark",
+                "X-Codex-Bengalfox-Primary-Used-Percent": "100",
+                "X-Codex-Bengalfox-Primary-Window-Minutes": "300",
+                "X-Codex-Bengalfox-Primary-Reset-At": "1787430252",
+            },
+        });
+        let parsed = parse_codex_websocket_rate_limits_response(&event, 1_787_409_530)
+            .expect("Codex usage-limit error should parse as quota metadata");
 
         assert!(
             parsed.get("primary_reset_at").is_none(),
@@ -5986,6 +6511,18 @@ mod tests {
         assert_eq!(
             parsed.get("spark_primary_reset_at"),
             Some(&json!(1_787_430_252u64))
+        );
+        assert_eq!(
+            parsed.get("spark_primary_used_percent"),
+            Some(&json!(100.0))
+        );
+        assert!(parsed.get("allowed").is_none());
+        assert!(parsed.get("limit_reached").is_none());
+        assert!(!codex_rate_limit_metadata_exhausted(&parsed));
+        assert!(codex_websocket_response_has_usage_limit_error(&event));
+        assert_eq!(
+            codex_websocket_usage_limit_reset_at(&event, 1_787_409_530),
+            Some(1_787_430_252u64)
         );
     }
 
