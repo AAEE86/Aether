@@ -1367,19 +1367,21 @@ fn mapped_namespace_request_extensions(
         source,
         FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
     ) || target != FormatId::OpenAiChat
-        || !openai_chat::request::raw_tool_choice_extension_is_representable_for_openai_chat(
-            request,
-        )
     {
         return mapped;
     }
 
+    let remove_tool_choice =
+        openai_chat::request::raw_tool_choice_extension_is_representable_for_openai_chat(request);
     for provider_namespace in ["openai_responses", "openai_cli"] {
         let should_remove_namespace = mapped
             .get_mut(provider_namespace)
             .and_then(Value::as_object_mut)
             .is_some_and(|fields| {
-                fields.remove("tool_choice");
+                fields.remove("include");
+                if remove_tool_choice {
+                    fields.remove("tool_choice");
+                }
                 fields.is_empty()
             });
         if should_remove_namespace {
@@ -2517,7 +2519,6 @@ fn validate_openai_responses_to_chat(
         return Ok(());
     };
     for field in [
-        "include",
         "previous_response_id",
         "truncation",
         "prompt",
@@ -4242,6 +4243,123 @@ mod tests {
     }
 
     #[test]
+    fn pure_openai_chat_to_gemini_preserves_json_tool_output_as_string() {
+        let body = json!({
+            "model": "gpt-source",
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"}
+                }]
+            }, {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "{\"key\":\"value\",\"items\":[1,2,3]}"
+            }]
+        });
+
+        let converted = convert_request_pure("openai:chat", "gemini:generate_content", &body)
+            .expect("pure conversion should succeed")
+            .value;
+
+        assert_eq!(
+            converted["contents"][1]["parts"][0]["functionResponse"]["response"]["result"],
+            "{\"key\":\"value\",\"items\":[1,2,3]}"
+        );
+    }
+
+    #[test]
+    fn pure_openai_responses_to_gemini_aligns_parallel_tool_outputs() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [{
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "read_file",
+                "arguments": "{\"path\":\"one\"}"
+            }, {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "read_file",
+                "arguments": "{\"path\":\"two\"}"
+            }, {
+                "type": "function_call_output",
+                "call_id": "call_2",
+                "output": "two"
+            }, {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "one"
+            }]
+        });
+
+        let converted = convert_request_pure("openai:responses", "gemini:generate_content", &body)
+            .expect("pure conversion should succeed")
+            .value;
+        let parts = converted["contents"][1]["parts"]
+            .as_array()
+            .expect("tool response parts");
+
+        assert_eq!(parts[0]["functionResponse"]["id"], "call_1");
+        assert_eq!(parts[0]["functionResponse"]["response"]["result"], "one");
+        assert_eq!(parts[1]["functionResponse"]["id"], "call_2");
+        assert_eq!(parts[1]["functionResponse"]["response"]["result"], "two");
+    }
+
+    #[test]
+    fn pure_claude_to_gemini_aligns_parallel_tool_results_before_text() {
+        let body = json!({
+            "model": "claude-source",
+            "max_tokens": 64,
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "read_file",
+                    "input": {"path": "one"}
+                }, {
+                    "type": "tool_use",
+                    "id": "call_2",
+                    "name": "read_file",
+                    "input": {"path": "two"}
+                }]
+            }, {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Results follow."
+                }, {
+                    "type": "tool_result",
+                    "tool_use_id": "call_2",
+                    "content": "two"
+                }, {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "one"
+                }, {
+                    "type": "text",
+                    "text": "Continue."
+                }]
+            }]
+        });
+
+        let converted = convert_request_pure("claude:messages", "gemini:generate_content", &body)
+            .expect("pure conversion should succeed")
+            .value;
+        let parts = converted["contents"][1]["parts"]
+            .as_array()
+            .expect("tool response parts");
+
+        assert_eq!(parts[0]["functionResponse"]["id"], "call_1");
+        assert_eq!(parts[1]["functionResponse"]["id"], "call_2");
+        assert_eq!(parts[2]["text"], "Results follow.");
+        assert_eq!(parts[3]["text"], "Continue.");
+    }
+
+    #[test]
     fn pure_gemini_to_openai_responses_blocks_thought_part_loss() {
         let body = json!({
             "contents": [{
@@ -4437,20 +4555,23 @@ mod tests {
     }
 
     #[test]
-    fn pure_openai_responses_to_chat_blocks_responses_only_fields() {
+    fn pure_openai_responses_to_chat_drops_include() {
         let body = json!({
             "model": "gpt-source",
             "input": [{"role": "user", "content": "hello"}],
-            "include": ["reasoning.encrypted_content"]
+            "include": [
+                "reasoning.encrypted_content",
+                "file_search_call.results"
+            ]
         });
 
-        let error = convert_request_pure("openai:responses", "openai:chat", &body)
-            .expect_err("lossy field should fail closed");
+        let converted = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("Responses include should be safely omitted for Chat")
+            .value;
 
-        assert!(matches!(
-            error,
-            super::FormatError::LossyConversionBlocked { ref field, .. } if field == "include"
-        ));
+        assert_eq!(converted["model"], "gpt-source");
+        assert_eq!(converted["messages"][0]["content"], "hello");
+        assert!(converted.get("include").is_none());
     }
 
     #[test]
@@ -6145,6 +6266,29 @@ mod tests {
             FormatError::UnsupportedField { ref field, .. }
                 if field == "previous_response_id"
         ));
+    }
+
+    #[test]
+    fn runtime_openai_responses_to_chat_drops_include() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [{"role": "user", "content": "hello"}],
+            "include": ["reasoning.encrypted_content"],
+            "stream": true
+        });
+
+        let converted = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default().with_upstream_stream(true),
+        )
+        .expect("runtime conversion should safely omit Responses include");
+
+        assert_eq!(converted["model"], "gpt-source");
+        assert_eq!(converted["messages"][0]["content"], "hello");
+        assert_eq!(converted["stream"], true);
+        assert!(converted.get("include").is_none());
     }
 
     #[test]

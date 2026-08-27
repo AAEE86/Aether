@@ -1410,6 +1410,14 @@ mod tests {
                     assert!(!input_json.contains("sig_123"));
                     continue;
                 }
+                if provider_api_format == "gemini:generate_content" {
+                    assert_eq!(
+                        converted["contents"][2]["parts"][0]["functionResponse"]["response"]
+                            ["result"],
+                        json!({"ok": true})
+                    );
+                    continue;
+                }
                 let legacy =
                     legacy_claude_request_body(&request, provider_api_format, upstream_is_stream);
                 assert_eq!(

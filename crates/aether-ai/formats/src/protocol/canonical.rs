@@ -1817,13 +1817,7 @@ pub(crate) fn openai_message_content_blocks(
                 .unwrap_or_default()
                 .to_string(),
             name: None,
-            output: match message.get("content") {
-                Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)
-                    .ok()
-                    .or_else(|| Some(Value::String(raw.clone()))),
-                Some(value) => Some(value.clone()),
-                None => None,
-            },
+            output: message.get("content").cloned(),
             content_text: Some(if text.is_empty() {
                 message
                     .get("content")
@@ -2114,7 +2108,7 @@ pub(crate) fn openai_responses_input_to_canonical_messages(
                                 generated
                             });
                         let raw_output = item_object.get("output");
-                        let output = Some(parse_jsonish_value(raw_output));
+                        let output = Some(raw_output.cloned().unwrap_or_else(|| json!({})));
                         let mut extensions = openai_responses_extensions(
                             item_object,
                             &[
@@ -2550,7 +2544,7 @@ pub(crate) fn openai_responses_output_to_canonical(
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| format!("call_auto_{index}"));
                 let raw_output = item_object.get("output");
-                let output = Some(parse_jsonish_value(raw_output));
+                let output = Some(raw_output.cloned().unwrap_or_else(|| json!({})));
                 let mut extensions = openai_responses_extensions(
                     item_object,
                     &[
@@ -3502,6 +3496,12 @@ pub(crate) fn is_claude_tool_result(extensions: &BTreeMap<String, Value>) -> boo
         .and_then(|value| value.get("source"))
         .and_then(Value::as_str)
         == Some(CLAUDE_TOOL_RESULT_SOURCE_MARKER)
+}
+
+pub(crate) fn is_cross_format_tool_result(extensions: &BTreeMap<String, Value>) -> bool {
+    is_claude_tool_result(extensions)
+        || is_openai_chat_tool_result(extensions)
+        || is_openai_responses_tool_result(extensions)
 }
 
 fn is_openai_responses_tool_result(extensions: &BTreeMap<String, Value>) -> bool {
