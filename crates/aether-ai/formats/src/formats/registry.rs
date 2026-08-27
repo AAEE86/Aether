@@ -4050,6 +4050,86 @@ mod tests {
     }
 
     #[test]
+    fn pure_gemini_idless_parallel_tool_history_stays_paired_for_standard_targets() {
+        let body = json!({
+            "model": "gemini-source",
+            "contents": [{
+                "role": "model",
+                "parts": [
+                    {"functionCall": {"name": "lookup", "args": {"q": "first"}}},
+                    {"functionCall": {"name": "lookup", "args": {"q": "second"}}}
+                ]
+            }, {
+                "role": "user",
+                "parts": [
+                    {"functionResponse": {"name": "lookup", "response": {"result": "one"}}},
+                    {"functionResponse": {"name": "lookup", "response": {"result": "two"}}}
+                ]
+            }]
+        });
+
+        let chat = convert_request_pure("gemini:generate_content", "openai:chat", &body)
+            .expect("Gemini history should convert to Chat")
+            .value;
+        let chat_call_ids = chat["messages"][0]["tool_calls"]
+            .as_array()
+            .expect("Chat tool calls")
+            .iter()
+            .map(|call| call["id"].as_str().expect("Chat call ID"))
+            .collect::<Vec<_>>();
+        let chat_result_ids = chat["messages"]
+            .as_array()
+            .expect("Chat messages")
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .map(|message| {
+                message["tool_call_id"]
+                    .as_str()
+                    .expect("Chat result call ID")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chat_result_ids, chat_call_ids);
+
+        let responses = convert_request_pure("gemini:generate_content", "openai:responses", &body)
+            .expect("Gemini history should convert to Responses")
+            .value;
+        let response_items = responses["input"].as_array().expect("Responses input");
+        let response_call_ids = response_items
+            .iter()
+            .filter(|item| item["type"] == "function_call")
+            .map(|item| item["call_id"].as_str().expect("Responses call ID"))
+            .collect::<Vec<_>>();
+        let response_result_ids = response_items
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .map(|item| item["call_id"].as_str().expect("Responses result call ID"))
+            .collect::<Vec<_>>();
+        assert_eq!(response_result_ids, response_call_ids);
+
+        let claude = convert_request_pure("gemini:generate_content", "claude:messages", &body)
+            .expect("Gemini history should convert to Claude Messages")
+            .value;
+        let claude_messages = claude["messages"].as_array().expect("Claude messages");
+        let claude_call_ids = claude_messages
+            .iter()
+            .flat_map(|message| message["content"].as_array().into_iter().flatten())
+            .filter(|block| block["type"] == "tool_use")
+            .map(|block| block["id"].as_str().expect("Claude tool use ID"))
+            .collect::<Vec<_>>();
+        let claude_result_ids = claude_messages
+            .iter()
+            .flat_map(|message| message["content"].as_array().into_iter().flatten())
+            .filter(|block| block["type"] == "tool_result")
+            .map(|block| {
+                block["tool_use_id"]
+                    .as_str()
+                    .expect("Claude tool result ID")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(claude_result_ids, claude_call_ids);
+    }
+
+    #[test]
     fn pure_claude_to_openai_chat_maps_disable_parallel_tool_use() {
         let body = json!({
             "model": "claude-sonnet",
