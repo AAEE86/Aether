@@ -6,8 +6,8 @@ use std::{
 use serde_json::{json, Map, Value};
 
 use super::{
-    encode_tool_result_error, history::record_converted_response_history,
-    openai_responses_synthetic_reasoning_item_id,
+    encode_gemini_tool_signature_carrier, encode_tool_result_error,
+    history::record_converted_response_history, openai_responses_synthetic_reasoning_item_id,
 };
 
 use crate::{
@@ -240,6 +240,28 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, compact: bo
                     &response_id,
                     &mut message_index,
                 );
+                if let Some(signature) = extensions
+                    .get("gemini")
+                    .and_then(Value::as_object)
+                    .and_then(|gemini| {
+                        gemini
+                            .get("thoughtSignature")
+                            .or_else(|| gemini.get("thought_signature"))
+                    })
+                    .and_then(Value::as_str)
+                    .and_then(encode_gemini_tool_signature_carrier)
+                {
+                    output.push(json!({
+                        "type": "reasoning",
+                        "id": openai_responses_synthetic_reasoning_item_id(
+                            &response_id,
+                            output.len(),
+                        ),
+                        "status": "completed",
+                        "encrypted_content": signature,
+                        "summary": [],
+                    }));
+                }
                 let namespaced_tool = namespace_tool_aliases.responses_name(name);
                 if namespaced_tool.is_none() && is_responses_web_search_tool(name) {
                     output.push(json!({

@@ -371,10 +371,16 @@ fn canonical_blocks_to_gemini_parts(
     tool_name_by_id: &mut BTreeMap<String, String>,
 ) -> Option<Vec<Value>> {
     let mut parts = Vec::new();
+    let mut saw_tool_use = false;
     for block in blocks {
-        if let Some(part) = canonical_block_to_gemini_part(block, tool_name_by_id)? {
+        let is_first_tool_use =
+            matches!(block, CanonicalContentBlock::ToolUse { .. }) && !saw_tool_use;
+        if let Some(part) =
+            canonical_block_to_gemini_part(block, tool_name_by_id, is_first_tool_use)?
+        {
             parts.push(part);
         }
+        saw_tool_use |= matches!(block, CanonicalContentBlock::ToolUse { .. });
     }
     Some(parts)
 }
@@ -382,6 +388,7 @@ fn canonical_blocks_to_gemini_parts(
 fn canonical_block_to_gemini_part(
     block: &CanonicalContentBlock,
     tool_name_by_id: &mut BTreeMap<String, String>,
+    is_first_tool_use: bool,
 ) -> Option<Option<Value>> {
     match block {
         CanonicalContentBlock::Text { text, .. } => Some(Some(json!({ "text": text }))),
@@ -433,16 +440,37 @@ fn canonical_block_to_gemini_part(
             })
         })),
         CanonicalContentBlock::ToolUse {
-            id, name, input, ..
+            id,
+            name,
+            input,
+            extensions,
         } => {
             tool_name_by_id.insert(id.clone(), name.clone());
-            Some(Some(json!({
+            let mut part = json!({
                 "functionCall": {
                     "id": id,
                     "name": name,
                     "args": gemini_function_args(input),
                 }
-            })))
+            });
+            let signature = extensions
+                .get("gemini")
+                .and_then(Value::as_object)
+                .and_then(|gemini| {
+                    gemini
+                        .get("thoughtSignature")
+                        .or_else(|| gemini.get("thought_signature"))
+                })
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .or_else(|| is_first_tool_use.then_some("skip_thought_signature_validator"));
+            if let Some(signature) = signature {
+                part.as_object_mut()?.insert(
+                    "thoughtSignature".to_string(),
+                    Value::String(signature.to_string()),
+                );
+            }
+            Some(Some(part))
         }
         CanonicalContentBlock::ToolResult {
             tool_use_id,
@@ -932,6 +960,7 @@ mod tests {
                 extensions: BTreeMap::new(),
             },
             &mut tool_name_by_id,
+            false,
         )
         .expect("part should be representable")
         .expect("part should not be omitted");

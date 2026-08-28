@@ -941,7 +941,11 @@
             <SelectTrigger class="h-auto w-auto gap-1.5 !border-0 bg-transparent !shadow-none p-0 font-medium rounded-none flex-row-reverse !ring-0 !ring-offset-0 !outline-none [&>svg]:h-4 [&>svg]:w-4 [&>svg]:opacity-70">
               <SelectValue placeholder="选择格式..." />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent
+              :disable-portal="false"
+              align="start"
+              class="max-h-[min(24rem,var(--radix-select-content-available-height))] min-w-[max(12rem,var(--radix-select-trigger-width))]"
+            >
               <SelectItem
                 v-for="format in availableFormats"
                 :key="format.value"
