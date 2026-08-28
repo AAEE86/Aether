@@ -103,6 +103,59 @@ fn builds_openai_chat_cross_format_request_body_from_openai_responses_source() {
 }
 
 #[test]
+fn maps_openai_responses_additional_tools_without_message_name() {
+    let body_json = json!({
+        "model": "gpt-5",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [{
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get the weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }]
+            },
+            {
+                "role": "user",
+                "content": "What is the weather?"
+            }
+        ]
+    });
+
+    let provider_request_body = build_cross_format_openai_responses_request_body(
+        &body_json,
+        "gpt-5-upstream",
+        "openai:responses",
+        "openai:chat",
+        false,
+        false,
+        "openai",
+        None,
+        None,
+        &http::HeaderMap::new(),
+        false,
+    )
+    .expect("Responses additional tools should map to a Chat request body");
+
+    assert_eq!(
+        provider_request_body["messages"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(provider_request_body["messages"][0]["role"], "user");
+    assert!(provider_request_body["messages"][0].get("name").is_none());
+    assert_eq!(provider_request_body["tools"][0]["type"], "function");
+    assert_eq!(
+        provider_request_body["tools"][0]["function"]["name"],
+        "get_weather"
+    );
+}
+
+#[test]
 fn local_openai_responses_wrapper_preserves_body_order_after_edits() {
     let body_json: Value = serde_json::from_str(
         r#"{

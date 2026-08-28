@@ -1783,7 +1783,7 @@ mod tests {
         let converted = build_standard_request_body(
             &request,
             "claude:messages",
-            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
             "google",
             "gemini:generate_content",
             "/v1/messages",
@@ -2056,7 +2056,7 @@ mod tests {
         let gemini = build_standard_request_body(
             &request,
             "openai:responses",
-            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
             "google",
             "gemini:generate_content",
             "/v1/responses",

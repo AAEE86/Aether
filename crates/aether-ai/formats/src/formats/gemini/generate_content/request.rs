@@ -9,7 +9,9 @@ use crate::{
             map_openai_reasoning_effort_to_gemini_budget,
             map_thinking_budget_to_openai_reasoning_effort,
         },
-        shared::model_directives::{gemini_model_uses_thinking_level, ReasoningEffort},
+        shared::model_directives::{
+            gemini_model_supports_mixed_tools, gemini_model_uses_thinking_level, ReasoningEffort,
+        },
     },
     protocol::canonical::{
         apply_gemini_request_extensions, canonical_extension_object_mut,
@@ -188,7 +190,7 @@ pub fn to_raw(
     let mut output = canonical_to_gemini_request_body(canonical, mapped_model, upstream_is_stream)?;
     apply_gemini_request_extensions(&mut output, &canonical.extensions)?;
     if !canonical_has_raw_gemini_tools(canonical) {
-        enable_server_side_tool_invocations_for_mixed_tools(&mut output)?;
+        enable_server_side_tool_invocations_for_mixed_tools(&mut output, mapped_model)?;
     }
     Some(output)
 }
@@ -201,12 +203,41 @@ fn canonical_has_raw_gemini_tools(canonical: &CanonicalRequest) -> bool {
         .is_some_and(|gemini| gemini.contains_key("raw_tools"))
 }
 
-fn enable_server_side_tool_invocations_for_mixed_tools(output: &mut Value) -> Option<()> {
+fn enable_server_side_tool_invocations_for_mixed_tools(
+    output: &mut Value,
+    mapped_model: &str,
+) -> Option<()> {
     let output_object = output.as_object_mut()?;
     let tools = output_object.get("tools").and_then(Value::as_array);
     let Some(tools) = tools else {
         return Some(());
     };
+    if !gemini_tools_are_mixed(tools) {
+        return Some(());
+    }
+    if !gemini_model_supports_mixed_tools(mapped_model) {
+        return None;
+    }
+
+    let tool_config = output_object
+        .entry("toolConfig".to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()?;
+    tool_config.remove("include_server_side_tool_invocations");
+    tool_config.insert(
+        "includeServerSideToolInvocations".to_string(),
+        Value::Bool(true),
+    );
+    Some(())
+}
+
+pub(crate) fn canonical_has_mixed_gemini_tools(canonical: &CanonicalRequest) -> bool {
+    canonical_tools_to_gemini(canonical)
+        .and_then(|tools| tools.as_array().cloned())
+        .is_some_and(|tools| gemini_tools_are_mixed(&tools))
+}
+
+fn gemini_tools_are_mixed(tools: &[Value]) -> bool {
     let has_function_declarations = tools.iter().any(|tool| {
         tool.as_object().is_some_and(|tool| {
             tool.get("functionDeclarations")
@@ -225,20 +256,7 @@ fn enable_server_side_tool_invocations_for_mixed_tools(output: &mut Value) -> Op
             })
         })
     });
-    if !has_function_declarations || !has_builtin_tools {
-        return Some(());
-    }
-
-    let tool_config = output_object
-        .entry("toolConfig".to_string())
-        .or_insert_with(|| Value::Object(Map::new()))
-        .as_object_mut()?;
-    tool_config.remove("include_server_side_tool_invocations");
-    tool_config.insert(
-        "includeServerSideToolInvocations".to_string(),
-        Value::Bool(true),
-    );
-    Some(())
+    has_function_declarations && has_builtin_tools
 }
 
 fn canonical_to_gemini_request_body(
@@ -1270,5 +1288,27 @@ mod tests {
             function_response["response"],
             serde_json::json!({"result": {"ok": true}})
         );
+    }
+
+    #[test]
+    fn mixed_builtin_and_function_tools_require_gemini_three() {
+        let canonical = CanonicalRequest {
+            model: "gemini-2.5-pro".to_string(),
+            tools: vec![CanonicalToolDefinition {
+                name: "save_result".to_string(),
+                description: None,
+                parameters: Some(json!({"type": "object"})),
+                strict: None,
+                extensions: BTreeMap::new(),
+            }],
+            extensions: BTreeMap::from([(
+                "gemini".to_string(),
+                json!({"builtin_tools": [{"googleSearch": {}}]}),
+            )]),
+            ..CanonicalRequest::default()
+        };
+
+        assert!(to_raw(&canonical, "gemini-2.5-pro", false).is_none());
+        assert!(to_raw(&canonical, "gemini-3-flash-preview", false).is_some());
     }
 }
