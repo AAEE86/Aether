@@ -18,9 +18,9 @@ use crate::{
         gemini_generation_config_extra, gemini_google_search_grounding,
         gemini_response_format_to_canonical, gemini_system_to_canonical_instructions,
         gemini_thinking_to_canonical, gemini_tool_choice_to_canonical, gemini_tools_to_canonical,
-        gemini_value_by_case, CanonicalContentBlock, CanonicalMessage, CanonicalRequest,
-        CanonicalResponseFormat, CanonicalRole, CanonicalToolChoice, CanonicalToolDefinition,
-        OPENAI_RESPONSES_LEGACY_EXTENSION_NAMESPACE,
+        gemini_value_by_case, is_cross_format_tool_result, CanonicalContentBlock, CanonicalMessage,
+        CanonicalRequest, CanonicalResponseFormat, CanonicalRole, CanonicalToolChoice,
+        CanonicalToolDefinition, OPENAI_RESPONSES_LEGACY_EXTENSION_NAMESPACE,
     },
 };
 
@@ -244,13 +244,51 @@ fn canonical_system_instruction(canonical: &CanonicalRequest) -> Option<Value> {
 fn canonical_messages_to_gemini_contents(messages: &[CanonicalMessage]) -> Option<Vec<Value>> {
     let mut contents = Vec::new();
     let mut tool_name_by_id = BTreeMap::new();
-    for message in messages {
-        let role = match message.role {
+    let mut pending_tool_use_ids = Vec::new();
+    let mut message_index = 0;
+    while message_index < messages.len() {
+        let role = match messages[message_index].role {
             CanonicalRole::Assistant => "model",
-            CanonicalRole::System | CanonicalRole::Developer => continue,
+            CanonicalRole::System | CanonicalRole::Developer => {
+                message_index += 1;
+                continue;
+            }
             CanonicalRole::Tool | CanonicalRole::User | CanonicalRole::Unknown => "user",
         };
-        let parts = canonical_blocks_to_gemini_parts(&message.content, &mut tool_name_by_id)?;
+        let mut blocks = Vec::new();
+        while message_index < messages.len() {
+            let next_role = match messages[message_index].role {
+                CanonicalRole::Assistant => Some("model"),
+                CanonicalRole::Tool | CanonicalRole::User | CanonicalRole::Unknown => Some("user"),
+                CanonicalRole::System | CanonicalRole::Developer => None,
+            };
+            match next_role {
+                Some(next_role) if next_role == role => {
+                    blocks.extend(messages[message_index].content.iter());
+                    message_index += 1;
+                }
+                None => message_index += 1,
+                Some(_) => break,
+            }
+        }
+
+        let blocks = if role == "user" {
+            let aligned = align_gemini_tool_results(blocks, &pending_tool_use_ids);
+            pending_tool_use_ids.clear();
+            aligned
+        } else {
+            pending_tool_use_ids = blocks
+                .iter()
+                .filter_map(|block| match block {
+                    CanonicalContentBlock::ToolUse { id, .. } if !id.trim().is_empty() => {
+                        Some(id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            blocks
+        };
+        let parts = canonical_blocks_to_gemini_parts(&blocks, &mut tool_name_by_id)?;
         if parts.is_empty() {
             continue;
         }
@@ -262,8 +300,74 @@ fn canonical_messages_to_gemini_contents(messages: &[CanonicalMessage]) -> Optio
     Some(contents)
 }
 
+fn align_gemini_tool_results<'a>(
+    blocks: Vec<&'a CanonicalContentBlock>,
+    pending_tool_use_ids: &[String],
+) -> Vec<&'a CanonicalContentBlock> {
+    if pending_tool_use_ids.is_empty() {
+        return blocks;
+    }
+
+    let result_indexes = blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| match block {
+            CanonicalContentBlock::ToolResult { extensions, .. }
+                if is_cross_format_tool_result(extensions) =>
+            {
+                Some(index)
+            }
+            CanonicalContentBlock::ToolResult { .. } => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if result_indexes.len() != pending_tool_use_ids.len()
+        || blocks
+            .iter()
+            .filter(|block| matches!(block, CanonicalContentBlock::ToolResult { .. }))
+            .count()
+            != result_indexes.len()
+    {
+        return blocks;
+    }
+
+    let mut ordered = Vec::with_capacity(blocks.len());
+    let mut used = vec![false; result_indexes.len()];
+    for pending_id in pending_tool_use_ids {
+        if pending_id.trim().is_empty() {
+            return blocks;
+        }
+        let Some((result_position, block_index)) =
+            result_indexes
+                .iter()
+                .enumerate()
+                .find(|(result_position, block_index)| {
+                    if used[*result_position] {
+                        return false;
+                    }
+                    matches!(
+                        blocks[**block_index],
+                        CanonicalContentBlock::ToolResult { ref tool_use_id, .. }
+                            if tool_use_id == pending_id
+                    )
+                })
+        else {
+            return blocks;
+        };
+        used[result_position] = true;
+        ordered.push(blocks[*block_index]);
+    }
+    ordered.extend(
+        blocks
+            .iter()
+            .copied()
+            .filter(|block| !matches!(block, CanonicalContentBlock::ToolResult { .. })),
+    );
+    ordered
+}
+
 fn canonical_blocks_to_gemini_parts(
-    blocks: &[CanonicalContentBlock],
+    blocks: &[&CanonicalContentBlock],
     tool_name_by_id: &mut BTreeMap<String, String>,
 ) -> Option<Vec<Value>> {
     let mut parts = Vec::new();
