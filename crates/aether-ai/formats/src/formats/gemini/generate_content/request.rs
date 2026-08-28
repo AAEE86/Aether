@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Map, Value};
 
@@ -9,7 +9,9 @@ use crate::{
             map_openai_reasoning_effort_to_gemini_budget,
             map_thinking_budget_to_openai_reasoning_effort,
         },
-        shared::model_directives::{gemini_model_uses_thinking_level, ReasoningEffort},
+        shared::model_directives::{
+            gemini_model_supports_mixed_tools, gemini_model_uses_thinking_level, ReasoningEffort,
+        },
     },
     protocol::canonical::{
         apply_gemini_request_extensions, canonical_extension_object_mut,
@@ -187,7 +189,74 @@ pub fn to_raw(
 ) -> Option<Value> {
     let mut output = canonical_to_gemini_request_body(canonical, mapped_model, upstream_is_stream)?;
     apply_gemini_request_extensions(&mut output, &canonical.extensions)?;
+    if !canonical_has_raw_gemini_tools(canonical) {
+        enable_server_side_tool_invocations_for_mixed_tools(&mut output, mapped_model)?;
+    }
     Some(output)
+}
+
+fn canonical_has_raw_gemini_tools(canonical: &CanonicalRequest) -> bool {
+    canonical
+        .extensions
+        .get("gemini")
+        .and_then(Value::as_object)
+        .is_some_and(|gemini| gemini.contains_key("raw_tools"))
+}
+
+fn enable_server_side_tool_invocations_for_mixed_tools(
+    output: &mut Value,
+    mapped_model: &str,
+) -> Option<()> {
+    let output_object = output.as_object_mut()?;
+    let tools = output_object.get("tools").and_then(Value::as_array);
+    let Some(tools) = tools else {
+        return Some(());
+    };
+    if !gemini_tools_are_mixed(tools) {
+        return Some(());
+    }
+    if !gemini_model_supports_mixed_tools(mapped_model) {
+        return None;
+    }
+
+    let tool_config = output_object
+        .entry("toolConfig".to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()?;
+    tool_config.remove("include_server_side_tool_invocations");
+    tool_config.insert(
+        "includeServerSideToolInvocations".to_string(),
+        Value::Bool(true),
+    );
+    Some(())
+}
+
+pub(crate) fn canonical_has_mixed_gemini_tools(canonical: &CanonicalRequest) -> bool {
+    canonical_tools_to_gemini(canonical)
+        .and_then(|tools| tools.as_array().cloned())
+        .is_some_and(|tools| gemini_tools_are_mixed(&tools))
+}
+
+fn gemini_tools_are_mixed(tools: &[Value]) -> bool {
+    let has_function_declarations = tools.iter().any(|tool| {
+        tool.as_object().is_some_and(|tool| {
+            tool.get("functionDeclarations")
+                .or_else(|| tool.get("function_declarations"))
+                .and_then(Value::as_array)
+                .is_some_and(|declarations| !declarations.is_empty())
+        })
+    });
+    let has_builtin_tools = tools.iter().any(|tool| {
+        tool.as_object().is_some_and(|tool| {
+            tool.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "functionDeclarations" | "function_declarations"
+                )
+            })
+        })
+    });
+    has_function_declarations && has_builtin_tools
 }
 
 fn canonical_to_gemini_request_body(
@@ -920,30 +989,273 @@ fn insert_f64(output: &mut Map<String, Value>, key: &str, value: Option<f64>) {
 }
 
 fn clean_gemini_schema(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            for inner in object.values_mut() {
-                clean_gemini_schema(inner);
-            }
-            if object.get("type").and_then(Value::as_str) == Some("object")
-                && !object.contains_key("properties")
-            {
-                object.insert("properties".to_string(), Value::Object(Map::new()));
+    let root = value.clone();
+    *value = json_schema_to_gemini_schema(&root, &root, &mut BTreeSet::new());
+}
+
+fn json_schema_to_gemini_schema(
+    value: &Value,
+    root: &Value,
+    resolving_refs: &mut BTreeSet<String>,
+) -> Value {
+    let Some(object) = value.as_object() else {
+        return json!({});
+    };
+
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        if let Some(pointer) = reference.strip_prefix('#') {
+            if resolving_refs.insert(reference.to_string()) {
+                if let Some(resolved) = root.pointer(pointer).and_then(Value::as_object) {
+                    let mut merged = resolved.clone();
+                    for (key, value) in object {
+                        if key != "$ref" {
+                            merged.insert(key.clone(), value.clone());
+                        }
+                    }
+                    let schema = clean_gemini_schema_object(&merged, root, resolving_refs);
+                    resolving_refs.remove(reference);
+                    return Value::Object(schema);
+                }
+                resolving_refs.remove(reference);
             }
         }
-        Value::Array(items) => {
-            for item in items {
-                clean_gemini_schema(item);
+    }
+
+    Value::Object(clean_gemini_schema_object(object, root, resolving_refs))
+}
+
+fn clean_gemini_schema_object(
+    object: &Map<String, Value>,
+    root: &Value,
+    resolving_refs: &mut BTreeSet<String>,
+) -> Map<String, Value> {
+    let mut schema = Map::new();
+
+    for key in ["title", "description", "format", "pattern"] {
+        if let Some(value) = object.get(key).filter(|value| value.is_string()) {
+            schema.insert(key.to_string(), value.clone());
+        }
+    }
+    for key in ["default", "example"] {
+        if let Some(value) = object.get(key) {
+            schema.insert(key.to_string(), value.clone());
+        }
+    }
+    for key in ["minimum", "maximum"] {
+        if let Some(value) = object.get(key).filter(|value| value.is_number()) {
+            schema.insert(key.to_string(), value.clone());
+        }
+    }
+    for key in [
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "minProperties",
+        "maxProperties",
+    ] {
+        if let Some(value) = object.get(key).and_then(gemini_int64_string) {
+            schema.insert(key.to_string(), Value::String(value));
+        }
+    }
+    if let Some(value) = object.get("nullable").filter(|value| value.is_boolean()) {
+        schema.insert("nullable".to_string(), value.clone());
+    }
+    for key in ["required", "propertyOrdering"] {
+        if let Some(values) = object.get(key).and_then(gemini_string_array) {
+            schema.insert(key.to_string(), values);
+        }
+    }
+    if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        let values = values
+            .iter()
+            .filter(|value| value.is_string())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            schema.insert("enum".to_string(), Value::Array(values));
+        }
+    }
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        schema.insert(
+            "properties".to_string(),
+            Value::Object(
+                properties
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            json_schema_to_gemini_schema(value, root, resolving_refs),
+                        )
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(items) = object.get("items") {
+        schema.insert(
+            "items".to_string(),
+            json_schema_to_gemini_schema(items, root, resolving_refs),
+        );
+    }
+
+    let explicit_any_of = object
+        .get("anyOf")
+        .or_else(|| object.get("oneOf"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .map(|item| json_schema_to_gemini_schema(item, root, resolving_refs))
+                    .collect(),
+            )
+        });
+    if let Some(any_of) = explicit_any_of {
+        schema.insert("anyOf".to_string(), any_of);
+    }
+
+    match object.get("type") {
+        Some(Value::String(schema_type)) => {
+            schema.insert("type".to_string(), Value::String(schema_type.clone()));
+        }
+        Some(Value::Array(types)) => {
+            let mut non_null_types = types
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|schema_type| *schema_type != "null")
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            let mut seen_types = BTreeSet::new();
+            non_null_types.retain(|schema_type| seen_types.insert(schema_type.clone()));
+            let nullable = types.iter().any(|value| value.as_str() == Some("null"));
+
+            match non_null_types.as_slice() {
+                [schema_type] => {
+                    schema.insert("type".to_string(), Value::String(schema_type.clone()));
+                }
+                [] if nullable => {
+                    schema.insert("type".to_string(), Value::String("null".to_string()));
+                }
+                [] => {}
+                _ if !schema.contains_key("anyOf") => {
+                    schema.insert(
+                        "anyOf".to_string(),
+                        Value::Array(
+                            non_null_types
+                                .iter()
+                                .map(|schema_type| json!({ "type": schema_type }))
+                                .collect(),
+                        ),
+                    );
+                }
+                _ => {}
+            }
+            if nullable && !non_null_types.is_empty() {
+                schema.insert("nullable".to_string(), Value::Bool(true));
             }
         }
         _ => {}
     }
+
+    if schema.get("type").and_then(Value::as_str) == Some("object")
+        && !schema.contains_key("properties")
+    {
+        schema.insert("properties".to_string(), Value::Object(Map::new()));
+    }
+    schema
+}
+
+fn gemini_int64_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn gemini_string_array(value: &Value) -> Option<Value> {
+    let values = value.as_array()?;
+    values.iter().all(Value::is_string).then(|| value.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::CanonicalContentBlock;
+
+    #[test]
+    fn canonical_tool_declaration_sanitizes_json_schema_for_gemini() {
+        let declaration = canonical_tool_to_gemini_declaration(&CanonicalToolDefinition {
+            name: "inspect".to_string(),
+            description: None,
+            parameters: Some(json!({
+                "$defs": {
+                    "Target": {
+                        "type": "object",
+                        "properties": {
+                            "secret": {
+                                "type": "string",
+                                "encrypted": true
+                            }
+                        },
+                        "required": ["secret"],
+                        "additionalProperties": false
+                    }
+                },
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/Target"},
+                            {"type": "null"}
+                        ]
+                    },
+                    "mode": {
+                        "type": ["string", "null"],
+                        "enum": [1, "fast"]
+                    },
+                    "value": {
+                        "type": ["string", "integer"]
+                    }
+                }
+            })),
+            strict: None,
+            extensions: BTreeMap::new(),
+        });
+
+        assert_eq!(
+            declaration["parameters"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "secret": {"type": "string"}
+                                },
+                                "required": ["secret"]
+                            },
+                            {"type": "null"}
+                        ]
+                    },
+                    "mode": {
+                        "type": "string",
+                        "nullable": true,
+                        "enum": ["fast"]
+                    },
+                    "value": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "integer"}
+                        ]
+                    }
+                }
+            })
+        );
+    }
 
     #[test]
     fn canonical_tool_result_to_gemini_request_preserves_function_response_id() {
@@ -976,5 +1288,27 @@ mod tests {
             function_response["response"],
             serde_json::json!({"result": {"ok": true}})
         );
+    }
+
+    #[test]
+    fn mixed_builtin_and_function_tools_require_gemini_three() {
+        let canonical = CanonicalRequest {
+            model: "gemini-2.5-pro".to_string(),
+            tools: vec![CanonicalToolDefinition {
+                name: "save_result".to_string(),
+                description: None,
+                parameters: Some(json!({"type": "object"})),
+                strict: None,
+                extensions: BTreeMap::new(),
+            }],
+            extensions: BTreeMap::from([(
+                "gemini".to_string(),
+                json!({"builtin_tools": [{"googleSearch": {}}]}),
+            )]),
+            ..CanonicalRequest::default()
+        };
+
+        assert!(to_raw(&canonical, "gemini-2.5-pro", false).is_none());
+        assert!(to_raw(&canonical, "gemini-3-flash-preview", false).is_some());
     }
 }

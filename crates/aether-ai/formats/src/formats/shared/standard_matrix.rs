@@ -1783,7 +1783,7 @@ mod tests {
         let converted = build_standard_request_body(
             &request,
             "claude:messages",
-            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
             "google",
             "gemini:generate_content",
             "/v1/messages",
@@ -2028,5 +2028,53 @@ mod tests {
             claude["tools"][0]["input_schema"].get("required").is_some(),
             "surface conversion should preserve the Claude tool schema before transport envelopes"
         );
+    }
+
+    #[test]
+    fn openai_responses_builtin_and_function_tools_enable_gemini_server_invocations() {
+        let request = json!({
+            "model": "gpt-5",
+            "input": "Search first, then save the result.",
+            "tools": [
+                {"type": "web_search_preview"},
+                {
+                    "type": "function",
+                    "name": "save_result",
+                    "description": "Save a search result",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "result": {"type": "string"}
+                        },
+                        "required": ["result"]
+                    }
+                }
+            ],
+            "tool_choice": "required"
+        });
+
+        let gemini = build_standard_request_body(
+            &request,
+            "openai:responses",
+            "gemini-3-flash-preview",
+            "google",
+            "gemini:generate_content",
+            "/v1/responses",
+            true,
+            None,
+            None,
+        )
+        .expect("openai responses should convert to gemini generate content");
+
+        assert_eq!(gemini["tools"][0]["googleSearch"], json!({}));
+        assert_eq!(
+            gemini["tools"][1]["functionDeclarations"][0]["name"],
+            "save_result"
+        );
+        assert_eq!(
+            gemini["toolConfig"]["includeServerSideToolInvocations"],
+            true
+        );
+        assert_eq!(gemini["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
     }
 }

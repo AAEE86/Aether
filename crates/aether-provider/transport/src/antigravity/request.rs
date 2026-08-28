@@ -177,6 +177,7 @@ mod tests {
                 }
             },
             "toolConfig": {
+                "includeServerSideToolInvocations": true,
                 "functionCallingConfig": {
                     "mode": "VALIDATED"
                 }
@@ -245,6 +246,13 @@ mod tests {
             envelope["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
         );
+        assert_eq!(
+            envelope["request"]["toolConfig"]["includeServerSideToolInvocations"],
+            true
+        );
+        assert!(envelope["request"]["toolConfig"]
+            .get("include_server_side_tool_invocations")
+            .is_none());
         assert_eq!(
             envelope["request"]["tools"][0]["functionDeclarations"][0]["name"],
             "run_command"
