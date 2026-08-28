@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use serde_json::Value;
 
 pub mod codex;
@@ -9,6 +10,69 @@ pub mod stream;
 
 const TOOL_ERROR_PREFIX: &str = "[tool error]";
 const AETHER_REASONING_ITEM_ID_PREFIX: &str = "rs_aether_";
+const GEMINI_TOOL_SIGNATURE_CARRIER_PREFIX: &str = "cpa-gemini-responses-carrier-v1:";
+const MAX_GEMINI_THOUGHT_SIGNATURE_LEN: usize = 32 * 1024 * 1024;
+const MAX_GEMINI_THOUGHT_SIGNATURE_ENCODED_LEN: usize =
+    MAX_GEMINI_THOUGHT_SIGNATURE_LEN.div_ceil(3) * 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GeminiToolSignatureCarrierDirection {
+    Next,
+    Previous,
+}
+
+impl GeminiToolSignatureCarrierDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Previous => "previous",
+        }
+    }
+}
+
+pub(crate) fn encode_gemini_tool_signature_carrier(signature: &str) -> Option<String> {
+    encode_gemini_tool_signature_carrier_with_direction(
+        signature,
+        GeminiToolSignatureCarrierDirection::Next,
+    )
+}
+
+pub(crate) fn encode_gemini_tool_signature_carrier_with_direction(
+    signature: &str,
+    direction: GeminiToolSignatureCarrierDirection,
+) -> Option<String> {
+    (!signature.trim().is_empty() && signature.len() <= MAX_GEMINI_THOUGHT_SIGNATURE_LEN).then(
+        || {
+            format!(
+                "{GEMINI_TOOL_SIGNATURE_CARRIER_PREFIX}{}:function:{}",
+                direction.as_str(),
+                STANDARD_NO_PAD.encode(signature)
+            )
+        },
+    )
+}
+
+pub(crate) fn decode_gemini_tool_signature_carrier(
+    carrier: &str,
+) -> Option<(String, GeminiToolSignatureCarrierDirection)> {
+    let payload = carrier.strip_prefix(GEMINI_TOOL_SIGNATURE_CARRIER_PREFIX)?;
+    let (direction, encoded) = payload.split_once(":function:")?;
+    let direction = match direction {
+        "next" => GeminiToolSignatureCarrierDirection::Next,
+        "previous" => GeminiToolSignatureCarrierDirection::Previous,
+        _ => return None,
+    };
+    if encoded.len() > MAX_GEMINI_THOUGHT_SIGNATURE_ENCODED_LEN {
+        return None;
+    }
+    let decoded = STANDARD_NO_PAD.decode(encoded).ok()?;
+    if decoded.len() > MAX_GEMINI_THOUGHT_SIGNATURE_LEN {
+        return None;
+    }
+    let signature = String::from_utf8(decoded).ok()?;
+    (!signature.trim().is_empty() && !signature.starts_with(GEMINI_TOOL_SIGNATURE_CARRIER_PREFIX))
+        .then_some((signature, direction))
+}
 
 /// Controls which provider-owned reasoning items may be replayed on a Responses request.
 ///
@@ -190,11 +254,57 @@ mod tests {
     use serde_json::json;
 
     use super::{
+        decode_gemini_tool_signature_carrier, encode_gemini_tool_signature_carrier_with_direction,
         openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,
         strip_incompatible_openai_responses_reasoning_items,
         strip_incompatible_openai_responses_reasoning_items_with_policy,
-        OpenAiResponsesReasoningReplayPolicy, OPENAI_RESPONSES_OPERATION_COMPACT,
+        GeminiToolSignatureCarrierDirection, OpenAiResponsesReasoningReplayPolicy,
+        MAX_GEMINI_THOUGHT_SIGNATURE_ENCODED_LEN, MAX_GEMINI_THOUGHT_SIGNATURE_LEN,
+        OPENAI_RESPONSES_OPERATION_COMPACT,
     };
+
+    #[test]
+    fn gemini_tool_signature_carrier_roundtrips_direction_and_exact_value() {
+        let signature = "  opaque-signature-with-padding==  ";
+        for direction in [
+            GeminiToolSignatureCarrierDirection::Next,
+            GeminiToolSignatureCarrierDirection::Previous,
+        ] {
+            let carrier = encode_gemini_tool_signature_carrier_with_direction(signature, direction)
+                .expect("signature carrier");
+            assert_eq!(
+                decode_gemini_tool_signature_carrier(&carrier),
+                Some((signature.to_string(), direction))
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_tool_signature_carrier_rejects_nested_and_oversized_values() {
+        let nested = encode_gemini_tool_signature_carrier_with_direction(
+            "opaque-signature",
+            GeminiToolSignatureCarrierDirection::Next,
+        )
+        .expect("inner carrier");
+        let nested = encode_gemini_tool_signature_carrier_with_direction(
+            &nested,
+            GeminiToolSignatureCarrierDirection::Previous,
+        )
+        .expect("outer carrier");
+        assert_eq!(decode_gemini_tool_signature_carrier(&nested), None);
+        assert_eq!(
+            encode_gemini_tool_signature_carrier_with_direction(
+                &"x".repeat(MAX_GEMINI_THOUGHT_SIGNATURE_LEN + 1),
+                GeminiToolSignatureCarrierDirection::Next,
+            ),
+            None
+        );
+        let oversized = format!(
+            "cpa-gemini-responses-carrier-v1:next:function:{}",
+            "A".repeat(MAX_GEMINI_THOUGHT_SIGNATURE_ENCODED_LEN + 1)
+        );
+        assert_eq!(decode_gemini_tool_signature_carrier(&oversized), None);
+    }
 
     #[test]
     fn resolves_compaction_trigger_as_compact_operation_on_responses_transport() {

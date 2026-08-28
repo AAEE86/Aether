@@ -3269,6 +3269,7 @@ struct GeminiSyncToolState {
     call_id: String,
     name: String,
     arguments: String,
+    thought_signature: String,
     part_index: Option<usize>,
 }
 
@@ -3596,6 +3597,13 @@ fn try_aggregate_gemini_stream_sync_response(
                         parts[part_index] = sync_gemini_function_call_part(state);
                     }
                 }
+                CanonicalStreamEvent::ToolCallSignature { index, signature } => {
+                    let state = tool_states.entry(index).or_default();
+                    state.thought_signature = signature;
+                    if let Some(part_index) = state.part_index {
+                        parts[part_index] = sync_gemini_function_call_part(state);
+                    }
+                }
                 CanonicalStreamEvent::ToolCallArgumentsDelta { index, arguments } => {
                     let state = tool_states.entry(index).or_default();
                     state.arguments.push_str(&arguments);
@@ -3790,7 +3798,7 @@ fn is_mergeable_gemini_text_part(part: &Map<String, Value>, thought: bool) -> bo
 }
 
 fn sync_gemini_function_call_part(state: &GeminiSyncToolState) -> Value {
-    json!({
+    let mut part = json!({
         "functionCall": {
             "id": if state.call_id.trim().is_empty() {
                 "call_auto_0".to_string()
@@ -3804,7 +3812,11 @@ fn sync_gemini_function_call_part(state: &GeminiSyncToolState) -> Value {
             },
             "args": sync_gemini_function_args_value(&state.arguments),
         }
-    })
+    });
+    if !state.thought_signature.is_empty() {
+        part["thoughtSignature"] = Value::String(state.thought_signature.clone());
+    }
+    part
 }
 
 fn sync_gemini_function_response_part(

@@ -1401,8 +1401,10 @@ fn mapped_namespace_tool_use_extensions(
     if !matches!(
         source,
         FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
-    ) || target != FormatId::OpenAiChat
-    {
+    ) || !matches!(
+        target,
+        FormatId::OpenAiChat | FormatId::GeminiGenerateContent
+    ) {
         return Ok(extensions.clone());
     }
 
@@ -1414,36 +1416,37 @@ fn mapped_namespace_tool_use_extensions(
         else {
             continue;
         };
-        let Some(namespace) = provider_fields.get("namespace") else {
-            continue;
-        };
-        let Some(namespace) = namespace
-            .as_str()
-            .map(str::trim)
-            .filter(|namespace| !namespace.is_empty())
-        else {
-            return Err(FormatError::LossyConversionBlocked {
-                source_format: source.as_str().to_string(),
-                target_format: target.as_str().to_string(),
-                field: format!("messages[].content[].{provider_namespace}.namespace"),
-                reason: "Responses namespace tool call has an invalid namespace identity"
-                    .to_string(),
-            });
-        };
-        if aliases.chat_name(namespace, name).is_none() {
-            return Err(FormatError::LossyConversionBlocked {
-                source_format: source.as_str().to_string(),
-                target_format: target.as_str().to_string(),
-                field: format!("messages[].content[].{provider_namespace}.namespace"),
-                reason: "Responses namespace tool call does not match an expanded namespace child"
-                    .to_string(),
-            });
+        if target == FormatId::OpenAiChat {
+            if let Some(namespace) = provider_fields.get("namespace") {
+                let Some(namespace) = namespace
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|namespace| !namespace.is_empty())
+                else {
+                    return Err(FormatError::LossyConversionBlocked {
+                        source_format: source.as_str().to_string(),
+                        target_format: target.as_str().to_string(),
+                        field: format!("messages[].content[].{provider_namespace}.namespace"),
+                        reason: "Responses namespace tool call has an invalid namespace identity"
+                            .to_string(),
+                    });
+                };
+                if aliases.chat_name(namespace, name).is_none() {
+                    return Err(FormatError::LossyConversionBlocked {
+                        source_format: source.as_str().to_string(),
+                        target_format: target.as_str().to_string(),
+                        field: format!("messages[].content[].{provider_namespace}.namespace"),
+                        reason: "Responses namespace tool call does not match an expanded namespace child"
+                            .to_string(),
+                    });
+                }
+                provider_fields.remove("namespace");
+            }
         }
-        provider_fields.remove("namespace");
         // Responses item IDs are distinct from executable call IDs, but Chat
-        // has only the latter. A completed history item is fully represented
-        // by the assistant tool call itself, so these transport/completion
-        // sidecars can be discarded after the namespace identity is proven.
+        // and Gemini pair tools by the latter. A completed history item is
+        // fully represented by the model function call, so these transport
+        // sidecars can be discarded after any namespace identity is proven.
         provider_fields.remove("item_id");
         if provider_fields.get("status").and_then(Value::as_str) == Some("completed") {
             provider_fields.remove("status");
@@ -1538,6 +1541,19 @@ fn request_extension_key_is_cross_format_safe(
                 FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
                 FormatId::OpenAiChat,
                 "openai_responses" | "openai_cli",
+            )
+        )
+    {
+        return true;
+    }
+    if location == "messages[].content[]"
+        && matches!(
+            (source, target, namespace, key),
+            (
+                FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+                FormatId::GeminiGenerateContent,
+                "gemini",
+                "thoughtSignature",
             )
         )
     {
@@ -4381,7 +4397,15 @@ mod tests {
         let parts = converted["contents"][1]["parts"]
             .as_array()
             .expect("tool response parts");
+        let calls = converted["contents"][0]["parts"]
+            .as_array()
+            .expect("parallel function call parts");
 
+        assert_eq!(
+            calls[0]["thoughtSignature"],
+            "skip_thought_signature_validator"
+        );
+        assert!(calls[1].get("thoughtSignature").is_none());
         assert_eq!(parts[0]["functionResponse"]["id"], "call_1");
         assert_eq!(parts[0]["functionResponse"]["response"]["result"], "one");
         assert_eq!(parts[1]["functionResponse"]["id"], "call_2");
@@ -4437,6 +4461,127 @@ mod tests {
         assert_eq!(parts[1]["functionResponse"]["id"], "call_2");
         assert_eq!(parts[2]["text"], "Results follow.");
         assert_eq!(parts[3]["text"], "Continue.");
+    }
+
+    #[test]
+    fn pure_openai_responses_to_gemini_signs_synthetic_tool_history() {
+        let body = json!({
+            "model": "gemini-3-flash-preview",
+            "input": [{
+                "type": "function_call",
+                "call_id": "call_weather",
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Shanghai\"}"
+            }, {
+                "type": "function_call_output",
+                "call_id": "call_weather",
+                "output": "sunny"
+            }]
+        });
+
+        let converted = convert_request_pure("openai:responses", "gemini:generate_content", &body)
+            .expect("synthetic Responses tool history should be compatible with Gemini")
+            .value;
+
+        assert_eq!(
+            converted["contents"][0]["parts"][0]["thoughtSignature"],
+            "skip_thought_signature_validator"
+        );
+    }
+
+    #[test]
+    fn gemini_tool_signature_roundtrips_through_openai_responses_history() {
+        let signature = "opaque-gemini-tool-signature";
+        let gemini_response = json!({
+            "responseId": "resp_gemini_tool",
+            "modelVersion": "gemini-3-flash-preview",
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "id": "call_weather",
+                            "name": "get_weather",
+                            "args": {"city": "Shanghai"}
+                        },
+                        "thoughtSignature": signature
+                    }]
+                },
+                "finishReason": "STOP"
+            }]
+        });
+
+        let responses = convert_response_pure(
+            "gemini:generate_content",
+            "openai:responses",
+            &gemini_response,
+        )
+        .expect("Gemini tool response should convert to Responses")
+        .value;
+        let mut input = responses["output"]
+            .as_array()
+            .expect("Responses output items")
+            .clone();
+        input.push(json!({
+            "type": "function_call_output",
+            "call_id": "call_weather",
+            "output": "sunny"
+        }));
+
+        let converted = convert_request_pure(
+            "openai:responses",
+            "gemini:generate_content",
+            &json!({
+                "model": "gemini-3-flash-preview",
+                "input": input
+            }),
+        )
+        .expect("Responses tool history should convert back to Gemini")
+        .value;
+
+        assert_eq!(
+            converted["contents"][0]["parts"][0]["thoughtSignature"],
+            signature
+        );
+    }
+
+    #[test]
+    fn post_call_gemini_signature_carrier_replays_to_previous_function_call() {
+        let signature = "opaque-late-tool-signature";
+        let carrier =
+            crate::formats::openai::responses::encode_gemini_tool_signature_carrier_with_direction(
+                signature,
+                crate::formats::openai::responses::GeminiToolSignatureCarrierDirection::Previous,
+            )
+            .expect("signature carrier");
+        let body = json!({
+            "model": "gemini-3-flash-preview",
+            "input": [{
+                "type": "function_call",
+                "call_id": "call_weather",
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Shanghai\"}"
+            }, {
+                "type": "reasoning",
+                "id": "rs_aether_late_signature",
+                "status": "completed",
+                "encrypted_content": carrier,
+                "summary": []
+            }, {
+                "type": "function_call_output",
+                "call_id": "call_weather",
+                "output": "sunny"
+            }]
+        });
+
+        let converted = convert_request_pure("openai:responses", "gemini:generate_content", &body)
+            .expect("post-call signature carrier should replay")
+            .value;
+
+        assert_eq!(
+            converted["contents"][0]["parts"][0]["thoughtSignature"],
+            signature
+        );
     }
 
     #[test]

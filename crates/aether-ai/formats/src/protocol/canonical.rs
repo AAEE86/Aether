@@ -3,6 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::formats::openai::responses::{
+    decode_gemini_tool_signature_carrier, GeminiToolSignatureCarrierDirection,
+};
 use crate::formats::openai::shared::map_thinking_budget_to_openai_reasoning_effort;
 use crate::formats::shared::model_directives::ReasoningEffort;
 use crate::formats::shared::response::remove_empty_pages_from_tool_input_value;
@@ -2066,7 +2069,31 @@ pub(crate) fn openai_responses_input_to_canonical_messages(
                     .to_ascii_lowercase();
                 match item_type.as_str() {
                     "reasoning" => {
-                        pending_reasoning = openai_responses_reasoning_block_from_item(item_object);
+                        let reasoning = openai_responses_reasoning_block_from_item(item_object);
+                        let previous_signature = reasoning.as_ref().and_then(|block| match block {
+                            CanonicalContentBlock::Thinking {
+                                text,
+                                encrypted_content: Some(carrier),
+                                ..
+                            } if text.trim().is_empty() => decode_gemini_tool_signature_carrier(
+                                carrier,
+                            )
+                            .and_then(|(signature, direction)| {
+                                (direction == GeminiToolSignatureCarrierDirection::Previous)
+                                    .then_some(signature)
+                            }),
+                            _ => None,
+                        });
+                        if let Some(signature) = previous_signature {
+                            if attach_gemini_signature_to_previous_tool_use(
+                                &mut messages,
+                                signature,
+                            ) {
+                                pending_reasoning = None;
+                                continue;
+                            }
+                        }
+                        pending_reasoning = reasoning;
                     }
                     "message" => {
                         let role = openai_role_to_canonical(
@@ -2277,10 +2304,28 @@ fn openai_responses_opaque_input_item_message(item: &Value, raw_type: String) ->
 
 fn append_openai_responses_tool_use(
     messages: &mut Vec<CanonicalMessage>,
-    tool_use: CanonicalContentBlock,
+    mut tool_use: CanonicalContentBlock,
     pending_reasoning: &mut Option<CanonicalContentBlock>,
 ) {
-    let reasoning = pending_reasoning.take();
+    let mut reasoning = pending_reasoning.take();
+    if let Some(CanonicalContentBlock::Thinking {
+        text,
+        encrypted_content: Some(carrier),
+        ..
+    }) = reasoning.as_ref()
+    {
+        if text.trim().is_empty() {
+            if let Some((signature, GeminiToolSignatureCarrierDirection::Next)) =
+                decode_gemini_tool_signature_carrier(carrier)
+            {
+                if let CanonicalContentBlock::ToolUse { extensions, .. } = &mut tool_use {
+                    canonical_extension_object_mut(extensions, "gemini")
+                        .insert("thoughtSignature".to_string(), Value::String(signature));
+                    reasoning = None;
+                }
+            }
+        }
+    }
     if let Some(last_message) = messages.last_mut() {
         if last_message.role == CanonicalRole::Assistant
             && (!is_openai_responses_input_message(&last_message.extensions)
@@ -2304,6 +2349,24 @@ fn append_openai_responses_tool_use(
         content,
         extensions: BTreeMap::new(),
     });
+}
+
+fn attach_gemini_signature_to_previous_tool_use(
+    messages: &mut [CanonicalMessage],
+    signature: String,
+) -> bool {
+    let Some(message) = messages.last_mut() else {
+        return false;
+    };
+    if message.role != CanonicalRole::Assistant {
+        return false;
+    }
+    let Some(CanonicalContentBlock::ToolUse { extensions, .. }) = message.content.last_mut() else {
+        return false;
+    };
+    canonical_extension_object_mut(extensions, "gemini")
+        .insert("thoughtSignature".to_string(), Value::String(signature));
+    true
 }
 
 fn canonical_assistant_message_has_visible_content(message: &CanonicalMessage) -> bool {
