@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 
 use crate::formats::openai::namespace::NamespaceToolAliases;
 use crate::formats::openai::responses::{
-    encode_gemini_tool_signature_carrier, encode_gemini_tool_signature_carrier_with_direction,
+    encode_gemini_tool_signature_carrier_with_direction,
     openai_responses_synthetic_reasoning_item_id,
     response::{
         ensure_modern_openai_responses_response_fields, openai_responses_current_timestamp,
@@ -3748,6 +3748,7 @@ fn openai_responses_incomplete_finish_reason(payload: &Value) -> String {
 mod tests {
     use super::*;
     use crate::formats::claude::messages::stream::ClaudeClientEmitter;
+    use crate::formats::openai::responses::encode_gemini_tool_signature_carrier;
 
     fn data_line(value: Value) -> Vec<u8> {
         format!("data: {}\n", value).into_bytes()
