@@ -1681,6 +1681,11 @@ fn thinking_extension_key_is_cross_format_safe(
             "openai_responses" | "openai_cli",
             "effort",
         ) | (
+            FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+            FormatId::OpenAiChat,
+            "openai_responses" | "openai_cli",
+            "summary",
+        ) | (
             FormatId::ClaudeMessages,
             _,
             "claude",
@@ -2553,19 +2558,18 @@ fn validate_openai_responses_to_chat(
             });
         }
     }
-    if let Some(reasoning) = object.get("reasoning").and_then(Value::as_object) {
-        for field in ["summary", "budget_tokens"] {
-            if reasoning.contains_key(field) {
-                return Err(FormatError::LossyConversionBlocked {
-                    source_format: FormatId::OpenAiResponses.as_str().to_string(),
-                    target_format: FormatId::OpenAiChat.as_str().to_string(),
-                    field: format!("reasoning.{field}"),
-                    reason:
-                        "OpenAI Chat reasoning_effort cannot carry this Responses reasoning field"
-                            .to_string(),
-                });
-            }
-        }
+    if object
+        .get("reasoning")
+        .and_then(Value::as_object)
+        .is_some_and(|reasoning| reasoning.contains_key("budget_tokens"))
+    {
+        return Err(FormatError::LossyConversionBlocked {
+            source_format: FormatId::OpenAiResponses.as_str().to_string(),
+            target_format: FormatId::OpenAiChat.as_str().to_string(),
+            field: "reasoning.budget_tokens".to_string(),
+            reason: "OpenAI Chat reasoning_effort cannot carry this Responses reasoning field"
+                .to_string(),
+        });
     }
     if let Some(tools) = object.get("tools").and_then(Value::as_array) {
         for tool in tools {
@@ -5732,6 +5736,84 @@ mod tests {
                 .value;
             assert_eq!(chat["reasoning_effort"], effort);
         }
+    }
+
+    #[test]
+    fn pure_openai_responses_to_chat_drops_reasoning_summary() {
+        for summary in ["auto", "concise", "detailed"] {
+            let body = json!({
+                "model": "gpt-5.6-sol",
+                "input": [{"role": "user", "content": "hello"}],
+                "reasoning": {
+                    "effort": "high",
+                    "summary": summary
+                }
+            });
+
+            let converted = convert_request_pure("openai:responses", "openai:chat", &body)
+                .expect("Responses reasoning summary should be safely omitted for Chat")
+                .value;
+
+            assert_eq!(converted["reasoning_effort"], "high");
+            assert!(converted.get("reasoning").is_none());
+        }
+
+        let summary_only = json!({
+            "model": "gpt-5.6-sol",
+            "input": "hello",
+            "reasoning": {"summary": "auto"}
+        });
+        let converted = convert_request_pure("openai:responses", "openai:chat", &summary_only)
+            .expect("Responses summary alone should be safely omitted for Chat")
+            .value;
+
+        assert!(converted.get("reasoning_effort").is_none());
+        assert!(converted.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn runtime_openai_responses_to_chat_drops_reasoning_summary() {
+        let body = json!({
+            "model": "deployment-alias",
+            "input": "hello",
+            "reasoning": {
+                "effort": "high",
+                "summary": "auto"
+            }
+        });
+
+        let converted = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default().with_mapped_model("qwen3.6-upstream-35004"),
+        )
+        .expect("runtime Responses summary should not block Chat provider body construction");
+
+        assert_eq!(converted["model"], "qwen3.6-upstream-35004");
+        assert_eq!(converted["reasoning_effort"], "high");
+        assert!(converted.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn pure_openai_responses_to_chat_rejects_reasoning_budget_tokens() {
+        let body = json!({
+            "model": "gpt-5.6-sol",
+            "input": [{"role": "user", "content": "hello"}],
+            "reasoning": {
+                "effort": "high",
+                "budget_tokens": 4096
+            }
+        });
+
+        let error = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect_err("Responses reasoning budget must remain fail-closed for Chat");
+
+        assert!(matches!(
+            error,
+            super::FormatError::LossyConversionBlocked { ref field, .. }
+                if field == "reasoning.budget_tokens"
+        ));
     }
 
     #[test]
