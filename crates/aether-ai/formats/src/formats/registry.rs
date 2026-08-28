@@ -184,6 +184,7 @@ fn validate_runtime_request_conversion(
     request: &CanonicalRequest,
     mapped_model: Option<&str>,
 ) -> Result<(), FormatError> {
+    validate_gemini_mixed_tool_model(source, target, request, mapped_model)?;
     validate_openai_cross_format_store(source, target, body)?;
     validate_openai_prompt_cache_contract(source, body, mapped_model)?;
     validate_openai_reasoning_effort(source, target, body, mapped_model)?;
@@ -437,6 +438,7 @@ fn validate_request_conversion(
 ) -> Result<(), FormatError> {
     let source = parse_format(source_format)?;
     let target = parse_format(target_format)?;
+    validate_gemini_mixed_tool_model(source, target, request, mapped_model)?;
     validate_openai_prompt_cache_contract(source, body, mapped_model)?;
     validate_openai_reasoning_effort(source, target, body, mapped_model)?;
     if source == target {
@@ -468,6 +470,34 @@ fn validate_request_conversion(
         _ => {}
     }
     validate_cross_format_request_extensions(source, target, request)
+}
+
+fn validate_gemini_mixed_tool_model(
+    source: FormatId,
+    target: FormatId,
+    request: &CanonicalRequest,
+    mapped_model: Option<&str>,
+) -> Result<(), FormatError> {
+    if source == target
+        || target != FormatId::GeminiGenerateContent
+        || !gemini_generate_content::request::canonical_has_mixed_gemini_tools(request)
+    {
+        return Ok(());
+    }
+    let target_model = mapped_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(request.model.trim());
+    if crate::formats::shared::model_directives::gemini_model_supports_mixed_tools(target_model) {
+        return Ok(());
+    }
+    Err(FormatError::InvalidTargetField {
+        format: target.as_str().to_string(),
+        field: "tools".to_string(),
+        reason: format!(
+            "model {target_model:?} does not support combining built-in tools with custom function declarations; use a Gemini 3 model"
+        ),
+    })
 }
 
 fn validate_openai_responses_cross_format_input(
@@ -3457,6 +3487,37 @@ mod tests {
             .fields
             .iter()
             .any(|field| field.field == "messages"));
+    }
+
+    #[test]
+    fn runtime_responses_to_gemini_rejects_mixed_tools_for_gemini_two() {
+        let body = json!({
+            "model": "gpt-5",
+            "input": "Search, then save the result.",
+            "tools": [
+                {"type": "web_search_preview"},
+                {
+                    "type": "function",
+                    "name": "save_result",
+                    "parameters": {"type": "object"}
+                }
+            ]
+        });
+        let context = FormatContext::default().with_mapped_model("gemini-2.5-pro");
+
+        let error = convert_request(
+            "openai:responses",
+            "gemini:generate_content",
+            &body,
+            &context,
+        )
+        .expect_err("Gemini 2.5 mixed tools should fail before reaching the provider");
+
+        assert!(matches!(
+            error,
+            FormatError::InvalidTargetField { ref field, ref reason, .. }
+                if field == "tools" && reason.contains("Gemini 3")
+        ));
     }
 
     #[test]
