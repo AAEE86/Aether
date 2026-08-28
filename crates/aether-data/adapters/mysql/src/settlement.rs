@@ -312,23 +312,12 @@ WHERE user_entitlement_id = ?
         total_remaining += remaining;
         grants_with_remaining.push((grant, remaining));
     }
-    if !allow_wallet_overage && total_remaining + 0.000_000_01 < total_cost_usd {
-        return Ok(DailyQuotaDebitResult {
-            debited_usd: 0.0,
-            insufficient: true,
-        });
-    }
-    if allow_wallet_overage
-        && !wallet_can_overdraft
-        && wallet_available_usd.is_some_and(|available| {
-            total_remaining + available + SETTLEMENT_EPSILON_USD < total_cost_usd
-        })
-    {
-        return Ok(DailyQuotaDebitResult {
-            debited_usd: 0.0,
-            insufficient: true,
-        });
-    }
+    let insufficient = (!allow_wallet_overage && total_remaining + 0.000_000_01 < total_cost_usd)
+        || (allow_wallet_overage
+            && !wallet_can_overdraft
+            && wallet_available_usd.is_some_and(|available| {
+                total_remaining + available + SETTLEMENT_EPSILON_USD < total_cost_usd
+            }));
 
     let mut remaining_cost = total_cost_usd;
     let mut debited = 0.0;
@@ -364,7 +353,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     }
     Ok(DailyQuotaDebitResult {
         debited_usd: debited,
-        insufficient: false,
+        insufficient,
     })
 }
 
