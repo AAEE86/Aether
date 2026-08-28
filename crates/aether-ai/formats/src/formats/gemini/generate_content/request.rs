@@ -187,7 +187,58 @@ pub fn to_raw(
 ) -> Option<Value> {
     let mut output = canonical_to_gemini_request_body(canonical, mapped_model, upstream_is_stream)?;
     apply_gemini_request_extensions(&mut output, &canonical.extensions)?;
+    if !canonical_has_raw_gemini_tools(canonical) {
+        enable_server_side_tool_invocations_for_mixed_tools(&mut output)?;
+    }
     Some(output)
+}
+
+fn canonical_has_raw_gemini_tools(canonical: &CanonicalRequest) -> bool {
+    canonical
+        .extensions
+        .get("gemini")
+        .and_then(Value::as_object)
+        .is_some_and(|gemini| gemini.contains_key("raw_tools"))
+}
+
+fn enable_server_side_tool_invocations_for_mixed_tools(output: &mut Value) -> Option<()> {
+    let output_object = output.as_object_mut()?;
+    let tools = output_object.get("tools").and_then(Value::as_array);
+    let Some(tools) = tools else {
+        return Some(());
+    };
+    let has_function_declarations = tools.iter().any(|tool| {
+        tool.as_object().is_some_and(|tool| {
+            tool.get("functionDeclarations")
+                .or_else(|| tool.get("function_declarations"))
+                .and_then(Value::as_array)
+                .is_some_and(|declarations| !declarations.is_empty())
+        })
+    });
+    let has_builtin_tools = tools.iter().any(|tool| {
+        tool.as_object().is_some_and(|tool| {
+            tool.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "functionDeclarations" | "function_declarations"
+                )
+            })
+        })
+    });
+    if !has_function_declarations || !has_builtin_tools {
+        return Some(());
+    }
+
+    let tool_config = output_object
+        .entry("toolConfig".to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()?;
+    tool_config.remove("include_server_side_tool_invocations");
+    tool_config.insert(
+        "includeServerSideToolInvocations".to_string(),
+        Value::Bool(true),
+    );
+    Some(())
 }
 
 fn canonical_to_gemini_request_body(
