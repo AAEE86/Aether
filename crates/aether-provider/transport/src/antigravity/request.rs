@@ -78,6 +78,7 @@ pub fn build_antigravity_safe_v1internal_request(
         inner_request.remove("model");
         inner_request.remove("safetySettings");
         inner_request.remove("safety_settings");
+        normalize_antigravity_builtin_tool_names(&mut inner_request);
         normalize_antigravity_function_declaration_parameters(&mut inner_request);
         let request_id = non_empty_string_field(source, "requestId").unwrap_or(request_id);
         let user_agent =
@@ -99,6 +100,7 @@ pub fn build_antigravity_safe_v1internal_request(
     inner_request.remove("model");
     inner_request.remove("safetySettings");
     inner_request.remove("safety_settings");
+    normalize_antigravity_builtin_tool_names(&mut inner_request);
     normalize_antigravity_function_declaration_parameters(&mut inner_request);
 
     AntigravityRequestEnvelopeSupport::Supported(serde_json::json!({
@@ -109,6 +111,34 @@ pub fn build_antigravity_safe_v1internal_request(
         "userAgent": ANTIGRAVITY_REQUEST_USER_AGENT,
         "requestType": request_type.as_str(),
     }))
+}
+
+/// Antigravity's private v1internal Gemini surface still uses the legacy
+/// `googleSearchRetrieval` spelling. The public Gemini converter emits the
+/// newer `googleSearch` spelling, which the private backend rejects when it is
+/// combined with function declarations. Normalize only at this transport
+/// boundary so public Gemini requests retain their native shape.
+fn normalize_antigravity_builtin_tool_names(request: &mut Map<String, Value>) {
+    let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for tool in tools {
+        let Some(tool_object) = tool.as_object_mut() else {
+            continue;
+        };
+
+        if let Some(payload) = tool_object.remove("googleSearch") {
+            tool_object
+                .entry("googleSearchRetrieval".to_string())
+                .or_insert(payload);
+        }
+        if let Some(payload) = tool_object.remove("google_search") {
+            tool_object
+                .entry("googleSearchRetrieval".to_string())
+                .or_insert(payload);
+        }
+    }
 }
 
 fn normalize_antigravity_function_declaration_parameters(request: &mut Map<String, Value>) {
@@ -290,6 +320,13 @@ mod tests {
         assert!(envelope["request"]["toolConfig"]
             .get("include_server_side_tool_invocations")
             .is_none());
+        assert!(envelope["request"]["tools"][0]
+            .get("googleSearch")
+            .is_none());
+        assert_eq!(
+            envelope["request"]["tools"][0]["googleSearchRetrieval"],
+            json!({})
+        );
         assert_eq!(
             envelope["request"]["tools"][1]["functionDeclarations"][0]["name"],
             "run_command"
@@ -380,7 +417,14 @@ mod tests {
                     "functionCallingConfig": {
                         "mode": "NONE"
                     }
-                }
+                },
+                "tools": [{
+                    "google_search": {
+                        "dynamicRetrievalConfig": {
+                            "mode": "MODE_UNSPECIFIED"
+                        }
+                    }
+                }]
             }
         });
 
@@ -415,6 +459,17 @@ mod tests {
         assert_eq!(
             envelope["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "NONE"
+        );
+        assert!(envelope["request"]["tools"][0]
+            .get("google_search")
+            .is_none());
+        assert_eq!(
+            envelope["request"]["tools"][0]["googleSearchRetrieval"],
+            json!({
+                "dynamicRetrievalConfig": {
+                    "mode": "MODE_UNSPECIFIED"
+                }
+            })
         );
     }
 
