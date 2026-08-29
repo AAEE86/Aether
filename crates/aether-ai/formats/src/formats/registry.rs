@@ -5434,6 +5434,26 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_compaction_trigger_is_not_converted_to_gemini() {
+        let body = json!({
+            "model": "gemini-3.7-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": "hello"},
+                {"type": "compaction_trigger"}
+            ]
+        });
+
+        let error = convert_request_pure("openai:responses", "gemini:generate_content", &body)
+            .expect_err("Gemini cannot represent the Responses compaction control item");
+
+        assert!(matches!(
+            error,
+            super::FormatError::LossyConversionBlocked { ref field, .. }
+                if field == "input[1]"
+        ));
+    }
+
+    #[test]
     fn openai_responses_rejects_official_multi_agent_incompatibilities() {
         let cases = [
             (

@@ -86,6 +86,52 @@ impl GatewayLocalCandidatePreselectionPort<'_> {
     }
 }
 
+/// A Responses compaction request carries the OpenAI-only `compaction_trigger`
+/// control item.  It must stay on an OpenAI Responses endpoint: treating it as
+/// an ordinary cross-format request would make Gemini/Claude candidates look
+/// eligible and defer the inevitable lossy-conversion failure until payload
+/// construction.
+fn request_candidate_api_formats_for_operation(
+    client_api_format: &str,
+    require_streaming: bool,
+    request_operation: Option<&str>,
+) -> Vec<String> {
+    let candidate_api_formats =
+        crate::ai_serving::request_candidate_api_formats(client_api_format, require_streaming)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+    restrict_candidate_api_formats_for_operation(
+        client_api_format,
+        request_operation,
+        candidate_api_formats,
+    )
+}
+
+fn restrict_candidate_api_formats_for_operation(
+    client_api_format: &str,
+    request_operation: Option<&str>,
+    candidate_api_formats: Vec<String>,
+) -> Vec<String> {
+    let is_responses_compaction = request_operation.is_some_and(|operation| {
+        operation.eq_ignore_ascii_case(crate::ai_serving::OPENAI_RESPONSES_OPERATION_COMPACT)
+    });
+    let is_standard_responses_client =
+        crate::ai_serving::normalize_api_format_alias(client_api_format) == "openai:responses";
+    if !(is_responses_compaction && is_standard_responses_client) {
+        return candidate_api_formats;
+    }
+
+    candidate_api_formats
+        .into_iter()
+        .filter(|candidate_api_format| {
+            crate::ai_serving::normalize_api_format_alias(candidate_api_format)
+                == "openai:responses"
+        })
+        .collect()
+}
+
 #[async_trait]
 impl AiCandidatePreselectionPort for GatewayLocalCandidatePreselectionPort<'_> {
     type Candidate = SchedulerMinimalCandidateSelectionCandidate;
@@ -219,11 +265,11 @@ pub(crate) async fn preselect_local_execution_candidates_with_serving(
     >,
     GatewayError,
 > {
-    let candidate_api_formats =
-        crate::ai_serving::request_candidate_api_formats(client_api_format, require_streaming)
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+    let candidate_api_formats = request_candidate_api_formats_for_operation(
+        client_api_format,
+        require_streaming,
+        request_operation,
+    );
     preselect_local_execution_candidates_for_api_formats_with_serving(
         state,
         model_directive_policy,
@@ -264,6 +310,11 @@ pub(crate) async fn preselect_local_execution_candidates_for_api_formats_with_se
     >,
     GatewayError,
 > {
+    let candidate_api_formats = restrict_candidate_api_formats_for_operation(
+        client_api_format,
+        request_operation,
+        candidate_api_formats,
+    );
     let model_directive_routing_models = resolve_model_directive_routing_models(
         model_directive_policy,
         &candidate_api_formats,
@@ -362,11 +413,11 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
         allow_priority_page_cache: bool,
         trace_id: Option<&str>,
     ) -> Self {
-        let candidate_api_formats =
-            crate::ai_serving::request_candidate_api_formats(client_api_format, require_streaming)
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>();
+        let candidate_api_formats = request_candidate_api_formats_for_operation(
+            client_api_format,
+            require_streaming,
+            request_operation,
+        );
         let model_directive_routing_models = resolve_model_directive_routing_models(
             model_directive_policy,
             &candidate_api_formats,
@@ -1436,6 +1487,31 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn compaction_operation_excludes_non_responses_provider_formats() {
+        assert_eq!(
+            request_candidate_api_formats_for_operation("openai:responses", true, Some("compact"),),
+            vec!["openai:responses"]
+        );
+        assert_eq!(
+            request_candidate_api_formats_for_operation("openai:responses", true, None),
+            vec![
+                "openai:responses",
+                "openai:chat",
+                "claude:messages",
+                "gemini:generate_content"
+            ]
+        );
+        assert_eq!(
+            request_candidate_api_formats_for_operation(
+                "openai:responses:compact",
+                false,
+                Some("compact"),
+            ),
+            vec!["openai:responses:compact"]
+        );
+    }
 
     #[derive(Default)]
     struct EmptyFallbackCountingRepository {
