@@ -78,6 +78,7 @@ pub fn build_antigravity_safe_v1internal_request(
         inner_request.remove("model");
         inner_request.remove("safetySettings");
         inner_request.remove("safety_settings");
+        normalize_antigravity_function_declaration_parameters(&mut inner_request);
         let request_id = non_empty_string_field(source, "requestId").unwrap_or(request_id);
         let user_agent =
             non_empty_string_field(source, "userAgent").unwrap_or(ANTIGRAVITY_REQUEST_USER_AGENT);
@@ -98,6 +99,7 @@ pub fn build_antigravity_safe_v1internal_request(
     inner_request.remove("model");
     inner_request.remove("safetySettings");
     inner_request.remove("safety_settings");
+    normalize_antigravity_function_declaration_parameters(&mut inner_request);
 
     AntigravityRequestEnvelopeSupport::Supported(serde_json::json!({
         "project": auth.project_id,
@@ -107,6 +109,38 @@ pub fn build_antigravity_safe_v1internal_request(
         "userAgent": ANTIGRAVITY_REQUEST_USER_AGENT,
         "requestType": request_type.as_str(),
     }))
+}
+
+fn normalize_antigravity_function_declaration_parameters(request: &mut Map<String, Value>) {
+    let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for tool in tools {
+        let Some(tool_object) = tool.as_object_mut() else {
+            continue;
+        };
+        for key in ["functionDeclarations", "function_declarations"] {
+            let Some(declarations) = tool_object.get_mut(key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for declaration in declarations {
+                let Some(declaration_object) = declaration.as_object_mut() else {
+                    continue;
+                };
+                if let Some(parameters) = declaration_object.remove("parametersJsonSchema") {
+                    declaration_object
+                        .entry("parameters".to_string())
+                        .or_insert(parameters);
+                }
+                if let Some(parameters) = declaration_object.remove("parameters_json_schema") {
+                    declaration_object
+                        .entry("parameters".to_string())
+                        .or_insert(parameters);
+                }
+            }
+        }
+    }
 }
 
 fn existing_v1internal_request_object(source: &Map<String, Value>) -> Option<&Map<String, Value>> {
@@ -184,6 +218,9 @@ mod tests {
             },
             "tools": [
                 {
+                    "googleSearch": {}
+                },
+                {
                     "functionDeclarations": [
                         {
                             "name": "run_command",
@@ -254,9 +291,17 @@ mod tests {
             .get("include_server_side_tool_invocations")
             .is_none());
         assert_eq!(
-            envelope["request"]["tools"][0]["functionDeclarations"][0]["name"],
+            envelope["request"]["tools"][1]["functionDeclarations"][0]["name"],
             "run_command"
         );
+        assert_eq!(
+            envelope["request"]["tools"][1]["functionDeclarations"][0]["parameters"]["properties"]
+                ["cmd"]["type"],
+            "string"
+        );
+        assert!(envelope["request"]["tools"][1]["functionDeclarations"][0]
+            .get("parametersJsonSchema")
+            .is_none());
         assert_eq!(
             envelope["request"]["labels"]["trajectory_id"],
             "trajectory-123"
@@ -371,5 +416,43 @@ mod tests {
             envelope["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "NONE"
         );
+    }
+
+    #[test]
+    fn antigravity_envelope_normalizes_json_schema_parameter_spellings() {
+        let request_body = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [{ "text": "hello" }]
+            }],
+            "tools": [{
+                "function_declarations": [{
+                    "name": "lookup",
+                    "parametersJsonSchema": { "type": "object" }
+                }, {
+                    "name": "weather",
+                    "parameters_json_schema": { "type": "object" }
+                }]
+            }]
+        });
+
+        let envelope = match build_antigravity_safe_v1internal_request(
+            &sample_auth(),
+            "request-ant-schema-123",
+            "gemini-3.5-flash-low",
+            &request_body,
+            AntigravityEnvelopeRequestType::Agent,
+        ) {
+            AntigravityRequestEnvelopeSupport::Supported(envelope) => envelope,
+            AntigravityRequestEnvelopeSupport::Unsupported(reason) => {
+                panic!("schema envelope should be supported: {reason:?}")
+            }
+        };
+
+        let declarations = &envelope["request"]["tools"][0]["function_declarations"];
+        assert_eq!(declarations[0]["parameters"]["type"], "object");
+        assert_eq!(declarations[1]["parameters"]["type"], "object");
+        assert!(declarations[0].get("parametersJsonSchema").is_none());
+        assert!(declarations[1].get("parameters_json_schema").is_none());
     }
 }

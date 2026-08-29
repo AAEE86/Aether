@@ -218,6 +218,18 @@ fn enable_server_side_tool_invocations_for_mixed_tools(
     if !gemini_model_supports_mixed_tools(mapped_model) {
         return None;
     }
+    ensure_server_side_tool_invocations_for_mixed_tools(output)
+}
+
+pub fn ensure_server_side_tool_invocations_for_mixed_tools(output: &mut Value) -> Option<()> {
+    let output_object = output.as_object_mut()?;
+    let tools = output_object.get("tools").and_then(Value::as_array);
+    let Some(tools) = tools else {
+        return Some(());
+    };
+    if !gemini_tools_are_mixed(tools) {
+        return Some(());
+    }
 
     let tool_config = output_object
         .entry("toolConfig".to_string())
