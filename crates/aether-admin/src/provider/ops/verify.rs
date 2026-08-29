@@ -35,6 +35,7 @@ pub fn parse_verify_payload(
         "sub2api" => {
             admin_provider_ops_sub2api_verify_payload(status, response_json, updated_credentials)
         }
+        "usage_api" => admin_provider_ops_usage_api_verify_payload(status, response_json),
         _ => admin_provider_ops_generic_verify_payload(status, response_json),
     }
 }
@@ -355,7 +356,7 @@ pub fn admin_provider_ops_verify_headers(
 ) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     match normalize_architecture_id(architecture_id) {
-        "generic_api" => {
+        "generic_api" | "usage_api" => {
             let api_key = credentials
                 .get("api_key")
                 .and_then(Value::as_str)
@@ -509,6 +510,78 @@ pub fn admin_provider_ops_generic_verify_payload(
         response_json,
         "认证失败：无效的凭据",
         "认证失败：权限不足",
+    )
+}
+
+pub fn admin_provider_ops_usage_api_verify_payload(
+    status: StatusCode,
+    response_json: &Value,
+) -> Value {
+    if status == StatusCode::UNAUTHORIZED {
+        return admin_provider_ops_verify_failure("认证失败：API Key 无效");
+    }
+    if status == StatusCode::FORBIDDEN {
+        return admin_provider_ops_verify_failure("认证失败：API Key 无权查询用量");
+    }
+    if status != StatusCode::OK {
+        return admin_provider_ops_verify_failure(format!("验证失败：HTTP {}", status.as_u16()));
+    }
+
+    let Some(data) = response_json.as_object() else {
+        return admin_provider_ops_verify_failure("响应格式无效");
+    };
+    let is_valid = data
+        .get("is_active")
+        .and_then(Value::as_bool)
+        .or_else(|| data.get("isValid").and_then(Value::as_bool));
+    if is_valid == Some(false) {
+        return admin_provider_ops_verify_failure("API Key 无效或已停用");
+    }
+
+    let quota = data.get("quota").and_then(Value::as_object);
+    let remaining = admin_provider_ops_value_as_f64(data.get("remaining"))
+        .or_else(|| quota.and_then(|quota| admin_provider_ops_value_as_f64(quota.get("remaining"))))
+        .or_else(|| admin_provider_ops_value_as_f64(data.get("balance")));
+    let Some(remaining) = remaining else {
+        return admin_provider_ops_verify_failure("响应缺少余额字段");
+    };
+    let unit = data
+        .get("unit")
+        .and_then(Value::as_str)
+        .or_else(|| quota.and_then(|quota| quota.get("unit").and_then(Value::as_str)))
+        .unwrap_or("USD")
+        .to_string();
+    let plan_name = data
+        .get("planName")
+        .and_then(Value::as_str)
+        .or_else(|| data.get("plan_name").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("API Key")
+        .to_string();
+
+    let mut extra = Map::new();
+    extra.insert("unit".to_string(), Value::String(unit));
+    if let Some(value) = data.get("balance") {
+        extra.insert("balance".to_string(), value.clone());
+    }
+    if let Some(value) = data.get("mode") {
+        extra.insert("mode".to_string(), value.clone());
+    }
+    extra.insert(
+        "is_valid".to_string(),
+        Value::Bool(is_valid.unwrap_or(true)),
+    );
+
+    admin_provider_ops_verify_success(
+        admin_provider_ops_verify_user_payload(
+            Some(plan_name.clone()),
+            Some(plan_name),
+            None,
+            Some(remaining),
+            Some(extra),
+        ),
+        None,
     )
 }
 
@@ -843,7 +916,8 @@ mod tests {
         admin_provider_ops_anyrouter_parse_session_user_id,
         admin_provider_ops_anyrouter_verify_payload, admin_provider_ops_cubence_verify_payload,
         admin_provider_ops_frontend_updated_credentials, admin_provider_ops_sub2api_verify_payload,
-        admin_provider_ops_verify_headers, parse_verify_payload, ADMIN_PROVIDER_OPS_USER_AGENT,
+        admin_provider_ops_usage_api_verify_payload, admin_provider_ops_verify_headers,
+        parse_verify_payload, ADMIN_PROVIDER_OPS_USER_AGENT,
     };
     use http::StatusCode;
     use reqwest::header::COOKIE;
@@ -949,6 +1023,57 @@ mod tests {
         assert_eq!(payload["data"]["username"], json!("user@example.com"));
         assert_eq!(payload["data"]["display_name"], json!("user@example.com"));
         assert_eq!(payload["data"]["email"], json!("user@example.com"));
+    }
+
+    #[test]
+    fn usage_api_headers_use_bearer_api_key() {
+        let headers = admin_provider_ops_verify_headers(
+            "usage_api",
+            &Map::new(),
+            &Map::from_iter([("api_key".to_string(), json!("example-api-key"))]),
+        )
+        .expect("headers should build");
+
+        assert_eq!(
+            headers
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer example-api-key")
+        );
+    }
+
+    #[test]
+    fn usage_api_verify_payload_reads_remaining_and_plan() {
+        let payload = admin_provider_ops_usage_api_verify_payload(
+            StatusCode::OK,
+            &json!({
+                "remaining": 42.5,
+                "balance": 42.5,
+                "unit": "USD",
+                "isValid": true,
+                "planName": "Example Plan"
+            }),
+        );
+
+        assert_eq!(payload["success"], json!(true));
+        assert_eq!(payload["data"]["username"], json!("Example Plan"));
+        assert_eq!(payload["data"]["quota"], json!(42.5));
+        assert_eq!(payload["data"]["extra"]["unit"], json!("USD"));
+        assert_eq!(payload["data"]["extra"]["is_valid"], json!(true));
+    }
+
+    #[test]
+    fn usage_api_verify_payload_rejects_inactive_key() {
+        let payload = admin_provider_ops_usage_api_verify_payload(
+            StatusCode::OK,
+            &json!({
+                "remaining": 0,
+                "isValid": false
+            }),
+        );
+
+        assert_eq!(payload["success"], json!(false));
+        assert_eq!(payload["message"], json!("API Key 无效或已停用"));
     }
 
     #[test]
