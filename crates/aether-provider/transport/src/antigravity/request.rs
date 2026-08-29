@@ -78,7 +78,7 @@ pub fn build_antigravity_safe_v1internal_request(
         inner_request.remove("model");
         inner_request.remove("safetySettings");
         inner_request.remove("safety_settings");
-        normalize_antigravity_function_declaration_schemas(&mut inner_request);
+        normalize_antigravity_function_declaration_parameters(&mut inner_request);
         let request_id = non_empty_string_field(source, "requestId").unwrap_or(request_id);
         let user_agent =
             non_empty_string_field(source, "userAgent").unwrap_or(ANTIGRAVITY_REQUEST_USER_AGENT);
@@ -99,7 +99,7 @@ pub fn build_antigravity_safe_v1internal_request(
     inner_request.remove("model");
     inner_request.remove("safetySettings");
     inner_request.remove("safety_settings");
-    normalize_antigravity_function_declaration_schemas(&mut inner_request);
+    normalize_antigravity_function_declaration_parameters(&mut inner_request);
 
     AntigravityRequestEnvelopeSupport::Supported(serde_json::json!({
         "project": auth.project_id,
@@ -111,7 +111,7 @@ pub fn build_antigravity_safe_v1internal_request(
     }))
 }
 
-fn normalize_antigravity_function_declaration_schemas(request: &mut Map<String, Value>) {
+fn normalize_antigravity_function_declaration_parameters(request: &mut Map<String, Value>) {
     let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
     };
@@ -128,9 +128,14 @@ fn normalize_antigravity_function_declaration_schemas(request: &mut Map<String, 
                 let Some(declaration_object) = declaration.as_object_mut() else {
                     continue;
                 };
-                if let Some(parameters) = declaration_object.remove("parameters") {
+                if let Some(parameters) = declaration_object.remove("parametersJsonSchema") {
                     declaration_object
-                        .entry("parametersJsonSchema".to_string())
+                        .entry("parameters".to_string())
+                        .or_insert(parameters);
+                }
+                if let Some(parameters) = declaration_object.remove("parameters_json_schema") {
+                    declaration_object
+                        .entry("parameters".to_string())
                         .or_insert(parameters);
                 }
             }
@@ -290,12 +295,12 @@ mod tests {
             "run_command"
         );
         assert_eq!(
-            envelope["request"]["tools"][1]["functionDeclarations"][0]["parametersJsonSchema"]
-                ["properties"]["cmd"]["type"],
+            envelope["request"]["tools"][1]["functionDeclarations"][0]["parameters"]["properties"]
+                ["cmd"]["type"],
             "string"
         );
         assert!(envelope["request"]["tools"][1]["functionDeclarations"][0]
-            .get("parameters")
+            .get("parametersJsonSchema")
             .is_none());
         assert_eq!(
             envelope["request"]["labels"]["trajectory_id"],
@@ -411,5 +416,43 @@ mod tests {
             envelope["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "NONE"
         );
+    }
+
+    #[test]
+    fn antigravity_envelope_normalizes_json_schema_parameter_spellings() {
+        let request_body = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [{ "text": "hello" }]
+            }],
+            "tools": [{
+                "function_declarations": [{
+                    "name": "lookup",
+                    "parametersJsonSchema": { "type": "object" }
+                }, {
+                    "name": "weather",
+                    "parameters_json_schema": { "type": "object" }
+                }]
+            }]
+        });
+
+        let envelope = match build_antigravity_safe_v1internal_request(
+            &sample_auth(),
+            "request-ant-schema-123",
+            "gemini-3.5-flash-low",
+            &request_body,
+            AntigravityEnvelopeRequestType::Agent,
+        ) {
+            AntigravityRequestEnvelopeSupport::Supported(envelope) => envelope,
+            AntigravityRequestEnvelopeSupport::Unsupported(reason) => {
+                panic!("schema envelope should be supported: {reason:?}")
+            }
+        };
+
+        let declarations = &envelope["request"]["tools"][0]["function_declarations"];
+        assert_eq!(declarations[0]["parameters"]["type"], "object");
+        assert_eq!(declarations[1]["parameters"]["type"], "object");
+        assert!(declarations[0].get("parametersJsonSchema").is_none());
+        assert!(declarations[1].get("parameters_json_schema").is_none());
     }
 }
