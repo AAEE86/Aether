@@ -43,7 +43,7 @@ use super::protocol::{
     LEGACY_LIVE_CALL_PATH, REALTIME_SIDEBAND_PATH,
 };
 use super::registry::{
-    LiveCallBinding, LiveCallLookup, LiveCallRegistry, LiveCallRegistryError, LiveSidebandLease,
+    LiveCallLookup, LiveCallRecord, LiveCallRegistry, LiveCallRegistryError, LiveSidebandLease,
     LiveSidebandLeaseLoss,
 };
 
@@ -302,8 +302,8 @@ pub(super) async fn prepare_live_websocket(
         ),
     )
     .await;
-    let binding = match lookup {
-        Ok(Ok(LiveCallLookup::Found(binding))) => binding,
+    let record = match lookup {
+        Ok(Ok(LiveCallLookup::Found(record))) => record,
         Ok(Ok(LiveCallLookup::Missing)) => {
             info!(
                 target: LIVE_LOG_TARGET,
@@ -360,7 +360,7 @@ pub(super) async fn prepare_live_websocket(
             ));
         }
     };
-    prepare_sideband_live_websocket(state, context, call_id, binding, dialect)
+    prepare_sideband_live_websocket(state, context, call_id, record, dialect)
         .await
         .map(PreparedLiveWebSocket::Sideband)
 }
@@ -380,6 +380,7 @@ async fn prepare_direct_live_websocket(
         &context.remote_addr,
         client_model,
         dialect,
+        None,
         None,
     )
     .await
@@ -557,10 +558,11 @@ async fn prepare_sideband_live_websocket(
     state: &AppState,
     context: &WebSocketRequestContext,
     call_id: String,
-    binding: LiveCallBinding,
+    record: LiveCallRecord,
     dialect: LiveRouteDialect,
 ) -> Result<PreparedLiveSideband, LiveWebSocketPreflightRejection> {
     let started_at = Instant::now();
+    let binding = record.binding();
     let Some(auth) = context.decision.auth_context.as_ref() else {
         return Err(preflight_rejection(
             context,
@@ -635,6 +637,7 @@ async fn prepare_sideband_live_websocket(
             binding.client_model(),
             dialect,
             Some(binding.pinned_candidate()),
+            record.provider_outbound_context(),
         ),
     )
     .await;
@@ -652,7 +655,7 @@ async fn prepare_sideband_live_websocket(
         Ok(Ok(LiveCandidatePlanningOutcome {
             candidate: Some(candidate),
             ..
-        })) if binding.matches_candidate(&candidate) => candidate,
+        })) if record.matches_candidate(&candidate) => candidate,
         Ok(Ok(LiveCandidatePlanningOutcome {
             candidate: Some(candidate),
             ..
