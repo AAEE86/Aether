@@ -37,6 +37,37 @@ describe('main layout navigation builder', () => {
     expect(navigation.flatMap(group => group.items.map(item => item.name))).toContain('tx:nav.myReferral')
   })
 
+  it('exposes the same VS Code control destination to users and administrators', () => {
+    const commonOptions = {
+      modules: {},
+      isModuleActive: () => false,
+      t: translate,
+    }
+    const userNavigation = buildNavigation({
+      ...commonOptions,
+      canAccessAdmin: false,
+    })
+    const adminNavigation = buildNavigation({
+      ...commonOptions,
+      canAccessAdmin: true,
+    })
+
+    const findVscodeControl = (navigation: ReturnType<typeof buildNavigation>) => (
+      navigation
+        .flatMap(group => group.items)
+        .find(item => item.href === '/dashboard/vscodex')
+    )
+
+    expect(findVscodeControl(userNavigation)).toMatchObject({
+      name: 'tx:nav.vscodex',
+      href: '/dashboard/vscodex',
+    })
+    expect(findVscodeControl(adminNavigation)).toMatchObject({
+      name: 'tx:nav.vscodex',
+      href: '/dashboard/vscodex',
+    })
+  })
+
   it('builds admin navigation with dynamic module menu items sorted by menu order', () => {
     const navigation = buildNavigation({
       canAccessAdmin: true,
@@ -98,6 +129,17 @@ describe('main layout navigation builder', () => {
       { label: 'tx:nav.group.management' },
       { label: 'tx:nav.routing', href: '/admin/routing' },
       { label: 'tx:breadcrumb.routingCreate' },
+    ])
+
+    expect(buildBreadcrumbs({
+      route: route('/dashboard/vscodex'),
+      navigation,
+      modules: {},
+      isNavActive: href => href === '/dashboard/vscodex',
+      t: translate,
+    })).toEqual([
+      expect.objectContaining({ label: expect.any(String) }),
+      { label: 'tx:nav.vscodex' },
     ])
   })
 })
