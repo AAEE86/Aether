@@ -168,7 +168,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
                 provider_api_format.as_str(),
             );
         }
-        apply_codex_oauth_fingerprint_convergence_to_decision(
+        apply_codex_fingerprint_convergence_to_decision(
             input,
             decision,
             transport,
@@ -231,7 +231,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
                 provider_api_format.as_str(),
             );
         }
-        apply_codex_oauth_fingerprint_convergence_to_decision(
+        apply_codex_fingerprint_convergence_to_decision(
             input,
             decision,
             transport,
@@ -356,7 +356,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
     if original_provider_request_body.is_some() {
         decision.provider_request_body = Some(provider_request_body);
     }
-    apply_codex_oauth_fingerprint_convergence_to_decision(
+    apply_codex_fingerprint_convergence_to_decision(
         input,
         decision,
         transport,
@@ -366,7 +366,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
     Ok(())
 }
 
-fn apply_codex_oauth_fingerprint_convergence_to_decision(
+fn apply_codex_fingerprint_convergence_to_decision(
     input: &LocalRequestedModelDecisionInput,
     decision: &mut AiExecutionDecision,
     transport: Option<&GatewayProviderTransportSnapshot>,
@@ -380,14 +380,13 @@ fn apply_codex_oauth_fingerprint_convergence_to_decision(
     let Some(context) = input.codex_fingerprint_context.as_ref() else {
         return;
     };
-    let applied =
-        crate::ai_serving::transport::apply_codex_oauth_fingerprint_convergence_with_context(
-            transport,
-            provider_api_format,
-            context,
-            &mut decision.provider_request_headers,
-            provider_request_body,
-        );
+    let applied = crate::ai_serving::transport::apply_codex_fingerprint_convergence_with_context(
+        transport,
+        provider_api_format,
+        context,
+        &mut decision.provider_request_headers,
+        provider_request_body,
+    );
     if applied {
         decision.prompt_cache_key = provider_request_body
             .get("prompt_cache_key")
