@@ -8,7 +8,7 @@
     </div>
     <div
       v-if="items.length"
-      class="space-y-2"
+      :class="hasNumericOnlyItems ? '' : 'space-y-2'"
     >
       <QuotaProgressRows
         :items="items"
@@ -39,7 +39,8 @@
   <template v-else>
     <div
       v-if="items.length"
-      class="max-w-[208px] space-y-2"
+      class="w-full max-w-[208px]"
+      :class="hasNumericOnlyItems ? '' : 'space-y-2'"
     >
       <QuotaProgressRows :items="items" />
       <div
@@ -64,7 +65,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineComponent, h, type PropType } from 'vue'
+import { computed, defineComponent, h, type PropType } from 'vue'
 import { useI18n } from '@/i18n'
 
 export interface PoolQuotaProgressDisplayItem {
@@ -103,6 +104,7 @@ const emit = defineEmits<{
 }>()
 
 const { legacyT } = useI18n()
+const hasNumericOnlyItems = computed(() => props.items.length > 0 && props.items.every(item => item.numericOnly))
 
 const ResetCredits = defineComponent({
   name: 'PoolQuotaResetCredits',
@@ -142,18 +144,28 @@ const QuotaProgressRows = defineComponent({
     },
   },
   setup(props) {
-    return () => props.items.map((item, idx) => h('div', {
+    return () => h('div', {
+      'data-testid': 'pool-quota-rows',
+      class: props.items.every(item => item.numericOnly)
+        ? 'grid grid-cols-2 gap-x-3 gap-y-1.5 min-w-0'
+        : 'space-y-2',
+    }, props.items.map((item, idx) => h('div', {
       key: `${item.label}-${idx}`,
-      class: props.mobile
-        ? 'flex flex-col gap-1 min-w-0'
-        : 'flex flex-col gap-1 min-w-[140px] max-w-[208px]',
+      class: item.numericOnly
+        ? 'flex min-w-0 items-baseline justify-between gap-2 text-[10px] leading-4'
+        : props.mobile
+          ? 'flex flex-col gap-1 min-w-0'
+          : 'flex flex-col gap-1 min-w-[140px] max-w-[208px]',
     }, [
-      h('div', { class: 'flex items-center justify-between text-[10px] leading-none' }, [
+      h('div', { class: item.numericOnly ? 'contents' : 'flex items-center justify-between text-[10px] leading-none' }, [
         h('span', {
           'data-testid': 'pool-quota-period-label',
-          class: 'text-muted-foreground font-medium shrink-0',
+          class: item.numericOnly
+            ? 'min-w-0 truncate text-muted-foreground'
+            : 'text-muted-foreground font-medium shrink-0',
+          title: item.numericOnly ? item.label : undefined,
         }, item.label),
-        item.resetText
+        item.resetText && !item.numericOnly
           ? h('span', {
             'data-testid': 'pool-quota-reset-text',
             class: 'text-muted-foreground/80 tabular-nums truncate',
@@ -161,7 +173,7 @@ const QuotaProgressRows = defineComponent({
           }, item.resetText)
           : null,
       ]),
-      h('div', { class: 'flex items-center gap-1.5' }, [
+      h('div', { class: item.numericOnly ? 'contents' : 'flex items-center gap-1.5' }, [
         item.numericOnly
           ? null
           : h('div', {
@@ -177,12 +189,12 @@ const QuotaProgressRows = defineComponent({
           'data-testid': 'pool-quota-meter-text',
           class: [
             'shrink-0 text-[10px] font-medium tabular-nums leading-none',
-            item.numericOnly ? 'ml-auto' : '',
+            item.numericOnly ? 'text-right' : '',
             item.meterClass,
           ],
         }, item.meterText),
       ]),
-    ]))
+    ])))
   },
 })
 </script>

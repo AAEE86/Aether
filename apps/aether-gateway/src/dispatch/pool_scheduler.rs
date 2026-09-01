@@ -105,6 +105,7 @@ async fn schedule_pool_page_candidates(
     candidates: Vec<EligibleLocalExecutionCandidate>,
     sticky_session_token: Option<&str>,
     effective_pool_config: Option<&AdminProviderPoolConfig>,
+    provider_model_name: Option<&str>,
 ) -> (
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
@@ -128,7 +129,8 @@ async fn schedule_pool_page_candidates(
         entry.1.insert(candidate.candidate.key_id.clone());
     }
 
-    let key_context_by_id = read_pool_catalog_key_contexts_by_id(state, &candidates).await;
+    let key_context_by_id =
+        read_pool_catalog_key_contexts_by_id(state, &candidates, provider_model_name).await;
 
     let mut runtime_by_provider = BTreeMap::new();
     let mut pool_config_by_provider = BTreeMap::new();
@@ -1034,6 +1036,7 @@ impl<'a> PoolKeyCursor<'a> {
                 candidates,
                 self.sticky_session_token.as_deref(),
                 self.effective_pool_config.as_ref(),
+                Some(self.group.candidate.selected_provider_model_name.as_str()),
             )
             .await;
             self.record_skipped_candidates(&skipped);
@@ -1406,6 +1409,7 @@ fn pool_candidate_from_catalog_key(
 async fn read_pool_catalog_key_contexts_by_id(
     state: PlannerAppState<'_>,
     candidates: &[EligibleLocalExecutionCandidate],
+    provider_model_name: Option<&str>,
 ) -> BTreeMap<String, PoolCatalogKeyContext> {
     let mut key_ids = Vec::new();
     let mut provider_type_by_key_id = BTreeMap::<String, String>::new();
@@ -1451,7 +1455,13 @@ async fn read_pool_catalog_key_contexts_by_id(
                 .unwrap_or_default();
             (
                 key.id.clone(),
-                build_pool_catalog_key_context(state, &provider_pool_service, &key, provider_type),
+                build_pool_catalog_key_context(
+                    state,
+                    &provider_pool_service,
+                    &key,
+                    provider_type,
+                    provider_model_name,
+                ),
             )
         })
         .collect()
@@ -1462,6 +1472,7 @@ fn build_pool_catalog_key_context(
     provider_pool_service: &ProviderPoolService,
     key: &StoredProviderCatalogKey,
     provider_type: &str,
+    provider_model_name: Option<&str>,
 ) -> PoolCatalogKeyContext {
     let (health_score, _, _, _, _) = provider_key_health_summary(key);
     let health_score = key
@@ -1480,8 +1491,12 @@ fn build_pool_catalog_key_context(
         .filter(|value| value.is_finite() && *value >= 0.0);
 
     let auth_config = parse_catalog_auth_config_json(state.app(), key);
-    let mut signals =
-        provider_pool_service.member_signals(provider_type, key, auth_config.as_ref());
+    let mut signals = provider_pool_service.member_signals(
+        provider_type,
+        key,
+        auth_config.as_ref(),
+        provider_model_name,
+    );
     signals.account_blocked |= admin_provider_pool_pure::admin_pool_key_is_known_banned(key);
     signals.account_blocked |=
         pool_key_requires_reauth_for_scheduling(key, current_unix_ms().saturating_div(1000));
@@ -4465,6 +4480,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert_eq!(context.plan_tier.as_deref(), Some("team"));
@@ -4510,6 +4526,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(!context.quota_exhausted);
@@ -4530,6 +4547,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(context.quota_exhausted);
@@ -4560,9 +4578,57 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "antigravity",
+            None,
         );
 
         assert!(context.quota_exhausted);
+    }
+
+    #[test]
+    fn pool_catalog_context_scopes_antigravity_exhaustion_to_requested_model() {
+        let mut key = sample_catalog_oauth_key("key-antigravity-model-quota");
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": false,
+                "windows": [
+                    {
+                        "code": "model:gemini-3.1-pro-high",
+                        "scope": "model",
+                        "model": "gemini-3.1-pro-high",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    },
+                    {
+                        "code": "model:gemini-3-flash-agent",
+                        "scope": "model",
+                        "model": "gemini-3-flash-agent",
+                        "used_ratio": 0.1,
+                        "is_exhausted": false
+                    }
+                ]
+            }
+        }));
+
+        let app = app_state_with_catalog_key(key.clone());
+        let exhausted = build_pool_catalog_key_context(
+            PlannerAppState::new(&app),
+            &ProviderPoolService::with_builtin_adapters(),
+            &key,
+            "antigravity",
+            Some("gemini-3.1-pro-high"),
+        );
+        let available = build_pool_catalog_key_context(
+            PlannerAppState::new(&app),
+            &ProviderPoolService::with_builtin_adapters(),
+            &key,
+            "antigravity",
+            Some("gemini-3-flash-agent"),
+        );
+
+        assert!(exhausted.quota_exhausted);
+        assert!(!available.quota_exhausted);
     }
 
     #[test]
@@ -4581,6 +4647,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(context.account_blocked);

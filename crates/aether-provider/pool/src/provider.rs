@@ -16,6 +16,7 @@ pub struct ProviderPoolMemberInput<'a> {
     pub provider_type: &'a str,
     pub key: &'a StoredProviderCatalogKey,
     pub auth_config: Option<&'a Map<String, Value>>,
+    pub provider_model_name: Option<&'a str>,
 }
 
 pub trait ProviderPoolAdapter: Send + Sync {
