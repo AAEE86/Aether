@@ -3876,7 +3876,6 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
           model,
           label: resolveAntigravityQuotaLabel(model, window.label, opaqueDisplayIndex),
           remainingPercent,
-          numericOnly: true,
           resetAtSeconds: normalizeUnixSeconds(window.reset_at ?? quota.reset_at ?? null),
           resetSeconds: normalizeRemainingSeconds(window.reset_seconds ?? quota.reset_seconds ?? null),
           updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
@@ -3884,6 +3883,12 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
         }
       })
         .filter((item): item is QuotaProgressItem & { model: string, resetSeconds: number | null } => item != null)))
+      .map(item => ({
+        ...item,
+        resetAtSeconds: null,
+        resetSeconds: null,
+        allowDynamicReset: false,
+      }))
   }
 
   if (providerType === 'gemini_cli') {
