@@ -3883,12 +3883,6 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
         }
       })
         .filter((item): item is QuotaProgressItem & { model: string, resetSeconds: number | null } => item != null)))
-      .map(item => ({
-        ...item,
-        resetAtSeconds: null,
-        resetSeconds: null,
-        allowDynamicReset: false,
-      }))
   }
 
   if (providerType === 'gemini_cli') {

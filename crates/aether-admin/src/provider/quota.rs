@@ -6754,6 +6754,10 @@ mod tests {
             json!("Key-1")
         );
         assert_eq!(
+            parsed["models"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]["reset_time"],
+            json!("2030-01-01T00:00:00Z")
+        );
+        assert_eq!(
             parsed["models"]["gemini-3-pro-preview"]["display_name"],
             json!("Gemini 3 Pro Preview")
         );

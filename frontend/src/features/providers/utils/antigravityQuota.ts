@@ -158,5 +158,6 @@ export function summarizeAntigravityQuotaItems<T extends AntigravityQuotaSortabl
 
 function formatAntigravityQuotaValue(value: number): string {
   const rounded = Math.round(value)
-  return Math.abs(value - rounded) < 1e-6 ? String(rounded) : value.toFixed(1)
+  const formatted = Math.abs(value - rounded) < 1e-6 ? String(rounded) : value.toFixed(1)
+  return `${formatted}%`
 }

@@ -15,9 +15,10 @@ describe('summarizeAntigravityQuotaItems', () => {
     ])
 
     expect(items.map(item => [item.label, item.remainingPercent, item.detail])).toEqual([
-      ['Gemini额度', 90.6, '90.6–95'],
-      ['Claude额度', 82, '82–100'],
+      ['Gemini额度', 90.6, '90.6%–95%'],
+      ['Claude额度', 82, '82%–100%'],
     ])
+    expect(items.map(item => item.resetSeconds)).toEqual([180, 120])
     expect(items[1]?.model).toBe('claude-sonnet-4-6')
   })
 })
