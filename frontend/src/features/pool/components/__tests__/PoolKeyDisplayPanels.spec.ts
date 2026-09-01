@@ -99,7 +99,7 @@ describe('pool key display panels', () => {
           label: 'Gemini额度',
           remainingPercent: 90.6,
           resetText: '1h 后重置',
-          meterText: '90.6–100',
+          meterText: '90.6%–100%',
           barClass: 'bg-emerald-500',
           meterClass: 'text-emerald-600',
         },
@@ -107,7 +107,7 @@ describe('pool key display panels', () => {
           label: 'Claude额度',
           remainingPercent: 100,
           resetText: '1h 后重置',
-          meterText: '100',
+          meterText: '100%',
           barClass: 'bg-emerald-500',
           meterClass: 'text-emerald-600',
         },
@@ -121,8 +121,12 @@ describe('pool key display panels', () => {
       'Gemini额度',
       'Claude额度',
     ])
-    expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-meter-text"]')).map(node => node.textContent)).toEqual(['90.6–100', '100'])
+    expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-meter-text"]')).map(node => node.textContent)).toEqual(['90.6%–100%', '100%'])
     expect(root.querySelectorAll('[data-testid="pool-quota-progress-track"]')).toHaveLength(2)
+    expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-reset-text"]')).map(node => node.textContent)).toEqual([
+      '1h 后重置',
+      '1h 后重置',
+    ])
 
     app.unmount()
     root.remove()
