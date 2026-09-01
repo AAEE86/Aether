@@ -107,8 +107,10 @@ const AUTH_API_KEY_CONCURRENCY_LIMIT_REACHED_DETAIL: &str =
     "当前调用方 API Key 并发请求数已达上限，请稍后重试";
 const PROVIDER_KEY_CAPACITY_LIMIT_REACHED_DETAIL: &str =
     "所有可用上游账号当前均已达到并发或 RPM 上限，请稍后重试";
-const PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS: &[&str] =
-    &["provider_key_concurrency_limit_reached", "key_rpm_exhausted"];
+const PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS: &[&str] = &[
+    "provider_key_concurrency_limit_reached",
+    "key_rpm_exhausted",
+];
 const LOCAL_EXECUTION_PLANNING_TIMEOUT_DETAIL: &str =
     "当前 AI 请求在本地执行规划阶段超时，请稍后重试";
 const EXECUTION_PATH_TUNNEL_AFFINITY_FORWARD: &str = "tunnel_affinity_forward";
@@ -2380,8 +2382,7 @@ fn diagnostic_is_provider_key_capacity_limited(
         || (diagnostic.candidate_count.is_some_and(|candidate_count| {
             candidate_count > 0
                 && diagnostic.skipped_candidate_count.unwrap_or(0) >= candidate_count
-        })
-            && !diagnostic.skip_reasons.is_empty()
+        }) && !diagnostic.skip_reasons.is_empty()
             && diagnostic.skip_reasons.iter().all(|(reason, count)| {
                 PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS.contains(&reason.as_str()) && *count > 0
             }))

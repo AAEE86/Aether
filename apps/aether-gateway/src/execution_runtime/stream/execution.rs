@@ -71,6 +71,7 @@ use crate::ai_serving::api::{
     UPSTREAM_IS_STREAM_KEY,
 };
 use crate::ai_serving::is_openai_responses_family_format;
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
 };
@@ -114,7 +115,6 @@ use crate::execution_runtime::{
 use crate::execution_runtime::{
     MAX_ERROR_BODY_BYTES, MAX_STREAM_PREFETCH_BYTES, MAX_STREAM_PREFETCH_FRAMES,
 };
-use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
     apply_local_execution_effect, build_local_error_flow_metadata, classify_failure_disposition,
@@ -8794,8 +8794,7 @@ mod tests {
             endpoint_id: format!("endpoint-{request_id}"),
             key_id: format!("key-{request_id}"),
             method: "POST".to_string(),
-            url: "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent"
-                .to_string(),
+            url: "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent".to_string(),
             headers: BTreeMap::from([
                 ("content-type".to_string(), "application/json".to_string()),
                 ("accept".to_string(), "text/event-stream".to_string()),

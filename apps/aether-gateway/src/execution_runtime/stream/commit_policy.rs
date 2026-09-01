@@ -631,10 +631,7 @@ mod tests {
         };
 
         assert_eq!(status_code, 502);
-        assert_eq!(
-            body_json["error"]["code"],
-            "MALFORMED_FUNCTION_CALL"
-        );
+        assert_eq!(body_json["error"]["code"], "MALFORMED_FUNCTION_CALL");
         assert_eq!(
             body_json["error"]["message"],
             "Malformed function call: Function call is empty - no input to parse."

@@ -379,9 +379,7 @@ impl StreamingStandardTerminalObserver {
                 if let Some(parser_error) = finish_reason
                     .as_deref()
                     .filter(|reason| !canonical_stream_finish_reason_is_supported(reason))
-                    .map(|reason| {
-                        format!("unsupported provider stream finish reason: {reason}")
-                    })
+                    .map(|reason| format!("unsupported provider stream finish reason: {reason}"))
                 {
                     summary.parser_error.get_or_insert(parser_error);
                 }
@@ -832,9 +830,7 @@ mod tests {
         );
         assert_eq!(
             summary.parser_error.as_deref(),
-            Some(
-                "unsupported provider stream finish reason: MALFORMED_FUNCTION_CALL"
-            )
+            Some("unsupported provider stream finish reason: MALFORMED_FUNCTION_CALL")
         );
     }
 

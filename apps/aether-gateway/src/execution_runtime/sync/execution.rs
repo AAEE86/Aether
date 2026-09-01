@@ -34,6 +34,7 @@ use crate::ai_serving::api::{
     implicit_sync_finalize_report_kind, maybe_build_sync_finalize_outcome, LocalCoreSyncErrorKind,
     LocalCoreSyncFinalizeOutcome,
 };
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
     build_client_response_from_parts_with_mutator,
@@ -69,7 +70,6 @@ use crate::execution_runtime::{
     local_failover_response_text, resolve_core_sync_error_finalize_report_kind,
     should_fallback_to_control_sync, should_finalize_sync_response, LocalFailoverDecision,
 };
-use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
     apply_local_execution_effect, build_local_error_flow_metadata,

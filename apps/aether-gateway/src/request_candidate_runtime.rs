@@ -372,10 +372,8 @@ pub(crate) async fn record_local_request_candidate_status(
     else {
         return;
     };
-    record.skip_reason = local_request_candidate_skip_reason(
-        record.status,
-        record.error_type.as_deref(),
-    );
+    record.skip_reason =
+        local_request_candidate_skip_reason(record.status, record.error_type.as_deref());
     persist_local_request_candidate_status_record(state, record).await;
 }
 
