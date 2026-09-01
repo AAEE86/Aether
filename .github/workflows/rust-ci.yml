@@ -1,6 +1,7 @@
 name: Rust CI
 
 on:
+  workflow_call:
   push:
     branches:
       - master
@@ -11,6 +12,7 @@ on:
       - "crates/**"
       - "apps/**"
       - ".github/workflows/rust-ci.yml"
+      - ".github/workflows/nightly.yml"
   pull_request:
     paths:
       - "Cargo.toml"
@@ -18,10 +20,14 @@ on:
       - "crates/**"
       - "apps/**"
       - ".github/workflows/rust-ci.yml"
+      - ".github/workflows/nightly.yml"
 
 concurrency:
-  group: rust-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: rust-ci-${{ github.event_name }}-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_INCREMENTAL: 0
