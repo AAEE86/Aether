@@ -438,6 +438,7 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts_with_
     let reasoning_replay_policy = openai_responses_reasoning_replay_policy(
         transport.provider.provider_type.as_str(),
         transport.endpoint.base_url.as_str(),
+        mapped_model.as_str(),
     );
     let redaction = resolve_provider_chat_pii_redaction(
         state,

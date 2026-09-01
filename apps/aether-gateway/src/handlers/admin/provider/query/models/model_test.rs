@@ -3177,6 +3177,7 @@ async fn provider_query_execute_standard_test_candidate(
                     crate::ai_serving::openai_responses_reasoning_replay_policy(
                         transport.provider.provider_type.as_str(),
                         transport.endpoint.base_url.as_str(),
+                        request_model,
                     ),
                 )
             else {
@@ -3238,6 +3239,7 @@ async fn provider_query_execute_standard_test_candidate(
         crate::ai_serving::openai_responses_reasoning_replay_policy(
             transport.provider.provider_type.as_str(),
             transport.endpoint.base_url.as_str(),
+            request_model,
         ),
     )
     .is_err()

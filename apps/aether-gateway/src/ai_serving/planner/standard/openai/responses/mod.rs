@@ -1005,6 +1005,7 @@ pub(crate) async fn maybe_build_responses_websocket_decision(
                 reasoning_replay_policy: openai_responses_reasoning_replay_policy(
                     transport.provider.provider_type.as_str(),
                     transport.endpoint.base_url.as_str(),
+                    mapped_model.as_str(),
                 ),
                 model_directive_patch: input
                     .model_directive_policy
