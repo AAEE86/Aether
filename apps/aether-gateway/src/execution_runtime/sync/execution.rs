@@ -69,6 +69,7 @@ use crate::execution_runtime::{
     local_failover_response_text, resolve_core_sync_error_finalize_report_kind,
     should_fallback_to_control_sync, should_finalize_sync_response, LocalFailoverDecision,
 };
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
     apply_local_execution_effect, build_local_error_flow_metadata,
@@ -2002,6 +2003,11 @@ async fn execute_execution_runtime_sync_impl(
     {
         ProviderPoolInFlightAdmission::Acquired(guard) => guard,
         ProviderPoolInFlightAdmission::Saturated { limit } => {
+            record_local_runtime_candidate_skip_reason(
+                state,
+                trace_id,
+                "provider_key_concurrency_limit_reached",
+            );
             if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
                 *retry_scope = AiAttemptRetryScope::Candidate;
             }

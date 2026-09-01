@@ -598,11 +598,17 @@ impl<'a> PoolKeyCursor<'a> {
             return;
         };
         self.exhaustion_skip_recorded = true;
-        record_local_runtime_candidate_skip_reason(
-            self.state.app(),
-            trace_id,
-            self.runtime_miss_pool_exhaustion_skip_reason(),
-        );
+        if self.skip_reason_counts.is_empty() {
+            record_local_runtime_candidate_skip_reason(
+                self.state.app(),
+                trace_id,
+                "pool_group_exhausted",
+            );
+            return;
+        }
+        for reason in self.skip_reason_counts.keys() {
+            record_local_runtime_candidate_skip_reason(self.state.app(), trace_id, reason);
+        }
     }
 
     fn runtime_miss_pool_exhaustion_skip_reason(&self) -> &'static str {
@@ -3245,8 +3251,12 @@ mod tests {
             .take_local_execution_runtime_miss_diagnostic(trace_id)
             .expect("runtime miss diagnostic should exist");
         assert_eq!(diagnostic.reason, "all_candidates_skipped");
-        assert_eq!(diagnostic.skipped_candidate_count, Some(1));
+        assert_eq!(diagnostic.skipped_candidate_count, Some(2));
         assert_eq!(diagnostic.skip_reasons.get("pool_cooldown"), Some(&1));
+        assert_eq!(
+            diagnostic.skip_reasons.get("transport_snapshot_missing"),
+            Some(&1)
+        );
     }
 
     #[tokio::test]

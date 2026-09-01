@@ -114,6 +114,7 @@ use crate::execution_runtime::{
 use crate::execution_runtime::{
     MAX_ERROR_BODY_BYTES, MAX_STREAM_PREFETCH_BYTES, MAX_STREAM_PREFETCH_FRAMES,
 };
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
     apply_local_execution_effect, build_local_error_flow_metadata, classify_failure_disposition,
@@ -3778,6 +3779,11 @@ async fn execute_execution_runtime_stream_inner(
         match acquire_provider_pool_execution_guard(state, &plan).await? {
             ProviderPoolInFlightAdmission::Acquired(guard) => guard,
             ProviderPoolInFlightAdmission::Saturated { limit } => {
+                record_local_runtime_candidate_skip_reason(
+                    state,
+                    trace_id,
+                    "provider_key_concurrency_limit_reached",
+                );
                 if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
                     *retry_scope = AiAttemptRetryScope::Candidate;
                 }
@@ -6490,7 +6496,9 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
                         }
                     }
 
-                    let inspection = if stream_commit_policy.is_native_anthropic() {
+                    let inspection = if stream_commit_policy.is_native_anthropic()
+                        || stream_commit_policy.is_gemini()
+                    {
                         StreamPrefetchInspection::NeedMore
                     } else {
                         inspect_prefetched_stream_body(
@@ -8231,7 +8239,8 @@ mod tests {
         DirectPassthroughFinalizerCore, DirectPassthroughInlineBodyState, DirectPassthroughMode,
         PostStopFrameReadBudget, PostStopLimitedStreamReader, ProviderStreamErrorInspection,
         ANTHROPIC_POST_STOP_DRAIN_MAX_BYTES, GEMINI_FILES_DOWNLOAD_PLAN_KIND,
-        OPENAI_CHAT_STREAM_PLAN_KIND, POST_STOP_MAX_EMPTY_CHUNKS_PER_POLL,
+        OPENAI_CHAT_STREAM_PLAN_KIND, OPENAI_RESPONSES_STREAM_PLAN_KIND,
+        POST_STOP_MAX_EMPTY_CHUNKS_PER_POLL,
     };
     use crate::control::GatewayControlDecision;
     use crate::stage_metrics::RequestStageTrace;
@@ -8770,6 +8779,37 @@ mod tests {
             client_api_format: "claude:messages".to_string(),
             provider_api_format: "claude:messages".to_string(),
             model_name: Some("claude-sonnet-4-6".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        }
+    }
+
+    fn antigravity_gemini_stream_plan(request_id: &str) -> ExecutionPlan {
+        ExecutionPlan {
+            request_id: request_id.to_string(),
+            candidate_id: Some(format!("candidate-{request_id}")),
+            provider_name: Some("antigravity".to_string()),
+            provider_id: format!("provider-{request_id}"),
+            endpoint_id: format!("endpoint-{request_id}"),
+            key_id: format!("key-{request_id}"),
+            method: "POST".to_string(),
+            url: "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent"
+                .to_string(),
+            headers: BTreeMap::from([
+                ("content-type".to_string(), "application/json".to_string()),
+                ("accept".to_string(), "text/event-stream".to_string()),
+            ]),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({
+                "model": "gemini-3.7-flash-tiered",
+                "contents": [{"role": "user", "parts": [{"text": "validate"}]}]
+            })),
+            stream: true,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "gemini:generate_content".to_string(),
+            model_name: Some("gemini-3.7-flash-tiered".to_string()),
             proxy: None,
             transport_profile: None,
             timeouts: None,
@@ -10522,6 +10562,92 @@ mod tests {
             panic!("HTTP stop policy should return the upstream error");
         };
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn malformed_antigravity_function_call_retries_before_stream_commit() {
+        let request_id = "req-antigravity-malformed-function-call";
+        let plan = antigravity_gemini_stream_plan(request_id);
+        let provider_catalog = provider_catalog_for_plan(
+            &plan,
+            Some(json!({
+                "failover_rules": {
+                    "continue_status_codes": [502]
+                }
+            })),
+        );
+        let data_state = crate::data::GatewayDataState::with_provider_transport_reader_for_tests(
+            Arc::new(provider_catalog),
+            "development-key",
+        );
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(data_state);
+        let frame_stream = stream! {
+            yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
+                frame_type: StreamFrameType::Headers,
+                payload: StreamFramePayload::Headers {
+                    status_code: 200,
+                    headers: BTreeMap::from([(
+                        "content-type".to_string(),
+                        "text/event-stream".to_string(),
+                    )]),
+                    response_observation: None,
+                },
+            }));
+            for chunk in [
+                r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"Validating the document."}]} }],"modelVersion":"gemini-3.7-flash-tiered"}}
+
+"#,
+                r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"signature","text":""}]},"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"Malformed function call: Function call is empty - no input to parse."}],"modelVersion":"gemini-3.7-flash-tiered"}}
+
+"#,
+            ] {
+                yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
+                    frame_type: StreamFrameType::Data,
+                    payload: StreamFramePayload::Data {
+                        chunk_b64: None,
+                        text: Some(chunk.to_string()),
+                    },
+                }));
+            }
+            yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame::eof()));
+        }
+        .boxed();
+        let mut retry_scope = AiAttemptRetryScope::Provider;
+
+        let response = execute_stream_from_frame_stream_with_retry_scope(
+            &state,
+            plan,
+            "trace-antigravity-malformed-function-call",
+            &test_decision(),
+            OPENAI_RESPONSES_STREAM_PLAN_KIND,
+            Some("openai_responses_stream_success".to_string()),
+            Some(json!({
+                "request_id": request_id,
+                "candidate_id": format!("candidate-{request_id}"),
+                "candidate_index": 0,
+                "retry_index": 0,
+                "provider_api_format": "gemini:generate_content",
+                "client_api_format": "openai:responses",
+                "needs_conversion": true
+            })),
+            crate::clock::current_unix_ms(),
+            Instant::now(),
+            RequestStageTrace::from_env(),
+            true,
+            frame_stream,
+            false,
+            None,
+            Some(&mut retry_scope),
+            None,
+            None,
+        )
+        .await
+        .expect("malformed Antigravity stream should resolve through failover");
+
+        assert!(response.is_none());
+        assert_eq!(retry_scope, AiAttemptRetryScope::Candidate);
     }
 
     fn tunnel_proxy_snapshot(base_url: String) -> aether_contracts::ProxySnapshot {
