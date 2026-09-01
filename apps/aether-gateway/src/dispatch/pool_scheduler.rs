@@ -1826,17 +1826,17 @@ fn pool_key_candidate_order_for_group(
         })
         .collect::<Vec<_>>();
     let active_presets = ProviderPoolService::with_builtin_adapters()
-        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets)
-        .into_iter()
-        .map(|preset| preset.preset)
-        .collect::<Vec<_>>();
+        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets);
     if let Some(distribution_mode) = active_presets
         .iter()
-        .find(|preset| pool_distribution_mode_preset(preset.as_str()))
-        .map(String::as_str)
+        .find(|preset| pool_distribution_mode_preset(preset.preset.as_str()))
     {
-        return match distribution_mode {
-            "cache_affinity" => StoredPoolKeyCandidateOrder::CacheAffinity,
+        return match distribution_mode.preset.as_str() {
+            "cache_affinity" => match distribution_mode.mode.as_deref() {
+                Some("lru") => StoredPoolKeyCandidateOrder::Lru,
+                Some("single_account") => StoredPoolKeyCandidateOrder::SingleAccount,
+                _ => StoredPoolKeyCandidateOrder::CacheAffinity,
+            },
             "load_balance" => StoredPoolKeyCandidateOrder::LoadBalance {
                 seed: pool_sort_seed(),
             },
@@ -2151,7 +2151,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_scheduler_promotes_sticky_hit_before_other_sorted_keys() {
+    fn pool_scheduler_promotes_sticky_hit_before_lru_secondary_order() {
         let key_a = sample_eligible_candidate(
             "provider-pool",
             "endpoint-1",
@@ -2159,7 +2159,11 @@ mod tests {
             10,
             Some(json!({
                 "pool_advanced": {
-                    "scheduling_presets": [{"preset": "cache_affinity", "enabled": true}]
+                    "scheduling_presets": [{
+                        "preset": "cache_affinity",
+                        "enabled": true,
+                        "mode": "lru"
+                    }]
                 }
             })),
         );
@@ -2170,7 +2174,11 @@ mod tests {
             10,
             Some(json!({
                 "pool_advanced": {
-                    "scheduling_presets": [{"preset": "cache_affinity", "enabled": true}]
+                    "scheduling_presets": [{
+                        "preset": "cache_affinity",
+                        "enabled": true,
+                        "mode": "lru"
+                    }]
                 }
             })),
         );
@@ -2202,6 +2210,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["key-a", "key-b"]
         );
+    }
+
+    #[test]
+    fn cache_affinity_secondary_modes_select_distinct_candidate_orders() {
+        for (mode, expected) in [
+            ("single_account", StoredPoolKeyCandidateOrder::SingleAccount),
+            ("lru", StoredPoolKeyCandidateOrder::Lru),
+        ] {
+            let group = sample_eligible_candidate(
+                "provider-pool",
+                "endpoint-1",
+                "key-a",
+                10,
+                Some(json!({
+                    "pool_advanced": {
+                        "scheduling_presets": [{
+                            "preset": "cache_affinity",
+                            "enabled": true,
+                            "mode": mode
+                        }]
+                    }
+                })),
+            );
+            let config = pool_config_for_candidate(&group).expect("pool config should parse");
+
+            assert!(admin_provider_pool_cache_affinity_enabled(&config));
+            assert_eq!(
+                pool_key_candidate_order_for_group(&group, Some(&config)),
+                expected
+            );
+        }
     }
 
     #[test]

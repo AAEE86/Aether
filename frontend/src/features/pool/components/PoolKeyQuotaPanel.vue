@@ -20,6 +20,7 @@
       >
         {{ accountQuotaText }}
       </div>
+      <ResetCredits />
     </div>
     <div
       v-else-if="accountQuotaText || fallbackText"
@@ -47,6 +48,7 @@
       >
         {{ accountQuotaText }}
       </div>
+      <ResetCredits />
     </div>
     <span
       v-else-if="accountQuotaText || fallbackText"
@@ -72,22 +74,60 @@ export interface PoolQuotaProgressDisplayItem {
   meterText: string
   barClass: string
   meterClass: string
+  numericOnly?: boolean
 }
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   items: PoolQuotaProgressDisplayItem[]
   accountQuotaText?: string | null
   fallbackText?: string | null
   textClass?: string
   variant?: 'desktop' | 'mobile'
+  resetCreditText?: string | null
+  resetCreditItems?: string[]
+  canConsumeResetCredit?: boolean
+  consumingResetCredit?: boolean
 }>(), {
   accountQuotaText: null,
   fallbackText: null,
   textClass: '',
   variant: 'desktop',
+  resetCreditText: null,
+  resetCreditItems: () => [],
+  canConsumeResetCredit: false,
+  consumingResetCredit: false,
 })
 
+const emit = defineEmits<{
+  'consume-reset-credit': []
+}>()
+
 const { legacyT } = useI18n()
+
+const ResetCredits = defineComponent({
+  name: 'PoolQuotaResetCredits',
+  setup() {
+    return () => props.resetCreditText ? h('div', {
+      'data-testid': 'pool-quota-reset-credits',
+      class: 'mt-2 border-t border-border/50 pt-1.5 text-[10px] leading-4 text-muted-foreground',
+    }, [
+      h('div', { class: 'flex flex-wrap items-center gap-x-1' }, [
+        props.canConsumeResetCredit
+          ? h('button', {
+            type: 'button',
+            disabled: props.consumingResetCredit,
+            class: 'font-medium text-primary hover:underline disabled:pointer-events-none disabled:opacity-60',
+            onClick: () => emit('consume-reset-credit'),
+          }, props.consumingResetCredit ? legacyT('重置中...') : legacyT('点击以进行重置'))
+          : null,
+        h('span', props.resetCreditText),
+      ]),
+      props.resetCreditItems.length
+        ? h('div', { class: 'truncate tabular-nums', title: props.resetCreditItems.join(' · ') }, props.resetCreditItems.join(' · '))
+        : null,
+    ]) : null
+  },
+})
 
 const QuotaProgressRows = defineComponent({
   name: 'QuotaProgressRows',
@@ -122,15 +162,24 @@ const QuotaProgressRows = defineComponent({
           : null,
       ]),
       h('div', { class: 'flex items-center gap-1.5' }, [
-        h('div', { class: 'relative flex-1 h-1.5 rounded-full bg-border overflow-hidden' }, [
-          h('div', {
-            class: ['absolute left-0 top-0 h-full rounded-full transition-all duration-300', item.barClass],
-            style: { width: `${item.remainingPercent}%` },
-          }),
-        ]),
+        item.numericOnly
+          ? null
+          : h('div', {
+            'data-testid': 'pool-quota-progress-track',
+            class: 'relative flex-1 h-1.5 rounded-full bg-border overflow-hidden',
+          }, [
+            h('div', {
+              class: ['absolute left-0 top-0 h-full rounded-full transition-all duration-300', item.barClass],
+              style: { width: `${item.remainingPercent}%` },
+            }),
+          ]),
         h('span', {
           'data-testid': 'pool-quota-meter-text',
-          class: ['shrink-0 text-[10px] font-medium tabular-nums leading-none', item.meterClass],
+          class: [
+            'shrink-0 text-[10px] font-medium tabular-nums leading-none',
+            item.numericOnly ? 'ml-auto' : '',
+            item.meterClass,
+          ],
         }, item.meterText),
       ]),
     ]))

@@ -717,7 +717,23 @@ impl RuntimeState {
         limit: usize,
         config: RuntimeSemaphoreConfig,
     ) -> Result<RuntimeSemaphore, RuntimeSemaphoreError> {
-        RuntimeSemaphore::new(self.clone(), gate, limit, config)
+        RuntimeSemaphore::new(self.clone(), gate, None, limit, config)
+    }
+
+    pub fn keyed_semaphore(
+        &self,
+        gate: &'static str,
+        resource_key: &str,
+        limit: usize,
+        config: RuntimeSemaphoreConfig,
+    ) -> Result<RuntimeSemaphore, RuntimeSemaphoreError> {
+        let resource_key = resource_key.trim();
+        if resource_key.is_empty() {
+            return Err(RuntimeSemaphoreError::InvalidConfiguration(
+                "runtime semaphore resource key cannot be empty".to_string(),
+            ));
+        }
+        RuntimeSemaphore::new(self.clone(), gate, Some(resource_key), limit, config)
     }
 }
 
@@ -1202,6 +1218,7 @@ impl RuntimeSemaphore {
     fn new(
         runtime: RuntimeState,
         gate: &'static str,
+        resource_key: Option<&str>,
         limit: usize,
         config: RuntimeSemaphoreConfig,
     ) -> Result<Self, RuntimeSemaphoreError> {
@@ -1222,7 +1239,9 @@ impl RuntimeSemaphore {
         }
         Ok(Self {
             state: Arc::new(RuntimeSemaphoreState {
-                key: format!("admission:{gate}"),
+                key: resource_key
+                    .map(|resource_key| format!("admission:{gate}:{resource_key}"))
+                    .unwrap_or_else(|| format!("admission:{gate}")),
                 runtime,
                 gate,
                 limit,
@@ -1256,6 +1275,7 @@ pub struct RuntimeSemaphorePermit {
     token: String,
     renew_task: JoinHandle<()>,
     healthy: Arc<std::sync::atomic::AtomicBool>,
+    released: bool,
 }
 
 impl aether_runtime::AdmissionPermitHealth for RuntimeSemaphorePermit {
@@ -1264,8 +1284,22 @@ impl aether_runtime::AdmissionPermitHealth for RuntimeSemaphorePermit {
     }
 }
 
+impl RuntimeSemaphorePermit {
+    pub async fn release(mut self) -> Result<(), RuntimeSemaphoreError> {
+        self.renew_task.abort();
+        let result = self.state.release(&self.token).await;
+        if result.is_ok() {
+            self.released = true;
+        }
+        result
+    }
+}
+
 impl Drop for RuntimeSemaphorePermit {
     fn drop(&mut self) {
+        if self.released {
+            return;
+        }
         self.renew_task.abort();
         let state = Arc::clone(&self.state);
         let token = self.token.clone();
@@ -1331,6 +1365,7 @@ impl RuntimeSemaphoreState {
             token,
             renew_task,
             healthy,
+            released: false,
         })
     }
 
@@ -1731,6 +1766,43 @@ mod tests {
         drop(permit);
         tokio::time::sleep(Duration::from_millis(5)).await;
         assert_eq!(gate.snapshot().await.expect("snapshot").in_flight, 0);
+    }
+
+    #[tokio::test]
+    async fn memory_keyed_semaphores_isolate_resource_capacity() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let first = runtime
+            .keyed_semaphore(
+                "provider_key",
+                "key-a",
+                1,
+                RuntimeSemaphoreConfig::default(),
+            )
+            .expect("first gate should build");
+        let second = runtime
+            .keyed_semaphore(
+                "provider_key",
+                "key-b",
+                1,
+                RuntimeSemaphoreConfig::default(),
+            )
+            .expect("second gate should build");
+        let permit = first.try_acquire().await.expect("first permit");
+
+        assert!(matches!(
+            first
+                .try_acquire()
+                .await
+                .expect_err("same key should saturate"),
+            RuntimeSemaphoreError::Saturated { .. }
+        ));
+        let second_permit = second
+            .try_acquire()
+            .await
+            .expect("different key should retain independent capacity");
+
+        drop(second_permit);
+        drop(permit);
     }
 
     #[tokio::test(flavor = "current_thread")]

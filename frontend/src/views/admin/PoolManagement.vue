@@ -331,6 +331,11 @@
                     :account-quota-text="keyUiStateMap[key.key_id]?.accountQuotaText"
                     :fallback-text="keyUiStateMap[key.key_id]?.quotaFallbackText"
                     :text-class="keyUiStateMap[key.key_id]?.quotaTextClass || ''"
+                    :reset-credit-text="getCodexResetCreditCountText(key)"
+                    :reset-credit-items="getCodexResetCreditItemTexts(key)"
+                    :can-consume-reset-credit="canConsumeCodexResetCredit(key)"
+                    :consuming-reset-credit="consumingCodexResetCreditKeyId === key.key_id"
+                    @consume-reset-credit="handleConsumeCodexResetCredit(key)"
                   />
                 </TableCell>
                 <TableCell class="py-3 px-2 align-middle">
@@ -709,7 +714,12 @@
                 :account-quota-text="keyUiStateMap[key.key_id]?.accountQuotaText"
                 :fallback-text="keyUiStateMap[key.key_id]?.quotaFallbackText"
                 :text-class="keyUiStateMap[key.key_id]?.quotaTextClass || ''"
+                :reset-credit-text="getCodexResetCreditCountText(key)"
+                :reset-credit-items="getCodexResetCreditItemTexts(key)"
+                :can-consume-reset-credit="canConsumeCodexResetCredit(key)"
+                :consuming-reset-credit="consumingCodexResetCreditKeyId === key.key_id"
                 variant="mobile"
+                @consume-reset-credit="handleConsumeCodexResetCredit(key)"
               />
 
               <div class="flex items-center gap-0.5">
@@ -1074,6 +1084,7 @@ import {
   deleteEndpointKey,
   updateProviderKey,
   refreshProviderQuota,
+  consumeCodexResetCredit,
   resetProviderKeyCycleStats,
 } from '@/api/endpoints/keys'
 import { refreshProviderOAuth } from '@/api/endpoints/provider_oauth'
@@ -1132,6 +1143,22 @@ import {
 } from '@/features/pool/utils/poolStatsDisplay'
 import { resetCodexCycleUsageWindows } from '@/features/pool/utils/poolCycleStats'
 import { mergePoolKeyQuotaSnapshots } from '@/features/pool/utils/poolQuotaRefresh'
+import {
+  dedupeAntigravityQuotaItemsByLabel,
+  resolveAntigravityQuotaLabel,
+} from '@/features/providers/utils/antigravityQuota'
+import {
+  clearPendingCodexResetCreditIdempotencyKey,
+  clearPendingCodexResetCreditIdempotencyKeyForOutcome,
+  createCodexResetCreditIdempotencyKey,
+  formatCodexResetCreditCount,
+  formatCodexResetCreditExpiresAt,
+  getCodexResetCreditAvailableCount,
+  getCodexResetCreditReservationIdempotencyKey,
+  getVisibleCodexResetCreditItems,
+  readPendingCodexResetCreditIdempotencyKey,
+  rememberPendingCodexResetCreditIdempotencyKey,
+} from '@/features/providers/components/codex-reset-credit-display'
 import { getCodexQuotaWindowPresentation } from '@/utils/codexQuotaWindow'
 import { getOAuthOrgBadge } from '@/utils/oauthIdentity'
 import { formatOAuthPlanType, getOAuthPlanTypeClass } from '@/utils/oauthPlanType'
@@ -1853,6 +1880,7 @@ const sortOrder = ref<PoolManagementSortOrder>(restoredViewState.sortOrder)
 const hasPoolKeyFilters = computed(() => searchQuery.value.trim().length > 0 || statusFilter.value !== 'all')
 const MANUAL_QUOTA_REFRESH_COOLDOWN_SECONDS = 5 * 60
 const refreshingOAuthKeyId = ref<string | null>(null)
+const consumingCodexResetCreditKeyId = ref<string | null>(null)
 const resettingCycleKeyId = ref<string | null>(null)
 const savingProxyKeyId = ref<string | null>(null)
 const proxyDesktopPopoverOpenKeyId = ref<string | null>(null)
@@ -1978,6 +2006,7 @@ watch(
 interface QuotaProgressItem {
   label: string
   remainingPercent: number
+  numericOnly?: boolean
   sortOrder?: number
   detail?: string
   resetAtSeconds?: number | null
@@ -1993,6 +2022,7 @@ interface QuotaProgressDisplayItem {
   meterText: string
   barClass: string
   meterClass: string
+  numericOnly?: boolean
 }
 
 type PoolKeyUiState = {
@@ -2033,9 +2063,12 @@ const quotaProgressDisplayMap = computed<Record<string, QuotaProgressDisplayItem
       label: getQuotaProgressLabel(item.label),
       remainingPercent: item.remainingPercent,
       resetText: getQuotaProgressResetDisplayText(item),
-      meterText: getQuotaProgressMeterDisplayText(item),
+      meterText: item.numericOnly
+        ? formatQuotaValue(item.remainingPercent)
+        : getQuotaProgressMeterDisplayText(item),
       barClass: getQuotaRemainingBarColorByRemaining(item.remainingPercent),
       meterClass: getQuotaRemainingClassByRemaining(item.remainingPercent),
+      numericOnly: item.numericOnly,
     }))
   }
   return map
@@ -2202,6 +2235,107 @@ function applyPoolKeyActiveState(key: PoolKeyDetail, nextStatus: boolean): void 
 
 function applyQuotaRefreshResultToCurrentPage(result: Awaited<ReturnType<typeof refreshProviderQuota>>): void {
   keyPage.value.keys = mergePoolKeyQuotaSnapshots(keyPage.value.keys, result.results)
+}
+
+function getCodexResetCredits(key: PoolKeyDetail) {
+  return getQuotaSnapshotProviderType(key) === 'codex'
+    ? key.status_snapshot?.quota?.reset_credits ?? null
+    : null
+}
+
+function getCodexCredentialGeneration(key: PoolKeyDetail): string | null | undefined {
+  const codex = key.upstream_metadata?.codex
+  return codex && typeof codex === 'object'
+    ? codex.credential_generation?.trim() || null
+    : undefined
+}
+
+function getPendingCodexResetCreditIdempotencyKey(key: PoolKeyDetail): string | null {
+  const codex = key.upstream_metadata?.codex
+  const serverReservation = getCodexResetCreditReservationIdempotencyKey(codex)
+  if (serverReservation) return serverReservation
+  const generation = getCodexCredentialGeneration(key)
+  return generation === undefined
+    ? null
+    : readPendingCodexResetCreditIdempotencyKey(key.key_id, generation)
+}
+
+function getCodexResetCreditCountText(key: PoolKeyDetail): string | null {
+  const count = getCodexResetCreditAvailableCount(getCodexResetCredits(key))
+  return count === null && !getPendingCodexResetCreditIdempotencyKey(key)
+    ? null
+    : formatCodexResetCreditCount(count)
+}
+
+function getCodexResetCreditItemTexts(key: PoolKeyDetail): string[] {
+  return getVisibleCodexResetCreditItems(getCodexResetCredits(key), undefined, 3)
+    .map(item => `${item.displayKey} ${formatCodexResetCreditExpiresAt(item.expiresAt)}`)
+}
+
+function canConsumeCodexResetCredit(key: PoolKeyDetail): boolean {
+  return getQuotaSnapshotProviderType(key) === 'codex'
+    && getCodexCredentialGeneration(key) !== undefined
+    && (getPendingCodexResetCreditIdempotencyKey(key) !== null
+      || (getCodexResetCreditAvailableCount(getCodexResetCredits(key)) ?? 0) > 0)
+    && consumingCodexResetCreditKeyId.value === null
+}
+
+async function handleConsumeCodexResetCredit(key: PoolKeyDetail): Promise<void> {
+  if (!canConsumeCodexResetCredit(key)) return
+  const generation = getCodexCredentialGeneration(key)
+  if (generation === undefined) return
+  const pendingIdempotencyKey = getPendingCodexResetCreditIdempotencyKey(key)
+  const confirmed = await confirm({
+    title: '确认使用 Codex 重置机会',
+    message: pendingIdempotencyKey
+      ? '将继续确认上次尚未完成的 Codex 重置请求。'
+      : '将消耗 1 次 Codex 重置机会，完成后自动刷新账号额度。',
+    confirmText: '确认重置',
+    cancelText: '取消',
+    variant: 'warning',
+  })
+  if (!confirmed) return
+
+  consumingCodexResetCreditKeyId.value = key.key_id
+  try {
+    const idempotencyKey = pendingIdempotencyKey
+      || readPendingCodexResetCreditIdempotencyKey(key.key_id, generation)
+      || createCodexResetCreditIdempotencyKey()
+    rememberPendingCodexResetCreditIdempotencyKey(key.key_id, idempotencyKey, generation)
+    const result = await consumeCodexResetCredit(key.key_id, {
+      idempotency_key: idempotencyKey,
+      expected_credential_generation: generation,
+    })
+    clearPendingCodexResetCreditIdempotencyKeyForOutcome(key.key_id, result.outcome)
+    keyPage.value.keys = mergePoolKeyQuotaSnapshots(keyPage.value.keys, [{
+      key_id: result.key_id,
+      key_name: key.key_name,
+      status: result.refresh_status === 'success' ? 'success' : result.status as 'success',
+      metadata: result.metadata,
+      quota_snapshot: result.quota_snapshot,
+    }])
+    if (result.outcome === 'reset' || result.outcome === 'already_redeemed') {
+      success('Codex 重置机会已使用，账号额度已刷新')
+    } else {
+      showWarning(result.message || '重置请求已处理，请查看最新额度')
+    }
+  } catch (err: unknown) {
+    const responseData = typeof err === 'object' && err !== null && 'response' in err
+      ? (err as { response?: { data?: Record<string, unknown> } }).response?.data
+      : undefined
+    if (responseData?.outcome === 'credential_changed') {
+      clearPendingCodexResetCreditIdempotencyKey(key.key_id)
+    } else if (typeof responseData?.active_idempotency_key === 'string') {
+      rememberPendingCodexResetCreditIdempotencyKey(
+        key.key_id,
+        responseData.active_idempotency_key,
+        generation,
+      )
+    }
+    showError(parseApiError(err, 'Codex 重置机会使用失败'))
+  } finally {
+    consumingCodexResetCreditKeyId.value = null
+  }
 }
 
 function normalizeQuotaUpdatedAt(raw: number | null | undefined): number | null {
@@ -2447,6 +2581,7 @@ function toEndpointApiKey(key: PoolKeyDetail): EndpointAPIKey {
     rate_multipliers: key.rate_multipliers ?? null,
     internal_priority: key.internal_priority ?? 50,
     rpm_limit: key.rpm_limit ?? null,
+    concurrent_limit: key.concurrent_limit ?? null,
     allowed_models: key.allowed_models ?? null,
     capabilities: key.capabilities ?? null,
     cache_ttl_minutes: key.cache_ttl_minutes ?? 5,
@@ -3730,20 +3865,24 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
   if (providerType === 'antigravity') {
     const windows = getQuotaSnapshotWindowsByScope(quota, 'model')
     if (windows.length === 0) return []
-
-    const remainingPercents = windows
-      .map(getQuotaWindowRemainingPercent)
-      .filter((value): value is number => value != null)
-    if (remainingPercents.length === 0) return []
-
-    return [{
-      label: '最低',
-      remainingPercent: Math.min(...remainingPercents),
-      detail: `${windows.length} 模型`,
-      resetAtSeconds: null,
-      resetSeconds: null,
-      updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-    }]
+    const opaqueDisplayIndex = { value: 1 }
+    return dedupeAntigravityQuotaItemsByLabel(windows
+      .map((window): (QuotaProgressItem & { model: string, resetSeconds: number | null }) | null => {
+        const remainingPercent = getQuotaWindowRemainingPercent(window)
+        if (remainingPercent == null) return null
+        const model = String(window.model || window.code || '').trim().replace(/^model:/i, '')
+        return {
+          model,
+          label: resolveAntigravityQuotaLabel(model, window.label, opaqueDisplayIndex),
+          remainingPercent,
+          numericOnly: true,
+          resetAtSeconds: normalizeUnixSeconds(window.reset_at ?? quota.reset_at ?? null),
+          resetSeconds: normalizeRemainingSeconds(window.reset_seconds ?? quota.reset_seconds ?? null),
+          updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
+          allowDynamicReset: true,
+        }
+      })
+      .filter((item): item is QuotaProgressItem & { model: string, resetSeconds: number | null } => item != null))
   }
 
   if (providerType === 'gemini_cli') {
