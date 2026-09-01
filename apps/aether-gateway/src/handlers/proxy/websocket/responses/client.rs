@@ -1,5 +1,6 @@
 //! Client-side Responses WebSocket event forwarding and follow-up planning.
 
+use aether_provider_transport::CodexFingerprintConvergenceContext;
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket};
 use futures_util::SinkExt;
 use serde_json::Value;
@@ -248,7 +249,14 @@ pub(super) async fn forward_client_message(
             // derive one strong live control snapshot that every stage below
             // shares. The connection's Upgrade-time decision is only the
             // immutable identity seed.
-            let planning_parts = build_planning_parts(context);
+            let logical_turn_id = Uuid::now_v7().to_string();
+            let mut planning_parts = build_planning_parts(context);
+            let codex_fingerprint_context =
+                crate::ai_serving::codex_context::attach_codex_logical_turn_context(
+                    &mut planning_parts,
+                    &client_event,
+                    &logical_turn_id,
+                );
             let turn_control = match resolve_responses_websocket_turn_control(
                 state,
                 context,
@@ -453,6 +461,8 @@ pub(super) async fn forward_client_message(
                     context,
                     planning_parts,
                     client_event,
+                    logical_turn_id,
+                    codex_fingerprint_context,
                     turn_control,
                     turn_redaction_session,
                 )
@@ -466,6 +476,8 @@ pub(super) async fn forward_client_message(
                 planning_parts,
                 client_event,
                 requested_model,
+                logical_turn_id,
+                codex_fingerprint_context,
                 turn_control,
                 raw_responses_lite_static_config
                     .expect("independent turns always retain their raw static config"),
@@ -513,6 +525,8 @@ async fn forward_pinned_continuation(
     context: &WebSocketRequestContext,
     planning_parts: http::request::Parts,
     client_event: Value,
+    logical_turn_id: String,
+    codex_fingerprint_context: CodexFingerprintConvergenceContext,
     turn_control: ResponsesWebSocketTurnControl,
     turn_redaction_session: Option<RedactionSession>,
 ) -> RelayDisposition {
@@ -556,7 +570,6 @@ async fn forward_pinned_continuation(
         };
 
     let turn_request_id = Uuid::new_v4().to_string();
-    let logical_turn_id = Uuid::new_v4().to_string();
     let planned = match await_owned_responses_websocket_plan(spawn_owned_responses_websocket_plan(
         state.clone(),
         planning_parts,
@@ -766,6 +779,7 @@ async fn forward_pinned_continuation(
     bound.body_normalization = normalization;
     bound.turn_state.begin(
         LogicalTurn::new(client_event, turn_index, logical_turn_id)
+            .with_codex_fingerprint_context(codex_fingerprint_context)
             .with_provider_store(provider_event.get("store") == Some(&Value::Bool(true)))
             .with_turn_control(turn_control),
         turn,
@@ -800,12 +814,13 @@ async fn forward_replanned_response_create(
     planning_parts: http::request::Parts,
     client_event: Value,
     requested_model: String,
+    logical_turn_id: String,
+    codex_fingerprint_context: CodexFingerprintConvergenceContext,
     turn_control: ResponsesWebSocketTurnControl,
     raw_responses_lite_static_config: ResponsesLiteStaticConfig,
     turn_redaction_session: Option<RedactionSession>,
 ) -> RelayDisposition {
     let turn_request_id = Uuid::new_v4().to_string();
-    let logical_turn_id = Uuid::new_v4().to_string();
     let now_unix_secs = current_unix_secs();
     let excluded_key_ids = bound.exhausted_exclusions.key_ids(now_unix_secs);
     let excluded_codex_account_ids = bound.exhausted_exclusions.codex_account_ids(now_unix_secs);
@@ -992,6 +1007,7 @@ async fn forward_replanned_response_create(
         bound.body_normalization = normalization;
         bound.turn_state.begin(
             LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id.clone())
+                .with_codex_fingerprint_context(codex_fingerprint_context.clone())
                 .with_provider_store(provider_event.get("store") == Some(&Value::Bool(true)))
                 .with_turn_control(turn_control),
             turn,
@@ -1076,6 +1092,7 @@ async fn forward_replanned_response_create(
     bound.binding_identity = replacement.binding_identity;
     bound.turn_state.begin(
         LogicalTurn::new(client_event, turn_index, logical_turn_id)
+            .with_codex_fingerprint_context(codex_fingerprint_context)
             .with_provider_store(provider_event.get("store") == Some(&Value::Bool(true)))
             .with_turn_control(turn_control),
         turn,

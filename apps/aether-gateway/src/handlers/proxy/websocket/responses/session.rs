@@ -444,7 +444,14 @@ async fn bootstrap_responses_websocket(
     let raw_responses_lite_static_config =
         ResponsesLiteStaticConfig::from_response_create(&first_event);
 
-    let planning_parts = build_planning_parts(context);
+    let first_logical_turn_id = Uuid::now_v7().to_string();
+    let mut planning_parts = build_planning_parts(context);
+    let first_codex_fingerprint_context =
+        crate::ai_serving::codex_context::attach_codex_logical_turn_context(
+            &mut planning_parts,
+            &first_event,
+            &first_logical_turn_id,
+        );
     let turn_control = match resolve_responses_websocket_turn_control(
         &state,
         context,
@@ -860,7 +867,6 @@ async fn bootstrap_responses_websocket(
                 return None;
             }
         };
-    let first_logical_turn_id = Uuid::new_v4().to_string();
     let first_turn_decision = prepare_responses_websocket_turn_decision(
         &decision,
         context.trace_id.clone(),
@@ -954,6 +960,7 @@ async fn bootstrap_responses_websocket(
     }
     bound.turn_state.begin(
         LogicalTurn::new(first_event, 1, first_logical_turn_id)
+            .with_codex_fingerprint_context(first_codex_fingerprint_context)
             .with_provider_store(first_provider_event.get("store") == Some(&Value::Bool(true)))
             .with_turn_control(turn_control),
         first_turn,

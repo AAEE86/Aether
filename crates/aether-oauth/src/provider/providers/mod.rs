@@ -13,7 +13,8 @@ pub use claude_code::{
 };
 pub use codex::CodexProviderOAuthAdapter;
 pub use generic::{
-    GenericProviderOAuthAdapter, GenericProviderOAuthTemplate, GENERIC_PROVIDER_OAUTH_TEMPLATES,
+    derive_codex_identity_fingerprint, GenericProviderOAuthAdapter, GenericProviderOAuthTemplate,
+    GENERIC_PROVIDER_OAUTH_TEMPLATES,
 };
 pub use kiro::{
     generate_kiro_machine_id, normalize_kiro_machine_id, KiroAuthConfig, KiroProviderOAuthAdapter,
