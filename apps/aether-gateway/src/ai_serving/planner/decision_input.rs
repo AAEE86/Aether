@@ -291,6 +291,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
                     crate::ai_serving::openai_responses_reasoning_replay_policy(
                         transport.provider.provider_type.as_str(),
                         transport.endpoint.base_url.as_str(),
+                        provider_model.as_str(),
                     )
                 })
                 .unwrap_or_default();

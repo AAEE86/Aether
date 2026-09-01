@@ -159,6 +159,7 @@ fn finalize_openai_chat_provider_request_body(
         openai_responses_reasoning_replay_policy(
             transport.provider.provider_type.as_str(),
             transport.endpoint.base_url.as_str(),
+            mapped_model,
         ),
     )
     .err()

@@ -15,11 +15,25 @@ pub(crate) fn is_deepseek_provider(provider_type: &str, base_url: &str) -> bool 
     host == "deepseek.com" || host.ends_with(".deepseek.com")
 }
 
+fn is_deepseek_model(provider_model: &str) -> bool {
+    let provider_model = provider_model.trim().to_ascii_lowercase();
+    let leaf = provider_model
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(provider_model.as_str());
+    leaf == "deepseek" || leaf.starts_with("deepseek-") || leaf.starts_with("deepseek_")
+}
+
+fn is_deepseek_upstream(provider_type: &str, base_url: &str, provider_model: &str) -> bool {
+    is_deepseek_provider(provider_type, base_url) || is_deepseek_model(provider_model)
+}
+
 pub(crate) fn openai_responses_reasoning_replay_policy(
     provider_type: &str,
     base_url: &str,
+    provider_model: &str,
 ) -> crate::ai_serving::OpenAiResponsesReasoningReplayPolicy {
-    if is_deepseek_provider(provider_type, base_url) {
+    if is_deepseek_upstream(provider_type, base_url, provider_model) {
         crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
     } else {
         crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds
@@ -33,7 +47,11 @@ pub(crate) fn apply_deepseek_tool_call_thinking_compat(
     provider_api_format: &str,
     original_request_body: Option<&Value>,
 ) {
-    if !is_deepseek_provider(provider_type, base_url) {
+    let provider_model = provider_request_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !is_deepseek_upstream(provider_type, base_url, provider_model) {
         return;
     }
 
@@ -302,11 +320,35 @@ mod tests {
         ));
         assert!(!is_deepseek_provider("custom", "ftp://api.deepseek.com/v1"));
         assert_eq!(
-            openai_responses_reasoning_replay_policy("custom", "https://api.deepseek.com/v1"),
+            openai_responses_reasoning_replay_policy(
+                "custom",
+                "https://api.deepseek.com/v1",
+                "deepseek-v4-flash",
+            ),
             crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
         );
         assert_eq!(
-            openai_responses_reasoning_replay_policy("openai", "https://api.openai.com/v1"),
+            openai_responses_reasoning_replay_policy(
+                "openai",
+                "https://api.openai.com/v1",
+                "gpt-5.6-sol",
+            ),
+            crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds
+        );
+        assert_eq!(
+            openai_responses_reasoning_replay_policy(
+                "custom",
+                "https://api.b.ai/v1",
+                "deepseek-v4-flash",
+            ),
+            crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+        );
+        assert_eq!(
+            openai_responses_reasoning_replay_policy(
+                "custom",
+                "https://api.b.ai/v1",
+                "not-deepseek-compatible",
+            ),
             crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds
         );
     }
@@ -330,8 +372,11 @@ mod tests {
             "input": reasoning_items.clone(),
             "future_request_field": {"preserve": true}
         });
-        let replay_policy =
-            openai_responses_reasoning_replay_policy("custom", "https://api.deepseek.com/v1");
+        let replay_policy = openai_responses_reasoning_replay_policy(
+            "custom",
+            "https://api.deepseek.com/v1",
+            "deepseek-v4-flash",
+        );
         let mut provider_body = crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
             &request,
             "openai:responses",
@@ -373,7 +418,11 @@ mod tests {
             crate::ai_serving::strip_incompatible_openai_responses_reasoning_items_with_policy(
                 &mut deepseek,
                 "openai:responses",
-                openai_responses_reasoning_replay_policy("custom", "https://api.deepseek.com/v1"),
+                openai_responses_reasoning_replay_policy(
+                    "custom",
+                    "https://api.deepseek.com/v1",
+                    "deepseek-v4-flash",
+                ),
             ),
             0
         );
@@ -383,7 +432,11 @@ mod tests {
             crate::ai_serving::strip_incompatible_openai_responses_reasoning_items_with_policy(
                 &mut openai,
                 "openai:responses",
-                openai_responses_reasoning_replay_policy("openai", "https://api.openai.com/v1"),
+                openai_responses_reasoning_replay_policy(
+                    "openai",
+                    "https://api.openai.com/v1",
+                    "gpt-5.6-sol",
+                ),
             ),
             66
         );
@@ -415,6 +468,52 @@ mod tests {
 
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["messages"][1]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn custom_relay_deepseek_model_adds_chat_thinking_compat() {
+        let mut body = json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role": "user", "content": "inspect the repository"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "inspect", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"}
+            ]
+        });
+
+        apply_deepseek_tool_call_thinking_compat(
+            &mut body,
+            "custom",
+            "https://api.b.ai/v1",
+            "openai:chat",
+            None,
+        );
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["messages"][1]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn custom_relay_non_deepseek_model_is_not_rewritten() {
+        let original = json!({
+            "model": "not-deepseek-compatible",
+            "messages": [{"role": "assistant", "content": "done"}]
+        });
+        let mut body = original.clone();
+
+        apply_deepseek_tool_call_thinking_compat(
+            &mut body,
+            "custom",
+            "https://api.b.ai/v1",
+            "openai:chat",
+            None,
+        );
+
+        assert_eq!(body, original);
     }
 
     #[test]
