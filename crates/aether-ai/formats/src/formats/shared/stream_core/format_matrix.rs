@@ -1367,6 +1367,17 @@ mod tests {
             .expect("keepalive should be ignored");
         assert!(keepalive.is_empty());
 
+        let ping = matrix
+            .transform_line(
+                &report_context,
+                data_line(json!({
+                    "type": "ping",
+                    "cost": "0",
+                })),
+            )
+            .expect("provider ping should be ignored");
+        assert!(ping.is_empty());
+
         for line in [
             data_line(json!({
                 "type": "response.output_text.delta",

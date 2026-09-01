@@ -1840,7 +1840,7 @@ impl OpenAIResponsesProviderState {
                 });
                 self.finished = true;
             }
-            "keepalive" => {}
+            "keepalive" | "ping" => {}
             event_type if openai_responses_stream_event_is_known_noop(event_type) => {
                 self.ensure_started(report_context, &mut out);
             }
