@@ -1340,6 +1340,7 @@ async fn proxy_request_inner(
             .extensions
             .get::<crate::middleware::CfConnectingIp>()
             .map(|value| value.0.as_str()),
+        client_ip,
         local_proxy_body.as_ref(),
     )
     .await

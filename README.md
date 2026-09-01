@@ -124,6 +124,12 @@ make dev
 `make dev` 会同时启动后端 `aether-gateway` 和前端 `frontend` 的 Vite dev server。需要单独启动时可使用 `make dev-backend` 或 `make dev-frontend`。
 Postgres / Redis 本地依赖未就绪时，`make dev` 会自动执行 `docker compose up -d postgres redis`。
 
+## Codex 远程协同
+
+`aether-vscodex/` 是独立的 VS Code Codex 协同模块：同步模式跟随 VS Code 官方 Codex 面板当前会话且不另起进程；异步模式使用独立 app-server，让浏览器自行列出、恢复、新建和切换会话。两种模式都能从本机 URL 或 Aether 云端查看输出、发送消息和处理授权，模块内的 Vue 前端提供中英文界面。
+
+安装、云端配对和安全边界请参阅 [`aether-vscodex/README.md`](aether-vscodex/README.md)。
+
 ## Aether Tunnel (可选)
 
 Aether Tunnel 是配套的正向代理节点，部署在海外 VPS 上，为墙内的 Aether 实例中转 API 流量。
