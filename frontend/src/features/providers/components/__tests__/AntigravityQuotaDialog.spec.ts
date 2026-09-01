@@ -102,7 +102,7 @@ function mount(metadata: UpstreamMetadata) {
 }
 
 describe('AntigravityQuotaDialog', () => {
-  it('renders opaque quota identifiers with concise visible labels', () => {
+  it('hides quota buckets outside the shared pool summary families', () => {
     const rawIdentifier = 'RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb'
     const { root, unmount } = mount({
       antigravity: {
@@ -116,14 +116,15 @@ describe('AntigravityQuotaDialog', () => {
       },
     })
 
-    expect(root.textContent).toContain('Key-1')
+    expect(root.textContent).toContain('暂无配额数据')
+    expect(root.textContent).not.toContain('Key-1')
     expect(root.textContent).not.toContain(rawIdentifier)
-    expect(root.textContent).toContain('25.0%')
+    expect(root.textContent).not.toContain('25.0%')
 
     unmount()
   })
 
-  it('orders important Gemini and Claude quota rows before low-priority rows', () => {
+  it('renders only the shared Gemini and Claude ChatGPT family summaries', () => {
     const { root, unmount } = mount({
       antigravity: {
         quota_by_model: {
@@ -164,16 +165,20 @@ describe('AntigravityQuotaDialog', () => {
 
     expect(text).not.toContain('gemini-pro-agent')
     expect(text).not.toContain('claude-opus-4-6-thinking')
-    expect(text.indexOf('Claude Opus 4.6 (Thinking)')).toBeLessThan(text.indexOf('Gemini 3.1 Pro (High)'))
-    expect(text.indexOf('Gemini 3.1 Pro (High)')).toBeLessThan(text.indexOf('Gemini 3.5 Flash (High)'))
-    expect(text.indexOf('Gemini 3.5 Flash (High)')).toBeLessThan(text.indexOf('Gemini 3.5 Flash (Medium)'))
-    expect(text.indexOf('Gemini 3.5 Flash (Medium)')).toBeLessThan(text.indexOf('Tab Flash Lite Preview'))
-    expect(text.indexOf('Tab Flash Lite Preview')).toBeLessThan(text.indexOf('chat_20706'))
+    expect(text).toContain('Gemini额度')
+    expect(text).toContain('80%–95%')
+    expect(text).toContain('Claude & ChatGPT')
+    expect(text).toContain('100%')
+    expect(text).not.toContain('Gemini 3.1 Pro (High)')
+    expect(text).not.toContain('Gemini 3.5 Flash (High)')
+    expect(text).not.toContain('Gemini 3.5 Flash (Medium)')
+    expect(text).not.toContain('Tab Flash Lite Preview')
+    expect(text).not.toContain('chat_20706')
 
     unmount()
   })
 
-  it('renders one row for duplicate quota labels and keeps the preferred active bucket', () => {
+  it('collapses duplicate model buckets into one family range', () => {
     const { root, unmount } = mount({
       antigravity: {
         quota_by_model: {
@@ -197,10 +202,11 @@ describe('AntigravityQuotaDialog', () => {
     })
     const text = root.textContent || ''
 
-    expect(text.match(/Gemini 3\.1 Pro \(High\)/g)).toHaveLength(1)
-    expect(text).toContain('40.0%')
+    expect(text.match(/Gemini额度/g)).toHaveLength(1)
+    expect(text).toContain('40%–90%')
     expect(text).not.toContain('95.0%')
-    expect(text.indexOf('Gemini 3.1 Pro (High)')).toBeLessThan(text.indexOf('Gemini 3.5 Flash (High)'))
+    expect(text).not.toContain('Gemini 3.1 Pro (High)')
+    expect(text).not.toContain('Gemini 3.5 Flash (High)')
 
     unmount()
   })

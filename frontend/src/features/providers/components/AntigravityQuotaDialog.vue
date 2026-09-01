@@ -8,7 +8,7 @@
     @update:model-value="$emit('update:open', $event)"
   >
     <template
-      v-if="providerId && items.length > 0"
+      v-if="providerId && rawItems.length > 0"
       #header-actions
     >
       <DropdownMenu :modal="false">
@@ -32,7 +32,7 @@
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            v-for="item in items"
+            v-for="item in rawItems"
             :key="item.model"
             :title="item.model"
             @select="handleTestModel(item.model)"
@@ -56,13 +56,13 @@
             <div class="min-w-0 flex-1 mr-2">
               <div
                 class="text-muted-foreground truncate"
-                :title="item.model"
+                :title="item.label"
               >
                 {{ item.label }}
               </div>
             </div>
             <span :class="getQuotaRemainingClass(item.usedPercent)">
-              {{ item.remainingPercent.toFixed(1) }}%
+              {{ item.detail || `${item.remainingPercent.toFixed(1)}%` }}
             </span>
           </div>
           <div class="relative w-full h-1.5 bg-border rounded-full overflow-hidden">
@@ -122,6 +122,7 @@ import {
   compareAntigravityQuotaItems,
   dedupeAntigravityQuotaItemsByLabel,
   resolveAntigravityQuotaLabel,
+  summarizeAntigravityQuotaItems,
 } from '@/features/providers/utils/antigravityQuota'
 
 const props = defineProps<{
@@ -143,6 +144,7 @@ interface QuotaItem {
   usedPercent: number
   remainingPercent: number
   resetSeconds: number | null
+  detail?: string
 }
 
 const { error: showError, success: showSuccess } = useToast()
@@ -236,7 +238,7 @@ function buildItemsFromQuotaSnapshot(quota: QuotaStatusSnapshot | null | undefin
   return dedupeAntigravityQuotaItemsByLabel(items)
 }
 
-const items = computed<QuotaItem[]>(() => {
+const rawItems = computed<QuotaItem[]>(() => {
   const snapshotItems = buildItemsFromQuotaSnapshot(props.quotaSnapshot)
   if (snapshotItems.length > 0) return snapshotItems
 
@@ -287,6 +289,8 @@ const items = computed<QuotaItem[]>(() => {
   result.sort(compareAntigravityQuotaItems)
   return dedupeAntigravityQuotaItemsByLabel(result)
 })
+
+const items = computed<QuotaItem[]>(() => summarizeAntigravityQuotaItems(rawItems.value))
 
 async function handleTestModel(modelName: string) {
   if (!props.providerId || testingModel.value) return

@@ -104,7 +104,7 @@ describe('pool key display panels', () => {
           meterClass: 'text-emerald-600',
         },
         {
-          label: 'Claude额度',
+          label: 'Claude & ChatGPT',
           remainingPercent: 100,
           resetText: '1h 后重置',
           meterText: '100%',
@@ -119,7 +119,7 @@ describe('pool key display panels', () => {
     expect(root.querySelector('[data-testid="pool-quota-rows"]')?.className).toContain('space-y-2')
     expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-period-label"]')).map(node => node.textContent)).toEqual([
       'Gemini额度',
-      'Claude额度',
+      'Claude & ChatGPT',
     ])
     expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-meter-text"]')).map(node => node.textContent)).toEqual(['90.6%–100%', '100%'])
     expect(root.querySelectorAll('[data-testid="pool-quota-progress-track"]')).toHaveLength(2)

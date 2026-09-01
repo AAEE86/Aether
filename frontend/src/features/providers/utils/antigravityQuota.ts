@@ -9,7 +9,7 @@ export interface AntigravityQuotaSortableItem {
 const ANTIGRAVITY_QUOTA_GROUPS = [
   { label: 'Gemini额度', matches: (model: string) => model.startsWith('gemini-') },
   {
-    label: 'Claude额度',
+    label: 'Claude & ChatGPT',
     matches: (model: string) => model.startsWith('claude-') || model.startsWith('gpt-'),
   },
 ] as const

@@ -376,6 +376,13 @@ impl StreamingStandardTerminalObserver {
                 finish_reason,
                 usage,
             } => {
+                if let Some(parser_error) = finish_reason
+                    .as_deref()
+                    .filter(|reason| !canonical_stream_finish_reason_is_supported(reason))
+                    .map(|reason| format!("unsupported provider stream finish reason: {reason}"))
+                {
+                    summary.parser_error.get_or_insert(parser_error);
+                }
                 summary.finish_reason = finish_reason;
                 summary.standardized_usage = usage.map(standardized_usage_from_canonical);
                 summary.observed_finish = true;
@@ -783,6 +790,48 @@ mod tests {
 
     fn event_only_line(event: &str) -> Vec<u8> {
         format!("event: {event}\n").into_bytes()
+    }
+
+    #[test]
+    fn terminal_observer_marks_malformed_gemini_function_call_as_failure() {
+        let context = report_context("gemini:generate_content", "openai:responses");
+        let mut observer = StreamingStandardTerminalObserver::default();
+        observer
+            .push_line(
+                &context,
+                data_line(json!({
+                    "response": {
+                        "responseId": "resp_malformed_tool_call",
+                        "modelVersion": "gemini-3.7-flash-tiered",
+                        "candidates": [{
+                            "index": 0,
+                            "content": {
+                                "role": "model",
+                                "parts": [{"thoughtSignature": "signature", "text": ""}]
+                            },
+                            "finishReason": "MALFORMED_FUNCTION_CALL",
+                            "finishMessage": "Malformed function call: Function call is empty - no input to parse."
+                        }]
+                    },
+                    "responseId": "resp_malformed_tool_call"
+                })),
+            )
+            .expect("Gemini terminal frame should parse");
+
+        let summary = observer
+            .finish(&context)
+            .expect("terminal observation should finish")
+            .expect("Gemini terminal frame should produce a summary");
+
+        assert!(summary.observed_finish);
+        assert_eq!(
+            summary.finish_reason.as_deref(),
+            Some("MALFORMED_FUNCTION_CALL")
+        );
+        assert_eq!(
+            summary.parser_error.as_deref(),
+            Some("unsupported provider stream finish reason: MALFORMED_FUNCTION_CALL")
+        );
     }
 
     #[test]

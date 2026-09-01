@@ -376,12 +376,13 @@
                         />
                         <div class="grid grid-cols-2 gap-3">
                           <ProviderQuotaProgressRow
-                            v-for="item in getAntigravityQuotaPreviewForKey(key)"
+                            v-for="item in getAntigravityQuotaSummaryForKey(key)"
                             :key="item.model"
                             :label="item.label"
-                            :title="item.model"
+                            :title="item.label"
                             :used-percent="item.usedPercent"
                             :remaining-percent="item.remainingPercent"
+                            :meter-text="item.detail"
                             :meter-class="getQuotaRemainingClass(item.usedPercent)"
                             :bar-class="getQuotaRemainingBarColor(item.usedPercent)"
                           >
@@ -401,14 +402,6 @@
                               </div>
                             </template>
                           </ProviderQuotaProgressRow>
-                          <button
-                            v-if="getAntigravityQuotaHiddenCountForKey(key) > 0"
-                            type="button"
-                            class="col-span-2 text-left text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                            @click="openAntigravityQuotaDialog(key)"
-                          >
-                            {{ legacyT('另有') }} {{ getAntigravityQuotaHiddenCountForKey(key) }} {{ legacyT('个模型，查看全部') }}
-                          </button>
                         </div>
                       </template>
                     </div>
@@ -989,6 +982,7 @@ import {
   compareAntigravityQuotaItems,
   dedupeAntigravityQuotaItemsByLabel,
   resolveAntigravityQuotaLabel,
+  summarizeAntigravityQuotaItems,
 } from '@/features/providers/utils/antigravityQuota'
 import {
   deleteEndpointKey,
@@ -3374,6 +3368,7 @@ interface AntigravityQuotaItem {
   usedPercent: number
   remainingPercent: number
   resetSeconds: number | null
+  detail?: string
 }
 
 interface GeminiCliQuotaItem {
@@ -3579,20 +3574,14 @@ function getAntigravityQuotaItemsFromSnapshot(key: EndpointAPIKey): AntigravityQ
   return dedupeAntigravityQuotaItemsByLabel(items)
 }
 
-const ANTIGRAVITY_QUOTA_PREVIEW_LIMIT = 6
-
 function getAntigravityQuotaItemsForKey(key: EndpointAPIKey): AntigravityQuotaItem[] {
   const snapshotItems = getAntigravityQuotaItemsFromSnapshot(key)
   if (snapshotItems.length > 0) return snapshotItems
   return getAntigravityQuotaItems(key.upstream_metadata)
 }
 
-function getAntigravityQuotaPreviewForKey(key: EndpointAPIKey): AntigravityQuotaItem[] {
-  return getAntigravityQuotaItemsForKey(key).slice(0, ANTIGRAVITY_QUOTA_PREVIEW_LIMIT)
-}
-
-function getAntigravityQuotaHiddenCountForKey(key: EndpointAPIKey): number {
-  return Math.max(getAntigravityQuotaItemsForKey(key).length - ANTIGRAVITY_QUOTA_PREVIEW_LIMIT, 0)
+function getAntigravityQuotaSummaryForKey(key: EndpointAPIKey): AntigravityQuotaItem[] {
+  return summarizeAntigravityQuotaItems(getAntigravityQuotaItemsForKey(key))
 }
 
 function getResetCountdownText(

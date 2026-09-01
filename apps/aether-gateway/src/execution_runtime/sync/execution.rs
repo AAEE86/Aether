@@ -34,6 +34,7 @@ use crate::ai_serving::api::{
     implicit_sync_finalize_report_kind, maybe_build_sync_finalize_outcome, LocalCoreSyncErrorKind,
     LocalCoreSyncFinalizeOutcome,
 };
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
     build_client_response_from_parts_with_mutator,
@@ -2002,6 +2003,11 @@ async fn execute_execution_runtime_sync_impl(
     {
         ProviderPoolInFlightAdmission::Acquired(guard) => guard,
         ProviderPoolInFlightAdmission::Saturated { limit } => {
+            record_local_runtime_candidate_skip_reason(
+                state,
+                trace_id,
+                "provider_key_concurrency_limit_reached",
+            );
             if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
                 *retry_scope = AiAttemptRetryScope::Candidate;
             }

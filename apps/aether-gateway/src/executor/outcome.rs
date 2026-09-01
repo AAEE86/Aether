@@ -111,6 +111,22 @@ impl LocalExecutionRuntimeMissContext {
         })
     }
 
+    pub(crate) fn all_candidates_skipped_for_reasons(&self, reasons: &[&str]) -> bool {
+        if reasons.is_empty() || self.candidate_contexts.is_empty() {
+            return false;
+        }
+
+        self.candidate_contexts.iter().all(|candidate| {
+            candidate.candidate.status == RequestCandidateStatus::Skipped
+                && candidate
+                    .candidate
+                    .skip_reason
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| reasons.contains(&value))
+        })
+    }
+
     pub(crate) fn candidate_summary(&self) -> Option<String> {
         const MAX_ITEMS: usize = 5;
 
