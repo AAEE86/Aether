@@ -97,7 +97,7 @@ pub fn codex_fingerprint_convergence_enabled(
             .unwrap_or(false)
 }
 
-pub fn apply_codex_oauth_fingerprint_convergence(
+pub fn apply_codex_fingerprint_convergence(
     transport: &GatewayProviderTransportSnapshot,
     provider_api_format: &str,
     original_client_session_id: Option<&str>,
@@ -109,7 +109,7 @@ pub fn apply_codex_oauth_fingerprint_convergence(
     if let Some(original_client_session_id) = original_client_session_id {
         context = context.with_original_client_session_id(original_client_session_id);
     }
-    apply_codex_oauth_fingerprint_convergence_with_context(
+    apply_codex_fingerprint_convergence_with_context(
         transport,
         provider_api_format,
         &context,
@@ -118,7 +118,7 @@ pub fn apply_codex_oauth_fingerprint_convergence(
     )
 }
 
-pub fn apply_codex_oauth_fingerprint_convergence_with_context(
+pub fn apply_codex_fingerprint_convergence_with_context(
     transport: &GatewayProviderTransportSnapshot,
     provider_api_format: &str,
     context: &CodexFingerprintConvergenceContext,
@@ -127,12 +127,14 @@ pub fn apply_codex_oauth_fingerprint_convergence_with_context(
 ) -> bool {
     let is_responses = aether_ai_formats::is_openai_responses_format(provider_api_format);
     let is_live = aether_ai_formats::api_format_alias_matches(provider_api_format, "codex:live");
+    // Convergence is a Codex provider policy, independent of whether the key
+    // uses OAuth, an API key, or another ordinary auth channel. Agent Identity
+    // uses a separate signed-identity protocol and is excluded here.
     if !transport
         .provider
         .provider_type
         .trim()
         .eq_ignore_ascii_case("codex")
-        || !transport.key.auth_type.trim().eq_ignore_ascii_case("oauth")
         || crate::agent_identity::is_codex_agent_identity_transport(transport)
         || (!is_responses && !is_live)
         || is_responses
@@ -588,7 +590,7 @@ mod tests {
             }
         });
 
-        assert!(apply_codex_oauth_fingerprint_convergence(
+        assert!(apply_codex_fingerprint_convergence(
             &transport,
             "openai:responses",
             Some("client-session"),
@@ -686,7 +688,7 @@ mod tests {
             }
         });
 
-        assert!(apply_codex_oauth_fingerprint_convergence_with_context(
+        assert!(apply_codex_fingerprint_convergence_with_context(
             &transport,
             "openai:responses",
             &context,
@@ -765,14 +767,14 @@ mod tests {
         });
         let mut second_body = first_body.clone();
 
-        assert!(apply_codex_oauth_fingerprint_convergence(
+        assert!(apply_codex_fingerprint_convergence(
             &transport,
             "openai:responses",
             Some("client-session"),
             &mut first_headers,
             &mut first_body,
         ));
-        assert!(apply_codex_oauth_fingerprint_convergence(
+        assert!(apply_codex_fingerprint_convergence(
             &transport,
             "openai:responses",
             Some("client-session"),
@@ -827,14 +829,14 @@ mod tests {
         let mut first_body = original_body.clone();
         let mut retried_headers = original_headers;
         let mut retried_body = original_body;
-        assert!(apply_codex_oauth_fingerprint_convergence_with_context(
+        assert!(apply_codex_fingerprint_convergence_with_context(
             &transport,
             "openai:responses",
             &context,
             &mut first_headers,
             &mut first_body,
         ));
-        assert!(apply_codex_oauth_fingerprint_convergence_with_context(
+        assert!(apply_codex_fingerprint_convergence_with_context(
             &transport,
             "openai:responses",
             &context,
@@ -904,7 +906,7 @@ mod tests {
         });
         let mut headers = BTreeMap::new();
 
-        assert!(apply_codex_oauth_fingerprint_convergence_with_context(
+        assert!(apply_codex_fingerprint_convergence_with_context(
             &transport,
             "openai:responses",
             &context,
@@ -984,7 +986,7 @@ mod tests {
         let mut body = original_body.clone();
         let mut headers = BTreeMap::new();
 
-        assert!(apply_codex_oauth_fingerprint_convergence(
+        assert!(apply_codex_fingerprint_convergence(
             &transport,
             "codex:live",
             Some("client-live-session"),
@@ -1007,7 +1009,7 @@ mod tests {
         transport.provider.config = None;
         let mut headers = original_headers.clone();
         let mut body = original_body.clone();
-        assert!(!apply_codex_oauth_fingerprint_convergence(
+        assert!(!apply_codex_fingerprint_convergence(
             &transport,
             "openai:responses",
             Some("client"),
@@ -1028,7 +1030,7 @@ mod tests {
         ] {
             let mut headers = original_headers.clone();
             let mut body = original_body.clone();
-            assert!(!apply_codex_oauth_fingerprint_convergence(
+            assert!(!apply_codex_fingerprint_convergence(
                 &transport,
                 api_format,
                 Some("client"),
@@ -1045,7 +1047,7 @@ mod tests {
             "input": [{"type": "compaction_trigger"}]
         });
         let original_compact_v2_body = compact_v2_body.clone();
-        assert!(!apply_codex_oauth_fingerprint_convergence(
+        assert!(!apply_codex_fingerprint_convergence(
             &transport,
             "openai:responses",
             Some("client"),
@@ -1054,25 +1056,126 @@ mod tests {
         ));
         assert_eq!(compact_v2_headers, original_headers);
         assert_eq!(compact_v2_body, original_compact_v2_body);
+    }
 
+    #[test]
+    fn ordinary_codex_auth_channels_apply_convergence() {
         for auth_type in ["api_key", "bearer"] {
+            let mut transport = sample_transport();
             transport.key.auth_type = auth_type.to_string();
+            let original_headers =
+                BTreeMap::from([("x-custom-header".to_string(), "preserve-me".to_string())]);
+            let original_body = json!({"model": "gpt-5.4"});
             let mut headers = original_headers.clone();
             let mut body = original_body.clone();
-            assert!(!apply_codex_oauth_fingerprint_convergence(
+
+            assert!(apply_codex_fingerprint_convergence(
                 &transport,
                 "openai:responses",
                 Some("client"),
                 &mut headers,
                 &mut body,
             ));
-            assert_eq!(headers, original_headers);
-            assert_eq!(body, original_body);
+            assert_ne!(headers, original_headers, "auth_type={auth_type}");
+            assert_ne!(body, original_body, "auth_type={auth_type}");
+            assert!(headers.contains_key("x-codex-installation-id"));
+            assert_eq!(body["client_metadata"]["session_id"], headers["session-id"]);
         }
     }
 
     #[test]
-    fn agent_identity_oauth_transport_is_unchanged() {
+    fn non_codex_providers_are_unchanged_even_with_codex_convergence_enabled() {
+        let context = CodexFingerprintConvergenceContext::new("logical-turn", 1_700_000_000_123)
+            .with_original_turn_id("client-turn")
+            .with_original_client_session_id("client-session")
+            .with_original_prompt_cache_key("client-cache");
+
+        for provider_type in ["openai", "anthropic", "custom"] {
+            let mut transport = sample_transport();
+            transport.provider.provider_type = provider_type.to_string();
+            let original_headers = BTreeMap::from([
+                ("session-id".to_string(), "client-session".to_string()),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    json!({"turn_id": "client-turn"}).to_string(),
+                ),
+                ("x-custom-header".to_string(), "preserve-me".to_string()),
+            ]);
+            let original_body = json!({
+                "model": "gpt-5.4",
+                "prompt_cache_key": "client-cache",
+                "client_metadata": {"session_id": "client-session"}
+            });
+            let mut headers = original_headers.clone();
+            let mut body = original_body.clone();
+
+            assert!(!apply_codex_fingerprint_convergence_with_context(
+                &transport,
+                "openai:responses",
+                &context,
+                &mut headers,
+                &mut body,
+            ));
+            assert_eq!(headers, original_headers, "provider={provider_type}");
+            assert_eq!(body, original_body, "provider={provider_type}");
+        }
+    }
+
+    #[test]
+    fn ordinary_codex_auth_channels_are_stable_and_key_scoped() {
+        let context = CodexFingerprintConvergenceContext::new("logical-turn", 1_700_000_000_123)
+            .with_original_client_session_id("client-session");
+        for auth_type in ["api_key", "bearer"] {
+            let mut transport = sample_transport();
+            transport.key.auth_type = auth_type.to_string();
+            transport.key.decrypted_auth_config = None;
+
+            let mut first_headers = BTreeMap::new();
+            let mut first_body = json!({"model": "gpt-5.4"});
+            assert!(apply_codex_fingerprint_convergence_with_context(
+                &transport,
+                "openai:responses",
+                &context,
+                &mut first_headers,
+                &mut first_body,
+            ));
+
+            let mut retry_headers = BTreeMap::new();
+            let mut retry_body = json!({"model": "gpt-5.4"});
+            assert!(apply_codex_fingerprint_convergence_with_context(
+                &transport,
+                "openai:responses",
+                &context,
+                &mut retry_headers,
+                &mut retry_body,
+            ));
+            assert_eq!(first_headers, retry_headers, "auth_type={auth_type}");
+            assert_eq!(first_body, retry_body, "auth_type={auth_type}");
+
+            transport.key.id = "key-2".to_string();
+            let mut other_key_headers = BTreeMap::new();
+            let mut other_key_body = json!({"model": "gpt-5.4"});
+            assert!(apply_codex_fingerprint_convergence_with_context(
+                &transport,
+                "openai:responses",
+                &context,
+                &mut other_key_headers,
+                &mut other_key_body,
+            ));
+            assert_ne!(
+                first_headers["x-codex-installation-id"],
+                other_key_headers["x-codex-installation-id"],
+                "auth_type={auth_type}"
+            );
+            assert_ne!(
+                first_body["client_metadata"], other_key_body["client_metadata"],
+                "auth_type={auth_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_identity_transport_is_unchanged() {
         let mut transport = sample_transport();
         transport.key.decrypted_auth_config = Some(
             json!({
@@ -1089,7 +1192,7 @@ mod tests {
         let mut headers = original_headers.clone();
         let mut body = original_body.clone();
 
-        assert!(!apply_codex_oauth_fingerprint_convergence(
+        assert!(!apply_codex_fingerprint_convergence(
             &transport,
             "openai:responses",
             Some("client"),
