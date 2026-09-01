@@ -90,24 +90,41 @@ describe('pool key display panels', () => {
     root.remove()
   })
 
-  it('renders Antigravity quota as numeric values without progress tracks', () => {
+  it('renders Antigravity quota summaries in a compact numeric grid', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     const app = createApp(PoolKeyQuotaPanel, {
-      items: [{
-        label: 'Gemini 3.1 Pro (High)',
-        remainingPercent: 42,
-        resetText: '1h 后重置',
-        meterText: '42',
-        barClass: 'bg-amber-500',
-        meterClass: 'text-amber-600',
-        numericOnly: true,
-      }],
+      items: [
+        {
+          label: 'Gemini额度',
+          remainingPercent: 90.6,
+          resetText: '1h 后重置',
+          meterText: '90.6–100',
+          barClass: 'bg-emerald-500',
+          meterClass: 'text-emerald-600',
+          numericOnly: true,
+        },
+        {
+          label: 'Claude额度',
+          remainingPercent: 100,
+          resetText: '1h 后重置',
+          meterText: '100',
+          barClass: 'bg-emerald-500',
+          meterClass: 'text-emerald-600',
+          numericOnly: true,
+        },
+      ],
     })
     app.use(createI18n())
     app.mount(root)
 
-    expect(root.querySelector('[data-testid="pool-quota-meter-text"]')?.textContent).toBe('42')
+    expect(root.querySelector('[data-testid="pool-quota-rows"]')?.className).toContain('grid-cols-2')
+    expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-period-label"]')).map(node => node.textContent)).toEqual([
+      'Gemini额度',
+      'Claude额度',
+    ])
+    expect(Array.from(root.querySelectorAll('[data-testid="pool-quota-meter-text"]')).map(node => node.textContent)).toEqual(['90.6–100', '100'])
+    expect(root.textContent).not.toContain('1h 后重置')
     expect(root.querySelector('[data-testid="pool-quota-progress-track"]')).toBeNull()
 
     app.unmount()

@@ -3,7 +3,16 @@ export interface AntigravityQuotaSortableItem {
   label: string
   remainingPercent: number
   resetSeconds: number | null
+  detail?: string
 }
+
+const ANTIGRAVITY_QUOTA_GROUPS = [
+  { label: 'Gemini额度', matches: (model: string) => model.startsWith('gemini-') },
+  {
+    label: 'Claude额度',
+    matches: (model: string) => model.startsWith('claude-') || model.startsWith('gpt-'),
+  },
+] as const
 
 const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
   'gemini-pro-agent': 'Gemini 3.1 Pro (High)',
@@ -114,4 +123,40 @@ export function dedupeAntigravityQuotaItemsByLabel<T extends AntigravityQuotaSor
     }
   }
   return Array.from(selectedByLabel.values()).sort(compareAntigravityQuotaItems)
+}
+
+export function summarizeAntigravityQuotaItems<T extends AntigravityQuotaSortableItem>(
+  items: T[],
+): T[] {
+  const itemsByGroup = new Map<string, T[]>()
+  for (const item of items) {
+    const normalizedModel = item.model.trim().toLowerCase().replace(/^model:/, '')
+    const group = ANTIGRAVITY_QUOTA_GROUPS.find(candidate => candidate.matches(normalizedModel))
+    if (!group) continue
+    const groupedItems = itemsByGroup.get(group.label) ?? []
+    groupedItems.push(item)
+    itemsByGroup.set(group.label, groupedItems)
+  }
+
+  return ANTIGRAVITY_QUOTA_GROUPS.map(group => group.label)
+    .map((label) => {
+      const groupedItems = itemsByGroup.get(label)
+      if (!groupedItems?.length) return undefined
+      const remainingValues = groupedItems
+        .map(item => item.remainingPercent)
+        .sort((left, right) => left - right)
+      const minRemaining = remainingValues[0] ?? 0
+      const maxRemaining = remainingValues.at(-1) ?? minRemaining
+      const selected = groupedItems.find(item => item.remainingPercent === minRemaining) ?? groupedItems[0]
+      const detail = Math.abs(maxRemaining - minRemaining) < 1e-6
+        ? formatAntigravityQuotaValue(minRemaining)
+        : `${formatAntigravityQuotaValue(minRemaining)}–${formatAntigravityQuotaValue(maxRemaining)}`
+      return { ...selected, label, remainingPercent: minRemaining, detail }
+    })
+    .filter((item): item is T => item !== undefined)
+}
+
+function formatAntigravityQuotaValue(value: number): string {
+  const rounded = Math.round(value)
+  return Math.abs(value - rounded) < 1e-6 ? String(rounded) : value.toFixed(1)
 }

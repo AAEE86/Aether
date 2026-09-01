@@ -561,7 +561,7 @@ mod tests {
             }
         })));
 
-        let signals = service.member_signals("windsurf", &key, None);
+        let signals = service.member_signals("windsurf", &key, None, None);
 
         assert!(!signals.quota_exhausted);
     }
@@ -588,7 +588,7 @@ mod tests {
             }
         }));
 
-        let signals = service.member_signals("windsurf", &key, None);
+        let signals = service.member_signals("windsurf", &key, None, None);
 
         assert!(signals.quota_exhausted);
     }
@@ -843,6 +843,99 @@ mod tests {
             }
         }));
         assert!(provider_pool_key_account_quota_exhausted(&active, "codex"));
+    }
+
+    #[test]
+    fn antigravity_model_quota_exhaustion_does_not_block_other_models() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": false,
+                "windows": [
+                    {
+                        "code": "model:gemini-3.1-pro-high",
+                        "scope": "model",
+                        "model": "gemini-3.1-pro-high",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    },
+                    {
+                        "code": "model:gemini-3-flash-agent",
+                        "scope": "model",
+                        "model": "gemini-3-flash-agent",
+                        "used_ratio": 0.1,
+                        "is_exhausted": false
+                    }
+                ]
+            }
+        }));
+
+        let exhausted =
+            service.member_signals("antigravity", &key, None, Some("gemini-3.1-pro-high"));
+        let available =
+            service.member_signals("antigravity", &key, None, Some("gemini-3-flash-agent"));
+
+        assert!(exhausted.quota_exhausted);
+        assert!(!available.quota_exhausted);
+    }
+
+    #[test]
+    fn codex_standard_and_spark_quota_families_are_independent() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut standard_exhausted = sample_key(None);
+        standard_exhausted.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "allowed": false,
+                "limit_reached": true,
+                "windows": [
+                    { "code": "weekly", "used_ratio": 1.0, "is_exhausted": true },
+                    { "code": "5h", "used_ratio": 0.5, "is_exhausted": false },
+                    { "code": "spark_weekly", "used_ratio": 0.2, "is_exhausted": false },
+                    { "code": "spark_5h", "used_ratio": 0.1, "is_exhausted": false }
+                ]
+            }
+        }));
+
+        let standard =
+            service.member_signals("codex", &standard_exhausted, None, Some("gpt-5.3-codex"));
+        let spark = service.member_signals(
+            "codex",
+            &standard_exhausted,
+            None,
+            Some("gpt-5.3-codex-spark"),
+        );
+        assert!(standard.quota_exhausted);
+        assert!(!standard.quota_hard_blocked);
+        assert!(!spark.quota_exhausted);
+        assert!(!spark.quota_hard_blocked);
+
+        let mut spark_exhausted = sample_key(None);
+        spark_exhausted.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": false,
+                "windows": [
+                    { "code": "weekly", "used_ratio": 0.2, "is_exhausted": false },
+                    { "code": "5h", "used_ratio": 0.1, "is_exhausted": false },
+                    { "code": "spark_weekly", "used_ratio": 1.0, "is_exhausted": true },
+                    { "code": "spark_5h", "used_ratio": 0.4, "is_exhausted": false }
+                ]
+            }
+        }));
+
+        let standard =
+            service.member_signals("codex", &spark_exhausted, None, Some("gpt-5.3-codex"));
+        let spark =
+            service.member_signals("codex", &spark_exhausted, None, Some("gpt-5.3-codex-spark"));
+        assert!(!standard.quota_exhausted);
+        assert!(spark.quota_exhausted);
     }
 
     #[test]

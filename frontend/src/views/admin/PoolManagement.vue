@@ -212,7 +212,7 @@
                 :class="getPoolKeyRowClass(key.key_id)"
               >
                 <TableCell
-                  class="px-4 py-3"
+                  class="px-4 py-3 align-top"
                 >
                   <div class="flex min-w-0 items-center gap-2">
                     <Checkbox
@@ -324,7 +324,7 @@
                 </TableCell>
                 <TableCell
                   v-if="showAccountQuotaColumn"
-                  class="py-3 align-middle"
+                  class="py-3 align-top"
                 >
                   <PoolKeyQuotaPanel
                     :items="quotaProgressDisplayMap[key.key_id] || []"
@@ -338,24 +338,24 @@
                     @consume-reset-credit="handleConsumeCodexResetCredit(key)"
                   />
                 </TableCell>
-                <TableCell class="py-3 px-2 align-middle">
+                <TableCell class="py-3 px-2 align-top">
                   <PoolKeyStatsPanel
                     :cycle="isPoolKeyCycleStatsDisplay(key)"
                     :cycle-groups="getPoolKeyCycleStatsGroups(key)"
                     :account-metrics="getPoolKeyAccountStatsMetrics(key)"
                   />
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="py-3 text-center align-top">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
                     {{ keyUiStateMap[key.key_id]?.importedAtRelative || '-' }}
                   </span>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="py-3 text-center align-top">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
                     {{ keyUiStateMap[key.key_id]?.lastUsedRelative || '-' }}
                   </span>
                 </TableCell>
-                <TableCell class="py-3 text-center align-middle">
+                <TableCell class="py-3 text-center align-top">
                   <div class="inline-flex items-center justify-center gap-1">
                     <span class="font-mono text-xs tabular-nums text-foreground/90">
                       {{ formatPoolScore(key.pool_score?.score) }}
@@ -416,7 +416,7 @@
                     </Popover>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="py-3 text-center align-top">
                   <Badge
                     :variant="keyUiStateMap[key.key_id]?.schedulingBadgeVariant || 'default'"
                     class="text-[10px]"
@@ -425,7 +425,7 @@
                     {{ keyUiStateMap[key.key_id]?.schedulingBadgeLabel }}
                   </Badge>
                 </TableCell>
-                <TableCell class="py-3 px-2 align-middle">
+                <TableCell class="py-3 px-2 align-top">
                   <div class="flex justify-center gap-0.5">
                     <Button
                       v-if="key.cooldown_reason"
@@ -1146,6 +1146,7 @@ import { mergePoolKeyQuotaSnapshots } from '@/features/pool/utils/poolQuotaRefre
 import {
   dedupeAntigravityQuotaItemsByLabel,
   resolveAntigravityQuotaLabel,
+  summarizeAntigravityQuotaItems,
 } from '@/features/providers/utils/antigravityQuota'
 import {
   clearPendingCodexResetCreditIdempotencyKey,
@@ -2064,7 +2065,7 @@ const quotaProgressDisplayMap = computed<Record<string, QuotaProgressDisplayItem
       remainingPercent: item.remainingPercent,
       resetText: getQuotaProgressResetDisplayText(item),
       meterText: item.numericOnly
-        ? formatQuotaValue(item.remainingPercent)
+        ? item.detail || formatQuotaValue(item.remainingPercent)
         : getQuotaProgressMeterDisplayText(item),
       barClass: getQuotaRemainingBarColorByRemaining(item.remainingPercent),
       meterClass: getQuotaRemainingClassByRemaining(item.remainingPercent),
@@ -3866,7 +3867,7 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
     const windows = getQuotaSnapshotWindowsByScope(quota, 'model')
     if (windows.length === 0) return []
     const opaqueDisplayIndex = { value: 1 }
-    return dedupeAntigravityQuotaItemsByLabel(windows
+    return summarizeAntigravityQuotaItems(dedupeAntigravityQuotaItemsByLabel(windows
       .map((window): (QuotaProgressItem & { model: string, resetSeconds: number | null }) | null => {
         const remainingPercent = getQuotaWindowRemainingPercent(window)
         if (remainingPercent == null) return null
@@ -3882,7 +3883,7 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
           allowDynamicReset: true,
         }
       })
-      .filter((item): item is QuotaProgressItem & { model: string, resetSeconds: number | null } => item != null))
+        .filter((item): item is QuotaProgressItem & { model: string, resetSeconds: number | null } => item != null)))
   }
 
   if (providerType === 'gemini_cli') {
