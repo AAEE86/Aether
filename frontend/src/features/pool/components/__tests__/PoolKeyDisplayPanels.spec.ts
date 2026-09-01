@@ -90,6 +90,30 @@ describe('pool key display panels', () => {
     root.remove()
   })
 
+  it('renders Antigravity quota as numeric values without progress tracks', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(PoolKeyQuotaPanel, {
+      items: [{
+        label: 'Gemini 3.1 Pro (High)',
+        remainingPercent: 42,
+        resetText: '1h 后重置',
+        meterText: '42',
+        barClass: 'bg-amber-500',
+        meterClass: 'text-amber-600',
+        numericOnly: true,
+      }],
+    })
+    app.use(createI18n())
+    app.mount(root)
+
+    expect(root.querySelector('[data-testid="pool-quota-meter-text"]')?.textContent).toBe('42')
+    expect(root.querySelector('[data-testid="pool-quota-progress-track"]')).toBeNull()
+
+    app.unmount()
+    root.remove()
+  })
+
   it('renders single-cycle stats as plain text', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)

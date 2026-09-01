@@ -513,10 +513,10 @@ fn generic_provider_type(provider_type: &str) -> Option<&'static str> {
 }
 
 fn refresh_token_from_auth_config(auth_config: &Value) -> Option<String> {
-    auth_config
-        .as_object()
-        .and_then(|object| object.get("refresh_token"))
-        .and_then(non_empty_string)
+    let object = auth_config.as_object()?;
+    ["refresh_token", "refreshToken"]
+        .iter()
+        .find_map(|field| object.get(*field).and_then(non_empty_string))
 }
 
 fn access_token_from_auth_config(auth_config: &Value) -> Option<String> {
@@ -889,6 +889,49 @@ mod tests {
         assert_eq!(
             current_access_token(&transport, Some(&entry)).as_deref(),
             Some("refreshed-access-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_expired_legacy_credential_refreshes_and_normalizes_refresh_token() {
+        let mut transport = sample_transport();
+        transport.provider.name = "Antigravity".to_string();
+        transport.provider.provider_type = "antigravity".to_string();
+        transport.key.decrypted_api_key = "stale-access-token".to_string();
+        transport.key.expires_at_unix_secs = Some(1);
+        transport.key.decrypted_auth_config = Some(
+            json!({
+                "provider_type": "antigravity",
+                "refreshToken": "stable-refresh-token",
+                "expires_at": 1,
+            })
+            .to_string(),
+        );
+        let hits = Arc::new(AtomicUsize::new(0));
+        let executor = StaticTokenExecutor {
+            hits: Arc::clone(&hits),
+        };
+        let adapter = GenericOAuthRefreshAdapter::default()
+            .with_token_url_for_tests("antigravity", "https://oauth.example/token");
+
+        assert!(adapter.supports(&transport));
+        assert!(adapter.should_refresh(&transport, None));
+
+        let refreshed = adapter
+            .refresh(&executor, &transport, None)
+            .await
+            .expect("antigravity refresh should succeed")
+            .expect("antigravity refresh should return a cache entry");
+
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(refreshed.provider_type, "antigravity");
+        assert_eq!(refreshed.auth_header_value, "Bearer fresh-access-token");
+        assert_eq!(
+            refreshed
+                .metadata
+                .as_ref()
+                .map(|metadata| &metadata["refresh_token"]),
+            Some(&json!("stable-refresh-token"))
         );
     }
 
