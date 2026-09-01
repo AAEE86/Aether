@@ -1092,6 +1092,7 @@ async fn proxy_request_inner(
         ),
     }
     let (mut parts, body) = request.into_parts();
+    crate::ai_serving::codex_context::install_codex_fingerprint_context_slot(&mut parts);
     let redaction_slot = crate::privacy::RedactionSessionSlot::default();
     parts.extensions.insert(redaction_slot.clone());
     parts

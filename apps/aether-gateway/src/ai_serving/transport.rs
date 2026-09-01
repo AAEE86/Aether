@@ -60,6 +60,7 @@ pub(crate) mod windsurf {
 
 pub(crate) use aether_provider_transport::{
     append_transport_diagnostics_to_value, apply_codex_oauth_fingerprint_convergence,
+    apply_codex_oauth_fingerprint_convergence_with_context,
     apply_local_auth_config_header_overrides, apply_local_body_rules,
     apply_local_body_rules_with_request_headers, apply_local_header_rules,
     apply_local_header_rules_with_request_headers, apply_standard_provider_request_body_rules,
@@ -107,8 +108,9 @@ pub(crate) use aether_provider_transport::{
     supports_local_generic_oauth_request_auth_resolution,
     supports_local_oauth_request_auth_resolution, transport_proxy_is_locally_supported,
     transport_supports_api_operation, video_create_transport_unsupported_reason,
-    AnthropicCompatibilityProfile, CandidateTransportPolicyFacts, GatewayProviderTransportSnapshot,
-    GeminiCliRequestAuth, GeminiCliRequestAuthSupport, GeminiCliRequestAuthUnsupportedReason,
+    AnthropicCompatibilityProfile, CandidateTransportPolicyFacts,
+    CodexFingerprintConvergenceContext, GatewayProviderTransportSnapshot, GeminiCliRequestAuth,
+    GeminiCliRequestAuthSupport, GeminiCliRequestAuthUnsupportedReason,
     GeminiCliRequestEnvelopeSupport, GeminiFilesHeadersInput, GeminiFilesRequestBodyError,
     GeminiFilesRequestBodyParts, GrokHeaderInput, LocalResolvedOAuthRequestAuth,
     ProviderOpenAiImageHeadersInput, ProviderVideoCreateFamily, ProviderVideoCreateHeadersInput,

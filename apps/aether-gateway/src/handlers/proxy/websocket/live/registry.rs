@@ -718,6 +718,11 @@ mod tests {
         PlannedLiveCandidate {
             execution,
             pinned_candidate: binding.pinned_candidate.clone(),
+            codex_fingerprint_context:
+                aether_provider_transport::CodexFingerprintConvergenceContext::new(
+                    "test-live-turn",
+                    1,
+                ),
             client_model: binding.client_model.clone(),
             provider_model: binding.provider_model.clone(),
             auth_mode: binding.auth_mode,

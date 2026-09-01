@@ -5,6 +5,7 @@
 //! 非法组合只能靠调用点的 if 和「记得同时改另外两个字段」来避免。这里把它收敛成
 //! 一个枚举：合法组合由类型保证，转换只能走受控 API。
 
+use aether_provider_transport::CodexFingerprintConvergenceContext;
 use serde_json::Value;
 
 use super::control::ResponsesWebSocketTurnControl;
@@ -26,6 +27,9 @@ pub(super) struct LogicalTurn {
     pub(super) provider_store: bool,
     pub(super) turn_index: u64,
     pub(super) logical_turn_id: String,
+    /// Immutable Codex client identity for every provider attempt belonging to
+    /// this logical turn. A transparent re-plan must never mint a new turn.
+    pub(super) codex_fingerprint_context: Option<CodexFingerprintConvergenceContext>,
     pub(super) turn_attempt: u32,
     pub(super) retry_attempted: bool,
     pub(super) retry_unsafe_reason: Option<&'static str>,
@@ -42,6 +46,7 @@ impl LogicalTurn {
             provider_store: false,
             turn_index,
             logical_turn_id,
+            codex_fingerprint_context: None,
             turn_attempt: 1,
             retry_attempted: false,
             retry_unsafe_reason: None,
@@ -51,6 +56,14 @@ impl LogicalTurn {
 
     pub(super) fn with_turn_control(mut self, turn_control: ResponsesWebSocketTurnControl) -> Self {
         self.turn_control = Some(turn_control);
+        self
+    }
+
+    pub(super) fn with_codex_fingerprint_context(
+        mut self,
+        context: CodexFingerprintConvergenceContext,
+    ) -> Self {
+        self.codex_fingerprint_context = Some(context);
         self
     }
 
