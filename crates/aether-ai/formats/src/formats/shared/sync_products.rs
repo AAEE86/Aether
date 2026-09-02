@@ -7,6 +7,7 @@ use aether_ai_formats::formats::conversion::response::{
     convert_openai_chat_response_to_openai_responses,
     convert_openai_responses_response_to_openai_chat,
 };
+use aether_ai_formats::formats::openai::responses::response::ensure_modern_openai_responses_response_fields;
 use aether_ai_formats::formats::openai::responses::{
     openai_responses_message_item_id, openai_responses_synthetic_reasoning_item_id,
 };
