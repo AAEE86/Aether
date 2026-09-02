@@ -205,6 +205,7 @@ fn daily_quota_usage_date(
 fn daily_quota_grants_from_entitlement(
     entitlement_id: &str,
     entitlements: &serde_json::Value,
+    current_allow_wallet_overage: Option<bool>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<DailyQuotaGrant>, DataLayerError> {
     let mut grants = Vec::new();
@@ -230,13 +231,25 @@ fn daily_quota_grants_from_entitlement(
                     .and_then(serde_json::Value::as_str),
                 now,
             )?,
-            allow_wallet_overage: item
-                .get("allow_wallet_overage")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            allow_wallet_overage: current_allow_wallet_overage.unwrap_or_else(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            }),
         });
     }
     Ok(grants)
+}
+
+fn daily_quota_wallet_overage_policy(entitlements: &serde_json::Value) -> Option<bool> {
+    entitlements.as_array()?.iter().find_map(|item| {
+        (item.get("type").and_then(serde_json::Value::as_str) == Some("daily_quota"))
+            .then(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .flatten()
+    })
 }
 
 async fn consume_daily_quota_mysql(
@@ -253,13 +266,19 @@ async fn consume_daily_quota_mysql(
     }
     let rows = sqlx::query(
         r#"
-SELECT id, entitlements_snapshot
+SELECT
+    user_plan_entitlements.id,
+    user_plan_entitlements.entitlements_snapshot,
+    billing_plans.entitlements_json AS plan_entitlements_json
 FROM user_plan_entitlements
-WHERE user_id = ?
-  AND status = 'active'
-  AND starts_at <= ?
-  AND expires_at > ?
-ORDER BY expires_at ASC, created_at ASC, id ASC
+JOIN billing_plans ON billing_plans.id = user_plan_entitlements.plan_id
+WHERE user_plan_entitlements.user_id = ?
+    AND user_plan_entitlements.status = 'active'
+    AND user_plan_entitlements.starts_at <= ?
+    AND user_plan_entitlements.expires_at > ?
+ORDER BY user_plan_entitlements.expires_at ASC,
+                 user_plan_entitlements.created_at ASC,
+                 user_plan_entitlements.id ASC
 FOR UPDATE
 "#,
     )
@@ -280,9 +299,17 @@ FOR UPDATE
                     "user_plan_entitlements.entitlements_snapshot invalid json: {err}"
                 ))
             })?;
+        let plan_entitlements_raw: String = row.try_get("plan_entitlements_json").map_sql_err()?;
+        let plan_entitlements = serde_json::from_str::<serde_json::Value>(&plan_entitlements_raw)
+            .map_err(|err| {
+            DataLayerError::UnexpectedValue(format!(
+                "billing_plans.entitlements_json invalid json: {err}"
+            ))
+        })?;
         grants.extend(daily_quota_grants_from_entitlement(
             &entitlement_id,
             &entitlements,
+            daily_quota_wallet_overage_policy(&plan_entitlements),
             now,
         )?);
     }

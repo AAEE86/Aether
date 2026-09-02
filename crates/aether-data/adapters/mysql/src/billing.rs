@@ -920,6 +920,39 @@ ORDER BY expires_at ASC, created_at ASC
         ))
     }
 
+    async fn revoke_user_plan_entitlement(
+        &self,
+        user_id: &str,
+        entitlement_id: &str,
+    ) -> Result<AdminBillingMutationOutcome<()>, DataLayerError> {
+        let now = current_unix_secs_i64();
+        let result = sqlx::query(
+            r#"
+UPDATE user_plan_entitlements
+SET status = 'revoked',
+    expires_at = LEAST(expires_at, ?),
+    updated_at = ?
+WHERE id = ?
+  AND user_id = ?
+  AND status = 'active'
+  AND expires_at > ?
+            "#,
+        )
+        .bind(now)
+        .bind(now)
+        .bind(entitlement_id)
+        .bind(user_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        if result.rows_affected() == 0 {
+            Ok(AdminBillingMutationOutcome::NotFound)
+        } else {
+            Ok(AdminBillingMutationOutcome::Applied(()))
+        }
+    }
+
     async fn find_user_daily_quota_availability(
         &self,
         user_id: &str,
@@ -927,13 +960,19 @@ ORDER BY expires_at ASC, created_at ASC
         let now_unix_secs = current_unix_secs_i64();
         let rows = sqlx::query(
             r#"
-SELECT id, entitlements_snapshot
+SELECT
+    user_plan_entitlements.id,
+    user_plan_entitlements.entitlements_snapshot,
+    billing_plans.entitlements_json AS plan_entitlements_json
 FROM user_plan_entitlements
-WHERE user_id = ?
-  AND status = 'active'
-  AND starts_at <= ?
-  AND expires_at > ?
-ORDER BY expires_at ASC, created_at ASC, id ASC
+JOIN billing_plans ON billing_plans.id = user_plan_entitlements.plan_id
+WHERE user_plan_entitlements.user_id = ?
+    AND user_plan_entitlements.status = 'active'
+    AND user_plan_entitlements.starts_at <= ?
+    AND user_plan_entitlements.expires_at > ?
+ORDER BY user_plan_entitlements.expires_at ASC,
+                 user_plan_entitlements.created_at ASC,
+                 user_plan_entitlements.id ASC
             "#,
         )
         .bind(user_id)
@@ -948,9 +987,13 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
             let entitlement_id: String = row.try_get("id").map_sql_err()?;
             let entitlements = parse_json(row.try_get("entitlements_snapshot").ok().flatten())?
                 .unwrap_or_else(|| serde_json::json!([]));
+            let plan_entitlements =
+                parse_json(row.try_get("plan_entitlements_json").ok().flatten())?
+                    .unwrap_or_else(|| serde_json::json!([]));
             grants.extend(daily_quota_grants_from_entitlement(
                 &entitlement_id,
                 &entitlements,
+                daily_quota_wallet_overage_policy(&plan_entitlements),
                 now,
             )?);
         }
@@ -1180,6 +1223,7 @@ fn daily_quota_usage_date(
 fn daily_quota_grants_from_entitlement(
     entitlement_id: &str,
     entitlements: &serde_json::Value,
+    current_allow_wallet_overage: Option<bool>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<DailyQuotaGrant>, DataLayerError> {
     let mut grants = Vec::new();
@@ -1205,13 +1249,25 @@ fn daily_quota_grants_from_entitlement(
                     .and_then(serde_json::Value::as_str),
                 now,
             )?,
-            allow_wallet_overage: item
-                .get("allow_wallet_overage")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            allow_wallet_overage: current_allow_wallet_overage.unwrap_or_else(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            }),
         });
     }
     Ok(grants)
+}
+
+fn daily_quota_wallet_overage_policy(entitlements: &serde_json::Value) -> Option<bool> {
+    entitlements.as_array()?.iter().find_map(|item| {
+        (item.get("type").and_then(serde_json::Value::as_str) == Some("daily_quota"))
+            .then(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .flatten()
+    })
 }
 
 fn read_count_mysql(row: &MySqlRow) -> Result<u64, DataLayerError> {
