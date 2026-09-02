@@ -49,6 +49,8 @@ pub(super) enum LiveAuthMode {
 pub(super) struct PlannedLiveCandidate {
     pub(super) execution: AiExecutionDecision,
     pub(super) pinned_candidate: ResponsesWebSocketPinnedCandidate,
+    pub(super) codex_fingerprint_context:
+        aether_provider_transport::CodexFingerprintConvergenceContext,
     pub(super) client_model: String,
     pub(super) provider_model: String,
     pub(super) auth_mode: LiveAuthMode,
@@ -228,8 +230,9 @@ async fn plan_live_candidate_inner(
     if validate_model(client_model).is_err() || client_model.len() > MAX_LIVE_MODEL_BYTES {
         return Ok(None);
     }
-    let parts = build_live_planning_parts(headers, remote_addr);
+    let mut parts = build_live_planning_parts(headers, remote_addr);
     let body = json!({"model": client_model, "input": []});
+    crate::ai_serving::codex_context::install_codex_fingerprint_context_slot(&mut parts);
     let execution = maybe_build_pinned_stream_local_same_format_provider_decision_payload(
         state,
         &parts,
@@ -338,6 +341,8 @@ async fn plan_live_candidate_inner(
     Ok(Some(PlannedLiveCandidate {
         execution,
         pinned_candidate,
+        codex_fingerprint_context:
+            crate::ai_serving::codex_context::resolve_codex_fingerprint_context(&parts, &body),
         client_model: client_model.to_string(),
         provider_model,
         auth_mode,
@@ -560,7 +565,11 @@ pub(super) fn build_live_stream_admission_attempt(
     remote_addr: &SocketAddr,
     upstream_url: String,
 ) -> Result<Option<AiStreamAttempt>, GatewayError> {
-    let parts = build_live_planning_parts(headers, remote_addr);
+    let mut parts = build_live_planning_parts(headers, remote_addr);
+    crate::ai_serving::codex_context::restore_codex_logical_turn_context(
+        &mut parts,
+        &candidate.codex_fingerprint_context,
+    );
     let body = json!({"model": candidate.client_model.as_str(), "input": []});
     let mut execution = candidate.execution.clone();
     execution.upstream_url = Some(upstream_url);
@@ -922,6 +931,11 @@ mod tests {
                 "key-1",
             )
             .unwrap(),
+            codex_fingerprint_context:
+                aether_provider_transport::CodexFingerprintConvergenceContext::new(
+                    "test-live-turn",
+                    1,
+                ),
             client_model: "global-model".to_string(),
             provider_model: "provider-model".to_string(),
             auth_mode,

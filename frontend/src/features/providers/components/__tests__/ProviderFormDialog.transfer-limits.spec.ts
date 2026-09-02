@@ -275,6 +275,7 @@ describe('ProviderFormDialog provider types', () => {
       '#codex-fingerprint-convergence',
     )
     expect(convergenceSwitch).not.toBeNull()
+    expect(document.body.textContent).toContain('Codex 指纹收敛')
     expect(convergenceSwitch?.getAttribute('aria-checked')).toBe('false')
 
     convergenceSwitch?.click()
