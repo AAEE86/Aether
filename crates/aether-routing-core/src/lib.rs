@@ -15,7 +15,7 @@ pub use conditions::{RoutingCondition, RoutingConditionContext, RoutingCondition
 pub use model::{
     RoutingDefaultPolicy, RoutingGroupBinding, RoutingGroupBindingSubject, RoutingGroupConfig,
     RoutingGroupRecord, RoutingGroupVersionRecord, RoutingModelPolicy, RoutingPoolPolicyOverride,
-    RoutingRule, RoutingSchedulingPreset,
+    RoutingRule, RoutingSchedulingPreset, DEFAULT_STICKY_KEY_ATTEMPTS,
 };
 pub use mutations::{
     apply_json_patch_operations, validate_header_patch, validate_json_patch_operations,

@@ -271,6 +271,7 @@ mod tests {
                     priority_mode: None,
                     scheduling_mode: None,
                     keep_priority_on_conversion: Some(true),
+                    sticky_key_attempts: None,
                 },
                 "set_scheduling",
             ),

@@ -57,6 +57,9 @@ pub struct ResolvedRoutingPolicy {
     pub priority_mode: RoutingSetPriorityMode,
     pub scheduling_mode: RoutingSchedulingMode,
     pub keep_priority_on_conversion: bool,
+    /// See `RoutingDefaultPolicy::sticky_key_attempts`.
+    #[serde(default = "default_sticky_key_attempts")]
+    pub sticky_key_attempts: u32,
     pub ranking_overlay: RankingOverlay,
     pub mutation_plan: MutationPlan,
     #[serde(default)]
@@ -89,6 +92,7 @@ pub fn resolve_routing_policy(
         priority_mode: config.default_policy.priority_mode,
         scheduling_mode: config.default_policy.scheduling_mode,
         keep_priority_on_conversion: config.default_policy.keep_priority_on_conversion,
+        sticky_key_attempts: config.default_policy.sticky_key_attempts,
         ranking_overlay: RankingOverlay::default(),
         mutation_plan: MutationPlan::default(),
         pool_policy_overrides: BTreeMap::new(),
@@ -205,6 +209,7 @@ fn apply_action(
             priority_mode,
             scheduling_mode,
             keep_priority_on_conversion,
+            sticky_key_attempts,
         } => {
             if let Some(priority_mode) = priority_mode {
                 policy.priority_mode = *priority_mode;
@@ -214,6 +219,9 @@ fn apply_action(
             }
             if let Some(keep_priority_on_conversion) = keep_priority_on_conversion {
                 policy.keep_priority_on_conversion = *keep_priority_on_conversion;
+            }
+            if let Some(sticky_key_attempts) = sticky_key_attempts {
+                policy.sticky_key_attempts = *sticky_key_attempts;
             }
         }
         RoutingAction::SetProviderPriority {
@@ -280,6 +288,10 @@ fn model_allowed(patterns: &[String], requested_model: &str) -> bool {
         || patterns
             .iter()
             .any(|pattern| model_pattern_matches(pattern, requested_model))
+}
+
+fn default_sticky_key_attempts() -> u32 {
+    crate::model::DEFAULT_STICKY_KEY_ATTEMPTS
 }
 
 fn model_pattern_matches(pattern: &str, value: &str) -> bool {
@@ -384,6 +396,7 @@ mod tests {
                 priority_mode: RoutingSetPriorityMode::GlobalKey,
                 scheduling_mode: RoutingSchedulingMode::LoadBalance,
                 keep_priority_on_conversion: true,
+                sticky_key_attempts: 3,
             },
             model_policies: vec![RoutingModelPolicy {
                 model: "special-model".to_string(),
@@ -415,6 +428,7 @@ mod tests {
         assert_eq!(special.priority_mode, RoutingSetPriorityMode::GlobalKey);
         assert_eq!(special.scheduling_mode, RoutingSchedulingMode::LoadBalance);
         assert!(special.keep_priority_on_conversion);
+        assert_eq!(special.sticky_key_attempts, 3);
         assert_eq!(
             special.ranking_overlay.allowed_providers,
             vec!["provider-special"]
@@ -448,12 +462,83 @@ mod tests {
         assert_eq!(ordinary.priority_mode, RoutingSetPriorityMode::GlobalKey);
         assert_eq!(ordinary.scheduling_mode, RoutingSchedulingMode::LoadBalance);
         assert!(ordinary.keep_priority_on_conversion);
+        assert_eq!(ordinary.sticky_key_attempts, 3);
         assert!(ordinary.ranking_overlay.allowed_providers.is_empty());
         assert!(ordinary.ranking_overlay.allowed_keys.is_empty());
         assert!(ordinary
             .ranking_overlay
             .provider_priority_overrides
             .is_empty());
+    }
+
+    #[test]
+    fn sticky_key_attempts_defaults_to_two_and_can_be_overridden_by_rule() {
+        let default_config = RoutingGroupConfig::default();
+        let default_policy = resolve_routing_policy(
+            &default_config,
+            RoutingPolicyInput {
+                group_id: None,
+                group_version: None,
+                selection_source: "test",
+                requested_model: "gpt-5",
+                resolved_model: "gpt-5",
+                api_format: "openai:chat",
+                user_id: None,
+                api_key_id: None,
+                headers: &json!({}),
+                body: &json!({}),
+                phase: RoutingRulePhase::ClientRequest,
+            },
+        )
+        .expect("default config should resolve");
+        assert_eq!(
+            default_policy.sticky_key_attempts,
+            crate::DEFAULT_STICKY_KEY_ATTEMPTS
+        );
+
+        let parsed: RoutingGroupConfig =
+            serde_json::from_value(json!({ "default_policy": { "priority_mode": "provider" } }))
+                .expect("legacy config without sticky_key_attempts should deserialize");
+        assert_eq!(
+            parsed.default_policy.sticky_key_attempts,
+            crate::DEFAULT_STICKY_KEY_ATTEMPTS
+        );
+
+        let config = RoutingGroupConfig {
+            rules: vec![RoutingRule {
+                id: "no-sticky-retry".to_string(),
+                priority: 1,
+                enabled: true,
+                phase: RoutingRulePhase::ClientRequest,
+                conditions: RoutingCondition::default(),
+                actions: vec![RoutingAction::SetScheduling {
+                    priority_mode: None,
+                    scheduling_mode: None,
+                    keep_priority_on_conversion: None,
+                    sticky_key_attempts: Some(1),
+                }],
+                stop_processing: false,
+            }],
+            ..RoutingGroupConfig::default()
+        };
+        let policy = resolve_routing_policy(
+            &config,
+            RoutingPolicyInput {
+                group_id: None,
+                group_version: None,
+                selection_source: "test",
+                requested_model: "gpt-5",
+                resolved_model: "gpt-5",
+                api_format: "openai:chat",
+                user_id: None,
+                api_key_id: None,
+                headers: &json!({}),
+                body: &json!({}),
+                phase: RoutingRulePhase::ClientRequest,
+            },
+        )
+        .expect("rule config should resolve");
+        assert_eq!(policy.sticky_key_attempts, 1);
     }
 
     #[test]

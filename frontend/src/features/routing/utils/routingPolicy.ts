@@ -3,10 +3,15 @@ export type RoutingSchedulingMode = 'fixed_order' | 'cache_affinity' | 'load_bal
 export type RoutingRulePhase = 'client_request' | 'provider_request'
 export type RoutingSortingScope = 'unified' | 'per_model'
 
+/** 首个候选（粘性 Key）的总尝试次数默认值：失败后同 Key 重试 1 次 */
+export const DEFAULT_STICKY_KEY_ATTEMPTS = 2
+
 export interface RoutingDefaultPolicy {
   priority_mode: RoutingPriorityMode
   scheduling_mode: RoutingSchedulingMode
   keep_priority_on_conversion: boolean
+  /** 首个候选的总尝试次数；后续候选始终只尝试 1 次。0 或 1 表示不重试 */
+  sticky_key_attempts: number
 }
 
 export interface RoutingPoolSchedulingPreset {
@@ -51,6 +56,7 @@ export interface RoutingSetSchedulingAction {
   type: 'set_scheduling'
   priority_mode: RoutingPriorityMode
   scheduling_mode: RoutingSchedulingMode
+  sticky_key_attempts?: number
 }
 
 export interface RoutingGroupConfig {
@@ -70,10 +76,17 @@ export function createEmptyRoutingGroupConfig(): RoutingGroupConfig {
       priority_mode: 'provider',
       scheduling_mode: 'cache_affinity',
       keep_priority_on_conversion: false,
+      sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
     },
     model_policies: [],
     rules: [],
   }
+}
+
+export function normalizeStickyKeyAttempts(value: unknown): number {
+  const parsed = Math.trunc(Number(value))
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_STICKY_KEY_ATTEMPTS
+  return Math.min(parsed, 99)
 }
 
 export function createEmptyModelPolicy(model = ''): RoutingModelPolicy {
@@ -97,6 +110,9 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
     default_policy: {
       ...base.default_policy,
       ...(value?.default_policy ?? {}),
+      sticky_key_attempts: normalizeStickyKeyAttempts(
+        value?.default_policy?.sticky_key_attempts ?? DEFAULT_STICKY_KEY_ATTEMPTS,
+      ),
     },
     model_policies: Array.isArray(value?.model_policies)
       ? value.model_policies.map(policy => ({
@@ -411,6 +427,7 @@ export function getModelScheduling(
     priority_mode: action?.priority_mode ?? normalized.default_policy.priority_mode,
     scheduling_mode: action?.scheduling_mode ?? normalized.default_policy.scheduling_mode,
     keep_priority_on_conversion: normalized.default_policy.keep_priority_on_conversion,
+    sticky_key_attempts: action?.sticky_key_attempts ?? normalized.default_policy.sticky_key_attempts,
   }
 }
 
