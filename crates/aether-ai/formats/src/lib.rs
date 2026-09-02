@@ -12,6 +12,7 @@ pub use formats::context::{
     ConversionFieldRecord, ConversionFieldStatus, ConversionReport, Converted, FormatContext,
     FormatError,
 };
+pub use formats::gemini::generate_content::request::ensure_server_side_tool_invocations_for_mixed_tools;
 pub use formats::id::{
     api_format_alias_matches, api_format_defaults_to_client_error_failover,
     api_format_defaults_to_non_stream, api_format_permission_covers,

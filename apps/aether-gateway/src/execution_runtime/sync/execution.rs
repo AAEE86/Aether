@@ -34,6 +34,7 @@ use crate::ai_serving::api::{
     implicit_sync_finalize_report_kind, maybe_build_sync_finalize_outcome, LocalCoreSyncErrorKind,
     LocalCoreSyncFinalizeOutcome,
 };
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
     build_client_response_from_parts_with_mutator,
@@ -78,7 +79,9 @@ use crate::orchestration::{
     LocalExecutionEffectContext, LocalHealthFailureEffect, LocalHealthSuccessEffect,
     LocalOAuthInvalidationEffect, LocalOAuthSuccessEffect, LocalPoolErrorEffect,
 };
-use crate::provider_pool_demand::acquire_provider_pool_in_flight_guard;
+use crate::provider_pool_demand::{
+    acquire_provider_pool_execution_guard, ProviderPoolInFlightAdmission,
+};
 use crate::request_candidate_runtime::{
     ensure_execution_request_candidate_slot, record_local_request_candidate_extra_data,
     record_local_request_candidate_status, record_local_request_candidate_status_snapshot,
@@ -1995,6 +1998,37 @@ async fn execute_execution_runtime_sync_impl(
         .unwrap_or_else(|| "-".to_string());
     let candidate_started_at = Instant::now();
     let candidate_started_unix_secs = current_request_candidate_unix_ms();
+    let _provider_pool_in_flight_guard = match acquire_provider_pool_execution_guard(state, &plan)
+        .await?
+    {
+        ProviderPoolInFlightAdmission::Acquired(guard) => guard,
+        ProviderPoolInFlightAdmission::Saturated { limit } => {
+            record_local_runtime_candidate_skip_reason(
+                state,
+                trace_id,
+                "provider_key_concurrency_limit_reached",
+            );
+            if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
+                *retry_scope = AiAttemptRetryScope::Candidate;
+            }
+            record_local_request_candidate_status(
+                state,
+                &plan,
+                report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Skipped,
+                    status_code: Some(StatusCode::TOO_MANY_REQUESTS.as_u16()),
+                    error_type: Some("provider_key_concurrency_limit_reached".to_string()),
+                    error_message: Some(format!("provider key concurrency limit reached: {limit}")),
+                    latency_ms: Some(0),
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
+                    finished_at_unix_ms: Some(candidate_started_unix_secs),
+                },
+            )
+            .await;
+            return Ok(None);
+        }
+    };
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
     let usage_data = state.usage_lifecycle_data_state().as_ref().clone();
     state
@@ -2024,14 +2058,6 @@ async fn execute_execution_runtime_sync_impl(
         candidate_started_at,
     );
     let result = (async {
-    let _provider_pool_in_flight_guard = acquire_provider_pool_in_flight_guard(
-        state.runtime_state.clone(),
-        &plan.provider_id,
-        plan_request_id.as_str(),
-        plan_candidate_id.as_deref(),
-        key_id.as_str(),
-    )
-    .await;
     record_sync_execution_active(
         state,
         &plan,
@@ -3279,7 +3305,14 @@ fn maybe_build_implicit_sync_finalize_outcome(
     body_base64: &Option<String>,
     telemetry: &Option<ExecutionTelemetry>,
 ) -> Result<Option<ImplicitSyncFinalizeOutcome>, GatewayError> {
-    if status_code >= 400 || body_json.is_some() || body_base64.is_none() {
+    let needs_conversion = report_context
+        .as_ref()
+        .and_then(|value| value.get("needs_conversion"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let has_captured_stream_body = body_json.is_none() && body_base64.is_some();
+    let has_cross_format_sync_body = needs_conversion && body_json.is_some();
+    if status_code >= 400 || (!has_captured_stream_body && !has_cross_format_sync_body) {
         return Ok(None);
     }
 
@@ -3459,6 +3492,137 @@ mod tests {
             Some("openai:chat".to_string()),
         )
         .with_execution_runtime_candidate(true)
+    }
+
+    #[tokio::test]
+    async fn implicit_sync_finalize_converts_chat_json_to_namespaced_responses() {
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/responses",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("responses".to_string()),
+            Some("openai:responses".to_string()),
+        )
+        .with_execution_runtime_candidate(true);
+        let report_context = Some(json!({
+            "provider_api_format": "openai:chat",
+            "client_api_format": "openai:responses",
+            "needs_conversion": true,
+            "mapped_model": "qwen-upstream",
+            "original_request_body": {
+                "model": "qwen",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__vulnerability_report",
+                    "description": "reporting tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "vulnerability_report",
+                        "description": "write the confirmed report",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "report_path": {"type": "string"}
+                            },
+                            "required": ["report_path"]
+                        },
+                        "strict": true
+                    }]
+                }]
+            }
+        }));
+        let provider_body = Some(json!({
+            "id": "chatcmpl_namespace_sync",
+            "object": "chat.completion",
+            "created": 1_777_777_777,
+            "model": "qwen-upstream",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_report_1",
+                        "type": "function",
+                        "function": {
+                            "name": "vulnerability_report",
+                            "arguments": "{\"report_path\":\"reports/sql-001-c1.md\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14
+            }
+        }));
+
+        let implicit = maybe_build_implicit_sync_finalize_outcome(
+            "trace-namespace-sync",
+            &decision,
+            "openai_responses_sync",
+            &report_context,
+            StatusCode::OK.as_u16(),
+            &BTreeMap::from([("content-type".to_string(), "application/json".to_string())]),
+            &provider_body,
+            &None,
+            &None,
+        )
+        .expect("cross-format sync JSON finalize should not error")
+        .expect("cross-format sync JSON should be finalized");
+        let response_body = axum::body::to_bytes(implicit.outcome.response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let response_json: Value =
+            serde_json::from_slice(&response_body).expect("response body should be JSON");
+
+        assert_eq!(response_json["object"], "response");
+        assert!(response_json.get("choices").is_none());
+        assert_eq!(response_json["output"][0]["type"], "function_call");
+        assert_eq!(response_json["output"][0]["name"], "vulnerability_report");
+        assert_eq!(
+            response_json["output"][0]["namespace"],
+            "mcp__vulnerability_report"
+        );
+        assert_eq!(response_json["output"][0]["call_id"], "call_report_1");
+    }
+
+    #[test]
+    fn implicit_sync_finalize_leaves_same_format_json_on_passthrough_path() {
+        let report_context = Some(json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "needs_conversion": false
+        }));
+        let body_json = Some(json!({
+            "id": "resp_same_format",
+            "object": "response",
+            "status": "completed",
+            "output": []
+        }));
+
+        let outcome = maybe_build_implicit_sync_finalize_outcome(
+            "trace-same-format-sync",
+            &GatewayControlDecision::synthetic(
+                "/v1/responses",
+                Some("ai_public".to_string()),
+                Some("openai".to_string()),
+                Some("responses".to_string()),
+                Some("openai:responses".to_string()),
+            ),
+            "openai_responses_sync",
+            &report_context,
+            StatusCode::OK.as_u16(),
+            &BTreeMap::new(),
+            &body_json,
+            &None,
+            &None,
+        )
+        .expect("same-format sync JSON guard should not error");
+
+        assert!(outcome.is_none());
     }
 
     #[tokio::test]

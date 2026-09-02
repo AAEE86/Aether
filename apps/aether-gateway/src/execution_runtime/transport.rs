@@ -5856,6 +5856,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_sync_execution_runtime_preserves_gemini_tool_config_on_wire() {
+        let listener = crate::test_support::bind_loopback_listener()
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("local addr should resolve");
+        let captured_body = Arc::new(Mutex::new(None));
+        let captured_body_for_handler = Arc::clone(&captured_body);
+        let app = Router::new().route(
+            "/generate",
+            post(move |body: Bytes| {
+                let captured_body = Arc::clone(&captured_body_for_handler);
+                async move {
+                    *captured_body
+                        .lock()
+                        .expect("capture lock should not be poisoned") = Some(body.to_vec());
+                    Json(json!({"ok": true}))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("test server should run");
+        });
+
+        let result = DirectSyncExecutionRuntime::new()
+            .execute_sync(&ExecutionPlan {
+                request_id: "req-gemini-tool-config-wire".into(),
+                candidate_id: Some("cand-gemini-tool-config-wire".into()),
+                provider_name: Some("google".into()),
+                provider_id: "prov-gemini-tool-config-wire".into(),
+                endpoint_id: "ep-gemini-tool-config-wire".into(),
+                key_id: "key-gemini-tool-config-wire".into(),
+                method: "POST".into(),
+                url: format!("http://{addr}/generate"),
+                headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+                content_type: Some("application/json".into()),
+                content_encoding: None,
+                body: RequestBody::from_json(json!({
+                    "model": "gemini-3-flash-preview",
+                    "contents": [{
+                        "role": "user",
+                        "parts": [{"text": "Search, then save the result."}]
+                    }],
+                    "tools": [
+                        {"googleSearch": {}},
+                        {"functionDeclarations": [{
+                            "name": "save_result",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {"result": {"type": "STRING"}}
+                            }
+                        }]}
+                    ],
+                    "toolConfig": {
+                        "includeServerSideToolInvocations": true,
+                        "functionCallingConfig": {"mode": "ANY"}
+                    }
+                })),
+                stream: false,
+                client_api_format: "openai:responses".into(),
+                provider_api_format: "gemini:generate_content".into(),
+                model_name: Some("gemini-3-flash-preview".into()),
+                proxy: None,
+                transport_profile: None,
+                timeouts: Some(ExecutionTimeouts {
+                    connect_ms: Some(5_000),
+                    total_ms: Some(LOCAL_HTTP_SUCCESS_TIMEOUT_MS),
+                    ..ExecutionTimeouts::default()
+                }),
+            })
+            .await
+            .expect("sync execution should succeed");
+
+        server.abort();
+
+        assert_eq!(result.status_code, 200);
+        let body = captured_body
+            .lock()
+            .expect("capture lock should not be poisoned")
+            .take()
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+            .expect("upstream should receive a JSON body");
+        assert_eq!(
+            body["toolConfig"]["includeServerSideToolInvocations"],
+            json!(true)
+        );
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+        assert!(body["toolConfig"]
+            .get("include_server_side_tool_invocations")
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn direct_sync_execution_runtime_applies_non_stream_total_timeout_to_body() {
         let listener = crate::test_support::bind_loopback_listener()
             .await

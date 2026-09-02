@@ -495,8 +495,14 @@ pub(crate) fn public_support_local_requires_buffered_body(
                     Some(
                         "api_keys_create"
                             | "api_key_install_session_create"
-                            | "management_tokens_create",
+                            | "management_tokens_create"
+                            | "vscodex_pairing_create"
+                            | "vscodex_ws_ticket_create",
                     ),
+                ) | (
+                    Some("vscodex"),
+                    http::Method::POST,
+                    Some("pairing_exchange"),
                 ) | (
                     Some("wallet"),
                     http::Method::POST,

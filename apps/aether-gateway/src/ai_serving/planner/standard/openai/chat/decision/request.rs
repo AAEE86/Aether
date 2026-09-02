@@ -159,6 +159,7 @@ fn finalize_openai_chat_provider_request_body(
         openai_responses_reasoning_replay_policy(
             transport.provider.provider_type.as_str(),
             transport.endpoint.base_url.as_str(),
+            mapped_model,
         ),
     )
     .err()
@@ -2182,7 +2183,7 @@ mod tests {
             client_surface: None,
             gateway_credential_carrier: None,
             client_session_affinity: None,
-            original_client_session_id: None,
+            codex_fingerprint_context: None,
             routing_policy: None,
             routing_trace_seed: None,
             routing_context: None,

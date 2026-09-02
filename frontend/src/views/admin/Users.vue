@@ -120,6 +120,7 @@
       :loading-entitlements="loadingUserPlans"
       :loading-plans="loadingBillingPlans"
       :granting="grantingUserPlan"
+      :revoking-entitlement-id="revokingUserPlanEntitlementId"
       :format-date-time="formatDateTime"
       :format-plan-price="formatPlanPrice"
       :format-plan-duration="formatPlanDuration"
@@ -129,6 +130,7 @@
       @update:grant-reason="grantReason = $event"
       @refresh-entitlements="loadUserPlanEntitlements"
       @grant="grantPlanToSelectedUser"
+      @revoke="revokePlanFromSelectedUser"
     />
 
     <UserApiKeysDialog
@@ -285,6 +287,7 @@ const loadingUserSessions = ref(false)
 const loadingUserPlans = ref(false)
 const loadingBillingPlans = ref(false)
 const grantingUserPlan = ref(false)
+const revokingUserPlanEntitlementId = ref<string | null>(null)
 const sessionDialogActionLoading = ref<string | null>(null)
 const editingUserApiKey = ref<ApiKey | null>(null)
 const userApiKeyForm = ref<UserApiKeyFormState>({
@@ -820,6 +823,7 @@ async function manageUserSessions(user: User) {
 async function manageUserPlans(user: User) {
   selectedUser.value = user
   showUserPlansDialog.value = true
+  revokingUserPlanEntitlementId.value = null
   selectedGrantPlanId.value = ''
   grantReason.value = ''
   await Promise.all([
@@ -878,6 +882,33 @@ async function grantPlanToSelectedUser() {
     error(localizedApiError(err, '发放套餐失败'), legacyT('发放套餐失败'))
   } finally {
     grantingUserPlan.value = false
+  }
+}
+
+async function revokePlanFromSelectedUser(entitlement: AdminUserPlanEntitlement) {
+  if (!selectedUser.value || revokingUserPlanEntitlementId.value) return
+  const userId = selectedUser.value.id
+  const planTitle = entitlement.plan_title || entitlement.plan?.title || entitlement.plan_id
+  const confirmed = await confirmDanger(
+    `${planTitle}\n\n${legacyT('撤销后该用户将立即失去该套餐的剩余额度和会员权益，历史订单与使用记录会保留。')}`,
+    legacyT('撤销用户套餐'),
+    legacyT('确认撤销'),
+  )
+  if (!confirmed) return
+  revokingUserPlanEntitlementId.value = entitlement.id
+  try {
+    const response = await usersApi.revokeUserPlanEntitlement(
+      userId,
+      entitlement.id,
+    )
+    if (selectedUser.value?.id === userId) {
+      userPlanEntitlements.value = response.items
+    }
+    success(legacyT('套餐已撤销'))
+  } catch (err) {
+    error(localizedApiError(err, '撤销套餐失败'), legacyT('撤销套餐失败'))
+  } finally {
+    revokingUserPlanEntitlementId.value = null
   }
 }
 

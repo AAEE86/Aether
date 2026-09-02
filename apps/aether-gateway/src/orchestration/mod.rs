@@ -34,9 +34,10 @@ pub(crate) use self::classifier::{
     LocalTransportFailoverClassification,
 };
 pub(crate) use self::codex_quota_breaker::{
-    codex_account_id_from_headers, codex_quota_breaker_blocks_candidate,
-    codex_quota_exhaustion_reset_at, install_codex_quota_exhaustion_breaker,
-    log_codex_quota_breaker_check_failure, log_codex_quota_breaker_install_failure,
+    codex_account_id_from_headers, codex_model_quota_exhaustion_reset_at,
+    codex_quota_breaker_blocks_candidate, codex_quota_exhaustion_reset_at,
+    install_codex_quota_exhaustion_breaker, log_codex_quota_breaker_check_failure,
+    log_codex_quota_breaker_install_failure,
 };
 pub(crate) use self::effects::{
     apply_local_execution_effect, apply_local_stream_failure_effects,

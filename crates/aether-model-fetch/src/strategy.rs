@@ -2631,14 +2631,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn antigravity_model_fetch_hydrates_project_from_daily_load_code_assist() {
+    async fn antigravity_model_fetch_hydrates_project_from_prod_load_code_assist() {
         let executed_urls = Arc::new(Mutex::new(Vec::new()));
         let runtime = OAuthRoutingTestRuntime {
             executed_urls: Arc::clone(&executed_urls),
             routes: vec![
                 (
-                    "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-                        .to_string(),
+                    "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist".to_string(),
                     Ok((
                         200,
                         json!({
@@ -2679,7 +2678,7 @@ mod tests {
         assert_eq!(
             urls.as_slice(),
             &[
-                "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+                "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
                 "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
             ]
         );

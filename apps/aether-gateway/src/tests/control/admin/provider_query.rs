@@ -4670,8 +4670,7 @@ async fn gateway_hydrates_antigravity_project_id_from_load_code_assist_for_test_
                     .lock()
                     .expect("mutex should lock")
                     .push(plan.url.clone());
-                if plan.url == "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-                {
+                if plan.url == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
                     assert_eq!(plan.model_name.as_deref(), Some("loadCodeAssist"));
                     assert_eq!(
                         plan.headers.get("authorization").map(String::as_str),
@@ -4827,7 +4826,7 @@ async fn gateway_hydrates_antigravity_project_id_from_load_code_assist_for_test_
     assert_eq!(
         *seen_urls.lock().expect("mutex should lock"),
         vec![
-            "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist".to_string(),
+            "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist".to_string(),
             "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent".to_string(),
         ]
     );

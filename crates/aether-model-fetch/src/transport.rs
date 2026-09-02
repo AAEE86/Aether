@@ -285,7 +285,7 @@ pub async fn build_antigravity_load_code_assist_plan(
         transport,
         ModelFetchExecutionPlanRequest {
             method: "POST".to_string(),
-            url: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist".to_string(),
+            url: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist".to_string(),
             headers,
             content_type: Some("application/json".to_string()),
             body: RequestBody::from_json(json!({
@@ -1212,7 +1212,7 @@ mod tests {
         assert_eq!(plan.method, "POST");
         assert_eq!(
             plan.url,
-            "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+            "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
         );
         assert_eq!(
             plan.headers.get("authorization").map(String::as_str),

@@ -600,11 +600,17 @@ impl<'a> PoolKeyCursor<'a> {
             return;
         };
         self.exhaustion_skip_recorded = true;
-        record_local_runtime_candidate_skip_reason(
-            self.state.app(),
-            trace_id,
-            self.runtime_miss_pool_exhaustion_skip_reason(),
-        );
+        if self.skip_reason_counts.is_empty() {
+            record_local_runtime_candidate_skip_reason(
+                self.state.app(),
+                trace_id,
+                "pool_group_exhausted",
+            );
+            return;
+        }
+        for reason in self.skip_reason_counts.keys() {
+            record_local_runtime_candidate_skip_reason(self.state.app(), trace_id, reason);
+        }
     }
 
     fn runtime_miss_pool_exhaustion_skip_reason(&self) -> &'static str {
@@ -1886,17 +1892,17 @@ fn pool_key_candidate_order_for_group(
         })
         .collect::<Vec<_>>();
     let active_presets = ProviderPoolService::with_builtin_adapters()
-        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets)
-        .into_iter()
-        .map(|preset| preset.preset)
-        .collect::<Vec<_>>();
+        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets);
     if let Some(distribution_mode) = active_presets
         .iter()
-        .find(|preset| pool_distribution_mode_preset(preset.as_str()))
-        .map(String::as_str)
+        .find(|preset| pool_distribution_mode_preset(preset.preset.as_str()))
     {
-        return match distribution_mode {
-            "cache_affinity" => StoredPoolKeyCandidateOrder::CacheAffinity,
+        return match distribution_mode.preset.as_str() {
+            "cache_affinity" => match distribution_mode.mode.as_deref() {
+                Some("lru") => StoredPoolKeyCandidateOrder::Lru,
+                Some("single_account") => StoredPoolKeyCandidateOrder::SingleAccount,
+                _ => StoredPoolKeyCandidateOrder::CacheAffinity,
+            },
             "load_balance" => StoredPoolKeyCandidateOrder::LoadBalance {
                 seed: pool_sort_seed(),
             },
@@ -2260,7 +2266,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_scheduler_promotes_sticky_hit_before_other_sorted_keys() {
+    fn pool_scheduler_promotes_sticky_hit_before_lru_secondary_order() {
         let key_a = sample_eligible_candidate(
             "provider-pool",
             "endpoint-1",
@@ -2268,7 +2274,11 @@ mod tests {
             10,
             Some(json!({
                 "pool_advanced": {
-                    "scheduling_presets": [{"preset": "cache_affinity", "enabled": true}]
+                    "scheduling_presets": [{
+                        "preset": "cache_affinity",
+                        "enabled": true,
+                        "mode": "lru"
+                    }]
                 }
             })),
         );
@@ -2279,7 +2289,11 @@ mod tests {
             10,
             Some(json!({
                 "pool_advanced": {
-                    "scheduling_presets": [{"preset": "cache_affinity", "enabled": true}]
+                    "scheduling_presets": [{
+                        "preset": "cache_affinity",
+                        "enabled": true,
+                        "mode": "lru"
+                    }]
                 }
             })),
         );
@@ -2311,6 +2325,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["key-a", "key-b"]
         );
+    }
+
+    #[test]
+    fn cache_affinity_secondary_modes_select_distinct_candidate_orders() {
+        for (mode, expected) in [
+            ("single_account", StoredPoolKeyCandidateOrder::SingleAccount),
+            ("lru", StoredPoolKeyCandidateOrder::Lru),
+        ] {
+            let group = sample_eligible_candidate(
+                "provider-pool",
+                "endpoint-1",
+                "key-a",
+                10,
+                Some(json!({
+                    "pool_advanced": {
+                        "scheduling_presets": [{
+                            "preset": "cache_affinity",
+                            "enabled": true,
+                            "mode": mode
+                        }]
+                    }
+                })),
+            );
+            let config = pool_config_for_candidate(&group).expect("pool config should parse");
+
+            assert!(admin_provider_pool_cache_affinity_enabled(&config));
+            assert_eq!(
+                pool_key_candidate_order_for_group(&group, Some(&config)),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -3300,8 +3345,12 @@ mod tests {
             .take_local_execution_runtime_miss_diagnostic(trace_id)
             .expect("runtime miss diagnostic should exist");
         assert_eq!(diagnostic.reason, "all_candidates_skipped");
-        assert_eq!(diagnostic.skipped_candidate_count, Some(1));
+        assert_eq!(diagnostic.skipped_candidate_count, Some(2));
         assert_eq!(diagnostic.skip_reasons.get("pool_cooldown"), Some(&1));
+        assert_eq!(
+            diagnostic.skip_reasons.get("transport_snapshot_missing"),
+            Some(&1)
+        );
     }
 
     #[tokio::test]
@@ -4637,6 +4686,53 @@ mod tests {
         );
 
         assert!(context.quota_exhausted);
+    }
+
+    #[test]
+    fn pool_catalog_context_scopes_antigravity_exhaustion_to_requested_model() {
+        let mut key = sample_catalog_oauth_key("key-antigravity-model-quota");
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": false,
+                "windows": [
+                    {
+                        "code": "model:gemini-3.1-pro-high",
+                        "scope": "model",
+                        "model": "gemini-3.1-pro-high",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    },
+                    {
+                        "code": "model:gemini-3-flash-agent",
+                        "scope": "model",
+                        "model": "gemini-3-flash-agent",
+                        "used_ratio": 0.1,
+                        "is_exhausted": false
+                    }
+                ]
+            }
+        }));
+
+        let app = app_state_with_catalog_key(key.clone());
+        let exhausted = build_pool_catalog_key_context(
+            PlannerAppState::new(&app),
+            &ProviderPoolService::with_builtin_adapters(),
+            &key,
+            "antigravity",
+            Some("gemini-3.1-pro-high"),
+        );
+        let available = build_pool_catalog_key_context(
+            PlannerAppState::new(&app),
+            &ProviderPoolService::with_builtin_adapters(),
+            &key,
+            "antigravity",
+            Some("gemini-3-flash-agent"),
+        );
+
+        assert!(exhausted.quota_exhausted);
+        assert!(!available.quota_exhausted);
     }
 
     #[test]

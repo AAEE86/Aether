@@ -34,6 +34,22 @@ fn admin_user_id_from_billing_path(request_path: &str, suffix: &str) -> Option<S
     }
 }
 
+fn admin_user_entitlement_ids_from_path(request_path: &str) -> Option<(String, String)> {
+    let rest = request_path
+        .trim_end_matches('/')
+        .strip_prefix("/api/admin/users/")?;
+    let mut parts = rest.split('/');
+    let user_id = parts.next()?.trim();
+    if parts.next()? != "billing" || parts.next()? != "entitlements" {
+        return None;
+    }
+    let entitlement_id = parts.next()?.trim();
+    if user_id.is_empty() || entitlement_id.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some((user_id.to_string(), entitlement_id.to_string()))
+}
+
 fn admin_user_billing_operator_id(request_context: &AdminRequestContext<'_>) -> Option<String> {
     request_context
         .decision()
@@ -200,6 +216,60 @@ pub(in super::super) async fn build_admin_list_user_billing_entitlements_respons
         Some(payload) => Ok(Json(payload).into_response()),
         None => Ok(build_admin_users_data_unavailable_response()),
     }
+}
+
+pub(in super::super) async fn build_admin_revoke_user_billing_entitlement_response(
+    state: &AdminAppState<'_>,
+    request_context: &AdminRequestContext<'_>,
+) -> Result<Response<Body>, GatewayError> {
+    let Some((user_id, entitlement_id)) =
+        admin_user_entitlement_ids_from_path(request_context.path())
+    else {
+        return Ok(build_admin_users_bad_request_response("缺少套餐权益 ID"));
+    };
+    if state.find_user_auth_by_id(&user_id).await?.is_none() {
+        return Ok((
+            http::StatusCode::NOT_FOUND,
+            Json(json!({ "detail": "用户不存在" })),
+        )
+            .into_response());
+    }
+    match state
+        .app()
+        .revoke_user_plan_entitlement(&user_id, &entitlement_id)
+        .await?
+    {
+        crate::LocalMutationOutcome::Applied(()) => {}
+        crate::LocalMutationOutcome::NotFound => {
+            return Ok((
+                http::StatusCode::NOT_FOUND,
+                Json(json!({ "detail": "套餐权益不存在或已失效" })),
+            )
+                .into_response());
+        }
+        crate::LocalMutationOutcome::Invalid(detail) => {
+            return Ok(build_admin_users_bad_request_response(detail));
+        }
+        crate::LocalMutationOutcome::Unavailable => {
+            return Ok(build_admin_users_data_unavailable_response());
+        }
+    }
+    let entitlements = match load_admin_user_entitlements_payload(state, &user_id).await? {
+        Some(value) => value,
+        None => return Ok(build_admin_users_data_unavailable_response()),
+    };
+    Ok(attach_admin_audit_response(
+        Json(json!({
+            "items": entitlements["items"].clone(),
+            "entitlements": entitlements["items"].clone(),
+            "total": entitlements["total"].clone(),
+        }))
+        .into_response(),
+        "admin_user_plan_revoked",
+        "revoke_user_billing_entitlement",
+        "user_plan_entitlement",
+        &entitlement_id,
+    ))
 }
 
 pub(in super::super) async fn build_admin_grant_user_billing_plan_response(

@@ -33,7 +33,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aether_crypto::encrypt_python_fernet_plaintext;
+use aether_crypto::{
+    decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY,
+};
 
 const LOCAL_OAUTH_HTTP_TIMEOUT_MS: u64 = 30_000;
 const REMOTE_OAUTH_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
@@ -3395,7 +3397,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+    use aether_crypto::{
+        decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext,
+        DEVELOPMENT_ENCRYPTION_KEY,
+    };
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data_contracts::repository::provider_catalog::{
         ProviderCatalogKeyAdminCasUpdate, ProviderCatalogKeyListQuery,
@@ -3479,8 +3484,16 @@ mod tests {
         auth_config: &serde_json::Value,
         access_token: &str,
     ) -> (AppState, Arc<InMemoryProviderCatalogReadRepository>, String) {
+        provider_oauth_state("codex", auth_config, access_token)
+    }
+
+    fn provider_oauth_state(
+        provider_type: &str,
+        auth_config: &serde_json::Value,
+        access_token: &str,
+    ) -> (AppState, Arc<InMemoryProviderCatalogReadRepository>, String) {
         let mut provider = sample_provider();
-        provider.provider_type = "codex".to_string();
+        provider.provider_type = provider_type.to_string();
         let encrypted_auth_config =
             encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, &auth_config.to_string())
                 .expect("auth config should encrypt");
@@ -3490,7 +3503,7 @@ mod tests {
         let key = StoredProviderCatalogKey::new(
             "key-1".to_string(),
             "provider-1".to_string(),
-            "Codex OAuth".to_string(),
+            format!("{provider_type} OAuth"),
             "oauth".to_string(),
             None,
             true,
@@ -4562,6 +4575,78 @@ mod tests {
             super::REMOTE_OAUTH_REFRESH_WAIT_TIMEOUT
                 > Duration::from_millis(super::LOCAL_OAUTH_HTTP_TIMEOUT_MS)
         );
+    }
+
+    #[tokio::test]
+    async fn antigravity_refresh_entry_persists_tokens_and_expiry() {
+        let initial_config = json!({
+            "provider_type": "antigravity",
+            "refreshToken": "legacy-refresh-token",
+            "expires_at": 1,
+        });
+        let (state, repository, _) =
+            provider_oauth_state("antigravity", &initial_config, "stale-access-token");
+        let transport = state
+            .read_provider_transport_snapshot("provider-1", "endpoint-1", "key-1")
+            .await
+            .expect("transport should load")
+            .expect("transport should exist");
+        let expected_credential_fence = state
+            .capture_provider_transport_credential_fence(&transport)
+            .await
+            .expect("credential fence should load")
+            .expect("credential fence should match");
+        let expires_at = 4_102_555_900;
+        let refreshed_entry = crate::provider_transport::CachedOAuthEntry {
+            provider_type: "antigravity".to_string(),
+            auth_header_name: "authorization".to_string(),
+            auth_header_value: "Bearer fresh-access-token".to_string(),
+            expires_at_unix_secs: Some(expires_at),
+            metadata: Some(json!({
+                "provider_type": "antigravity",
+                "refresh_token": "legacy-refresh-token",
+                "expires_at": expires_at,
+            })),
+            source_fingerprint: None,
+        };
+
+        state
+            .persist_local_oauth_refresh_entry(
+                &transport,
+                &refreshed_entry,
+                Some(&expected_credential_fence),
+            )
+            .await
+            .expect("Antigravity refresh should persist");
+
+        let stored = repository
+            .list_keys_by_ids(&["key-1".to_string()])
+            .await
+            .expect("key should reload")
+            .pop()
+            .expect("key should remain");
+        let access_token = decrypt_python_fernet_ciphertext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            stored
+                .encrypted_api_key
+                .as_deref()
+                .expect("access token should persist"),
+        )
+        .expect("access token should decrypt");
+        let auth_config = decrypt_python_fernet_ciphertext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            stored
+                .encrypted_auth_config
+                .as_deref()
+                .expect("auth config should persist"),
+        )
+        .expect("auth config should decrypt");
+        let auth_config: serde_json::Value =
+            serde_json::from_str(&auth_config).expect("auth config should parse");
+
+        assert_eq!(access_token, "fresh-access-token");
+        assert_eq!(auth_config["refresh_token"], json!("legacy-refresh-token"));
+        assert_eq!(stored.expires_at_unix_secs, Some(expires_at));
     }
 
     #[tokio::test]

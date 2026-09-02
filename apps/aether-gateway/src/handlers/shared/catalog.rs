@@ -443,7 +443,18 @@ fn provider_quota_metadata_bucket<'a>(
 fn provider_quota_timestamp_unix_secs(value: Option<&Value>) -> Option<u64> {
     let mut parsed = match value {
         Some(Value::Number(number)) => number.as_f64(),
-        Some(Value::String(text)) => text.trim().parse::<f64>().ok(),
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            if let Ok(timestamp) = text.parse::<f64>() {
+                Some(timestamp)
+            } else {
+                return chrono::DateTime::parse_from_rfc3339(text)
+                    .ok()?
+                    .timestamp()
+                    .try_into()
+                    .ok();
+            }
+        }
         _ => None,
     }?;
     if !parsed.is_finite() || parsed <= 0.0 {
@@ -560,7 +571,10 @@ fn model_quota_window_snapshot(
         .map(|value| value.clamp(0.0, 1.0))
         .or_else(|| used_ratio.map(|value| (1.0 - value).max(0.0)));
     let reset_at = provider_quota_timestamp_unix_secs(
-        item.get("reset_at").or_else(|| item.get("next_reset_at")),
+        item.get("reset_at")
+            .or_else(|| item.get("next_reset_at"))
+            .or_else(|| item.get("reset_time"))
+            .or_else(|| item.get("next_reset_time")),
     );
     let reset_seconds = quota_window_reset_seconds(observed_at_unix_secs, reset_at);
     let is_exhausted = item
@@ -4094,7 +4108,8 @@ mod tests {
                     },
                     "claude-sonnet-4-6": {
                         "display_name": "Claude Sonnet 4.6 (Thinking)",
-                        "remaining_fraction": 0.3
+                        "remaining_fraction": 0.3,
+                        "reset_time": "2026-04-07T12:34:56Z"
                     }
                 }
             }
@@ -4139,6 +4154,16 @@ mod tests {
             label_for_model("claude-sonnet-4-6"),
             Some(json!("Claude Sonnet 4.6 (Thinking)"))
         );
+        let claude_window = windows
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|window| window.get("model") == Some(&json!("claude-sonnet-4-6")))
+            .expect("Claude quota window should exist");
+        assert_eq!(
+            claude_window.get("reset_at"),
+            Some(&json!(1_775_565_296u64))
+        );
+        assert_eq!(claude_window.get("reset_seconds"), Some(&json!(12_011u64)));
     }
 
     #[test]

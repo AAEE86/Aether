@@ -1,8 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::formats::openai::responses::{
+    decode_gemini_tool_signature_carrier, GeminiToolSignatureCarrierDirection,
+};
 use crate::formats::openai::shared::map_thinking_budget_to_openai_reasoning_effort;
 use crate::formats::openai::responses::openai_responses_message_item_id;
 use crate::formats::shared::model_directives::ReasoningEffort;
@@ -1119,6 +1122,25 @@ pub(crate) fn gemini_contents_to_canonical_messages(
     };
     let contents = contents.as_array()?;
     let mut messages = Vec::new();
+    let mut reserved_tool_call_ids = contents
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|content| content.get("parts"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|part| {
+            part.get("functionCall")
+                .or_else(|| part.get("function_call"))
+                .or_else(|| part.get("functionResponse"))
+                .or_else(|| part.get("function_response"))
+                .and_then(Value::as_object)
+                .and_then(gemini_explicit_function_id)
+                .map(ToOwned::to_owned)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut pending_tool_calls = VecDeque::<(String, String)>::new();
+    let mut next_generated_tool_call_index = 0usize;
     for content in contents {
         let content_object = content.as_object()?;
         let role = match content_object
@@ -1137,7 +1159,77 @@ pub(crate) fn gemini_contents_to_canonical_messages(
         let parts = content_object.get("parts").and_then(Value::as_array)?;
         let mut blocks = Vec::new();
         for (index, part) in parts.iter().enumerate() {
-            blocks.push(gemini_part_to_canonical_block(part, index)?);
+            let mut block = gemini_part_to_canonical_block(part, index)?;
+            match &mut block {
+                CanonicalContentBlock::ToolUse { id, name, .. } => {
+                    let has_explicit_id = part
+                        .as_object()
+                        .and_then(|part| {
+                            part.get("functionCall")
+                                .or_else(|| part.get("function_call"))
+                        })
+                        .and_then(Value::as_object)
+                        .and_then(gemini_explicit_function_id)
+                        .is_some();
+                    if !has_explicit_id {
+                        loop {
+                            let generated = format!("call_auto_{next_generated_tool_call_index}");
+                            next_generated_tool_call_index += 1;
+                            if reserved_tool_call_ids.insert(generated.clone()) {
+                                *id = generated;
+                                break;
+                            }
+                        }
+                    }
+                    pending_tool_calls.push_back((id.clone(), name.clone()));
+                }
+                CanonicalContentBlock::ToolResult {
+                    tool_use_id, name, ..
+                } => {
+                    let explicit_response_id = part
+                        .as_object()
+                        .and_then(|part| {
+                            part.get("functionResponse")
+                                .or_else(|| part.get("function_response"))
+                        })
+                        .and_then(Value::as_object)
+                        .and_then(gemini_explicit_function_id);
+                    let matched_position = explicit_response_id
+                        .and_then(|response_id| {
+                            pending_tool_calls
+                                .iter()
+                                .position(|(call_id, _)| call_id == response_id)
+                        })
+                        .or_else(|| {
+                            if explicit_response_id.is_none() {
+                                name.as_deref().and_then(|response_name| {
+                                    pending_tool_calls
+                                        .iter()
+                                        .position(|(_, call_name)| call_name == response_name)
+                                })
+                            } else {
+                                None
+                            }
+                        });
+                    let matched_call = matched_position
+                        .and_then(|position| pending_tool_calls.remove(position))
+                        .or_else(|| {
+                            if explicit_response_id.is_none() && name.is_none() {
+                                pending_tool_calls.pop_front()
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some((call_id, call_name)) = matched_call {
+                        *tool_use_id = call_id;
+                        if name.is_none() {
+                            *name = Some(call_name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            blocks.push(block);
         }
         if blocks.is_empty() {
             continue;
@@ -1206,11 +1298,7 @@ pub(crate) fn gemini_part_to_canonical_block(
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())?;
-        let id = function_call
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        let id = gemini_explicit_function_id(function_call)
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("call_auto_{index}"));
         return Some(CanonicalContentBlock::ToolUse {
@@ -1234,11 +1322,7 @@ pub(crate) fn gemini_part_to_canonical_block(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
-        let tool_use_id = function_response
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        let tool_use_id = gemini_explicit_function_id(function_response)
             .map(ToOwned::to_owned)
             .or_else(|| name.clone())
             .unwrap_or_else(|| format!("toolu_response_{index}"));
@@ -1265,6 +1349,16 @@ pub(crate) fn gemini_part_to_canonical_block(
         raw_type: gemini_raw_part_type(part_object),
         payload: part.clone(),
         extensions: BTreeMap::from([("gemini".to_string(), part.clone())]),
+    })
+}
+
+fn gemini_explicit_function_id(function: &Map<String, Value>) -> Option<&str> {
+    ["id", "call_id", "callId"].iter().find_map(|field| {
+        function
+            .get(*field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
     })
 }
 
@@ -1818,13 +1912,7 @@ pub(crate) fn openai_message_content_blocks(
                 .unwrap_or_default()
                 .to_string(),
             name: None,
-            output: match message.get("content") {
-                Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)
-                    .ok()
-                    .or_else(|| Some(Value::String(raw.clone()))),
-                Some(value) => Some(value.clone()),
-                None => None,
-            },
+            output: message.get("content").cloned(),
             content_text: Some(if text.is_empty() {
                 message
                     .get("content")
@@ -1982,7 +2070,31 @@ pub(crate) fn openai_responses_input_to_canonical_messages(
                     .to_ascii_lowercase();
                 match item_type.as_str() {
                     "reasoning" => {
-                        pending_reasoning = openai_responses_reasoning_block_from_item(item_object);
+                        let reasoning = openai_responses_reasoning_block_from_item(item_object);
+                        let previous_signature = reasoning.as_ref().and_then(|block| match block {
+                            CanonicalContentBlock::Thinking {
+                                text,
+                                encrypted_content: Some(carrier),
+                                ..
+                            } if text.trim().is_empty() => decode_gemini_tool_signature_carrier(
+                                carrier,
+                            )
+                            .and_then(|(signature, direction)| {
+                                (direction == GeminiToolSignatureCarrierDirection::Previous)
+                                    .then_some(signature)
+                            }),
+                            _ => None,
+                        });
+                        if let Some(signature) = previous_signature {
+                            if attach_gemini_signature_to_previous_tool_use(
+                                &mut messages,
+                                signature,
+                            ) {
+                                pending_reasoning = None;
+                                continue;
+                            }
+                        }
+                        pending_reasoning = reasoning;
                     }
                     "message" => {
                         let role = openai_role_to_canonical(
@@ -2115,7 +2227,7 @@ pub(crate) fn openai_responses_input_to_canonical_messages(
                                 generated
                             });
                         let raw_output = item_object.get("output");
-                        let output = Some(parse_jsonish_value(raw_output));
+                        let output = Some(raw_output.cloned().unwrap_or_else(|| json!({})));
                         let mut extensions = openai_responses_extensions(
                             item_object,
                             &[
@@ -2193,10 +2305,28 @@ fn openai_responses_opaque_input_item_message(item: &Value, raw_type: String) ->
 
 fn append_openai_responses_tool_use(
     messages: &mut Vec<CanonicalMessage>,
-    tool_use: CanonicalContentBlock,
+    mut tool_use: CanonicalContentBlock,
     pending_reasoning: &mut Option<CanonicalContentBlock>,
 ) {
-    let reasoning = pending_reasoning.take();
+    let mut reasoning = pending_reasoning.take();
+    if let Some(CanonicalContentBlock::Thinking {
+        text,
+        encrypted_content: Some(carrier),
+        ..
+    }) = reasoning.as_ref()
+    {
+        if text.trim().is_empty() {
+            if let Some((signature, GeminiToolSignatureCarrierDirection::Next)) =
+                decode_gemini_tool_signature_carrier(carrier)
+            {
+                if let CanonicalContentBlock::ToolUse { extensions, .. } = &mut tool_use {
+                    canonical_extension_object_mut(extensions, "gemini")
+                        .insert("thoughtSignature".to_string(), Value::String(signature));
+                    reasoning = None;
+                }
+            }
+        }
+    }
     if let Some(last_message) = messages.last_mut() {
         if last_message.role == CanonicalRole::Assistant
             && (!is_openai_responses_input_message(&last_message.extensions)
@@ -2220,6 +2350,24 @@ fn append_openai_responses_tool_use(
         content,
         extensions: BTreeMap::new(),
     });
+}
+
+fn attach_gemini_signature_to_previous_tool_use(
+    messages: &mut [CanonicalMessage],
+    signature: String,
+) -> bool {
+    let Some(message) = messages.last_mut() else {
+        return false;
+    };
+    if message.role != CanonicalRole::Assistant {
+        return false;
+    }
+    let Some(CanonicalContentBlock::ToolUse { extensions, .. }) = message.content.last_mut() else {
+        return false;
+    };
+    canonical_extension_object_mut(extensions, "gemini")
+        .insert("thoughtSignature".to_string(), Value::String(signature));
+    true
 }
 
 fn canonical_assistant_message_has_visible_content(message: &CanonicalMessage) -> bool {
@@ -2551,7 +2699,7 @@ pub(crate) fn openai_responses_output_to_canonical(
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| format!("call_auto_{index}"));
                 let raw_output = item_object.get("output");
-                let output = Some(parse_jsonish_value(raw_output));
+                let output = Some(raw_output.cloned().unwrap_or_else(|| json!({})));
                 let mut extensions = openai_responses_extensions(
                     item_object,
                     &[
@@ -3503,6 +3651,12 @@ pub(crate) fn is_claude_tool_result(extensions: &BTreeMap<String, Value>) -> boo
         .and_then(|value| value.get("source"))
         .and_then(Value::as_str)
         == Some(CLAUDE_TOOL_RESULT_SOURCE_MARKER)
+}
+
+pub(crate) fn is_cross_format_tool_result(extensions: &BTreeMap<String, Value>) -> bool {
+    is_claude_tool_result(extensions)
+        || is_openai_chat_tool_result(extensions)
+        || is_openai_responses_tool_result(extensions)
 }
 
 fn is_openai_responses_tool_result(extensions: &BTreeMap<String, Value>) -> bool {
@@ -8453,6 +8607,139 @@ mod tests {
         let canonical = from_openai_responses_to_canonical_response(&response)
             .expect("legacy usage alias should parse");
         assert_eq!(canonical.usage.as_ref().unwrap().cache_write_tokens, 5);
+    }
+
+    #[test]
+    fn gemini_request_pairs_parallel_idless_function_responses_by_order() {
+        let contents = json!([
+            {
+                "role": "model",
+                "parts": [
+                    {"functionCall": {"name": "lookup", "args": {"q": "first"}}},
+                    {"functionCall": {"name": "lookup", "args": {"q": "second"}}}
+                ]
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {"functionResponse": {"name": "lookup", "response": {"result": "one"}}},
+                    {"functionResponse": {"name": "lookup", "response": {"result": "two"}}}
+                ]
+            }
+        ]);
+
+        let messages = super::gemini_contents_to_canonical_messages(Some(&contents))
+            .expect("Gemini contents should parse");
+        let call_ids = messages[0]
+            .content
+            .iter()
+            .map(|block| match block {
+                CanonicalContentBlock::ToolUse { id, .. } => id.as_str(),
+                _ => panic!("expected tool use"),
+            })
+            .collect::<Vec<_>>();
+        let result_ids = messages[1]
+            .content
+            .iter()
+            .map(|block| match block {
+                CanonicalContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+                _ => panic!("expected tool result"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_ne!(call_ids[0], call_ids[1]);
+        assert_eq!(result_ids, call_ids);
+    }
+
+    #[test]
+    fn gemini_request_pairs_idless_function_responses_by_name() {
+        let contents = json!([{
+            "role": "model",
+            "parts": [
+                {"functionCall": {"name": "first", "args": {}}},
+                {"functionCall": {"name": "second", "args": {}}}
+            ]
+        }, {
+            "role": "user",
+            "parts": [
+                {"functionResponse": {"name": "second", "response": {"result": 2}}},
+                {"functionResponse": {"name": "first", "response": {"result": 1}}}
+            ]
+        }]);
+
+        let messages = super::gemini_contents_to_canonical_messages(Some(&contents))
+            .expect("Gemini contents should parse");
+        let call_ids = messages[0]
+            .content
+            .iter()
+            .map(|block| match block {
+                CanonicalContentBlock::ToolUse { id, .. } => id.as_str(),
+                _ => panic!("expected tool use"),
+            })
+            .collect::<Vec<_>>();
+        let result_ids = messages[1]
+            .content
+            .iter()
+            .map(|block| match block {
+                CanonicalContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+                _ => panic!("expected tool result"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(result_ids, vec![call_ids[1], call_ids[0]]);
+    }
+
+    #[test]
+    fn gemini_request_generated_function_call_ids_avoid_explicit_ids() {
+        let contents = json!([{
+            "role": "model",
+            "parts": [
+                {"functionCall": {"name": "first", "args": {}}},
+                {"functionCall": {"id": "call_auto_0", "name": "second", "args": {}}}
+            ]
+        }]);
+
+        let messages = super::gemini_contents_to_canonical_messages(Some(&contents))
+            .expect("Gemini contents should parse");
+        let call_ids = messages[0]
+            .content
+            .iter()
+            .map(|block| match block {
+                CanonicalContentBlock::ToolUse { id, .. } => id.as_str(),
+                _ => panic!("expected tool use"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(call_ids, vec!["call_auto_1", "call_auto_0"]);
+    }
+
+    #[test]
+    fn gemini_request_generated_function_call_ids_avoid_explicit_response_ids() {
+        let contents = json!([{
+            "role": "model",
+            "parts": [{"functionCall": {"name": "generated", "args": {}}}]
+        }, {
+            "role": "user",
+            "parts": [{
+                "functionResponse": {
+                    "id": "call_auto_0",
+                    "name": "external",
+                    "response": {"result": "done"}
+                }
+            }]
+        }]);
+
+        let messages = super::gemini_contents_to_canonical_messages(Some(&contents))
+            .expect("Gemini contents should parse");
+        let CanonicalContentBlock::ToolUse { id: call_id, .. } = &messages[0].content[0] else {
+            panic!("expected tool use");
+        };
+        let CanonicalContentBlock::ToolResult { tool_use_id, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+
+        assert_eq!(call_id, "call_auto_1");
+        assert_eq!(tool_use_id, "call_auto_0");
     }
 
     #[test]

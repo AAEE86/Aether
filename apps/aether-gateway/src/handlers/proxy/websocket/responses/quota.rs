@@ -146,6 +146,7 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     };
     let turn_index = active.turn_index;
     let logical_turn_id = active.logical_turn_id.clone();
+    let codex_fingerprint_context = active.codex_fingerprint_context.clone();
     let turn_attempt = active.turn_attempt;
 
     let retry_exclusion_until_unix_secs = bound
@@ -154,7 +155,13 @@ pub(super) async fn retry_active_turn_after_quota_exhaustion(
     let exhausted_key = record_exhausted_bound_key(bound, retry_exclusion_until_unix_secs);
     let exhausted_key_id = exhausted_key.as_ref().map(|(key_id, _)| key_id.clone());
 
-    let planning_parts = build_planning_parts(context);
+    let mut planning_parts = build_planning_parts(context);
+    if let Some(codex_fingerprint_context) = codex_fingerprint_context.as_ref() {
+        crate::ai_serving::codex_context::restore_codex_logical_turn_context(
+            &mut planning_parts,
+            codex_fingerprint_context,
+        );
+    }
     let turn_request_id = Uuid::new_v4().to_string();
     let now_unix_secs = current_unix_secs();
     let excluded_key_ids = bound.exhausted_exclusions.key_ids(now_unix_secs);

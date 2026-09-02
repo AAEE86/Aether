@@ -499,11 +499,16 @@ impl AppState {
         plan_id: &str,
         input: &BillingPlanWriteInput,
     ) -> Result<LocalMutationOutcome<BillingPlanRecord>, GatewayError> {
-        self.data
+        let outcome = self
+            .data
             .update_billing_plan(plan_id, input)
             .await
             .map(local_mutation_outcome)
-            .map_err(data_error)
+            .map_err(data_error)?;
+        if matches!(&outcome, LocalMutationOutcome::Applied(_)) {
+            self.invalidate_auth_context_cache();
+        }
+        Ok(outcome)
     }
 
     pub(crate) async fn set_billing_plan_enabled(
@@ -537,6 +542,23 @@ impl AppState {
             .list_user_plan_entitlements(user_id)
             .await
             .map_err(data_error)
+    }
+
+    pub(crate) async fn revoke_user_plan_entitlement(
+        &self,
+        user_id: &str,
+        entitlement_id: &str,
+    ) -> Result<LocalMutationOutcome<()>, GatewayError> {
+        let outcome = self
+            .data
+            .revoke_user_plan_entitlement(user_id, entitlement_id)
+            .await
+            .map(local_mutation_outcome)
+            .map_err(data_error)?;
+        if matches!(&outcome, LocalMutationOutcome::Applied(_)) {
+            self.invalidate_auth_context_cache();
+        }
+        Ok(outcome)
     }
 
     pub(crate) async fn find_user_daily_quota_availability(
