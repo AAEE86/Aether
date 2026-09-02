@@ -436,6 +436,15 @@ pub trait BillingReadRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn revoke_user_plan_entitlement(
+        &self,
+        user_id: &str,
+        entitlement_id: &str,
+    ) -> Result<AdminBillingMutationOutcome<()>, crate::DataLayerError> {
+        let _ = (user_id, entitlement_id);
+        Ok(AdminBillingMutationOutcome::Unavailable)
+    }
+
     async fn find_user_daily_quota_availability(
         &self,
         user_id: &str,
