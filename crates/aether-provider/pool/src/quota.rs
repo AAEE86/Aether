@@ -106,7 +106,7 @@ pub(crate) fn provider_pool_model_quota_exhausted(
             })
             .collect::<Vec<_>>();
         if !model_matches.is_empty() {
-            let exhausted = provider_pool_matching_windows_exhausted(
+            let exhausted = provider_pool_explicit_model_windows_exhausted(
                 model_matches,
                 observed_at,
             );
@@ -130,10 +130,32 @@ pub(crate) fn provider_pool_model_quota_exhausted(
             .filter(|window| provider_pool_window_family_matches_model(window, &requested))
             .collect::<Vec<_>>();
         if !family_matches.is_empty() {
-            let exhausted = provider_pool_matching_windows_exhausted(
+            let exhausted = provider_pool_any_window_exhausted(
                 family_matches,
                 observed_at,
             );
+            if resolved.is_none()
+                || provider_pool_should_replace_model_quota_resolution(
+                    resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
+                    observed_at,
+                )
+            {
+                resolved = Some((observed_at, exhausted));
+            }
+            continue;
+        }
+
+        // Account-scoped windows (for example the ordinary weekly and short
+        // windows emitted by Codex) apply to every model that has no more
+        // specific family.  Restrict this fallback to well-known structural
+        // window names; opaque family names such as `alpha_weekly` must not
+        // accidentally make an unrelated model look schedulable.
+        let generic_matches = windows
+            .iter()
+            .filter(|window| provider_pool_window_is_generic(window))
+            .collect::<Vec<_>>();
+        if !generic_matches.is_empty() {
+            let exhausted = provider_pool_any_window_exhausted(generic_matches, observed_at);
             if resolved.is_none()
                 || provider_pool_should_replace_model_quota_resolution(
                     resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
@@ -172,20 +194,64 @@ pub fn provider_pool_key_model_quota_exhausted(
     provider_pool_model_quota_exhausted(key, provider_type, provider_model_name)
 }
 
-fn provider_pool_matching_windows_exhausted(
+fn provider_pool_explicit_model_windows_exhausted(
     windows: Vec<&Map<String, Value>>,
     snapshot_observed_at: Option<u64>,
 ) -> bool {
     let now_unix_secs = provider_pool_current_unix_secs();
 
-    // A request can use a bucket as long as at least one of its independent
-    // windows still has capacity (e.g. a short and a long rolling window).
+    // Explicit model buckets represent independent windows for one model. The
+    // model remains usable while at least one of those windows still has
+    // capacity, so exhaustion is reported only when all are exhausted.
     windows.iter().all(|window| {
         provider_pool_quota_window_is_exhausted(window)
             && !now_unix_secs.is_some_and(|now| {
                 provider_pool_reset_deadline_elapsed(window, snapshot_observed_at, now)
             })
     })
+}
+
+fn provider_pool_any_window_exhausted(
+    windows: Vec<&Map<String, Value>>,
+    snapshot_observed_at: Option<u64>,
+) -> bool {
+    let now_unix_secs = provider_pool_current_unix_secs();
+    windows.iter().any(|window| {
+        provider_pool_quota_window_is_exhausted(window)
+            && !now_unix_secs.is_some_and(|now| {
+                provider_pool_reset_deadline_elapsed(window, snapshot_observed_at, now)
+            })
+    })
+}
+
+fn provider_pool_window_is_generic(window: &Map<String, Value>) -> bool {
+    if provider_pool_window_has_explicit_model(window)
+        || window
+            .get("scope")
+            .and_then(Value::as_str)
+            .is_some_and(|scope| scope.trim().eq_ignore_ascii_case("model"))
+    {
+        return false;
+    }
+
+    let code = window.get("code").and_then(Value::as_str).unwrap_or_default();
+    let family = code
+        .split_once(['_', ':', '/'])
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(code)
+        .trim()
+        .to_ascii_lowercase();
+    if family.is_empty() {
+        return window
+            .get("scope")
+            .and_then(Value::as_str)
+            .is_some_and(|scope| scope.trim().eq_ignore_ascii_case("account"));
+    }
+    [
+        "weekly", "5h", "daily", "monthly", "primary", "secondary", "account", "quota",
+        "window", "rate", "reset",
+    ]
+    .contains(&family.as_str())
 }
 
 fn provider_pool_window_explicitly_matches_model(
