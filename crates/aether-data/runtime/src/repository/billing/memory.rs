@@ -75,6 +75,7 @@ fn billing_plan_from_input(
 
 fn daily_quota_availability_from_entitlements(
     entitlements: impl IntoIterator<Item = UserPlanEntitlementRecord>,
+    billing_plans: &BTreeMap<String, BillingPlanRecord>,
     now: u64,
 ) -> UserDailyQuotaAvailabilityRecord {
     let mut has_active_daily_quota = false;
@@ -92,6 +93,9 @@ fn daily_quota_availability_from_entitlements(
         let Some(items) = entitlement.entitlements_snapshot.as_array() else {
             continue;
         };
+        let current_allow_wallet_overage = billing_plans
+            .get(&entitlement.plan_id)
+            .and_then(|plan| daily_quota_wallet_overage_policy(&plan.entitlements_json));
         for item in items {
             if item.get("type").and_then(serde_json::Value::as_str) != Some("daily_quota") {
                 continue;
@@ -106,10 +110,11 @@ fn daily_quota_availability_from_entitlements(
             has_active_daily_quota = true;
             total_quota_usd += daily_quota_usd;
             remaining_usd += daily_quota_usd;
-            allow_wallet_overage &= item
-                .get("allow_wallet_overage")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+            allow_wallet_overage &= current_allow_wallet_overage.unwrap_or_else(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            });
         }
     }
     UserDailyQuotaAvailabilityRecord {
@@ -119,6 +124,17 @@ fn daily_quota_availability_from_entitlements(
         remaining_usd,
         allow_wallet_overage,
     }
+}
+
+fn daily_quota_wallet_overage_policy(entitlements: &serde_json::Value) -> Option<bool> {
+    entitlements.as_array()?.iter().find_map(|item| {
+        (item.get("type").and_then(serde_json::Value::as_str) == Some("daily_quota"))
+            .then(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .flatten()
+    })
 }
 
 #[async_trait]
@@ -366,6 +382,31 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
         Ok(Some(items))
     }
 
+    async fn revoke_user_plan_entitlement(
+        &self,
+        user_id: &str,
+        entitlement_id: &str,
+    ) -> Result<AdminBillingMutationOutcome<()>, DataLayerError> {
+        let now = current_unix_secs();
+        let mut entitlements = self
+            .entitlements_by_id
+            .write()
+            .expect("billing repository lock");
+        let Some(entitlement) = entitlements.get_mut(entitlement_id) else {
+            return Ok(AdminBillingMutationOutcome::NotFound);
+        };
+        if entitlement.user_id != user_id
+            || entitlement.status != "active"
+            || entitlement.expires_at_unix_secs <= now
+        {
+            return Ok(AdminBillingMutationOutcome::NotFound);
+        }
+        entitlement.status = "revoked".to_string();
+        entitlement.expires_at_unix_secs = entitlement.expires_at_unix_secs.min(now);
+        entitlement.updated_at_unix_secs = now;
+        Ok(AdminBillingMutationOutcome::Applied(()))
+    }
+
     async fn find_user_daily_quota_availability(
         &self,
         user_id: &str,
@@ -379,8 +420,13 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
             .filter(|item| item.user_id == user_id)
             .cloned()
             .collect::<Vec<_>>();
+        let billing_plans = self
+            .billing_plans_by_id
+            .read()
+            .expect("billing repository lock");
         Ok(Some(daily_quota_availability_from_entitlements(
             entitlements,
+            &billing_plans,
             now,
         )))
     }

@@ -920,6 +920,40 @@ ORDER BY expires_at ASC, created_at ASC
         ))
     }
 
+    async fn revoke_user_plan_entitlement(
+        &self,
+        user_id: &str,
+        entitlement_id: &str,
+    ) -> Result<AdminBillingMutationOutcome<()>, DataLayerError> {
+        let now = current_unix_secs_i64();
+        let result = sqlx::query(
+            r#"
+UPDATE user_plan_entitlements
+SET status = 'revoked',
+    expires_at = CASE WHEN expires_at > ? THEN ? ELSE expires_at END,
+    updated_at = ?
+WHERE id = ?
+  AND user_id = ?
+  AND status = 'active'
+  AND expires_at > ?
+            "#,
+        )
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .bind(entitlement_id)
+        .bind(user_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        if result.rows_affected() == 0 {
+            Ok(AdminBillingMutationOutcome::NotFound)
+        } else {
+            Ok(AdminBillingMutationOutcome::Applied(()))
+        }
+    }
+
     async fn find_user_daily_quota_availability(
         &self,
         user_id: &str,
@@ -927,13 +961,19 @@ ORDER BY expires_at ASC, created_at ASC
         let now_unix_secs = current_unix_secs_i64();
         let rows = sqlx::query(
             r#"
-SELECT id, entitlements_snapshot
+SELECT
+    user_plan_entitlements.id,
+    user_plan_entitlements.entitlements_snapshot,
+    billing_plans.entitlements_json AS plan_entitlements_json
 FROM user_plan_entitlements
-WHERE user_id = ?
-  AND status = 'active'
-  AND starts_at <= ?
-  AND expires_at > ?
-ORDER BY expires_at ASC, created_at ASC, id ASC
+JOIN billing_plans ON billing_plans.id = user_plan_entitlements.plan_id
+WHERE user_plan_entitlements.user_id = ?
+    AND user_plan_entitlements.status = 'active'
+    AND user_plan_entitlements.starts_at <= ?
+    AND user_plan_entitlements.expires_at > ?
+ORDER BY user_plan_entitlements.expires_at ASC,
+                 user_plan_entitlements.created_at ASC,
+                 user_plan_entitlements.id ASC
             "#,
         )
         .bind(user_id)
@@ -948,9 +988,13 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
             let entitlement_id: String = row.try_get("id").map_sql_err()?;
             let entitlements = parse_json(row.try_get("entitlements_snapshot").ok().flatten())?
                 .unwrap_or_else(|| serde_json::json!([]));
+            let plan_entitlements =
+                parse_json(row.try_get("plan_entitlements_json").ok().flatten())?
+                    .unwrap_or_else(|| serde_json::json!([]));
             grants.extend(daily_quota_grants_from_entitlement(
                 &entitlement_id,
                 &entitlements,
+                daily_quota_wallet_overage_policy(&plan_entitlements),
                 now,
             )?);
         }
@@ -1174,6 +1218,7 @@ fn daily_quota_usage_date(
 fn daily_quota_grants_from_entitlement(
     entitlement_id: &str,
     entitlements: &serde_json::Value,
+    current_allow_wallet_overage: Option<bool>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<DailyQuotaGrant>, DataLayerError> {
     let mut grants = Vec::new();
@@ -1199,13 +1244,25 @@ fn daily_quota_grants_from_entitlement(
                     .and_then(serde_json::Value::as_str),
                 now,
             )?,
-            allow_wallet_overage: item
-                .get("allow_wallet_overage")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            allow_wallet_overage: current_allow_wallet_overage.unwrap_or_else(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            }),
         });
     }
     Ok(grants)
+}
+
+fn daily_quota_wallet_overage_policy(entitlements: &serde_json::Value) -> Option<bool> {
+    entitlements.as_array()?.iter().find_map(|item| {
+        (item.get("type").and_then(serde_json::Value::as_str) == Some("daily_quota"))
+            .then(|| {
+                item.get("allow_wallet_overage")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .flatten()
+    })
 }
 
 fn read_count_sqlite(row: &SqliteRow) -> Result<u64, DataLayerError> {
@@ -1556,6 +1613,106 @@ mod tests {
         };
         assert_eq!(preset.updated, 1);
         assert_eq!(preset.errors, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn sqlite_repository_revokes_active_user_plan_entitlement() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        let now = super::current_unix_secs_i64();
+        sqlx::query(
+            r#"
+INSERT INTO users (
+    id, username, email, role, auth_source, password_hash, is_active,
+    is_deleted, created_at, updated_at
+) VALUES (
+    'user-revoke', 'revoke-user', 'revoke@example.com', 'user', 'local',
+    'hash', 1, 0, 1, 1
+);
+INSERT INTO wallets (
+    id, user_id, balance, gift_balance, limit_mode, created_at, updated_at
+) VALUES (
+    'wallet-revoke', 'user-revoke', 5.0, 0.0, 'finite', 1, 1
+);
+INSERT INTO billing_plans (
+    id, title, price_amount, price_currency, duration_unit,
+    duration_value, entitlements_json, created_at, updated_at
+) VALUES (
+    'plan-revoke', 'Revocable Plan', 0.0, 'USD', 'month', 1,
+    '[{"type":"daily_quota","daily_quota_usd":10.0,"allow_wallet_overage":true}]',
+    1, 1
+);
+INSERT INTO payment_orders (
+    id, order_no, wallet_id, user_id, amount_usd, refunded_amount_usd,
+    refundable_amount_usd, payment_method, gateway_response, status, created_at
+) VALUES (
+    'order-revoke', 'order-revoke', 'wallet-revoke', 'user-revoke', 0.0, 0.0,
+    0.0, 'admin_manual', '{}', 'credited', 1
+);
+INSERT INTO user_plan_entitlements (
+    id, user_id, plan_id, payment_order_id, status, starts_at, expires_at,
+    entitlements_snapshot, created_at, updated_at
+) VALUES (
+    'entitlement-revoke', 'user-revoke', 'plan-revoke', 'order-revoke',
+    'active', ?, ?,
+    '[{"type":"daily_quota","daily_quota_usd":10.0,"allow_wallet_overage":false}]',
+    ?, ?
+);
+"#,
+        )
+        .bind(now - 60)
+        .bind(now + 3600)
+        .bind(now - 60)
+        .bind(now - 60)
+        .execute(&pool)
+        .await
+        .expect("revocable entitlement should seed");
+        let repository = SqliteBillingReadRepository::new(pool.clone());
+
+        let quota = repository
+            .find_user_daily_quota_availability("user-revoke")
+            .await
+            .expect("quota should load")
+            .expect("quota should be available");
+        assert!(quota.has_active_daily_quota);
+        assert!(quota.allow_wallet_overage);
+
+        let wrong_user = repository
+            .revoke_user_plan_entitlement("other-user", "entitlement-revoke")
+            .await
+            .expect("ownership check should run");
+        assert_eq!(wrong_user, AdminBillingMutationOutcome::NotFound);
+
+        let outcome = repository
+            .revoke_user_plan_entitlement("user-revoke", "entitlement-revoke")
+            .await
+            .expect("entitlement revoke should run");
+        assert_eq!(outcome, AdminBillingMutationOutcome::Applied(()));
+        let active = repository
+            .list_user_plan_entitlements("user-revoke")
+            .await
+            .expect("entitlements should load")
+            .expect("entitlements should be available");
+        assert!(active.is_empty());
+        let quota = repository
+            .find_user_daily_quota_availability("user-revoke")
+            .await
+            .expect("quota should load")
+            .expect("quota should be available");
+        assert!(!quota.has_active_daily_quota);
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM user_plan_entitlements WHERE id = 'entitlement-revoke'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("entitlement status should load");
+        assert_eq!(status, "revoked");
     }
 
     #[tokio::test]

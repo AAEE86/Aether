@@ -88,9 +88,21 @@
                   </Badge>
                 </div>
               </div>
-              <div class="text-left text-[11px] text-muted-foreground sm:text-right">
-                <div>{{ legacyT('开始：') }}{{ formatDateTime(item.starts_at) }}</div>
-                <div>{{ legacyT('到期：') }}{{ formatDateTime(item.expires_at) }}</div>
+              <div class="flex shrink-0 items-start gap-2">
+                <div class="text-left text-[11px] text-muted-foreground sm:text-right">
+                  <div>{{ legacyT('开始：') }}{{ formatDateTime(item.starts_at) }}</div>
+                  <div>{{ legacyT('到期：') }}{{ formatDateTime(item.expires_at) }}</div>
+                </div>
+                <Button
+                  v-if="item.active"
+                  variant="destructive"
+                  size="sm"
+                  class="h-7 px-2 text-[11px]"
+                  :disabled="revokingEntitlementId === item.id"
+                  @click="$emit('revoke', item)"
+                >
+                  {{ revokingEntitlementId === item.id ? legacyT('撤销中...') : legacyT('撤销套餐') }}
+                </Button>
               </div>
             </div>
           </div>
@@ -199,6 +211,7 @@ defineProps<{
   loadingEntitlements: boolean
   loadingPlans: boolean
   granting: boolean
+  revokingEntitlementId?: string | null
   formatDateTime: (value?: string | null) => string
   formatPlanPrice: (plan: BillingPlan) => string
   formatPlanDuration: (plan: BillingPlan) => string
@@ -211,6 +224,7 @@ defineEmits<{
   'update:grantReason': [value: string]
   'refresh-entitlements': [userId: string]
   grant: []
+  revoke: [entitlement: AdminUserPlanEntitlement]
 }>()
 
 const { legacyT } = useI18n()
