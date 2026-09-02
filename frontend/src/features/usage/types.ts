@@ -120,6 +120,12 @@ export interface UsageRecord {
   end_to_end_time_ms?: number | null  // 客户端从请求进入网关到完成的总耗时
   end_to_end_first_byte_time_ms?: number | null  // 客户端从请求进入网关到首字节的耗时
   is_stream: boolean
+  is_websocket?: boolean
+  websocket_transport?: string | null
+  usage_available?: boolean
+  usage_pricing_available?: boolean
+  input_audio_tokens?: number | null
+  output_audio_tokens?: number | null
   upstream_is_stream?: boolean
   client_requested_stream?: boolean
   client_is_stream?: boolean
@@ -157,6 +163,7 @@ export type FilterStatusValue =
   '__all__' |
   'stream' |
   'standard' |
+  'websocket' |
   'active' |
   'failed' |
   'cancelled' |

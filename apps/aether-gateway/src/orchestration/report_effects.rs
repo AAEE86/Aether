@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use aether_admin::provider::quota as admin_provider_quota_pure;
 use aether_data_contracts::repository::provider_catalog::ProviderCatalogKeyRuntimeMetadataUpdate;
@@ -16,18 +16,16 @@ use serde_json::{json, Value};
 use tracing::warn;
 use uuid::Uuid;
 
+use super::codex_quota_breaker::{
+    install_codex_quota_exhaustion_breaker, log_codex_quota_breaker_install_failure,
+};
 use crate::clock::current_unix_secs;
 use crate::handlers::shared::sync_provider_key_quota_status_snapshot;
 use crate::log_ids::short_request_id;
 use crate::{AppState, GatewayError};
 
-const CODEX_QUOTA_CACHE_TTL_SECONDS: u64 = 30;
-const CODEX_QUOTA_CACHE_MAX_ENTRIES: usize = 4096;
 const RUNTIME_METADATA_CAS_MAX_ATTEMPTS: usize = 16;
-
-type HeaderFingerprintCache = Mutex<HashMap<String, (String, Instant)>>;
-
-static CODEX_QUOTA_HEADER_FINGERPRINT_CACHE: OnceLock<HeaderFingerprintCache> = OnceLock::new();
+const CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD: &str = "codex_websocket_rate_limits";
 static GROK_CHINESE_WAIT_DURATION_RE: OnceLock<Regex> = OnceLock::new();
 static GROK_ENGLISH_WAIT_DURATION_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -62,10 +60,6 @@ pub(crate) async fn apply_local_report_effect(state: &AppState, effect: LocalRep
     }
 }
 
-fn codex_quota_header_fingerprint_cache() -> &'static HeaderFingerprintCache {
-    CODEX_QUOTA_HEADER_FINGERPRINT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 fn report_context_key_id(report_context: Option<&Value>) -> Option<String> {
     report_context
         .and_then(|context| context.get("key_id"))
@@ -73,6 +67,20 @@ fn report_context_key_id(report_context: Option<&Value>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn report_context_u64(report_context: Option<&Value>, key: &str) -> Option<u64> {
+    report_context
+        .and_then(|context| context.get(key))
+        .and_then(admin_provider_quota_pure::coerce_json_u64)
+}
+
+fn report_context_string<'a>(report_context: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    report_context
+        .and_then(|context| context.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn report_context_provider_response_headers(
@@ -91,86 +99,12 @@ fn report_context_provider_response_headers(
     (!out.is_empty()).then_some(out)
 }
 
-fn is_volatile_compare_field(key: &str) -> bool {
-    key == "updated_at" || key.ends_with("_reset_seconds") || key.ends_with("_reset_after_seconds")
+fn codex_websocket_quota_from_report_context(report_context: Option<&Value>) -> Option<Value> {
+    report_context
+        .and_then(|context| context.get(CODEX_WEBSOCKET_RATE_LIMITS_REPORT_CONTEXT_FIELD))
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+        .cloned()
 }
-
-fn canonicalize_value(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonicalize_value).collect()),
-        Value::Object(object) => {
-            let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_by(|left, right| left.0.cmp(right.0));
-            let mut normalized = serde_json::Map::new();
-            for (key, value) in entries {
-                normalized.insert(key.clone(), canonicalize_value(value));
-            }
-            Value::Object(normalized)
-        }
-        _ => value.clone(),
-    }
-}
-
-fn fingerprint_codex_payload(value: &Value) -> Option<String> {
-    let object = value.as_object()?;
-    let mut entries = object
-        .iter()
-        .filter(|(key, _)| !is_volatile_compare_field(key))
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.0.cmp(right.0));
-
-    let mut normalized = serde_json::Map::new();
-    for (key, value) in entries {
-        normalized.insert(key.clone(), canonicalize_value(value));
-    }
-    serde_json::to_string(&Value::Object(normalized)).ok()
-}
-
-fn get_cached_codex_quota_fingerprint(key_id: &str, now: Instant) -> Option<String> {
-    let mut cache = codex_quota_header_fingerprint_cache()
-        .lock()
-        .expect("codex realtime quota cache should lock");
-    match cache.get(key_id) {
-        Some((fingerprint, expires_at)) if *expires_at > now => Some(fingerprint.clone()),
-        Some(_) => {
-            cache.remove(key_id);
-            None
-        }
-        None => None,
-    }
-}
-
-fn set_cached_codex_quota_fingerprint(key_id: &str, fingerprint: String, now: Instant) {
-    let mut cache = codex_quota_header_fingerprint_cache()
-        .lock()
-        .expect("codex realtime quota cache should lock");
-    cache.insert(
-        key_id.to_string(),
-        (
-            fingerprint,
-            now.checked_add(Duration::from_secs(CODEX_QUOTA_CACHE_TTL_SECONDS))
-                .unwrap_or(now),
-        ),
-    );
-
-    cache.retain(|_, (_, expires_at)| *expires_at > now);
-    if cache.len() <= CODEX_QUOTA_CACHE_MAX_ENTRIES {
-        return;
-    }
-
-    let mut entries = cache
-        .iter()
-        .map(|(key, (_, expires_at))| (key.clone(), *expires_at))
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.1);
-    for (key, _) in entries
-        .into_iter()
-        .take(cache.len() - CODEX_QUOTA_CACHE_MAX_ENTRIES)
-    {
-        cache.remove(&key);
-    }
-}
-
 fn merge_metadata_object(
     current: Option<&Value>,
     section_key: &str,
@@ -328,6 +262,35 @@ fn gemini_cli_credits_from_stream_payload(
             )
         {
             latest = Some(credits);
+        }
+    }
+    latest
+}
+
+fn codex_websocket_quota_from_stream_payload(
+    payload: &GatewayStreamReportRequest,
+    now_unix_secs: u64,
+) -> Option<Value> {
+    let body_base64 = payload.provider_body_base64.as_deref()?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(body_base64)
+        .ok()?;
+    let text = std::str::from_utf8(&body).ok()?;
+    let mut latest = None::<Value>;
+    for raw_line in text.lines() {
+        let line = raw_line.trim_matches('\r').trim();
+        let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+        if data.is_empty() || data == "[DONE]" || data.starts_with(':') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if let Some(quota) = admin_provider_quota_pure::parse_codex_websocket_rate_limits_response(
+            &value,
+            now_unix_secs,
+        ) {
+            latest = Some(quota);
         }
     }
     latest
@@ -593,21 +556,23 @@ async fn sync_grok_quota_from_report_context(
 
 async fn apply_local_sync_report_effect(state: &AppState, payload: &GatewaySyncReportRequest) {
     apply_local_gemini_file_mapping_report_effect(state, payload).await;
-    if let Err(err) = sync_codex_quota_from_response_headers(
-        state,
-        payload.report_context.as_ref(),
-        &payload.headers,
-    )
-    .await
-    {
-        warn!(
-            event_name = "codex_realtime_quota_sync_failed",
-            log_type = "ops",
-            report_kind = %payload.report_kind,
-            report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
-            error = ?err,
-            "gateway failed to persist codex realtime quota from sync response headers"
-        );
+    if (200..300).contains(&payload.status_code) {
+        if let Err(err) = sync_codex_quota_from_response_headers(
+            state,
+            payload.report_context.as_ref(),
+            &payload.headers,
+        )
+        .await
+        {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist codex realtime quota from sync response headers"
+            );
+        }
     }
     if let Err(err) = sync_grok_quota_from_report_context(
         state,
@@ -646,21 +611,40 @@ async fn apply_local_sync_report_effect(state: &AppState, payload: &GatewaySyncR
 }
 
 async fn apply_local_stream_report_effect(state: &AppState, payload: &GatewayStreamReportRequest) {
-    if let Err(err) = sync_codex_quota_from_response_headers(
-        state,
-        payload.report_context.as_ref(),
-        &payload.headers,
-    )
-    .await
+    let websocket_quota_seen = match sync_codex_websocket_quota_from_stream_payload(state, payload)
+        .await
     {
-        warn!(
-            event_name = "codex_realtime_quota_sync_failed",
-            log_type = "ops",
-            report_kind = %payload.report_kind,
-            report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
-            error = ?err,
-            "gateway failed to persist codex realtime quota from stream response headers"
-        );
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist Codex realtime quota from WebSocket response body"
+            );
+            false
+        }
+    };
+    if !websocket_quota_seen && (200..300).contains(&payload.status_code) {
+        if let Err(err) = sync_codex_quota_from_response_headers(
+            state,
+            payload.report_context.as_ref(),
+            &payload.headers,
+        )
+        .await
+        {
+            warn!(
+                event_name = "codex_realtime_quota_sync_failed",
+                log_type = "ops",
+                report_kind = %payload.report_kind,
+                report_request_id = %short_request_id(report_request_id(payload.report_context.as_ref())),
+                error = ?err,
+                "gateway failed to persist codex realtime quota from stream response headers"
+            );
+        }
     }
     if let Err(err) = sync_grok_quota_from_report_context(
         state,
@@ -834,109 +818,212 @@ async fn sync_codex_quota_from_response_headers(
     report_context: Option<&Value>,
     headers: &BTreeMap<String, String>,
 ) -> Result<bool, GatewayError> {
+    let now_unix_secs = current_unix_secs();
+    let observed_at_unix_secs = report_context_u64(
+        report_context,
+        "provider_response_headers_observed_at_unix_ms",
+    )
+    .map(|value| value / 1_000)
+    .filter(|value| *value > 0)
+    .unwrap_or(now_unix_secs);
+    let request_started_at_unix_ms =
+        report_context_u64(report_context, "provider_request_started_at_unix_ms");
+    let request_order_id = report_context_string(report_context, "provider_request_order_id");
+    let observed_reset_generation =
+        report_context_u64(report_context, "codex_quota_reset_generation");
+    let observed_credential_generation =
+        report_context_string(report_context, "codex_credential_generation");
+    let provider_headers = report_context_provider_response_headers(report_context);
+    let parsed_from_provider_headers = provider_headers.as_ref().and_then(|headers| {
+        admin_provider_quota_pure::parse_codex_usage_headers(headers, observed_at_unix_secs)
+    });
+    let Some(parsed) = parsed_from_provider_headers.or_else(|| {
+        admin_provider_quota_pure::parse_codex_usage_headers(headers, observed_at_unix_secs)
+    }) else {
+        return Ok(false);
+    };
+    sync_codex_quota_metadata_with_observation(
+        state,
+        report_context,
+        parsed,
+        "response_headers",
+        observed_at_unix_secs,
+        request_started_at_unix_ms,
+        request_order_id,
+        observed_reset_generation,
+        observed_credential_generation,
+    )
+    .await
+}
+
+async fn sync_codex_websocket_quota_from_stream_payload(
+    state: &AppState,
+    payload: &GatewayStreamReportRequest,
+) -> Result<Option<bool>, GatewayError> {
+    let now_unix_secs = current_unix_secs();
+    let parsed = codex_websocket_quota_from_report_context(payload.report_context.as_ref())
+        .or_else(|| codex_websocket_quota_from_stream_payload(payload, now_unix_secs));
+    let Some(parsed) = parsed else {
+        return Ok(None);
+    };
+    Ok(Some(
+        sync_codex_quota_metadata(
+            state,
+            payload.report_context.as_ref(),
+            parsed,
+            "websocket_response_body",
+        )
+        .await?,
+    ))
+}
+
+async fn sync_codex_quota_metadata(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+    source: &'static str,
+) -> Result<bool, GatewayError> {
+    let observed_at_unix_secs = parsed
+        .get("updated_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(current_unix_secs);
+    let request_started_at_unix_ms =
+        report_context_u64(report_context, "provider_request_started_at_unix_ms");
+    let request_order_id = report_context_string(report_context, "provider_request_order_id");
+    let observed_reset_generation =
+        report_context_u64(report_context, "codex_quota_reset_generation");
+    let observed_credential_generation =
+        report_context_string(report_context, "codex_credential_generation");
+    sync_codex_quota_metadata_with_observation(
+        state,
+        report_context,
+        parsed,
+        source,
+        observed_at_unix_secs,
+        request_started_at_unix_ms,
+        request_order_id,
+        observed_reset_generation,
+        observed_credential_generation,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_codex_quota_metadata_with_observation(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+    source: &'static str,
+    observed_at_unix_secs: u64,
+    request_started_at_unix_ms: Option<u64>,
+    request_order_id: Option<&str>,
+    observed_reset_generation: Option<u64>,
+    observed_credential_generation: Option<&str>,
+) -> Result<bool, GatewayError> {
+    if admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(&parsed) {
+        if let Err(error) =
+            install_codex_quota_exhaustion_breaker(state, report_context, &parsed, source).await
+        {
+            log_codex_quota_breaker_install_failure(&error);
+        }
+    }
+
     let key_id = match report_context_key_id(report_context) {
         Some(value) => value,
         None => return Ok(false),
     };
+    // Runtime headers can be partial (for example only the primary window),
+    // so absence never authoritatively removes another stored window.
+    let coverage = admin_provider_quota_pure::CodexQuotaWindowCoverage::Patch;
 
-    let now_unix_secs = current_unix_secs();
-    let provider_headers = report_context_provider_response_headers(report_context);
-    let parsed_from_provider_headers = provider_headers.as_ref().and_then(|headers| {
-        admin_provider_quota_pure::parse_codex_usage_headers(headers, now_unix_secs)
-    });
-    let Some(parsed) = parsed_from_provider_headers
-        .or_else(|| admin_provider_quota_pure::parse_codex_usage_headers(headers, now_unix_secs))
-    else {
-        return Ok(false);
-    };
-    let Some(incoming_fingerprint) = fingerprint_codex_payload(&parsed) else {
-        return Ok(false);
-    };
+    for attempt in 0..RUNTIME_METADATA_CAS_MAX_ATTEMPTS {
+        let Some(key) = state
+            .read_provider_catalog_keys_by_ids(std::slice::from_ref(&key_id))
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(false);
+        };
 
-    let now = Instant::now();
-    if get_cached_codex_quota_fingerprint(&key_id, now).as_deref()
-        == Some(incoming_fingerprint.as_str())
-    {
-        return Ok(false);
+        let Some(provider) = state
+            .read_provider_catalog_providers_by_ids(std::slice::from_ref(&key.provider_id))
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(false);
+        };
+        if !provider.provider_type.trim().eq_ignore_ascii_case("codex") {
+            return Ok(false);
+        }
+
+        let expected_namespace_value =
+            upstream_metadata_namespace_value(key.upstream_metadata.as_ref(), "codex");
+        let Some(outcome) = admin_provider_quota_pure::merge_codex_quota_metadata_snapshot(
+            expected_namespace_value.as_ref(),
+            &parsed,
+            admin_provider_quota_pure::CodexQuotaMergeContext {
+                observed_at_unix_secs,
+                request_started_at_unix_ms,
+                request_order_id,
+                observed_reset_generation,
+                authoritative_reset_generation: None,
+                observed_credential_generation,
+                account_reset_fence_id: None,
+                coverage,
+            },
+        ) else {
+            return Ok(false);
+        };
+        if !outcome.changed {
+            return Ok(false);
+        }
+        let next_codex = outcome.metadata;
+        let updated_upstream_metadata =
+            merge_metadata_object(key.upstream_metadata.as_ref(), "codex", next_codex.clone());
+        let updated_status_snapshot = sync_provider_key_quota_status_snapshot(
+            key.status_snapshot.as_ref(),
+            provider.provider_type.as_str(),
+            updated_upstream_metadata.as_ref(),
+            source,
+        );
+        let updated = state
+            .update_provider_catalog_key_runtime_metadata(
+                &ProviderCatalogKeyRuntimeMetadataUpdate {
+                    key_id: key_id.clone(),
+                    namespace: "codex".to_string(),
+                    expected_upstream_metadata_value: expected_namespace_value,
+                    upstream_metadata_value: next_codex,
+                    status_snapshot_patch: quota_status_snapshot_patch(
+                        updated_status_snapshot.as_ref(),
+                    ),
+                    updated_at_unix_secs: Some(observed_at_unix_secs),
+                },
+            )
+            .await?;
+        if updated {
+            return Ok(true);
+        }
+        if attempt + 1 < RUNTIME_METADATA_CAS_MAX_ATTEMPTS {
+            let backoff_us = 50_u64.saturating_mul((attempt + 1) as u64).min(1_000);
+            tokio::time::sleep(Duration::from_micros(backoff_us)).await;
+        }
     }
-
-    let Some(key) = state
-        .read_provider_catalog_keys_by_ids(std::slice::from_ref(&key_id))
-        .await?
-        .into_iter()
-        .next()
-    else {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
-        return Ok(false);
-    };
-
-    let Some(provider) = state
-        .read_provider_catalog_providers_by_ids(std::slice::from_ref(&key.provider_id))
-        .await?
-        .into_iter()
-        .next()
-    else {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
-        return Ok(false);
-    };
-    if !provider.provider_type.trim().eq_ignore_ascii_case("codex") {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
-        return Ok(false);
-    }
-
-    let expected_namespace_value =
-        upstream_metadata_namespace_value(key.upstream_metadata.as_ref(), "codex");
-    let current_codex = expected_namespace_value
-        .clone()
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
-    let current_codex = Value::Object(current_codex);
-    let Some(current_fingerprint) = fingerprint_codex_payload(&current_codex) else {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
-        return Ok(false);
-    };
-    if current_fingerprint == incoming_fingerprint {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
-        return Ok(false);
-    }
-
-    let updated_upstream_metadata =
-        merge_metadata_object(key.upstream_metadata.as_ref(), "codex", parsed.clone());
-    let updated_status_snapshot = sync_provider_key_quota_status_snapshot(
-        key.status_snapshot.as_ref(),
-        provider.provider_type.as_str(),
-        updated_upstream_metadata.as_ref(),
-        "response_headers",
-    );
-    let updated = state
-        .update_provider_catalog_key_runtime_metadata(&ProviderCatalogKeyRuntimeMetadataUpdate {
-            key_id: key_id.clone(),
-            namespace: "codex".to_string(),
-            expected_upstream_metadata_value: expected_namespace_value,
-            upstream_metadata_value: parsed.clone(),
-            status_snapshot_patch: quota_status_snapshot_patch(updated_status_snapshot.as_ref()),
-            updated_at_unix_secs: Some(now_unix_secs),
-        })
-        .await?;
-    if updated {
-        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint.clone(), now);
-        return Ok(true);
-    }
-    // Response headers describe an authoritative quota snapshot.  A CAS
-    // conflict means a newer snapshot/delta won, so avoid replaying stale
-    // data over it.
     Ok(false)
 }
 
-#[cfg(test)]
-pub(crate) fn clear_local_report_effect_caches_for_tests() {
-    if let Some(cache) = CODEX_QUOTA_HEADER_FINGERPRINT_CACHE.get() {
-        cache
-            .lock()
-            .expect("codex realtime quota cache should lock")
-            .clear();
-    }
+pub(crate) async fn sync_codex_websocket_quota_metadata(
+    state: &AppState,
+    report_context: Option<&Value>,
+    parsed: Value,
+) -> Result<bool, GatewayError> {
+    sync_codex_quota_metadata(state, report_context, parsed, "websocket_response_body").await
 }
+
+#[cfg(test)]
+pub(crate) fn clear_local_report_effect_caches_for_tests() {}
 
 #[cfg(test)]
 mod tests {
@@ -949,6 +1036,151 @@ mod tests {
     use std::sync::Arc;
 
     use crate::data::GatewayDataState;
+
+    fn codex_headers(used_percent: f64, reset_at: u64) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("x-codex-plan-type".to_string(), "free".to_string()),
+            (
+                "x-codex-primary-used-percent".to_string(),
+                used_percent.to_string(),
+            ),
+            ("x-codex-primary-reset-at".to_string(), reset_at.to_string()),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+        ])
+    }
+
+    fn codex_test_state(key_id: &str) -> AppState {
+        let provider = StoredProviderCatalogProvider::new(
+            "codex-provider".to_string(),
+            "Codex".to_string(),
+            None,
+            "codex".to_string(),
+        )
+        .expect("provider should build");
+        let key = StoredProviderCatalogKey::new(
+            key_id.to_string(),
+            provider.id.clone(),
+            "Codex Key".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build");
+        let repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+            vec![provider],
+            vec![],
+            vec![key],
+        ));
+        AppState::new()
+            .expect("gateway state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(repository),
+            )
+    }
+
+    async fn stored_codex_metadata(state: &AppState, key_id: &str) -> Value {
+        state
+            .read_provider_catalog_keys_by_ids(&[key_id.to_string()])
+            .await
+            .expect("key should reload")
+            .pop()
+            .and_then(|key| key.upstream_metadata)
+            .and_then(|metadata| metadata.get("codex").cloned())
+            .expect("codex metadata should exist")
+    }
+
+    #[tokio::test]
+    async fn out_of_order_codex_quota_reports_keep_max_usage_and_allow_next_reset() {
+        clear_local_report_effect_caches_for_tests();
+        let key_id = "codex-out-of-order-quota-key";
+        let state = codex_test_state(key_id);
+        let report_context = json!({"key_id": key_id});
+        let reset_at = 2_000_000_000u64;
+        let higher = codex_headers(60.0, reset_at);
+        let lower = codex_headers(50.0, reset_at);
+
+        let (higher_result, lower_result) = tokio::join!(
+            sync_codex_quota_from_response_headers(&state, Some(&report_context), &higher),
+            sync_codex_quota_from_response_headers(&state, Some(&report_context), &lower),
+        );
+        higher_result.expect("higher quota report should complete");
+        lower_result.expect("lower quota report should complete");
+
+        let stored = stored_codex_metadata(&state, key_id).await;
+        assert_eq!(stored["primary_used_percent"], json!(60.0));
+        assert_eq!(stored["primary_reset_at"], json!(reset_at));
+
+        let next_reset_at = reset_at + 18_000;
+        assert!(sync_codex_quota_from_response_headers(
+            &state,
+            Some(&report_context),
+            &codex_headers(2.0, next_reset_at),
+        )
+        .await
+        .expect("new reset quota report should complete"));
+        let reset = stored_codex_metadata(&state, key_id).await;
+        assert_eq!(reset["primary_used_percent"], json!(2.0));
+        assert_eq!(reset["primary_reset_at"], json!(next_reset_at));
+    }
+
+    #[tokio::test]
+    async fn non_success_sync_report_does_not_persist_codex_quota_headers() {
+        let key_id = "codex-non-success-sync-report";
+        let state = codex_test_state(key_id);
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-non-success-sync".to_string(),
+            report_kind: "openai_responses_sync_error".to_string(),
+            report_context: Some(json!({"key_id": key_id})),
+            status_code: 401,
+            headers: codex_headers(85.0, 2_000_000_000),
+            body_json: None,
+            client_body_json: None,
+            body_base64: None,
+            telemetry: None,
+        };
+
+        apply_local_report_effect(&state, LocalReportEffect::Sync { payload: &payload }).await;
+
+        let stored = state
+            .read_provider_catalog_keys_by_ids(&[key_id.to_string()])
+            .await
+            .expect("key should reload")
+            .pop()
+            .expect("key should exist");
+        assert!(stored.upstream_metadata.is_none());
+    }
+
+    #[tokio::test]
+    async fn non_success_stream_report_does_not_persist_codex_quota_headers() {
+        let key_id = "codex-non-success-stream-report";
+        let state = codex_test_state(key_id);
+        let payload = GatewayStreamReportRequest {
+            trace_id: "trace-non-success-stream".to_string(),
+            report_kind: "openai_responses_stream_error".to_string(),
+            report_context: Some(json!({"key_id": key_id})),
+            status_code: 429,
+            headers: codex_headers(95.0, 2_000_000_000),
+            provider_body_base64: None,
+            provider_body_state: None,
+            client_body_base64: None,
+            client_body_state: None,
+            terminal_summary: None,
+            telemetry: None,
+        };
+
+        apply_local_report_effect(&state, LocalReportEffect::Stream { payload: &payload }).await;
+
+        let stored = state
+            .read_provider_catalog_keys_by_ids(&[key_id.to_string()])
+            .await
+            .expect("key should reload")
+            .pop()
+            .expect("key should exist");
+        assert!(stored.upstream_metadata.is_none());
+    }
 
     #[tokio::test]
     async fn gemini_report_metadata_write_preserves_adaptive_and_other_provider_state() {

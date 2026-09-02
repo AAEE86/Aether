@@ -86,6 +86,52 @@ impl GatewayLocalCandidatePreselectionPort<'_> {
     }
 }
 
+/// A Responses compaction request carries the OpenAI-only `compaction_trigger`
+/// control item.  It must stay on an OpenAI Responses endpoint: treating it as
+/// an ordinary cross-format request would make Gemini/Claude candidates look
+/// eligible and defer the inevitable lossy-conversion failure until payload
+/// construction.
+fn request_candidate_api_formats_for_operation(
+    client_api_format: &str,
+    require_streaming: bool,
+    request_operation: Option<&str>,
+) -> Vec<String> {
+    let candidate_api_formats =
+        crate::ai_serving::request_candidate_api_formats(client_api_format, require_streaming)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+    restrict_candidate_api_formats_for_operation(
+        client_api_format,
+        request_operation,
+        candidate_api_formats,
+    )
+}
+
+fn restrict_candidate_api_formats_for_operation(
+    client_api_format: &str,
+    request_operation: Option<&str>,
+    candidate_api_formats: Vec<String>,
+) -> Vec<String> {
+    let is_responses_compaction = request_operation.is_some_and(|operation| {
+        operation.eq_ignore_ascii_case(crate::ai_serving::OPENAI_RESPONSES_OPERATION_COMPACT)
+    });
+    let is_standard_responses_client =
+        crate::ai_serving::normalize_api_format_alias(client_api_format) == "openai:responses";
+    if !(is_responses_compaction && is_standard_responses_client) {
+        return candidate_api_formats;
+    }
+
+    candidate_api_formats
+        .into_iter()
+        .filter(|candidate_api_format| {
+            crate::ai_serving::normalize_api_format_alias(candidate_api_format)
+                == "openai:responses"
+        })
+        .collect()
+}
+
 #[async_trait]
 impl AiCandidatePreselectionPort for GatewayLocalCandidatePreselectionPort<'_> {
     type Candidate = SchedulerMinimalCandidateSelectionCandidate;
@@ -128,6 +174,8 @@ impl AiCandidatePreselectionPort for GatewayLocalCandidatePreselectionPort<'_> {
                 self.ranking_seed,
                 false,
                 self.request_operation,
+                self.routing_policy
+                    .map(SchedulerOrderingConfig::from_routing_policy),
             )
             .await?;
 
@@ -219,11 +267,11 @@ pub(crate) async fn preselect_local_execution_candidates_with_serving(
     >,
     GatewayError,
 > {
-    let candidate_api_formats =
-        crate::ai_serving::request_candidate_api_formats(client_api_format, require_streaming)
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+    let candidate_api_formats = request_candidate_api_formats_for_operation(
+        client_api_format,
+        require_streaming,
+        request_operation,
+    );
     preselect_local_execution_candidates_for_api_formats_with_serving(
         state,
         model_directive_policy,
@@ -264,6 +312,11 @@ pub(crate) async fn preselect_local_execution_candidates_for_api_formats_with_se
     >,
     GatewayError,
 > {
+    let candidate_api_formats = restrict_candidate_api_formats_for_operation(
+        client_api_format,
+        request_operation,
+        candidate_api_formats,
+    );
     let model_directive_routing_models = resolve_model_directive_routing_models(
         model_directive_policy,
         &candidate_api_formats,
@@ -362,11 +415,11 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
         allow_priority_page_cache: bool,
         trace_id: Option<&str>,
     ) -> Self {
-        let candidate_api_formats =
-            crate::ai_serving::request_candidate_api_formats(client_api_format, require_streaming)
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>();
+        let candidate_api_formats = request_candidate_api_formats_for_operation(
+            client_api_format,
+            require_streaming,
+            request_operation,
+        );
         let model_directive_routing_models = resolve_model_directive_routing_models(
             model_directive_policy,
             &candidate_api_formats,
@@ -1240,6 +1293,9 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                     .then_some(self.client_session_affinity.as_ref())
                     .flatten(),
                 self.ranking_seed,
+                self.routing_policy
+                    .as_ref()
+                    .map(SchedulerOrderingConfig::from_routing_policy),
             )
             .await?;
         let skipped_candidates = skipped_candidates
@@ -1436,6 +1492,31 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn compaction_operation_excludes_non_responses_provider_formats() {
+        assert_eq!(
+            request_candidate_api_formats_for_operation("openai:responses", true, Some("compact"),),
+            vec!["openai:responses"]
+        );
+        assert_eq!(
+            request_candidate_api_formats_for_operation("openai:responses", true, None),
+            vec![
+                "openai:responses",
+                "openai:chat",
+                "claude:messages",
+                "gemini:generate_content"
+            ]
+        );
+        assert_eq!(
+            request_candidate_api_formats_for_operation(
+                "openai:responses:compact",
+                false,
+                Some("compact"),
+            ),
+            vec!["openai:responses:compact"]
+        );
+    }
 
     #[derive(Default)]
     struct EmptyFallbackCountingRepository {
@@ -1808,6 +1889,7 @@ mod tests {
             priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: Default::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: Default::default(),
@@ -1871,6 +1953,7 @@ mod tests {
             priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: Default::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: Default::default(),
@@ -2581,14 +2664,16 @@ mod tests {
                 candidate_repository,
             )
             .with_encryption_key_for_tests("development-key")
+            // Legacy keys deliberately disagree with the routing policy: the
+            // resolved policy must be the only source of scheduler ordering.
             .with_system_config_values_for_tests([
                 (
                     "scheduling_mode".to_string(),
-                    serde_json::json!("fixed_order"),
+                    serde_json::json!("cache_affinity"),
                 ),
                 (
                     "keep_priority_on_conversion".to_string(),
-                    serde_json::json!(true),
+                    serde_json::json!(false),
                 ),
             ]);
         let app = AppState::new()
@@ -2605,7 +2690,8 @@ mod tests {
             resolved_model: "gpt-5.4-mini".to_string(),
             priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
-            keep_priority_on_conversion: false,
+            keep_priority_on_conversion: true,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: Default::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: Default::default(),

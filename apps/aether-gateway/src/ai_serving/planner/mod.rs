@@ -38,6 +38,7 @@ pub(crate) use self::common::resolve_upstream_is_stream_for_provider;
 pub(crate) use self::passthrough::{
     build_local_same_format_stream_attempt_source, build_local_same_format_stream_plan_and_reports,
     build_local_same_format_sync_attempt_source, build_local_same_format_sync_plan_and_reports,
+    maybe_build_pinned_stream_local_same_format_provider_decision_payload,
 };
 pub(crate) use self::plan_builders::{
     build_gemini_stream_plan_from_decision, build_gemini_sync_plan_from_decision,
@@ -49,6 +50,7 @@ pub(crate) use self::plan_builders::{
 pub(crate) use self::pool_scores::{
     build_provider_key_pool_score_upsert, provider_key_pool_score_id, provider_key_pool_score_scope,
 };
+pub(crate) use self::redaction::resolve_provider_chat_pii_redaction;
 pub(crate) use self::request_gzip::resolve_transport_request_encoding_policy;
 pub(crate) use self::route::is_matching_stream_request as planner_is_matching_stream_request;
 pub(crate) use self::runtime_miss::{
@@ -80,8 +82,10 @@ pub(crate) use self::standard::{
     build_local_stream_plan_and_reports as build_standard_family_stream_plan_and_reports,
     build_local_sync_attempt_source as build_standard_family_sync_attempt_source,
     build_local_sync_plan_and_reports as build_standard_family_sync_plan_and_reports,
-    codex_model_capabilities_for_transport, set_local_openai_chat_execution_exhausted_diagnostic,
-    validate_final_openai_provider_request,
+    codex_model_capabilities_for_transport, maybe_build_responses_websocket_decision,
+    openai_responses_reasoning_replay_policy, set_local_openai_chat_execution_exhausted_diagnostic,
+    validate_final_openai_provider_request, ResponsesWebSocketBodyNormalization,
+    ResponsesWebSocketDecision, ResponsesWebSocketPinnedCandidate,
 };
 pub(crate) use self::state::{
     GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalResolvedOAuthRequestAuth,

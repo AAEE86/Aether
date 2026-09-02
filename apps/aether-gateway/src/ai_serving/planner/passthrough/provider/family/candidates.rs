@@ -26,6 +26,7 @@ use crate::ai_serving::{
 };
 use crate::client_session_affinity::client_session_affinity_from_api_request;
 use crate::clock::current_unix_secs;
+use crate::scheduler::config::SchedulerOrderingConfig;
 use crate::{AppState, GatewayError};
 
 use super::{
@@ -140,6 +141,10 @@ pub(crate) async fn materialize_local_same_format_provider_candidate_attempts(
             current_unix_secs(),
             false,
             spec.operation.map(|operation| operation.as_str()),
+            input
+                .routing_policy
+                .as_ref()
+                .map(SchedulerOrderingConfig::from_routing_policy),
         )
         .await?;
     let outcome = materialize_local_execution_candidates_with_serving(
@@ -167,20 +172,21 @@ pub(crate) async fn materialize_local_same_format_provider_candidate_attempts(
             .collect(),
         LocalCandidateResolutionMode::Standard,
         |eligible| {
+            let provider_api_format = eligible.provider_api_format.clone();
             let (execution_strategy, conversion_mode) = ai_local_execution_contract_for_formats(
                 spec_metadata.api_format,
-                spec_metadata.api_format,
+                &provider_api_format,
             );
             Some(build_local_execution_candidate_contract_metadata(
                 LocalExecutionCandidateMetadataParts {
                     eligible,
-                    provider_api_format: spec_metadata.api_format,
+                    provider_api_format: provider_api_format.as_str(),
                     client_api_format: spec_metadata.api_format,
                     extra_fields: serde_json::Map::new(),
                 },
                 execution_strategy,
                 conversion_mode,
-                spec_metadata.api_format,
+                provider_api_format.as_str(),
             ))
         },
         |mut skipped_candidate| {
@@ -245,6 +251,10 @@ pub(crate) async fn build_local_same_format_provider_candidate_attempt_source<'a
             current_unix_secs(),
             false,
             spec.operation.map(|operation| operation.as_str()),
+            input
+                .routing_policy
+                .as_ref()
+                .map(SchedulerOrderingConfig::from_routing_policy),
         )
         .await?;
 
@@ -273,20 +283,21 @@ pub(crate) async fn build_local_same_format_provider_candidate_attempt_source<'a
             .collect(),
         LocalCandidateResolutionMode::Standard,
         |eligible| {
+            let provider_api_format = eligible.provider_api_format.clone();
             let (execution_strategy, conversion_mode) = ai_local_execution_contract_for_formats(
                 spec_metadata.api_format,
-                spec_metadata.api_format,
+                &provider_api_format,
             );
             Some(build_local_execution_candidate_contract_metadata(
                 LocalExecutionCandidateMetadataParts {
                     eligible,
-                    provider_api_format: spec_metadata.api_format,
+                    provider_api_format: provider_api_format.as_str(),
                     client_api_format: spec_metadata.api_format,
                     extra_fields: serde_json::Map::new(),
                 },
                 execution_strategy,
                 conversion_mode,
-                spec_metadata.api_format,
+                provider_api_format.as_str(),
             ))
         },
         |mut skipped_candidate| {

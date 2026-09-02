@@ -1,7 +1,9 @@
 use self::selection::{
-    collect_selectable_candidates, collect_selectable_candidates_with_skip_reasons,
+    collect_selectable_candidates, collect_selectable_candidates_with_skip_reasons_and_ordering,
     collect_selectable_enumerated_candidates_with_skip_reasons,
+    resolve_preselection_ordering_config,
 };
+use super::config::SchedulerOrderingConfig;
 use super::state::SchedulerRuntimeState;
 
 mod affinity;
@@ -53,6 +55,10 @@ enum RequiredCapabilityMatchMode {
     Exclusive,
 }
 
+/// `ordering_config` carries the request's routing-policy derived scheduler
+/// config. `None` falls back to the runtime default (system-default routing
+/// group, then legacy system-config keys).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn list_selectable_candidates(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -64,6 +70,7 @@ pub(crate) async fn list_selectable_candidates(
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
     enable_model_directives: bool,
+    ordering_config: Option<SchedulerOrderingConfig>,
 ) -> Result<Vec<SchedulerMinimalCandidateSelectionCandidate>, GatewayError> {
     collect_selectable_candidates(
         selection_row_source,
@@ -76,6 +83,7 @@ pub(crate) async fn list_selectable_candidates(
         client_session_affinity,
         now_unix_secs,
         enable_model_directives,
+        ordering_config,
     )
     .await
 }
@@ -87,6 +95,7 @@ pub(crate) fn is_exact_all_skipped_by_auth_limit(
     selection::is_exact_all_skipped_by_auth_limit(selected, skipped)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn list_selectable_candidates_with_skip_reasons(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -98,6 +107,7 @@ pub(crate) async fn list_selectable_candidates_with_skip_reasons(
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
     enable_model_directives: bool,
+    ordering_config: Option<SchedulerOrderingConfig>,
 ) -> Result<
     (
         Vec<SchedulerMinimalCandidateSelectionCandidate>,
@@ -105,7 +115,7 @@ pub(crate) async fn list_selectable_candidates_with_skip_reasons(
     ),
     GatewayError,
 > {
-    collect_selectable_candidates_with_skip_reasons(
+    collect_selectable_candidates_with_skip_reasons_and_ordering(
         selection_row_source,
         runtime_state,
         api_format,
@@ -117,10 +127,12 @@ pub(crate) async fn list_selectable_candidates_with_skip_reasons(
         now_unix_secs,
         enable_model_directives,
         None,
+        ordering_config,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn list_selectable_candidates_with_skip_reasons_for_request_operation(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -133,6 +145,7 @@ pub(crate) async fn list_selectable_candidates_with_skip_reasons_for_request_ope
     now_unix_secs: u64,
     enable_model_directives: bool,
     request_operation: Option<&str>,
+    ordering_config: Option<SchedulerOrderingConfig>,
 ) -> Result<
     (
         Vec<SchedulerMinimalCandidateSelectionCandidate>,
@@ -140,7 +153,7 @@ pub(crate) async fn list_selectable_candidates_with_skip_reasons_for_request_ope
     ),
     GatewayError,
 > {
-    collect_selectable_candidates_with_skip_reasons(
+    collect_selectable_candidates_with_skip_reasons_and_ordering(
         selection_row_source,
         runtime_state,
         api_format,
@@ -152,6 +165,7 @@ pub(crate) async fn list_selectable_candidates_with_skip_reasons_for_request_ope
         now_unix_secs,
         enable_model_directives,
         request_operation,
+        ordering_config,
     )
     .await
 }
@@ -166,6 +180,7 @@ pub(crate) async fn list_selectable_enumerated_candidates_with_skip_reasons(
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
+    ordering_config: Option<SchedulerOrderingConfig>,
 ) -> Result<
     (
         Vec<SchedulerMinimalCandidateSelectionCandidate>,
@@ -173,7 +188,8 @@ pub(crate) async fn list_selectable_enumerated_candidates_with_skip_reasons(
     ),
     GatewayError,
 > {
-    let ordering_config = runtime_state.read_scheduler_ordering_config().await?;
+    let ordering_config =
+        resolve_preselection_ordering_config(runtime_state, ordering_config).await?;
     let priority_affinity_key = selection::scheduling_priority_affinity_key(
         auth_snapshot,
         client_session_affinity,
@@ -194,6 +210,7 @@ pub(crate) async fn list_selectable_enumerated_candidates_with_skip_reasons(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn list_selectable_candidates_for_required_capability_without_requested_model(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -203,6 +220,7 @@ pub(crate) async fn list_selectable_candidates_for_required_capability_without_r
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
+    ordering_config: Option<SchedulerOrderingConfig>,
 ) -> Result<Vec<SchedulerMinimalCandidateSelectionCandidate>, GatewayError> {
     Ok(
         list_selectable_candidates_for_required_capability_without_requested_model_with_auth_limit_signal(
@@ -214,12 +232,14 @@ pub(crate) async fn list_selectable_candidates_for_required_capability_without_r
             auth_snapshot,
             client_session_affinity,
             now_unix_secs,
+            ordering_config,
         )
         .await?
         .0,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn list_selectable_candidates_for_required_capability_without_requested_model_with_auth_limit_signal(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -229,6 +249,7 @@ pub(crate) async fn list_selectable_candidates_for_required_capability_without_r
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
+    ordering_config: Option<SchedulerOrderingConfig>,
 ) -> Result<(Vec<SchedulerMinimalCandidateSelectionCandidate>, bool), GatewayError> {
     let normalized_api_format = normalize_api_format(candidate_api_format);
     if normalized_api_format.is_empty() {
@@ -262,20 +283,22 @@ pub(crate) async fn list_selectable_candidates_for_required_capability_without_r
     let mut all_attempts_blocked_by_auth_limit = !model_names.is_empty();
 
     for global_model_name in model_names {
-        let (candidates, skipped_candidates) = collect_selectable_candidates_with_skip_reasons(
-            selection_row_source,
-            runtime_state,
-            &normalized_api_format,
-            &global_model_name,
-            require_streaming,
-            required_capabilities.as_ref(),
-            auth_snapshot,
-            client_session_affinity,
-            now_unix_secs,
-            false,
-            None,
-        )
-        .await?;
+        let (candidates, skipped_candidates) =
+            collect_selectable_candidates_with_skip_reasons_and_ordering(
+                selection_row_source,
+                runtime_state,
+                &normalized_api_format,
+                &global_model_name,
+                require_streaming,
+                required_capabilities.as_ref(),
+                auth_snapshot,
+                client_session_affinity,
+                now_unix_secs,
+                false,
+                None,
+                ordering_config,
+            )
+            .await?;
         all_attempts_blocked_by_auth_limit &=
             is_exact_all_skipped_by_auth_limit(&candidates, &skipped_candidates);
         match capability_mode {

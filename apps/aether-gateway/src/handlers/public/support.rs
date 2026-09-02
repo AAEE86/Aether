@@ -54,6 +54,8 @@ mod support_vscodex;
 mod support_wallet;
 
 pub(crate) use self::support_announcements::maybe_build_local_admin_announcements_response;
+#[cfg(test)]
+pub(crate) use self::support_models::filter_eligible_model_rows;
 pub(crate) use self::support_models::matches_model_mapping_for_models;
 
 use self::support_announcements::{

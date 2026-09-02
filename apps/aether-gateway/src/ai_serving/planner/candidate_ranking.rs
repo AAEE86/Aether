@@ -3,7 +3,7 @@ use aether_ai_serving::{
     AiCandidateRankingPort, AiRankableCandidateParts, AiRankingContextConfig,
     AiRankingSchedulingMode,
 };
-use aether_routing_core::{ResolvedRoutingPolicy, RoutingSchedulingMode, RoutingSetPriorityMode};
+use aether_routing_core::ResolvedRoutingPolicy;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -184,35 +184,16 @@ fn ai_ranking_scheduling_mode(mode: SchedulerSchedulingMode) -> AiRankingSchedul
     }
 }
 
+/// Ordering config for a request. A resolved routing policy is authoritative
+/// and is never merged with legacy system-config values; without a policy the
+/// effective default (system-default routing group, then legacy keys) applies.
 pub(crate) async fn scheduler_ordering_config_for_routing_policy(
     state: PlannerAppState<'_>,
     routing_policy: Option<&ResolvedRoutingPolicy>,
 ) -> SchedulerOrderingConfig {
-    let system_config = read_scheduler_ordering_config_or_default(state).await;
     match routing_policy {
-        Some(policy) => {
-            let mut config = scheduler_ordering_config_from_routing_policy(policy);
-            config.keep_priority_on_conversion |= system_config.keep_priority_on_conversion;
-            config
-        }
-        None => system_config,
-    }
-}
-
-fn scheduler_ordering_config_from_routing_policy(
-    policy: &ResolvedRoutingPolicy,
-) -> SchedulerOrderingConfig {
-    SchedulerOrderingConfig {
-        priority_mode: match policy.priority_mode {
-            RoutingSetPriorityMode::Provider => SchedulerPriorityMode::Provider,
-            RoutingSetPriorityMode::GlobalKey => SchedulerPriorityMode::GlobalKey,
-        },
-        scheduling_mode: match policy.scheduling_mode {
-            RoutingSchedulingMode::FixedOrder => SchedulerSchedulingMode::FixedOrder,
-            RoutingSchedulingMode::CacheAffinity => SchedulerSchedulingMode::CacheAffinity,
-            RoutingSchedulingMode::LoadBalance => SchedulerSchedulingMode::LoadBalance,
-        },
-        keep_priority_on_conversion: policy.keep_priority_on_conversion,
+        Some(policy) => SchedulerOrderingConfig::from_routing_policy(policy),
+        None => read_scheduler_ordering_config_or_default(state).await,
     }
 }
 
@@ -231,14 +212,26 @@ fn routing_overlaid_candidate(
     let overlaid_key_priority = match kind {
         LocalExecutionCandidateKind::SingleKey => policy
             .ranking_overlay
-            .key_priority_overrides
-            .get(candidate.key_id.as_str()),
+            .key_priority_override_matching_format(candidate.key_id.as_str(), |format| {
+                crate::ai_serving::api_format_alias_matches(
+                    format,
+                    candidate.endpoint_api_format.as_str(),
+                )
+            })
+            .or_else(|| {
+                policy
+                    .ranking_overlay
+                    .key_priority_overrides
+                    .get(candidate.key_id.as_str())
+                    .copied()
+            }),
         LocalExecutionCandidateKind::PoolGroup => policy
             .ranking_overlay
             .pool_priority_overrides
-            .get(candidate.provider_id.as_str()),
+            .get(candidate.provider_id.as_str())
+            .copied(),
     };
-    if let Some(overlaid_key_priority) = overlaid_key_priority.copied() {
+    if let Some(overlaid_key_priority) = overlaid_key_priority {
         overlaid.key_internal_priority = overlaid_key_priority;
         overlaid.key_global_priority_for_format = Some(overlaid_key_priority);
     }
@@ -378,6 +371,7 @@ mod tests {
             priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: aether_routing_core::RankingOverlay::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: BTreeMap::new(),
@@ -396,7 +390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_policy_inherits_global_conversion_priority_override() {
+    async fn routing_policy_ignores_legacy_global_conversion_priority_override() {
         let data_state = GatewayDataState::default().with_system_config_values_for_tests([(
             "keep_priority_on_conversion".to_string(),
             json!(true),
@@ -413,6 +407,7 @@ mod tests {
             priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: Default::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: Default::default(),
@@ -429,7 +424,10 @@ mod tests {
             ordering.scheduling_mode,
             crate::scheduler::config::SchedulerSchedulingMode::FixedOrder
         );
-        assert!(ordering.keep_priority_on_conversion);
+        assert!(
+            !ordering.keep_priority_on_conversion,
+            "a resolved routing policy must not inherit the legacy system-config flag"
+        );
     }
 
     #[test]
@@ -447,6 +445,7 @@ mod tests {
             priority_mode: aether_routing_core::RoutingSetPriorityMode::GlobalKey,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: aether_routing_core::RankingOverlay {
                 pool_priority_overrides: BTreeMap::from([("provider-1".to_string(), 4)]),
                 key_priority_overrides: BTreeMap::from([("representative-key".to_string(), 1)]),

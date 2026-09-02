@@ -10,6 +10,9 @@ const OAUTH_REFRESH_FAILED_PREFIX: &str = "[REFRESH_FAILED] ";
 const OAUTH_EXPIRED_PREFIX: &str = "[OAUTH_EXPIRED] ";
 const OAUTH_REQUEST_FAILED_PREFIX: &str = "[REQUEST_FAILED] ";
 const CODEX_SPARK_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
+const CODEX_ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";
+const CODEX_HEADER_PREFIX: &str = "x-codex-";
+const CODEX_LIMIT_NAME_HEADER_SUFFIX: &str = "-limit-name";
 
 pub fn provider_auto_remove_banned_keys(config: Option<&serde_json::Value>) -> bool {
     config
@@ -616,6 +619,1317 @@ pub fn build_codex_quota_exhausted_fallback_metadata(
     serde_json::Value::Object(object)
 }
 
+const CODEX_QUOTA_WINDOW_SUFFIXES: &[&str] = &[
+    "used_percent",
+    "reset_seconds",
+    "reset_after_seconds",
+    "reset_at",
+    "next_reset_at",
+    "window_minutes",
+];
+const CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS: u64 = 30;
+// Header and WHAM observations for the same active limit can be a few requests apart. Keep the
+// historical-contamination fingerprint tolerant of that small movement, but require a close
+// usage match so coincidentally aligned account and Spark reset deadlines are not enough.
+const CODEX_QUOTA_CONTAMINATION_USAGE_TOLERANCE_PERCENT: f64 = 5.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexQuotaWindowCoverage {
+    Patch,
+    AccountSnapshot,
+    FullSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodexQuotaMergeContext<'a> {
+    pub observed_at_unix_secs: u64,
+    pub request_started_at_unix_ms: Option<u64>,
+    pub request_order_id: Option<&'a str>,
+    /// Reset generation captured before the upstream request was sent.
+    /// Once a key has entered generation 1, an absent or different value is
+    /// treated as a pre-reset observation for account quota and metadata.
+    pub observed_reset_generation: Option<u64>,
+    /// Generation owned by an explicit reset reconciliation request. Normal
+    /// quota observations leave this unset, but a complete account snapshot
+    /// started after the reset fence may still reconcile a delayed reset.
+    pub authoritative_reset_generation: Option<u64>,
+    /// Non-secret credential generation captured with the transport snapshot.
+    pub observed_credential_generation: Option<&'a str>,
+    /// Identifies the reset-credit fence that authorized this observation.
+    /// Retained for generation-0 rolling-upgrade compatibility.
+    pub account_reset_fence_id: Option<&'a str>,
+    pub coverage: CodexQuotaWindowCoverage,
+}
+
+impl<'a> CodexQuotaMergeContext<'a> {
+    fn request_order(self) -> Option<CodexQuotaRequestOrder<'a>> {
+        codex_quota_request_order(self.request_started_at_unix_ms, self.request_order_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodexQuotaMergeOutcome {
+    pub metadata: serde_json::Value,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexQuotaWindowFamily {
+    Account,
+    Spark,
+}
+
+impl CodexQuotaWindowFamily {
+    fn watermark_key(self) -> &'static str {
+        match self {
+            Self::Account => CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_KEY,
+            Self::Spark => CODEX_QUOTA_SPARK_REQUEST_WATERMARK_KEY,
+        }
+    }
+
+    fn watermark_id_key(self) -> &'static str {
+        match self {
+            Self::Account => CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_ID_KEY,
+            Self::Spark => CODEX_QUOTA_SPARK_REQUEST_WATERMARK_ID_KEY,
+        }
+    }
+}
+
+pub const CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_KEY: &str =
+    "account_quota_request_started_at_unix_ms";
+pub const CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_ID_KEY: &str = "account_quota_request_id";
+pub const CODEX_QUOTA_SPARK_REQUEST_WATERMARK_KEY: &str = "spark_quota_request_started_at_unix_ms";
+pub const CODEX_QUOTA_SPARK_REQUEST_WATERMARK_ID_KEY: &str = "spark_quota_request_id";
+pub const CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY: &str =
+    "quota_metadata_request_started_at_unix_ms";
+pub const CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY: &str = "quota_metadata_request_id";
+pub const CODEX_OAUTH_STATE_REQUEST_WATERMARK_KEY: &str = "oauth_state_request_started_at_unix_ms";
+pub const CODEX_OAUTH_STATE_REQUEST_WATERMARK_ID_KEY: &str = "oauth_state_request_id";
+pub const CODEX_QUOTA_ACCOUNT_RESET_FENCE_UNIX_MS_KEY: &str = "account_quota_reset_fence_unix_ms";
+pub const CODEX_QUOTA_ACCOUNT_RESET_FENCE_ID_KEY: &str = "account_quota_reset_fence_id";
+pub const CODEX_QUOTA_ACCOUNT_RESET_PROCESSED_IDS_KEY: &str = "account_quota_reset_processed_ids";
+pub const CODEX_QUOTA_ACCOUNT_RESET_PENDING_KEY: &str = "account_quota_reset_pending";
+pub const CODEX_QUOTA_ACCOUNT_RESET_SEQUENCE_KEY: &str = "account_quota_reset_sequence";
+pub const CODEX_QUOTA_ACCOUNT_RESET_GENERATION_KEY: &str = "account_quota_reset_generation";
+pub const CODEX_QUOTA_ACCOUNT_RESET_PENDING_GENERATION_KEY: &str =
+    "account_quota_reset_pending_generation";
+pub const CODEX_QUOTA_ACCOUNT_RESET_RESERVATION_KEY: &str = "account_quota_reset_reservation";
+pub const CODEX_QUOTA_ACCOUNT_RESET_HISTORY_KEY: &str = "account_quota_reset_history";
+pub const CODEX_CREDENTIAL_GENERATION_KEY: &str = "credential_generation";
+
+pub fn codex_quota_account_reset_generation(codex: Option<&serde_json::Value>) -> u64 {
+    codex
+        .and_then(serde_json::Value::as_object)
+        .and_then(|codex| codex.get(CODEX_QUOTA_ACCOUNT_RESET_GENERATION_KEY))
+        .and_then(coerce_json_u64)
+        .unwrap_or(0)
+}
+
+pub fn codex_credential_generation(codex: Option<&serde_json::Value>) -> Option<&str> {
+    codex
+        .and_then(serde_json::Value::as_object)
+        .and_then(|codex| codex.get(CODEX_CREDENTIAL_GENERATION_KEY))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+pub fn codex_credential_generation_matches(
+    codex: Option<&serde_json::Value>,
+    observed: Option<&str>,
+) -> bool {
+    let observed = observed.map(str::trim).filter(|value| !value.is_empty());
+    codex_credential_generation(codex) == observed
+}
+
+fn codex_quota_observation_matches_reset_generation(
+    object: &serde_json::Map<String, serde_json::Value>,
+    context: CodexQuotaMergeContext<'_>,
+) -> bool {
+    let active_generation = object
+        .get(CODEX_QUOTA_ACCOUNT_RESET_GENERATION_KEY)
+        .and_then(coerce_json_u64)
+        .unwrap_or(0);
+    if active_generation == 0 {
+        context.observed_reset_generation.unwrap_or(0) == 0
+    } else {
+        context.observed_reset_generation == Some(active_generation)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CodexQuotaRequestOrder<'a> {
+    started_at_unix_ms: u64,
+    request_id: Option<&'a str>,
+}
+
+fn codex_quota_request_order<'a>(
+    started_at_unix_ms: Option<u64>,
+    request_id: Option<&'a str>,
+) -> Option<CodexQuotaRequestOrder<'a>> {
+    started_at_unix_ms.map(|started_at_unix_ms| CodexQuotaRequestOrder {
+        started_at_unix_ms,
+        request_id: request_id
+            .map(str::trim)
+            .filter(|request_id| !request_id.is_empty()),
+    })
+}
+
+fn codex_quota_read_request_order<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    watermark_key: &str,
+    watermark_id_key: &str,
+) -> Option<CodexQuotaRequestOrder<'a>> {
+    object
+        .get(watermark_key)
+        .and_then(coerce_json_u64)
+        .map(|started_at_unix_ms| CodexQuotaRequestOrder {
+            started_at_unix_ms,
+            request_id: object
+                .get(watermark_id_key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|request_id| !request_id.is_empty()),
+        })
+}
+
+fn codex_quota_request_order_is_stale(
+    incoming: Option<CodexQuotaRequestOrder<'_>>,
+    current: Option<CodexQuotaRequestOrder<'_>>,
+) -> bool {
+    match (incoming, current) {
+        (Some(incoming), Some(current)) => incoming <= current,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+/// Returns whether an incoming Codex observation is older than or identical
+/// to the stored request order. Request ids break ties within one millisecond;
+/// a legacy watermark without an id sorts before one that has an id.
+pub fn codex_request_order_is_stale(
+    incoming_started_at_unix_ms: Option<u64>,
+    incoming_request_id: Option<&str>,
+    stored_started_at_unix_ms: Option<u64>,
+    stored_request_id: Option<&str>,
+) -> bool {
+    codex_quota_request_order_is_stale(
+        codex_quota_request_order(incoming_started_at_unix_ms, incoming_request_id),
+        codex_quota_request_order(stored_started_at_unix_ms, stored_request_id),
+    )
+}
+
+/// Compares an OAuth-state observation against every persisted Codex response
+/// watermark. Quota-only responses also prove request ordering, so an older
+/// runtime authentication failure cannot override them.
+pub fn codex_oauth_state_request_order_is_stale(
+    codex: Option<&serde_json::Map<String, serde_json::Value>>,
+    incoming_started_at_unix_ms: Option<u64>,
+    incoming_request_id: Option<&str>,
+) -> bool {
+    let stored = codex.and_then(|codex| {
+        [
+            (
+                CODEX_OAUTH_STATE_REQUEST_WATERMARK_KEY,
+                CODEX_OAUTH_STATE_REQUEST_WATERMARK_ID_KEY,
+            ),
+            (
+                CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY,
+            ),
+            (
+                CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_ID_KEY,
+            ),
+            (
+                CODEX_QUOTA_SPARK_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_SPARK_REQUEST_WATERMARK_ID_KEY,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(watermark_key, watermark_id_key)| {
+            codex_quota_read_request_order(codex, watermark_key, watermark_id_key)
+        })
+        .max()
+    });
+    codex_quota_request_order_is_stale(
+        codex_quota_request_order(incoming_started_at_unix_ms, incoming_request_id),
+        stored,
+    )
+}
+
+/// Compares a successful OAuth observation against every persisted Codex
+/// response watermark. Equality is allowed because quota persistence and the
+/// success effect may independently process the same upstream response.
+pub fn codex_oauth_success_request_order_is_stale(
+    codex: Option<&serde_json::Map<String, serde_json::Value>>,
+    incoming_started_at_unix_ms: Option<u64>,
+    incoming_request_id: Option<&str>,
+) -> bool {
+    let stored = codex.and_then(|codex| {
+        [
+            (
+                CODEX_OAUTH_STATE_REQUEST_WATERMARK_KEY,
+                CODEX_OAUTH_STATE_REQUEST_WATERMARK_ID_KEY,
+            ),
+            (
+                CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY,
+            ),
+            (
+                CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_ACCOUNT_REQUEST_WATERMARK_ID_KEY,
+            ),
+            (
+                CODEX_QUOTA_SPARK_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_SPARK_REQUEST_WATERMARK_ID_KEY,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(watermark_key, watermark_id_key)| {
+            codex_quota_read_request_order(codex, watermark_key, watermark_id_key)
+        })
+        .max()
+    });
+    match (
+        codex_quota_request_order(incoming_started_at_unix_ms, incoming_request_id),
+        stored,
+    ) {
+        (Some(incoming), Some(stored)) => incoming < stored,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+fn codex_quota_request_order_is_newer(
+    incoming: CodexQuotaRequestOrder<'_>,
+    current: Option<CodexQuotaRequestOrder<'_>>,
+) -> bool {
+    current.is_none_or(|current| incoming > current)
+}
+
+fn codex_quota_write_request_order(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    watermark_key: &str,
+    watermark_id_key: &str,
+    order: CodexQuotaRequestOrder<'_>,
+) {
+    object.insert(watermark_key.to_string(), json!(order.started_at_unix_ms));
+    if let Some(request_id) = order.request_id {
+        object.insert(watermark_id_key.to_string(), json!(request_id));
+    } else {
+        object.remove(watermark_id_key);
+    }
+}
+
+fn codex_quota_is_request_order_key(key: &str) -> bool {
+    key == CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY
+        || key == CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY
+        || [
+            CodexQuotaWindowFamily::Account,
+            CodexQuotaWindowFamily::Spark,
+        ]
+        .into_iter()
+        .any(|family| key == family.watermark_key() || key == family.watermark_id_key())
+}
+
+fn codex_quota_is_reset_fence_key(key: &str) -> bool {
+    matches!(
+        key,
+        CODEX_QUOTA_ACCOUNT_RESET_FENCE_UNIX_MS_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_FENCE_ID_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_PROCESSED_IDS_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_PENDING_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_SEQUENCE_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_GENERATION_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_PENDING_GENERATION_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_RESERVATION_KEY
+            | CODEX_QUOTA_ACCOUNT_RESET_HISTORY_KEY
+            | CODEX_CREDENTIAL_GENERATION_KEY
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CodexQuotaAccountResetFence<'a> {
+    unix_ms: u64,
+    id: &'a str,
+    pending: bool,
+}
+
+fn codex_quota_account_reset_fence(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<CodexQuotaAccountResetFence<'_>> {
+    let unix_ms = object
+        .get(CODEX_QUOTA_ACCOUNT_RESET_FENCE_UNIX_MS_KEY)
+        .and_then(coerce_json_u64)
+        .filter(|value| *value > 0)?;
+    let id = object
+        .get(CODEX_QUOTA_ACCOUNT_RESET_FENCE_ID_KEY)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let pending = object
+        .get(CODEX_QUOTA_ACCOUNT_RESET_PENDING_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Some(CodexQuotaAccountResetFence {
+        unix_ms,
+        id,
+        pending,
+    })
+}
+
+fn codex_quota_reset_fence_authorizes(
+    fence: CodexQuotaAccountResetFence<'_>,
+    context: CodexQuotaMergeContext<'_>,
+) -> bool {
+    context
+        .account_reset_fence_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(fence.id)
+}
+
+fn codex_quota_request_started_after_reset_fence(
+    fence: CodexQuotaAccountResetFence<'_>,
+    context: CodexQuotaMergeContext<'_>,
+) -> bool {
+    context
+        .request_started_at_unix_ms
+        .is_some_and(|started_at| started_at > fence.unix_ms)
+}
+
+fn codex_quota_reset_fence_blocks(
+    fence: CodexQuotaAccountResetFence<'_>,
+    context: CodexQuotaMergeContext<'_>,
+) -> bool {
+    !codex_quota_reset_fence_authorizes(fence, context)
+        && !codex_quota_request_started_after_reset_fence(fence, context)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CodexQuotaWindowSlot {
+    Primary,
+    Secondary,
+    SparkPrimary,
+    SparkSecondary,
+}
+
+impl CodexQuotaWindowSlot {
+    const ALL: [Self; 4] = [
+        Self::Primary,
+        Self::Secondary,
+        Self::SparkPrimary,
+        Self::SparkSecondary,
+    ];
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+            Self::SparkPrimary => "spark_primary",
+            Self::SparkSecondary => "spark_secondary",
+        }
+    }
+
+    fn family(self) -> CodexQuotaWindowFamily {
+        match self {
+            Self::Primary | Self::Secondary => CodexQuotaWindowFamily::Account,
+            Self::SparkPrimary | Self::SparkSecondary => CodexQuotaWindowFamily::Spark,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CodexQuotaWindowObservation {
+    slot: CodexQuotaWindowSlot,
+    fields: serde_json::Map<String, serde_json::Value>,
+    window_minutes: Option<u64>,
+    deadline: Option<u64>,
+    disabled: bool,
+}
+
+impl CodexQuotaWindowObservation {
+    fn active(&self) -> bool {
+        !self.disabled && !self.fields.is_empty()
+    }
+
+    fn used_percent(&self) -> Option<f64> {
+        self.fields
+            .get("used_percent")
+            .and_then(coerce_json_f64)
+            .filter(|value| value.is_finite())
+    }
+
+    fn persist_deadline(&mut self) {
+        if let Some(deadline) = self.deadline {
+            self.fields.remove("next_reset_at");
+            self.fields.insert("reset_at".to_string(), json!(deadline));
+        }
+    }
+}
+
+fn codex_quota_window_key(slot: CodexQuotaWindowSlot, suffix: &str) -> String {
+    format!("{}_{suffix}", slot.prefix())
+}
+
+fn codex_quota_is_window_key(key: &str) -> bool {
+    CodexQuotaWindowSlot::ALL.iter().any(|slot| {
+        CODEX_QUOTA_WINDOW_SUFFIXES
+            .iter()
+            .any(|suffix| key == codex_quota_window_key(*slot, suffix))
+    })
+}
+
+fn codex_quota_read_window(
+    object: &serde_json::Map<String, serde_json::Value>,
+    slot: CodexQuotaWindowSlot,
+    observed_at_unix_secs: Option<u64>,
+) -> Option<CodexQuotaWindowObservation> {
+    let mut fields = serde_json::Map::new();
+    for suffix in CODEX_QUOTA_WINDOW_SUFFIXES {
+        let key = codex_quota_window_key(slot, suffix);
+        let Some(raw) = object.get(&key) else {
+            continue;
+        };
+        let normalized = match *suffix {
+            "used_percent" => coerce_json_f64(raw)
+                .filter(|value| value.is_finite())
+                .map(|value| json!(value)),
+            _ => coerce_json_u64(raw).map(|value| json!(value)),
+        };
+        if let Some(value) = normalized {
+            fields.insert((*suffix).to_string(), value);
+        }
+    }
+    if fields.is_empty() {
+        return None;
+    }
+
+    let window_minutes = fields.get("window_minutes").and_then(coerce_json_u64);
+    let disabled = window_minutes == Some(0);
+    let explicit_deadline = fields
+        .get("reset_at")
+        .and_then(coerce_json_u64)
+        .filter(|value| *value > 0)
+        .or_else(|| {
+            fields
+                .get("next_reset_at")
+                .and_then(coerce_json_u64)
+                .filter(|value| *value > 0)
+        });
+    let reset_after_seconds = fields
+        .get("reset_after_seconds")
+        .and_then(coerce_json_u64)
+        .or_else(|| fields.get("reset_seconds").and_then(coerce_json_u64));
+    let deadline = explicit_deadline.or_else(|| {
+        observed_at_unix_secs
+            .zip(reset_after_seconds)
+            .map(|(observed_at, reset_after)| observed_at.saturating_add(reset_after))
+    });
+
+    Some(CodexQuotaWindowObservation {
+        slot,
+        fields,
+        window_minutes: window_minutes.filter(|value| *value > 0),
+        deadline,
+        disabled,
+    })
+}
+
+fn codex_quota_read_family_windows(
+    object: &serde_json::Map<String, serde_json::Value>,
+    family: CodexQuotaWindowFamily,
+    observed_at_unix_secs: Option<u64>,
+) -> Vec<CodexQuotaWindowObservation> {
+    CodexQuotaWindowSlot::ALL
+        .iter()
+        .copied()
+        .filter(|slot| slot.family() == family)
+        .filter_map(|slot| codex_quota_read_window(object, slot, observed_at_unix_secs))
+        .collect()
+}
+
+pub fn codex_quota_metadata_has_account_windows(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        !codex_quota_read_family_windows(object, CodexQuotaWindowFamily::Account, None).is_empty()
+    })
+}
+
+pub fn codex_quota_metadata_has_spark_windows(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        !codex_quota_read_family_windows(object, CodexQuotaWindowFamily::Spark, None).is_empty()
+    })
+}
+
+fn codex_quota_same_window_identity(
+    current: &CodexQuotaWindowObservation,
+    incoming: &CodexQuotaWindowObservation,
+) -> bool {
+    match (current.window_minutes, incoming.window_minutes) {
+        (Some(current), Some(incoming)) => current == incoming,
+        // Old metadata did not always carry a duration. Only fall back to its
+        // storage slot when at least one side has that legacy shape.
+        _ => current.slot == incoming.slot,
+    }
+}
+
+fn codex_quota_same_window_generation(
+    left: &CodexQuotaWindowObservation,
+    right: &CodexQuotaWindowObservation,
+) -> bool {
+    codex_quota_same_window_duration(left, right)
+        && left
+            .deadline
+            .zip(right.deadline)
+            .is_some_and(|(left, right)| {
+                left.abs_diff(right) <= CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS
+            })
+}
+
+fn codex_quota_same_contamination_fingerprint(
+    account: &CodexQuotaWindowObservation,
+    spark: &CodexQuotaWindowObservation,
+) -> bool {
+    codex_quota_same_window_generation(account, spark)
+        && account
+            .used_percent()
+            .zip(spark.used_percent())
+            .is_some_and(|(account, spark)| {
+                (account - spark).abs() <= CODEX_QUOTA_CONTAMINATION_USAGE_TOLERANCE_PERCENT
+            })
+}
+
+fn codex_quota_same_window_duration(
+    left: &CodexQuotaWindowObservation,
+    right: &CodexQuotaWindowObservation,
+) -> bool {
+    left.window_minutes
+        .zip(right.window_minutes)
+        .is_some_and(|(left, right)| left > 0 && left == right)
+}
+
+fn codex_quota_merge_same_window(
+    current: &CodexQuotaWindowObservation,
+    incoming: &CodexQuotaWindowObservation,
+) -> CodexQuotaWindowObservation {
+    // A deadline must be present on both sides to prove a natural generation
+    // change. Legacy metadata without one stays monotonic until a later pair of
+    // observations establishes the deadline.
+    if current
+        .deadline
+        .zip(incoming.deadline)
+        .is_some_and(|(current, incoming)| {
+            incoming.saturating_add(CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS) < current
+        })
+    {
+        return current.clone();
+    }
+
+    if current
+        .deadline
+        .zip(incoming.deadline)
+        .is_some_and(|(current, incoming)| {
+            incoming > current.saturating_add(CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS)
+        })
+    {
+        let mut next = incoming.clone();
+        next.persist_deadline();
+        return next;
+    }
+
+    let mut merged = current.clone();
+    for (suffix, value) in &incoming.fields {
+        if suffix != "used_percent" {
+            merged.fields.insert(suffix.clone(), value.clone());
+        }
+    }
+    merged.window_minutes = incoming.window_minutes.or(current.window_minutes);
+    // Keep the established deadline when observations differ only by normal
+    // countdown/clock jitter so repeated responses cannot inch it forward.
+    merged.deadline = current.deadline.or(incoming.deadline);
+    merged.persist_deadline();
+
+    let used_percent = match (current.used_percent(), incoming.used_percent()) {
+        (Some(current), Some(incoming)) => Some(current.max(incoming)),
+        (Some(current), None) => Some(current),
+        (None, Some(incoming)) => Some(incoming),
+        (None, None) => None,
+    };
+    if let Some(used_percent) = used_percent {
+        merged
+            .fields
+            .insert("used_percent".to_string(), json!(used_percent));
+    } else {
+        merged.fields.remove("used_percent");
+    }
+    merged
+}
+
+fn codex_quota_merge_stale_same_window_usage(
+    current: &CodexQuotaWindowObservation,
+    incoming: &CodexQuotaWindowObservation,
+) -> CodexQuotaWindowObservation {
+    let same_generation = match (current.deadline, incoming.deadline) {
+        (Some(current), Some(incoming)) => {
+            current.abs_diff(incoming) <= CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if !same_generation {
+        return current.clone();
+    }
+
+    let Some(incoming_used_percent) = incoming.used_percent() else {
+        return current.clone();
+    };
+    if current
+        .used_percent()
+        .is_some_and(|current_used_percent| current_used_percent >= incoming_used_percent)
+    {
+        return current.clone();
+    }
+
+    let mut merged = current.clone();
+    merged
+        .fields
+        .insert("used_percent".to_string(), json!(incoming_used_percent));
+    merged
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CodexQuotaWindowAssignmentScore {
+    unmatched: usize,
+    worst_deadline_rank: u8,
+    deadline_rank_sum: usize,
+    deadline_distance_sum: u128,
+    slot_mismatches: usize,
+    assignment_key: Vec<usize>,
+}
+
+fn codex_quota_window_deadline_match_score(
+    current: &CodexQuotaWindowObservation,
+    incoming: &CodexQuotaWindowObservation,
+) -> (u8, u64) {
+    match (current.deadline, incoming.deadline) {
+        (Some(current), Some(incoming)) => {
+            let distance = current.abs_diff(incoming);
+            (
+                u8::from(distance > CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS),
+                distance,
+            )
+        }
+        (None, None) => (0, 0),
+        _ => (2, 0),
+    }
+}
+
+fn codex_quota_window_assignment_score(
+    current: &[CodexQuotaWindowObservation],
+    incoming: &[CodexQuotaWindowObservation],
+    assignment: &[Option<usize>],
+) -> CodexQuotaWindowAssignmentScore {
+    let mut unmatched = 0;
+    let mut worst_deadline_rank = 0;
+    let mut deadline_rank_sum = 0;
+    let mut deadline_distance_sum = 0u128;
+    let mut slot_mismatches = 0;
+
+    for (incoming_index, current_index) in assignment.iter().copied().enumerate() {
+        if !incoming[incoming_index].active() {
+            continue;
+        }
+        let Some(current_index) = current_index else {
+            unmatched += 1;
+            continue;
+        };
+        let current_window = &current[current_index];
+        let incoming_window = &incoming[incoming_index];
+        let (deadline_rank, deadline_distance) =
+            codex_quota_window_deadline_match_score(current_window, incoming_window);
+        worst_deadline_rank = worst_deadline_rank.max(deadline_rank);
+        deadline_rank_sum += usize::from(deadline_rank);
+        deadline_distance_sum += u128::from(deadline_distance);
+        slot_mismatches += usize::from(current_window.slot != incoming_window.slot);
+    }
+
+    CodexQuotaWindowAssignmentScore {
+        unmatched,
+        worst_deadline_rank,
+        deadline_rank_sum,
+        deadline_distance_sum,
+        slot_mismatches,
+        assignment_key: assignment
+            .iter()
+            .map(|index| index.unwrap_or(usize::MAX))
+            .collect(),
+    }
+}
+
+fn codex_quota_search_window_assignments(
+    current: &[CodexQuotaWindowObservation],
+    incoming: &[CodexQuotaWindowObservation],
+    incoming_index: usize,
+    used_current: &mut [bool],
+    assignment: &mut [Option<usize>],
+    best: &mut Option<(CodexQuotaWindowAssignmentScore, Vec<Option<usize>>)>,
+) {
+    if incoming_index == incoming.len() {
+        let score = codex_quota_window_assignment_score(current, incoming, assignment);
+        if best
+            .as_ref()
+            .is_none_or(|(best_score, _)| score < *best_score)
+        {
+            *best = Some((score, assignment.to_vec()));
+        }
+        return;
+    }
+
+    assignment[incoming_index] = None;
+    codex_quota_search_window_assignments(
+        current,
+        incoming,
+        incoming_index + 1,
+        used_current,
+        assignment,
+        best,
+    );
+    if !incoming[incoming_index].active() {
+        return;
+    }
+
+    for (current_index, current_window) in current.iter().enumerate() {
+        if used_current[current_index]
+            || !current_window.active()
+            || !codex_quota_same_window_identity(current_window, &incoming[incoming_index])
+        {
+            continue;
+        }
+        used_current[current_index] = true;
+        assignment[incoming_index] = Some(current_index);
+        codex_quota_search_window_assignments(
+            current,
+            incoming,
+            incoming_index + 1,
+            used_current,
+            assignment,
+            best,
+        );
+        used_current[current_index] = false;
+    }
+    assignment[incoming_index] = None;
+}
+
+fn codex_quota_match_windows(
+    current: &[CodexQuotaWindowObservation],
+    incoming: &[CodexQuotaWindowObservation],
+) -> Vec<Option<usize>> {
+    let mut best = None;
+    codex_quota_search_window_assignments(
+        current,
+        incoming,
+        0,
+        &mut vec![false; current.len()],
+        &mut vec![None; incoming.len()],
+        &mut best,
+    );
+    best.map(|(_, assignment)| assignment)
+        .unwrap_or_else(|| vec![None; incoming.len()])
+}
+
+fn codex_quota_reset_observation_proves_new_baseline(
+    current: &[CodexQuotaWindowObservation],
+    incoming: &[CodexQuotaWindowObservation],
+) -> bool {
+    let current = current
+        .iter()
+        .filter(|window| window.active())
+        .cloned()
+        .collect::<Vec<_>>();
+    let incoming = incoming
+        .iter()
+        .filter(|window| window.active())
+        .cloned()
+        .collect::<Vec<_>>();
+    if current.is_empty() {
+        return !incoming.is_empty();
+    }
+
+    let incoming_is_confirmed_zero_baseline = !incoming.is_empty()
+        && incoming
+            .iter()
+            .all(|window| window.used_percent() == Some(0.0));
+    if incoming_is_confirmed_zero_baseline
+        && current
+            .iter()
+            .all(|window| window.used_percent() == Some(0.0))
+    {
+        return true;
+    }
+
+    let window_matches = codex_quota_match_windows(&current, &incoming);
+    incoming
+        .iter()
+        .enumerate()
+        .any(|(incoming_index, incoming_window)| {
+            let Some(current_index) = window_matches[incoming_index] else {
+                return true;
+            };
+            let current_window = &current[current_index];
+            if current_window
+                .deadline
+                .zip(incoming_window.deadline)
+                .is_some_and(|(current, incoming)| {
+                    incoming > current.saturating_add(CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS)
+                })
+            {
+                return true;
+            }
+            current_window
+                .used_percent()
+                .zip(incoming_window.used_percent())
+                .is_some_and(|(current, incoming)| incoming < current)
+        })
+}
+
+fn codex_quota_write_family_windows(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    family: CodexQuotaWindowFamily,
+    windows: &[CodexQuotaWindowObservation],
+) {
+    for slot in CodexQuotaWindowSlot::ALL
+        .iter()
+        .copied()
+        .filter(|slot| slot.family() == family)
+    {
+        for suffix in CODEX_QUOTA_WINDOW_SUFFIXES {
+            object.remove(&codex_quota_window_key(slot, suffix));
+        }
+    }
+    for window in windows.iter().filter(|window| window.active()) {
+        for (suffix, value) in &window.fields {
+            object.insert(codex_quota_window_key(window.slot, suffix), value.clone());
+        }
+    }
+}
+
+fn codex_quota_stabilize_legacy_deadlines(
+    current: &serde_json::Map<String, serde_json::Value>,
+    merged: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let observed_at = current.get("updated_at").and_then(coerce_json_u64);
+    for family in [
+        CodexQuotaWindowFamily::Account,
+        CodexQuotaWindowFamily::Spark,
+    ] {
+        let mut windows = codex_quota_read_family_windows(current, family, observed_at);
+        if windows.iter().any(|window| window.deadline.is_some()) {
+            for window in &mut windows {
+                window.persist_deadline();
+            }
+            codex_quota_write_family_windows(merged, family, &windows);
+        }
+    }
+}
+
+fn codex_quota_family_authoritative(
+    coverage: CodexQuotaWindowCoverage,
+    family: CodexQuotaWindowFamily,
+) -> bool {
+    matches!(coverage, CodexQuotaWindowCoverage::FullSnapshot)
+        || matches!(
+            (coverage, family),
+            (
+                CodexQuotaWindowCoverage::AccountSnapshot,
+                CodexQuotaWindowFamily::Account
+            )
+        )
+}
+
+fn codex_quota_processes_family(
+    coverage: CodexQuotaWindowCoverage,
+    family: CodexQuotaWindowFamily,
+    incoming: &[CodexQuotaWindowObservation],
+) -> bool {
+    match coverage {
+        CodexQuotaWindowCoverage::Patch => !incoming.is_empty(),
+        CodexQuotaWindowCoverage::AccountSnapshot => family == CodexQuotaWindowFamily::Account,
+        CodexQuotaWindowCoverage::FullSnapshot => true,
+    }
+}
+
+fn codex_quota_apply_family(
+    current_object: &serde_json::Map<String, serde_json::Value>,
+    incoming_object: &serde_json::Map<String, serde_json::Value>,
+    merged: &mut serde_json::Map<String, serde_json::Value>,
+    family: CodexQuotaWindowFamily,
+    context: CodexQuotaMergeContext<'_>,
+) {
+    let active_reset_generation = current_object
+        .get(CODEX_QUOTA_ACCOUNT_RESET_GENERATION_KEY)
+        .and_then(coerce_json_u64)
+        .unwrap_or(0);
+    let generation_matches =
+        codex_quota_observation_matches_reset_generation(current_object, context);
+    if family == CodexQuotaWindowFamily::Account && !generation_matches {
+        return;
+    }
+    let current_observed_at = current_object.get("updated_at").and_then(coerce_json_u64);
+    let current = codex_quota_read_family_windows(current_object, family, current_observed_at);
+    let mut incoming = codex_quota_read_family_windows(
+        incoming_object,
+        family,
+        Some(context.observed_at_unix_secs),
+    );
+    if context.coverage == CodexQuotaWindowCoverage::Patch
+        && current.iter().filter(|window| window.active()).count() > 1
+    {
+        // A partial header reports upstream's primary/secondary name, while
+        // paid accounts may store those windows in the opposite slots. Without
+        // a duration there is no stable identity, so leave both windows alone.
+        incoming.retain(|window| !window.active() || window.window_minutes.is_some());
+    }
+    if !codex_quota_processes_family(context.coverage, family, &incoming) {
+        return;
+    }
+
+    let account_reset_fence = (family == CodexQuotaWindowFamily::Account)
+        .then(|| codex_quota_account_reset_fence(current_object))
+        .flatten();
+    if active_reset_generation == 0
+        && account_reset_fence.is_some_and(|fence| codex_quota_reset_fence_blocks(fence, context))
+    {
+        return;
+    }
+    let authoritative = codex_quota_family_authoritative(context.coverage, family);
+    let pending_generation_matches = active_reset_generation > 0
+        && current_object
+            .get(CODEX_QUOTA_ACCOUNT_RESET_PENDING_GENERATION_KEY)
+            .and_then(coerce_json_u64)
+            == Some(active_reset_generation);
+    let generation_authorizes_reset = pending_generation_matches
+        && (context.authoritative_reset_generation == Some(active_reset_generation)
+            || account_reset_fence.is_some_and(|fence| {
+                codex_quota_request_started_after_reset_fence(fence, context)
+            }));
+    let legacy_fence_authorizes_reset = active_reset_generation == 0
+        && account_reset_fence.is_some_and(|fence| {
+            codex_quota_reset_fence_authorizes(fence, context)
+                || codex_quota_request_started_after_reset_fence(fence, context)
+        });
+    let reset_baseline = account_reset_fence.is_some_and(|fence| {
+        fence.pending
+            && authoritative
+            && incoming.iter().any(CodexQuotaWindowObservation::active)
+            && codex_quota_reset_observation_proves_new_baseline(&current, &incoming)
+            && (generation_authorizes_reset || legacy_fence_authorizes_reset)
+    });
+    if account_reset_fence.is_some_and(|fence| fence.pending) && !reset_baseline {
+        return;
+    }
+    let stored_watermark = codex_quota_read_request_order(
+        current_object,
+        family.watermark_key(),
+        family.watermark_id_key(),
+    );
+    let stale_family = !reset_baseline
+        && codex_quota_request_order_is_stale(context.request_order(), stored_watermark);
+    let window_matches = (!reset_baseline).then(|| codex_quota_match_windows(&current, &incoming));
+    // A full wham snapshot reports the account and named model families together. Older
+    // releases could copy the active Spark window into the account slot, after which its later
+    // deadline made the normal monotonic merge reject the real account window forever. Keep the
+    // conservative deadline rule unless both the stored Spark family and this authoritative
+    // response prove that the stored account generation is actually a Spark generation.
+    let incoming_spark = if family == CodexQuotaWindowFamily::Account
+        && context.coverage == CodexQuotaWindowCoverage::FullSnapshot
+    {
+        codex_quota_read_family_windows(
+            incoming_object,
+            CodexQuotaWindowFamily::Spark,
+            Some(context.observed_at_unix_secs),
+        )
+    } else {
+        Vec::new()
+    };
+    let current_spark = if !incoming_spark.is_empty() {
+        codex_quota_read_family_windows(
+            current_object,
+            CodexQuotaWindowFamily::Spark,
+            current_observed_at,
+        )
+    } else {
+        Vec::new()
+    };
+    let mut next = if reset_baseline || (authoritative && !stale_family) {
+        Vec::new()
+    } else {
+        current
+            .iter()
+            .filter(|window| window.active())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    for (incoming_index, incoming_window) in incoming
+        .iter()
+        .enumerate()
+        .filter(|(_, window)| window.active())
+    {
+        let current_index = window_matches
+            .as_ref()
+            .and_then(|matches| matches[incoming_index]);
+        let Some(current_index) = current_index else {
+            if !stale_family {
+                next.retain(|window| window.slot != incoming_window.slot);
+                let mut accepted = incoming_window.clone();
+                accepted.persist_deadline();
+                next.push(accepted);
+            }
+            continue;
+        };
+        let repairs_model_scoped_account_window = !stale_family
+            && codex_quota_same_window_duration(&current[current_index], incoming_window)
+            && current[current_index]
+                .deadline
+                .zip(incoming_window.deadline)
+                .is_some_and(|(current, incoming)| {
+                    incoming.saturating_add(CODEX_QUOTA_RESET_DEADLINE_TOLERANCE_SECONDS) < current
+                })
+            && current_spark.iter().any(|spark_window| {
+                codex_quota_same_contamination_fingerprint(&current[current_index], spark_window)
+            })
+            && incoming_spark.iter().any(|spark_window| {
+                codex_quota_same_contamination_fingerprint(&current[current_index], spark_window)
+            });
+        let mut merged_window = if repairs_model_scoped_account_window {
+            let mut accepted = incoming_window.clone();
+            accepted.persist_deadline();
+            accepted
+        } else if stale_family {
+            codex_quota_merge_stale_same_window_usage(&current[current_index], incoming_window)
+        } else {
+            codex_quota_merge_same_window(&current[current_index], incoming_window)
+        };
+        let target_slot = if authoritative && !stale_family {
+            incoming_window.slot
+        } else {
+            current[current_index].slot
+        };
+        merged_window.slot = target_slot;
+        next.retain(|window| window.slot != target_slot);
+        next.push(merged_window);
+    }
+
+    if !authoritative && !stale_family {
+        for incoming_window in incoming.iter().filter(|window| window.disabled) {
+            next.retain(|window| window.slot != incoming_window.slot);
+        }
+    }
+    next.sort_by_key(|window| window.slot);
+
+    codex_quota_write_family_windows(merged, family, &next);
+    if reset_baseline {
+        merged.insert(
+            CODEX_QUOTA_ACCOUNT_RESET_PENDING_KEY.to_string(),
+            json!(false),
+        );
+    }
+    if !stale_family {
+        if let Some(incoming_order) = context
+            .request_order()
+            .filter(|incoming| codex_quota_request_order_is_newer(*incoming, stored_watermark))
+        {
+            codex_quota_write_request_order(
+                merged,
+                family.watermark_key(),
+                family.watermark_id_key(),
+                incoming_order,
+            );
+        }
+    }
+}
+
+fn codex_quota_semantic_metadata(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    object
+        .iter()
+        .filter(|(key, _)| {
+            key.as_str() != "updated_at"
+                && !key.ends_with("_reset_seconds")
+                && !key.ends_with("_reset_after_seconds")
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn codex_quota_is_account_status_key(key: &str) -> bool {
+    matches!(key, "allowed" | "limit_reached")
+}
+
+/// Merge a parsed Codex quota observation into the stored flat metadata.
+///
+/// Positive `window_minutes` values identify windows independently of the
+/// primary/secondary storage slot. Within one reset deadline usage is
+/// monotonic; advancing the deadline starts a new generation. Snapshot modes
+/// replace the covered window families, while patch mode leaves absent windows
+/// alone. A request-start/id watermark prevents a delayed request from
+/// restoring a superseded window shape.
+pub fn merge_codex_quota_metadata_snapshot(
+    current: Option<&serde_json::Value>,
+    incoming: &serde_json::Value,
+    context: CodexQuotaMergeContext<'_>,
+) -> Option<CodexQuotaMergeOutcome> {
+    let incoming_object = incoming.as_object()?;
+    let current_object = current
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if !codex_credential_generation_matches(current, context.observed_credential_generation) {
+        return Some(CodexQuotaMergeOutcome {
+            metadata: serde_json::Value::Object(current_object),
+            changed: false,
+        });
+    }
+    let mut merged = current_object.clone();
+    codex_quota_stabilize_legacy_deadlines(&current_object, &mut merged);
+
+    let stored_metadata_watermark = std::iter::once(codex_quota_read_request_order(
+        &current_object,
+        CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY,
+        CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY,
+    ))
+    .chain(
+        [
+            CodexQuotaWindowFamily::Account,
+            CodexQuotaWindowFamily::Spark,
+        ]
+        .into_iter()
+        .map(|family| {
+            codex_quota_read_request_order(
+                &current_object,
+                family.watermark_key(),
+                family.watermark_id_key(),
+            )
+        }),
+    )
+    .flatten()
+    .max();
+    let has_incoming_metadata = incoming_object.keys().any(|key| {
+        key != "updated_at"
+            && !codex_quota_is_account_status_key(key)
+            && !codex_quota_is_request_order_key(key)
+            && !codex_quota_is_reset_fence_key(key)
+            && !codex_quota_is_window_key(key)
+    });
+    let stale_metadata = has_incoming_metadata
+        && (codex_quota_request_order_is_stale(context.request_order(), stored_metadata_watermark)
+            || !codex_quota_observation_matches_reset_generation(&current_object, context)
+            || (codex_quota_account_reset_generation(Some(&serde_json::Value::Object(
+                current_object.clone(),
+            ))) == 0
+                && codex_quota_account_reset_fence(&current_object)
+                    .is_some_and(|fence| codex_quota_reset_fence_blocks(fence, context))));
+
+    if has_incoming_metadata && !stale_metadata {
+        for (key, value) in incoming_object {
+            if key == "updated_at"
+                || codex_quota_is_account_status_key(key)
+                || codex_quota_is_request_order_key(key)
+                || codex_quota_is_reset_fence_key(key)
+                || codex_quota_is_window_key(key)
+            {
+                continue;
+            }
+            merged.insert(key.clone(), value.clone());
+        }
+        if let Some(incoming_order) = context.request_order().filter(|incoming| {
+            codex_quota_request_order_is_newer(*incoming, stored_metadata_watermark)
+        }) {
+            codex_quota_write_request_order(
+                &mut merged,
+                CODEX_QUOTA_METADATA_REQUEST_WATERMARK_KEY,
+                CODEX_QUOTA_METADATA_REQUEST_WATERMARK_ID_KEY,
+                incoming_order,
+            );
+        }
+    }
+
+    // `allowed` and `limit_reached` describe the account family in WHAM and account-scoped
+    // WebSocket observations. A newer Spark-only patch must not make those account signals look
+    // stale, so order them against the account watermark rather than the newest watermark from
+    // any quota family.
+    let has_incoming_account_status = incoming_object
+        .keys()
+        .any(|key| codex_quota_is_account_status_key(key));
+    let stored_account_watermark = codex_quota_read_request_order(
+        &current_object,
+        CodexQuotaWindowFamily::Account.watermark_key(),
+        CodexQuotaWindowFamily::Account.watermark_id_key(),
+    );
+    let stale_account_status = has_incoming_account_status
+        && (codex_quota_request_order_is_stale(context.request_order(), stored_account_watermark)
+            || !codex_quota_observation_matches_reset_generation(&current_object, context)
+            || (codex_quota_account_reset_generation(Some(&serde_json::Value::Object(
+                current_object.clone(),
+            ))) == 0
+                && codex_quota_account_reset_fence(&current_object)
+                    .is_some_and(|fence| codex_quota_reset_fence_blocks(fence, context))));
+    if has_incoming_account_status && !stale_account_status {
+        for key in ["allowed", "limit_reached"] {
+            if let Some(value) = incoming_object.get(key) {
+                merged.insert(key.to_string(), value.clone());
+            }
+        }
+        if let Some(incoming_order) = context.request_order().filter(|incoming| {
+            codex_quota_request_order_is_newer(*incoming, stored_account_watermark)
+        }) {
+            codex_quota_write_request_order(
+                &mut merged,
+                CodexQuotaWindowFamily::Account.watermark_key(),
+                CodexQuotaWindowFamily::Account.watermark_id_key(),
+                incoming_order,
+            );
+        }
+    }
+
+    codex_quota_apply_family(
+        &current_object,
+        incoming_object,
+        &mut merged,
+        CodexQuotaWindowFamily::Account,
+        context,
+    );
+    codex_quota_apply_family(
+        &current_object,
+        incoming_object,
+        &mut merged,
+        CodexQuotaWindowFamily::Spark,
+        context,
+    );
+
+    let changed =
+        codex_quota_semantic_metadata(&current_object) != codex_quota_semantic_metadata(&merged);
+    if changed {
+        let updated_at_unix_secs = current_object
+            .get("updated_at")
+            .and_then(coerce_json_u64)
+            .unwrap_or_default()
+            .max(context.observed_at_unix_secs);
+        merged.insert("updated_at".to_string(), json!(updated_at_unix_secs));
+        Some(CodexQuotaMergeOutcome {
+            metadata: serde_json::Value::Object(merged),
+            changed: true,
+        })
+    } else {
+        Some(CodexQuotaMergeOutcome {
+            metadata: serde_json::Value::Object(current_object),
+            changed: false,
+        })
+    }
+}
+
 fn codex_write_window(
     target: &mut serde_json::Map<String, serde_json::Value>,
     source: &serde_json::Map<String, serde_json::Value>,
@@ -659,6 +1973,37 @@ fn codex_window_has_active_limit(source: &serde_json::Map<String, serde_json::Va
         .get("used_percent")
         .and_then(coerce_json_f64)
         .is_some_and(|value| value > 0.0)
+}
+
+fn codex_window_is_explicitly_disabled(
+    source: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let used_percent_is_zero = source
+        .get("used_percent")
+        .and_then(coerce_json_f64)
+        .is_some_and(|value| value == 0.0);
+    let reset_after_is_zero = source
+        .get("reset_after_seconds")
+        .and_then(coerce_json_u64)
+        .is_some_and(|value| value == 0);
+    let reset_at_is_empty = source.get("reset_at").is_some_and(|value| {
+        value.is_null()
+            || value.as_str().is_some_and(|value| value.trim().is_empty())
+            || coerce_json_u64(value).is_some_and(|value| value == 0)
+    });
+    let duration_is_zero = ["window_minutes", "limit_window_seconds"]
+        .iter()
+        .find_map(|key| source.get(*key).and_then(coerce_json_u64))
+        .is_some_and(|value| value == 0);
+
+    used_percent_is_zero && reset_after_is_zero && reset_at_is_empty && duration_is_zero
+}
+
+fn codex_write_disabled_window(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    target_prefix: &str,
+) {
+    target.insert(format!("{target_prefix}_window_minutes"), json!(0u64));
 }
 
 fn codex_find_spark_rate_limit(
@@ -739,6 +2084,12 @@ pub fn parse_codex_wham_usage_response(
         .and_then(serde_json::Value::as_object)
         .cloned()
         .unwrap_or_default();
+    if let Some(allowed) = rate_limit.get("allowed").and_then(coerce_json_bool) {
+        result.insert("allowed".to_string(), json!(allowed));
+    }
+    if let Some(limit_reached) = rate_limit.get("limit_reached").and_then(coerce_json_bool) {
+        result.insert("limit_reached".to_string(), json!(limit_reached));
+    }
     let primary_window = rate_limit
         .get("primary_window")
         .and_then(serde_json::Value::as_object)
@@ -757,6 +2108,9 @@ pub fn parse_codex_wham_usage_response(
         codex_write_window(&mut result, &primary_window, "secondary");
     } else {
         codex_write_window(&mut result, &primary_window, "primary");
+        if codex_window_is_explicitly_disabled(&secondary_window) {
+            codex_write_disabled_window(&mut result, "secondary");
+        }
     }
 
     if let Some(spark_rate_limit) = codex_find_spark_rate_limit(root) {
@@ -795,6 +2149,240 @@ pub fn parse_codex_wham_usage_response(
 
     if result.is_empty() {
         return None;
+    }
+    result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
+    Some(serde_json::Value::Object(result))
+}
+
+/// Normalizes quota metadata emitted by the Codex Responses WebSocket.
+///
+/// The upstream normally sends a `codex.rate_limits` item inside a `chunks`
+/// envelope. When the account is already exhausted it can instead send a
+/// terminal `usage_limit_reached` error whose embedded `X-Codex-*` headers
+/// contain the authoritative final quota snapshot.
+pub fn parse_codex_websocket_rate_limits_response(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    let mut latest = parse_codex_websocket_quota_event(value, updated_at_unix_secs);
+    for chunk in value
+        .get("chunks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(parsed) = parse_codex_websocket_quota_event(chunk, updated_at_unix_secs) {
+            latest = Some(parsed);
+        }
+    }
+    latest
+}
+
+fn codex_websocket_usage_limit_error(
+    value: &serde_json::Value,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let root = value.as_object()?;
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
+    }
+    let status_code = root
+        .get("status_code")
+        .or_else(|| root.get("status"))
+        .and_then(coerce_json_u64);
+    if status_code != Some(429) {
+        return None;
+    }
+    let error = root.get("error").and_then(serde_json::Value::as_object)?;
+    (error.get("type").and_then(serde_json::Value::as_str) == Some("usage_limit_reached"))
+        .then_some(error)
+}
+
+/// Returns whether a Codex WebSocket response contains the terminal quota error for the limit
+/// used by this request. This is intentionally request-scoped: callers must not interpret it as
+/// proof that the account-wide Codex quota is exhausted.
+pub fn codex_websocket_response_has_usage_limit_error(value: &serde_json::Value) -> bool {
+    codex_websocket_usage_limit_error(value).is_some()
+        || value
+            .get("chunks")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|chunks| {
+                chunks
+                    .iter()
+                    .any(|chunk| codex_websocket_usage_limit_error(chunk).is_some())
+            })
+}
+
+/// Reads the reset deadline attached to the latest terminal quota error in a Codex WebSocket
+/// response. The error body follows the active limit, so this is suitable for a current-turn
+/// retry exclusion even when that limit is model-scoped.
+pub fn codex_websocket_usage_limit_reset_at(
+    value: &serde_json::Value,
+    observed_at_unix_secs: u64,
+) -> Option<u64> {
+    let read_reset = |event: &serde_json::Value| {
+        let error = codex_websocket_usage_limit_error(event)?;
+        error
+            .get("resets_at")
+            .and_then(coerce_json_u64)
+            .or_else(|| {
+                error
+                    .get("resets_in_seconds")
+                    .and_then(coerce_json_u64)
+                    .map(|seconds| observed_at_unix_secs.saturating_add(seconds))
+            })
+    };
+
+    let mut latest = read_reset(value);
+    for chunk in value
+        .get("chunks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if codex_websocket_usage_limit_error(chunk).is_some() {
+            latest = read_reset(chunk);
+        }
+    }
+    latest
+}
+
+fn parse_codex_websocket_quota_event(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    parse_codex_websocket_rate_limits_chunk(value, updated_at_unix_secs)
+        .or_else(|| parse_codex_websocket_usage_limit_error(value, updated_at_unix_secs))
+}
+
+/// Returns whether normalized Codex rate-limit metadata says that the account
+/// cannot accept another request. Explicit upstream flags take precedence, and
+/// the percentage fallback keeps older payloads working when those flags are
+/// absent.
+pub fn codex_rate_limit_metadata_exhausted(value: &serde_json::Value) -> bool {
+    let allowed = value.get("allowed").and_then(coerce_json_bool);
+    let limit_reached = value.get("limit_reached").and_then(coerce_json_bool);
+    if allowed == Some(false) || limit_reached == Some(true) {
+        return true;
+    }
+    if allowed == Some(true) || limit_reached == Some(false) {
+        return false;
+    }
+    ["primary_used_percent", "secondary_used_percent"]
+        .into_iter()
+        .filter_map(|key| value.get(key))
+        .filter_map(coerce_json_f64)
+        .any(|used_percent| used_percent >= 100.0 - 1e-6)
+}
+
+fn parse_codex_websocket_rate_limits_chunk(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    let root = value.as_object()?;
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("codex.rate_limits") {
+        return None;
+    }
+    let rate_limits = root
+        .get("rate_limits")
+        .and_then(serde_json::Value::as_object)?;
+
+    let mut result = serde_json::Map::new();
+    let plan_type = root
+        .get("plan_type")
+        .or_else(|| rate_limits.get("plan_type"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| normalize_codex_plan_type(Some(value)));
+    if let Some(plan_type) = plan_type {
+        result.insert("plan_type".to_string(), json!(plan_type));
+    }
+    if let Some(allowed) = rate_limits.get("allowed").and_then(coerce_json_bool) {
+        result.insert("allowed".to_string(), json!(allowed));
+    }
+    if let Some(limit_reached) = rate_limits.get("limit_reached").and_then(coerce_json_bool) {
+        result.insert("limit_reached".to_string(), json!(limit_reached));
+    }
+    if let Some(primary) = rate_limits
+        .get("primary")
+        .and_then(serde_json::Value::as_object)
+    {
+        codex_write_window(&mut result, primary, "primary");
+    }
+    if let Some(secondary) = rate_limits
+        .get("secondary")
+        .and_then(serde_json::Value::as_object)
+    {
+        codex_write_window(&mut result, secondary, "secondary");
+    }
+    if result.is_empty() {
+        return None;
+    }
+    result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
+    Some(serde_json::Value::Object(result))
+}
+
+fn parse_codex_websocket_usage_limit_error(
+    value: &serde_json::Value,
+    updated_at_unix_secs: u64,
+) -> Option<serde_json::Value> {
+    let root = value.as_object()?;
+    let error = codex_websocket_usage_limit_error(value)?;
+
+    let headers = root
+        .get("headers")
+        .and_then(serde_json::Value::as_object)
+        .map(|headers| {
+            headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_string()))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut result = parse_codex_usage_headers(&headers, updated_at_unix_secs)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let account_scoped = codex_headers_carry_account_windows(&headers);
+
+    if !result.contains_key("plan_type") {
+        if let Some(plan_type) = error
+            .get("plan_type")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| normalize_codex_plan_type(Some(value)))
+        {
+            result.insert("plan_type".to_string(), json!(plan_type));
+        }
+    }
+    // `resets_at` describes whichever limit rejected the request. When a named per-model limit
+    // owned the window headers it owns this timing too, so backfilling it into the account slot
+    // would put a model window's reset on the account's own quota.
+    if account_scoped {
+        if !result.contains_key("primary_reset_at") {
+            if let Some(reset_at) = error.get("resets_at").and_then(coerce_json_u64) {
+                result.insert("primary_reset_at".to_string(), json!(reset_at));
+            }
+        }
+        if !result.contains_key("primary_reset_after_seconds") {
+            if let Some(reset_after_seconds) =
+                error.get("resets_in_seconds").and_then(coerce_json_u64)
+            {
+                result.insert(
+                    "primary_reset_after_seconds".to_string(),
+                    json!(reset_after_seconds),
+                );
+            }
+        }
+    }
+
+    // `usage_limit_reached` is terminal for the active limit. Only project it onto the account
+    // when the unprefixed headers belong to the account; a named model limit (for example Spark)
+    // must not make every Codex model on the credential look exhausted. With no ownership headers
+    // the legacy account-wide fallback remains intact.
+    if account_scoped {
+        result.insert("allowed".to_string(), json!(false));
+        result.insert("limit_reached".to_string(), json!(true));
     }
     result.insert("updated_at".to_string(), json!(updated_at_unix_secs));
     Some(serde_json::Value::Object(result))
@@ -1151,16 +2739,75 @@ pub fn parse_codex_backend_me_response(
     Some(serde_json::Value::Object(result))
 }
 
+fn codex_normalized_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect()
+}
+
+/// Whether the account's own quota windows can be read from these headers' unprefixed fields.
+///
+/// False when a named per-model limit governed the request: the unprefixed fields — and any reset
+/// timing reported alongside them — then describe that limit instead.
+fn codex_headers_carry_account_windows(headers: &BTreeMap<String, String>) -> bool {
+    let normalized = codex_normalized_headers(headers);
+    let named_limits = codex_named_limit_headers(&normalized);
+    !codex_named_limit_owns_unprefixed_windows(&normalized, &named_limits)
+}
+
+/// Lists the named per-model limits the response headers announce, as `(feature, limit_name)`.
+///
+/// `feature` is the header segment that carries the limit's windows
+/// (`x-codex-bengalfox-primary-used-percent`), and matches the `metered_feature` reported by
+/// `wham/usage` minus its `codex_` prefix.
+fn codex_named_limit_headers(normalized: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    normalized
+        .iter()
+        .filter_map(|(key, value)| {
+            let feature = key
+                .strip_prefix(CODEX_HEADER_PREFIX)?
+                .strip_suffix(CODEX_LIMIT_NAME_HEADER_SUFFIX)?;
+            let limit_name = value.trim();
+            (!feature.is_empty() && !limit_name.is_empty())
+                .then(|| (feature.to_string(), limit_name.to_string()))
+        })
+        .collect()
+}
+
+/// Whether one of the announced named limits owns the unprefixed `x-codex-primary/secondary-*`
+/// windows.
+///
+/// `x-codex-active-limit` names the metered feature this request was billed against, and reports
+/// the plan's own limit as `premium`, which matches no announced feature. The account therefore
+/// keeps the unprefixed windows unless the active limit is one of the named ones.
+fn codex_named_limit_owns_unprefixed_windows(
+    normalized: &BTreeMap<String, String>,
+    named_limits: &[(String, String)],
+) -> bool {
+    let Some(active_limit) = normalized
+        .get(CODEX_ACTIVE_LIMIT_HEADER)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    named_limits.iter().any(|(feature, _)| {
+        active_limit.eq_ignore_ascii_case(feature)
+            || active_limit.eq_ignore_ascii_case(&format!("codex_{feature}"))
+    })
+}
+
 pub fn parse_codex_usage_headers(
     headers: &BTreeMap<String, String>,
     updated_at_unix_secs: u64,
 ) -> Option<serde_json::Value> {
     let mut result = serde_json::Map::new();
-    let normalized = headers
-        .iter()
-        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim().to_string()))
-        .collect::<BTreeMap<_, _>>();
-    if !normalized.keys().any(|key| key.starts_with("x-codex-")) {
+    let normalized = codex_normalized_headers(headers);
+    if !normalized
+        .keys()
+        .any(|key| key.starts_with(CODEX_HEADER_PREFIX))
+    {
         return None;
     }
 
@@ -1193,6 +2840,13 @@ pub fn parse_codex_usage_headers(
             .and_then(|value| value.parse::<u64>().ok())
         {
             object.insert("reset_at".to_string(), json!(value));
+        } else if normalized
+            .get(&reset_at_key)
+            .is_some_and(|value| value.is_empty())
+        {
+            // Preserve an explicitly empty reset-at long enough to recognize
+            // the complete all-zero secondary-window disabled marker.
+            object.insert("reset_at".to_string(), serde_json::Value::Null);
         }
         if let Some(value) = normalized
             .get(&window_minutes_key)
@@ -1203,25 +2857,52 @@ pub fn parse_codex_usage_headers(
         object
     };
 
-    let primary_window = read_window("primary");
-    let secondary_window = read_window("secondary");
-    let use_paid_windows =
-        codex_window_has_active_limit(&secondary_window) && plan_type.as_deref() != Some("free");
-    if use_paid_windows {
-        codex_write_window(&mut result, &secondary_window, "primary");
-        codex_write_window(&mut result, &primary_window, "secondary");
-    } else {
-        codex_write_window(&mut result, &primary_window, "primary");
+    // Every named limit is announced by its own `x-codex-<feature>-limit-name` header and carries
+    // its windows under the same `<feature>` prefix, so the header set describes itself.
+    let named_limits = codex_named_limit_headers(&normalized);
+    for (feature, limit_name) in &named_limits {
+        if limit_name != CODEX_SPARK_LIMIT_NAME {
+            continue;
+        }
+        let spark_primary_window = read_window(&format!("{feature}-primary"));
+        if !spark_primary_window.is_empty() {
+            codex_write_window(&mut result, &spark_primary_window, "spark_primary");
+        }
+        let spark_secondary_window = read_window(&format!("{feature}-secondary"));
+        if !spark_secondary_window.is_empty() {
+            codex_write_window(&mut result, &spark_secondary_window, "spark_secondary");
+        }
     }
 
-    if let Some(value) = normalized
-        .get("x-codex-primary-over-secondary-limit-percent")
-        .and_then(|value| value.parse::<f64>().ok())
-    {
-        result.insert(
-            "primary_over_secondary_limit_percent".to_string(),
-            json!(value),
-        );
+    // The unprefixed windows describe whichever limit governed this request, not the account:
+    // on a request metered against a named limit they repeat that limit's windows verbatim.
+    // `x-codex-active-limit` is the only thing that tells the two apart, so an account window is
+    // only claimed when no named limit owns the unprefixed set. Upstreams that do not send the
+    // header keep the previous behaviour.
+    if !codex_named_limit_owns_unprefixed_windows(&normalized, &named_limits) {
+        let primary_window = read_window("primary");
+        let secondary_window = read_window("secondary");
+        let use_paid_windows = codex_window_has_active_limit(&secondary_window)
+            && plan_type.as_deref() != Some("free");
+        if use_paid_windows {
+            codex_write_window(&mut result, &secondary_window, "primary");
+            codex_write_window(&mut result, &primary_window, "secondary");
+        } else {
+            codex_write_window(&mut result, &primary_window, "primary");
+            if codex_window_is_explicitly_disabled(&secondary_window) {
+                codex_write_disabled_window(&mut result, "secondary");
+            }
+        }
+
+        if let Some(value) = normalized
+            .get("x-codex-primary-over-secondary-limit-percent")
+            .and_then(|value| value.parse::<f64>().ok())
+        {
+            result.insert(
+                "primary_over_secondary_limit_percent".to_string(),
+                json!(value),
+            );
+        }
     }
     if let Some(value) = normalized
         .get("x-codex-credits-has-credits")
@@ -1284,8 +2965,30 @@ fn codex_merge_invalid_reason(current: &str, candidate_reason: &str) -> String {
         }
         return format!("{current}\n{candidate_reason}");
     }
-    if current.starts_with(OAUTH_EXPIRED_PREFIX)
-        && candidate_reason.starts_with(OAUTH_REQUEST_FAILED_PREFIX)
+    if candidate_reason.starts_with(OAUTH_EXPIRED_PREFIX) {
+        let candidate_lines = candidate_reason
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        let missing_refresh_failures = current
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(OAUTH_REFRESH_FAILED_PREFIX))
+            .filter(|line| !candidate_lines.contains(line))
+            .collect::<Vec<_>>();
+        if missing_refresh_failures.is_empty() {
+            return candidate_reason.to_string();
+        }
+        return format!(
+            "{candidate_reason}\n{}",
+            missing_refresh_failures.join("\n")
+        );
+    }
+    if candidate_reason.starts_with(OAUTH_REQUEST_FAILED_PREFIX)
+        && current.lines().map(str::trim).any(|line| {
+            line.starts_with(OAUTH_EXPIRED_PREFIX) || line.starts_with(OAUTH_REFRESH_FAILED_PREFIX)
+        })
     {
         return current.to_string();
     }
@@ -2122,21 +3825,1682 @@ pub fn parse_chatgpt_web_conversation_init_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_build_invalid_state, codex_runtime_invalid_reason, extract_execution_error_detail,
+        codex_build_invalid_state, codex_oauth_success_request_order_is_stale,
+        codex_rate_limit_metadata_exhausted, codex_runtime_invalid_reason,
+        codex_websocket_response_has_usage_limit_error, codex_websocket_usage_limit_reset_at,
+        extract_execution_error_detail, merge_codex_quota_metadata_snapshot,
         normalize_codex_reset_credit_consume_outcome, parse_antigravity_usage_response,
         parse_chatgpt_web_conversation_init_response, parse_codex_backend_me_response,
-        parse_codex_usage_headers, parse_codex_wham_reset_credits_detail_response,
-        parse_codex_wham_usage_response, parse_gemini_cli_retrieve_user_quota_response,
+        parse_codex_usage_headers, parse_codex_websocket_rate_limits_response,
+        parse_codex_wham_reset_credits_detail_response, parse_codex_wham_usage_response,
+        parse_gemini_cli_retrieve_user_quota_response,
         parse_gemini_cli_v1internal_credits_response, parse_windsurf_model_configs_response,
         parse_windsurf_rate_limit_response, parse_windsurf_user_status_response,
         provider_auto_remove_quota_exhausted_keys, quota_refresh_success_invalid_state,
-        should_auto_remove_structured_reason, OAUTH_ACCOUNT_BLOCK_PREFIX, OAUTH_EXPIRED_PREFIX,
-        OAUTH_REFRESH_FAILED_PREFIX, OAUTH_REQUEST_FAILED_PREFIX,
+        should_auto_remove_structured_reason, CodexQuotaMergeContext, CodexQuotaWindowCoverage,
+        OAUTH_ACCOUNT_BLOCK_PREFIX, OAUTH_EXPIRED_PREFIX, OAUTH_REFRESH_FAILED_PREFIX,
+        OAUTH_REQUEST_FAILED_PREFIX,
     };
     use aether_contracts::{ExecutionResult, ResponseBody};
     use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    fn merge_codex_quota(
+        current: Option<&serde_json::Value>,
+        incoming: &serde_json::Value,
+        observed_at_unix_secs: u64,
+        request_started_at_unix_ms: u64,
+        coverage: CodexQuotaWindowCoverage,
+    ) -> super::CodexQuotaMergeOutcome {
+        merge_codex_quota_metadata_snapshot(
+            current,
+            incoming,
+            CodexQuotaMergeContext {
+                observed_at_unix_secs,
+                request_started_at_unix_ms: Some(request_started_at_unix_ms),
+                request_order_id: None,
+                observed_reset_generation: Some(0),
+                authoritative_reset_generation: None,
+                observed_credential_generation: None,
+                account_reset_fence_id: None,
+                coverage,
+            },
+        )
+        .expect("quota metadata should merge")
+    }
+
+    fn merge_codex_quota_ordered(
+        current: Option<&serde_json::Value>,
+        incoming: &serde_json::Value,
+        observed_at_unix_secs: u64,
+        request_started_at_unix_ms: u64,
+        request_order_id: &str,
+        coverage: CodexQuotaWindowCoverage,
+    ) -> super::CodexQuotaMergeOutcome {
+        merge_codex_quota_metadata_snapshot(
+            current,
+            incoming,
+            CodexQuotaMergeContext {
+                observed_at_unix_secs,
+                request_started_at_unix_ms: Some(request_started_at_unix_ms),
+                request_order_id: Some(request_order_id),
+                observed_reset_generation: Some(0),
+                authoritative_reset_generation: None,
+                observed_credential_generation: None,
+                account_reset_fence_id: None,
+                coverage,
+            },
+        )
+        .expect("quota metadata should merge")
+    }
+
+    fn merge_codex_quota_after_explicit_reset(
+        current: Option<&serde_json::Value>,
+        incoming: &serde_json::Value,
+        observed_at_unix_secs: u64,
+        request_started_at_unix_ms: u64,
+    ) -> super::CodexQuotaMergeOutcome {
+        merge_codex_quota_metadata_snapshot(
+            current,
+            incoming,
+            CodexQuotaMergeContext {
+                observed_at_unix_secs,
+                request_started_at_unix_ms: Some(request_started_at_unix_ms),
+                request_order_id: Some("reset-refresh"),
+                observed_reset_generation: Some(0),
+                authoritative_reset_generation: None,
+                observed_credential_generation: None,
+                account_reset_fence_id: Some("reset-fence"),
+                coverage: CodexQuotaWindowCoverage::AccountSnapshot,
+            },
+        )
+        .expect("reset quota metadata should merge")
+    }
+
+    #[test]
+    fn codex_oauth_success_allows_equal_quota_and_oauth_watermarks() {
+        let quota_watermark = json!({
+            "account_quota_request_started_at_unix_ms": 1_000_u64,
+            "account_quota_request_id": "01900000-0000-7000-8000-000000000010"
+        });
+        let oauth_watermark = json!({
+            "oauth_state_request_started_at_unix_ms": 1_000_u64,
+            "oauth_state_request_id": "01900000-0000-7000-8000-000000000010"
+        });
+
+        for current in [&quota_watermark, &oauth_watermark] {
+            assert!(!codex_oauth_success_request_order_is_stale(
+                current.as_object(),
+                Some(1_000),
+                Some("01900000-0000-7000-8000-000000000010"),
+            ));
+        }
+    }
+
+    #[test]
+    fn codex_oauth_success_rejects_older_order_and_same_millisecond_lower_id() {
+        let current = json!({
+            "quota_metadata_request_started_at_unix_ms": 1_000_u64,
+            "quota_metadata_request_id": "01900000-0000-7000-8000-000000000010"
+        });
+
+        assert!(codex_oauth_success_request_order_is_stale(
+            current.as_object(),
+            Some(999),
+            Some("01900000-0000-7000-8000-000000000099"),
+        ));
+        assert!(codex_oauth_success_request_order_is_stale(
+            current.as_object(),
+            Some(1_000),
+            Some("01900000-0000-7000-8000-000000000009"),
+        ));
+    }
+
+    #[test]
+    fn codex_quota_merge_keeps_usage_monotonic_within_one_generation() {
+        let current = json!({
+            "primary_used_percent": 60.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 90_000u64,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 50.0,
+            "primary_reset_at": 2_012u64,
+            "primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &incoming,
+            101,
+            90_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_same_value_advances_request_watermark_once() {
+        let current = json!({
+            "primary_used_percent": 60.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 90_000u64,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 60.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &incoming,
+            101,
+            100_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(
+            outcome.metadata["account_quota_request_started_at_unix_ms"],
+            json!(100_000u64)
+        );
+        assert_eq!(outcome.metadata["updated_at"], json!(101u64));
+
+        let duplicate = merge_codex_quota(
+            Some(&outcome.metadata),
+            &incoming,
+            102,
+            100_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+        assert!(!duplicate.changed);
+        assert_eq!(duplicate.metadata, outcome.metadata);
+    }
+
+    #[test]
+    fn codex_quota_request_id_breaks_same_millisecond_ties() {
+        let first = merge_codex_quota_ordered(
+            None,
+            &json!({
+                "plan_type": "free",
+                "primary_used_percent": 60.0,
+                "primary_reset_at": 2_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            100,
+            100_000,
+            "request-a",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+        assert_eq!(
+            first.metadata["account_quota_request_id"],
+            json!("request-a")
+        );
+        assert_eq!(
+            first.metadata["quota_metadata_request_id"],
+            json!("request-a")
+        );
+
+        let newer = merge_codex_quota_ordered(
+            Some(&first.metadata),
+            &json!({
+                "plan_type": "team",
+                "primary_used_percent": 5.0,
+                "primary_reset_at": 3_000_000u64,
+                "primary_window_minutes": 43_800u64
+            }),
+            101,
+            100_000,
+            "request-z",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+        assert!(newer.changed);
+        assert_eq!(newer.metadata["plan_type"], json!("team"));
+        assert_eq!(newer.metadata["primary_window_minutes"], json!(43_800u64));
+        assert_eq!(
+            newer.metadata["account_quota_request_id"],
+            json!("request-z")
+        );
+        assert_eq!(
+            newer.metadata["quota_metadata_request_id"],
+            json!("request-z")
+        );
+
+        let delayed = merge_codex_quota_ordered(
+            Some(&newer.metadata),
+            &json!({
+                "plan_type": "plus",
+                "primary_used_percent": 80.0,
+                "primary_reset_at": 2_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            102,
+            100_000,
+            "request-m",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+        assert!(!delayed.changed);
+        assert_eq!(delayed.metadata, newer.metadata);
+    }
+
+    #[test]
+    fn codex_quota_stale_same_millisecond_request_cannot_advance_generation() {
+        let newer = merge_codex_quota_ordered(
+            None,
+            &json!({
+                "primary_used_percent": 60.0,
+                "primary_reset_at": 1_001u64,
+                "primary_window_minutes": 300u64
+            }),
+            1,
+            100_000,
+            "request-b",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+        assert_eq!(newer.metadata["primary_reset_at"], json!(1_001u64));
+        assert_eq!(newer.metadata["primary_used_percent"], json!(60.0));
+
+        let delayed = merge_codex_quota_ordered(
+            Some(&newer.metadata),
+            &json!({
+                "primary_used_percent": 5.0,
+                "primary_reset_after_seconds": 60u64,
+                "primary_window_minutes": 300u64
+            }),
+            1_000,
+            100_000,
+            "request-a",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!delayed.changed);
+        assert_eq!(delayed.metadata, newer.metadata);
+        assert_eq!(delayed.metadata["primary_reset_at"], json!(1_001u64));
+        assert_eq!(delayed.metadata["primary_used_percent"], json!(60.0));
+        assert_eq!(
+            delayed.metadata["account_quota_request_id"],
+            json!("request-b")
+        );
+    }
+
+    #[test]
+    fn codex_quota_stale_request_can_raise_usage_within_same_generation() {
+        let current = json!({
+            "primary_used_percent": 60.0,
+            "primary_reset_at": 1_001u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "account_quota_request_id": "request-b",
+            "updated_at": 1u64
+        });
+        let delayed = merge_codex_quota_ordered(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 80.0,
+                "primary_reset_at": 1_010u64,
+                "primary_window_minutes": 300u64
+            }),
+            2,
+            100_000,
+            "request-a",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(delayed.changed);
+        assert_eq!(delayed.metadata["primary_used_percent"], json!(80.0));
+        assert_eq!(delayed.metadata["primary_reset_at"], json!(1_001u64));
+        assert_eq!(
+            delayed.metadata["account_quota_request_id"],
+            json!("request-b")
+        );
+    }
+
+    #[test]
+    fn codex_quota_request_id_supersedes_legacy_same_millisecond_watermark() {
+        let legacy = json!({
+            "primary_used_percent": 60.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+
+        let outcome = merge_codex_quota_ordered(
+            Some(&legacy),
+            &json!({
+                "primary_used_percent": 5.0,
+                "primary_reset_at": 3_000_000u64,
+                "primary_window_minutes": 43_800u64
+            }),
+            101,
+            100_000,
+            "request-a",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(43_800u64));
+        assert_eq!(
+            outcome.metadata["account_quota_request_id"],
+            json!("request-a")
+        );
+    }
+
+    #[test]
+    fn codex_quota_merge_allows_usage_drop_after_deadline_advances() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 2.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &incoming,
+            101,
+            100_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(2.0));
+        assert_eq!(outcome.metadata["primary_reset_at"], json!(20_000u64));
+        assert_eq!(outcome.metadata["updated_at"], json!(101u64));
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_repairs_account_window_copied_from_spark() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            // Adjacent runtime and WHAM observations can move slightly while still proving
+            // that the account window was copied from this Spark generation.
+            "spark_secondary_used_percent": 30.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = parse_codex_wham_usage_response(
+            &json!({
+                "plan_type": "pro",
+                "rate_limit": {
+                    "allowed": false,
+                    "limit_reached": true,
+                    "primary_window": {
+                        "limit_window_seconds": 604_800u64,
+                        "used_percent": 100.0,
+                        "reset_at": 1_788_137_653u64
+                    },
+                    "secondary_window": null
+                },
+                "additional_rate_limits": [{
+                    "limit_name": "GPT-5.3-Codex-Spark",
+                    "metered_feature": "codex_bengalfox",
+                    "rate_limit": {
+                        "primary_window": {
+                            "limit_window_seconds": 18_000u64,
+                            "used_percent": 0.0
+                        },
+                        "secondary_window": {
+                            "limit_window_seconds": 604_800u64,
+                            "used_percent": 32.0,
+                            "reset_at": 1_788_153_238u64
+                        }
+                    }
+                }]
+            }),
+            110,
+        )
+        .expect("production-shaped WHAM response should parse");
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(100.0));
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(10_080u64));
+        assert_eq!(outcome.metadata["allowed"], json!(false));
+        assert_eq!(outcome.metadata["limit_reached"], json!(true));
+        assert!(codex_rate_limit_metadata_exhausted(&outcome.metadata));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_137_653u64)
+        );
+        assert_eq!(outcome.metadata["spark_primary_used_percent"], json!(0.0));
+        assert_eq!(
+            outcome.metadata["spark_secondary_used_percent"],
+            json!(32.0)
+        );
+        assert_eq!(
+            outcome.metadata["spark_secondary_reset_at"],
+            json!(1_788_153_238u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_rejects_deadline_only_contamination_fingerprint() {
+        let current = json!({
+            "primary_used_percent": 72.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(72.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_does_not_replace_unrelated_later_account_generation() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 33.0,
+            "spark_secondary_reset_at": 1_788_190_000u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(32.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_requires_stored_spark_contamination_fingerprint() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_190_000u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 32.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(32.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_without_account_duration_cannot_repair_account_window() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let authoritative_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "spark_secondary_used_percent": 33.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &authoritative_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(32.0));
+        assert_eq!(
+            outcome.metadata["primary_reset_at"],
+            json!(1_788_153_237u64)
+        );
+    }
+
+    #[test]
+    fn codex_quota_stale_full_snapshot_cannot_repair_account_window_copied_from_spark() {
+        let current = json!({
+            "primary_used_percent": 32.0,
+            "primary_reset_at": 1_788_153_237u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 31.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 120_000u64,
+            "spark_quota_request_started_at_unix_ms": 120_000u64,
+            "updated_at": 100u64
+        });
+        let stale_wham = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 1_788_137_653u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 31.0,
+            "spark_secondary_reset_at": 1_788_153_238u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &stale_wham,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_deadline_tolerance_has_inclusive_thirty_second_boundary() {
+        let current = json!({
+            "primary_used_percent": 90.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "updated_at": 100u64
+        });
+        let cases = [
+            (2_030u64, 10.0, 90.0, 2_000u64),
+            (2_031u64, 10.0, 10.0, 2_031u64),
+            (1_970u64, 95.0, 95.0, 2_000u64),
+            (1_969u64, 95.0, 90.0, 2_000u64),
+        ];
+
+        for (incoming_deadline, incoming_usage, expected_usage, expected_deadline) in cases {
+            let outcome = merge_codex_quota(
+                Some(&current),
+                &json!({
+                    "primary_used_percent": incoming_usage,
+                    "primary_reset_at": incoming_deadline,
+                    "primary_window_minutes": 300u64
+                }),
+                110,
+                110_000,
+                CodexQuotaWindowCoverage::AccountSnapshot,
+            );
+
+            assert_eq!(
+                outcome.metadata["primary_used_percent"],
+                json!(expected_usage),
+                "incoming deadline {incoming_deadline}"
+            );
+            assert_eq!(
+                outcome.metadata["primary_reset_at"],
+                json!(expected_deadline),
+                "incoming deadline {incoming_deadline}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_quota_legacy_window_without_deadline_stays_conservative() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_window_minutes": 300u64,
+            "updated_at": 100u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 1.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(100.0));
+        assert_eq!(outcome.metadata["primary_reset_at"], json!(20_000u64));
+    }
+
+    #[test]
+    fn codex_quota_explicit_reset_allows_usage_drop_with_same_deadline() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "account_quota_request_id": "before-reset",
+                "account_quota_reset_fence_unix_ms": 105_000u64,
+                "account_quota_reset_fence_id": "reset-fence",
+                "account_quota_reset_processed_ids": ["redeem-once"],
+            "account_quota_reset_pending": true,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 0.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64
+        });
+
+        let outcome =
+            merge_codex_quota_after_explicit_reset(Some(&current), &incoming, 110, 110_000);
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(0.0));
+        assert_eq!(outcome.metadata["primary_reset_at"], json!(20_000u64));
+        assert_eq!(
+            outcome.metadata["account_quota_reset_pending"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn codex_quota_reset_fence_rejects_pre_reset_response_after_baseline() {
+        let baseline = merge_codex_quota_after_explicit_reset(
+            Some(&json!({
+                "primary_used_percent": 100.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64,
+                "account_quota_request_started_at_unix_ms": 100_000u64,
+                "account_quota_request_id": "before-reset",
+                "account_quota_reset_fence_unix_ms": 105_000u64,
+                "account_quota_reset_fence_id": "reset-fence",
+                "account_quota_reset_pending": true,
+                "updated_at": 100u64
+            })),
+            &json!({
+                "primary_used_percent": 0.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            110_000,
+        );
+
+        let delayed = merge_codex_quota_ordered(
+            Some(&baseline.metadata),
+            &json!({
+                "primary_used_percent": 100.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            120,
+            100_000,
+            "old-in-flight",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!delayed.changed);
+        assert_eq!(delayed.metadata, baseline.metadata);
+        assert_eq!(delayed.metadata["primary_used_percent"], json!(0.0));
+    }
+
+    #[test]
+    fn codex_quota_reset_fence_rejects_pre_reset_account_metadata() {
+        let current = json!({
+            "plan_type": "plus",
+            "reset_credits": {
+                "available_count": 0,
+                "updated_at": 110,
+            },
+            "primary_used_percent": 0.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 110_000u64,
+            "account_quota_request_id": "after-reset",
+            "quota_metadata_request_started_at_unix_ms": 110_000u64,
+            "quota_metadata_request_id": "after-reset",
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset-fence",
+            "account_quota_reset_pending": false,
+            "updated_at": 110u64
+        });
+        let delayed = merge_codex_quota_ordered(
+            Some(&current),
+            &json!({
+                "plan_type": "team",
+                "reset_credits": {
+                    "available_count": 1,
+                    "updated_at": 100,
+                },
+                "primary_used_percent": 100.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            120,
+            100_000,
+            "before-reset",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!delayed.changed);
+        assert_eq!(delayed.metadata, current);
+        assert_eq!(delayed.metadata["plan_type"], json!("plus"));
+        assert_eq!(
+            delayed.metadata["reset_credits"]["available_count"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn codex_quota_pending_reset_ignores_runtime_patch_but_not_spark() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "spark_primary_used_percent": 20.0,
+            "spark_primary_reset_at": 30_000u64,
+            "spark_primary_window_minutes": 300u64,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset-fence",
+            "account_quota_reset_pending": true,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 0.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "spark_primary_used_percent": 30.0,
+            "spark_primary_reset_at": 30_000u64,
+            "spark_primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota_ordered(
+            Some(&current),
+            &incoming,
+            110,
+            110_000,
+            "after-reset-runtime",
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(100.0));
+        assert_eq!(outcome.metadata["spark_primary_used_percent"], json!(30.0));
+        assert_eq!(outcome.metadata["account_quota_reset_pending"], json!(true));
+    }
+
+    #[test]
+    fn codex_quota_reset_fence_treats_same_millisecond_request_as_pre_reset() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset-fence",
+            "account_quota_reset_pending": true,
+            "updated_at": 100u64
+        });
+
+        let outcome = merge_codex_quota_ordered(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 0.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            105_000,
+            "uuid-that-sorts-after-fence",
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_reset_pending_waits_for_usage_to_drop() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset-fence",
+            "account_quota_reset_pending": true,
+            "updated_at": 100u64
+        });
+        let unchanged = merge_codex_quota_after_explicit_reset(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 100.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            110_000,
+        );
+        assert!(!unchanged.changed);
+        assert_eq!(
+            unchanged.metadata["account_quota_reset_pending"],
+            json!(true)
+        );
+
+        let reset = merge_codex_quota_after_explicit_reset(
+            Some(&unchanged.metadata),
+            &json!({
+                "primary_used_percent": 0.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            111,
+            111_000,
+        );
+        assert!(reset.changed);
+        assert_eq!(reset.metadata["primary_used_percent"], json!(0.0));
+        assert_eq!(reset.metadata["account_quota_reset_pending"], json!(false));
+    }
+
+    #[test]
+    fn codex_quota_reset_pending_disambiguates_equal_duration_slot_swap() {
+        let current = json!({
+            "primary_used_percent": 90.0,
+            "primary_reset_at": 1_000u64,
+            "primary_window_minutes": 300u64,
+            "secondary_used_percent": 10.0,
+            "secondary_reset_at": 2_000u64,
+            "secondary_window_minutes": 300u64,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset-fence",
+            "account_quota_reset_pending": true,
+            "updated_at": 100u64
+        });
+        let swapped_but_increased = json!({
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 2_005u64,
+            "primary_window_minutes": 300u64,
+            "secondary_used_percent": 95.0,
+            "secondary_reset_at": 1_005u64,
+            "secondary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota_after_explicit_reset(
+            Some(&current),
+            &swapped_but_increased,
+            110,
+            110_000,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+        assert_eq!(outcome.metadata["account_quota_reset_pending"], json!(true));
+    }
+
+    #[test]
+    fn codex_quota_reset_pending_accepts_authoritative_zero_after_zero_baseline() {
+        let current = json!({
+            "primary_used_percent": 0.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset-fence",
+            "account_quota_reset_pending": true,
+            "updated_at": 100u64
+        });
+        let confirmed = merge_codex_quota_after_explicit_reset(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 0.0,
+                "primary_reset_at": 20_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            110_000,
+        );
+
+        assert!(confirmed.changed);
+        assert_eq!(confirmed.metadata["primary_used_percent"], json!(0.0));
+        assert_eq!(
+            confirmed.metadata["account_quota_reset_pending"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn codex_quota_pre_reset_generation_cannot_touch_account_but_spark_still_merges() {
+        let current = json!({
+            "plan_type": "plus",
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "spark_primary_used_percent": 10.0,
+            "spark_primary_reset_at": 3_000u64,
+            "spark_primary_window_minutes": 300u64,
+            "account_quota_reset_generation": 2u64,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "plan_type": "team",
+            "primary_used_percent": 90.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "spark_primary_used_percent": 30.0,
+            "spark_primary_reset_at": 3_000u64,
+            "spark_primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota_metadata_snapshot(
+            Some(&current),
+            &incoming,
+            CodexQuotaMergeContext {
+                observed_at_unix_secs: 110,
+                request_started_at_unix_ms: Some(110_000),
+                request_order_id: Some("pre-reset"),
+                observed_reset_generation: Some(1),
+                authoritative_reset_generation: None,
+                observed_credential_generation: None,
+                account_reset_fence_id: None,
+                coverage: CodexQuotaWindowCoverage::FullSnapshot,
+            },
+        )
+        .expect("quota metadata should merge");
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["plan_type"], json!("plus"));
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(20.0));
+        assert_eq!(outcome.metadata["spark_primary_used_percent"], json!(30.0));
+    }
+
+    #[test]
+    fn codex_quota_credential_generation_mismatch_rejects_every_field() {
+        let current = json!({
+            "credential_generation": "credential-new",
+            "plan_type": "plus",
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "spark_primary_used_percent": 10.0,
+            "spark_primary_reset_at": 3_000u64,
+            "spark_primary_window_minutes": 300u64,
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "plan_type": "team",
+            "primary_used_percent": 90.0,
+            "spark_primary_used_percent": 30.0
+        });
+
+        let outcome = merge_codex_quota_metadata_snapshot(
+            Some(&current),
+            &incoming,
+            CodexQuotaMergeContext {
+                observed_at_unix_secs: 110,
+                request_started_at_unix_ms: Some(110_000),
+                request_order_id: Some("old-credential"),
+                observed_reset_generation: Some(0),
+                authoritative_reset_generation: None,
+                observed_credential_generation: Some("credential-old"),
+                account_reset_fence_id: None,
+                coverage: CodexQuotaWindowCoverage::FullSnapshot,
+            },
+        )
+        .expect("quota metadata should be acknowledged");
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_only_latest_reset_generation_can_close_pending_zero_baseline() {
+        let current = json!({
+            "primary_used_percent": 0.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_reset_generation": 2u64,
+            "account_quota_reset_pending_generation": 2u64,
+            "account_quota_reset_pending": true,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset:b",
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 0.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64
+        });
+        let merge = |generation| {
+            merge_codex_quota_metadata_snapshot(
+                Some(&current),
+                &incoming,
+                CodexQuotaMergeContext {
+                    observed_at_unix_secs: 110,
+                    request_started_at_unix_ms: Some(110_000),
+                    request_order_id: Some("reset-refresh"),
+                    observed_reset_generation: Some(generation),
+                    authoritative_reset_generation: Some(generation),
+                    observed_credential_generation: None,
+                    account_reset_fence_id: Some("reset:b"),
+                    coverage: CodexQuotaWindowCoverage::AccountSnapshot,
+                },
+            )
+            .expect("quota metadata should merge")
+        };
+
+        let stale = merge(1);
+        assert!(!stale.changed);
+        assert_eq!(stale.metadata["account_quota_reset_pending"], json!(true));
+
+        let current_generation = merge(2);
+        assert!(current_generation.changed);
+        assert_eq!(
+            current_generation.metadata["account_quota_reset_pending"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn codex_quota_pending_reset_recovers_from_later_current_generation_snapshot() {
+        let current = json!({
+            "primary_used_percent": 100.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_reset_generation": 2u64,
+            "account_quota_reset_pending_generation": 2u64,
+            "account_quota_reset_pending": true,
+            "account_quota_reset_fence_unix_ms": 105_000u64,
+            "account_quota_reset_fence_id": "reset:b",
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64
+        });
+        let merge = |request_started_at_unix_ms, coverage| {
+            merge_codex_quota_metadata_snapshot(
+                Some(&current),
+                &incoming,
+                CodexQuotaMergeContext {
+                    observed_at_unix_secs: 120,
+                    request_started_at_unix_ms: Some(request_started_at_unix_ms),
+                    request_order_id: Some("later-refresh"),
+                    observed_reset_generation: Some(2),
+                    authoritative_reset_generation: None,
+                    observed_credential_generation: None,
+                    account_reset_fence_id: None,
+                    coverage,
+                },
+            )
+            .expect("quota metadata should merge")
+        };
+
+        let pre_reset_request = merge(100_000, CodexQuotaWindowCoverage::AccountSnapshot);
+        assert!(!pre_reset_request.changed);
+        assert_eq!(
+            pre_reset_request.metadata["account_quota_reset_pending"],
+            json!(true)
+        );
+
+        let partial_headers = merge(120_000, CodexQuotaWindowCoverage::Patch);
+        assert!(!partial_headers.changed);
+        assert_eq!(
+            partial_headers.metadata["account_quota_reset_pending"],
+            json!(true)
+        );
+
+        let settled = merge(120_000, CodexQuotaWindowCoverage::AccountSnapshot);
+        assert!(settled.changed);
+        assert_eq!(settled.metadata["primary_used_percent"], json!(20.0));
+        assert_eq!(
+            settled.metadata["account_quota_reset_pending"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn codex_quota_merge_derives_stable_deadline_from_observation_time() {
+        let first = merge_codex_quota(
+            None,
+            &json!({
+                "primary_used_percent": 60.0,
+                "primary_reset_after_seconds": 900u64,
+                "primary_window_minutes": 300u64
+            }),
+            1_000,
+            900_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+        assert_eq!(first.metadata["primary_reset_at"], json!(1_900u64));
+
+        let delayed = merge_codex_quota(
+            Some(&first.metadata),
+            &json!({
+                "primary_used_percent": 50.0,
+                "primary_reset_after_seconds": 890u64,
+                "primary_window_minutes": 300u64
+            }),
+            1_010,
+            800_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!delayed.changed);
+        assert_eq!(delayed.metadata["primary_used_percent"], json!(60.0));
+        assert_eq!(delayed.metadata["primary_reset_at"], json!(1_900u64));
+    }
+
+    #[test]
+    fn codex_quota_merge_replaces_paid_windows_with_monthly_shape() {
+        let current = json!({
+            "primary_used_percent": 70.0,
+            "primary_reset_at": 10_000u64,
+            "primary_window_minutes": 10_080u64,
+            "secondary_used_percent": 20.0,
+            "secondary_reset_at": 2_000u64,
+            "secondary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let monthly = json!({
+            "primary_used_percent": 5.0,
+            "primary_reset_at": 3_000_000u64,
+            "primary_window_minutes": 43_800u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &monthly,
+            200,
+            150_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(43_800u64));
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(5.0));
+        assert!(outcome.metadata.get("secondary_used_percent").is_none());
+        assert!(outcome.metadata.get("secondary_window_minutes").is_none());
+    }
+
+    #[test]
+    fn codex_quota_merge_stale_request_cannot_restore_old_window_shape() {
+        let monthly = json!({
+            "primary_used_percent": 5.0,
+            "primary_reset_at": 3_000_000u64,
+            "primary_window_minutes": 43_800u64,
+            "account_quota_request_started_at_unix_ms": 150_000u64,
+            "updated_at": 200u64
+        });
+        let delayed_paid = json!({
+            "primary_used_percent": 70.0,
+            "primary_reset_at": 10_000u64,
+            "primary_window_minutes": 10_080u64,
+            "secondary_used_percent": 20.0,
+            "secondary_reset_at": 2_000u64,
+            "secondary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&monthly),
+            &delayed_paid,
+            210,
+            100_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, monthly);
+    }
+
+    #[test]
+    fn codex_quota_merge_matches_duration_when_windows_move_slots() {
+        let free = json!({
+            "primary_used_percent": 40.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let paid = json!({
+            "primary_used_percent": 10.0,
+            "primary_reset_at": 10_000u64,
+            "primary_window_minutes": 10_080u64,
+            "secondary_used_percent": 30.0,
+            "secondary_reset_at": 2_005u64,
+            "secondary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&free),
+            &paid,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(10_080u64));
+        assert_eq!(outcome.metadata["secondary_window_minutes"], json!(300u64));
+        assert_eq!(outcome.metadata["secondary_used_percent"], json!(40.0));
+    }
+
+    #[test]
+    fn codex_quota_merge_uses_deadline_to_disambiguate_equal_duration_slot_swap() {
+        let current = json!({
+            "primary_used_percent": 90.0,
+            "primary_reset_at": 1_000u64,
+            "primary_window_minutes": 300u64,
+            "secondary_used_percent": 10.0,
+            "secondary_reset_at": 2_000u64,
+            "secondary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let swapped = json!({
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 2_005u64,
+            "primary_window_minutes": 300u64,
+            "secondary_used_percent": 95.0,
+            "secondary_reset_at": 1_005u64,
+            "secondary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &swapped,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(20.0));
+        assert_eq!(outcome.metadata["primary_reset_at"], json!(2_000u64));
+        assert_eq!(outcome.metadata["secondary_used_percent"], json!(95.0));
+        assert_eq!(outcome.metadata["secondary_reset_at"], json!(1_000u64));
+    }
+
+    #[test]
+    fn codex_quota_patch_ignores_primary_only_header_for_paid_windows() {
+        let current = json!({
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 10_000u64,
+            "primary_window_minutes": 10_080u64,
+            "secondary_used_percent": 40.0,
+            "secondary_reset_at": 2_000u64,
+            "secondary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+        let headers =
+            BTreeMap::from([("x-codex-primary-used-percent".to_string(), "80".to_string())]);
+        let partial = parse_codex_usage_headers(&headers, 110)
+            .expect("partial Codex usage headers should parse");
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &partial,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_patch_without_duration_uses_slot_for_single_window() {
+        let current = json!({
+            "primary_used_percent": 60.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &json!({ "primary_used_percent": 70.0 }),
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(70.0));
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(300u64));
+    }
+
+    #[test]
+    fn codex_quota_patch_with_duration_matches_across_paid_slots() {
+        let current = json!({
+            "primary_used_percent": 20.0,
+            "primary_reset_at": 10_000u64,
+            "primary_window_minutes": 10_080u64,
+            "secondary_used_percent": 40.0,
+            "secondary_reset_at": 2_000u64,
+            "secondary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 100u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 70.0,
+                "primary_reset_at": 2_005u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(20.0));
+        assert_eq!(outcome.metadata["secondary_used_percent"], json!(70.0));
+        assert_eq!(outcome.metadata["secondary_window_minutes"], json!(300u64));
+    }
+
+    #[test]
+    fn codex_quota_account_snapshot_preserves_spark_windows() {
+        let current = json!({
+            "primary_used_percent": 50.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "spark_primary_used_percent": 25.0,
+            "spark_primary_reset_at": 3_000u64,
+            "spark_primary_window_minutes": 300u64,
+            "updated_at": 100u64
+        });
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 60.0,
+                "primary_reset_at": 2_000u64,
+                "primary_window_minutes": 300u64
+            }),
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["spark_primary_used_percent"], json!(25.0));
+        assert_eq!(outcome.metadata["spark_primary_reset_at"], json!(3_000u64));
+    }
+
+    #[test]
+    fn codex_quota_full_snapshot_removes_absent_spark_and_zero_windows() {
+        let current = json!({
+            "primary_used_percent": 50.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64,
+            "secondary_used_percent": 20.0,
+            "secondary_window_minutes": 10_080u64,
+            "spark_primary_used_percent": 25.0,
+            "spark_primary_window_minutes": 300u64,
+            "updated_at": 100u64
+        });
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &json!({
+                "primary_used_percent": 55.0,
+                "primary_reset_at": 2_000u64,
+                "primary_window_minutes": 300u64,
+                "secondary_window_minutes": 0u64
+            }),
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert!(outcome.metadata.get("secondary_window_minutes").is_none());
+        assert!(outcome.metadata.get("spark_primary_used_percent").is_none());
+        assert!(outcome
+            .metadata
+            .get("spark_primary_window_minutes")
+            .is_none());
+    }
+
+    #[test]
+    fn codex_quota_merge_legacy_slot_without_identity_is_monotonic() {
+        let current = json!({
+            "primary_used_percent": 60.0,
+            "account_quota_request_started_at_unix_ms": 110_000u64,
+            "updated_at": 100u64
+        });
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &json!({ "primary_used_percent": 50.0 }),
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_stale_request_cannot_overwrite_account_metadata() {
+        let current = json!({
+            "plan_type": "free",
+            "credits_balance": 20.0,
+            "primary_used_percent": 10.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 43_800u64,
+            "quota_metadata_request_started_at_unix_ms": 200_000u64,
+            "account_quota_request_started_at_unix_ms": 200_000u64,
+            "updated_at": 200u64
+        });
+        let stale = json!({
+            "plan_type": "plus",
+            "credits_balance": 2.0,
+            "primary_used_percent": 80.0,
+            "primary_reset_at": 2_000u64,
+            "primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &stale,
+            210,
+            100_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
+
+    #[test]
+    fn codex_quota_metadata_uses_the_newest_family_watermark() {
+        let current = json!({
+            "plan_type": "free",
+            "credits_balance": 20.0,
+            "primary_used_percent": 40.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64,
+            "quota_metadata_request_started_at_unix_ms": 100_000u64,
+            "account_quota_request_started_at_unix_ms": 200_000u64,
+            "updated_at": 200u64
+        });
+        let delayed = json!({
+            "plan_type": "plus",
+            "credits_balance": 2.0,
+            "primary_used_percent": 50.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 300u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &delayed,
+            210,
+            150_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["plan_type"], json!("free"));
+        assert_eq!(outcome.metadata["credits_balance"], json!(20.0));
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(50.0));
+        assert_eq!(
+            outcome.metadata["quota_metadata_request_started_at_unix_ms"],
+            json!(100_000u64)
+        );
+        assert_eq!(
+            outcome.metadata["account_quota_request_started_at_unix_ms"],
+            json!(200_000u64)
+        );
+    }
+
+    #[test]
+    fn codex_account_status_ignores_a_newer_spark_only_watermark() {
+        let current = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 40.0,
+            "spark_secondary_reset_at": 30_000u64,
+            "spark_secondary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "spark_quota_request_started_at_unix_ms": 200_000u64,
+            "updated_at": 200u64
+        });
+        let wham = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64,
+            "spark_secondary_used_percent": 40.0,
+            "spark_secondary_reset_at": 30_000u64,
+            "spark_secondary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &wham,
+            210,
+            150_000,
+            CodexQuotaWindowCoverage::FullSnapshot,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(99.0));
+        assert_eq!(outcome.metadata["allowed"], json!(false));
+        assert_eq!(outcome.metadata["limit_reached"], json!(true));
+        assert!(codex_rate_limit_metadata_exhausted(&outcome.metadata));
+        assert_eq!(
+            outcome.metadata["account_quota_request_started_at_unix_ms"],
+            json!(150_000u64)
+        );
+        assert_eq!(
+            outcome.metadata["spark_quota_request_started_at_unix_ms"],
+            json!(200_000u64)
+        );
+    }
+
+    #[test]
+    fn stale_codex_account_status_cannot_override_newer_account_signal() {
+        let current = json!({
+            "allowed": false,
+            "limit_reached": true,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64,
+            "account_quota_request_started_at_unix_ms": 200_000u64,
+            "updated_at": 200u64
+        });
+        let stale = json!({
+            "allowed": true,
+            "limit_reached": false,
+            "primary_used_percent": 99.0,
+            "primary_reset_at": 20_000u64,
+            "primary_window_minutes": 10_080u64
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &stale,
+            210,
+            150_000,
+            CodexQuotaWindowCoverage::AccountSnapshot,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.metadata, current);
+    }
 
     #[test]
     fn execution_error_detail_preserves_structured_code_and_message() {
@@ -2145,6 +5509,7 @@ mod tests {
             candidate_id: None,
             status_code: 401,
             headers: BTreeMap::new(),
+            response_observation: None,
             body: Some(ResponseBody {
                 json_body: Some(json!({
                     "error": {
@@ -2282,6 +5647,56 @@ mod tests {
     }
 
     #[test]
+    fn codex_invalid_state_preserves_refresh_failure_when_oauth_expired_arrives_later() {
+        let mut key = StoredProviderCatalogKey::new(
+            "key-1".to_string(),
+            "provider-1".to_string(),
+            "key-1".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build");
+        key.oauth_invalid_at_unix_secs = Some(100);
+        key.oauth_invalid_reason = Some(format!(
+            "{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+        ));
+        let expected = format!(
+            "{OAUTH_EXPIRED_PREFIX}session expired\n{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+        );
+
+        assert_eq!(
+            codex_build_invalid_state(&key, format!("{OAUTH_EXPIRED_PREFIX}session expired"), 200,),
+            (Some(200), Some(expected.clone()))
+        );
+
+        key.oauth_invalid_reason = Some(format!(
+            "{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+        ));
+        assert_eq!(
+            codex_build_invalid_state(&key, expected.clone(), 200),
+            (Some(200), Some(expected))
+        );
+
+        key.oauth_invalid_reason = Some(format!(
+            "{OAUTH_EXPIRED_PREFIX}old session expired\n{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+        ));
+        assert_eq!(
+            codex_build_invalid_state(
+                &key,
+                format!("{OAUTH_EXPIRED_PREFIX}new session expired"),
+                300,
+            ),
+            (
+                Some(300),
+                Some(format!(
+                    "{OAUTH_EXPIRED_PREFIX}new session expired\n{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+                ))
+            )
+        );
+    }
+
+    #[test]
     fn codex_invalid_state_keeps_oauth_expired_over_request_failure() {
         let mut key = StoredProviderCatalogKey::new(
             "key-1".to_string(),
@@ -2304,6 +5719,37 @@ mod tests {
             (
                 Some(100),
                 Some(format!("{OAUTH_EXPIRED_PREFIX}session expired"))
+            )
+        );
+    }
+
+    #[test]
+    fn codex_invalid_state_keeps_refresh_failure_over_request_failure() {
+        let mut key = StoredProviderCatalogKey::new(
+            "key-1".to_string(),
+            "provider-1".to_string(),
+            "key-1".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build");
+        key.oauth_invalid_at_unix_secs = Some(100);
+        key.oauth_invalid_reason = Some(format!(
+            "{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+        ));
+
+        assert_eq!(
+            codex_build_invalid_state(
+                &key,
+                format!("{OAUTH_REQUEST_FAILED_PREFIX}账号状态检查失败"),
+                200,
+            ),
+            (
+                Some(100),
+                Some(format!(
+                    "{OAUTH_REFRESH_FAILED_PREFIX}Token 续期失败 (401): refresh_token 无效"
+                ))
             )
         );
     }
@@ -2527,12 +5973,231 @@ mod tests {
         )));
     }
 
+    /// Header set captured from a `gpt-5.6-sol` response: the request was metered against the
+    /// plan's own limit, so the unprefixed windows are the account's and the Spark limit is
+    /// announced separately.
+    fn codex_premium_response_headers() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("x-codex-plan-type".to_string(), "pro".to_string()),
+            ("x-codex-active-limit".to_string(), "premium".to_string()),
+            ("x-codex-primary-used-percent".to_string(), "50".to_string()),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-primary-reset-at".to_string(),
+                "1787801347".to_string(),
+            ),
+            (
+                "x-codex-secondary-used-percent".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "x-codex-secondary-window-minutes".to_string(),
+                "0".to_string(),
+            ),
+            ("x-codex-secondary-reset-at".to_string(), "".to_string()),
+            (
+                "x-codex-secondary-reset-after-seconds".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-limit-name".to_string(),
+                "GPT-5.3-Codex-Spark".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-used-percent".to_string(),
+                "17".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-reset-at".to_string(),
+                "1787410252".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-used-percent".to_string(),
+                "8".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-reset-at".to_string(),
+                "1787833868".to_string(),
+            ),
+        ])
+    }
+
+    /// Header set captured from a `gpt-5.3-codex-spark` response three seconds later on the same
+    /// key: the unprefixed windows now repeat the Spark limit verbatim, and only
+    /// `x-codex-active-limit` says so.
+    fn codex_spark_response_headers() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("x-codex-plan-type".to_string(), "pro".to_string()),
+            (
+                "x-codex-active-limit".to_string(),
+                "codex_bengalfox".to_string(),
+            ),
+            ("x-codex-primary-used-percent".to_string(), "22".to_string()),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "x-codex-primary-reset-at".to_string(),
+                "1787410252".to_string(),
+            ),
+            (
+                "x-codex-secondary-used-percent".to_string(),
+                "11".to_string(),
+            ),
+            (
+                "x-codex-secondary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-secondary-reset-at".to_string(),
+                "1787833868".to_string(),
+            ),
+            (
+                "x-codex-secondary-reset-after-seconds".to_string(),
+                "424336".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-limit-name".to_string(),
+                "GPT-5.3-Codex-Spark".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-used-percent".to_string(),
+                "22".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-window-minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-primary-reset-at".to_string(),
+                "1787410252".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-used-percent".to_string(),
+                "11".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-window-minutes".to_string(),
+                "10080".to_string(),
+            ),
+            (
+                "x-codex-bengalfox-secondary-reset-at".to_string(),
+                "1787833868".to_string(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn codex_usage_headers_keep_the_account_window_when_the_plan_limit_is_active() {
+        let parsed = parse_codex_usage_headers(&codex_premium_response_headers(), 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(50.0)));
+        assert_eq!(
+            parsed.get("primary_window_minutes"),
+            Some(&json!(10_080u64))
+        );
+        assert_eq!(
+            parsed.get("primary_reset_at"),
+            Some(&json!(1_787_801_347u64))
+        );
+        assert_eq!(parsed.get("secondary_window_minutes"), Some(&json!(0u64)));
+    }
+
+    #[test]
+    fn codex_usage_headers_capture_named_limit_windows_alongside_the_account_window() {
+        let parsed = parse_codex_usage_headers(&codex_premium_response_headers(), 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(17.0)));
+        assert_eq!(
+            parsed.get("spark_primary_window_minutes"),
+            Some(&json!(300u64))
+        );
+        assert_eq!(
+            parsed.get("spark_primary_reset_at"),
+            Some(&json!(1_787_410_252u64))
+        );
+        assert_eq!(
+            parsed.get("spark_secondary_used_percent"),
+            Some(&json!(8.0))
+        );
+        assert_eq!(
+            parsed.get("spark_secondary_window_minutes"),
+            Some(&json!(10_080u64))
+        );
+    }
+
+    #[test]
+    fn codex_usage_headers_keep_model_scoped_windows_out_of_the_account_family() {
+        let parsed = parse_codex_usage_headers(&codex_spark_response_headers(), 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        // Without this the paid-window swap promotes the Spark weekly window into the account's
+        // own weekly slot, which is what the scheduler reads.
+        assert!(
+            parsed.get("primary_used_percent").is_none(),
+            "the Spark limit governed this request, so it must not claim the account window: {parsed}"
+        );
+        assert!(parsed.get("primary_window_minutes").is_none());
+        assert!(parsed.get("primary_reset_at").is_none());
+        assert!(parsed.get("secondary_used_percent").is_none());
+        assert!(parsed.get("primary_over_secondary_limit_percent").is_none());
+
+        assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(22.0)));
+        assert_eq!(
+            parsed.get("spark_secondary_used_percent"),
+            Some(&json!(11.0))
+        );
+        assert_eq!(parsed.get("plan_type"), Some(&json!("pro")));
+    }
+
+    #[test]
+    fn codex_usage_headers_without_an_active_limit_still_fill_the_account_window() {
+        let mut headers = codex_premium_response_headers();
+        headers.remove("x-codex-active-limit");
+
+        let parsed = parse_codex_usage_headers(&headers, 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(50.0)));
+        assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(17.0)));
+    }
+
+    #[test]
+    fn codex_usage_headers_ignore_an_active_limit_that_matches_no_announced_family() {
+        let mut headers = codex_premium_response_headers();
+        headers.insert(
+            "x-codex-active-limit".to_string(),
+            "codex_unknown_feature".to_string(),
+        );
+
+        let parsed = parse_codex_usage_headers(&headers, 1_787_409_530)
+            .expect("Codex usage headers should parse");
+
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(50.0)));
+    }
+
     #[test]
     fn parses_codex_spark_quota_from_additional_rate_limits() {
         let parsed = parse_codex_wham_usage_response(
             &json!({
                 "plan_type": "plus",
                 "rate_limit": {
+                    "allowed": false,
+                    "limit_reached": true,
                     "primary_window": {
                         "used_percent": 25.0,
                         "reset_after_seconds": 604800,
@@ -2567,6 +6232,8 @@ mod tests {
         )
         .expect("codex wham usage should parse");
 
+        assert_eq!(parsed.get("allowed"), Some(&json!(false)));
+        assert_eq!(parsed.get("limit_reached"), Some(&json!(true)));
         assert_eq!(parsed.get("primary_used_percent"), Some(&json!(10.0)));
         assert_eq!(parsed.get("secondary_used_percent"), Some(&json!(25.0)));
         assert_eq!(parsed.get("spark_primary_used_percent"), Some(&json!(40.0)));
@@ -2585,7 +6252,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_codex_monthly_header_without_zero_secondary_placeholder() {
+    fn codex_quota_parses_monthly_header_with_zero_secondary_tombstone() {
         let headers = BTreeMap::from([
             ("x-codex-plan-type".to_string(), "team".to_string()),
             ("x-codex-primary-used-percent".to_string(), "14".to_string()),
@@ -2625,7 +6292,259 @@ mod tests {
             Some(&json!(43_800u64))
         );
         assert!(parsed.get("secondary_used_percent").is_none());
+        assert_eq!(parsed.get("secondary_window_minutes"), Some(&json!(0u64)));
+    }
+
+    #[test]
+    fn codex_quota_monthly_header_patch_removes_previous_five_hour_window() {
+        let current = json!({
+            "primary_used_percent": 30.0,
+            "primary_reset_at": 1_790_000_000u64,
+            "primary_window_minutes": 10_080u64,
+            "secondary_used_percent": 70.0,
+            "secondary_reset_at": 1_785_000_000u64,
+            "secondary_window_minutes": 300u64,
+            "account_quota_request_started_at_unix_ms": 100_000u64,
+            "updated_at": 1_784_000_000u64
+        });
+        let headers = BTreeMap::from([
+            ("x-codex-plan-type".to_string(), "team".to_string()),
+            ("x-codex-primary-used-percent".to_string(), "14".to_string()),
+            (
+                "x-codex-primary-reset-after-seconds".to_string(),
+                "2627672".to_string(),
+            ),
+            (
+                "x-codex-primary-reset-at".to_string(),
+                "1786915122".to_string(),
+            ),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "43800".to_string(),
+            ),
+            (
+                "x-codex-secondary-used-percent".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "x-codex-secondary-reset-after-seconds".to_string(),
+                "0".to_string(),
+            ),
+            ("x-codex-secondary-reset-at".to_string(), "".to_string()),
+            (
+                "x-codex-secondary-window-minutes".to_string(),
+                "0".to_string(),
+            ),
+        ]);
+        let monthly = parse_codex_usage_headers(&headers, 1_784_287_450)
+            .expect("monthly Codex headers should parse");
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &monthly,
+            1_784_287_450,
+            110_000,
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.metadata["primary_used_percent"], json!(14.0));
+        assert_eq!(outcome.metadata["primary_window_minutes"], json!(43_800u64));
+        assert!(outcome.metadata.get("secondary_used_percent").is_none());
+        assert!(outcome.metadata.get("secondary_window_minutes").is_none());
+    }
+
+    #[test]
+    fn codex_quota_parses_monthly_body_with_complete_zero_secondary_tombstone() {
+        let parsed = parse_codex_wham_usage_response(
+            &json!({
+                "plan_type": "team",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 14.0,
+                        "reset_after_seconds": 2_627_672u64,
+                        "reset_at": 1_786_915_122u64,
+                        "window_minutes": 43_800u64
+                    },
+                    "secondary_window": {
+                        "used_percent": 0.0,
+                        "reset_after_seconds": 0u64,
+                        "reset_at": null,
+                        "window_minutes": 0u64
+                    }
+                }
+            }),
+            1_784_287_450,
+        )
+        .expect("monthly Codex body should parse");
+
+        assert_eq!(parsed.get("secondary_window_minutes"), Some(&json!(0u64)));
+    }
+
+    #[test]
+    fn codex_quota_partial_zero_secondary_header_does_not_emit_tombstone() {
+        let headers = BTreeMap::from([
+            ("x-codex-primary-used-percent".to_string(), "14".to_string()),
+            (
+                "x-codex-primary-window-minutes".to_string(),
+                "43800".to_string(),
+            ),
+            (
+                "x-codex-secondary-window-minutes".to_string(),
+                "0".to_string(),
+            ),
+        ]);
+        let parsed = parse_codex_usage_headers(&headers, 1_784_287_450)
+            .expect("partial Codex headers should parse");
+
         assert!(parsed.get("secondary_window_minutes").is_none());
+    }
+
+    #[test]
+    fn parses_codex_websocket_rate_limits_from_chunk_envelope() {
+        let parsed = parse_codex_websocket_rate_limits_response(
+            &json!({
+                "chunks": [
+                    {"type": "response.output_text.delta", "delta": "ignored"},
+                    {
+                        "type": "codex.rate_limits",
+                        "plan_type": "free",
+                        "rate_limits": {
+                            "allowed": true,
+                            "limit_reached": false,
+                            "primary": {
+                                "used_percent": 91,
+                                "window_minutes": 43200,
+                                "reset_after_seconds": 2590791,
+                                "reset_at": 1787154563u64
+                            }
+                        }
+                    }
+                ]
+            }),
+            1_787_000_000,
+        )
+        .expect("Codex WebSocket quota chunk should parse");
+
+        assert_eq!(parsed.get("plan_type"), Some(&json!("free")));
+        assert_eq!(parsed.get("allowed"), Some(&json!(true)));
+        assert_eq!(parsed.get("limit_reached"), Some(&json!(false)));
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(91.0)));
+        assert_eq!(
+            parsed.get("primary_window_minutes"),
+            Some(&json!(43_200u64))
+        );
+        assert_eq!(
+            parsed.get("primary_reset_after_seconds"),
+            Some(&json!(2_590_791u64))
+        );
+        assert!(parsed.get("secondary_used_percent").is_none());
+    }
+
+    #[test]
+    fn parses_codex_websocket_usage_limit_error_headers() {
+        let parsed = parse_codex_websocket_rate_limits_response(
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "free",
+                    "resets_at": 1_787_274_385u64,
+                    "resets_in_seconds": 2_590_077u64,
+                },
+                "status_code": 429,
+                "headers": {
+                    "X-Codex-Plan-Type": "free",
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "43200",
+                    "X-Codex-Primary-Reset-After-Seconds": "2590078",
+                    "X-Codex-Primary-Reset-At": "1787274385",
+                    "X-Codex-Credits-Has-Credits": "False",
+                },
+            }),
+            1_787_000_000,
+        )
+        .expect("Codex usage-limit error should parse as quota metadata");
+
+        assert_eq!(parsed.get("allowed"), Some(&json!(false)));
+        assert_eq!(parsed.get("limit_reached"), Some(&json!(true)));
+        assert_eq!(parsed.get("plan_type"), Some(&json!("free")));
+        assert_eq!(parsed.get("primary_used_percent"), Some(&json!(100.0)));
+        assert_eq!(
+            parsed.get("primary_reset_at"),
+            Some(&json!(1_787_274_385u64))
+        );
+        assert!(codex_rate_limit_metadata_exhausted(&parsed));
+    }
+
+    #[test]
+    fn codex_usage_limit_error_does_not_backfill_a_model_scoped_reset_into_the_account() {
+        let event = json!({
+            "type": "error",
+            "error": {
+                "type": "usage_limit_reached",
+                "plan_type": "pro",
+                "resets_at": 1_787_430_252u64,
+                "resets_in_seconds": 20_722u64,
+            },
+            "status_code": 429,
+            "headers": {
+                "X-Codex-Plan-Type": "pro",
+                "X-Codex-Active-Limit": "codex_bengalfox",
+                "X-Codex-Primary-Used-Percent": "100",
+                "X-Codex-Primary-Window-Minutes": "300",
+                "X-Codex-Primary-Reset-At": "1787430252",
+                "X-Codex-Bengalfox-Limit-Name": "GPT-5.3-Codex-Spark",
+                "X-Codex-Bengalfox-Primary-Used-Percent": "100",
+                "X-Codex-Bengalfox-Primary-Window-Minutes": "300",
+                "X-Codex-Bengalfox-Primary-Reset-At": "1787430252",
+            },
+        });
+        let parsed = parse_codex_websocket_rate_limits_response(&event, 1_787_409_530)
+            .expect("Codex usage-limit error should parse as quota metadata");
+
+        assert!(
+            parsed.get("primary_reset_at").is_none(),
+            "the Spark limit rejected this request, so its reset timing must not claim the account window: {parsed}"
+        );
+        assert!(parsed.get("primary_reset_after_seconds").is_none());
+        assert_eq!(
+            parsed.get("spark_primary_reset_at"),
+            Some(&json!(1_787_430_252u64))
+        );
+        assert_eq!(
+            parsed.get("spark_primary_used_percent"),
+            Some(&json!(100.0))
+        );
+        assert!(parsed.get("allowed").is_none());
+        assert!(parsed.get("limit_reached").is_none());
+        assert!(!codex_rate_limit_metadata_exhausted(&parsed));
+        assert!(codex_websocket_response_has_usage_limit_error(&event));
+        assert_eq!(
+            codex_websocket_usage_limit_reset_at(&event, 1_787_409_530),
+            Some(1_787_430_252u64)
+        );
+    }
+
+    #[test]
+    fn codex_rate_limit_metadata_detects_explicit_and_window_exhaustion() {
+        assert!(codex_rate_limit_metadata_exhausted(&json!({
+            "allowed": false
+        })));
+        assert!(codex_rate_limit_metadata_exhausted(&json!({
+            "limit_reached": true
+        })));
+        assert!(codex_rate_limit_metadata_exhausted(&json!({
+            "primary_used_percent": 100
+        })));
+        assert!(!codex_rate_limit_metadata_exhausted(&json!({
+            "allowed": true,
+            "primary_used_percent": 100
+        })));
+        assert!(!codex_rate_limit_metadata_exhausted(&json!({
+            "limit_reached": false,
+            "secondary_used_percent": 100
+        })));
     }
 
     #[test]
@@ -2833,6 +6752,10 @@ mod tests {
             parsed["models"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]
                 ["display_name"],
             json!("Key-1")
+        );
+        assert_eq!(
+            parsed["models"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]["reset_time"],
+            json!("2030-01-01T00:00:00Z")
         );
         assert_eq!(
             parsed["models"]["gemini-3-pro-preview"]["display_name"],

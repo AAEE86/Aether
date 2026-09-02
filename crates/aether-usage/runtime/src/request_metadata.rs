@@ -7,10 +7,13 @@ use aether_data_contracts::repository::usage::{
     extract_provider_actual_service_tier_from_response,
     extract_provider_reasoning_effort_from_body, extract_provider_service_tier_from_body,
     normalize_provider_service_tier, resolve_provider_cache_ttl_minutes, UsageBodyCaptureState,
-    PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY, PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY,
-    PROVIDER_REASONING_EFFORT_METADATA_KEY, PROVIDER_SERVICE_TIER_METADATA_KEY,
+    LIVE_SESSION_METADATA_KEY, PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY,
+    PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY, PROVIDER_REASONING_EFFORT_METADATA_KEY,
+    PROVIDER_SERVICE_TIER_METADATA_KEY, REALTIME_SESSION_METADATA_KEY,
     REQUESTED_REASONING_EFFORT_METADATA_KEY, ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY,
-    ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY,
+    ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY, USAGE_AVAILABLE_METADATA_KEY,
+    USAGE_PRICING_AVAILABLE_METADATA_KEY, WEBSOCKET_MODE_METADATA_KEY,
+    WEBSOCKET_TRANSPORT_METADATA_KEY,
 };
 use serde_json::{json, Map, Value};
 
@@ -131,6 +134,12 @@ pub(crate) fn retain_first_byte_request_metadata(value: Option<Value>) -> Option
                 | "upstream_is_stream"
                 | "client_session_affinity"
                 | "api_key_is_standalone"
+                | "websocket_mode"
+                | "websocket_transport"
+                | "usage_available"
+                | "usage_pricing_available"
+                | "live_session"
+                | "realtime_session"
                 | "request_path"
                 | "request_query_string"
                 | "request_path_and_query"
@@ -348,6 +357,12 @@ fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<St
     copy_bool(source, target, UPSTREAM_IS_STREAM_KEY);
     copy_non_null_value(source, target, "client_session_affinity");
     copy_bool(source, target, "api_key_is_standalone");
+    copy_bool(source, target, WEBSOCKET_MODE_METADATA_KEY);
+    copy_non_empty_string(source, target, WEBSOCKET_TRANSPORT_METADATA_KEY);
+    copy_bool(source, target, USAGE_AVAILABLE_METADATA_KEY);
+    copy_bool(source, target, USAGE_PRICING_AVAILABLE_METADATA_KEY);
+    copy_non_null_value(source, target, LIVE_SESSION_METADATA_KEY);
+    copy_non_null_value(source, target, REALTIME_SESSION_METADATA_KEY);
     copy_non_empty_string(source, target, "request_path");
     copy_non_empty_string(source, target, "request_query_string");
     copy_non_empty_string(source, target, "request_path_and_query");
@@ -402,6 +417,12 @@ fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map
     remove_bool(&mut source, target, UPSTREAM_IS_STREAM_KEY);
     remove_non_null_value(&mut source, target, "client_session_affinity");
     remove_bool(&mut source, target, "api_key_is_standalone");
+    remove_bool(&mut source, target, WEBSOCKET_MODE_METADATA_KEY);
+    remove_non_empty_string(&mut source, target, WEBSOCKET_TRANSPORT_METADATA_KEY);
+    remove_bool(&mut source, target, USAGE_AVAILABLE_METADATA_KEY);
+    remove_bool(&mut source, target, USAGE_PRICING_AVAILABLE_METADATA_KEY);
+    remove_non_null_value(&mut source, target, LIVE_SESSION_METADATA_KEY);
+    remove_non_null_value(&mut source, target, REALTIME_SESSION_METADATA_KEY);
     remove_non_empty_string(&mut source, target, "request_path");
     remove_non_empty_string(&mut source, target, "request_query_string");
     remove_non_empty_string(&mut source, target, "request_path_and_query");
@@ -903,6 +924,24 @@ mod tests {
                 "request_path_and_query": "/v1/chat/completions",
                 "upstream_is_stream": true,
                 "proxy": {"mode": "manual", "node_id": "proxy-1"}
+            })
+        );
+    }
+
+    #[test]
+    fn sanitizes_websocket_transport_metadata() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "websocket_mode": true,
+            "websocket_transport": "responses",
+            "untrusted_field": "drop-me",
+        })))
+        .expect("WebSocket metadata should remain");
+
+        assert_eq!(
+            metadata,
+            json!({
+                "websocket_mode": true,
+                "websocket_transport": "responses",
             })
         );
     }

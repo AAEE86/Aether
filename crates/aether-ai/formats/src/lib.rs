@@ -12,6 +12,7 @@ pub use formats::context::{
     ConversionFieldRecord, ConversionFieldStatus, ConversionReport, Converted, FormatContext,
     FormatError,
 };
+pub use formats::gemini::generate_content::request::ensure_server_side_tool_invocations_for_mixed_tools;
 pub use formats::id::{
     api_format_alias_matches, api_format_defaults_to_client_error_failover,
     api_format_defaults_to_non_stream, api_format_permission_covers,
@@ -39,21 +40,27 @@ pub use formats::openai::reasoning::{
 pub use formats::openai::request_contract::{
     finalize_openai_provider_request,
     finalize_openai_provider_request_with_codex_model_capabilities,
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy,
+    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation,
     validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
     OpenAiProviderRequestFinalization,
 };
 pub use formats::openai::responses::codex::{
-    build_codex_model_catalog_metadata, bundled_codex_model_cards, effective_codex_model_cards,
-    parse_codex_auth_identity, resolve_codex_responses_model_capabilities, CodexAuthIdentity,
-    CodexResponsesModelCapabilities, CODEX_CLIENT_ORIGINATOR, CODEX_CLIENT_USER_AGENT,
-    CODEX_CLIENT_VERSION, CODEX_MODEL_CATALOG_METADATA_FIELD, CODEX_RESPONSES_LITE_HEADER,
+    build_codex_model_catalog_metadata, bundled_codex_model_cards,
+    codex_responses_lite_tool_is_client_executed, effective_codex_model_cards,
+    parse_codex_auth_identity, project_codex_catalog_model_card,
+    resolve_codex_responses_model_capabilities, CodexAuthIdentity, CodexResponsesModelCapabilities,
+    CODEX_CLIENT_ORIGINATOR, CODEX_CLIENT_USER_AGENT, CODEX_CLIENT_VERSION,
+    CODEX_MODEL_CATALOG_METADATA_FIELD, CODEX_RESPONSES_LITE_HEADER,
 };
 pub use formats::openai::responses::request::{
     validate_openai_responses_request_contract, OpenAiResponsesRequestContractViolation,
 };
 pub use formats::openai::responses::{
     openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,
-    strip_incompatible_openai_responses_reasoning_items, OPENAI_RESPONSES_OPERATION_COMPACT,
+    strip_incompatible_openai_responses_reasoning_items,
+    strip_incompatible_openai_responses_reasoning_items_with_policy,
+    OpenAiResponsesReasoningReplayPolicy, OPENAI_RESPONSES_OPERATION_COMPACT,
 };
 pub use formats::registry::{
     build_stream_transcoder, convert_request, convert_request_pure,

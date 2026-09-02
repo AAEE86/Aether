@@ -20,9 +20,11 @@ use crate::ai_serving::LocalExecutionAttemptSource;
 use crate::clock::current_unix_ms;
 use crate::control::GatewayControlDecision;
 use crate::execution_runtime::{
-    build_transport_error_stop_response, execute_execution_runtime_stream_with_retry_scope,
+    acquire_upstream_execution_gate, build_transport_error_stop_response,
+    execute_execution_runtime_stream_with_retry_scope,
     execute_execution_runtime_sync_with_retry_scope,
     mark_stream_candidate_watchdog_terminal_started, StreamCandidateWatchdogProgress,
+    UpstreamExecutionGateProvider, UPSTREAM_EXECUTION_GATE_NAME,
 };
 use crate::executor::{
     build_local_execution_exhaustion, mark_deferred_upstream_response, LocalExecutionRequestOutcome,
@@ -43,7 +45,6 @@ use crate::stage_metrics::observe_gateway_stage_ms;
 use crate::{AppState, GatewayError};
 
 const DEFAULT_STREAM_FIRST_BYTE_WATCHDOG_TIMEOUT_MS: u64 = 30_000;
-const UPSTREAM_EXECUTION_GATE_NAME: &str = "gateway_upstream_execution";
 const UPSTREAM_TARGET_GATE_NAME: &str = "gateway_upstream_target";
 const UPSTREAM_EXECUTION_GATE_HOLD_STREAM_RESPONSE_ENV: &str =
     "AETHER_GATEWAY_UPSTREAM_EXECUTION_GATE_HOLD_STREAM_RESPONSE";
@@ -249,6 +250,10 @@ where
     async fn record_attempt_started(&self, attempt: &T) -> Result<(), Self::Error> {
         record_provider_transfer_attempt_started(self.transfer_tracker, attempt).await;
         Ok(())
+    }
+
+    async fn next_same_key_retry(&self, attempt: &T) -> Result<Option<T>, Self::Error> {
+        Ok(crate::orchestration::next_same_key_retry_attempt(attempt))
     }
 
     async fn record_attempt_failed(&self, attempt: &T) -> Result<(), Self::Error> {
@@ -787,18 +792,31 @@ where
 {
     let mut last_attempted = None;
     let mut fallback_response = None;
+    // A same-key retry derived after a candidate-scoped failure runs before
+    // the source is asked for the next candidate.
+    let mut pending_same_key_retry: Option<Attempt> = None;
 
     loop {
-        let next_started_at = std::time::Instant::now();
-        let next_attempt =
-            next_execution_attempt_with_timeout(source, trace_id, plan_kind, planning_timeout)
+        let attempt = match pending_same_key_retry.take() {
+            Some(attempt) => attempt,
+            None => {
+                let next_started_at = std::time::Instant::now();
+                let next_attempt = next_execution_attempt_with_timeout(
+                    source,
+                    trace_id,
+                    plan_kind,
+                    planning_timeout,
+                )
                 .await?;
-        observe_gateway_stage_ms(
-            "stream_candidate_next",
-            next_started_at.elapsed().as_millis() as u64,
-        );
-        let Some(attempt) = next_attempt else {
-            break;
+                observe_gateway_stage_ms(
+                    "stream_candidate_next",
+                    next_started_at.elapsed().as_millis() as u64,
+                );
+                let Some(attempt) = next_attempt else {
+                    break;
+                };
+                attempt
+            }
         };
         if port.should_skip_attempt(&attempt).await? {
             let provider_id = attempt.execution_plan().provider_id.clone();
@@ -837,6 +855,9 @@ where
             } => {
                 if attempt_fallback_response.is_some() {
                     fallback_response = attempt_fallback_response;
+                }
+                if scope == AiAttemptRetryScope::Candidate {
+                    pending_same_key_retry = port.next_same_key_retry(&attempt).await?;
                 }
                 apply_attempt_retry_scope(source, &attempt, scope).await?;
             }
@@ -949,6 +970,10 @@ where
     async fn record_attempt_started(&self, attempt: &T) -> Result<(), Self::Error> {
         record_provider_transfer_attempt_started(self.transfer_tracker, attempt).await;
         Ok(())
+    }
+
+    async fn next_same_key_retry(&self, attempt: &T) -> Result<Option<T>, Self::Error> {
+        Ok(crate::orchestration::next_same_key_retry_attempt(attempt))
     }
 
     async fn record_attempt_failed(&self, attempt: &T) -> Result<(), Self::Error> {
@@ -1610,47 +1635,6 @@ fn hold_response_upstream_execution_permit(
         }
     };
     Response::from_parts(parts, Body::from_stream(stream))
-}
-
-trait UpstreamExecutionGateProvider {
-    fn upstream_execution_gate(&self) -> Option<&aether_runtime::ConcurrencyGate>;
-    fn upstream_execution_gate_queue_budget(&self) -> Duration;
-}
-
-impl UpstreamExecutionGateProvider for AppState {
-    fn upstream_execution_gate(&self) -> Option<&aether_runtime::ConcurrencyGate> {
-        self.upstream_execution_gate.as_deref()
-    }
-
-    fn upstream_execution_gate_queue_budget(&self) -> Duration {
-        self.frontdoor_runtime_guards.internal_gate_queue_budget
-    }
-}
-
-async fn acquire_upstream_execution_gate(
-    state: &(impl UpstreamExecutionGateProvider + ?Sized),
-    trace_id: &str,
-) -> Result<Option<ConcurrencyPermit>, GatewayError> {
-    let Some(gate) = state.upstream_execution_gate() else {
-        return Ok(None);
-    };
-    let budget = state.upstream_execution_gate_queue_budget();
-    let gate_wait_started_at = std::time::Instant::now();
-    match timeout(budget, gate.acquire()).await {
-        Ok(Ok(permit)) => {
-            observe_gateway_stage_ms(
-                "upstream_execution_gate_wait",
-                gate_wait_started_at.elapsed().as_millis() as u64,
-            );
-            Ok(Some(permit))
-        }
-        Ok(Err(err)) => Err(GatewayError::Internal(err.to_string())),
-        Err(_) => Err(GatewayError::AdmissionTimeout {
-            trace_id: trace_id.to_string(),
-            gate: UPSTREAM_EXECUTION_GATE_NAME,
-            queue_budget_ms: budget.as_millis() as u64,
-        }),
-    }
 }
 
 pub(crate) async fn mark_unused_local_candidate_items<T, FPlan, FContext>(

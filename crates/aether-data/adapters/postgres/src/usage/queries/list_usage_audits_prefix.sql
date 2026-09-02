@@ -185,6 +185,12 @@ SELECT
       OR NULLIF(BTRIM("usage".request_metadata->>'provider_actual_service_tier'), '') IS NOT NULL
       OR ("usage".request_metadata->>'client_requested_stream') IN ('true', 'false')
       OR ("usage".request_metadata->>'upstream_is_stream') IN ('true', 'false')
+      OR ("usage".request_metadata->>'websocket_mode') IN ('true', 'false')
+      OR NULLIF(BTRIM("usage".request_metadata->>'websocket_transport'), '') IS NOT NULL
+      OR ("usage".request_metadata->>'usage_available') IN ('true', 'false')
+      OR ("usage".request_metadata->>'usage_pricing_available') IN ('true', 'false')
+      OR json_typeof("usage".request_metadata->'live_session') = 'object'
+      OR json_typeof("usage".request_metadata->'realtime_session') = 'object'
       THEN jsonb_strip_nulls(jsonb_build_object(
         'client_ip',
         NULLIF(BTRIM("usage".request_metadata->>'client_ip'), ''),
@@ -212,6 +218,38 @@ SELECT
         CASE
           WHEN ("usage".request_metadata->>'upstream_is_stream') IN ('true', 'false')
             THEN ("usage".request_metadata->>'upstream_is_stream')::boolean
+          ELSE NULL
+        END,
+        'websocket_mode',
+        CASE
+          WHEN ("usage".request_metadata->>'websocket_mode') IN ('true', 'false')
+            THEN ("usage".request_metadata->>'websocket_mode')::boolean
+          ELSE NULL
+        END,
+        'websocket_transport',
+        NULLIF(BTRIM("usage".request_metadata->>'websocket_transport'), ''),
+        'usage_available',
+        CASE
+          WHEN ("usage".request_metadata->>'usage_available') IN ('true', 'false')
+            THEN ("usage".request_metadata->>'usage_available')::boolean
+          ELSE NULL
+        END,
+        'usage_pricing_available',
+        CASE
+          WHEN ("usage".request_metadata->>'usage_pricing_available') IN ('true', 'false')
+            THEN ("usage".request_metadata->>'usage_pricing_available')::boolean
+          ELSE NULL
+        END,
+        'live_session',
+        CASE
+          WHEN json_typeof("usage".request_metadata->'live_session') = 'object'
+            THEN "usage".request_metadata->'live_session'
+          ELSE NULL
+        END,
+        'realtime_session',
+        CASE
+          WHEN json_typeof("usage".request_metadata->'realtime_session') = 'object'
+            THEN "usage".request_metadata->'realtime_session'
           ELSE NULL
         END
       ))::json

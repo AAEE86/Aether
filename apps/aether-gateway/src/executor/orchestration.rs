@@ -1664,12 +1664,29 @@ mod tests {
         endpoint_id: &str,
         candidate_id: &str,
     ) -> AiSyncAttempt {
+        test_openai_image_heartbeat_attempt_with_sticky_key_attempts(
+            candidate_index,
+            endpoint_id,
+            candidate_id,
+            1,
+        )
+    }
+
+    /// `sticky_key_attempts` is pinned so these tests exercise candidate
+    /// failover; the default same-key retry is covered separately.
+    fn test_openai_image_heartbeat_attempt_with_sticky_key_attempts(
+        candidate_index: u32,
+        endpoint_id: &str,
+        candidate_id: &str,
+        sticky_key_attempts: u32,
+    ) -> AiSyncAttempt {
         AiSyncAttempt {
             plan: test_openai_image_heartbeat_plan(endpoint_id, candidate_id),
             report_kind: None,
             report_context: Some(json!({
                 "candidate_index": candidate_index,
                 "retry_index": 0,
+                "sticky_key_attempts": sticky_key_attempts,
             })),
         }
     }
@@ -1687,6 +1704,7 @@ mod tests {
                 CONTENT_TYPE.as_str().to_string(),
                 "application/json".to_string(),
             )]),
+            response_observation: None,
             body: Some(aether_contracts::ResponseBody {
                 json_body: Some(body_json),
                 body_bytes_b64: None,
@@ -1827,6 +1845,9 @@ mod tests {
             report_context: Some(json!({
                 "candidate_index": candidate_index,
                 "retry_index": 0,
+                // Pin to a single attempt so this helper exercises candidate
+                // failover rather than the default same-key retry.
+                "sticky_key_attempts": 1,
                 "client_api_format": client_api_format,
                 "provider_api_format": client_api_format,
             })),
@@ -1980,6 +2001,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openai_image_sync_heartbeat_retries_sticky_key_lazily_before_failover() {
+        let seen_plans = Arc::new(std::sync::Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let seen_plans_for_override = Arc::clone(&seen_plans);
+        let state = AppState::new()
+            .expect("state should build")
+            .with_execution_runtime_sync_override_for_tests(move |plan| {
+                seen_plans_for_override
+                    .lock()
+                    .expect("mutex should lock")
+                    .push((plan.endpoint_id.clone(), plan.candidate_id.clone()));
+                if plan.endpoint_id == "endpoint-retry" {
+                    Ok(test_openai_image_execution_result(
+                        plan,
+                        StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                        json!({"error": {"message": "retry this candidate"}}),
+                    ))
+                } else {
+                    Ok(test_openai_image_execution_result(
+                        plan,
+                        StatusCode::OK.as_u16(),
+                        json!({"data": [{"b64_json": "second-candidate"}]}),
+                    ))
+                }
+            });
+        // Three total attempts on the sticky key; only one attempt is
+        // materialized up front, the other two are derived after each failure.
+        let attempts = vec![
+            test_openai_image_heartbeat_attempt_with_sticky_key_attempts(
+                0,
+                "endpoint-retry",
+                "candidate-retry",
+                3,
+            ),
+            test_openai_image_heartbeat_attempt_with_sticky_key_attempts(
+                1,
+                "endpoint-success",
+                "candidate-success",
+                3,
+            ),
+        ];
+        let outcome = execute_openai_image_sync_heartbeat_attempts(
+            state,
+            "/v1/images/generations".to_string(),
+            "trace-image-heartbeat-sticky-retry".to_string(),
+            test_openai_image_heartbeat_decision(),
+            TEST_OPENAI_IMAGE_SYNC_PLAN_KIND.to_string(),
+            attempts,
+            ProviderTransferTracker::default(),
+            Instant::now(),
+        )
+        .await
+        .expect("heartbeat attempts should execute");
+        let LocalExecutionRequestOutcome::Responded(response) = outcome else {
+            panic!("second candidate should return a response");
+        };
+        let bytes = openai_image_sync_heartbeat_response_body_bytes(response).await;
+        let body: Value = serde_json::from_slice(&bytes).expect("body should decode");
+
+        let seen_plans = seen_plans.lock().expect("mutex should lock").clone();
+        assert_eq!(
+            seen_plans
+                .iter()
+                .map(|(endpoint_id, _)| endpoint_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "endpoint-retry",
+                "endpoint-retry",
+                "endpoint-retry",
+                "endpoint-success"
+            ]
+        );
+        let sticky_candidate_ids = seen_plans[..3]
+            .iter()
+            .map(|(_, candidate_id)| candidate_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            sticky_candidate_ids.len(),
+            3,
+            "each derived same-key retry must carry a fresh candidate id"
+        );
+        assert_eq!(body, json!({"data": [{"b64_json": "second-candidate"}]}));
+    }
+
+    #[tokio::test]
     async fn openai_image_sync_heartbeat_honors_provider_transfer_limit() {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_for_override = Arc::clone(&call_count);
@@ -2012,6 +2117,7 @@ mod tests {
             attempt.report_context = Some(json!({
                 "candidate_index": index,
                 "retry_index": 0,
+                "sticky_key_attempts": 1,
                 "local_failover_policy": {
                     "max_transfer_count": 1,
                     "max_transfer_timeout_seconds": 0

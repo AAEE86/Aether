@@ -21,6 +21,9 @@ const MODEL_FETCH_FORMAT_PRIORITY: &[&[&str]] = &[
     &["gemini:generate_content"],
 ];
 
+pub(crate) const CODEX_MODELS_MAX_ITEMS: usize = 512;
+pub(crate) const CODEX_MODELS_MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelFetchRunSummary {
     pub attempted: usize,
@@ -67,13 +70,22 @@ pub fn build_models_fetch_url(
     endpoint_api_format: &str,
     base_url: &str,
 ) -> Option<(String, String)> {
+    build_models_fetch_url_for_client_version(provider_type, endpoint_api_format, base_url, None)
+}
+
+pub fn build_models_fetch_url_for_client_version(
+    provider_type: &str,
+    endpoint_api_format: &str,
+    base_url: &str,
+    codex_client_version: Option<&str>,
+) -> Option<(String, String)> {
     let api_format = normalize_api_format(endpoint_api_format);
     if !endpoint_supports_rust_models_fetch(&api_format) {
         return None;
     }
     let provider_type = provider_type.trim().to_ascii_lowercase();
     let url = if provider_type == "codex" && api_format.starts_with("openai:") {
-        build_codex_models_url(base_url)
+        build_codex_models_url(base_url, codex_client_version)
     } else if api_format.starts_with("openai:") {
         build_v1_models_url(base_url)
     } else if api_format.starts_with("claude:") {
@@ -171,6 +183,203 @@ pub fn parse_models_response_page(
         has_more,
         next_after_id,
     })
+}
+
+/// Parses the Codex `/models` response without applying the generic cache projection.
+///
+/// Codex model cards are versioned protocol data. They must remain opaque so future fields and
+/// instruction representations survive catalog caching and downstream projection. Invalid entries
+/// reject the whole response instead of being skipped and accidentally replacing a complete LKG
+/// with a partial directory.
+pub(crate) fn parse_codex_models_response_page(body: &Value) -> Result<ModelsFetchPage, String> {
+    let serialized = serde_json::to_vec(body)
+        .map_err(|_| "Codex models response could not be serialized".to_string())?;
+    if serialized.len() > CODEX_MODELS_MAX_JSON_BYTES {
+        return Err(format!(
+            "Codex models response exceeds {CODEX_MODELS_MAX_JSON_BYTES} bytes"
+        ));
+    }
+
+    let items = body
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Codex models response is missing models array".to_string())?;
+    if items.is_empty() {
+        return Err("Codex models response contains no models".to_string());
+    }
+    if items.len() > CODEX_MODELS_MAX_ITEMS {
+        return Err(format!(
+            "Codex models response exceeds {CODEX_MODELS_MAX_ITEMS} models"
+        ));
+    }
+
+    let cached_models = merge_codex_models_preserving_cards(items)?;
+    let fetched_model_ids = cached_models
+        .iter()
+        .filter_map(codex_model_identity)
+        .map(ToOwned::to_owned)
+        .collect();
+
+    Ok(ModelsFetchPage {
+        fetched_model_ids,
+        cached_models,
+        has_more: false,
+        next_after_id: None,
+    })
+}
+
+/// Merges opaque Codex model cards without silently selecting one of two conflicting cards.
+///
+/// Both `id` and `slug` are mapping identities. Exact duplicate JSON cards can occur when the
+/// same catalog is fetched through multiple endpoint transports and are collapsed. If any valid
+/// identity is reused by a different card, the response is ambiguous and must not replace a
+/// last-known-good catalog.
+pub(crate) fn merge_codex_models_preserving_cards(models: &[Value]) -> Result<Vec<Value>, String> {
+    let mut merged = Vec::<Value>::with_capacity(models.len());
+    let mut index_by_identity = BTreeMap::<String, usize>::new();
+
+    for model in models {
+        let identities = codex_model_identities(model)?;
+        let mut duplicate_index = None;
+        for identity in &identities {
+            let Some(existing_index) = index_by_identity.get(*identity).copied() else {
+                continue;
+            };
+            if merged.get(existing_index) != Some(model) {
+                return Err(format!(
+                    "Codex models response contains conflicting cards for identity '{identity}'"
+                ));
+            }
+            if duplicate_index.is_some_and(|index| index != existing_index) {
+                return Err(format!(
+                    "Codex models response contains conflicting cards for identity '{identity}'"
+                ));
+            }
+            duplicate_index = Some(existing_index);
+        }
+
+        if let Some(existing_index) = duplicate_index {
+            for identity in identities {
+                index_by_identity
+                    .entry(identity.to_string())
+                    .or_insert(existing_index);
+            }
+            continue;
+        }
+
+        let model_index = merged.len();
+        merged.push(model.clone());
+        for identity in identities {
+            index_by_identity.insert(identity.to_string(), model_index);
+        }
+    }
+
+    Ok(merged)
+}
+
+fn codex_model_identities(model: &Value) -> Result<Vec<&str>, String> {
+    let object = model
+        .as_object()
+        .ok_or_else(|| "Codex models response contains a non-object model card".to_string())?;
+    let mut identities = Vec::with_capacity(2);
+    for field in ["id", "slug"] {
+        let Some(identity) = object
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| *value == value.trim())
+            .filter(|value| valid_codex_model_identity(value))
+        else {
+            continue;
+        };
+        if !identities.contains(&identity) {
+            identities.push(identity);
+        }
+    }
+    if identities.is_empty() {
+        return Err("Codex models response contains a card without a valid id or slug".to_string());
+    }
+    Ok(identities)
+}
+
+pub(crate) fn codex_model_identity(model: &Value) -> Option<&str> {
+    let object = model.as_object()?;
+    ["slug", "id"].iter().find_map(|field| {
+        object
+            .get(*field)
+            .and_then(Value::as_str)
+            .filter(|value| *value == value.trim())
+            .filter(|value| valid_codex_model_identity(value))
+    })
+}
+
+/// Projects opaque Codex cards into the legacy model-cache shape used by permission sync.
+///
+/// The source cards remain untouched. Only formats from transports that actually returned the
+/// card are admitted into `api_formats`; an upstream `api_format` field is protocol data and is
+/// preserved as-is rather than interpreted as an Aether endpoint format.
+pub fn project_codex_models_for_legacy_cache<'a>(
+    successful_transports: impl IntoIterator<Item = (&'a str, &'a [Value])>,
+) -> Vec<Value> {
+    let mut projected = BTreeMap::<String, serde_json::Map<String, Value>>::new();
+
+    for (endpoint_api_format, models) in successful_transports {
+        let api_format = normalize_api_format(endpoint_api_format);
+        if api_format.is_empty() {
+            continue;
+        }
+
+        for model in models {
+            let Some(model_id) = codex_model_identity(model).map(ToOwned::to_owned) else {
+                continue;
+            };
+            let Some(source) = model.as_object() else {
+                continue;
+            };
+
+            let entry = projected.entry(model_id.clone()).or_insert_with(|| {
+                let mut card = source.clone();
+                card.insert("id".to_string(), Value::String(model_id));
+                // `api_formats` is Aether's routing projection. Never inherit a similarly named
+                // opaque upstream field when constructing this legacy view.
+                card.insert("api_formats".to_string(), Value::Array(Vec::new()));
+                card
+            });
+            let mut formats = entry
+                .get("api_formats")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect::<BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            formats.insert(api_format.clone());
+            entry.insert(
+                "api_formats".to_string(),
+                Value::Array(
+                    sorted_api_formats(formats)
+                        .into_iter()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    projected.into_values().map(Value::Object).collect()
+}
+
+fn valid_codex_model_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value == value.trim()
+        && value
+            .chars()
+            .all(|character| !character.is_whitespace() && !character.is_control())
 }
 
 pub fn parse_windsurf_model_configs_response(
@@ -567,9 +776,15 @@ pub fn aggregate_models_for_cache(models: &[Value]) -> Vec<Value> {
             continue;
         };
 
+        let has_api_formats_array = object
+            .get("api_formats")
+            .and_then(Value::as_array)
+            .is_some();
         let entry = aggregated.entry(model_id.to_string()).or_insert_with(|| {
             let mut cloned = object.clone();
-            cloned.remove("api_format");
+            if !has_api_formats_array {
+                cloned.remove("api_format");
+            }
             cloned
         });
 
@@ -586,12 +801,16 @@ pub fn aggregate_models_for_cache(models: &[Value]) -> Vec<Value> {
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        let legacy_api_format = object
-            .get("api_format")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned);
+        let legacy_api_format = (!has_api_formats_array)
+            .then(|| {
+                object
+                    .get("api_format")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .flatten();
         let existing_formats = entry
             .get("api_formats")
             .and_then(Value::as_array)
@@ -619,7 +838,13 @@ pub fn aggregate_models_for_cache(models: &[Value]) -> Vec<Value> {
         entry.insert("api_formats".to_string(), Value::Array(merged_formats));
 
         for (key, value) in object {
-            if key == "api_format" || entry.contains_key(key) {
+            if key == "api_format" {
+                if has_api_formats_array && !entry.contains_key(key) {
+                    entry.insert(key.clone(), value.clone());
+                }
+                continue;
+            }
+            if entry.contains_key(key) {
                 continue;
             }
             entry.insert(key.clone(), value.clone());
@@ -678,9 +903,17 @@ fn build_deepseek_anthropic_models_url(base_url: &str) -> Option<String> {
     Some(url)
 }
 
-fn build_codex_models_url(base_url: &str) -> Option<String> {
+fn build_codex_models_url(base_url: &str, client_version: Option<&str>) -> Option<String> {
     if let Some(url) = build_bigmodel_coding_models_url(base_url) {
-        return Some(url);
+        return Some(
+            client_version
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|client_version| {
+                    replace_or_append_query_param(&url, "client_version", client_version)
+                })
+                .unwrap_or(url),
+        );
     }
 
     let (trimmed_base_url, query) = split_url_query(base_url);
@@ -692,32 +925,75 @@ fn build_codex_models_url(base_url: &str) -> Option<String> {
         || trimmed_base_url.ends_with("/codex")
         || trimmed_base_url.ends_with("/models");
     if !is_codex_backend && openai_compatible_base_includes_unversioned_api_root(base_url) {
-        return build_openai_compatible_models_url(base_url);
+        let url = build_openai_compatible_models_url(base_url)?;
+        return Some(
+            client_version
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|client_version| {
+                    replace_or_append_query_param(&url, "client_version", client_version)
+                })
+                .unwrap_or(url),
+        );
     }
     let mut url = if trimmed_base_url.ends_with("/models") {
         trimmed_base_url.to_string()
     } else {
         format!("{trimmed_base_url}/models")
     };
-    let mut has_client_version = false;
-    if let Some(query) = query.filter(|value| !value.trim().is_empty()) {
-        has_client_version = query.split('&').any(|part| {
-            part.split_once('=')
+    let explicit_client_version = client_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut query_parts = query
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.split('&').map(ToOwned::to_owned).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let has_client_version = query_parts.iter().any(|part| {
+        part.split_once('=')
+            .map(|(key, _)| key)
+            .unwrap_or(part)
+            .trim()
+            .eq_ignore_ascii_case("client_version")
+    });
+    if let Some(client_version) = explicit_client_version {
+        query_parts.retain(|part| {
+            !part
+                .split_once('=')
                 .map(|(key, _)| key)
                 .unwrap_or(part)
                 .trim()
                 .eq_ignore_ascii_case("client_version")
         });
-        url.push('?');
-        url.push_str(query);
+        query_parts.push(format!("client_version={client_version}"));
+    } else if !has_client_version {
+        query_parts.push(format!(
+            "client_version={}",
+            aether_ai_formats::CODEX_CLIENT_VERSION
+        ));
     }
-    if !has_client_version {
-        let separator = if url.contains('?') { '&' } else { '?' };
-        url.push(separator);
-        url.push_str("client_version=");
-        url.push_str(aether_ai_formats::CODEX_CLIENT_VERSION);
+    if !query_parts.is_empty() {
+        url.push('?');
+        url.push_str(&query_parts.join("&"));
     }
     Some(url)
+}
+
+fn replace_or_append_query_param(url: &str, name: &str, value: &str) -> String {
+    let (base, query) = split_url_query(url);
+    let mut query_parts = query
+        .filter(|query| !query.trim().is_empty())
+        .map(|query| query.split('&').map(ToOwned::to_owned).collect::<Vec<_>>())
+        .unwrap_or_default();
+    query_parts.retain(|part| {
+        !part
+            .split_once('=')
+            .map(|(key, _)| key)
+            .unwrap_or(part)
+            .trim()
+            .eq_ignore_ascii_case(name)
+    });
+    query_parts.push(format!("{name}={value}"));
+    format!("{base}?{}", query_parts.join("&"))
 }
 
 fn build_gemini_models_url(base_url: &str) -> Option<String> {
@@ -793,12 +1069,13 @@ fn windsurf_json_f64(value: &Value) -> Option<f64> {
 fn collect_cached_model_ids(models: &[Value]) -> Vec<String> {
     let mut ids = Vec::new();
     for model in models {
-        let Some(model_id) = model
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(model_id) = codex_model_identity(model).or_else(|| {
+            model
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        }) else {
             continue;
         };
         ids.push(model_id.to_string());
@@ -880,8 +1157,10 @@ mod tests {
 
     use super::{
         aggregate_models_for_cache, apply_model_filters, build_gemini_models_url,
-        build_models_fetch_url, merge_upstream_metadata, parse_models_response,
-        parse_models_response_page, preset_models_for_provider, selected_models_fetch_endpoints,
+        build_models_fetch_url, build_models_fetch_url_for_client_version, merge_upstream_metadata,
+        parse_codex_models_response_page, parse_models_response, parse_models_response_page,
+        preset_models_for_provider, project_codex_models_for_legacy_cache,
+        selected_models_fetch_endpoints,
     };
 
     fn sample_endpoint(
@@ -1000,6 +1279,27 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_models_for_cache_preserves_opaque_api_format_on_projected_cards() {
+        let card = json!({
+            "slug": "gpt-slug-only-future",
+            "api_format": "opaque-upstream-protocol",
+            "model_messages": {"instructions_template": "Future instructions"},
+            "future_capability": {"opaque": true}
+        });
+        let cards = vec![card];
+        let projected =
+            project_codex_models_for_legacy_cache([("openai:responses", cards.as_slice())]);
+
+        let aggregated = aggregate_models_for_cache(&projected);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0]["id"], "gpt-slug-only-future");
+        assert_eq!(aggregated[0]["api_format"], "opaque-upstream-protocol");
+        assert_eq!(aggregated[0]["api_formats"], json!(["openai:responses"]));
+        assert_eq!(aggregated[0]["future_capability"]["opaque"], true);
+    }
+
+    #[test]
     fn build_gemini_models_url_preserves_base_query() {
         let url =
             build_gemini_models_url("https://generativelanguage.googleapis.com/v1beta?key=abc")
@@ -1037,6 +1337,56 @@ mod tests {
     }
 
     #[test]
+    fn build_models_fetch_url_uses_explicit_codex_client_version() {
+        assert_eq!(
+            build_models_fetch_url_for_client_version(
+                "codex",
+                "openai:responses",
+                "https://chatgpt.com/backend-api/codex",
+                Some("0.145.2"),
+            ),
+            Some((
+                "https://chatgpt.com/backend-api/codex/models?client_version=0.145.2".to_string(),
+                "openai:responses".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn explicit_codex_client_version_replaces_stale_base_query_value() {
+        assert_eq!(
+            build_models_fetch_url_for_client_version(
+                "codex",
+                "openai:responses",
+                "https://chatgpt.com/backend-api/codex?feature=on&client_version=0.144.1",
+                Some("0.145.2"),
+            ),
+            Some((
+                "https://chatgpt.com/backend-api/codex/models?feature=on&client_version=0.145.2"
+                    .to_string(),
+                "openai:responses".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn explicit_codex_client_version_is_forwarded_through_compatible_proxy_roots() {
+        assert_eq!(
+            build_models_fetch_url_for_client_version(
+                "codex",
+                "openai:responses",
+                "https://proxy.example.com/api?feature=on&client_version=0.144.1",
+                Some("0.145.2"),
+            ),
+            Some((
+                "https://proxy.example.com/api/models?feature=on&client_version=0.145.2"
+                    .to_string(),
+                "openai:responses".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn build_models_fetch_url_supports_bigmodel_coding_paas_root() {
         assert_eq!(
             build_models_fetch_url(
@@ -1057,6 +1407,19 @@ mod tests {
             ),
             Some((
                 "https://open.bigmodel.cn/api/coding/paas/v4/models".to_string(),
+                "openai:responses".to_string()
+            ))
+        );
+        assert_eq!(
+            build_models_fetch_url_for_client_version(
+                "codex",
+                "openai:responses",
+                "https://open.bigmodel.cn/api/coding/paas/v4?tenant=demo&client_version=0.144.1",
+                Some("0.145.2"),
+            ),
+            Some((
+                "https://open.bigmodel.cn/api/coding/paas/v4/models?tenant=demo&client_version=0.145.2"
+                    .to_string(),
                 "openai:responses".to_string()
             ))
         );
@@ -1183,6 +1546,129 @@ mod tests {
         assert_eq!(cached["supports_image_detail_original"], true);
         assert_eq!(cached["future_capability"]["mode"], "preserve-me");
         assert_eq!(cached["api_formats"], json!(["openai:responses"]));
+    }
+
+    #[test]
+    fn strict_codex_parser_preserves_opaque_cards_without_cache_projection() {
+        let card = json!({
+            "id": "gpt-future-dynamic",
+            "slug": "gpt-future-dynamic",
+            "api_format": "future-protocol-field",
+            "model_messages": {"instructions_template": "Future instructions"},
+            "available_in_plans": ["plus"],
+            "future_capability": {"opaque": true}
+        });
+        let parsed = parse_codex_models_response_page(&json!({"models": [card.clone()]}))
+            .expect("opaque Codex card should parse");
+
+        assert_eq!(parsed.fetched_model_ids, vec!["gpt-future-dynamic"]);
+        assert_eq!(parsed.cached_models, vec![card]);
+    }
+
+    #[test]
+    fn codex_legacy_projector_adds_internal_identity_and_only_successful_endpoint_formats() {
+        let card = json!({
+            "id": "opaque-upstream-id",
+            "slug": "gpt-slug-only-future",
+            "api_format": "opaque-upstream-protocol",
+            "api_formats": ["opaque-upstream-format-list"],
+            "model_messages": {"instructions_template": "Future instructions"},
+            "future_capability": {"opaque": true}
+        });
+        let cards = vec![card.clone()];
+
+        let projected = project_codex_models_for_legacy_cache([
+            ("openai:responses", cards.as_slice()),
+            ("openai:chat", cards.as_slice()),
+        ]);
+
+        assert_eq!(cards, vec![card]);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0]["id"], "gpt-slug-only-future");
+        assert_eq!(
+            projected[0]["api_formats"],
+            json!(["openai:chat", "openai:responses"])
+        );
+        assert_eq!(projected[0]["api_format"], "opaque-upstream-protocol");
+        assert_eq!(
+            projected[0]["model_messages"]["instructions_template"],
+            "Future instructions"
+        );
+        assert_eq!(projected[0]["future_capability"]["opaque"], true);
+    }
+
+    #[test]
+    fn strict_codex_parser_rejects_empty_models_array() {
+        let error = parse_codex_models_response_page(&json!({"models": []}))
+            .expect_err("empty Codex catalog must fail");
+
+        assert!(error.contains("no models"));
+    }
+
+    #[test]
+    fn strict_codex_parser_merges_only_exact_duplicate_cards() {
+        let card = json!({
+            "id": "gpt-future-duplicate",
+            "slug": "gpt-future-duplicate",
+            "model_messages": {"instructions_template": "Opaque instructions"},
+            "future_capability": {"opaque": true}
+        });
+        let parsed = parse_codex_models_response_page(&json!({
+            "models": [card.clone(), card.clone()]
+        }))
+        .expect("exact duplicate Codex cards should merge");
+
+        assert_eq!(parsed.fetched_model_ids, vec!["gpt-future-duplicate"]);
+        assert_eq!(parsed.cached_models, vec![card]);
+    }
+
+    #[test]
+    fn strict_codex_parser_rejects_same_or_cross_identity_conflicts() {
+        let conflicts = [
+            json!({
+                "models": [
+                    {"id": "gpt-conflict", "slug": "gpt-conflict", "future": 1},
+                    {"id": "gpt-conflict", "slug": "gpt-conflict", "future": 2}
+                ]
+            }),
+            json!({
+                "models": [
+                    {"id": "gpt-id-one", "slug": "gpt-cross-identity", "future": 1},
+                    {"id": "gpt-cross-identity", "slug": "gpt-slug-two", "future": 2}
+                ]
+            }),
+        ];
+
+        for body in conflicts {
+            let error = parse_codex_models_response_page(&body)
+                .expect_err("ambiguous Codex identities must fail");
+            assert!(error.contains("conflicting cards"));
+        }
+    }
+
+    #[test]
+    fn strict_codex_parser_rejects_non_object_or_synthetic_identity_cards() {
+        for body in [
+            json!({"models": ["gpt-future-dynamic"]}),
+            json!({"models": [{"model": "gpt-future-dynamic"}]}),
+            json!({"models": [{"name": "gpt-future-dynamic"}]}),
+            json!({"models": [{"slug": " gpt-future-dynamic "}]}),
+        ] {
+            assert!(parse_codex_models_response_page(&body).is_err());
+        }
+    }
+
+    #[test]
+    fn strict_codex_parser_does_not_impose_an_ascii_symbol_allowlist_on_identities() {
+        let card = json!({
+            "slug": "gpt+future@dynamic",
+            "model_messages": {"instructions_template": "Future instructions"}
+        });
+        let parsed = parse_codex_models_response_page(&json!({"models": [card.clone()]}))
+            .expect("future identity punctuation should remain opaque");
+
+        assert_eq!(parsed.fetched_model_ids, vec!["gpt+future@dynamic"]);
+        assert_eq!(parsed.cached_models, vec![card]);
     }
 
     #[test]

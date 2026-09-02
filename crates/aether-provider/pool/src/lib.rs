@@ -34,9 +34,10 @@ pub use providers::{
     WINDSURF_MODEL_CONFIGS_PATH, WINDSURF_RATE_LIMIT_PATH, WINDSURF_USER_STATUS_PATH,
 };
 pub use quota::{
-    provider_pool_key_account_quota_exhausted, provider_pool_key_scheduling_label,
-    provider_pool_member_quota_snapshot, provider_pool_quota_metadata_provider_type,
-    provider_pool_quota_metadata_updated_at, provider_pool_quota_snapshot_updated_at,
+    provider_pool_key_account_quota_exhausted, provider_pool_key_quota_hard_blocked,
+    provider_pool_key_scheduling_label, provider_pool_member_quota_snapshot,
+    provider_pool_quota_metadata_provider_type, provider_pool_quota_metadata_updated_at,
+    provider_pool_quota_snapshot_updated_at,
 };
 pub use quota_refresh::ProviderPoolQuotaRequestSpec;
 pub use service::ProviderPoolService;
@@ -560,7 +561,7 @@ mod tests {
             }
         })));
 
-        let signals = service.member_signals("windsurf", &key, None);
+        let signals = service.member_signals("windsurf", &key, None, None);
 
         assert!(!signals.quota_exhausted);
     }
@@ -587,7 +588,7 @@ mod tests {
             }
         }));
 
-        let signals = service.member_signals("windsurf", &key, None);
+        let signals = service.member_signals("windsurf", &key, None, None);
 
         assert!(signals.quota_exhausted);
     }
@@ -696,6 +697,15 @@ mod tests {
         assert!(provider_pool_key_account_quota_exhausted(
             &sample_key(Some(json!({
                 "codex": {
+                    "allowed": false,
+                    "limit_reached": true
+                }
+            }))),
+            "codex",
+        ));
+        assert!(provider_pool_key_account_quota_exhausted(
+            &sample_key(Some(json!({
+                "codex": {
                     "has_credits": false,
                     "credits_unlimited": false
                 }
@@ -758,6 +768,35 @@ mod tests {
             }))),
             "codex",
         ));
+        assert!(!provider_pool_key_account_quota_exhausted(
+            &sample_key(Some(json!({
+                "codex": {
+                    "allowed": true,
+                    "primary_used_percent": 100.0
+                }
+            }))),
+            "codex",
+        ));
+
+        let mut explicit_codex_limit = sample_key(None);
+        explicit_codex_limit.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "allowed": false,
+                "limit_reached": true,
+                "usage_ratio": 0.91,
+                "windows": [{
+                    "code": "weekly",
+                    "used_ratio": 0.91
+                }]
+            }
+        }));
+        assert!(provider_pool_key_account_quota_exhausted(
+            &explicit_codex_limit,
+            "codex",
+        ));
     }
 
     #[test]
@@ -807,6 +846,99 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_model_quota_exhaustion_does_not_block_other_models() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": false,
+                "windows": [
+                    {
+                        "code": "model:gemini-3.1-pro-high",
+                        "scope": "model",
+                        "model": "gemini-3.1-pro-high",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    },
+                    {
+                        "code": "model:gemini-3-flash-agent",
+                        "scope": "model",
+                        "model": "gemini-3-flash-agent",
+                        "used_ratio": 0.1,
+                        "is_exhausted": false
+                    }
+                ]
+            }
+        }));
+
+        let exhausted =
+            service.member_signals("antigravity", &key, None, Some("gemini-3.1-pro-high"));
+        let available =
+            service.member_signals("antigravity", &key, None, Some("gemini-3-flash-agent"));
+
+        assert!(exhausted.quota_exhausted);
+        assert!(!available.quota_exhausted);
+    }
+
+    #[test]
+    fn codex_standard_and_spark_quota_families_are_independent() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut standard_exhausted = sample_key(None);
+        standard_exhausted.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "allowed": false,
+                "limit_reached": true,
+                "windows": [
+                    { "code": "weekly", "used_ratio": 1.0, "is_exhausted": true },
+                    { "code": "5h", "used_ratio": 0.5, "is_exhausted": false },
+                    { "code": "spark_weekly", "used_ratio": 0.2, "is_exhausted": false },
+                    { "code": "spark_5h", "used_ratio": 0.1, "is_exhausted": false }
+                ]
+            }
+        }));
+
+        let standard =
+            service.member_signals("codex", &standard_exhausted, None, Some("gpt-5.3-codex"));
+        let spark = service.member_signals(
+            "codex",
+            &standard_exhausted,
+            None,
+            Some("gpt-5.3-codex-spark"),
+        );
+        assert!(standard.quota_exhausted);
+        assert!(!standard.quota_hard_blocked);
+        assert!(!spark.quota_exhausted);
+        assert!(!spark.quota_hard_blocked);
+
+        let mut spark_exhausted = sample_key(None);
+        spark_exhausted.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": false,
+                "windows": [
+                    { "code": "weekly", "used_ratio": 0.2, "is_exhausted": false },
+                    { "code": "5h", "used_ratio": 0.1, "is_exhausted": false },
+                    { "code": "spark_weekly", "used_ratio": 1.0, "is_exhausted": true },
+                    { "code": "spark_5h", "used_ratio": 0.4, "is_exhausted": false }
+                ]
+            }
+        }));
+
+        let standard =
+            service.member_signals("codex", &spark_exhausted, None, Some("gpt-5.3-codex"));
+        let spark =
+            service.member_signals("codex", &spark_exhausted, None, Some("gpt-5.3-codex-spark"));
+        assert!(!standard.quota_exhausted);
+        assert!(spark.quota_exhausted);
+    }
+
+    #[test]
     fn provider_quota_exhaustion_metadata_expires_after_reset_at() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -817,6 +949,8 @@ mod tests {
             &sample_key(Some(json!({
                 "codex": {
                     "updated_at": now.saturating_sub(600),
+                    "allowed": false,
+                    "limit_reached": true,
                     "primary_used_percent": 100.0,
                     "primary_reset_at": now.saturating_sub(60)
                 }
@@ -831,6 +965,79 @@ mod tests {
                     "primary_reset_at": now.saturating_add(3600)
                 }
             }))),
+            "codex",
+        ));
+    }
+
+    #[test]
+    fn codex_explicit_quota_block_is_hard_until_reset() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_secs();
+
+        assert!(provider_pool_key_quota_hard_blocked(
+            &sample_key(Some(json!({
+                "codex": {
+                    "updated_at": now,
+                    "allowed": false,
+                    "limit_reached": true,
+                    "primary_reset_at": now.saturating_add(3600)
+                }
+            }))),
+            "codex",
+        ));
+        assert!(!provider_pool_key_quota_hard_blocked(
+            &sample_key(Some(json!({
+                "codex": {
+                    "updated_at": now,
+                    "primary_used_percent": 100.0,
+                    "primary_reset_at": now.saturating_add(3600)
+                }
+            }))),
+            "codex",
+        ));
+        assert!(!provider_pool_key_quota_hard_blocked(
+            &sample_key(Some(json!({
+                "codex": {
+                    "updated_at": now.saturating_sub(600),
+                    "allowed": false,
+                    "limit_reached": true,
+                    "primary_reset_at": now.saturating_sub(60)
+                }
+            }))),
+            "codex",
+        ));
+
+        let mut snapshot_blocked = sample_key(None);
+        snapshot_blocked.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "allowed": false,
+                "limit_reached": true,
+                "usage_ratio": 0.91,
+                "reset_at": now.saturating_add(3600)
+            }
+        }));
+        assert!(provider_pool_key_quota_hard_blocked(
+            &snapshot_blocked,
+            "codex",
+        ));
+        snapshot_blocked.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "allowed": false,
+                "limit_reached": true,
+                "usage_ratio": 0.91,
+                "reset_at": now.saturating_sub(60)
+            }
+        }));
+        assert!(!provider_pool_key_quota_hard_blocked(
+            &snapshot_blocked,
             "codex",
         ));
     }

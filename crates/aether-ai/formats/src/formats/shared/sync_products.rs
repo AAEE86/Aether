@@ -3184,6 +3184,13 @@ fn materialize_openai_responses_reasoning_item(
     state: OpenAIResponsesSyncReasoningState,
 ) -> Value {
     let mut item = state.item;
+    let has_provider_opaque_state = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    if has_provider_opaque_state {
+        return Value::Object(item);
+    }
     item.entry("type".to_string())
         .or_insert_with(|| Value::String("reasoning".to_string()));
     item.entry("id".to_string()).or_insert_with(|| {
@@ -3262,6 +3269,7 @@ struct GeminiSyncToolState {
     call_id: String,
     name: String,
     arguments: String,
+    thought_signature: String,
     part_index: Option<usize>,
 }
 
@@ -3589,6 +3597,13 @@ fn try_aggregate_gemini_stream_sync_response(
                         parts[part_index] = sync_gemini_function_call_part(state);
                     }
                 }
+                CanonicalStreamEvent::ToolCallSignature { index, signature } => {
+                    let state = tool_states.entry(index).or_default();
+                    state.thought_signature = signature;
+                    if let Some(part_index) = state.part_index {
+                        parts[part_index] = sync_gemini_function_call_part(state);
+                    }
+                }
                 CanonicalStreamEvent::ToolCallArgumentsDelta { index, arguments } => {
                     let state = tool_states.entry(index).or_default();
                     state.arguments.push_str(&arguments);
@@ -3783,7 +3798,7 @@ fn is_mergeable_gemini_text_part(part: &Map<String, Value>, thought: bool) -> bo
 }
 
 fn sync_gemini_function_call_part(state: &GeminiSyncToolState) -> Value {
-    json!({
+    let mut part = json!({
         "functionCall": {
             "id": if state.call_id.trim().is_empty() {
                 "call_auto_0".to_string()
@@ -3797,7 +3812,11 @@ fn sync_gemini_function_call_part(state: &GeminiSyncToolState) -> Value {
             },
             "args": sync_gemini_function_args_value(&state.arguments),
         }
-    })
+    });
+    if !state.thought_signature.is_empty() {
+        part["thoughtSignature"] = Value::String(state.thought_signature.clone());
+    }
+    part
 }
 
 fn sync_gemini_function_response_part(
@@ -3939,7 +3958,7 @@ mod tests {
         aggregate_claude_stream_sync_response, aggregate_gemini_stream_sync_response,
         aggregate_openai_chat_stream_sync_response,
         aggregate_openai_responses_stream_sync_response, convert_standard_chat_response,
-        convert_standard_cli_response,
+        convert_standard_cli_response, materialize_openai_responses_reasoning_item,
         maybe_build_openai_chat_cross_format_sync_product_from_normalized_payload,
         maybe_build_openai_responses_cross_format_sync_product_from_normalized_payload,
         maybe_build_openai_responses_same_family_sync_body_from_normalized_payload,
@@ -3947,7 +3966,9 @@ mod tests {
         maybe_build_standard_cross_format_sync_product_from_normalized_payload,
         maybe_build_standard_same_format_sync_body_from_normalized_payload,
         maybe_build_standard_sync_finalize_product_from_normalized_payload,
-        try_aggregate_openai_responses_stream_sync_response, StandardSyncFinalizeNormalizedProduct,
+        openai_responses_synthetic_reasoning_item_id,
+        try_aggregate_openai_responses_stream_sync_response, OpenAIResponsesSyncReasoningState,
+        StandardSyncFinalizeNormalizedProduct,
     };
     use aether_ai_formats::formats::conversion::response::{
         convert_claude_chat_response_to_openai_chat, convert_gemini_chat_response_to_openai_chat,
@@ -5334,6 +5355,85 @@ mod tests {
         assert!(result["output"].as_array().is_some());
         assert_eq!(result["output_text"], "");
         assert!(result["completed_at"].as_i64().is_some());
+    }
+
+    #[test]
+    fn preserves_idless_provider_opaque_reasoning_item_during_materialization() {
+        let original = json!({
+            "type": "reasoning",
+            "encrypted_content": "opaque-provider-state",
+            "content": [{
+                "type": "reasoning_text",
+                "text": "private chain of thought"
+            }],
+            "summary": [{
+                "type": "provider_summary",
+                "text": "provider-owned summary"
+            }],
+            "future_provider_field": {"version": 2}
+        });
+        let state = OpenAIResponsesSyncReasoningState {
+            item: original
+                .as_object()
+                .expect("reasoning item should be an object")
+                .clone(),
+            summary_text: "must not replace provider-owned state".to_string(),
+        };
+
+        let materialized = materialize_openai_responses_reasoning_item("resp_opaque_123", state);
+
+        assert_eq!(materialized, original);
+        assert!(materialized.get("id").is_none());
+        assert!(materialized.get("status").is_none());
+    }
+
+    #[test]
+    fn aggregates_authoritative_provider_opaque_reasoning_item_without_mutation() {
+        let body = concat!(
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque-provider-state\",\"content\":[]}}\n\n",
+            "event: response.reasoning_text.done\n",
+            "data: {\"type\":\"response.reasoning_text.done\",\"output_index\":0,\"text\":\"provider reasoning\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque-provider-state\",\"content\":[{\"type\":\"reasoning_text\",\"text\":\"provider reasoning\"}],\"future_provider_field\":{\"version\":2}}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_opaque_stream_123\",\"object\":\"response\",\"model\":\"deepseek-reasoner\",\"status\":\"completed\",\"output\":[]}}\n\n",
+        );
+
+        let result = aggregate_openai_responses_stream_sync_response(body.as_bytes())
+            .expect("provider opaque reasoning stream should aggregate");
+
+        assert_eq!(
+            result["output"][0],
+            json!({
+                "type": "reasoning",
+                "encrypted_content": "opaque-provider-state",
+                "content": [{
+                    "type": "reasoning_text",
+                    "text": "provider reasoning"
+                }],
+                "future_provider_field": {"version": 2}
+            })
+        );
+    }
+
+    #[test]
+    fn synthesizes_wire_compatible_id_for_local_reasoning_summary() {
+        let state = OpenAIResponsesSyncReasoningState {
+            item: json!({"type": "reasoning"})
+                .as_object()
+                .expect("reasoning item should be an object")
+                .clone(),
+            summary_text: "Need care".to_string(),
+        };
+
+        let materialized = materialize_openai_responses_reasoning_item("resp_summary_123", state);
+
+        assert_eq!(
+            materialized["id"],
+            openai_responses_synthetic_reasoning_item_id("resp_summary_123", 0)
+        );
+        assert_eq!(materialized["summary"][0]["text"], "Need care");
     }
 
     #[test]

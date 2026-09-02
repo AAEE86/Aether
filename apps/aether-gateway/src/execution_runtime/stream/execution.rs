@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use aether_ai_serving::{AiAttemptExecutionOutcome, AiAttemptRetryScope};
 use aether_contracts::{
-    ExecutionPlan, ExecutionStreamTerminalSummary, ExecutionTelemetry, StandardizedUsage,
-    StreamFrame, StreamFramePayload,
+    ExecutionPlan, ExecutionResponseObservation, ExecutionStreamTerminalSummary,
+    ExecutionTelemetry, StandardizedUsage, StreamFrame, StreamFramePayload,
 };
 use aether_data_contracts::repository::candidates::{
     RequestCandidateStatus, UpsertRequestCandidateRecord,
@@ -64,8 +64,14 @@ use crate::ai_serving::api::{
     extract_provider_private_stream_error_body, maybe_bridge_standard_sync_json_to_stream,
     maybe_build_provider_private_stream_normalizer, maybe_build_stream_response_rewriter,
     normalize_provider_private_report_context, StreamingStandardTerminalObserver,
+    CLAUDE_CHAT_STREAM_PLAN_KIND, CLAUDE_CLI_STREAM_PLAN_KIND, GEMINI_CHAT_STREAM_PLAN_KIND,
+    GEMINI_CLI_STREAM_PLAN_KIND, GEMINI_INTERACTIONS_STREAM_PLAN_KIND,
+    OPENAI_CHAT_STREAM_PLAN_KIND, OPENAI_IMAGE_STREAM_PLAN_KIND,
+    OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND, OPENAI_RESPONSES_STREAM_PLAN_KIND,
+    UPSTREAM_IS_STREAM_KEY,
 };
 use crate::ai_serving::is_openai_responses_family_format;
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
 };
@@ -112,15 +118,16 @@ use crate::execution_runtime::{
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
     apply_local_execution_effect, build_local_error_flow_metadata, classify_failure_disposition,
-    cyber_continue_failover_enabled, trace_upstream_response_body, with_error_flow_report_context,
+    cyber_continue_failover_enabled, spawn_local_oauth_success_effect,
+    trace_upstream_response_body, with_error_flow_report_context,
     with_upstream_response_report_context, FailureDisposition, FailureTokenAction,
     LocalAdaptiveRateLimitEffect, LocalAdaptiveSuccessEffect, LocalAttemptFailureEffect,
     LocalExecutionEffect, LocalExecutionEffectContext, LocalFailoverAnalysis,
     LocalHealthFailureEffect, LocalHealthSuccessEffect, LocalOAuthInvalidationEffect,
-    LocalPoolErrorEffect,
+    LocalOAuthSuccessEffect, LocalPoolErrorEffect,
 };
 use crate::provider_pool_demand::{
-    acquire_provider_pool_in_flight_guard, ProviderPoolInFlightGuard,
+    acquire_provider_pool_execution_guard, ProviderPoolInFlightAdmission, ProviderPoolInFlightGuard,
 };
 use crate::request_candidate_runtime::{
     ensure_execution_request_candidate_slot, persist_local_request_candidate_status_record,
@@ -143,7 +150,6 @@ use crate::{
     AppState, GatewayError, GEMINI_FILES_DOWNLOAD_PLAN_KIND, OPENAI_VIDEO_CONTENT_PLAN_KIND,
 };
 
-const OPENAI_IMAGE_STREAM_PLAN_KIND: &str = "openai_image_stream";
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const SSE_KEEPALIVE_BYTES: &[u8] = b": aether-keepalive\n\n";
 const SSE_CONTROL_FILTER_MAX_BUFFER_BYTES: usize = 1024 * 1024;
@@ -1249,6 +1255,9 @@ async fn execute_in_process_stream_with_oauth_retry(
             retry_status_code,
             response_text.as_deref(),
             trace_id,
+            report_context,
+            Some(execution.response_observation.request_started_at_unix_ms),
+            Some(&execution.response_observation.request_order_id),
         )
         .await
     {
@@ -2818,6 +2827,7 @@ async fn execute_stream_from_direct_passthrough(
         stream_precommit_committed: _,
         response,
         started_at: upstream_started_at,
+        response_observation,
         stream_first_byte_timeout,
         upstream_target_permit,
     } = execution;
@@ -2834,8 +2844,23 @@ async fn execute_stream_from_direct_passthrough(
     let request_id = plan.request_id.clone();
     let candidate_id = plan.candidate_id.clone();
     let request_id_for_log = short_request_id(request_id.as_str());
-    let mut report_context =
-        attach_provider_response_headers_to_report_context(report_context, &headers);
+    let mut report_context = attach_provider_response_headers_to_report_context(
+        report_context,
+        &headers,
+        response_observation.request_started_at_unix_ms,
+        response_observation.response_headers_observed_at_unix_ms,
+        &response_observation.request_order_id,
+    );
+    spawn_local_oauth_success_effect(
+        state.clone(),
+        &plan,
+        report_context.as_ref(),
+        LocalOAuthSuccessEffect {
+            status_code,
+            request_started_at_unix_ms: Some(response_observation.request_started_at_unix_ms),
+            request_order_id: Some(&response_observation.request_order_id),
+        },
+    );
     if status_code == 200 {
         seed_kiro_simulated_cache_enabled(state, &plan, &mut report_context).await;
         if kiro_simulated_cache_enabled_from_report_context(report_context.as_ref()) {
@@ -3748,6 +3773,46 @@ async fn execute_execution_runtime_stream_inner(
         plan_kind,
         report_context.as_ref(),
     );
+    let candidate_started_unix_secs = current_request_candidate_unix_ms();
+    let provider_in_flight_started_at = Instant::now();
+    let mut provider_pool_in_flight_guard =
+        match acquire_provider_pool_execution_guard(state, &plan).await? {
+            ProviderPoolInFlightAdmission::Acquired(guard) => guard,
+            ProviderPoolInFlightAdmission::Saturated { limit } => {
+                record_local_runtime_candidate_skip_reason(
+                    state,
+                    trace_id,
+                    "provider_key_concurrency_limit_reached",
+                );
+                if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
+                    *retry_scope = AiAttemptRetryScope::Candidate;
+                }
+                if let Some(snapshot) = request_candidate_status_snapshot.as_ref() {
+                    record_local_request_candidate_status_snapshot(
+                        state,
+                        snapshot,
+                        SchedulerRequestCandidateStatusUpdate {
+                            status: RequestCandidateStatus::Skipped,
+                            status_code: Some(http::StatusCode::TOO_MANY_REQUESTS.as_u16()),
+                            error_type: Some("provider_key_concurrency_limit_reached".to_string()),
+                            error_message: Some(format!(
+                                "provider key concurrency limit reached: {limit}"
+                            )),
+                            latency_ms: Some(0),
+                            started_at_unix_ms: Some(candidate_started_unix_secs),
+                            finished_at_unix_ms: Some(candidate_started_unix_secs),
+                        },
+                    )
+                    .await;
+                }
+                return Ok(None);
+            }
+        };
+    observe_gateway_stage_trace_ms(
+        &mut stage_trace,
+        "stream_provider_in_flight",
+        provider_in_flight_started_at.elapsed().as_millis() as u64,
+    );
     // Inline passthrough records its lifecycle seed after upstream headers are
     // available. Avoid constructing a throwaway seed on the common path.
     let mut lifecycle_seed = (!defer_stream_pending_for_direct_inline)
@@ -3757,7 +3822,6 @@ async fn execute_execution_runtime_stream_inner(
         record_stream_pending_lifecycle(state, seed, &mut stage_trace).await;
         lifecycle_pending_recorded = true;
     }
-    let candidate_started_unix_secs = current_request_candidate_unix_ms();
     if let Some(snapshot) = request_candidate_status_snapshot.clone() {
         record_local_request_candidate_status_snapshot(
             state,
@@ -3786,20 +3850,6 @@ async fn execute_execution_runtime_stream_inner(
         .and_then(|context| context.candidate_index)
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string());
-    let provider_in_flight_started_at = Instant::now();
-    let mut provider_pool_in_flight_guard = acquire_provider_pool_in_flight_guard(
-        state.runtime_state.clone(),
-        &plan.provider_id,
-        plan.request_id.as_str(),
-        plan.candidate_id.as_deref(),
-        key_id.as_str(),
-    )
-    .await;
-    observe_gateway_stage_trace_ms(
-        &mut stage_trace,
-        "stream_provider_in_flight",
-        provider_in_flight_started_at.elapsed().as_millis() as u64,
-    );
     match maybe_execute_grok_stream(&plan, report_context.as_ref()).await {
         Ok(Some(grok_stream)) => {
             return execute_stream_from_frame_stream_with_retry_scope(
@@ -3819,6 +3869,7 @@ async fn execute_execution_runtime_stream_inner(
                 provider_pool_in_flight_guard.take(),
                 retry_scope_out.as_deref_mut(),
                 retry_fallback_out.as_deref_mut(),
+                None,
             )
             .await;
         }
@@ -3891,6 +3942,7 @@ async fn execute_execution_runtime_stream_inner(
                 provider_pool_in_flight_guard.take(),
                 retry_scope_out.as_deref_mut(),
                 retry_fallback_out.as_deref_mut(),
+                None,
             )
             .await;
         }
@@ -3963,6 +4015,7 @@ async fn execute_execution_runtime_stream_inner(
                 provider_pool_in_flight_guard.take(),
                 retry_scope_out.as_deref_mut(),
                 retry_fallback_out.as_deref_mut(),
+                None,
             )
             .await;
         }
@@ -4035,6 +4088,7 @@ async fn execute_execution_runtime_stream_inner(
                 provider_pool_in_flight_guard.take(),
                 retry_scope_out.as_deref_mut(),
                 retry_fallback_out.as_deref_mut(),
+                None,
             )
             .await;
         }
@@ -4192,6 +4246,15 @@ async fn execute_execution_runtime_stream_inner(
             record_stream_pending_lifecycle(state, seed, &mut stage_trace).await;
             lifecycle_pending_recorded = true;
         }
+        let report_context = attach_provider_response_headers_to_report_context(
+            report_context,
+            &execution.headers,
+            execution.response_observation.request_started_at_unix_ms,
+            execution
+                .response_observation
+                .response_headers_observed_at_unix_ms,
+            &execution.response_observation.request_order_id,
+        );
         let stream_precommit_committed = execution.stream_precommit_committed;
         let frame_stream = build_direct_execution_frame_stream(execution).boxed();
         return execute_stream_from_frame_stream_with_retry_scope(
@@ -4211,6 +4274,7 @@ async fn execute_execution_runtime_stream_inner(
             provider_pool_in_flight_guard.take(),
             retry_scope_out,
             retry_fallback_out,
+            None,
         )
         .await;
     }
@@ -4327,6 +4391,15 @@ async fn execute_execution_runtime_stream_inner(
                 record_stream_pending_lifecycle(state, seed, &mut stage_trace).await;
                 lifecycle_pending_recorded = true;
             }
+            let report_context = attach_provider_response_headers_to_report_context(
+                report_context,
+                &execution.headers,
+                execution.response_observation.request_started_at_unix_ms,
+                execution
+                    .response_observation
+                    .response_headers_observed_at_unix_ms,
+                &execution.response_observation.request_order_id,
+            );
             let stream_precommit_committed = execution.stream_precommit_committed;
             let frame_stream = build_direct_execution_frame_stream(execution).boxed();
             return execute_stream_from_frame_stream_with_retry_scope(
@@ -4346,10 +4419,13 @@ async fn execute_execution_runtime_stream_inner(
                 provider_pool_in_flight_guard.take(),
                 retry_scope_out.as_deref_mut(),
                 retry_fallback_out.as_deref_mut(),
+                None,
             )
             .await;
         }
 
+        let remote_request_started_at_unix_ms = current_request_candidate_unix_ms();
+        let remote_request_order_id = uuid::Uuid::now_v7().to_string();
         let response = match post_stream_plan_to_remote_execution_runtime(
             state,
             remote_execution_runtime_base_url,
@@ -4431,6 +4507,12 @@ async fn execute_execution_runtime_stream_inner(
             )?));
         }
 
+        let remote_response_observed_at_unix_ms = current_request_candidate_unix_ms();
+        let remote_fallback_observation = ExecutionResponseObservation {
+            request_started_at_unix_ms: remote_request_started_at_unix_ms,
+            response_headers_observed_at_unix_ms: remote_response_observed_at_unix_ms,
+            request_order_id: remote_request_order_id,
+        };
         let frame_stream = response
             .bytes_stream()
             .map_err(|err| IoError::other(err.to_string()))
@@ -4452,6 +4534,7 @@ async fn execute_execution_runtime_stream_inner(
             provider_pool_in_flight_guard.take(),
             retry_scope_out.as_deref_mut(),
             retry_fallback_out.as_deref_mut(),
+            Some(remote_fallback_observation),
         )
         .await;
     }
@@ -4471,11 +4554,84 @@ fn decode_stream_data_chunk(
 
 fn response_headers_indicate_sse(headers: &BTreeMap<String, String>) -> bool {
     headers
-        .get("content-type")
-        .map(String::as_str)
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+}
+
+fn report_context_upstream_is_stream(report_context: Option<&Value>) -> bool {
+    report_context
+        .and_then(|value| value.get(UPSTREAM_IS_STREAM_KEY))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn response_headers_have_octet_stream_content_type(headers: &BTreeMap<String, String>) -> bool {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.as_str())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("application/octet-stream"))
+}
+
+fn response_headers_have_only_identity_content_encoding(
+    headers: &BTreeMap<String, String>,
+) -> bool {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+        .map(|(_, value)| value.as_str())
+        .is_none_or(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .all(|coding| coding.is_empty() || coding.eq_ignore_ascii_case("identity"))
+        })
+}
+
+fn plan_kind_uses_text_event_stream(plan_kind: &str) -> bool {
+    matches!(
+        plan_kind,
+        OPENAI_CHAT_STREAM_PLAN_KIND
+            | OPENAI_RESPONSES_STREAM_PLAN_KIND
+            | OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND
+            | OPENAI_IMAGE_STREAM_PLAN_KIND
+            | CLAUDE_CHAT_STREAM_PLAN_KIND
+            | CLAUDE_CLI_STREAM_PLAN_KIND
+            | GEMINI_CHAT_STREAM_PLAN_KIND
+            | GEMINI_CLI_STREAM_PLAN_KIND
+            | GEMINI_INTERACTIONS_STREAM_PLAN_KIND
+    )
+}
+
+fn should_normalize_declared_stream_response_headers(
+    plan_kind: &str,
+    status_code: u16,
+    headers: &BTreeMap<String, String>,
+    report_context: Option<&Value>,
+) -> bool {
+    plan_kind_uses_text_event_stream(plan_kind)
+        && (200..300).contains(&status_code)
+        && report_context_upstream_is_stream(report_context)
+        && response_headers_have_octet_stream_content_type(headers)
+        && response_headers_have_only_identity_content_encoding(headers)
+        && !headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-length"))
+}
+
+fn normalize_declared_stream_response_headers(headers: &mut BTreeMap<String, String>) {
+    headers.retain(|name, _| {
+        !name.eq_ignore_ascii_case("content-encoding")
+            && !name.eq_ignore_ascii_case("content-length")
+            && !name.eq_ignore_ascii_case("content-type")
+    });
+    headers.insert("content-type".to_string(), "text/event-stream".to_string());
 }
 
 fn parse_prefetched_sync_json_body(body: &[u8]) -> Option<Value> {
@@ -5481,6 +5637,7 @@ async fn execute_stream_from_frame_stream(
         in_flight_guard,
         None,
         None,
+        None,
     )
     .await
 }
@@ -5503,6 +5660,7 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
     in_flight_guard: Option<ProviderPoolInFlightGuard>,
     mut retry_scope_out: Option<&mut AiAttemptRetryScope>,
     mut retry_fallback_out: Option<&mut Option<Response<Body>>>,
+    fallback_response_observation: Option<ExecutionResponseObservation>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let request_id = plan.request_id.as_str();
     let request_id_for_log = short_request_id(request_id);
@@ -5535,14 +5693,37 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
     let StreamFramePayload::Headers {
         status_code,
         mut headers,
+        response_observation,
     } = first_frame.payload
     else {
         return Err(GatewayError::Internal(
             "execution runtime stream must start with headers frame".to_string(),
         ));
     };
-    let mut report_context =
-        attach_provider_response_headers_to_report_context(report_context, &headers);
+    let response_observation = response_observation
+        .or(fallback_response_observation)
+        .unwrap_or(ExecutionResponseObservation {
+            request_started_at_unix_ms: candidate_started_unix_secs,
+            response_headers_observed_at_unix_ms: current_request_candidate_unix_ms(),
+            request_order_id: uuid::Uuid::now_v7().to_string(),
+        });
+    let mut report_context = attach_provider_response_headers_to_report_context(
+        report_context,
+        &headers,
+        response_observation.request_started_at_unix_ms,
+        response_observation.response_headers_observed_at_unix_ms,
+        &response_observation.request_order_id,
+    );
+    spawn_local_oauth_success_effect(
+        state.clone(),
+        &plan,
+        report_context.as_ref(),
+        LocalOAuthSuccessEffect {
+            status_code,
+            request_started_at_unix_ms: Some(response_observation.request_started_at_unix_ms),
+            request_order_id: Some(&response_observation.request_order_id),
+        },
+    );
     if status_code == 200 {
         seed_kiro_simulated_cache_enabled(state, &plan, &mut report_context).await;
         if kiro_simulated_cache_enabled_from_report_context(report_context.as_ref()) {
@@ -5964,6 +6145,32 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
         headers.insert("content-type".to_string(), "text/event-stream".to_string());
     }
     let upstream_content_type = upstream_headers.get("content-type").map(String::as_str);
+    let normalized_declared_stream_headers = private_stream_normalizer.is_none()
+        && local_stream_rewriter.is_none()
+        && should_normalize_declared_stream_response_headers(
+            plan_kind,
+            status_code,
+            &upstream_headers,
+            report_context.as_ref(),
+        );
+    if normalized_declared_stream_headers {
+        normalize_declared_stream_response_headers(&mut headers);
+        debug!(
+            event_name = "execution_runtime_stream_content_type_corrected",
+            log_type = "debug",
+            trace_id = %trace_id,
+            request_id = %request_id_for_log,
+            candidate_id = ?candidate_id,
+            plan_kind,
+            provider_name,
+            endpoint_id = %plan.endpoint_id,
+            key_id = %plan.key_id,
+            model_name,
+            candidate_index = candidate_index.as_str(),
+            upstream_content_type = upstream_content_type.unwrap_or("-"),
+            "gateway normalized declared upstream stream response headers for the client"
+        );
+    }
     let prefetch_for_cyber_failover =
         is_openai_responses_family_format(plan.provider_api_format.as_str())
             && cyber_continue_failover_enabled(state).await;
@@ -6289,7 +6496,9 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
                         }
                     }
 
-                    let inspection = if stream_commit_policy.is_native_anthropic() {
+                    let inspection = if stream_commit_policy.is_native_anthropic()
+                        || stream_commit_policy.is_gemini()
+                    {
                         StreamPrefetchInspection::NeedMore
                     } else {
                         inspect_prefetched_stream_body(
@@ -6651,8 +6860,9 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
     let native_anthropic_stream_for_report = stream_commit_policy.is_native_anthropic();
     let plan_for_report = plan;
     let emit_passthrough_sse_terminal_error = (skip_direct_finalize_prefetch
-        || stream_commit_policy.is_native_anthropic())
-        && response_headers_indicate_sse(&upstream_headers)
+        || stream_commit_policy.is_native_anthropic()
+        || normalized_declared_stream_headers)
+        && (response_headers_indicate_sse(&upstream_headers) || normalized_declared_stream_headers)
         && !is_openai_image_stream_for_report;
     let plan_kind_for_report = plan_kind.to_string();
     let stream_started_at_for_report = stream_started_at;
@@ -8014,20 +8224,23 @@ mod tests {
         execute_execution_runtime_stream, execute_in_process_stream_with_oauth_retry,
         execute_stream_from_frame_stream, execute_stream_from_frame_stream_with_retry_scope,
         maybe_apply_kiro_prompt_cache_usage_to_stream_summary, merge_stream_terminal_summary,
-        parse_direct_passthrough_mode, prefetch_direct_stream_error_body,
-        prefetched_openai_responses_body_has_output_boundary,
+        normalize_declared_stream_response_headers, parse_direct_passthrough_mode,
+        prefetch_direct_stream_error_body, prefetched_openai_responses_body_has_output_boundary,
         record_sync_terminal_usage_with_handoff,
         record_sync_terminal_usage_with_handoff_after_spawn,
         resolve_provider_stream_error_status_code, select_direct_anthropic_prefetch_wait,
-        should_limit_direct_finalize_prefetch, should_probe_success_failover_before_stream,
-        should_skip_direct_finalize_prefetch, stream_chunk_contains_sse_done,
-        stream_requires_observed_terminal_event, stream_terminal_summary_missing_observed_finish,
+        should_limit_direct_finalize_prefetch, should_normalize_declared_stream_response_headers,
+        should_probe_success_failover_before_stream, should_skip_direct_finalize_prefetch,
+        stream_chunk_contains_sse_done, stream_requires_observed_terminal_event,
+        stream_terminal_summary_missing_observed_finish,
         stream_terminal_summary_missing_observed_finish_with_requirement,
         stream_terminal_summary_represents_failure_with_requirement,
         ClientVisibleStreamCompletionTracker, DirectPassthroughFinalizer,
         DirectPassthroughFinalizerCore, DirectPassthroughInlineBodyState, DirectPassthroughMode,
         PostStopFrameReadBudget, PostStopLimitedStreamReader, ProviderStreamErrorInspection,
-        ANTHROPIC_POST_STOP_DRAIN_MAX_BYTES, POST_STOP_MAX_EMPTY_CHUNKS_PER_POLL,
+        ANTHROPIC_POST_STOP_DRAIN_MAX_BYTES, GEMINI_FILES_DOWNLOAD_PLAN_KIND,
+        OPENAI_CHAT_STREAM_PLAN_KIND, OPENAI_RESPONSES_STREAM_PLAN_KIND,
+        POST_STOP_MAX_EMPTY_CHUNKS_PER_POLL,
     };
     use crate::control::GatewayControlDecision;
     use crate::stage_metrics::RequestStageTrace;
@@ -8310,6 +8523,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -8389,6 +8603,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -8430,6 +8645,7 @@ mod tests {
             false,
             None,
             Some(&mut retry_scope),
+            None,
             None,
         )
         .await
@@ -8480,6 +8696,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -8522,6 +8739,7 @@ mod tests {
             None,
             Some(&mut retry_scope),
             None,
+            None,
         )
         .await
         .expect("prefetch HTTP status execution should resolve");
@@ -8561,6 +8779,36 @@ mod tests {
             client_api_format: "claude:messages".to_string(),
             provider_api_format: "claude:messages".to_string(),
             model_name: Some("claude-sonnet-4-6".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        }
+    }
+
+    fn antigravity_gemini_stream_plan(request_id: &str) -> ExecutionPlan {
+        ExecutionPlan {
+            request_id: request_id.to_string(),
+            candidate_id: Some(format!("candidate-{request_id}")),
+            provider_name: Some("antigravity".to_string()),
+            provider_id: format!("provider-{request_id}"),
+            endpoint_id: format!("endpoint-{request_id}"),
+            key_id: format!("key-{request_id}"),
+            method: "POST".to_string(),
+            url: "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent".to_string(),
+            headers: BTreeMap::from([
+                ("content-type".to_string(), "application/json".to_string()),
+                ("accept".to_string(), "text/event-stream".to_string()),
+            ]),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({
+                "model": "gemini-3.7-flash-tiered",
+                "contents": [{"role": "user", "parts": [{"text": "validate"}]}]
+            })),
+            stream: true,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "gemini:generate_content".to_string(),
+            model_name: Some("gemini-3.7-flash-tiered".to_string()),
             proxy: None,
             transport_profile: None,
             timeouts: None,
@@ -8680,6 +8928,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             for chunk in chunks {
@@ -8725,6 +8974,7 @@ mod tests {
             None,
             Some(&mut retry_scope),
             Some(&mut fallback_response),
+            None,
         )
         .await
         .expect("native Anthropic stream execution should succeed");
@@ -9364,6 +9614,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -9410,6 +9661,7 @@ mod tests {
                 true,
                 frame_stream,
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -9850,6 +10102,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
         }
@@ -10308,6 +10561,92 @@ mod tests {
             panic!("HTTP stop policy should return the upstream error");
         };
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn malformed_antigravity_function_call_retries_before_stream_commit() {
+        let request_id = "req-antigravity-malformed-function-call";
+        let plan = antigravity_gemini_stream_plan(request_id);
+        let provider_catalog = provider_catalog_for_plan(
+            &plan,
+            Some(json!({
+                "failover_rules": {
+                    "continue_status_codes": [502]
+                }
+            })),
+        );
+        let data_state = crate::data::GatewayDataState::with_provider_transport_reader_for_tests(
+            Arc::new(provider_catalog),
+            "development-key",
+        );
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(data_state);
+        let frame_stream = stream! {
+            yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
+                frame_type: StreamFrameType::Headers,
+                payload: StreamFramePayload::Headers {
+                    status_code: 200,
+                    headers: BTreeMap::from([(
+                        "content-type".to_string(),
+                        "text/event-stream".to_string(),
+                    )]),
+                    response_observation: None,
+                },
+            }));
+            for chunk in [
+                r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"Validating the document."}]} }],"modelVersion":"gemini-3.7-flash-tiered"}}
+
+"#,
+                r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"signature","text":""}]},"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"Malformed function call: Function call is empty - no input to parse."}],"modelVersion":"gemini-3.7-flash-tiered"}}
+
+"#,
+            ] {
+                yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
+                    frame_type: StreamFrameType::Data,
+                    payload: StreamFramePayload::Data {
+                        chunk_b64: None,
+                        text: Some(chunk.to_string()),
+                    },
+                }));
+            }
+            yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame::eof()));
+        }
+        .boxed();
+        let mut retry_scope = AiAttemptRetryScope::Provider;
+
+        let response = execute_stream_from_frame_stream_with_retry_scope(
+            &state,
+            plan,
+            "trace-antigravity-malformed-function-call",
+            &test_decision(),
+            OPENAI_RESPONSES_STREAM_PLAN_KIND,
+            Some("openai_responses_stream_success".to_string()),
+            Some(json!({
+                "request_id": request_id,
+                "candidate_id": format!("candidate-{request_id}"),
+                "candidate_index": 0,
+                "retry_index": 0,
+                "provider_api_format": "gemini:generate_content",
+                "client_api_format": "openai:responses",
+                "needs_conversion": true
+            })),
+            crate::clock::current_unix_ms(),
+            Instant::now(),
+            RequestStageTrace::from_env(),
+            true,
+            frame_stream,
+            false,
+            None,
+            Some(&mut retry_scope),
+            None,
+            None,
+        )
+        .await
+        .expect("malformed Antigravity stream should resolve through failover");
+
+        assert!(response.is_none());
+        assert_eq!(retry_scope, AiAttemptRetryScope::Candidate);
     }
 
     fn tunnel_proxy_snapshot(base_url: String) -> aether_contracts::ProxySnapshot {
@@ -11532,6 +11871,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -11660,6 +12000,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -11966,6 +12307,109 @@ mod tests {
             false,
             false,
             false,
+        ));
+    }
+
+    #[test]
+    fn declared_stream_response_headers_are_normalized_without_body_inspection() {
+        let mut headers = BTreeMap::from([
+            (
+                "Content-Type".to_string(),
+                "Application/Octet-Stream; charset=binary".to_string(),
+            ),
+            ("Content-Encoding".to_string(), "identity".to_string()),
+            ("x-upstream-header".to_string(), "preserved".to_string()),
+        ]);
+        assert!(should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &headers,
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        headers.insert("Content-Length".to_string(), "4096".to_string());
+        normalize_declared_stream_response_headers(&mut headers);
+
+        assert_eq!(
+            headers.get("content-type").map(String::as_str),
+            Some("text/event-stream")
+        );
+        assert!(!headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-encoding")));
+        assert!(!headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-length")));
+        assert_eq!(
+            headers.get("x-upstream-header").map(String::as_str),
+            Some("preserved")
+        );
+    }
+
+    #[test]
+    fn declared_stream_header_normalization_requires_success_and_stream_context() {
+        let headers = BTreeMap::from([(
+            "content-type".to_string(),
+            "application/octet-stream".to_string(),
+        )]);
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            500,
+            &headers,
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &headers,
+            Some(&json!({"upstream_is_stream": false})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &BTreeMap::from([("content-type".to_string(), "text/event-stream".to_string(),)]),
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &BTreeMap::from([("content-type".to_string(), "application/json".to_string(),)]),
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &BTreeMap::from([("content-type".to_string(), "text/plain".to_string(),)]),
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &BTreeMap::from([
+                (
+                    "content-type".to_string(),
+                    "application/octet-stream".to_string(),
+                ),
+                ("content-encoding".to_string(), "gzip".to_string()),
+            ]),
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            OPENAI_CHAT_STREAM_PLAN_KIND,
+            200,
+            &BTreeMap::from([
+                (
+                    "content-type".to_string(),
+                    "application/octet-stream".to_string(),
+                ),
+                ("content-length".to_string(), "128".to_string()),
+            ]),
+            Some(&json!({"upstream_is_stream": true})),
+        ));
+        assert!(!should_normalize_declared_stream_response_headers(
+            GEMINI_FILES_DOWNLOAD_PLAN_KIND,
+            200,
+            &headers,
+            Some(&json!({"upstream_is_stream": true})),
         ));
     }
 
@@ -12384,6 +12828,7 @@ mod tests {
                         "content-type".to_string(),
                         "text/event-stream".to_string(),
                     )]),
+                    response_observation: None,
                 },
             }));
             yield Ok::<Bytes, std::io::Error>(ndjson_frame(StreamFrame {
@@ -13700,6 +14145,7 @@ mod tests {
             Some(json!({
                 "provider_api_format": "openai:responses",
                 "client_api_format": "openai:responses",
+                "upstream_is_stream": true,
             })),
         )
         .await

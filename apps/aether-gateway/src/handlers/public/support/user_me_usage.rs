@@ -65,6 +65,51 @@ fn parse_users_me_usage_offset(query: Option<&str>) -> Result<usize, String> {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UsersMeUsageRecordFilter {
+    api_format: Option<String>,
+    statuses: Option<Vec<String>>,
+    is_stream: Option<bool>,
+    is_websocket: Option<bool>,
+    error_only: bool,
+}
+
+fn parse_users_me_usage_record_filter(query: Option<&str>) -> UsersMeUsageRecordFilter {
+    let mut filter = UsersMeUsageRecordFilter {
+        api_format: query_param_value(query, "api_format")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        ..UsersMeUsageRecordFilter::default()
+    };
+    let Some(status) = query_param_value(query, "status")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    else {
+        return filter;
+    };
+
+    match status.as_str() {
+        "stream" => {
+            filter.is_stream = Some(true);
+            filter.is_websocket = Some(false);
+        }
+        "standard" => {
+            filter.is_stream = Some(false);
+            filter.is_websocket = Some(false);
+        }
+        "websocket" | "ws" => filter.is_websocket = Some(true),
+        "error" | "failed" => filter.error_only = true,
+        "active" => {
+            filter.statuses = Some(vec!["pending".to_string(), "streaming".to_string()]);
+        }
+        "pending" | "streaming" | "completed" | "cancelled" => {
+            filter.statuses = Some(vec![status]);
+        }
+        _ => {}
+    }
+    filter
+}
+
 fn parse_users_me_usage_hours(query: Option<&str>) -> Result<u32, String> {
     match query_param_value(query, "hours") {
         Some(value) => parse_bounded_u32("hours", &value, 1, 720),
@@ -479,6 +524,12 @@ fn build_users_me_usage_record_payload(
         "response_time_ms": item.response_time_ms,
         "first_byte_time_ms": item.first_byte_time_ms,
         "is_stream": item.is_stream,
+        "is_websocket": item.is_websocket(),
+        "websocket_transport": item.websocket_transport(),
+        "usage_available": item.usage_available(),
+        "usage_pricing_available": item.usage_pricing_available(),
+        "input_audio_tokens": item.realtime_input_audio_tokens(),
+        "output_audio_tokens": item.realtime_output_audio_tokens(),
         "upstream_is_stream": upstream_is_stream,
         "client_requested_stream": client_is_stream,
         "client_is_stream": client_is_stream,
@@ -562,6 +613,12 @@ fn build_users_me_usage_active_payload(item: &StoredRequestUsageAudit) -> serde_
         "api_format": item.api_format,
         "endpoint_api_format": item.endpoint_api_format,
         "is_stream": item.is_stream,
+        "is_websocket": item.is_websocket(),
+        "websocket_transport": item.websocket_transport(),
+        "usage_available": item.usage_available(),
+        "usage_pricing_available": item.usage_pricing_available(),
+        "input_audio_tokens": item.realtime_input_audio_tokens(),
+        "output_audio_tokens": item.realtime_output_audio_tokens(),
         "upstream_is_stream": upstream_is_stream,
         "client_requested_stream": client_is_stream,
         "client_is_stream": client_is_stream,
@@ -945,6 +1002,7 @@ pub(super) async fn handle_users_me_usage_get(
         Ok(value) => value,
         Err(detail) => return admin_stats_bad_request_response(detail),
     };
+    let record_filter = parse_users_me_usage_record_filter(query);
 
     // When no time range is specified, default to 7 days to avoid full-table scans.
     let effective_time_range = time_range.or_else(|| {
@@ -1082,13 +1140,14 @@ pub(super) async fn handle_users_me_usage_get(
                 user_id: Some(auth.user.id.clone()),
                 provider_name: None,
                 model: None,
-                api_format: None,
+                api_format: record_filter.api_format.clone(),
                 client_family: None,
                 exclude_unknown_model_or_provider: false,
-                statuses: None,
+                statuses: record_filter.statuses.clone(),
                 exclude_status_codes: Vec::new(),
-                is_stream: None,
-                error_only: false,
+                is_stream: record_filter.is_stream,
+                is_websocket: record_filter.is_websocket,
+                error_only: record_filter.error_only,
                 keywords,
                 matched_user_ids_by_keyword: Vec::new(),
                 auth_user_reader_available: false,
@@ -1138,13 +1197,14 @@ pub(super) async fn handle_users_me_usage_get(
                     user_id: Some(auth.user.id.clone()),
                     provider_name: None,
                     model: None,
-                    api_format: None,
+                    api_format: record_filter.api_format.clone(),
                     client_family: None,
                     exclude_unknown_model_or_provider: false,
-                    statuses: None,
+                    statuses: record_filter.statuses.clone(),
                     exclude_status_codes: Vec::new(),
-                    is_stream: None,
-                    error_only: false,
+                    is_stream: record_filter.is_stream,
+                    is_websocket: record_filter.is_websocket,
+                    error_only: record_filter.error_only,
                     limit: None,
                     offset: None,
                     newest_first: true,
@@ -1167,13 +1227,14 @@ pub(super) async fn handle_users_me_usage_get(
                     user_id: Some(auth.user.id.clone()),
                     provider_name: None,
                     model: None,
-                    api_format: None,
+                    api_format: record_filter.api_format.clone(),
                     client_family: None,
                     exclude_unknown_model_or_provider: false,
-                    statuses: None,
+                    statuses: record_filter.statuses.clone(),
                     exclude_status_codes: Vec::new(),
-                    is_stream: None,
-                    error_only: false,
+                    is_stream: record_filter.is_stream,
+                    is_websocket: record_filter.is_websocket,
+                    error_only: record_filter.error_only,
                     limit: Some(limit),
                     offset: Some(offset),
                     newest_first: true,
@@ -1312,6 +1373,7 @@ pub(super) async fn handle_users_me_usage_active_get(
                 statuses: Some(vec!["pending".to_string(), "streaming".to_string()]),
                 exclude_status_codes: Vec::new(),
                 is_stream: None,
+                is_websocket: None,
                 error_only: false,
                 limit: Some(50),
                 offset: None,
@@ -1566,9 +1628,47 @@ mod tests {
 
     use super::{
         build_users_me_usage_active_payload, build_users_me_usage_record_payload,
-        users_me_usage_client_is_stream, users_me_usage_is_failed,
-        users_me_usage_terminal_candidate_state_override, users_me_usage_upstream_is_stream,
+        parse_users_me_usage_record_filter, users_me_usage_client_is_stream,
+        users_me_usage_is_failed, users_me_usage_terminal_candidate_state_override,
+        users_me_usage_upstream_is_stream,
     };
+
+    #[test]
+    fn users_me_usage_transport_statuses_are_disjoint_server_side_filters() {
+        let live_websocket = parse_users_me_usage_record_filter(Some(
+            "limit=20&api_format=codex%3Alive&status=websocket",
+        ));
+        assert_eq!(live_websocket.api_format.as_deref(), Some("codex:live"));
+        assert_eq!(live_websocket.is_websocket, Some(true));
+
+        let live_without_status =
+            parse_users_me_usage_record_filter(Some("api_format=codex%3Alive"));
+        assert_eq!(
+            live_without_status.api_format.as_deref(),
+            Some("codex:live")
+        );
+        assert_eq!(live_without_status.is_websocket, None);
+
+        for status in ["websocket", "ws", "WS"] {
+            let filter = parse_users_me_usage_record_filter(Some(
+                format!("limit=20&status={status}").as_str(),
+            ));
+            assert_eq!(filter.is_websocket, Some(true));
+            assert_eq!(filter.is_stream, None);
+            assert_eq!(filter.statuses, None);
+            assert!(!filter.error_only);
+        }
+
+        for (status, expected_stream) in [("stream", true), ("standard", false)] {
+            let filter = parse_users_me_usage_record_filter(Some(
+                format!("limit=20&status={status}").as_str(),
+            ));
+            assert_eq!(filter.is_stream, Some(expected_stream));
+            assert_eq!(filter.is_websocket, Some(false));
+            assert_eq!(filter.statuses, None);
+            assert!(!filter.error_only);
+        }
+    }
 
     fn sample_usage(status: &str) -> StoredRequestUsageAudit {
         StoredRequestUsageAudit::new(
@@ -1721,6 +1821,39 @@ mod tests {
         assert_eq!(active["requested_reasoning_effort"], "xhigh");
         assert_eq!(record["reasoning_effort"], "max");
         assert_eq!(active["reasoning_effort"], "max");
+    }
+
+    #[test]
+    fn user_usage_payloads_expose_websocket_transport() {
+        let item = StoredRequestUsageAudit {
+            request_metadata: Some(json!({
+                "websocket_mode": true,
+                "websocket_transport": "responses",
+                "usage_available": false,
+                "usage_pricing_available": false,
+                "realtime_session": {
+                    "input_audio_tokens": 7,
+                    "output_audio_tokens": 3,
+                },
+            })),
+            ..sample_usage("completed")
+        };
+
+        let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let active = build_users_me_usage_active_payload(&item);
+
+        assert_eq!(record["is_websocket"], true);
+        assert_eq!(active["is_websocket"], true);
+        assert_eq!(record["websocket_transport"], "responses");
+        assert_eq!(active["websocket_transport"], "responses");
+        assert_eq!(record["usage_available"], false);
+        assert_eq!(active["usage_available"], false);
+        assert_eq!(record["usage_pricing_available"], false);
+        assert_eq!(active["usage_pricing_available"], false);
+        assert_eq!(record["input_audio_tokens"], 7);
+        assert_eq!(active["input_audio_tokens"], 7);
+        assert_eq!(record["output_audio_tokens"], 3);
+        assert_eq!(active["output_audio_tokens"], 3);
     }
 
     #[test]

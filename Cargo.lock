@@ -325,6 +325,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bcrypt",
+ "brotli",
  "bytes",
  "chrono",
  "chrono-tz",
@@ -346,6 +347,7 @@ dependencies = [
  "reqwest",
  "rsa",
  "rustls 0.23.37",
+ "semver",
  "serde",
  "serde_json",
  "sha1",
@@ -442,6 +444,7 @@ name = "aether-integration-tests"
 version = "0.1.0"
 dependencies = [
  "aether-contracts",
+ "aether-crypto",
  "aether-data",
  "aether-data-contracts",
  "aether-gateway",
@@ -458,6 +461,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-tungstenite 0.28.0",
+ "uuid",
 ]
 
 [[package]]

@@ -4,14 +4,20 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aether_runtime_state::RuntimeState;
+use aether_contracts::ExecutionPlan;
+use aether_runtime_state::{
+    RuntimeSemaphoreConfig, RuntimeSemaphoreError, RuntimeSemaphorePermit, RuntimeState,
+};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::{AppState, GatewayError};
+
 const PROVIDER_POOL_IN_FLIGHT_TOKENS_PREFIX: &str = "ap:provider_pool:in_flight";
+const PROVIDER_KEY_CONCURRENCY_GATE: &str = "provider_key";
 const PROVIDER_POOL_DEMAND_SNAPSHOT_PREFIX: &str = "ap:provider_pool:demand";
 const PROVIDER_POOL_BURST_PENDING_PREFIX: &str = "ap:quota_probe:burst_pending";
 const PROVIDER_POOL_IN_FLIGHT_TOKEN_TTL_MS: u64 = 120_000;
@@ -42,10 +48,17 @@ pub(crate) struct ProviderPoolDemandSnapshot {
 
 pub(crate) struct ProviderPoolInFlightGuard {
     kind: ProviderPoolInFlightGuardKind,
+    provider_key_permit: Option<RuntimeSemaphorePermit>,
     released: bool,
 }
 
+pub(crate) enum ProviderPoolInFlightAdmission {
+    Acquired(Option<ProviderPoolInFlightGuard>),
+    Saturated { limit: usize },
+}
+
 enum ProviderPoolInFlightGuardKind {
+    Disabled,
     Local {
         provider_id: String,
         counter: Arc<AtomicUsize>,
@@ -68,12 +81,17 @@ impl ProviderPoolInFlightGuard {
         if self.released {
             return;
         }
-        self.released = true;
         match &mut self.kind {
+            ProviderPoolInFlightGuardKind::Disabled => {
+                self.released = true;
+            }
             ProviderPoolInFlightGuardKind::Local {
                 provider_id,
                 counter,
-            } => decrement_local_provider_in_flight(provider_id, counter),
+            } => {
+                self.released = true;
+                decrement_local_provider_in_flight(provider_id, counter);
+            }
             ProviderPoolInFlightGuardKind::Runtime {
                 runtime,
                 tokens_key,
@@ -85,10 +103,26 @@ impl ProviderPoolInFlightGuard {
                 if let Some(handle) = renew_handle.take() {
                     handle.abort();
                 }
-                if let Err(err) = runtime.score_remove(tokens_key, token).await {
+                // Mark the guard released only after Redis confirms removal.
+                // If this future is cancelled, Drop still schedules the same
+                // idempotent cleanup instead of leaving the token until TTL.
+                match runtime.score_remove(tokens_key, token).await {
+                    Ok(_) => self.released = true,
+                    Err(err) => {
+                        debug!(
+                            error = ?err,
+                            "gateway provider pool demand: failed to release in-flight token; scheduling drop fallback"
+                        );
+                    }
+                }
+            }
+        }
+        if self.released {
+            if let Some(provider_key_permit) = self.provider_key_permit.take() {
+                if let Err(err) = provider_key_permit.release().await {
                     debug!(
                         error = ?err,
-                        "gateway provider pool demand: failed to release in-flight token"
+                        "gateway provider pool demand: failed to release provider key permit; scheduling drop fallback"
                     );
                 }
             }
@@ -103,6 +137,7 @@ impl Drop for ProviderPoolInFlightGuard {
         }
         self.released = true;
         match &mut self.kind {
+            ProviderPoolInFlightGuardKind::Disabled => {}
             ProviderPoolInFlightGuardKind::Local {
                 provider_id,
                 counter,
@@ -282,32 +317,83 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard(
     candidate_id: Option<&str>,
     key_id: &str,
 ) -> Option<ProviderPoolInFlightGuard> {
+    acquire_provider_pool_in_flight_guard_with_key_limit(
+        runtime,
+        provider_id,
+        request_id,
+        candidate_id,
+        key_id,
+        None,
+    )
+    .await
+    .ok()
+    .flatten()
+}
+
+pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
+    runtime: Arc<RuntimeState>,
+    provider_id: &str,
+    request_id: &str,
+    candidate_id: Option<&str>,
+    key_id: &str,
+    concurrent_limit: Option<usize>,
+) -> Result<Option<ProviderPoolInFlightGuard>, RuntimeSemaphoreError> {
+    let provider_key_permit = match concurrent_limit.filter(|limit| *limit > 0) {
+        Some(limit) => Some(
+            runtime
+                .keyed_semaphore(
+                    PROVIDER_KEY_CONCURRENCY_GATE,
+                    key_id,
+                    limit,
+                    RuntimeSemaphoreConfig::default(),
+                )?
+                .try_acquire()
+                .await?,
+        ),
+        None => None,
+    };
     let provider_id = provider_id.trim();
     if provider_id.is_empty() {
-        return None;
+        return Ok(
+            provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
+                kind: ProviderPoolInFlightGuardKind::Disabled,
+                provider_key_permit: Some(provider_key_permit),
+                released: false,
+            }),
+        );
     }
 
     match provider_pool_in_flight_mode() {
-        ProviderPoolInFlightMode::Off => return None,
+        ProviderPoolInFlightMode::Off => {
+            return Ok(
+                provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
+                    kind: ProviderPoolInFlightGuardKind::Disabled,
+                    provider_key_permit: Some(provider_key_permit),
+                    released: false,
+                }),
+            );
+        }
         ProviderPoolInFlightMode::Local => {
             let counter = increment_local_provider_in_flight(provider_id);
-            return Some(ProviderPoolInFlightGuard {
+            return Ok(Some(ProviderPoolInFlightGuard {
                 kind: ProviderPoolInFlightGuardKind::Local {
                     provider_id: provider_id.to_string(),
                     counter,
                 },
+                provider_key_permit,
                 released: false,
-            });
+            }));
         }
         ProviderPoolInFlightMode::Runtime if runtime.is_memory() => {
             let counter = increment_local_provider_in_flight(provider_id);
-            return Some(ProviderPoolInFlightGuard {
+            return Ok(Some(ProviderPoolInFlightGuard {
                 kind: ProviderPoolInFlightGuardKind::Local {
                     provider_id: provider_id.to_string(),
                     counter,
                 },
+                provider_key_permit,
                 released: false,
-            });
+            }));
         }
         ProviderPoolInFlightMode::Runtime => {}
     }
@@ -327,7 +413,13 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard(
                 error = ?err,
                 "gateway provider pool demand: failed to acquire in-flight token"
             );
-            return None;
+            return Ok(
+                provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
+                    kind: ProviderPoolInFlightGuardKind::Disabled,
+                    provider_key_permit: Some(provider_key_permit),
+                    released: false,
+                }),
+            );
         }
         Err(_) => {
             debug!(
@@ -335,7 +427,13 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard(
                 timeout_ms = provider_pool_in_flight_acquire_timeout().as_millis() as u64,
                 "gateway provider pool demand: skipped in-flight token after acquire timeout"
             );
-            return None;
+            return Ok(
+                provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
+                    kind: ProviderPoolInFlightGuardKind::Disabled,
+                    provider_key_permit: Some(provider_key_permit),
+                    released: false,
+                }),
+            );
         }
     }
 
@@ -347,7 +445,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard(
         stop_renewal.clone(),
     );
 
-    Some(ProviderPoolInFlightGuard {
+    Ok(Some(ProviderPoolInFlightGuard {
         kind: ProviderPoolInFlightGuardKind::Runtime {
             runtime,
             tokens_key,
@@ -355,8 +453,39 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard(
             stop_renewal,
             renew_handle: Some(renew_handle),
         },
+        provider_key_permit,
         released: false,
-    })
+    }))
+}
+
+pub(crate) async fn acquire_provider_pool_execution_guard(
+    state: &AppState,
+    plan: &ExecutionPlan,
+) -> Result<ProviderPoolInFlightAdmission, GatewayError> {
+    let concurrent_limit = state
+        .read_provider_catalog_keys_by_ids(std::slice::from_ref(&plan.key_id))
+        .await?
+        .into_iter()
+        .find(|key| key.id == plan.key_id)
+        .and_then(|key| key.concurrent_limit)
+        .filter(|limit| *limit > 0)
+        .and_then(|limit| usize::try_from(limit).ok());
+    match acquire_provider_pool_in_flight_guard_with_key_limit(
+        state.runtime_state.clone(),
+        &plan.provider_id,
+        &plan.request_id,
+        plan.candidate_id.as_deref(),
+        &plan.key_id,
+        concurrent_limit,
+    )
+    .await
+    {
+        Ok(guard) => Ok(ProviderPoolInFlightAdmission::Acquired(guard)),
+        Err(RuntimeSemaphoreError::Saturated { limit, .. }) => {
+            Ok(ProviderPoolInFlightAdmission::Saturated { limit })
+        }
+        Err(error) => Err(GatewayError::Internal(error.to_string())),
+    }
 }
 
 pub(crate) async fn provider_pool_live_in_flight_count(
@@ -576,6 +705,50 @@ mod tests {
             provider_pool_live_in_flight_count(runtime.as_ref(), provider_id).await,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn provider_key_limit_rejects_concurrent_guard_until_release() {
+        let runtime = Arc::new(RuntimeState::memory(MemoryRuntimeStateConfig::default()));
+        let first = acquire_provider_pool_in_flight_guard_with_key_limit(
+            runtime.clone(),
+            "provider-limit",
+            "request-1",
+            Some("candidate-1"),
+            "key-limit",
+            Some(1),
+        )
+        .await
+        .expect("first admission should resolve")
+        .expect("first guard should be acquired");
+
+        let second = acquire_provider_pool_in_flight_guard_with_key_limit(
+            runtime.clone(),
+            "provider-limit",
+            "request-2",
+            Some("candidate-2"),
+            "key-limit",
+            Some(1),
+        )
+        .await;
+        assert!(matches!(
+            second,
+            Err(RuntimeSemaphoreError::Saturated { limit: 1, .. })
+        ));
+
+        first.release().await;
+        let replacement = acquire_provider_pool_in_flight_guard_with_key_limit(
+            runtime,
+            "provider-limit",
+            "request-3",
+            Some("candidate-3"),
+            "key-limit",
+            Some(1),
+        )
+        .await
+        .expect("replacement admission should resolve")
+        .expect("replacement guard should acquire after release");
+        drop(replacement);
     }
 
     #[tokio::test]

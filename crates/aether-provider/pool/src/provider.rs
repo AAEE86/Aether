@@ -16,6 +16,7 @@ pub struct ProviderPoolMemberInput<'a> {
     pub provider_type: &'a str,
     pub key: &'a StoredProviderCatalogKey,
     pub auth_config: Option<&'a Map<String, Value>>,
+    pub provider_model_name: Option<&'a str>,
 }
 
 pub trait ProviderPoolAdapter: Send + Sync {
@@ -64,6 +65,7 @@ pub trait ProviderPoolAdapter: Send + Sync {
             quota_reset_seconds: provider_pool_quota_reset_seconds(input.key),
             account_blocked: provider_pool_account_blocked(input.key),
             quota_exhausted: self.quota_exhausted(input),
+            quota_hard_blocked: self.quota_hard_blocked(input),
             ..PoolMemberSignals::default()
         }
     }
@@ -71,6 +73,10 @@ pub trait ProviderPoolAdapter: Send + Sync {
     fn quota_exhausted(&self, input: &ProviderPoolMemberInput<'_>) -> bool {
         provider_pool_quota_snapshot_exhausted_decision(input.key, input.provider_type)
             .unwrap_or(false)
+    }
+
+    fn quota_hard_blocked(&self, _input: &ProviderPoolMemberInput<'_>) -> bool {
+        false
     }
 }
 

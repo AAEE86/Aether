@@ -443,7 +443,18 @@ fn provider_quota_metadata_bucket<'a>(
 fn provider_quota_timestamp_unix_secs(value: Option<&Value>) -> Option<u64> {
     let mut parsed = match value {
         Some(Value::Number(number)) => number.as_f64(),
-        Some(Value::String(text)) => text.trim().parse::<f64>().ok(),
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            if let Ok(timestamp) = text.parse::<f64>() {
+                Some(timestamp)
+            } else {
+                return chrono::DateTime::parse_from_rfc3339(text)
+                    .ok()?
+                    .timestamp()
+                    .try_into()
+                    .ok();
+            }
+        }
         _ => None,
     }?;
     if !parsed.is_finite() || parsed <= 0.0 {
@@ -560,7 +571,10 @@ fn model_quota_window_snapshot(
         .map(|value| value.clamp(0.0, 1.0))
         .or_else(|| used_ratio.map(|value| (1.0 - value).max(0.0)));
     let reset_at = provider_quota_timestamp_unix_secs(
-        item.get("reset_at").or_else(|| item.get("next_reset_at")),
+        item.get("reset_at")
+            .or_else(|| item.get("next_reset_at"))
+            .or_else(|| item.get("reset_time"))
+            .or_else(|| item.get("next_reset_time")),
     );
     let reset_seconds = quota_window_reset_seconds(observed_at_unix_secs, reset_at);
     let is_exhausted = item
@@ -967,6 +981,12 @@ fn build_codex_quota_status_snapshot(
     let credits_unlimited = metadata
         .get("credits_unlimited")
         .and_then(admin_provider_quota_pure::coerce_json_bool);
+    let allowed = metadata
+        .get("allowed")
+        .and_then(admin_provider_quota_pure::coerce_json_bool);
+    let limit_reached = metadata
+        .get("limit_reached")
+        .and_then(admin_provider_quota_pure::coerce_json_bool);
     let reset_credits = build_codex_reset_credits_status_snapshot(metadata, observed_at_unix_secs);
 
     let windows = [
@@ -996,6 +1016,8 @@ fn build_codex_quota_status_snapshot(
         && credits_has_credits.is_none()
         && credits_balance.is_none()
         && credits_unlimited.is_none()
+        && allowed.is_none()
+        && limit_reached.is_none()
         && reset_credits.is_none()
         && observed_at_unix_secs.is_none()
     {
@@ -1031,11 +1053,19 @@ fn build_codex_quota_status_snapshot(
         .filter_map(admin_provider_quota_pure::coerce_json_u64)
         .min();
     let reset_at = quota_windows_min_reset_at(&primary_windows);
-    let exhausted_by_credits = primary_windows.is_empty()
+    let explicitly_blocked = allowed == Some(false) || limit_reached == Some(true);
+    let explicitly_available =
+        !explicitly_blocked && (allowed == Some(true) || limit_reached == Some(false));
+    let exhausted_by_credits = !explicitly_available
+        && primary_windows.is_empty()
         && credits_unlimited != Some(true)
         && credits_has_credits == Some(false);
-    let exhausted_by_window = usage_ratio.is_some_and(|value| value >= 1.0 - 1e-6);
-    let exhausted = exhausted_by_credits || exhausted_by_window;
+    let exhausted_by_window =
+        !explicitly_available && usage_ratio.is_some_and(|value| value >= 1.0 - 1e-6);
+    let exhausted_by_signal = admin_provider_quota_pure::codex_rate_limit_metadata_exhausted(
+        &Value::Object(metadata.clone()),
+    );
+    let exhausted = exhausted_by_signal || exhausted_by_credits || exhausted_by_window;
 
     let mut credits = Map::new();
     if let Some(value) = credits_has_credits {
@@ -1048,7 +1078,9 @@ fn build_codex_quota_status_snapshot(
         credits.insert("unlimited".to_string(), json!(value));
     }
 
-    let reason = if exhausted_by_credits {
+    let reason = if exhausted_by_signal {
+        Some("上游已拒绝继续使用该账号")
+    } else if exhausted_by_credits {
         Some("无可用积分")
     } else if exhausted_by_window {
         Some("额度窗口已耗尽")
@@ -1071,6 +1103,8 @@ fn build_codex_quota_status_snapshot(
         "reset_at": reset_at,
         "reset_seconds": reset_seconds,
         "plan_type": plan_type,
+        "allowed": allowed,
+        "limit_reached": limit_reached,
         "credits": if credits.is_empty() {
             Value::Null
         } else {
@@ -3834,6 +3868,28 @@ mod tests {
     }
 
     #[test]
+    fn sync_provider_key_quota_status_snapshot_honors_codex_limit_signal() {
+        let payload = sync_provider_key_quota_status_snapshot(
+            None,
+            "codex",
+            Some(&json!({
+                "codex": {
+                    "updated_at": 1_775_800_000u64,
+                    "allowed": false,
+                    "limit_reached": true
+                }
+            })),
+            "websocket_response_body",
+        )
+        .expect("explicit Codex limit signal should build a quota snapshot");
+
+        assert_eq!(payload.pointer("/quota/code"), Some(&json!("exhausted")));
+        assert_eq!(payload.pointer("/quota/exhausted"), Some(&json!(true)));
+        assert_eq!(payload.pointer("/quota/allowed"), Some(&json!(false)));
+        assert_eq!(payload.pointer("/quota/limit_reached"), Some(&json!(true)));
+    }
+
+    #[test]
     fn sync_provider_key_quota_status_snapshot_drops_codex_usage_state_when_window_resets() {
         let current_status_snapshot = json!({
             "quota": {
@@ -4041,7 +4097,8 @@ mod tests {
                     },
                     "claude-sonnet-4-6": {
                         "display_name": "Claude Sonnet 4.6 (Thinking)",
-                        "remaining_fraction": 0.3
+                        "remaining_fraction": 0.3,
+                        "reset_time": "2026-04-07T12:34:56Z"
                     }
                 }
             }
@@ -4086,6 +4143,16 @@ mod tests {
             label_for_model("claude-sonnet-4-6"),
             Some(json!("Claude Sonnet 4.6 (Thinking)"))
         );
+        let claude_window = windows
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|window| window.get("model") == Some(&json!("claude-sonnet-4-6")))
+            .expect("Claude quota window should exist");
+        assert_eq!(
+            claude_window.get("reset_at"),
+            Some(&json!(1_775_565_296u64))
+        );
+        assert_eq!(claude_window.get("reset_seconds"), Some(&json!(12_011u64)));
     }
 
     #[test]

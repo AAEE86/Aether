@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use aether_ai_serving::{AiAttemptExecutionOutcome, AiAttemptRetryScope, UPSTREAM_IS_STREAM_KEY};
 use aether_contracts::{
-    ExecutionError, ExecutionErrorKind, ExecutionPhase, ExecutionPlan, ExecutionResult,
-    ExecutionTelemetry,
+    ExecutionError, ExecutionErrorKind, ExecutionPhase, ExecutionPlan,
+    ExecutionResponseObservation, ExecutionResult, ExecutionTelemetry,
 };
 use aether_data_contracts::repository::candidates::RequestCandidateStatus;
 use aether_scheduler_core::{
@@ -34,6 +34,7 @@ use crate::ai_serving::api::{
     implicit_sync_finalize_report_kind, maybe_build_sync_finalize_outcome, LocalCoreSyncErrorKind,
     LocalCoreSyncFinalizeOutcome,
 };
+use crate::ai_serving::record_local_runtime_candidate_skip_reason;
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
     build_client_response_from_parts_with_mutator,
@@ -55,8 +56,9 @@ use crate::execution_runtime::submission::{
     resolve_local_sync_error_status_code, submit_local_core_error_or_sync_finalize,
 };
 use crate::execution_runtime::transport::{
-    append_upstream_response_body_chunk, build_execution_response_body, build_request_body,
-    collect_response_headers, decode_response_body_bytes, execution_response_body_mode,
+    append_upstream_response_body_chunk_with_limit, build_execution_response_body,
+    build_request_body, collect_response_headers, decode_response_body_bytes_with_limit,
+    execution_plan_response_body_limit_bytes, execution_response_body_mode,
     format_hyper_error_chain, format_upstream_request_error, format_wreq_upstream_request_error,
     response_body_is_json, send_request, DirectHttpResponse, DirectSyncExecutionRuntime,
     ExecutionRuntimeTransportError,
@@ -70,13 +72,16 @@ use crate::execution_runtime::{
 };
 use crate::log_ids::short_request_id;
 use crate::orchestration::{
-    apply_local_execution_effect, build_local_error_flow_metadata, trace_upstream_response_body,
-    with_error_flow_report_context, with_upstream_response_report_context,
-    LocalAdaptiveRateLimitEffect, LocalAdaptiveSuccessEffect, LocalAttemptFailureEffect,
-    LocalExecutionEffect, LocalExecutionEffectContext, LocalHealthFailureEffect,
-    LocalHealthSuccessEffect, LocalOAuthInvalidationEffect, LocalPoolErrorEffect,
+    apply_local_execution_effect, build_local_error_flow_metadata,
+    spawn_local_oauth_success_effect, trace_upstream_response_body, with_error_flow_report_context,
+    with_upstream_response_report_context, LocalAdaptiveRateLimitEffect,
+    LocalAdaptiveSuccessEffect, LocalAttemptFailureEffect, LocalExecutionEffect,
+    LocalExecutionEffectContext, LocalHealthFailureEffect, LocalHealthSuccessEffect,
+    LocalOAuthInvalidationEffect, LocalOAuthSuccessEffect, LocalPoolErrorEffect,
 };
-use crate::provider_pool_demand::acquire_provider_pool_in_flight_guard;
+use crate::provider_pool_demand::{
+    acquire_provider_pool_execution_guard, ProviderPoolInFlightAdmission,
+};
 use crate::request_candidate_runtime::{
     ensure_execution_request_candidate_slot, record_local_request_candidate_extra_data,
     record_local_request_candidate_status, record_local_request_candidate_status_snapshot,
@@ -1379,7 +1384,19 @@ async fn execute_direct_sync_runtime_candidate(
                     candidate_started_unix_ms,
                     event.status_code,
                     event.ttfb_ms,
-                )
+                );
+                spawn_local_oauth_success_effect(
+                    state_for_response_started.clone(),
+                    plan,
+                    report_context,
+                    LocalOAuthSuccessEffect {
+                        status_code: event.status_code,
+                        request_started_at_unix_ms: Some(
+                            event.response_observation.request_started_at_unix_ms,
+                        ),
+                        request_order_id: Some(&event.response_observation.request_order_id),
+                    },
+                );
             })
             .await
             .map_err(SyncExecutionFailure::from_transport);
@@ -1478,17 +1495,31 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
     progress_snapshot: Option<Arc<Mutex<OpenAiImageSyncProgressSnapshot>>>,
 ) -> Result<ExecutionResult, SyncExecutionFailure> {
     let request_body = build_request_body(plan).map_err(SyncExecutionFailure::from_transport)?;
+    let response_body_limit_bytes = execution_plan_response_body_limit_bytes(plan);
     let started_at = Instant::now();
     let mut progress =
         OpenAiImageSyncProgressRecorder::new(state, plan, report_context, progress_snapshot);
     progress.record_connecting().await;
 
+    let request_started_at_unix_ms = current_request_candidate_unix_ms();
+    let request_order_id = uuid::Uuid::now_v7().to_string();
     let response = send_request(plan, request_body)
         .await
         .map_err(SyncExecutionFailure::from_transport)?;
     let ttfb_ms = started_at.elapsed().as_millis() as u64;
+    let response_headers_observed_at_unix_ms = current_request_candidate_unix_ms();
     let status_code = response.status_code();
     let headers = response.headers();
+    spawn_local_oauth_success_effect(
+        state.clone(),
+        plan,
+        report_context,
+        LocalOAuthSuccessEffect {
+            status_code,
+            request_started_at_unix_ms: Some(request_started_at_unix_ms),
+            request_order_id: Some(&request_order_id),
+        },
+    );
     progress.record_response_started(status_code, ttfb_ms).await;
 
     let mut body_bytes = Vec::new();
@@ -1503,8 +1534,12 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
                         ),
                     )
                 })?;
-                append_upstream_response_body_chunk(&mut body_bytes, &chunk)
-                    .map_err(SyncExecutionFailure::from_transport)?;
+                append_upstream_response_body_chunk_with_limit(
+                    &mut body_bytes,
+                    &chunk,
+                    response_body_limit_bytes,
+                )
+                .map_err(SyncExecutionFailure::from_transport)?;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 progress
                     .observe_chunk(&chunk, status_code, elapsed_ms)
@@ -1521,8 +1556,12 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
                         )),
                     )
                 })?;
-                append_upstream_response_body_chunk(&mut body_bytes, &chunk)
-                    .map_err(SyncExecutionFailure::from_transport)?;
+                append_upstream_response_body_chunk_with_limit(
+                    &mut body_bytes,
+                    &chunk,
+                    response_body_limit_bytes,
+                )
+                .map_err(SyncExecutionFailure::from_transport)?;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 progress
                     .observe_chunk(&chunk, status_code, elapsed_ms)
@@ -1539,8 +1578,12 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
                         ),
                     )
                 })?;
-                append_upstream_response_body_chunk(&mut body_bytes, &chunk)
-                    .map_err(SyncExecutionFailure::from_transport)?;
+                append_upstream_response_body_chunk_with_limit(
+                    &mut body_bytes,
+                    &chunk,
+                    response_body_limit_bytes,
+                )
+                .map_err(SyncExecutionFailure::from_transport)?;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 progress
                     .observe_chunk(&chunk, status_code, elapsed_ms)
@@ -1549,8 +1592,9 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
         }
     }
 
-    let decoded_body_bytes = decode_response_body_bytes(&headers, &body_bytes)
-        .map_err(SyncExecutionFailure::from_transport)?;
+    let decoded_body_bytes =
+        decode_response_body_bytes_with_limit(&headers, &body_bytes, response_body_limit_bytes)
+            .map_err(SyncExecutionFailure::from_transport)?;
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     let upstream_bytes = body_bytes.len() as u64;
     progress.finish(status_code, elapsed_ms).await;
@@ -1569,6 +1613,11 @@ async fn execute_openai_image_sync_upstream_sse_candidate(
         candidate_id: plan.candidate_id.clone(),
         status_code,
         headers,
+        response_observation: Some(ExecutionResponseObservation {
+            request_started_at_unix_ms,
+            response_headers_observed_at_unix_ms,
+            request_order_id,
+        }),
         body,
         telemetry: Some(ExecutionTelemetry {
             ttfb_ms: Some(ttfb_ms),
@@ -1949,6 +1998,37 @@ async fn execute_execution_runtime_sync_impl(
         .unwrap_or_else(|| "-".to_string());
     let candidate_started_at = Instant::now();
     let candidate_started_unix_secs = current_request_candidate_unix_ms();
+    let _provider_pool_in_flight_guard = match acquire_provider_pool_execution_guard(state, &plan)
+        .await?
+    {
+        ProviderPoolInFlightAdmission::Acquired(guard) => guard,
+        ProviderPoolInFlightAdmission::Saturated { limit } => {
+            record_local_runtime_candidate_skip_reason(
+                state,
+                trace_id,
+                "provider_key_concurrency_limit_reached",
+            );
+            if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
+                *retry_scope = AiAttemptRetryScope::Candidate;
+            }
+            record_local_request_candidate_status(
+                state,
+                &plan,
+                report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Skipped,
+                    status_code: Some(StatusCode::TOO_MANY_REQUESTS.as_u16()),
+                    error_type: Some("provider_key_concurrency_limit_reached".to_string()),
+                    error_message: Some(format!("provider key concurrency limit reached: {limit}")),
+                    latency_ms: Some(0),
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
+                    finished_at_unix_ms: Some(candidate_started_unix_secs),
+                },
+            )
+            .await;
+            return Ok(None);
+        }
+    };
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
     let usage_data = state.usage_lifecycle_data_state().as_ref().clone();
     state
@@ -1978,14 +2058,6 @@ async fn execute_execution_runtime_sync_impl(
         candidate_started_at,
     );
     let result = (async {
-    let _provider_pool_in_flight_guard = acquire_provider_pool_in_flight_guard(
-        state.runtime_state.clone(),
-        &plan.provider_id,
-        plan_request_id.as_str(),
-        plan_candidate_id.as_deref(),
-        key_id.as_str(),
-    )
-    .await;
     record_sync_execution_active(
         state,
         &plan,
@@ -2461,6 +2533,16 @@ async fn execute_execution_runtime_sync_impl(
     };
     let mut candidate_first_byte_elapsed_ms =
         calibrated_sync_candidate_first_byte_elapsed_ms(candidate_started_at, &result);
+    let initial_response_observed_at_unix_ms = current_request_candidate_unix_ms();
+    let mut provider_response_observation =
+        result
+            .response_observation
+            .clone()
+            .unwrap_or(ExecutionResponseObservation {
+                request_started_at_unix_ms: candidate_started_unix_secs,
+                response_headers_observed_at_unix_ms: initial_response_observed_at_unix_ms,
+                request_order_id: uuid::Uuid::now_v7().to_string(),
+            });
     let mut oauth_retry_attempted = false;
     let (
         result_error_type,
@@ -2473,6 +2555,18 @@ async fn execute_execution_runtime_sync_impl(
         local_failover_response_text,
         local_failover_analysis,
     ) = loop {
+        spawn_local_oauth_success_effect(
+            state.clone(),
+            &plan,
+            report_context.as_ref(),
+            LocalOAuthSuccessEffect {
+                status_code: result.status_code,
+                request_started_at_unix_ms: Some(
+                    provider_response_observation.request_started_at_unix_ms,
+                ),
+                request_order_id: Some(&provider_response_observation.request_order_id),
+            },
+        );
         let result_latency_ms = result
             .telemetry
             .as_ref()
@@ -2534,10 +2628,15 @@ async fn execute_execution_runtime_sync_impl(
                 result.status_code,
                 local_failover_response_text.as_deref(),
                 trace_id,
+                report_context.as_ref(),
+                Some(provider_response_observation.request_started_at_unix_ms),
+                Some(&provider_response_observation.request_order_id),
             )
             .await
         {
             oauth_retry_attempted = true;
+            let retry_started_at_unix_ms = current_request_candidate_unix_ms();
+            let retry_request_order_id = uuid::Uuid::now_v7().to_string();
             match crate::execution_runtime::execute_execution_runtime_sync_plan(
                 state,
                 Some(trace_id),
@@ -2546,6 +2645,16 @@ async fn execute_execution_runtime_sync_impl(
             .await
             {
                 Ok(retry_result) => {
+                    let retry_response_observed_at_unix_ms = current_request_candidate_unix_ms();
+                    provider_response_observation = retry_result
+                        .response_observation
+                        .clone()
+                        .unwrap_or(ExecutionResponseObservation {
+                            request_started_at_unix_ms: retry_started_at_unix_ms,
+                            response_headers_observed_at_unix_ms:
+                                retry_response_observed_at_unix_ms,
+                            request_order_id: retry_request_order_id,
+                        });
                     candidate_first_byte_elapsed_ms =
                         calibrated_sync_candidate_first_byte_elapsed_ms(
                             candidate_started_at,
@@ -2594,6 +2703,13 @@ async fn execute_execution_runtime_sync_impl(
             local_failover_analysis,
         );
     };
+    let mut report_context = attach_provider_response_headers_to_report_context(
+        report_context,
+        &headers,
+        provider_response_observation.request_started_at_unix_ms,
+        provider_response_observation.response_headers_observed_at_unix_ms,
+        &provider_response_observation.request_order_id,
+    );
     if result.status_code >= 400 {
         apply_local_execution_effect(
             state,
@@ -2739,8 +2855,6 @@ async fn execute_execution_runtime_sync_impl(
     }
     let status_code = result.status_code;
     let has_body_bytes = body_base64.is_some();
-    let mut report_context =
-        attach_provider_response_headers_to_report_context(report_context, &headers);
     if (200..300).contains(&status_code) {
         seed_kiro_sync_simulated_cache_enabled(state, &plan, &mut report_context).await;
         if kiro_simulated_cache_enabled_from_report_context(report_context.as_ref()) {
@@ -3191,7 +3305,14 @@ fn maybe_build_implicit_sync_finalize_outcome(
     body_base64: &Option<String>,
     telemetry: &Option<ExecutionTelemetry>,
 ) -> Result<Option<ImplicitSyncFinalizeOutcome>, GatewayError> {
-    if status_code >= 400 || body_json.is_some() || body_base64.is_none() {
+    let needs_conversion = report_context
+        .as_ref()
+        .and_then(|value| value.get("needs_conversion"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let has_captured_stream_body = body_json.is_none() && body_base64.is_some();
+    let has_cross_format_sync_body = needs_conversion && body_json.is_some();
+    if status_code >= 400 || (!has_captured_stream_body && !has_cross_format_sync_body) {
         return Ok(None);
     }
 
@@ -3231,6 +3352,8 @@ async fn execute_sync_via_remote_execution_runtime(
     candidate_started_unix_secs: u64,
     candidate_started_at: Instant,
 ) -> Result<RemoteSyncFallbackOutcome, GatewayError> {
+    let remote_request_started_at_unix_ms = current_request_candidate_unix_ms();
+    let remote_request_order_id = uuid::Uuid::now_v7().to_string();
     let response = match post_sync_plan_to_remote_execution_runtime(
         state,
         remote_execution_runtime_base_url,
@@ -3299,11 +3422,19 @@ async fn execute_sync_via_remote_execution_runtime(
         ));
     }
 
-    response
-        .json()
+    let remote_response_observed_at_unix_ms = current_request_candidate_unix_ms();
+    let mut result = response
+        .json::<ExecutionResult>()
         .await
-        .map(RemoteSyncFallbackOutcome::Executed)
-        .map_err(|err| GatewayError::Internal(err.to_string()))
+        .map_err(|err| GatewayError::Internal(err.to_string()))?;
+    result
+        .response_observation
+        .get_or_insert(ExecutionResponseObservation {
+            request_started_at_unix_ms: remote_request_started_at_unix_ms,
+            response_headers_observed_at_unix_ms: remote_response_observed_at_unix_ms,
+            request_order_id: remote_request_order_id,
+        });
+    Ok(RemoteSyncFallbackOutcome::Executed(result))
 }
 
 #[cfg(test)]
@@ -3361,6 +3492,137 @@ mod tests {
             Some("openai:chat".to_string()),
         )
         .with_execution_runtime_candidate(true)
+    }
+
+    #[tokio::test]
+    async fn implicit_sync_finalize_converts_chat_json_to_namespaced_responses() {
+        let decision = GatewayControlDecision::synthetic(
+            "/v1/responses",
+            Some("ai_public".to_string()),
+            Some("openai".to_string()),
+            Some("responses".to_string()),
+            Some("openai:responses".to_string()),
+        )
+        .with_execution_runtime_candidate(true);
+        let report_context = Some(json!({
+            "provider_api_format": "openai:chat",
+            "client_api_format": "openai:responses",
+            "needs_conversion": true,
+            "mapped_model": "qwen-upstream",
+            "original_request_body": {
+                "model": "qwen",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__vulnerability_report",
+                    "description": "reporting tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "vulnerability_report",
+                        "description": "write the confirmed report",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "report_path": {"type": "string"}
+                            },
+                            "required": ["report_path"]
+                        },
+                        "strict": true
+                    }]
+                }]
+            }
+        }));
+        let provider_body = Some(json!({
+            "id": "chatcmpl_namespace_sync",
+            "object": "chat.completion",
+            "created": 1_777_777_777,
+            "model": "qwen-upstream",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_report_1",
+                        "type": "function",
+                        "function": {
+                            "name": "vulnerability_report",
+                            "arguments": "{\"report_path\":\"reports/sql-001-c1.md\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14
+            }
+        }));
+
+        let implicit = maybe_build_implicit_sync_finalize_outcome(
+            "trace-namespace-sync",
+            &decision,
+            "openai_responses_sync",
+            &report_context,
+            StatusCode::OK.as_u16(),
+            &BTreeMap::from([("content-type".to_string(), "application/json".to_string())]),
+            &provider_body,
+            &None,
+            &None,
+        )
+        .expect("cross-format sync JSON finalize should not error")
+        .expect("cross-format sync JSON should be finalized");
+        let response_body = axum::body::to_bytes(implicit.outcome.response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let response_json: Value =
+            serde_json::from_slice(&response_body).expect("response body should be JSON");
+
+        assert_eq!(response_json["object"], "response");
+        assert!(response_json.get("choices").is_none());
+        assert_eq!(response_json["output"][0]["type"], "function_call");
+        assert_eq!(response_json["output"][0]["name"], "vulnerability_report");
+        assert_eq!(
+            response_json["output"][0]["namespace"],
+            "mcp__vulnerability_report"
+        );
+        assert_eq!(response_json["output"][0]["call_id"], "call_report_1");
+    }
+
+    #[test]
+    fn implicit_sync_finalize_leaves_same_format_json_on_passthrough_path() {
+        let report_context = Some(json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "needs_conversion": false
+        }));
+        let body_json = Some(json!({
+            "id": "resp_same_format",
+            "object": "response",
+            "status": "completed",
+            "output": []
+        }));
+
+        let outcome = maybe_build_implicit_sync_finalize_outcome(
+            "trace-same-format-sync",
+            &GatewayControlDecision::synthetic(
+                "/v1/responses",
+                Some("ai_public".to_string()),
+                Some("openai".to_string()),
+                Some("responses".to_string()),
+                Some("openai:responses".to_string()),
+            ),
+            "openai_responses_sync",
+            &report_context,
+            StatusCode::OK.as_u16(),
+            &BTreeMap::new(),
+            &body_json,
+            &None,
+            &None,
+        )
+        .expect("same-format sync JSON guard should not error");
+
+        assert!(outcome.is_none());
     }
 
     #[tokio::test]

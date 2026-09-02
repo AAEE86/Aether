@@ -105,6 +105,7 @@ async fn schedule_pool_page_candidates(
     candidates: Vec<EligibleLocalExecutionCandidate>,
     sticky_session_token: Option<&str>,
     effective_pool_config: Option<&AdminProviderPoolConfig>,
+    provider_model_name: Option<&str>,
 ) -> (
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
@@ -128,7 +129,8 @@ async fn schedule_pool_page_candidates(
         entry.1.insert(candidate.candidate.key_id.clone());
     }
 
-    let key_context_by_id = read_pool_catalog_key_contexts_by_id(state, &candidates).await;
+    let key_context_by_id =
+        read_pool_catalog_key_contexts_by_id(state, &candidates, provider_model_name).await;
 
     let mut runtime_by_provider = BTreeMap::new();
     let mut pool_config_by_provider = BTreeMap::new();
@@ -596,11 +598,17 @@ impl<'a> PoolKeyCursor<'a> {
             return;
         };
         self.exhaustion_skip_recorded = true;
-        record_local_runtime_candidate_skip_reason(
-            self.state.app(),
-            trace_id,
-            self.runtime_miss_pool_exhaustion_skip_reason(),
-        );
+        if self.skip_reason_counts.is_empty() {
+            record_local_runtime_candidate_skip_reason(
+                self.state.app(),
+                trace_id,
+                "pool_group_exhausted",
+            );
+            return;
+        }
+        for reason in self.skip_reason_counts.keys() {
+            record_local_runtime_candidate_skip_reason(self.state.app(), trace_id, reason);
+        }
     }
 
     fn runtime_miss_pool_exhaustion_skip_reason(&self) -> &'static str {
@@ -746,19 +754,28 @@ impl<'a> PoolKeyCursor<'a> {
                         return None;
                     }
                 };
+                let api_format = self.group.candidate.endpoint_api_format.as_str();
                 rows.sort_by(|left, right| {
-                    let left_priority = self
-                        .routing_overlay
-                        .as_ref()
-                        .map_or(left.key_internal_priority, |overlay| {
-                            overlay.key_priority(&left.key_id, left.key_internal_priority)
-                        });
-                    let right_priority = self
-                        .routing_overlay
-                        .as_ref()
-                        .map_or(right.key_internal_priority, |overlay| {
-                            overlay.key_priority(&right.key_id, right.key_internal_priority)
-                        });
+                    let left_priority = self.routing_overlay.as_ref().map_or(
+                        left.key_internal_priority,
+                        |overlay| {
+                            overlay.key_priority_for_format(
+                                &left.key_id,
+                                api_format,
+                                left.key_internal_priority,
+                            )
+                        },
+                    );
+                    let right_priority = self.routing_overlay.as_ref().map_or(
+                        right.key_internal_priority,
+                        |overlay| {
+                            overlay.key_priority_for_format(
+                                &right.key_id,
+                                api_format,
+                                right.key_internal_priority,
+                            )
+                        },
+                    );
                     left_priority
                         .cmp(&right_priority)
                         .then(left.key_id.cmp(&right.key_id))
@@ -1034,6 +1051,7 @@ impl<'a> PoolKeyCursor<'a> {
                 candidates,
                 self.sticky_session_token.as_deref(),
                 self.effective_pool_config.as_ref(),
+                Some(self.group.candidate.selected_provider_model_name.as_str()),
             )
             .await;
             self.record_skipped_candidates(&skipped);
@@ -1406,6 +1424,7 @@ fn pool_candidate_from_catalog_key(
 async fn read_pool_catalog_key_contexts_by_id(
     state: PlannerAppState<'_>,
     candidates: &[EligibleLocalExecutionCandidate],
+    provider_model_name: Option<&str>,
 ) -> BTreeMap<String, PoolCatalogKeyContext> {
     let mut key_ids = Vec::new();
     let mut provider_type_by_key_id = BTreeMap::<String, String>::new();
@@ -1451,7 +1470,13 @@ async fn read_pool_catalog_key_contexts_by_id(
                 .unwrap_or_default();
             (
                 key.id.clone(),
-                build_pool_catalog_key_context(state, &provider_pool_service, &key, provider_type),
+                build_pool_catalog_key_context(
+                    state,
+                    &provider_pool_service,
+                    &key,
+                    provider_type,
+                    provider_model_name,
+                ),
             )
         })
         .collect()
@@ -1462,6 +1487,7 @@ fn build_pool_catalog_key_context(
     provider_pool_service: &ProviderPoolService,
     key: &StoredProviderCatalogKey,
     provider_type: &str,
+    provider_model_name: Option<&str>,
 ) -> PoolCatalogKeyContext {
     let (health_score, _, _, _, _) = provider_key_health_summary(key);
     let health_score = key
@@ -1480,8 +1506,12 @@ fn build_pool_catalog_key_context(
         .filter(|value| value.is_finite() && *value >= 0.0);
 
     let auth_config = parse_catalog_auth_config_json(state.app(), key);
-    let mut signals =
-        provider_pool_service.member_signals(provider_type, key, auth_config.as_ref());
+    let mut signals = provider_pool_service.member_signals(
+        provider_type,
+        key,
+        auth_config.as_ref(),
+        provider_model_name,
+    );
     signals.account_blocked |= admin_provider_pool_pure::admin_pool_key_is_known_banned(key);
     signals.account_blocked |=
         pool_key_requires_reauth_for_scheduling(key, current_unix_ms().saturating_div(1000));
@@ -1826,17 +1856,17 @@ fn pool_key_candidate_order_for_group(
         })
         .collect::<Vec<_>>();
     let active_presets = ProviderPoolService::with_builtin_adapters()
-        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets)
-        .into_iter()
-        .map(|preset| preset.preset)
-        .collect::<Vec<_>>();
+        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets);
     if let Some(distribution_mode) = active_presets
         .iter()
-        .find(|preset| pool_distribution_mode_preset(preset.as_str()))
-        .map(String::as_str)
+        .find(|preset| pool_distribution_mode_preset(preset.preset.as_str()))
     {
-        return match distribution_mode {
-            "cache_affinity" => StoredPoolKeyCandidateOrder::CacheAffinity,
+        return match distribution_mode.preset.as_str() {
+            "cache_affinity" => match distribution_mode.mode.as_deref() {
+                Some("lru") => StoredPoolKeyCandidateOrder::Lru,
+                Some("single_account") => StoredPoolKeyCandidateOrder::SingleAccount,
+                _ => StoredPoolKeyCandidateOrder::CacheAffinity,
+            },
             "load_balance" => StoredPoolKeyCandidateOrder::LoadBalance {
                 seed: pool_sort_seed(),
             },
@@ -1921,11 +1951,13 @@ fn apply_pool_orchestration(
     orchestration: PoolCandidateOrchestration,
 ) -> EligibleLocalExecutionCandidate {
     let scheduler_affinity_epoch = candidate.orchestration.scheduler_affinity_epoch;
+    let sticky_key_attempts = candidate.orchestration.sticky_key_attempts;
     candidate.orchestration = LocalExecutionCandidateMetadata {
         candidate_group_id: orchestration.candidate_group_id,
         pool_key_index: orchestration.pool_key_index,
         pool_key_lease: None,
         scheduler_affinity_epoch,
+        sticky_key_attempts,
     };
     candidate
 }
@@ -2129,6 +2161,7 @@ mod tests {
                 pool_key_index: Some(0),
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                sticky_key_attempts: None,
             }
         );
         assert_eq!(reordered[1].orchestration.pool_key_index, Some(1));
@@ -2146,12 +2179,13 @@ mod tests {
                 pool_key_index: None,
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                sticky_key_attempts: None,
             }
         );
     }
 
     #[test]
-    fn pool_scheduler_promotes_sticky_hit_before_other_sorted_keys() {
+    fn pool_scheduler_promotes_sticky_hit_before_lru_secondary_order() {
         let key_a = sample_eligible_candidate(
             "provider-pool",
             "endpoint-1",
@@ -2159,7 +2193,11 @@ mod tests {
             10,
             Some(json!({
                 "pool_advanced": {
-                    "scheduling_presets": [{"preset": "cache_affinity", "enabled": true}]
+                    "scheduling_presets": [{
+                        "preset": "cache_affinity",
+                        "enabled": true,
+                        "mode": "lru"
+                    }]
                 }
             })),
         );
@@ -2170,7 +2208,11 @@ mod tests {
             10,
             Some(json!({
                 "pool_advanced": {
-                    "scheduling_presets": [{"preset": "cache_affinity", "enabled": true}]
+                    "scheduling_presets": [{
+                        "preset": "cache_affinity",
+                        "enabled": true,
+                        "mode": "lru"
+                    }]
                 }
             })),
         );
@@ -2202,6 +2244,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["key-a", "key-b"]
         );
+    }
+
+    #[test]
+    fn cache_affinity_secondary_modes_select_distinct_candidate_orders() {
+        for (mode, expected) in [
+            ("single_account", StoredPoolKeyCandidateOrder::SingleAccount),
+            ("lru", StoredPoolKeyCandidateOrder::Lru),
+        ] {
+            let group = sample_eligible_candidate(
+                "provider-pool",
+                "endpoint-1",
+                "key-a",
+                10,
+                Some(json!({
+                    "pool_advanced": {
+                        "scheduling_presets": [{
+                            "preset": "cache_affinity",
+                            "enabled": true,
+                            "mode": mode
+                        }]
+                    }
+                })),
+            );
+            let config = pool_config_for_candidate(&group).expect("pool config should parse");
+
+            assert!(admin_provider_pool_cache_affinity_enabled(&config));
+            assert_eq!(
+                pool_key_candidate_order_for_group(&group, Some(&config)),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -3191,8 +3264,12 @@ mod tests {
             .take_local_execution_runtime_miss_diagnostic(trace_id)
             .expect("runtime miss diagnostic should exist");
         assert_eq!(diagnostic.reason, "all_candidates_skipped");
-        assert_eq!(diagnostic.skipped_candidate_count, Some(1));
+        assert_eq!(diagnostic.skipped_candidate_count, Some(2));
         assert_eq!(diagnostic.skip_reasons.get("pool_cooldown"), Some(&1));
+        assert_eq!(
+            diagnostic.skip_reasons.get("transport_snapshot_missing"),
+            Some(&1)
+        );
     }
 
     #[tokio::test]
@@ -4426,6 +4503,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert_eq!(context.plan_tier.as_deref(), Some("team"));
@@ -4471,6 +4549,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(!context.quota_exhausted);
@@ -4491,6 +4570,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(context.quota_exhausted);
@@ -4521,9 +4601,57 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "antigravity",
+            None,
         );
 
         assert!(context.quota_exhausted);
+    }
+
+    #[test]
+    fn pool_catalog_context_scopes_antigravity_exhaustion_to_requested_model() {
+        let mut key = sample_catalog_oauth_key("key-antigravity-model-quota");
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": false,
+                "windows": [
+                    {
+                        "code": "model:gemini-3.1-pro-high",
+                        "scope": "model",
+                        "model": "gemini-3.1-pro-high",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    },
+                    {
+                        "code": "model:gemini-3-flash-agent",
+                        "scope": "model",
+                        "model": "gemini-3-flash-agent",
+                        "used_ratio": 0.1,
+                        "is_exhausted": false
+                    }
+                ]
+            }
+        }));
+
+        let app = app_state_with_catalog_key(key.clone());
+        let exhausted = build_pool_catalog_key_context(
+            PlannerAppState::new(&app),
+            &ProviderPoolService::with_builtin_adapters(),
+            &key,
+            "antigravity",
+            Some("gemini-3.1-pro-high"),
+        );
+        let available = build_pool_catalog_key_context(
+            PlannerAppState::new(&app),
+            &ProviderPoolService::with_builtin_adapters(),
+            &key,
+            "antigravity",
+            Some("gemini-3-flash-agent"),
+        );
+
+        assert!(exhausted.quota_exhausted);
+        assert!(!available.quota_exhausted);
     }
 
     #[test]
@@ -4542,6 +4670,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(context.account_blocked);
@@ -4947,6 +5076,7 @@ mod tests {
             priority_mode: RoutingSetPriorityMode::Provider,
             scheduling_mode: RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
             ranking_overlay: RankingOverlay {
                 allowed_keys: key_ids.into_iter().map(str::to_string).collect(),
                 ..RankingOverlay::default()

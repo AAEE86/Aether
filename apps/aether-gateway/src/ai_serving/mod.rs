@@ -1,5 +1,6 @@
 mod adaptation;
 pub(crate) mod api;
+pub(crate) mod codex_context;
 mod finalize;
 mod planner;
 mod pure;
@@ -23,6 +24,7 @@ pub(crate) use self::finalize::internal::{
     maybe_build_sync_finalize_outcome, maybe_compile_sync_finalize_response,
     SyncToStreamBridgeOutcome,
 };
+pub(crate) use self::planner::openai_responses_reasoning_replay_policy;
 pub(crate) use self::planner::{
     apply_local_runtime_candidate_terminal_reason, build_gemini_stream_plan_from_decision,
     build_gemini_sync_plan_from_decision, build_local_gemini_files_stream_attempt_source_for_kind,
@@ -52,17 +54,20 @@ pub(crate) use self::planner::{
     build_standard_family_sync_plan_and_reports, build_standard_stream_plan_from_decision,
     build_standard_sync_plan_from_decision, candidate_auth_channel_skip_reason,
     codex_model_capabilities_for_transport, extract_pool_sticky_session_token,
-    maybe_build_stream_decision_payload, maybe_build_stream_plan_payload,
-    maybe_build_sync_decision_payload, maybe_build_sync_plan_payload,
-    planner_is_matching_stream_request, provider_key_pool_score_id, provider_key_pool_score_scope,
-    read_candidate_transport_snapshot, record_local_runtime_candidate_skip_reason,
+    maybe_build_pinned_stream_local_same_format_provider_decision_payload,
+    maybe_build_responses_websocket_decision, maybe_build_stream_decision_payload,
+    maybe_build_stream_plan_payload, maybe_build_sync_decision_payload,
+    maybe_build_sync_plan_payload, planner_is_matching_stream_request, provider_key_pool_score_id,
+    provider_key_pool_score_scope, read_candidate_transport_snapshot,
+    record_local_runtime_candidate_skip_reason, resolve_provider_chat_pii_redaction,
     resolve_tunnel_scheduler_affinity_context, resolve_upstream_is_stream_for_provider,
     set_local_openai_chat_execution_exhausted_diagnostic,
     set_local_openai_image_execution_exhausted_diagnostic, validate_final_openai_provider_request,
     CandidateFailureDiagnostic, CandidateFailureDiagnosticKind, EligibleLocalExecutionCandidate,
     GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalExecutionAttemptSource,
     LocalExecutionCandidateKind, LocalResolvedOAuthRequestAuth, PlannerAppState,
-    SkippedLocalExecutionCandidate,
+    ResponsesWebSocketBodyNormalization, ResponsesWebSocketDecision,
+    ResponsesWebSocketPinnedCandidate, SkippedLocalExecutionCandidate,
 };
 pub(crate) use self::pure::*;
 pub(crate) use self::response_history::{

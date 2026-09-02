@@ -74,11 +74,12 @@ Options:
                       compose-single-node: Docker Compose single-node app
                       single-node: single-node system service
                       Linux services use systemd; macOS services use launchd
-  --channel CHANNEL    Release channel to resolve when --version is omitted: stable, latest, rc, or beta
+  --channel CHANNEL    Release channel to resolve when --version is omitted: stable, latest, rc, beta, or nightly
                       stable/latest resolves the latest stable tag (default)
                       rc resolves the latest tag like v0.7.0-rc.1
                       beta resolves the latest tag like v0.7.0-beta.1
-  --version VERSION    Exact release tag to install, for example v0.7.0-rc.1
+                      nightly resolves the rolling nightly build from main
+  --version VERSION    Exact release tag to install, for example v0.7.0-rc.1 or nightly
   --repo OWNER/REPO    GitHub repository to download from (default: fawney19/Aether)
   --source-ref REF     Source branch/tag used for compose templates (default: main)
   --archive PATH       Install from a local release tarball instead of downloading
@@ -389,7 +390,8 @@ select_version() {
   1) 最新正式版
   2) 最新 RC 预发布版
   3) 最新 Beta 预发布版
-  4) 指定 tag，例如 v0.7.0-rc.1
+  4) 最新 nightly 构建版
+  5) 指定 tag，例如 v0.7.0-rc.1
 
 请输入选项 [1]:
 EOF
@@ -400,7 +402,8 @@ Choose Aether version:
   1) Latest stable release
   2) Latest RC prerelease
   3) Latest beta prerelease
-  4) Exact tag, for example v0.7.0-rc.1
+  4) Latest nightly build
+  5) Exact tag, for example v0.7.0-rc.1
 
 Enter choice [1]:
 EOF
@@ -418,6 +421,9 @@ EOF
                 CHANNEL="beta"
                 ;;
             4)
+                CHANNEL="nightly"
+                ;;
+            5)
                 if ui_is_zh; then
                     cat >/dev/tty <<'EOF'
 请输入准确 tag:
@@ -905,8 +911,13 @@ resolve_version() {
                 grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$' |
                 head -n1 || true)"
             ;;
+        nightly)
+            # The nightly release is a single rolling tag, so no API listing is
+            # needed (and unauthenticated release-list calls are rate-limited).
+            tag="nightly"
+            ;;
         *)
-            die "unsupported release channel: ${CHANNEL}; expected stable, latest, rc, or beta"
+            die "unsupported release channel: ${CHANNEL}; expected stable, latest, rc, beta, or nightly"
             ;;
     esac
     echo "${tag}"
@@ -1215,11 +1226,11 @@ compose_image() {
             stable|latest)
                 tag="latest"
                 ;;
-            rc|beta)
+            rc|beta|nightly)
                 tag="${CHANNEL}"
                 ;;
             *)
-                die "unsupported release channel: ${CHANNEL}; expected stable, latest, rc, or beta"
+                die "unsupported release channel: ${CHANNEL}; expected stable, latest, rc, beta, or nightly"
                 ;;
         esac
     fi

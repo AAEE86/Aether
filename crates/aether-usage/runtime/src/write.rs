@@ -2,7 +2,11 @@ use std::collections::BTreeMap;
 
 use aether_ai_formats::UPSTREAM_IS_STREAM_KEY;
 use aether_contracts::{ExecutionPlan, ExecutionTelemetry};
-use aether_data_contracts::repository::usage::{UpsertUsageRecord, UsageBodyCaptureState};
+use aether_data_contracts::repository::usage::{
+    UpsertUsageRecord, UsageBodyCaptureState, LIVE_SESSION_METADATA_KEY,
+    USAGE_AVAILABLE_METADATA_KEY, USAGE_PRICING_AVAILABLE_METADATA_KEY,
+    WEBSOCKET_MODE_METADATA_KEY, WEBSOCKET_TRANSPORT_METADATA_KEY,
+};
 use aether_data_contracts::DataLayerError;
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
@@ -2114,6 +2118,33 @@ fn build_runtime_request_metadata_seed_from_parts(
             Value::Bool(api_key_is_standalone),
         );
     }
+    if let Some(websocket_mode) = context_bool(context, WEBSOCKET_MODE_METADATA_KEY) {
+        metadata.insert(
+            WEBSOCKET_MODE_METADATA_KEY.to_string(),
+            Value::Bool(websocket_mode),
+        );
+    }
+    if let Some(websocket_transport) = context_string(context, WEBSOCKET_TRANSPORT_METADATA_KEY) {
+        metadata.insert(
+            WEBSOCKET_TRANSPORT_METADATA_KEY.to_string(),
+            Value::String(websocket_transport),
+        );
+    }
+    if let Some(usage_available) = context_bool(context, USAGE_AVAILABLE_METADATA_KEY) {
+        metadata.insert(
+            USAGE_AVAILABLE_METADATA_KEY.to_string(),
+            Value::Bool(usage_available),
+        );
+    }
+    if let Some(pricing_available) = context_bool(context, USAGE_PRICING_AVAILABLE_METADATA_KEY) {
+        metadata.insert(
+            USAGE_PRICING_AVAILABLE_METADATA_KEY.to_string(),
+            Value::Bool(pricing_available),
+        );
+    }
+    if let Some(live_session) = context_value_ref(context, LIVE_SESSION_METADATA_KEY) {
+        metadata.insert(LIVE_SESSION_METADATA_KEY.to_string(), live_session.clone());
+    }
     let provider_source_bytes = provider_request_body_base64.and_then(decoded_base64_len_hint);
     append_runtime_body_capture_metadata(
         &mut metadata,
@@ -3763,6 +3794,8 @@ mod tests {
                 Some(&json!({
                     "candidate_id": "cand-pending-event-1",
                     "candidate_index": 3,
+                    "websocket_mode": true,
+                    "websocket_transport": "responses",
                     "original_request_body": {"messages": [{"content": "omit me"}]},
                     "provider_request_body": {
                         "input": [{"type": "compaction_trigger"}]
@@ -3785,6 +3818,22 @@ mod tests {
         assert!(record.provider_request_body.is_none());
         assert_eq!(record.candidate_id.as_deref(), Some("cand-pending-event-1"));
         assert_eq!(record.candidate_index, Some(3));
+        assert_eq!(
+            record
+                .request_metadata
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get("websocket_mode")),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            record
+                .request_metadata
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get("websocket_transport")),
+            Some(&json!("responses"))
+        );
     }
 
     #[test]

@@ -635,7 +635,6 @@ fn provider_query_build_test_request_body_for_api_format_with_search_session(
             "model": model,
             "input": message,
             "max_output_tokens": 30,
-            "temperature": 0.7,
             "stream": true,
         }),
         "openai:search" => json!({
@@ -654,7 +653,6 @@ fn provider_query_build_test_request_body_for_api_format_with_search_session(
                 "content": message
             }],
             "max_tokens": 30,
-            "temperature": 0.7,
             "stream": true,
         }),
         _ => json!({
@@ -664,7 +662,6 @@ fn provider_query_build_test_request_body_for_api_format_with_search_session(
                 "content": message
             }],
             "max_tokens": 30,
-            "temperature": 0.7,
             "stream": true,
         }),
     }
@@ -811,7 +808,6 @@ fn provider_query_build_test_request_body_with_model_policy(
             "content": provider_query_extract_message(payload)
                 .unwrap_or_else(|| DEFAULT_PROVIDER_QUERY_TEST_MESSAGE.to_string())
         }],
-        "temperature": 0.7,
         "stream": true,
     })
 }
@@ -1303,6 +1299,10 @@ fn provider_query_pool_catalog_key_context(
             key,
             provider_type,
             quota_snapshot,
+        ),
+        quota_hard_blocked: admin_provider_pool_pure::admin_pool_key_quota_hard_blocked(
+            key,
+            provider_type,
         ),
         health_score,
         latency_avg_ms,
@@ -3162,7 +3162,7 @@ async fn provider_query_execute_standard_test_candidate(
         | "openai:rerank"
         | "jina:rerank" => {
             let Some(mut provider_request_body) =
-                crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers(
+                crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
                     &request_body,
                     client_api_format,
                     request_model,
@@ -3174,6 +3174,11 @@ async fn provider_query_execute_standard_test_candidate(
                     Some(candidate.key.id.as_str()),
                     Some(&incoming_request_headers),
                     false,
+                    crate::ai_serving::openai_responses_reasoning_replay_policy(
+                        transport.provider.provider_type.as_str(),
+                        transport.endpoint.base_url.as_str(),
+                        request_model,
+                    ),
                 )
             else {
                 return Ok(provider_query_skipped_execution_outcome(
@@ -3218,7 +3223,7 @@ async fn provider_query_execute_standard_test_candidate(
     if matches!(
         normalized_provider_api_format.as_str(),
         "openai:chat" | "openai:responses" | "openai:responses:compact" | "openai:search"
-    ) && crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
+    ) && crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
         &mut provider_request_body,
         crate::ai_serving::OpenAiProviderRequestFinalization {
             source_api_format: client_api_format,
@@ -3231,6 +3236,11 @@ async fn provider_query_execute_standard_test_candidate(
             require_body_stream_field,
         },
         codex_model_capabilities.as_ref(),
+        crate::ai_serving::openai_responses_reasoning_replay_policy(
+            transport.provider.provider_type.as_str(),
+            transport.endpoint.base_url.as_str(),
+            request_model,
+        ),
     )
     .is_err()
     {

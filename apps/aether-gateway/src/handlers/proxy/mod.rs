@@ -1,5 +1,6 @@
 mod body_buffer;
 mod local;
+mod websocket;
 
 use self::body_buffer::{
     buffer_and_normalize_request_body, build_request_body_buffer_error_response,
@@ -8,6 +9,9 @@ use self::body_buffer::{
 use self::local::{
     maybe_build_local_admin_proxy_response, maybe_build_local_internal_proxy_response,
 };
+pub(crate) use self::websocket::live::{live_websocket, maybe_handle_live_http};
+pub(crate) use self::websocket::realtime::realtime_websocket;
+pub(crate) use self::websocket::responses::responses_websocket;
 use super::internal::resolve_local_proxy_execution_path;
 pub(crate) use super::public::matches_model_mapping_for_models;
 use crate::ai_serving::api::{
@@ -101,9 +105,16 @@ const LOCAL_EXECUTION_LOOP_DETECTED_DETAIL: &str =
     "Gateway detected an execution runtime request loop back into the local frontdoor";
 const AUTH_API_KEY_CONCURRENCY_LIMIT_REACHED_DETAIL: &str =
     "当前调用方 API Key 并发请求数已达上限，请稍后重试";
+const PROVIDER_KEY_CAPACITY_LIMIT_REACHED_DETAIL: &str =
+    "所有可用上游账号当前均已达到并发或 RPM 上限，请稍后重试";
+const PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS: &[&str] = &[
+    "provider_key_concurrency_limit_reached",
+    "key_rpm_exhausted",
+];
 const LOCAL_EXECUTION_PLANNING_TIMEOUT_DETAIL: &str =
     "当前 AI 请求在本地执行规划阶段超时，请稍后重试";
 const EXECUTION_PATH_TUNNEL_AFFINITY_FORWARD: &str = "tunnel_affinity_forward";
+const EXECUTION_PATH_CODEX_LIVE_CALL: &str = "codex_live_call";
 const MANAGEMENT_TOKEN_PREFIX: &str = "ae-";
 const LEGACY_MANAGEMENT_TOKEN_PREFIX: &str = "ae_";
 fn finalize_request_body_buffer_rejection(
@@ -937,11 +948,11 @@ pub(crate) async fn proxy_request(
     ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
     request: Request,
 ) -> Result<Response<Body>, GatewayError> {
-    crate::request_diagnostics::scope_request_diagnostics(proxy_request_inner(
+    crate::request_diagnostics::scope_request_diagnostics(Box::pin(proxy_request_inner(
         state,
         remote_addr,
         request,
-    ))
+    )))
     .await
 }
 
@@ -1087,6 +1098,7 @@ async fn proxy_request_inner(
         ),
     }
     let (mut parts, body) = request.into_parts();
+    crate::ai_serving::codex_context::install_codex_fingerprint_context_slot(&mut parts);
     let redaction_slot = crate::privacy::RedactionSessionSlot::default();
     parts.extensions.insert(redaction_slot.clone());
     parts
@@ -1566,6 +1578,26 @@ async fn proxy_request_inner(
         ));
     }
 
+    if let Some(response) = Box::pin(maybe_handle_live_http(
+        &state,
+        &request_context,
+        &parts,
+        buffered_body.as_ref(),
+        &remote_addr,
+    ))
+    .await?
+    {
+        return Ok(finalize_gateway_response_with_context(
+            &state,
+            response,
+            &remote_addr,
+            &request_context,
+            EXECUTION_PATH_CODEX_LIVE_CALL,
+            &started_at,
+            request_permit.take(),
+        ));
+    }
+
     let local_ai_public_started_at = Instant::now();
     let local_ai_public_response = super::public::maybe_build_local_ai_public_response(
         &state,
@@ -1884,12 +1916,23 @@ async fn proxy_request_inner(
             .all_candidates_skipped_for_reason(AUTH_API_KEY_CONCURRENCY_LIMIT_SKIP_REASON)
             || local_execution_runtime_miss_context
                 .all_candidates_skipped_for_reason(LEGACY_API_KEY_CONCURRENCY_LIMIT_SKIP_REASON);
-        let local_execution_runtime_miss_detail = (!auth_api_key_concurrency_limited)
-            .then(|| {
+        let provider_key_capacity_limited = local_execution_runtime_miss_diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic_is_provider_key_capacity_limited(Some(diagnostic)))
+            .unwrap_or_else(|| {
                 local_execution_runtime_miss_context
-                    .all_provider_request_body_build_failures_detail()
+                    .all_candidates_skipped_for_reasons(PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS)
+            });
+        let local_execution_runtime_miss_detail = provider_key_capacity_limited
+            .then_some(PROVIDER_KEY_CAPACITY_LIMIT_REACHED_DETAIL.to_string())
+            .or_else(|| {
+                (!auth_api_key_concurrency_limited)
+                    .then(|| {
+                        local_execution_runtime_miss_context
+                            .all_provider_request_body_build_failures_detail()
+                    })
+                    .flatten()
             })
-            .flatten()
             .or_else(|| {
                 local_execution_runtime_miss_detail(
                     control_decision,
@@ -2005,7 +2048,7 @@ async fn proxy_request_inner(
         let mut response = build_local_http_error_response(
             &trace_id,
             control_decision,
-            http::StatusCode::SERVICE_UNAVAILABLE,
+            local_execution_runtime_miss_status(provider_key_capacity_limited),
             local_execution_runtime_miss_client_message(
                 local_execution_runtime_miss_detail.as_str(),
             )
@@ -2331,6 +2374,30 @@ fn diagnostic_is_auth_api_key_concurrency_limited(
             }))
 }
 
+fn diagnostic_is_provider_key_capacity_limited(
+    diagnostic: Option<&LocalExecutionRuntimeMissDiagnostic>,
+) -> bool {
+    let Some(diagnostic) = diagnostic else {
+        return false;
+    };
+    PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS.contains(&diagnostic.reason.as_str())
+        || (diagnostic.candidate_count.is_some_and(|candidate_count| {
+            candidate_count > 0
+                && diagnostic.skipped_candidate_count.unwrap_or(0) >= candidate_count
+        }) && !diagnostic.skip_reasons.is_empty()
+            && diagnostic.skip_reasons.iter().all(|(reason, count)| {
+                PROVIDER_KEY_CAPACITY_LIMIT_SKIP_REASONS.contains(&reason.as_str()) && *count > 0
+            }))
+}
+
+fn local_execution_runtime_miss_status(provider_key_capacity_limited: bool) -> http::StatusCode {
+    if provider_key_capacity_limited {
+        http::StatusCode::TOO_MANY_REQUESTS
+    } else {
+        http::StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
 fn local_execution_runtime_miss_route_detail(
     decision: Option<&GatewayControlDecision>,
 ) -> Option<&'static str> {
@@ -2369,14 +2436,15 @@ mod tests {
 
     use super::{
         api_key_remote_ip_allowed, buffer_and_normalize_request_body,
-        diagnostic_is_auth_api_key_concurrency_limited, local_execution_runtime_miss_detail,
-        owner_forward_request_is_stream, restore_redacted_stream_execution_response,
-        restore_redacted_sync_execution_response, routing_overlay_allows_affinity_target,
-        GatewayControlDecision, LocalExecutionRuntimeMissDiagnostic, RequestBodyBufferError,
-        RequestBodyBufferPolicy,
+        diagnostic_is_auth_api_key_concurrency_limited,
+        diagnostic_is_provider_key_capacity_limited, local_execution_runtime_miss_detail,
+        local_execution_runtime_miss_status, owner_forward_request_is_stream,
+        restore_redacted_stream_execution_response, restore_redacted_sync_execution_response,
+        routing_overlay_allows_affinity_target, GatewayControlDecision,
+        LocalExecutionRuntimeMissDiagnostic, RequestBodyBufferError, RequestBodyBufferPolicy,
     };
     use axum::body::{to_bytes, Body, Bytes};
-    use axum::http::{header, HeaderMap, HeaderValue, Method, Response};
+    use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
     use serde_json::json;
     use tokio::sync::Semaphore;
 
@@ -2854,6 +2922,45 @@ mod tests {
         assert_eq!(
             detail.as_deref(),
             Some("当前调用方 API Key 并发请求数已达上限，请稍后重试")
+        );
+    }
+
+    #[test]
+    fn provider_key_capacity_requires_every_skip_reason_to_be_capacity_related() {
+        let capacity_limited = LocalExecutionRuntimeMissDiagnostic {
+            reason: "candidate_evaluation_incomplete".to_string(),
+            candidate_count: Some(2),
+            skipped_candidate_count: Some(2),
+            skip_reasons: std::collections::BTreeMap::from([
+                ("provider_key_concurrency_limit_reached".to_string(), 1),
+                ("key_rpm_exhausted".to_string(), 1),
+            ]),
+            ..LocalExecutionRuntimeMissDiagnostic::default()
+        };
+        let mixed_failure = LocalExecutionRuntimeMissDiagnostic {
+            reason: "all_candidates_skipped".to_string(),
+            candidate_count: Some(2),
+            skipped_candidate_count: Some(2),
+            skip_reasons: std::collections::BTreeMap::from([
+                ("provider_key_concurrency_limit_reached".to_string(), 1),
+                ("account_quota_exhausted".to_string(), 1),
+            ]),
+            ..LocalExecutionRuntimeMissDiagnostic::default()
+        };
+
+        assert!(diagnostic_is_provider_key_capacity_limited(Some(
+            &capacity_limited
+        )));
+        assert!(!diagnostic_is_provider_key_capacity_limited(Some(
+            &mixed_failure
+        )));
+        assert_eq!(
+            local_execution_runtime_miss_status(true),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            local_execution_runtime_miss_status(false),
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 }

@@ -321,15 +321,22 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_exe
                             .unwrap_or_default()
                             .to_string(),
                     });
+                let response_body = Body::from_stream(async_stream::stream! {
+                    yield Ok::<Bytes, std::convert::Infallible>(Bytes::from_static(
+                        b"data: {\"id\":\"chatcmpl-local-123\"}\n\n",
+                    ));
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    yield Ok::<Bytes, std::convert::Infallible>(Bytes::from_static(
+                        b"data: [DONE]\n\n",
+                    ));
+                });
                 let mut response = Response::builder()
                     .status(StatusCode::OK)
-                    .body(Body::from(
-                        "data: {\"id\":\"chatcmpl-local-123\"}\n\ndata: [DONE]\n\n",
-                    ))
+                    .body(response_body)
                     .expect("response should build");
                 response.headers_mut().insert(
                     http::header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/event-stream"),
+                    HeaderValue::from_static("application/octet-stream"),
                 );
                 response
             }
@@ -368,12 +375,14 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_exe
                 DEVELOPMENT_ENCRYPTION_KEY,
             ),
         );
-    let gateway = build_router_with_state(gateway_state);
+    let gateway = build_router_with_state(gateway_state)
+        .layer(tower_http::compression::CompressionLayer::new());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
-    let response = reqwest::Client::new()
+    let mut response = reqwest::Client::new()
         .post(format!("{gateway_url}/v1/chat/completions"))
         .header(http::header::CONTENT_TYPE, "application/json")
+        .header(http::header::ACCEPT_ENCODING, "gzip")
         .header(
             http::header::AUTHORIZATION,
             "Bearer sk-client-openai-local-stream",
@@ -393,8 +402,31 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_exe
         Some(EXECUTION_PATH_EXECUTION_RUNTIME_STREAM)
     );
     assert_eq!(
+        response
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    assert!(
+        response
+            .headers()
+            .get(http::header::CONTENT_ENCODING)
+            .is_none(),
+        "SSE responses must not be gzip-buffered"
+    );
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            super::super::next_non_keepalive_chunk(&mut response),
+        )
+        .await
+        .expect("first upstream SSE event should reach the client before completion"),
+        Bytes::from_static(b"data: {\"id\":\"chatcmpl-local-123\"}\n\n")
+    );
+    assert_eq!(
         strip_sse_keepalive_comments(&response.text().await.expect("body should read")),
-        "data: {\"id\":\"chatcmpl-local-123\"}\n\ndata: [DONE]\n\n"
+        "data: [DONE]\n\n"
     );
 
     let seen_upstream_request = seen_upstream
@@ -2188,7 +2220,9 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_after_retryable
                             .to_string(),
                     });
 
-                let frames = if attempt == 1 {
+                // The primary key gets two attempts under the default
+                // sticky_key_attempts; both must fail to reach the backup.
+                let frames = if attempt <= 2 {
                     concat!(
                         "{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":429,\"headers\":{\"content-type\":\"application/json\"}}}\n",
                         "{\"type\":\"data\",\"payload\":{\"kind\":\"data\",\"text\":\"{\\\"error\\\":{\\\"message\\\":\\\"rate limited\\\",\\\"type\\\":\\\"rate_limit_error\\\"}}\"}}\n",
@@ -2330,14 +2364,25 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_after_retryable
             .lock()
             .expect("mutex should lock")
             .len()
-            >= 2
+            >= 3
     })
     .await;
     let seen_execution_runtime_requests = seen_execution_runtime
         .lock()
         .expect("mutex should lock")
         .clone();
-    assert_eq!(seen_execution_runtime_requests.len(), 2);
+    // Default sticky_key_attempts is 2: the primary key is retried once on
+    // the same key, then failover moves to the backup with a single attempt.
+    assert_eq!(seen_execution_runtime_requests.len(), 3);
+    assert_eq!(
+        seen_execution_runtime_requests
+            .iter()
+            .filter(|request| {
+                request.url == "https://api.openai.primary.example/chat/completions"
+            })
+            .count(),
+        2
+    );
     let primary_request = seen_execution_runtime_requests
         .iter()
         .find(|request| request.url == "https://api.openai.primary.example/chat/completions")
@@ -2372,7 +2417,15 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_after_retryable
         .list_by_request_id("trace-openai-chat-local-stream-failover-123")
         .await
         .expect("request candidate trace should read");
-    assert_eq!(stored_candidates.len(), 2);
+    assert_eq!(stored_candidates.len(), 3);
+    assert_eq!(
+        stored_candidates
+            .iter()
+            .filter(|candidate| candidate.status == RequestCandidateStatus::Failed)
+            .count(),
+        2,
+        "both sticky-key attempts on the primary should be recorded as failed"
+    );
     let failed_candidate = stored_candidates
         .iter()
         .find(|candidate| {
@@ -2433,7 +2486,7 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_after_retryable
 
     assert_eq!(
         execution_runtime_hits.load(std::sync::atomic::Ordering::SeqCst),
-        2
+        3
     );
     assert_eq!(*decision_hits.lock().expect("mutex should lock"), 0);
     assert_eq!(*plan_hits.lock().expect("mutex should lock"), 0);

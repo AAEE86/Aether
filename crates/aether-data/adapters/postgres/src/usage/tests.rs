@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Utc};
 use serde_json::json;
-use sqlx::Row;
+use sqlx::{Postgres, QueryBuilder, Row};
 use std::sync::Arc;
 
 use super::{
@@ -8,14 +8,15 @@ use super::{
     attach_usage_routing_snapshot_metadata, attach_usage_settlement_pricing_snapshot_metadata,
     clear_previous_request_body_facts, inflate_usage_json_value,
     prepare_request_metadata_for_body_storage, prepare_usage_body_storage,
-    prepare_usage_upsert_context, request_body_capture_replaces_derived_facts,
-    resolved_read_usage_body_ref, resolved_write_usage_body_ref,
-    split_dashboard_daily_aggregate_range, split_dashboard_hourly_aggregate_range,
-    usage_body_capture_state_for_storage, usage_body_ref, usage_capture_update_allowed,
-    usage_effective_input_tokens, usage_http_audit_body_refs, usage_http_audit_capture_mode,
-    usage_routing_snapshot_from_usage, usage_settlement_pricing_snapshot_from_usage,
-    usage_total_input_context, AggregateRangeSplit, SqlxUsageReadRepository, UsageHttpAuditRefs,
-    UsageRoutingSnapshot, UsageSettlementPricingSnapshot, MAX_INLINE_USAGE_BODY_BYTES,
+    prepare_usage_upsert_context, push_postgres_usage_websocket_filter,
+    request_body_capture_replaces_derived_facts, resolved_read_usage_body_ref,
+    resolved_write_usage_body_ref, split_dashboard_daily_aggregate_range,
+    split_dashboard_hourly_aggregate_range, usage_body_capture_state_for_storage, usage_body_ref,
+    usage_capture_update_allowed, usage_effective_input_tokens, usage_http_audit_body_refs,
+    usage_http_audit_capture_mode, usage_routing_snapshot_from_usage,
+    usage_settlement_pricing_snapshot_from_usage, usage_total_input_context, AggregateRangeSplit,
+    SqlxUsageReadRepository, UsageHttpAuditRefs, UsageRoutingSnapshot,
+    UsageSettlementPricingSnapshot, MAX_INLINE_USAGE_BODY_BYTES,
     SELECT_STALE_PENDING_USAGE_BATCH_SQL,
 };
 use crate::{PostgresPoolConfig, PostgresPoolFactory};
@@ -3109,6 +3110,21 @@ fn usage_sql_reads_http_audits_for_single_record_fetches() {
 }
 
 #[test]
+fn usage_sql_single_record_fetches_preserve_full_request_metadata() {
+    for sql in [super::FIND_BY_REQUEST_ID_SQL, super::FIND_BY_ID_SQL] {
+        assert!(
+            sql.contains("\n  \"usage\".request_metadata,\n"),
+            "single-record usage detail queries must preserve the full request metadata, \
+             including WebSocket and Live session summaries"
+        );
+        assert!(
+            !sql.contains("END AS request_metadata"),
+            "bounded list metadata projection must not leak into detail queries"
+        );
+    }
+}
+
+#[test]
 fn usage_sql_reads_routing_snapshots_for_single_record_fetches() {
     assert!(super::FIND_BY_REQUEST_ID_SQL.contains("LEFT JOIN usage_routing_snapshots"));
     assert!(super::FIND_BY_ID_SQL.contains("LEFT JOIN usage_routing_snapshots"));
@@ -3221,6 +3237,8 @@ fn usage_sql_uses_json_null_placeholders_for_usage_payload_columns() {
         assert!(sql.contains("request_metadata->>'provider_reasoning_effort'"));
         assert!(sql.contains("request_metadata->>'provider_service_tier'"));
         assert!(sql.contains("request_metadata->>'provider_actual_service_tier'"));
+        assert!(sql.contains("request_metadata->>'websocket_mode'"));
+        assert!(sql.contains("'websocket_mode'"));
         assert!(sql.contains("AS client_family"));
         assert!(sql.contains("request_metadata->'client_session_affinity'->>'client_family'"));
         assert!(sql.contains("request_metadata->>'client_family'"));
@@ -3238,6 +3256,42 @@ fn usage_sql_uses_json_null_placeholders_for_usage_payload_columns() {
 }
 
 #[test]
+fn usage_sql_list_queries_project_bounded_live_and_realtime_metadata() {
+    for sql in [
+        super::LIST_USAGE_AUDITS_PREFIX,
+        super::LIST_RECENT_USAGE_AUDITS_PREFIX,
+    ] {
+        assert!(sql.contains("'websocket_transport'"));
+        assert!(
+            sql.contains("NULLIF(BTRIM(\"usage\".request_metadata->>'websocket_transport'), '')")
+        );
+
+        for key in ["usage_available", "usage_pricing_available"] {
+            assert!(sql.contains(format!("'{key}'").as_str()));
+            assert!(sql.contains(
+                format!("WHEN (\"usage\".request_metadata->>'{key}') IN ('true', 'false')")
+                    .as_str()
+            ));
+            assert!(sql.contains(
+                format!("THEN (\"usage\".request_metadata->>'{key}')::boolean").as_str()
+            ));
+        }
+
+        for key in ["live_session", "realtime_session"] {
+            assert!(sql.contains(format!("'{key}'").as_str()));
+            assert!(sql.contains(
+                format!("WHEN json_typeof(\"usage\".request_metadata->'{key}') = 'object'")
+                    .as_str()
+            ));
+            assert!(sql.contains(format!("THEN \"usage\".request_metadata->'{key}'").as_str()));
+        }
+
+        assert!(sql.contains("END AS request_metadata"));
+        assert!(!sql.contains("\n  \"usage\".request_metadata,\n"));
+    }
+}
+
+#[test]
 fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
     let source = include_str!("mod.rs");
     assert!(source.contains("push_postgres_usage_client_family_filter"));
@@ -3245,6 +3299,26 @@ fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
     assert!(source.contains("request_metadata->>'client_family'"));
     assert!(source.contains("exclude_unknown_model_or_provider"));
     assert!(source.contains("NOT IN ('unknown', 'unknow')"));
+    assert_eq!(
+        source
+            .matches("push_postgres_usage_websocket_filter(")
+            .count(),
+        5,
+        "the WebSocket filter must cover list/count and keyword list/count"
+    );
+}
+
+#[test]
+fn usage_sql_websocket_filter_compares_json_metadata_without_boolean_casts() {
+    let mut builder = QueryBuilder::<Postgres>::new("SELECT * FROM usage");
+    let mut has_where = false;
+    push_postgres_usage_websocket_filter(&mut builder, &mut has_where, Some(true));
+
+    assert!(has_where);
+    assert!(builder
+        .sql()
+        .contains("LOWER(COALESCE(\"usage\".request_metadata->>'websocket_mode', 'false'))"));
+    assert!(!builder.sql().contains("::boolean"));
 }
 
 #[test]

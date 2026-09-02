@@ -261,7 +261,7 @@ const DEFAULT_SQLITE_POOL_MAX_CONNECTIONS: u32 = 1;
 const AUTO_SERVER_SQL_POOL_CONNECTIONS_PER_CPU: u32 = 4;
 const AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_FLOOR: u32 = 4;
 const AUTO_SERVER_SQL_POOL_MIN_CONNECTIONS_CAP: u32 = 16;
-const AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_FLOOR: u32 = 20;
+const AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_FLOOR: u32 = 32;
 const AUTO_SERVER_SQL_POOL_MAX_CONNECTIONS_CAP: u32 = 100;
 const DEFAULT_USAGE_QUEUE_WORKERS_CAP: usize = 8;
 const AUTO_USAGE_QUEUE_WORKERS_MIN: usize = 2;
@@ -1330,8 +1330,20 @@ struct Args {
     #[arg(long, env = "AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS")]
     max_in_flight_requests: Option<usize>,
 
+    /// Maximum number of long-lived public WebSocket connections. When unset,
+    /// this follows `max_in_flight_requests` while remaining an independent
+    /// gate. Set `AETHER_GATEWAY_MAX_WEBSOCKET_CONNECTIONS` to override it.
+    #[arg(long, env = "AETHER_GATEWAY_MAX_WEBSOCKET_CONNECTIONS")]
+    max_websocket_connections: Option<usize>,
+
     #[arg(long, env = "AETHER_GATEWAY_DISTRIBUTED_REQUEST_LIMIT")]
     distributed_request_limit: Option<usize>,
+
+    /// Optional distributed limit for long-lived WebSocket connections. When
+    /// omitted, the distributed request limit is reused; set it to 0 to keep
+    /// WebSocket admission local-only.
+    #[arg(long, env = "AETHER_GATEWAY_DISTRIBUTED_WEBSOCKET_CONNECTION_LIMIT")]
+    distributed_websocket_connection_limit: Option<usize>,
 
     #[arg(long, env = "AETHER_GATEWAY_DISTRIBUTED_REQUEST_REDIS_URL")]
     distributed_request_redis_url: Option<String>,
@@ -1820,6 +1832,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .max_in_flight_requests
         .filter(|limit| *limit > 0)
         .unwrap_or_else(automatic_gateway_request_concurrency);
+    let websocket_connection_limit = args
+        .max_websocket_connections
+        .filter(|limit| *limit > 0)
+        .unwrap_or(request_concurrency_limit);
+    let distributed_websocket_connection_limit = match args.distributed_websocket_connection_limit {
+        Some(limit) if limit > 0 => Some(limit),
+        Some(_) => None,
+        None => args.distributed_request_limit.filter(|limit| *limit > 0),
+    };
     let usage_queue_request_concurrency_hint = usage_queue_request_concurrency_hint(
         Some(request_concurrency_limit),
         args.distributed_request_limit,
@@ -1941,6 +1962,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "auto"
         },
         distributed_request_limit = args.distributed_request_limit.unwrap_or_default(),
+        max_websocket_connections = websocket_connection_limit,
+        max_websocket_connections_source = if args.max_websocket_connections.is_some() {
+            "explicit"
+        } else {
+            "request_concurrency_fallback"
+        },
+        distributed_websocket_connection_limit =
+            distributed_websocket_connection_limit.unwrap_or_default(),
         distributed_request_redis_configured = args
             .distributed_request_redis_url
             .as_deref()
@@ -1995,7 +2024,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         state = state.with_video_task_store_path(path)?;
     }
-    state = state.with_request_concurrency_limit(request_concurrency_limit);
+    state = state
+        .with_request_concurrency_limit(request_concurrency_limit)
+        .with_websocket_connection_limit(websocket_connection_limit);
     if let Some(limit) = args.distributed_request_limit.filter(|limit| *limit > 0) {
         let distributed_gate = state
             .runtime_state()
@@ -2012,6 +2043,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
             })?;
         state = state.with_distributed_request_concurrency_gate(distributed_gate);
+    }
+    if let Some(limit) = distributed_websocket_connection_limit {
+        let distributed_gate = state
+            .runtime_state()
+            .semaphore(
+                "gateway_websocket_connections_distributed",
+                limit,
+                RuntimeSemaphoreConfig {
+                    lease_ttl_ms: args.distributed_request_lease_ttl_ms.max(1),
+                    renew_interval_ms: args.distributed_request_renew_interval_ms.max(1),
+                    command_timeout_ms: Some(args.distributed_request_command_timeout_ms.max(1)),
+                },
+            )
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+            })?;
+        state = state.with_distributed_websocket_connection_gate(distributed_gate);
     }
     if matches!(args.deployment_topology, DeploymentTopologyArg::MultiNode)
         && !state.has_usage_data_writer()
@@ -2048,6 +2096,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     state.bootstrap_admin_from_env().await?;
+    match state.ensure_system_default_routing_group().await {
+        Ok(Some(group)) => {
+            info!(
+                group_id = %group.id,
+                group_name = %group.name,
+                "created system default routing group from legacy scheduler config"
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to bootstrap system default routing group; scheduler falls back to legacy system config"
+            );
+        }
+    }
     match state.prewarm_chat_pii_redaction_runtime_config().await {
         Ok(enabled) => {
             info!(
@@ -2531,7 +2595,9 @@ mod tests {
             video_task_poller_batch_size: 32,
             video_task_store_path: None,
             max_in_flight_requests: None,
+            max_websocket_connections: None,
             distributed_request_limit: None,
+            distributed_websocket_connection_limit: None,
             distributed_request_redis_url: None,
             distributed_request_redis_key_prefix: None,
             distributed_request_lease_ttl_ms: 30_000,
@@ -2837,7 +2903,11 @@ mod tests {
     fn gateway_data_pool_cpu_sizing_examples() {
         let two_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 2);
         assert_eq!(two_cpu.min_connections, 4);
-        assert_eq!(two_cpu.max_connections, 20);
+        assert_eq!(two_cpu.max_connections, 32);
+
+        let four_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 4);
+        assert_eq!(four_cpu.min_connections, 4);
+        assert_eq!(four_cpu.max_connections, 32);
 
         let eight_cpu = automatic_sql_pool_config_for_parallelism(DatabaseDriver::Postgres, 8);
         assert_eq!(eight_cpu.min_connections, 8);

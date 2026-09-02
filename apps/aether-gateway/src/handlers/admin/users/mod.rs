@@ -28,6 +28,7 @@ use self::batch::{
 use self::billing::{
     build_admin_grant_user_billing_plan_response,
     build_admin_list_user_billing_entitlements_response,
+    build_admin_revoke_user_billing_entitlement_response,
 };
 use self::groups::{
     build_admin_create_user_group_response, build_admin_delete_user_group_response,

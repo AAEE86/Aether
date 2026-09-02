@@ -1,5 +1,5 @@
 import type { EndpointHealthDetail } from '@/api/endpoints'
-import { compareApiFormats } from '@/api/endpoints/types/api-format'
+import { compareApiFormats, formatApiFormat } from '@/api/endpoints/types/api-format'
 import { defaultLocale, translateLegacyText, type Locale } from '@/i18n/messages'
 
 // 端点状态枚举
@@ -58,7 +58,7 @@ export function getEndpointDotColor(endpoint: EndpointHealthDetail): string {
  * 端点提示文本
  */
 export function getEndpointTooltip(endpoint: EndpointHealthDetail, locale: Locale = defaultLocale): string {
-  const format = endpoint.api_format
+  const format = formatApiFormat(endpoint.api_format)
   const status = getEndpointStatus(endpoint)
   const t = (value: string) => translateLegacyText(value, locale)
 

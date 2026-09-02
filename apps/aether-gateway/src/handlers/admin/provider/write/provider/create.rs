@@ -7,6 +7,8 @@ use crate::handlers::admin::provider::shared::support::{
 use crate::handlers::admin::provider::write::normalize::normalize_chat_pii_redaction_config;
 use crate::handlers::admin::provider::write::normalize::normalize_pool_advanced_config;
 use crate::handlers::admin::provider::write::normalize::normalize_provider_type_input;
+use crate::handlers::admin::provider::write::normalize::set_responses_websocket_enabled;
+use crate::handlers::admin::provider::write::normalize::validate_responses_websocket_config;
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::normalize_json_object;
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider;
@@ -140,6 +142,28 @@ pub(crate) async fn build_admin_create_provider_record(
     if let Some(value) = normalize_pool_advanced_config(payload.pool_advanced)? {
         config_map.insert("pool_advanced".to_string(), value);
     }
+    if let Some(enabled) = payload.codex_fingerprint_convergence_enabled {
+        if provider_type != "codex" && enabled {
+            return Err(
+                "codex_fingerprint_convergence_enabled 仅适用于 provider_type=codex".to_string(),
+            );
+        }
+        if provider_type == "codex" {
+            let codex_config = config_map
+                .entry(crate::provider_transport::CODEX_FINGERPRINT_CONFIG_NAMESPACE.to_string())
+                .or_insert_with(|| json!({}));
+            let Some(codex_config) = codex_config.as_object_mut() else {
+                return Err("config.codex 必须是 JSON 对象".to_string());
+            };
+            codex_config.insert(
+                crate::provider_transport::CODEX_FINGERPRINT_ENABLED_CONFIG_KEY.to_string(),
+                json!(enabled),
+            );
+        }
+    }
+    if provider_type != "codex" {
+        remove_codex_fingerprint_config(&mut config_map);
+    }
     if let Some(value) = normalize_json_object(payload.failover_rules, "failover_rules")? {
         config_map.insert("failover_rules".to_string(), value);
     }
@@ -157,6 +181,10 @@ pub(crate) async fn build_admin_create_provider_record(
             config_map.insert("chat_pii_redaction".to_string(), value);
         }
     }
+    if let Some(enabled) = payload.responses_websocket_enabled {
+        set_responses_websocket_enabled(&mut config_map, enabled)?;
+    }
+    validate_responses_websocket_config(&config_map)?;
     let config = (!config_map.is_empty()).then_some(serde_json::Value::Object(config_map));
     crate::provider_transport::validate_anthropic_compatibility_profile_config(config.as_ref())
         .map_err(|_| "无效的 Anthropic compatibility profile".to_string())?;
@@ -203,4 +231,47 @@ pub(crate) async fn build_admin_create_provider_record(
     .with_timestamps(Some(now_unix_secs), Some(now_unix_secs));
 
     Ok((record, shift_existing_priorities_from))
+}
+
+fn remove_codex_fingerprint_config(config_map: &mut serde_json::Map<String, serde_json::Value>) {
+    let namespace = crate::provider_transport::CODEX_FINGERPRINT_CONFIG_NAMESPACE;
+    let key = crate::provider_transport::CODEX_FINGERPRINT_ENABLED_CONFIG_KEY;
+    let mut remove_namespace = false;
+    if let Some(codex_config) = config_map
+        .get_mut(namespace)
+        .and_then(|value| value.as_object_mut())
+    {
+        codex_config.remove(key);
+        remove_namespace = codex_config.is_empty();
+    }
+    if remove_namespace {
+        config_map.remove(namespace);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn removing_fingerprint_setting_preserves_other_codex_config() {
+        let mut config = json!({
+            "codex": {
+                "fingerprint_convergence_enabled": true,
+                "pass_through_cyber_flag_interrupt": true
+            },
+            "other": {"kept": true}
+        })
+        .as_object()
+        .expect("config object")
+        .clone();
+
+        super::remove_codex_fingerprint_config(&mut config);
+
+        assert_eq!(
+            config["codex"],
+            json!({"pass_through_cyber_flag_interrupt": true})
+        );
+        assert_eq!(config["other"], json!({"kept": true}));
+    }
 }

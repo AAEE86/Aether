@@ -73,6 +73,12 @@ export interface UsageRecordDetail {
   updated_at?: string | null
   response_time_updated_at?: string | null
   is_stream: boolean
+  is_websocket?: boolean
+  websocket_transport?: string | null
+  usage_available?: boolean
+  usage_pricing_available?: boolean
+  input_audio_tokens?: number | null
+  output_audio_tokens?: number | null
   upstream_is_stream?: boolean
   client_requested_stream?: boolean
   client_is_stream?: boolean
@@ -300,8 +306,10 @@ export const meApi = {
     return response.data
   },
 
-  async toggleApiKey(keyId: string): Promise<ApiKey> {
-    const response = await apiClient.patch<ApiKey>(`/api/users/me/api-keys/${keyId}`)
+  async toggleApiKey(keyId: string, isActive: boolean): Promise<ApiKey> {
+    const response = await apiClient.patch<ApiKey>(`/api/users/me/api-keys/${keyId}`, {
+      is_active: isActive,
+    })
     return response.data
   },
 
@@ -335,6 +343,8 @@ export const meApi = {
     timezone?: string
     tz_offset_minutes?: number
     search?: string  // 通用搜索：密钥名、模型名
+    api_format?: string
+    status?: string
     limit?: number
     offset?: number
   }): Promise<UsageResponse> {
@@ -368,6 +378,12 @@ export const meApi = {
       api_format?: string | null
       endpoint_api_format?: string | null
       is_stream?: boolean | null
+      is_websocket?: boolean | null
+      websocket_transport?: string | null
+      usage_available?: boolean | null
+      usage_pricing_available?: boolean | null
+      input_audio_tokens?: number | null
+      output_audio_tokens?: number | null
       upstream_is_stream?: boolean | null
       client_requested_stream?: boolean | null
       client_is_stream?: boolean | null

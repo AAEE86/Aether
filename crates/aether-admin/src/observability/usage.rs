@@ -7,7 +7,10 @@ use aether_billing::{
 use aether_data::repository::users::StoredUserSummary;
 use aether_data_contracts::repository::{
     provider_catalog::{StoredProviderCatalogEndpoint, StoredProviderCatalogProvider},
-    usage::{StoredRequestUsageAudit, StoredUsageAuditSummary, UsageBodyField},
+    usage::{
+        StoredRequestUsageAudit, StoredUsageAuditSummary, UsageBodyField,
+        LIVE_SESSION_METADATA_KEY, REALTIME_SESSION_METADATA_KEY,
+    },
 };
 use axum::{
     body::Body,
@@ -263,12 +266,17 @@ pub fn admin_usage_has_fallback(item: &StoredRequestUsageAudit) -> bool {
 }
 
 pub fn admin_usage_matches_status(item: &StoredRequestUsageAudit, status: Option<&str>) -> bool {
-    let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(status) = status
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+    else {
         return true;
     };
-    match status {
-        "stream" => item.is_stream,
-        "standard" => !item.is_stream,
+    match status.as_str() {
+        "stream" => item.is_stream && !item.is_websocket(),
+        "standard" => !item.is_stream && !item.is_websocket(),
+        "websocket" | "ws" => item.is_websocket(),
         "error" => {
             item.status_code
                 .is_some_and(|value| !(200..300).contains(&value))
@@ -1216,6 +1224,12 @@ fn admin_usage_active_request_json(
         "api_key_name": api_key_name,
         "provider_key_name": provider_key_name,
         "is_stream": item.is_stream,
+        "is_websocket": item.is_websocket(),
+        "websocket_transport": item.websocket_transport(),
+        "usage_available": item.usage_available(),
+        "usage_pricing_available": item.usage_pricing_available(),
+        "input_audio_tokens": item.realtime_input_audio_tokens(),
+        "output_audio_tokens": item.realtime_output_audio_tokens(),
         "upstream_is_stream": upstream_is_stream,
         "client_requested_stream": client_is_stream,
         "client_is_stream": client_is_stream,
@@ -1347,6 +1361,24 @@ pub fn admin_usage_record_json(
             item,
             "end_to_end_first_byte_time_ms"
         )),
+    );
+    object.insert("is_websocket".to_string(), json!(item.is_websocket()));
+    object.insert(
+        "websocket_transport".to_string(),
+        json!(item.websocket_transport()),
+    );
+    object.insert("usage_available".to_string(), json!(item.usage_available()));
+    object.insert(
+        "usage_pricing_available".to_string(),
+        json!(item.usage_pricing_available()),
+    );
+    object.insert(
+        "input_audio_tokens".to_string(),
+        json!(item.realtime_input_audio_tokens()),
+    );
+    object.insert(
+        "output_audio_tokens".to_string(),
+        json!(item.realtime_output_audio_tokens()),
     );
     object.insert("is_stream".to_string(), json!(item.is_stream));
     object.insert(
@@ -2443,6 +2475,16 @@ pub fn build_admin_usage_detail_payload(
         admin_usage_strip_settlement_metadata(object);
         admin_usage_strip_trace_metadata(object);
     }
+    let live_session = metadata
+        .as_object()
+        .and_then(|object| object.get(LIVE_SESSION_METADATA_KEY))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let realtime_session = metadata
+        .as_object()
+        .and_then(|object| object.get(REALTIME_SESSION_METADATA_KEY))
+        .cloned()
+        .unwrap_or(Value::Null);
     payload["user"] = match item.user_id.as_ref() {
         Some(user_id) => json!({
             "id": user_id,
@@ -2473,6 +2515,11 @@ pub fn build_admin_usage_detail_payload(
     payload["client_response_headers"] =
         item.client_response_headers.clone().unwrap_or(Value::Null);
     payload["metadata"] = metadata;
+    // Session summaries are also first-class detail fields. Keep the original
+    // values in `metadata` for backward compatibility while making the detail
+    // contract independent from the generic metadata viewer.
+    payload[LIVE_SESSION_METADATA_KEY] = live_session;
+    payload[REALTIME_SESSION_METADATA_KEY] = realtime_session;
     payload["routing"] = admin_usage_routing_json(item, provider_key_name);
     payload["body_capture"] = admin_usage_body_capture_json(item);
     payload["settlement"] = admin_usage_settlement_json(item);
@@ -2695,6 +2742,104 @@ mod tests {
             assert_eq!(payload["end_to_end_time_ms"], 10_626);
             assert_eq!(payload["end_to_end_first_byte_time_ms"], 10_120);
         }
+    }
+
+    #[test]
+    fn admin_usage_payloads_expose_websocket_transport() {
+        let item = StoredRequestUsageAudit {
+            request_metadata: Some(json!({
+                "websocket_mode": true,
+                "websocket_transport": "responses",
+                "usage_available": false,
+                "usage_pricing_available": false,
+                "realtime_session": {
+                    "input_audio_tokens": 7,
+                    "output_audio_tokens": 3,
+                },
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let record = admin_usage_record_json(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+        );
+        let active = admin_usage_active_request_json(&item, None, None, None);
+
+        assert_eq!(record["is_websocket"], true);
+        assert_eq!(active["is_websocket"], true);
+        assert_eq!(record["websocket_transport"], "responses");
+        assert_eq!(active["websocket_transport"], "responses");
+        assert_eq!(record["usage_available"], false);
+        assert_eq!(active["usage_available"], false);
+        assert_eq!(record["usage_pricing_available"], false);
+        assert_eq!(active["usage_pricing_available"], false);
+        assert_eq!(record["input_audio_tokens"], 7);
+        assert_eq!(active["input_audio_tokens"], 7);
+        assert_eq!(record["output_audio_tokens"], 3);
+        assert_eq!(active["output_audio_tokens"], 3);
+        assert!(admin_usage_matches_status(&item, Some("websocket")));
+        assert!(admin_usage_matches_status(&item, Some("ws")));
+        assert!(admin_usage_matches_status(&item, Some("WS")));
+        assert!(!admin_usage_matches_status(&item, Some("standard")));
+        assert!(!admin_usage_matches_status(&item, Some("stream")));
+    }
+
+    #[test]
+    fn admin_usage_detail_preserves_websocket_and_session_metadata() {
+        let live_session = json!({
+            "schema_version": "1",
+            "transport": "websocket",
+            "mode": "direct",
+            "state": "closed",
+            "client_frames": 4,
+            "upstream_frames": 8,
+        });
+        let realtime_session = json!({
+            "schema_version": "1",
+            "transport": "websocket",
+            "usage_state": "authoritative",
+            "input_audio_tokens": 7,
+            "output_audio_tokens": 3,
+        });
+        let item = StoredRequestUsageAudit {
+            request_type: Some("live".to_string()),
+            api_format: Some("codex:live".to_string()),
+            endpoint_api_format: Some("codex:live".to_string()),
+            is_stream: true,
+            request_metadata: Some(json!({
+                "websocket_mode": true,
+                "websocket_transport": "codex_live_direct",
+                "usage_available": false,
+                "usage_pricing_available": false,
+                "live_session": live_session,
+                "realtime_session": realtime_session,
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let payload = build_admin_usage_detail_payload(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+            false,
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(payload["is_websocket"], true);
+        assert_eq!(payload["websocket_transport"], "codex_live_direct");
+        assert_eq!(payload["live_session"], live_session);
+        assert_eq!(payload["realtime_session"], realtime_session);
+        assert_eq!(payload["metadata"]["live_session"], live_session);
+        assert_eq!(payload["metadata"]["realtime_session"], realtime_session);
     }
 
     #[test]

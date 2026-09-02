@@ -69,6 +69,7 @@ enum CodexOpenAiEndpointKind {
     Compact,
     Search,
     Images,
+    Live,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +235,40 @@ pub fn build_codex_model_catalog_metadata(cards: &[Value]) -> Value {
             "cards": cards,
         },
     })
+}
+
+/// Projects an upstream Codex catalog card onto an authorized Aether model name.
+///
+/// Catalog cards are versioned by Codex and may gain fields that Aether does not know about. Keep
+/// the matching card opaque: only the Aether-internal identity fields are removed and `slug` is
+/// replaced with the downstream model name. A non-empty, exact `id` or `slug` match is the only
+/// schema requirement.
+pub fn project_codex_catalog_model_card(
+    catalog_models: &[Value],
+    source_model: &str,
+    global_model: &str,
+) -> Option<Value> {
+    if source_model.trim().is_empty() || global_model.trim().is_empty() {
+        return None;
+    }
+
+    let mut card = catalog_models
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|card| {
+            ["id", "slug"].iter().any(|field| {
+                card.get(*field)
+                    .and_then(Value::as_str)
+                    .filter(|identity| !identity.trim().is_empty())
+                    .is_some_and(|identity| identity == source_model)
+            })
+        })?
+        .clone();
+
+    card.remove("id");
+    card.remove("api_formats");
+    card.insert("slug".to_string(), Value::String(global_model.to_string()));
+    Some(Value::Object(card))
 }
 
 fn codex_execution_model_card(card: &Value) -> Value {
@@ -618,6 +653,8 @@ fn codex_openai_endpoint_kind(
         Some(CodexOpenAiEndpointKind::Search)
     } else if is_openai_image_request(provider_api_format) {
         Some(CodexOpenAiEndpointKind::Images)
+    } else if aether_ai_formats::api_format_alias_matches(provider_api_format, "codex:live") {
+        Some(CodexOpenAiEndpointKind::Live)
     } else {
         None
     }
@@ -814,8 +851,24 @@ fn header_value_contains_media_type(value: &str, media_type: &str) -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodexAuthIdentity {
     pub account_id: Option<String>,
+    pub account_user_id: Option<String>,
+    pub user_id: Option<String>,
+    pub email: Option<String>,
+    pub codex_identity_fingerprint: Option<String>,
     pub is_fedramp: bool,
     pub uses_codex_backend: bool,
+}
+
+fn first_non_empty_codex_identity_string<'a>(
+    values: impl IntoIterator<Item = Option<&'a Value>>,
+) -> Option<String> {
+    values.into_iter().find_map(|value| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
 }
 
 pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> CodexAuthIdentity {
@@ -831,29 +884,72 @@ pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> Cod
     let namespaced_auth = value
         .get("https://api.openai.com/auth")
         .and_then(Value::as_object);
+    let namespaced_profile = value
+        .get("https://api.openai.com/profile")
+        .and_then(Value::as_object);
     let agent_identity = value
         .get("agent_identity")
         .or_else(|| value.get("agentIdentity"))
         .and_then(Value::as_object);
-    let account_id = value
-        .get("account_id")
-        .or_else(|| value.get("accountId"))
-        .or_else(|| value.get("chatgpt_account_id"))
-        .or_else(|| value.get("chatgptAccountId"))
-        .or_else(|| namespaced_auth.and_then(|auth| auth.get("chatgpt_account_id")))
-        .or_else(|| {
-            agent_identity.and_then(|identity| {
-                identity
-                    .get("account_id")
-                    .or_else(|| identity.get("accountId"))
-                    .or_else(|| identity.get("chatgpt_account_id"))
-                    .or_else(|| identity.get("chatgptAccountId"))
-            })
-        })
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+    let account_id = first_non_empty_codex_identity_string([
+        value.get("account_id"),
+        value.get("accountId"),
+        value.get("chatgpt_account_id"),
+        value.get("chatgptAccountId"),
+        namespaced_auth.and_then(|auth| auth.get("chatgpt_account_id")),
+        agent_identity.and_then(|identity| identity.get("account_id")),
+        agent_identity.and_then(|identity| identity.get("accountId")),
+        agent_identity.and_then(|identity| identity.get("chatgpt_account_id")),
+        agent_identity.and_then(|identity| identity.get("chatgptAccountId")),
+    ]);
+    let account_user_id = first_non_empty_codex_identity_string([
+        value.get("account_user_id"),
+        value.get("accountUserId"),
+        value.get("chatgpt_account_user_id"),
+        value.get("chatgptAccountUserId"),
+        namespaced_auth.and_then(|auth| auth.get("chatgpt_account_user_id")),
+        agent_identity.and_then(|identity| identity.get("account_user_id")),
+        agent_identity.and_then(|identity| identity.get("accountUserId")),
+        agent_identity.and_then(|identity| identity.get("chatgpt_account_user_id")),
+        agent_identity.and_then(|identity| identity.get("chatgptAccountUserId")),
+    ]);
+    let user_id = first_non_empty_codex_identity_string([
+        value.get("user_id"),
+        value.get("userId"),
+        value.get("chatgpt_user_id"),
+        value.get("chatgptUserId"),
+        namespaced_auth.and_then(|auth| auth.get("chatgpt_user_id")),
+        agent_identity.and_then(|identity| identity.get("user_id")),
+        agent_identity.and_then(|identity| identity.get("userId")),
+        agent_identity.and_then(|identity| identity.get("chatgpt_user_id")),
+        agent_identity.and_then(|identity| identity.get("chatgptUserId")),
+        value.get("sub"),
+    ]);
+    let email = first_non_empty_codex_identity_string([
+        value.get("email"),
+        value.get("email_address"),
+        value.get("emailAddress"),
+        value.get("outlook_email"),
+        namespaced_auth.and_then(|auth| auth.get("email")),
+        namespaced_auth.and_then(|auth| auth.get("email_address")),
+        namespaced_auth.and_then(|auth| auth.get("emailAddress")),
+        namespaced_auth.and_then(|auth| auth.get("outlook_email")),
+        namespaced_profile.and_then(|profile| profile.get("email")),
+        namespaced_profile.and_then(|profile| profile.get("email_address")),
+        namespaced_profile.and_then(|profile| profile.get("emailAddress")),
+        agent_identity.and_then(|identity| identity.get("email")),
+        agent_identity.and_then(|identity| identity.get("email_address")),
+        agent_identity.and_then(|identity| identity.get("emailAddress")),
+        agent_identity.and_then(|identity| identity.get("outlook_email")),
+    ]);
+    let codex_identity_fingerprint = first_non_empty_codex_identity_string([
+        value.get("codex_identity_fingerprint"),
+        value.get("codex-identity-fingerprint"),
+        value.get("codexIdentityFingerprint"),
+        agent_identity.and_then(|identity| identity.get("codex_identity_fingerprint")),
+        agent_identity.and_then(|identity| identity.get("codex-identity-fingerprint")),
+        agent_identity.and_then(|identity| identity.get("codexIdentityFingerprint")),
+    ]);
     let is_fedramp = value
         .get("is_fedramp")
         .or_else(|| value.get("chatgpt_account_is_fedramp"))
@@ -870,6 +966,9 @@ pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> Cod
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let uses_codex_backend = account_id.is_some()
+        || account_user_id.is_some()
+        || user_id.is_some()
+        || codex_identity_fingerprint.is_some()
         || value
             .get("provider_type")
             .and_then(Value::as_str)
@@ -882,6 +981,10 @@ pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> Cod
 
     CodexAuthIdentity {
         account_id,
+        account_user_id,
+        user_id,
+        email,
+        codex_identity_fingerprint,
         is_fedramp,
         uses_codex_backend,
     }
@@ -1224,11 +1327,23 @@ fn is_codex_responses_lite_additional_tools_item(value: &Value) -> bool {
         .is_some_and(|item_type| item_type == "additional_tools")
 }
 
+fn is_codex_responses_lite_static_additional_tools_item(value: &Value) -> bool {
+    is_codex_responses_lite_additional_tools_item(value)
+        && value.get("role").and_then(Value::as_str) == Some("developer")
+        && value.get("tools").is_some_and(Value::is_array)
+}
+
 fn codex_tool_type_accepts_top_level_name(tool_type: &str) -> bool {
     matches!(tool_type, "function" | "custom" | "namespace")
 }
 
-fn is_codex_client_executed_tool(tool: &Value) -> bool {
+/// Returns whether a tool is represented in the Responses Lite synthetic
+/// `additional_tools` item and therefore becomes part of stored history.
+///
+/// Keep callers that compare raw client configuration with the synthetic wire
+/// prefix on this predicate so hosted/server-executed tools do not create a
+/// false configuration change.
+pub fn codex_responses_lite_tool_is_client_executed(tool: &Value) -> bool {
     match tool.get("type").and_then(Value::as_str) {
         Some("function" | "custom" | "namespace") => true,
         Some("tool_search") => tool.get("execution").and_then(Value::as_str) == Some("client"),
@@ -1243,7 +1358,7 @@ fn retain_codex_client_executed_tools(additional_tools: &mut Value) {
     else {
         return;
     };
-    tools.retain(is_codex_client_executed_tool);
+    tools.retain(codex_responses_lite_tool_is_client_executed);
 }
 
 fn is_codex_responses_lite_instruction_item(value: &Value) -> bool {
@@ -1311,6 +1426,7 @@ fn codex_responses_lite_supports_request_body(provider_request_body: Option<&Val
 fn apply_codex_responses_lite_body_contract(
     body_object: &mut serde_json::Map<String, Value>,
     capabilities: &CodexResponsesModelCapabilities,
+    websocket_continuation: bool,
 ) {
     if !capabilities.use_responses_lite {
         return;
@@ -1335,7 +1451,7 @@ fn apply_codex_responses_lite_body_contract(
         .map(|tools| {
             tools
                 .into_iter()
-                .filter(is_codex_client_executed_tool)
+                .filter(codex_responses_lite_tool_is_client_executed)
                 .collect::<Vec<_>>()
         });
     let top_level_instructions = body_object
@@ -1346,6 +1462,41 @@ fn apply_codex_responses_lite_body_contract(
         .get_mut("input")
         .and_then(Value::as_array_mut)
         .expect("Responses Lite input was validated as an array");
+
+    // `previous_response_id` already references the prior response's stored
+    // input. The Codex client sends only the new input items on these turns;
+    // replaying the current top-level tools/instructions as synthetic history
+    // would permanently append another copy on every tool round-trip. Keep
+    // the Lite wire requirements below, but do not synthesize static config
+    // for a continuation.
+    if websocket_continuation {
+        // A few compatible clients send the already-normalized Lite prefix
+        // instead of top-level fields. It is still inherited through
+        // `previous_response_id`, so remove every repeated leading prefix
+        // item. Limit this to the prefix: a later developer message can be
+        // genuine incremental input and must not be deleted by shape alone.
+        let mut repeated_prefix_len = 0;
+        while input
+            .get(repeated_prefix_len)
+            .is_some_and(is_codex_responses_lite_static_additional_tools_item)
+        {
+            repeated_prefix_len += 1;
+            if input
+                .get(repeated_prefix_len)
+                .is_some_and(is_codex_responses_lite_instruction_item)
+            {
+                repeated_prefix_len += 1;
+            }
+        }
+        if repeated_prefix_len > 0 {
+            input.drain(..repeated_prefix_len);
+        }
+        for item in input.iter_mut() {
+            strip_codex_responses_lite_image_details(item);
+        }
+        body_object.insert("parallel_tool_calls".to_string(), json!(false));
+        return;
+    }
 
     let existing_additional_tools = input
         .iter()
@@ -1668,6 +1819,50 @@ pub fn apply_codex_openai_responses_special_body_edits_with_source_model_and_cap
     model_capabilities: Option<&CodexResponsesModelCapabilities>,
     body_rules: Option<&Value>,
 ) {
+    apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities_inner(
+        provider_request_body,
+        provider_type,
+        provider_api_format,
+        provider_model,
+        source_model,
+        model_capabilities,
+        body_rules,
+        false,
+    );
+}
+
+pub fn apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities(
+    provider_request_body: &mut Value,
+    provider_type: &str,
+    provider_api_format: &str,
+    provider_model: &str,
+    source_model: &str,
+    model_capabilities: Option<&CodexResponsesModelCapabilities>,
+    body_rules: Option<&Value>,
+) {
+    apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities_inner(
+        provider_request_body,
+        provider_type,
+        provider_api_format,
+        provider_model,
+        source_model,
+        model_capabilities,
+        body_rules,
+        true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities_inner(
+    provider_request_body: &mut Value,
+    provider_type: &str,
+    provider_api_format: &str,
+    provider_model: &str,
+    source_model: &str,
+    model_capabilities: Option<&CodexResponsesModelCapabilities>,
+    body_rules: Option<&Value>,
+    websocket_continuation: bool,
+) {
     if !is_codex_openai_responses_request(provider_type, provider_api_format) {
         return;
     }
@@ -1760,7 +1955,7 @@ pub fn apply_codex_openai_responses_special_body_edits_with_source_model_and_cap
         capabilities,
         body_rules,
     );
-    apply_codex_responses_lite_body_contract(body_object, capabilities);
+    apply_codex_responses_lite_body_contract(body_object, capabilities, websocket_continuation);
     strip_codex_cache_control_fields(provider_request_body);
     apply_codex_openai_responses_compact_body_edits(
         provider_request_body,
@@ -1953,7 +2148,13 @@ pub fn apply_codex_openai_special_headers(
         }
         return;
     }
-    if endpoint_kind == CodexOpenAiEndpointKind::Images {
+    if matches!(
+        endpoint_kind,
+        CodexOpenAiEndpointKind::Images | CodexOpenAiEndpointKind::Live
+    ) {
+        if endpoint_kind == CodexOpenAiEndpointKind::Live {
+            remove_btree_header(provider_request_headers, CODEX_RESPONSES_LITE_HEADER);
+        }
         return;
     }
 
@@ -1987,8 +2188,10 @@ mod tests {
         apply_codex_openai_responses_lite_header_with_capabilities,
         apply_codex_openai_responses_special_body_edits,
         apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities,
+        apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities,
         apply_codex_openai_special_headers, apply_openai_responses_compact_special_body_edits,
         build_codex_model_catalog_metadata, bundled_codex_model_cards, effective_codex_model_cards,
+        parse_codex_auth_identity, project_codex_catalog_model_card,
         resolve_codex_responses_model_capabilities,
         validate_codex_openai_responses_compact_request_contract, CODEX_CLIENT_ORIGINATOR,
         CODEX_CLIENT_USER_AGENT, CODEX_OPENAI_IMAGE_INTERNAL_MODEL,
@@ -2089,6 +2292,105 @@ mod tests {
             headers.get("x-openai-internal-codex-responses-lite"),
             Some(&"true".to_string())
         );
+    }
+
+    #[test]
+    fn projects_current_codex_catalog_card_as_opaque_json() {
+        let card = json!({
+            "id": "upstream-internal-id",
+            "slug": "gpt-future-dynamic",
+            "api_formats": ["openai:responses"],
+            "model_messages": {
+                "instructions_template": "Current instructions for {{ personality }}"
+            },
+            "available_in_plans": ["plus", "pro"],
+            "future_capability": {
+                "mode": "native",
+                "unknown_nested_field": [1, 2, 3]
+            }
+        });
+
+        let projected =
+            project_codex_catalog_model_card(&[card], "gpt-future-dynamic", "future-model-alias")
+                .expect("current Codex card should project");
+
+        assert_eq!(projected["slug"], "future-model-alias");
+        assert!(projected.get("id").is_none());
+        assert!(projected.get("api_formats").is_none());
+        assert_eq!(
+            projected["model_messages"]["instructions_template"],
+            "Current instructions for {{ personality }}"
+        );
+        assert_eq!(projected["available_in_plans"], json!(["plus", "pro"]));
+        assert_eq!(
+            projected["future_capability"],
+            json!({
+                "mode": "native",
+                "unknown_nested_field": [1, 2, 3]
+            })
+        );
+    }
+
+    #[test]
+    fn projects_legacy_codex_catalog_card_by_id_without_known_schema_fields() {
+        let card = json!({
+            "id": "gpt-future-dynamic",
+            "base_instructions": "Legacy instructions",
+            "available_in_plans": ["team"],
+            "future_capability": true
+        });
+
+        let projected = project_codex_catalog_model_card(
+            &[json!("not an object"), card],
+            "gpt-future-dynamic",
+            "legacy-model-alias",
+        )
+        .expect("legacy Codex card should project by id");
+
+        assert_eq!(
+            projected,
+            json!({
+                "slug": "legacy-model-alias",
+                "base_instructions": "Legacy instructions",
+                "available_in_plans": ["team"],
+                "future_capability": true
+            })
+        );
+    }
+
+    #[test]
+    fn codex_catalog_projection_requires_a_non_empty_exact_identity() {
+        let cards = [
+            json!(null),
+            json!({}),
+            json!({"id": "", "slug": "   "}),
+            json!({"slug": "gpt-future-dynamic-preview"}),
+        ];
+
+        assert!(project_codex_catalog_model_card(
+            &cards,
+            "gpt-future-dynamic",
+            "future-model-alias"
+        )
+        .is_none());
+        assert!(project_codex_catalog_model_card(
+            &[json!({"slug": "gpt-future-dynamic"})],
+            "",
+            "future-model-alias"
+        )
+        .is_none());
+        assert!(project_codex_catalog_model_card(
+            &[json!({"slug": "gpt-future-dynamic"})],
+            " gpt-future-dynamic ",
+            "future-model-alias"
+        )
+        .is_none());
+        assert!(project_codex_catalog_model_card(
+            &[json!({"slug": "gpt-future-dynamic"})],
+            "gpt-future-dynamic",
+            "   "
+        )
+        .is_none());
     }
 
     #[test]
@@ -2544,6 +2846,41 @@ mod tests {
     }
 
     #[test]
+    fn codex_auth_identity_parses_member_claims_and_persisted_fingerprint() {
+        let identity = parse_codex_auth_identity(Some(
+            &json!({
+                "provider_type": "codex",
+                "accountId": "workspace-1",
+                "codexIdentityFingerprint": "codex-persisted-fingerprint:v1:stable",
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_user_id": "workspace-member-1",
+                    "chatgpt_user_id": "user-1"
+                },
+                "https://api.openai.com/profile": {
+                    "email": "Alice@Example.com"
+                }
+            })
+            .to_string(),
+        ));
+
+        assert_eq!(identity.account_id.as_deref(), Some("workspace-1"));
+        assert_eq!(
+            identity.account_user_id.as_deref(),
+            Some("workspace-member-1")
+        );
+        assert_eq!(identity.user_id.as_deref(), Some("user-1"));
+        assert_eq!(identity.email.as_deref(), Some("Alice@Example.com"));
+        assert_eq!(
+            identity.codex_identity_fingerprint.as_deref(),
+            Some("codex-persisted-fingerprint:v1:stable")
+        );
+        assert!(identity.uses_codex_backend);
+
+        let sub_fallback = parse_codex_auth_identity(Some(r#"{"sub":"legacy-user-1"}"#));
+        assert_eq!(sub_fallback.user_id.as_deref(), Some("legacy-user-1"));
+    }
+
+    #[test]
     fn codex_identity_headers_are_derived_only_from_auth_config() {
         let mut headers = std::collections::BTreeMap::from([
             ("chatgpt-account-id".to_string(), "spoofed".to_string()),
@@ -2645,6 +2982,42 @@ mod tests {
         assert!(!headers.contains_key(CODEX_RESPONSES_LITE_HEADER));
         assert!(!headers.contains_key("openai-beta"));
         assert!(!headers.contains_key("accept"));
+    }
+
+    #[test]
+    fn codex_live_uses_account_identity_without_responses_lite_headers() {
+        let mut headers = std::collections::BTreeMap::from([(
+            CODEX_RESPONSES_LITE_HEADER.to_string(),
+            "true".to_string(),
+        )]);
+
+        apply_codex_openai_special_headers(
+            &mut headers,
+            &json!({"model": "gpt-live"}),
+            &http::HeaderMap::new(),
+            "codex",
+            "codex:live",
+            Some("request-live"),
+            Some(r#"{"account_id":"account-live","is_fedramp":true}"#),
+        );
+
+        assert_eq!(
+            headers.get("chatgpt-account-id").map(String::as_str),
+            Some("account-live")
+        );
+        assert_eq!(
+            headers.get("x-openai-fedramp").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            headers.get("user-agent").map(String::as_str),
+            Some(CODEX_CLIENT_USER_AGENT)
+        );
+        assert_eq!(
+            headers.get("originator").map(String::as_str),
+            Some(CODEX_CLIENT_ORIGINATOR)
+        );
+        assert!(!headers.contains_key(CODEX_RESPONSES_LITE_HEADER));
     }
 
     #[test]
@@ -3059,6 +3432,167 @@ mod tests {
         assert_eq!(
             existing_additional_tools["input"][0]["tools"],
             json!([{"type": "function", "name": "shell", "parameters": {}}])
+        );
+    }
+
+    #[test]
+    fn codex_responses_lite_websocket_continuations_do_not_reappend_static_config() {
+        let incremental_input = json!([
+            {
+                "type": "reasoning",
+                "id": "rs_provider_123",
+                "content": [{
+                    "type": "reasoning_text",
+                    "text": "Pass the provider reasoning state through unchanged."
+                }],
+                "encrypted_content": "opaque-provider-state"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "small result"
+            }
+        ]);
+        let mut provider_request_body = json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "previous_response_id": "resp_123",
+            "instructions": "Static developer instructions.",
+            "tools": [{
+                "type": "function",
+                "name": "lookup",
+                "parameters": {"type": "object"}
+            }],
+            "input": incremental_input.clone()
+        });
+
+        apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+            None,
+            None,
+        );
+
+        assert!(provider_request_body.get("previous_response_id").is_none());
+        assert!(provider_request_body.get("instructions").is_none());
+        assert!(provider_request_body.get("tools").is_none());
+        assert_eq!(provider_request_body["input"], incremental_input);
+        assert_eq!(provider_request_body["parallel_tool_calls"], false);
+
+        let once = provider_request_body.clone();
+        apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+            None,
+            None,
+        );
+        assert_eq!(provider_request_body, once);
+    }
+
+    #[test]
+    fn codex_responses_lite_websocket_continuation_removes_only_the_static_prefix() {
+        let later_developer_message = json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "genuine incremental input"}]
+        });
+        let mut provider_request_body = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [{"type": "function", "name": "lookup", "parameters": {}}]
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "static instructions"}]
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+                later_developer_message.clone()
+            ]
+        });
+
+        apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+            None,
+            None,
+        );
+
+        let input = provider_request_body["input"]
+            .as_array()
+            .expect("continuation input");
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[1], later_developer_message);
+    }
+
+    #[test]
+    fn codex_responses_lite_http_body_cannot_opt_into_websocket_continuation_edits() {
+        let mut provider_request_body = json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "previous_response_id": "resp_123",
+            "instructions": "Static developer instructions.",
+            "tools": [{"type": "function", "name": "lookup", "parameters": {}}],
+            "input": [{"type": "message", "role": "user", "content": []}]
+        });
+
+        apply_codex_openai_responses_special_body_edits(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+        );
+
+        assert!(provider_request_body.get("previous_response_id").is_none());
+        assert_eq!(
+            provider_request_body["input"][0]["type"],
+            "additional_tools"
+        );
+        assert_eq!(provider_request_body["input"][1]["role"], "developer");
+    }
+
+    #[test]
+    fn codex_responses_lite_null_previous_id_is_an_independent_turn() {
+        let mut provider_request_body = json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "previous_response_id": null,
+            "instructions": "Fresh instructions.",
+            "tools": [{"type": "function", "name": "lookup", "parameters": {}}],
+            "input": [{"type": "message", "role": "user", "content": []}]
+        });
+
+        apply_codex_openai_responses_special_body_edits(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+        );
+
+        assert!(provider_request_body.get("previous_response_id").is_none());
+        assert_eq!(
+            provider_request_body["input"][0]["type"],
+            "additional_tools"
+        );
+        assert_eq!(provider_request_body["input"][1]["role"], "developer");
+        assert_eq!(
+            provider_request_body["input"][1]["content"][0]["text"],
+            "Fresh instructions."
         );
     }
 

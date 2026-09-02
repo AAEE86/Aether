@@ -5,6 +5,7 @@ pub mod auth;
 mod auth_config;
 mod cache;
 pub mod claude_code;
+mod codex_fingerprint;
 pub mod conversion;
 mod diagnostics;
 pub mod gemini_cli;
@@ -55,6 +56,11 @@ pub use anthropic_compat::{
 pub use auth::{build_passthrough_headers, ensure_upstream_auth_header};
 pub use auth_config::apply_local_auth_config_header_overrides;
 pub use cache::{provider_transport_snapshot_looks_refreshed, ProviderTransportSnapshotCacheKey};
+pub use codex_fingerprint::{
+    apply_codex_fingerprint_convergence, apply_codex_fingerprint_convergence_with_context,
+    codex_fingerprint_convergence_enabled, CodexFingerprintConvergenceContext,
+    CODEX_FINGERPRINT_CONFIG_NAMESPACE, CODEX_FINGERPRINT_ENABLED_CONFIG_KEY,
+};
 pub use conversion::{
     candidate_common_transport_skip_reason, candidate_transport_pair_skip_reason,
     request_conversion_direct_auth, request_conversion_enabled_for_transport,
@@ -140,6 +146,7 @@ pub use rules::{
 pub use same_format_provider::{
     build_same_format_provider_headers, build_same_format_provider_request_body,
     build_same_format_provider_request_body_with_compatibility_report,
+    build_same_format_provider_request_body_with_compatibility_report_and_reasoning_replay_policy,
     build_same_format_provider_upstream_url, classify_same_format_provider_request_behavior,
     classify_same_format_provider_request_behavior_for_operation,
     enforce_same_format_provider_api_operation_body_policy,

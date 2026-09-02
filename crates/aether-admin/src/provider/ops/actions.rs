@@ -17,6 +17,7 @@ pub fn parse_query_balance_payload(
         "generic_api" | "new_api" | "anyrouter" | "done_hub" => {
             parse_new_api_balance_payload(action_config, response_json)
         }
+        "usage_api" => parse_usage_api_balance_payload(action_config, response_json),
         "cubence" => parse_cubence_balance_payload(action_config, response_json),
         "nekocode" => parse_nekocode_balance_payload(response_json),
         _ => Err("Provider 操作仅支持 Rust execution runtime".to_string()),
@@ -201,6 +202,57 @@ fn parse_new_api_balance_payload(
             .and_then(Value::as_str)
             .unwrap_or("USD"),
         Map::new(),
+    ))
+}
+
+fn parse_usage_api_balance_payload(
+    action_config: &Map<String, Value>,
+    response_json: &Value,
+) -> Result<Value, String> {
+    let data = response_json
+        .as_object()
+        .ok_or_else(|| "响应格式无效".to_string())?;
+    let is_valid = data
+        .get("is_active")
+        .and_then(Value::as_bool)
+        .or_else(|| data.get("isValid").and_then(Value::as_bool));
+    if is_valid == Some(false) {
+        return Err("API Key 无效或已停用".to_string());
+    }
+
+    let quota = data.get("quota").and_then(Value::as_object);
+    let remaining = admin_provider_ops_value_as_f64(data.get("remaining"))
+        .or_else(|| quota.and_then(|quota| admin_provider_ops_value_as_f64(quota.get("remaining"))))
+        .or_else(|| admin_provider_ops_value_as_f64(data.get("balance")))
+        .ok_or_else(|| "响应缺少余额字段".to_string())?;
+    let currency = data
+        .get("unit")
+        .and_then(Value::as_str)
+        .or_else(|| quota.and_then(|quota| quota.get("unit").and_then(Value::as_str)))
+        .or_else(|| action_config.get("currency").and_then(Value::as_str))
+        .unwrap_or("USD");
+
+    let mut extra = Map::new();
+    extra.insert(
+        "is_valid".to_string(),
+        Value::Bool(is_valid.unwrap_or(true)),
+    );
+    if let Some(value) = data.get("balance") {
+        extra.insert("balance".to_string(), value.clone());
+    }
+    if let Some(value) = data.get("planName").or_else(|| data.get("plan_name")) {
+        extra.insert("plan_name".to_string(), value.clone());
+    }
+    if let Some(value) = data.get("mode") {
+        extra.insert("mode".to_string(), value.clone());
+    }
+
+    Ok(build_balance_data(
+        None,
+        None,
+        Some(remaining),
+        currency,
+        extra,
     ))
 }
 
@@ -469,7 +521,7 @@ mod tests {
         attach_balance_checkin_outcome, parse_query_balance_payload, parse_sub2api_balance_payload,
         ProviderOpsCheckinOutcome,
     };
-    use serde_json::json;
+    use serde_json::{json, Map};
 
     #[test]
     fn anyrouter_single_request_parser_uses_usage_fields() {
@@ -488,6 +540,48 @@ mod tests {
 
         assert_eq!(payload["total_available"], json!(5.0));
         assert_eq!(payload["total_used"], json!(1.0));
+    }
+
+    #[test]
+    fn usage_api_parser_reads_remaining_and_unit() {
+        let payload = parse_query_balance_payload(
+            "usage_api",
+            &json!({ "currency": "USD" })
+                .as_object()
+                .cloned()
+                .expect("config"),
+            &json!({
+                "remaining": 42.5,
+                "balance": 42.5,
+                "unit": "USD",
+                "isValid": true,
+                "planName": "Example Plan"
+            }),
+        )
+        .expect("payload should parse");
+
+        assert_eq!(payload["total_available"], json!(42.5));
+        assert_eq!(payload["currency"], json!("USD"));
+        assert_eq!(payload["extra"]["plan_name"], json!("Example Plan"));
+        assert_eq!(payload["extra"]["is_valid"], json!(true));
+    }
+
+    #[test]
+    fn usage_api_parser_falls_back_to_nested_quota() {
+        let payload = parse_query_balance_payload(
+            "usage_api",
+            &Map::new(),
+            &json!({
+                "quota": {
+                    "remaining": "12.5",
+                    "unit": "CNY"
+                }
+            }),
+        )
+        .expect("payload should parse");
+
+        assert_eq!(payload["total_available"], json!(12.5));
+        assert_eq!(payload["currency"], json!("CNY"));
     }
 
     #[test]

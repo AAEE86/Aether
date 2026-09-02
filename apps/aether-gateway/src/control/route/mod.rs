@@ -212,7 +212,7 @@ pub(crate) fn classify_control_route(
     .or_else(|| oauth::classify_oauth_route(method, &normalized_path))
     .or_else(|| admin::classify_admin_route(method, &normalized_path))
     .or_else(|| internal::classify_internal_route(method, &normalized_path))
-    .or_else(|| ai::classify_ai_public_route(method, &normalized_path, headers))?;
+    .or_else(|| ai::classify_ai_public_route(method, &normalized_path, uri.query(), headers))?;
 
     let mut decision = classified.into_decision(normalized_path);
     if let Some(signature) = decision.auth_endpoint_signature.as_deref() {
@@ -247,8 +247,7 @@ pub(super) fn detect_public_models_auth_signature(uri: &Uri, headers: &http::Hea
 
     let has_codex_client_version = uri.path() == "/v1/models"
         && uri.query().is_some_and(|query| {
-            url::form_urlencoded::parse(query.as_bytes())
-                .any(|(key, value)| key == "client_version" && !value.trim().is_empty())
+            url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "client_version")
         });
     if has_codex_client_version {
         return "openai:responses".to_string();
