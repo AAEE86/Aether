@@ -318,8 +318,7 @@ mod tests {
     use super::{
         decode_gemini_tool_signature_carrier, encode_gemini_tool_signature_carrier_with_direction,
         normalize_openai_responses_message_item_ids, openai_responses_message_item_id,
-        openai_responses_request_operation,
-        openai_responses_synthetic_reasoning_item_id,
+        openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,
         strip_incompatible_openai_responses_reasoning_items,
         strip_incompatible_openai_responses_reasoning_items_with_policy,
         GeminiToolSignatureCarrierDirection, OpenAiResponsesReasoningReplayPolicy,
@@ -414,14 +413,8 @@ mod tests {
 
     #[test]
     fn synthetic_message_item_ids_are_stable_and_start_with_msg() {
-        let first = openai_responses_message_item_id(
-            "1c938e58-32a8-4d28-9c34-538d78076895",
-            0,
-        );
-        let second = openai_responses_message_item_id(
-            "1c938e58-32a8-4d28-9c34-538d78076895",
-            0,
-        );
+        let first = openai_responses_message_item_id("1c938e58-32a8-4d28-9c34-538d78076895", 0);
+        let second = openai_responses_message_item_id("1c938e58-32a8-4d28-9c34-538d78076895", 0);
         let other = openai_responses_message_item_id("chatcmpl-123", 1);
 
         assert!(first.starts_with("msg_"));
@@ -442,7 +435,9 @@ mod tests {
 
         assert_eq!(normalize_openai_responses_message_item_ids(&mut body), 1);
         let input = body["input"].as_array().expect("input array");
-        assert!(input[0]["id"].as_str().is_some_and(|id| id.starts_with("msg_")));
+        assert!(input[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("msg_")));
         assert_eq!(input[1]["id"], "msg_provider_123");
         assert_eq!(input[2].get("id"), Some(&json!("legacy_call")));
         assert!(input[3].get("id").is_none());

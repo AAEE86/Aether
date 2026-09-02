@@ -106,10 +106,8 @@ pub(crate) fn provider_pool_model_quota_exhausted(
             })
             .collect::<Vec<_>>();
         if !model_matches.is_empty() {
-            let exhausted = provider_pool_explicit_model_windows_exhausted(
-                model_matches,
-                observed_at,
-            );
+            let exhausted =
+                provider_pool_explicit_model_windows_exhausted(model_matches, observed_at);
             if resolved.is_none()
                 || provider_pool_should_replace_model_quota_resolution(
                     resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
@@ -130,10 +128,7 @@ pub(crate) fn provider_pool_model_quota_exhausted(
             .filter(|window| provider_pool_window_family_matches_model(window, &requested))
             .collect::<Vec<_>>();
         if !family_matches.is_empty() {
-            let exhausted = provider_pool_any_window_exhausted(
-                family_matches,
-                observed_at,
-            );
+            let exhausted = provider_pool_any_window_exhausted(family_matches, observed_at);
             if resolved.is_none()
                 || provider_pool_should_replace_model_quota_resolution(
                     resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
@@ -234,7 +229,10 @@ fn provider_pool_window_is_generic(window: &Map<String, Value>) -> bool {
         return false;
     }
 
-    let code = window.get("code").and_then(Value::as_str).unwrap_or_default();
+    let code = window
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let family = code
         .split_once(['_', ':', '/'])
         .map(|(prefix, _)| prefix)
@@ -248,8 +246,17 @@ fn provider_pool_window_is_generic(window: &Map<String, Value>) -> bool {
             .is_some_and(|scope| scope.trim().eq_ignore_ascii_case("account"));
     }
     [
-        "weekly", "5h", "daily", "monthly", "primary", "secondary", "account", "quota",
-        "window", "rate", "reset",
+        "weekly",
+        "5h",
+        "daily",
+        "monthly",
+        "primary",
+        "secondary",
+        "account",
+        "quota",
+        "window",
+        "rate",
+        "reset",
     ]
     .contains(&family.as_str())
 }
@@ -301,8 +308,7 @@ fn provider_pool_window_family_matches_model(
         .map(|scope| scope.trim().to_ascii_lowercase());
     // A model-scoped window without an explicit model must not accidentally
     // match a token from its opaque code.
-    if explicit_scope.as_deref() == Some("model")
-        || provider_pool_window_has_explicit_model(window)
+    if explicit_scope.as_deref() == Some("model") || provider_pool_window_has_explicit_model(window)
     {
         return false;
     }
@@ -373,9 +379,26 @@ fn provider_pool_is_specific_model_token(token: &str) -> bool {
     token.len() >= 4
         && !token.chars().all(|character| character.is_ascii_digit())
         && ![
-            "auto", "base", "claude", "codex", "default", "fast", "flash", "free",
-            "gemini", "gpt", "latest", "mini", "model", "plus", "pro", "reasoning",
-            "team", "think", "thinking", "vendor",
+            "auto",
+            "base",
+            "claude",
+            "codex",
+            "default",
+            "fast",
+            "flash",
+            "free",
+            "gemini",
+            "gpt",
+            "latest",
+            "mini",
+            "model",
+            "plus",
+            "pro",
+            "reasoning",
+            "team",
+            "think",
+            "thinking",
+            "vendor",
         ]
         .contains(&token)
 }
@@ -394,9 +417,9 @@ fn provider_pool_window_has_explicit_model(window: &Map<String, Value>) -> bool 
     .iter()
     .any(|key| match window.get(*key) {
         Some(Value::String(value)) => !value.trim().is_empty(),
-        Some(Value::Array(values)) => values.iter().any(|value| {
-            value.as_str().is_some_and(|value| !value.trim().is_empty())
-        }),
+        Some(Value::Array(values)) => values
+            .iter()
+            .any(|value| value.as_str().is_some_and(|value| !value.trim().is_empty())),
         _ => false,
     })
 }
@@ -610,8 +633,12 @@ fn provider_pool_quota_window_is_exhausted(window: &Map<String, Value>) -> bool 
     provider_pool_json_bool(window.get("is_exhausted"))
         .or_else(|| provider_pool_json_bool(window.get("exhausted")))
         .or_else(|| {
-            provider_pool_json_f64(window.get("used_ratio").or_else(|| window.get("usage_ratio")))
-                .map(|value| value >= 1.0 - 1e-6)
+            provider_pool_json_f64(
+                window
+                    .get("used_ratio")
+                    .or_else(|| window.get("usage_ratio")),
+            )
+            .map(|value| value >= 1.0 - 1e-6)
         })
         .or_else(|| {
             provider_pool_json_f64(window.get("used_percent")).map(|value| value >= 100.0 - 1e-6)
@@ -625,8 +652,7 @@ fn provider_pool_quota_window_is_exhausted(window: &Map<String, Value>) -> bool 
             .map(|value| value <= 1e-6)
         })
         .or_else(|| {
-            provider_pool_json_f64(window.get("remaining_percent"))
-                .map(|value| value <= 1e-6)
+            provider_pool_json_f64(window.get("remaining_percent")).map(|value| value <= 1e-6)
         })
         .or_else(|| {
             let remaining = provider_pool_json_f64(

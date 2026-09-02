@@ -10,7 +10,6 @@ use aether_ai_formats::formats::conversion::response::{
 use aether_ai_formats::formats::openai::responses::{
     openai_responses_message_item_id, openai_responses_synthetic_reasoning_item_id,
 };
-use aether_ai_formats::formats::openai::responses::response::ensure_modern_openai_responses_response_fields;
 use aether_ai_formats::formats::registry::{convert_response, FormatContext, FormatError};
 use aether_ai_formats::{
     canonical_response_unknown_block_count, canonical_to_claude_response,

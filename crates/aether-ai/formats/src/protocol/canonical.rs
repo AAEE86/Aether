@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::formats::openai::responses::openai_responses_message_item_id;
 use crate::formats::openai::responses::{
     decode_gemini_tool_signature_carrier, GeminiToolSignatureCarrierDirection,
 };
 use crate::formats::openai::shared::map_thinking_budget_to_openai_reasoning_effort;
-use crate::formats::openai::responses::openai_responses_message_item_id;
 use crate::formats::shared::model_directives::ReasoningEffort;
 use crate::formats::shared::response::remove_empty_pages_from_tool_input_value;
 

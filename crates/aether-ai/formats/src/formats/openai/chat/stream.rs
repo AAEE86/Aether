@@ -4,8 +4,7 @@ use serde_json::{json, Map, Value};
 
 use crate::formats::openai::namespace::NamespaceToolAliases;
 use crate::formats::openai::responses::{
-    encode_gemini_tool_signature_carrier_with_direction,
-    openai_responses_message_item_id,
+    encode_gemini_tool_signature_carrier_with_direction, openai_responses_message_item_id,
     openai_responses_synthetic_reasoning_item_id,
     response::{
         ensure_modern_openai_responses_response_fields, openai_responses_current_timestamp,

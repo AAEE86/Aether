@@ -34,8 +34,8 @@ pub use providers::{
     WINDSURF_MODEL_CONFIGS_PATH, WINDSURF_RATE_LIMIT_PATH, WINDSURF_USER_STATUS_PATH,
 };
 pub use quota::{
-    provider_pool_key_account_quota_exhausted, provider_pool_key_quota_hard_blocked,
-    provider_pool_key_model_quota_exhausted, provider_pool_key_model_quota_hard_blocked,
+    provider_pool_key_account_quota_exhausted, provider_pool_key_model_quota_exhausted,
+    provider_pool_key_model_quota_hard_blocked, provider_pool_key_quota_hard_blocked,
     provider_pool_key_scheduling_label, provider_pool_member_quota_snapshot,
     provider_pool_quota_metadata_provider_type, provider_pool_quota_metadata_updated_at,
     provider_pool_quota_snapshot_updated_at,
@@ -1005,14 +1005,12 @@ mod tests {
             }
         }));
 
-        let alpha = service.member_signals(
-            "codex",
-            &key,
-            None,
-            Some("vendor-alpha-model"),
-        );
+        let alpha = service.member_signals("codex", &key, None, Some("vendor-alpha-model"));
         let beta = service.member_signals("codex", &key, None, Some("vendor-beta-model"));
-        assert!(!alpha.quota_exhausted, "one available alpha window must keep it usable");
+        assert!(
+            !alpha.quota_exhausted,
+            "one available alpha window must keep it usable"
+        );
         assert!(beta.quota_exhausted);
         assert!(!beta.quota_hard_blocked);
     }
@@ -1062,12 +1060,7 @@ mod tests {
             }
         }));
 
-        let signals = service.member_signals(
-            "codex",
-            &key,
-            None,
-            Some("gpt-5.3-codex-spark"),
-        );
+        let signals = service.member_signals("codex", &key, None, Some("gpt-5.3-codex-spark"));
         assert!(
             !signals.quota_exhausted,
             "a compact bucket name should match a token in the selected model"
@@ -1093,12 +1086,7 @@ mod tests {
             }
         }));
 
-        let signals = service.member_signals(
-            "codex",
-            &key,
-            None,
-            Some("gpt-5.4-codex-spark"),
-        );
+        let signals = service.member_signals("codex", &key, None, Some("gpt-5.4-codex-spark"));
         assert!(signals.quota_exhausted);
     }
 
