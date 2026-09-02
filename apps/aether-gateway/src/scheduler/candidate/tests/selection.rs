@@ -75,6 +75,7 @@ async fn collect_selectable_candidates(
         None,
         now_unix_secs,
         false,
+        None,
     )
     .await
 }

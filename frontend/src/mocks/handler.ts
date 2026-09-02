@@ -985,6 +985,8 @@ const MOCK_ROUTING_GROUPS: MockRoutingGroup[] = [
           allowed_keys: [],
           provider_priority_overrides: { 'provider-002': 0 },
           key_priority_overrides: {},
+          key_priority_overrides_by_format: {},
+          pool_priority_overrides: {},
           pool_policy_overrides: {},
         },
       ],

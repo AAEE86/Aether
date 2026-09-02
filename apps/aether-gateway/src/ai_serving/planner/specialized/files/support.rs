@@ -26,6 +26,7 @@ use crate::ai_serving::{
 };
 use crate::client_session_affinity::client_session_affinity_from_parts;
 use crate::clock::current_unix_secs;
+use crate::scheduler::config::SchedulerOrderingConfig;
 use crate::{AppState, GatewayError};
 
 pub(super) use crate::ai_serving::planner::candidate_materialization::LocalExecutionCandidateAttempt as LocalGeminiFilesCandidateAttempt;
@@ -108,6 +109,10 @@ pub(super) async fn materialize_local_gemini_files_candidate_attempts(
             Some(&input.auth_snapshot),
             input.client_session_affinity.as_ref(),
             current_unix_secs(),
+            input
+                .routing_policy
+                .as_ref()
+                .map(SchedulerOrderingConfig::from_routing_policy),
         )
         .await?;
     let outcome = materialize_local_execution_candidates_with_serving(
@@ -181,6 +186,10 @@ pub(super) async fn build_local_gemini_files_candidate_attempt_source<'a>(
             Some(&input.auth_snapshot),
             input.client_session_affinity.as_ref(),
             current_unix_secs(),
+            input
+                .routing_policy
+                .as_ref()
+                .map(SchedulerOrderingConfig::from_routing_policy),
         )
         .await?;
     Ok(build_local_execution_candidate_attempt_source_with_serving(

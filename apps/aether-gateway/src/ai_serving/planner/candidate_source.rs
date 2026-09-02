@@ -174,6 +174,8 @@ impl AiCandidatePreselectionPort for GatewayLocalCandidatePreselectionPort<'_> {
                 self.ranking_seed,
                 false,
                 self.request_operation,
+                self.routing_policy
+                    .map(SchedulerOrderingConfig::from_routing_policy),
             )
             .await?;
 
@@ -1291,6 +1293,9 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                     .then_some(self.client_session_affinity.as_ref())
                     .flatten(),
                 self.ranking_seed,
+                self.routing_policy
+                    .as_ref()
+                    .map(SchedulerOrderingConfig::from_routing_policy),
             )
             .await?;
         let skipped_candidates = skipped_candidates
@@ -2657,14 +2662,16 @@ mod tests {
                 candidate_repository,
             )
             .with_encryption_key_for_tests("development-key")
+            // Legacy keys deliberately disagree with the routing policy: the
+            // resolved policy must be the only source of scheduler ordering.
             .with_system_config_values_for_tests([
                 (
                     "scheduling_mode".to_string(),
-                    serde_json::json!("fixed_order"),
+                    serde_json::json!("cache_affinity"),
                 ),
                 (
                     "keep_priority_on_conversion".to_string(),
-                    serde_json::json!(true),
+                    serde_json::json!(false),
                 ),
             ]);
         let app = AppState::new()
@@ -2681,7 +2688,7 @@ mod tests {
             resolved_model: "gpt-5.4-mini".to_string(),
             priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
-            keep_priority_on_conversion: false,
+            keep_priority_on_conversion: true,
             ranking_overlay: Default::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: Default::default(),

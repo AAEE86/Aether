@@ -315,7 +315,8 @@ import {
   getDefaultModelPolicy,
   getModelPolicy,
   normalizeRoutingGroupConfig,
-  setModelKeyPriorityOverrides,
+  normalizeRoutingApiFormatKey,
+  setModelKeyPriorityOverridesForFormat,
   setModelPoolPriorityOverrides,
   setModelProviderPriorityOverrides,
   type RoutingDefaultPolicy,
@@ -452,9 +453,18 @@ const providerRows = computed<ProviderPriorityRow[]>(() => {
     .sort(comparePriorityRows)
 })
 
+const selectedFormatKey = computed(() => normalizeRoutingApiFormatKey(selectedApiFormat.value))
+const selectedFormatKeyOverrides = computed<Record<string, number>>(() => (
+  targetModelPolicy.value.key_priority_overrides_by_format[selectedFormatKey.value] ?? {}
+))
+
 const keyRows = computed<KeyPriorityRow[]>(() => {
   const format = selectedApiFormat.value
-  const keyOverrides = targetModelPolicy.value.key_priority_overrides
+  // 按格式覆盖优先；旧的不分格式覆盖仅作为兜底展示
+  const keyOverrides: Record<string, number> = {
+    ...targetModelPolicy.value.key_priority_overrides,
+    ...selectedFormatKeyOverrides.value,
+  }
   const poolOverrides = targetModelPolicy.value.pool_priority_overrides
   const normalRows: KeyPriorityRow[] = []
   const poolGroups = new Map<string, GlobalKeySource[]>()
@@ -686,7 +696,7 @@ function setKeyPriority(keyId: string, event: Event): void {
     })
   } else {
     updateKeyOverrides({
-      ...targetModelPolicy.value.key_priority_overrides,
+      ...selectedFormatKeyOverrides.value,
       [row.target_id]: priority,
     })
   }
@@ -697,8 +707,14 @@ function moveKey(keyId: string, direction: -1 | 1): void {
   updateVisibleKeyAndPoolOverrides(rows)
 }
 
+// Key 覆盖始终写入当前选中的 API 格式，不同格式互不影响
 function updateKeyOverrides(overrides: Record<string, number>): void {
-  updateConfig(setModelKeyPriorityOverrides(config.value, targetModel.value, overrides))
+  updateConfig(setModelKeyPriorityOverridesForFormat(
+    config.value,
+    targetModel.value,
+    selectedApiFormat.value,
+    overrides,
+  ))
 }
 
 function updatePoolOverrides(overrides: Record<string, number>): void {
@@ -710,7 +726,12 @@ function updateKeyAndPoolOverrides(
   poolOverrides: Record<string, number>,
 ): void {
   const next = setModelPoolPriorityOverrides(
-    setModelKeyPriorityOverrides(config.value, targetModel.value, keyOverrides),
+    setModelKeyPriorityOverridesForFormat(
+      config.value,
+      targetModel.value,
+      selectedApiFormat.value,
+      keyOverrides,
+    ),
     targetModel.value,
     poolOverrides,
   )
@@ -718,7 +739,7 @@ function updateKeyAndPoolOverrides(
 }
 
 function updateVisibleKeyAndPoolOverrides(rows: KeyPriorityRow[]): void {
-  const keyOverrides = { ...targetModelPolicy.value.key_priority_overrides }
+  const keyOverrides = { ...selectedFormatKeyOverrides.value }
   const poolOverrides = { ...targetModelPolicy.value.pool_priority_overrides }
 
   for (const row of keyRows.value) {

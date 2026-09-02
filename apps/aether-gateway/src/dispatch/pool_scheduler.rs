@@ -754,19 +754,28 @@ impl<'a> PoolKeyCursor<'a> {
                         return None;
                     }
                 };
+                let api_format = self.group.candidate.endpoint_api_format.as_str();
                 rows.sort_by(|left, right| {
-                    let left_priority = self
-                        .routing_overlay
-                        .as_ref()
-                        .map_or(left.key_internal_priority, |overlay| {
-                            overlay.key_priority(&left.key_id, left.key_internal_priority)
-                        });
-                    let right_priority = self
-                        .routing_overlay
-                        .as_ref()
-                        .map_or(right.key_internal_priority, |overlay| {
-                            overlay.key_priority(&right.key_id, right.key_internal_priority)
-                        });
+                    let left_priority = self.routing_overlay.as_ref().map_or(
+                        left.key_internal_priority,
+                        |overlay| {
+                            overlay.key_priority_for_format(
+                                &left.key_id,
+                                api_format,
+                                left.key_internal_priority,
+                            )
+                        },
+                    );
+                    let right_priority = self.routing_overlay.as_ref().map_or(
+                        right.key_internal_priority,
+                        |overlay| {
+                            overlay.key_priority_for_format(
+                                &right.key_id,
+                                api_format,
+                                right.key_internal_priority,
+                            )
+                        },
+                    );
                     left_priority
                         .cmp(&right_priority)
                         .then(left.key_id.cmp(&right.key_id))
