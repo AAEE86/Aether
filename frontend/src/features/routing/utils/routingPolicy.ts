@@ -25,6 +25,8 @@ export interface RoutingModelPolicy {
   allowed_keys: string[]
   provider_priority_overrides: Record<string, number>
   key_priority_overrides: Record<string, number>
+  /** api_format -> key_id -> priority；同一 Key 在不同 API 格式下可独立排序 */
+  key_priority_overrides_by_format: Record<string, Record<string, number>>
   pool_priority_overrides: Record<string, number>
   pool_policy_overrides: Record<string, RoutingPoolPolicyOverride>
 }
@@ -81,6 +83,7 @@ export function createEmptyModelPolicy(model = ''): RoutingModelPolicy {
     allowed_keys: [],
     provider_priority_overrides: {},
     key_priority_overrides: {},
+    key_priority_overrides_by_format: {},
     pool_priority_overrides: {},
     pool_policy_overrides: {},
   }
@@ -103,6 +106,9 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
           allowed_keys: Array.isArray(policy.allowed_keys) ? [...policy.allowed_keys] : [],
           provider_priority_overrides: { ...(policy.provider_priority_overrides ?? {}) },
           key_priority_overrides: { ...(policy.key_priority_overrides ?? {}) },
+          key_priority_overrides_by_format: normalizeKeyPriorityOverridesByFormat(
+            policy.key_priority_overrides_by_format,
+          ),
           pool_priority_overrides: { ...(policy.pool_priority_overrides ?? {}) },
           pool_policy_overrides: { ...(policy.pool_policy_overrides ?? {}) },
         }))
@@ -296,6 +302,64 @@ export function setModelKeyPriorityOverrides(
   })
 }
 
+export function normalizeRoutingApiFormatKey(apiFormat: string): string {
+  return apiFormat.trim().toLowerCase()
+}
+
+export function getModelKeyPriorityOverridesForFormat(
+  config: RoutingGroupConfig,
+  model: string,
+  apiFormat: string,
+): Record<string, number> {
+  const policy = getModelPolicy(config, model)
+  const format = normalizeRoutingApiFormatKey(apiFormat)
+  return { ...(policy.key_priority_overrides_by_format[format] ?? {}) }
+}
+
+/**
+ * 某个 Key 在指定 API 格式下的生效覆盖值：按格式覆盖优先，其次是不分格式的 Key 覆盖。
+ */
+export function resolveModelKeyPriorityOverride(
+  config: RoutingGroupConfig,
+  model: string,
+  apiFormat: string,
+  keyId: string,
+): number | undefined {
+  const policy = getModelPolicy(config, model)
+  const format = normalizeRoutingApiFormatKey(apiFormat)
+  return policy.key_priority_overrides_by_format[format]?.[keyId]
+    ?? policy.key_priority_overrides[keyId]
+}
+
+export function setModelKeyPriorityOverridesForFormat(
+  config: RoutingGroupConfig,
+  model: string,
+  apiFormat: string,
+  overrides: Record<string, number>,
+): RoutingGroupConfig {
+  const normalizedModel = model.trim() || DEFAULT_ROUTING_POLICY_MODEL
+  const format = normalizeRoutingApiFormatKey(apiFormat)
+  if (!format) return normalizeRoutingGroupConfig(config)
+
+  const current = getModelPolicy(config, normalizedModel)
+  const byFormat = { ...current.key_priority_overrides_by_format }
+  const normalized = normalizePriorityOverrides(overrides)
+  if (Object.keys(normalized).length > 0) {
+    byFormat[format] = normalized
+  } else {
+    delete byFormat[format]
+  }
+
+  if (normalizedModel === DEFAULT_ROUTING_POLICY_MODEL) {
+    return upsertDefaultModelPolicy(config, { key_priority_overrides_by_format: byFormat })
+  }
+  return upsertModelPolicy(config, {
+    ...current,
+    model: normalizedModel,
+    key_priority_overrides_by_format: byFormat,
+  })
+}
+
 export function setModelPoolPriorityOverrides(
   config: RoutingGroupConfig,
   model: string,
@@ -460,6 +524,25 @@ export function normalizePriorityOverrides(overrides: Record<string, number>): R
     const priority = Math.max(0, Math.trunc(Number(rawPriority)))
     if (!id || !Number.isFinite(priority)) continue
     normalized[id] = priority
+  }
+  return normalized
+}
+
+function normalizeKeyPriorityOverridesByFormat(
+  value: Record<string, Record<string, number>> | null | undefined,
+): Record<string, Record<string, number>> {
+  const normalized: Record<string, Record<string, number>> = {}
+  if (!value || typeof value !== 'object') return normalized
+  for (const [rawFormat, overrides] of Object.entries(value)) {
+    const format = normalizeRoutingApiFormatKey(rawFormat)
+    if (!format || !overrides || typeof overrides !== 'object') continue
+    const merged = normalizePriorityOverrides({
+      ...(normalized[format] ?? {}),
+      ...overrides,
+    })
+    if (Object.keys(merged).length > 0) {
+      normalized[format] = merged
+    }
   }
   return normalized
 }

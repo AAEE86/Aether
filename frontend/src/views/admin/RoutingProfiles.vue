@@ -454,6 +454,23 @@
                   </div>
                 </div>
               </div>
+              <label
+                class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm"
+                data-testid="keep-priority-on-conversion"
+              >
+                <Switch
+                  :model-value="keepPriorityOnConversion"
+                  :disabled="saving"
+                  aria-label="格式转换时保持优先级"
+                  @update:model-value="updateKeepPriorityOnConversion"
+                />
+                <span class="min-w-0">
+                  <span class="block font-medium">格式转换时保持优先级</span>
+                  <span class="mt-0.5 block text-xs text-muted-foreground">
+                    开启后，需要跨 API 格式转换的候选不会被降级到同格式候选之后。作用于本策略范围内的全部模型；Provider 自身的同名开关仍单独生效。
+                  </span>
+                </span>
+              </label>
             </div>
 
             <RoutingPriorityPolicyEditor
@@ -749,6 +766,7 @@ import {
   Button,
   Card,
   Input,
+  Switch,
   Table,
   TableBody,
   TableCard,
@@ -874,6 +892,9 @@ const firstStepSchedulingMode = computed<RoutingSchedulingMode>(() => {
   }
   return draft.value?.config_json.default_policy.scheduling_mode ?? 'cache_affinity'
 })
+const keepPriorityOnConversion = computed<boolean>(() => (
+  draft.value?.config_json.default_policy.keep_priority_on_conversion ?? false
+))
 const allowedModelsLookLikeLegacyMirror = computed(() => {
   return draft.value
     ? allowedModelsMirrorPerModelPolicies(draft.value.config_json)
@@ -1186,6 +1207,17 @@ function updateFirstStepSchedulingMode(mode: RoutingSchedulingMode): void {
     default_policy: {
       ...draft.value.config_json.default_policy,
       scheduling_mode: mode,
+    },
+  })
+}
+
+function updateKeepPriorityOnConversion(value: boolean): void {
+  if (!draft.value) return
+  updateDraftConfig({
+    ...draft.value.config_json,
+    default_policy: {
+      ...draft.value.config_json.default_policy,
+      keep_priority_on_conversion: value,
     },
   })
 }

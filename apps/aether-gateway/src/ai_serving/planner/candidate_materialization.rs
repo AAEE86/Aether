@@ -1840,6 +1840,7 @@ fn routing_trace_for_candidate(
                     CandidateKind::Provider => Some(candidate.key_id.clone()),
                     CandidateKind::PoolGroup => None,
                 },
+                api_format: Some(candidate.endpoint_api_format.clone()),
                 provider_priority: candidate.provider_priority,
                 key_priority: candidate
                     .key_global_priority_for_format

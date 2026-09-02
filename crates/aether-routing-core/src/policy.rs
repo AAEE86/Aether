@@ -163,6 +163,13 @@ fn apply_model_policy(policy: &mut ResolvedRoutingPolicy, model_policy: &Routing
             .iter()
             .map(|(key, value)| (key.clone(), *value)),
     );
+    for (api_format, overrides) in &model_policy.key_priority_overrides_by_format {
+        for (key_id, priority) in overrides {
+            policy
+                .ranking_overlay
+                .insert_key_priority_override_for_format(api_format, key_id.clone(), *priority);
+        }
+    }
     policy.ranking_overlay.pool_priority_overrides.extend(
         model_policy
             .pool_priority_overrides
@@ -218,12 +225,27 @@ fn apply_action(
                 .provider_priority_overrides
                 .insert(provider_id.clone(), *priority);
         }
-        RoutingAction::SetKeyPriority { key_id, priority } => {
-            policy
-                .ranking_overlay
-                .key_priority_overrides
-                .insert(key_id.clone(), *priority);
-        }
+        RoutingAction::SetKeyPriority {
+            key_id,
+            priority,
+            api_format,
+        } => match api_format
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        {
+            Some(api_format) => {
+                policy
+                    .ranking_overlay
+                    .insert_key_priority_override_for_format(api_format, key_id.clone(), *priority);
+            }
+            None => {
+                policy
+                    .ranking_overlay
+                    .key_priority_overrides
+                    .insert(key_id.clone(), *priority);
+            }
+        },
         RoutingAction::JsonPatchBody { patch } => {
             validate_json_patch_operations(patch)
                 .map_err(|error| RoutingPolicyError::InvalidMutation(error.to_string()))?;

@@ -44,6 +44,13 @@ pub struct RoutingModelPolicy {
     pub provider_priority_overrides: BTreeMap<String, i32>,
     #[serde(default)]
     pub key_priority_overrides: BTreeMap<String, i32>,
+    /// Key priority overrides scoped to one API format: `api_format -> key_id -> priority`.
+    ///
+    /// A key can serve several API formats and legacy `global_priority_by_format`
+    /// ranks it independently per format. Entries here take precedence over
+    /// `key_priority_overrides` when the candidate format matches.
+    #[serde(default)]
+    pub key_priority_overrides_by_format: BTreeMap<String, BTreeMap<String, i32>>,
     #[serde(default)]
     pub pool_priority_overrides: BTreeMap<String, i32>,
     #[serde(default)]
