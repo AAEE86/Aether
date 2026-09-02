@@ -12,6 +12,7 @@ import {
   getModelScheduling,
   modelSchedulingRuleId,
   normalizeRoutingGroupConfig,
+  normalizeStickyKeyAttempts,
   parseAllowedModelsInput,
   removePerModelRoutingConfig,
   resolveModelKeyPriorityOverride,
@@ -75,6 +76,19 @@ describe('routingPolicy', () => {
       'provider-pool': 3,
     })
     expect(policy.key_priority_overrides).toEqual({})
+  })
+
+  it('defaults sticky key attempts to 2 and normalizes invalid values', () => {
+    expect(createEmptyRoutingGroupConfig().default_policy.sticky_key_attempts).toBe(2)
+    expect(normalizeRoutingGroupConfig({}).default_policy.sticky_key_attempts).toBe(2)
+    expect(normalizeRoutingGroupConfig({
+      default_policy: { priority_mode: 'provider', scheduling_mode: 'cache_affinity', keep_priority_on_conversion: false, sticky_key_attempts: 3 },
+    }).default_policy.sticky_key_attempts).toBe(3)
+    expect(normalizeStickyKeyAttempts('5')).toBe(5)
+    expect(normalizeStickyKeyAttempts(-1)).toBe(2)
+    expect(normalizeStickyKeyAttempts('abc')).toBe(2)
+    expect(normalizeStickyKeyAttempts(500)).toBe(99)
+    expect(getModelScheduling(createEmptyRoutingGroupConfig(), 'gpt-5').sticky_key_attempts).toBe(2)
   })
 
   it('keeps key priority overrides independent per api format', () => {

@@ -47,13 +47,12 @@ use crate::cache::{
 use crate::clock::current_unix_ms;
 use crate::dispatch::refs::dispatch_ref_for_local_candidate;
 use crate::handlers::shared::provider_pool::admin_provider_pool_config_from_config_value;
-use crate::orchestration::{local_attempt_slot_count, ExecutionAttemptIdentity};
+use crate::orchestration::{ExecutionAttemptIdentity, POOL_KEY_RETRY_INDEX_STRIDE};
 use crate::scheduler::candidate::is_auth_api_key_concurrency_limit_skip_reason;
 use crate::scheduler::config::SchedulerSchedulingMode;
 use crate::stage_metrics::observe_gateway_stage_ms;
 use crate::{AppState, GatewayError};
 
-const POOL_KEY_RETRY_INDEX_STRIDE: u32 = 100;
 const AUTH_API_KEY_CONCURRENCY_WAIT_BUDGET: Duration = Duration::from_millis(100);
 const AUTH_API_KEY_CONCURRENCY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
@@ -480,10 +479,6 @@ where
     type Attempt = LocalExecutionCandidateAttempt;
     type ExtraData = Value;
     type Error = Infallible;
-
-    fn attempt_slot_count(&self, candidate: &Self::Candidate) -> u32 {
-        local_attempt_slot_count(&candidate.transport)
-    }
 
     fn build_extra_data(&self, candidate: &Self::Candidate) -> Option<Self::ExtraData> {
         available_candidate_extra_data_with_dispatch_ref(candidate, &self.build_extra_data)
@@ -1610,7 +1605,8 @@ async fn persist_available_local_execution_candidate_at_index<F>(
 where
     F: Fn(&EligibleLocalExecutionCandidate) -> Option<Value> + Send + Sync,
 {
-    let attempt_slots = local_attempt_slot_count(&candidate.transport).max(1);
+    // Exactly one attempt is materialized per candidate; same-key retries are
+    // derived lazily by the attempt loop after a failure.
     let extra_data = ai_candidate_extra_data_with_ranking(
         available_candidate_base_extra_data_with_dispatch_ref(&candidate, build_extra_data),
         candidate.ranking.as_ref(),
@@ -1625,53 +1621,34 @@ where
         Some(candidate_index),
         extra_data,
     );
-    let should_persist = should_persist_available_local_candidate(&candidate);
-    let mut attempts = Vec::with_capacity(attempt_slots as usize);
-    let mut owned_candidate = Some(candidate);
+    let retry_index = effective_retry_index(0, candidate.orchestration.pool_key_index);
+    let generated_candidate_id = Uuid::new_v4().to_string();
+    let candidate_id = if should_persist_available_local_candidate(&candidate) {
+        state
+            .persist_available_local_candidate(
+                trace_id,
+                context.user_id,
+                context.api_key_id,
+                &candidate.candidate,
+                candidate_index,
+                retry_index,
+                generated_candidate_id.as_str(),
+                context.required_capabilities,
+                extra_data,
+                current_unix_ms(),
+                context.error_context,
+            )
+            .await
+    } else {
+        generated_candidate_id
+    };
 
-    for retry_index in 0..attempt_slots {
-        let candidate_ref = owned_candidate
-            .as_ref()
-            .expect("candidate should remain available until final retry");
-        let generated_candidate_id = Uuid::new_v4().to_string();
-        let candidate_id = if should_persist {
-            state
-                .persist_available_local_candidate(
-                    trace_id,
-                    context.user_id,
-                    context.api_key_id,
-                    &candidate_ref.candidate,
-                    candidate_index,
-                    effective_retry_index(retry_index, candidate_ref.orchestration.pool_key_index),
-                    generated_candidate_id.as_str(),
-                    context.required_capabilities,
-                    extra_data.clone(),
-                    current_unix_ms(),
-                    context.error_context,
-                )
-                .await
-        } else {
-            generated_candidate_id
-        };
-
-        let candidate = if retry_index + 1 == attempt_slots {
-            owned_candidate
-                .take()
-                .expect("final retry should consume owned candidate")
-        } else {
-            candidate_ref.clone()
-        };
-        let retry_index =
-            effective_retry_index(retry_index, candidate.orchestration.pool_key_index);
-        attempts.push(LocalExecutionCandidateAttempt {
-            eligible: candidate,
-            candidate_index,
-            retry_index,
-            candidate_id,
-        });
-    }
-
-    attempts
+    vec![LocalExecutionCandidateAttempt {
+        eligible: candidate,
+        candidate_index,
+        retry_index,
+        candidate_id,
+    }]
 }
 
 fn available_candidate_extra_data_with_dispatch_ref<F>(
@@ -1924,32 +1901,15 @@ fn build_unpersisted_local_execution_candidate_attempts(
     candidate: EligibleLocalExecutionCandidate,
     candidate_index: u32,
 ) -> VecDeque<LocalExecutionCandidateAttempt> {
-    let attempt_slots = local_attempt_slot_count(&candidate.transport).max(1);
-    let mut attempts = VecDeque::with_capacity(attempt_slots as usize);
-    let mut owned_candidate = Some(candidate);
-
-    for retry_index in 0..attempt_slots {
-        let candidate = if retry_index + 1 == attempt_slots {
-            owned_candidate
-                .take()
-                .expect("final retry should consume owned candidate")
-        } else {
-            owned_candidate
-                .as_ref()
-                .expect("candidate should remain available until final retry")
-                .clone()
-        };
-        let retry_index =
-            effective_retry_index(retry_index, candidate.orchestration.pool_key_index);
-        attempts.push_back(LocalExecutionCandidateAttempt {
-            eligible: candidate,
-            candidate_index,
-            retry_index,
-            candidate_id: Uuid::new_v4().to_string(),
-        });
-    }
-
-    attempts
+    // One attempt per candidate; same-key retries are derived lazily by the
+    // attempt loop after a failure.
+    let retry_index = effective_retry_index(0, candidate.orchestration.pool_key_index);
+    VecDeque::from([LocalExecutionCandidateAttempt {
+        eligible: candidate,
+        candidate_index,
+        retry_index,
+        candidate_id: Uuid::new_v4().to_string(),
+    }])
 }
 
 async fn persist_pool_group_exhaustion_skipped_candidate(
@@ -2277,6 +2237,8 @@ mod tests {
                 pool_key_index,
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                // These tests cover persistence shape, not same-key retries.
+                sticky_key_attempts: Some(1),
             },
             ranking: None,
         }

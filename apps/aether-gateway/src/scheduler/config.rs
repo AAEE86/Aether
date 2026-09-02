@@ -1,6 +1,7 @@
 use aether_data_contracts::repository::routing_profiles::RoutingGroupLookupKey;
 use aether_routing_core::{
     ResolvedRoutingPolicy, RoutingDefaultPolicy, RoutingSchedulingMode, RoutingSetPriorityMode,
+    DEFAULT_STICKY_KEY_ATTEMPTS,
 };
 use aether_scheduler_core::SchedulerPriorityMode;
 use tracing::warn;
@@ -37,6 +38,8 @@ pub(crate) struct SchedulerOrderingConfig {
     pub(crate) priority_mode: SchedulerPriorityMode,
     pub(crate) scheduling_mode: SchedulerSchedulingMode,
     pub(crate) keep_priority_on_conversion: bool,
+    /// Total attempts on the first-ranked (sticky) candidate before failover.
+    pub(crate) sticky_key_attempts: u32,
 }
 
 impl Default for SchedulerOrderingConfig {
@@ -45,6 +48,7 @@ impl Default for SchedulerOrderingConfig {
             priority_mode: SchedulerPriorityMode::Provider,
             scheduling_mode: SchedulerSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
         }
     }
 }
@@ -57,6 +61,7 @@ impl SchedulerOrderingConfig {
             priority_mode: scheduler_priority_mode_from_routing(policy.priority_mode),
             scheduling_mode: scheduler_scheduling_mode_from_routing(policy.scheduling_mode),
             keep_priority_on_conversion: policy.keep_priority_on_conversion,
+            sticky_key_attempts: policy.sticky_key_attempts,
         }
     }
 
@@ -65,6 +70,7 @@ impl SchedulerOrderingConfig {
             priority_mode: scheduler_priority_mode_from_routing(policy.priority_mode),
             scheduling_mode: scheduler_scheduling_mode_from_routing(policy.scheduling_mode),
             keep_priority_on_conversion: policy.keep_priority_on_conversion,
+            sticky_key_attempts: policy.sticky_key_attempts,
         }
     }
 
@@ -80,6 +86,7 @@ impl SchedulerOrderingConfig {
                 SchedulerSchedulingMode::LoadBalance => RoutingSchedulingMode::LoadBalance,
             },
             keep_priority_on_conversion: self.keep_priority_on_conversion,
+            sticky_key_attempts: self.sticky_key_attempts,
         }
     }
 
@@ -221,6 +228,8 @@ pub(crate) async fn read_legacy_scheduler_ordering_config(
         priority_mode,
         scheduling_mode,
         keep_priority_on_conversion,
+        // Legacy config never carried a sticky-key setting; use the routing default.
+        sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
     })
 }
 
@@ -358,7 +367,8 @@ mod tests {
             json!({
                 "priority_mode": "global_key",
                 "scheduling_mode": "load_balance",
-                "keep_priority_on_conversion": true
+                "keep_priority_on_conversion": true,
+                "sticky_key_attempts": DEFAULT_STICKY_KEY_ATTEMPTS
             })
         );
 

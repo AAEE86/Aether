@@ -23,7 +23,11 @@ pub struct RoutingPoolPolicyOverride {
     pub scheduling_presets: Vec<RoutingSchedulingPreset>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Default number of attempts on the first-ranked (sticky) candidate before
+/// failing over: one retry on the same key.
+pub const DEFAULT_STICKY_KEY_ATTEMPTS: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingDefaultPolicy {
     #[serde(default)]
     pub priority_mode: RoutingSetPriorityMode,
@@ -31,6 +35,26 @@ pub struct RoutingDefaultPolicy {
     pub scheduling_mode: RoutingSchedulingMode,
     #[serde(default)]
     pub keep_priority_on_conversion: bool,
+    /// Total attempts on the first-ranked candidate before moving on. Later
+    /// candidates always get a single attempt so failover keeps advancing.
+    /// `0` and `1` both mean no same-key retry.
+    #[serde(default = "default_sticky_key_attempts")]
+    pub sticky_key_attempts: u32,
+}
+
+impl Default for RoutingDefaultPolicy {
+    fn default() -> Self {
+        Self {
+            priority_mode: RoutingSetPriorityMode::default(),
+            scheduling_mode: RoutingSchedulingMode::default(),
+            keep_priority_on_conversion: false,
+            sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
+        }
+    }
+}
+
+fn default_sticky_key_attempts() -> u32 {
+    DEFAULT_STICKY_KEY_ATTEMPTS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

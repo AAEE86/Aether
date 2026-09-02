@@ -252,6 +252,10 @@ where
         Ok(())
     }
 
+    async fn next_same_key_retry(&self, attempt: &T) -> Result<Option<T>, Self::Error> {
+        Ok(crate::orchestration::next_same_key_retry_attempt(attempt))
+    }
+
     async fn record_attempt_failed(&self, attempt: &T) -> Result<(), Self::Error> {
         record_provider_transfer_attempt_failed(
             self.state,
@@ -788,18 +792,31 @@ where
 {
     let mut last_attempted = None;
     let mut fallback_response = None;
+    // A same-key retry derived after a candidate-scoped failure runs before
+    // the source is asked for the next candidate.
+    let mut pending_same_key_retry: Option<Attempt> = None;
 
     loop {
-        let next_started_at = std::time::Instant::now();
-        let next_attempt =
-            next_execution_attempt_with_timeout(source, trace_id, plan_kind, planning_timeout)
+        let attempt = match pending_same_key_retry.take() {
+            Some(attempt) => attempt,
+            None => {
+                let next_started_at = std::time::Instant::now();
+                let next_attempt = next_execution_attempt_with_timeout(
+                    source,
+                    trace_id,
+                    plan_kind,
+                    planning_timeout,
+                )
                 .await?;
-        observe_gateway_stage_ms(
-            "stream_candidate_next",
-            next_started_at.elapsed().as_millis() as u64,
-        );
-        let Some(attempt) = next_attempt else {
-            break;
+                observe_gateway_stage_ms(
+                    "stream_candidate_next",
+                    next_started_at.elapsed().as_millis() as u64,
+                );
+                let Some(attempt) = next_attempt else {
+                    break;
+                };
+                attempt
+            }
         };
         if port.should_skip_attempt(&attempt).await? {
             let provider_id = attempt.execution_plan().provider_id.clone();
@@ -838,6 +855,9 @@ where
             } => {
                 if attempt_fallback_response.is_some() {
                     fallback_response = attempt_fallback_response;
+                }
+                if scope == AiAttemptRetryScope::Candidate {
+                    pending_same_key_retry = port.next_same_key_retry(&attempt).await?;
                 }
                 apply_attempt_retry_scope(source, &attempt, scope).await?;
             }
@@ -950,6 +970,10 @@ where
     async fn record_attempt_started(&self, attempt: &T) -> Result<(), Self::Error> {
         record_provider_transfer_attempt_started(self.transfer_tracker, attempt).await;
         Ok(())
+    }
+
+    async fn next_same_key_retry(&self, attempt: &T) -> Result<Option<T>, Self::Error> {
+        Ok(crate::orchestration::next_same_key_retry_attempt(attempt))
     }
 
     async fn record_attempt_failed(&self, attempt: &T) -> Result<(), Self::Error> {

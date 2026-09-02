@@ -1,7 +1,7 @@
 use aether_routing_core::{
     resolve_routing_policy, MutationPlan, RankingOverlay, ResolvedRoutingPolicy,
-    RoutingGroupConfig, RoutingPolicyInput, RoutingRulePhase, RoutingSchedulingMode,
-    RoutingSetPriorityMode,
+    RoutingDefaultPolicy, RoutingGroupConfig, RoutingPolicyInput, RoutingRulePhase,
+    RoutingSchedulingMode, RoutingSetPriorityMode, DEFAULT_STICKY_KEY_ATTEMPTS,
 };
 use http::StatusCode;
 use serde_json::Value;
@@ -81,9 +81,7 @@ pub(crate) fn resolve_gateway_routing_policy(
 pub(crate) fn resolve_gateway_static_default_routing_policy(
     input: GatewayStaticRoutingPolicyInput<'_>,
 ) -> Result<Option<ResolvedRoutingPolicy>, GatewayError> {
-    let Some((priority_mode, scheduling_mode, keep_priority_on_conversion)) =
-        static_default_policy_fields(input.group_config_json)?
-    else {
+    let Some(default_policy) = static_default_policy_fields(input.group_config_json)? else {
         return Ok(None);
     };
 
@@ -93,9 +91,10 @@ pub(crate) fn resolve_gateway_static_default_routing_policy(
         selection_source: input.selection_source.to_string(),
         requested_model: input.requested_model.to_string(),
         resolved_model: input.resolved_model.to_string(),
-        priority_mode,
-        scheduling_mode,
-        keep_priority_on_conversion,
+        priority_mode: default_policy.priority_mode,
+        scheduling_mode: default_policy.scheduling_mode,
+        keep_priority_on_conversion: default_policy.keep_priority_on_conversion,
+        sticky_key_attempts: default_policy.sticky_key_attempts,
         ranking_overlay: RankingOverlay::default(),
         mutation_plan: MutationPlan::default(),
         pool_policy_overrides: BTreeMap::new(),
@@ -105,7 +104,7 @@ pub(crate) fn resolve_gateway_static_default_routing_policy(
 
 fn static_default_policy_fields(
     config_json: &Value,
-) -> Result<Option<(RoutingSetPriorityMode, RoutingSchedulingMode, bool)>, GatewayError> {
+) -> Result<Option<RoutingDefaultPolicy>, GatewayError> {
     let Some(object) = config_json.as_object() else {
         return Ok(None);
     };
@@ -117,11 +116,7 @@ fn static_default_policy_fields(
     }
 
     let Some(default_policy) = object.get("default_policy") else {
-        return Ok(Some((
-            RoutingSetPriorityMode::default(),
-            RoutingSchedulingMode::default(),
-            false,
-        )));
+        return Ok(Some(RoutingDefaultPolicy::default()));
     };
     let Some(default_policy) = default_policy.as_object() else {
         return Ok(None);
@@ -141,12 +136,22 @@ fn static_default_policy_fields(
         })?,
         None => false,
     };
+    let sticky_key_attempts = match default_policy.get("sticky_key_attempts") {
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                invalid_routing_group_config("sticky_key_attempts must be a non-negative integer")
+            })?,
+        None => DEFAULT_STICKY_KEY_ATTEMPTS,
+    };
 
-    Ok(Some((
+    Ok(Some(RoutingDefaultPolicy {
         priority_mode,
         scheduling_mode,
         keep_priority_on_conversion,
-    )))
+        sticky_key_attempts,
+    }))
 }
 
 fn routing_array_field_is_missing_or_empty(

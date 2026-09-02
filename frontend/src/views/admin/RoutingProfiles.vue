@@ -471,6 +471,27 @@
                   </span>
                 </span>
               </label>
+              <label
+                class="flex items-start gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm"
+                data-testid="sticky-key-attempts"
+              >
+                <Input
+                  :model-value="stickyKeyAttempts"
+                  type="number"
+                  min="0"
+                  max="99"
+                  class="w-20 shrink-0"
+                  :disabled="saving"
+                  aria-label="粘性 Key 尝试次数"
+                  @update:model-value="updateStickyKeyAttempts"
+                />
+                <span class="min-w-0">
+                  <span class="block font-medium">粘性 Key 尝试次数</span>
+                  <span class="mt-0.5 block text-xs text-muted-foreground">
+                    首个候选（缓存亲和命中的 Key）的总尝试次数。2 表示失败后同 Key 重试 1 次再转移，避免偶发错误破坏缓存；0 或 1 表示不重试。转移后的候选始终只尝试 1 次。
+                  </span>
+                </span>
+              </label>
             </div>
 
             <RoutingPriorityPolicyEditor
@@ -780,6 +801,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { AlertDialog } from '@/components/common'
 import {
   DEFAULT_ROUTING_POLICY_MODEL,
+  DEFAULT_STICKY_KEY_ATTEMPTS,
   allowedModelsMirrorPerModelPolicies,
   clearAllowedModels,
   copyPerModelRoutingConfig,
@@ -790,6 +812,7 @@ import {
   isGeneratedModelSchedulingRule,
   modelSchedulingRuleId,
   normalizeRoutingGroupConfig,
+  normalizeStickyKeyAttempts,
   removePerModelRoutingConfig,
   routingModelScopeLabel,
   savePerModelRoutingConfig,
@@ -894,6 +917,9 @@ const firstStepSchedulingMode = computed<RoutingSchedulingMode>(() => {
 })
 const keepPriorityOnConversion = computed<boolean>(() => (
   draft.value?.config_json.default_policy.keep_priority_on_conversion ?? false
+))
+const stickyKeyAttempts = computed<number>(() => (
+  draft.value?.config_json.default_policy.sticky_key_attempts ?? DEFAULT_STICKY_KEY_ATTEMPTS
 ))
 const allowedModelsLookLikeLegacyMirror = computed(() => {
   return draft.value
@@ -1207,6 +1233,17 @@ function updateFirstStepSchedulingMode(mode: RoutingSchedulingMode): void {
     default_policy: {
       ...draft.value.config_json.default_policy,
       scheduling_mode: mode,
+    },
+  })
+}
+
+function updateStickyKeyAttempts(value: string | number): void {
+  if (!draft.value) return
+  updateDraftConfig({
+    ...draft.value.config_json,
+    default_policy: {
+      ...draft.value.config_json.default_policy,
+      sticky_key_attempts: normalizeStickyKeyAttempts(value),
     },
   })
 }

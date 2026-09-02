@@ -879,9 +879,13 @@ async fn gateway_records_failed_usage_when_all_local_openai_chat_candidates_exha
         .list_by_request_id("trace-openai-chat-local-report-sync-failure-123")
         .await
         .expect("request candidate trace should read");
-    assert_eq!(stored_candidates.len(), 1);
-    assert_eq!(stored_candidates[0].status, RequestCandidateStatus::Failed);
-    assert_eq!(stored_candidates[0].status_code, Some(503));
+    // The only candidate is the sticky first key: the default policy retries
+    // it once on the same key before the request is exhausted.
+    assert_eq!(stored_candidates.len(), 2);
+    for candidate in &stored_candidates {
+        assert_eq!(candidate.status, RequestCandidateStatus::Failed);
+        assert_eq!(candidate.status_code, Some(503));
+    }
 }
 
 #[test]
@@ -957,7 +961,8 @@ async fn gateway_records_failed_usage_when_sync_runtime_transport_is_unavailable
     let response = send_request(gateway, request).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(*execution_hits.lock().expect("mutex should lock"), 1);
+    // The sticky first key is retried once on the same key before exhaustion.
+    assert_eq!(*execution_hits.lock().expect("mutex should lock"), 2);
 
     let stored_usage = wait_for_usage_status(
         usage_repository.as_ref(),
@@ -982,15 +987,15 @@ async fn gateway_records_failed_usage_when_sync_runtime_transport_is_unavailable
         .list_by_request_id("trace-openai-chat-local-transport-unavailable-123")
         .await
         .expect("request candidate trace should read");
-    assert_eq!(stored_candidates.len(), 1);
-    assert_eq!(stored_candidates[0].status, RequestCandidateStatus::Failed);
-    assert!(stored_candidates[0]
-        .latency_ms
-        .is_some_and(|value| value >= 5));
-    assert_eq!(
-        stored_candidates[0].error_type.as_deref(),
-        Some("execution_runtime_unavailable")
-    );
+    assert_eq!(stored_candidates.len(), 2);
+    for candidate in &stored_candidates {
+        assert_eq!(candidate.status, RequestCandidateStatus::Failed);
+        assert!(candidate.latency_ms.is_some_and(|value| value >= 5));
+        assert_eq!(
+            candidate.error_type.as_deref(),
+            Some("execution_runtime_unavailable")
+        );
+    }
 }
 
 #[test]
@@ -1786,7 +1791,7 @@ async fn gateway_records_failed_usage_when_all_local_claude_cli_candidates_are_s
             false,
             false,
             None,
-            Some(2),
+            Some(1),
             None,
             Some(20.0),
             None,
@@ -1808,7 +1813,7 @@ async fn gateway_records_failed_usage_when_all_local_claude_cli_candidates_are_s
             "https://right.codes/codex".to_string(),
             None,
             None,
-            Some(2),
+            Some(1),
             Some("/v1/messages".to_string()),
             None,
             None,
@@ -2111,7 +2116,7 @@ fn gateway_keeps_failed_usage_request_capture_lightweight_for_large_local_claude
             false,
             false,
             None,
-            Some(2),
+            Some(1),
             None,
             Some(20.0),
             None,
@@ -2133,7 +2138,7 @@ fn gateway_keeps_failed_usage_request_capture_lightweight_for_large_local_claude
             "https://right.codes/codex".to_string(),
             None,
             None,
-            Some(2),
+            Some(1),
             Some("/v1/messages".to_string()),
             None,
             None,
