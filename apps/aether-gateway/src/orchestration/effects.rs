@@ -2060,6 +2060,15 @@ fn pool_score_hard_state_for_status(
         return Some(pool_score_hard_state_for_terminal_error_reason(&reason));
     }
 
+    // A number of providers report account quota exhaustion as HTTP 429 rather
+    // than 402. Keep those members out of the score-based pool fallback until
+    // the provider's quota probe observes a reset; treating every 429 as a
+    // generic cooldown otherwise lets the member re-enter as soon as the short
+    // transient cooldown expires.
+    if status_code == 429 && error_body_indicates_quota_exhaustion(error_body) {
+        return Some(PoolMemberHardState::QuotaExhausted);
+    }
+
     match status_code {
         401 | 403 => Some(PoolMemberHardState::AuthInvalid),
         402 => Some(PoolMemberHardState::QuotaExhausted),
@@ -2080,6 +2089,27 @@ fn pool_score_hard_state_for_status(
             }
         }
     }
+}
+
+fn error_body_indicates_quota_exhaustion(error_body: Option<&str>) -> bool {
+    let body = error_body.unwrap_or_default().to_ascii_lowercase();
+    [
+        "quota exhausted",
+        "quota_exhausted",
+        "quota exceeded",
+        "quota_exceeded",
+        "insufficient_quota",
+        "resource exhausted",
+        "resource has been exhausted",
+        "resource_exhausted",
+        "usage_limit_reached",
+        "limit_reached",
+        "quota limit reached",
+        "credits exhausted",
+        "insufficient credits",
+    ]
+    .iter()
+    .any(|marker| body.contains(marker))
 }
 
 fn pool_score_hard_state_for_terminal_error_reason(reason: &str) -> PoolMemberHardState {
@@ -3656,6 +3686,13 @@ mod tests {
             pool_score_hard_state_for_status(
                 402,
                 Some(r#"{"error":{"message":"payment required"}}"#),
+            ),
+            Some(PoolMemberHardState::QuotaExhausted)
+        );
+        assert_eq!(
+            pool_score_hard_state_for_status(
+                429,
+                Some(r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}"#),
             ),
             Some(PoolMemberHardState::QuotaExhausted)
         );

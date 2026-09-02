@@ -10,6 +10,7 @@ const OAUTH_REFRESH_FAILED_PREFIX: &str = "[REFRESH_FAILED] ";
 const OAUTH_EXPIRED_PREFIX: &str = "[OAUTH_EXPIRED] ";
 const OAUTH_REQUEST_FAILED_PREFIX: &str = "[REQUEST_FAILED] ";
 const CODEX_SPARK_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
+const CODEX_ADDITIONAL_QUOTA_WINDOWS_KEY: &str = "additional_quota_windows";
 
 pub fn provider_auto_remove_banned_keys(config: Option<&serde_json::Value>) -> bool {
     config
@@ -1893,6 +1894,112 @@ fn codex_find_spark_rate_limit(
         .and_then(serde_json::Value::as_object)
 }
 
+/// Preserve every additional Codex rate-limit bucket in a model-addressable
+/// representation.  The upstream can add independent limits over time; do
+/// not discard them merely because they are not one of the legacy flat
+/// primary/secondary slots.
+fn codex_additional_quota_windows(
+    root: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let mut windows = Vec::new();
+    let Some(items) = root
+        .get("additional_rate_limits")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return windows;
+    };
+
+    for (index, item) in items.iter().enumerate() {
+        let Some(item_object) = item.as_object() else {
+            continue;
+        };
+        let Some(limit_name) = ["limit_name", "metered_feature", "name", "id"]
+            .iter()
+            .find_map(|key| item_object.get(*key).and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let model_identity = item_object
+            .get("model")
+            .or_else(|| item_object.get("model_name"))
+            .or_else(|| item_object.get("model_id"))
+            .cloned()
+            .unwrap_or_else(|| json!(limit_name));
+        let model_identities = item_object
+            .get("models")
+            .or_else(|| item_object.get("model_ids"))
+            .cloned();
+        let Some(rate_limit) = item_object
+            .get("rate_limit")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+
+        for (slot, slot_name) in [
+            ("primary_window", "primary"),
+            ("secondary_window", "secondary"),
+        ] {
+            let Some(source) = rate_limit.get(slot).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let used_percent = source.get("used_percent").and_then(coerce_json_f64);
+            let reset_after_seconds = source
+                .get("reset_after_seconds")
+                .or_else(|| source.get("reset_seconds"))
+                .and_then(coerce_json_u64);
+            let reset_at = source.get("reset_at").and_then(coerce_json_u64);
+            let window_minutes = source
+                .get("limit_window_seconds")
+                .or_else(|| source.get("window_seconds"))
+                .and_then(coerce_json_u64)
+                .map(|seconds| seconds.saturating_add(59) / 60)
+                .filter(|minutes| *minutes > 0);
+            if used_percent.is_none()
+                && reset_after_seconds.is_none()
+                && reset_at.is_none()
+                && window_minutes.is_none()
+            {
+                continue;
+            }
+
+            let used_ratio = used_percent.map(|value| (value / 100.0).clamp(0.0, 1.0));
+            let mut window = serde_json::Map::new();
+            window.insert(
+                "code".to_string(),
+                json!(format!("additional_{index}_{slot_name}")),
+            );
+            window.insert("label".to_string(), json!(limit_name));
+            window.insert("scope".to_string(), json!("model"));
+            // The upstream limit name is the only stable identity available
+            // for an additional bucket.  Keeping it in both fields allows
+            // exact model matching and generic family matching downstream.
+            window.insert("model".to_string(), model_identity.clone());
+            if let Some(model_identities) = model_identities.clone() {
+                window.insert("models".to_string(), model_identities);
+            }
+            window.insert("quota_group".to_string(), json!(limit_name));
+            window.insert("limit_name".to_string(), json!(limit_name));
+            window.insert("used_ratio".to_string(), json!(used_ratio));
+            window.insert(
+                "remaining_ratio".to_string(),
+                json!(used_ratio.map(|value| (1.0 - value).max(0.0))),
+            );
+            window.insert(
+                "is_exhausted".to_string(),
+                json!(used_ratio.is_some_and(|value| value >= 1.0 - 1e-6)),
+            );
+            window.insert("reset_at".to_string(), json!(reset_at));
+            window.insert("reset_seconds".to_string(), json!(reset_after_seconds));
+            window.insert("window_minutes".to_string(), json!(window_minutes));
+            windows.push(serde_json::Value::Object(window));
+        }
+    }
+    windows
+}
+
 fn codex_reset_credits_container(
     root: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -1992,6 +2099,14 @@ pub fn parse_codex_wham_usage_response(
             codex_write_window(&mut result, secondary_window, "spark_secondary");
         }
     }
+
+    // Keep all additional limits, including future ones with names unknown to
+    // this version of the gateway, so scheduling can select their bucket by
+    // metadata rather than by a hard-coded model name.
+    result.insert(
+        CODEX_ADDITIONAL_QUOTA_WINDOWS_KEY.to_string(),
+        serde_json::Value::Array(codex_additional_quota_windows(root)),
+    );
 
     if let Some(credits) = root.get("credits").and_then(serde_json::Value::as_object) {
         if let Some(value) = credits.get("has_credits").and_then(coerce_json_bool) {
@@ -5413,6 +5528,44 @@ mod tests {
             parsed.get("spark_secondary_window_minutes"),
             Some(&json!(10_080u64))
         );
+        let additional = parsed
+            .get("additional_quota_windows")
+            .and_then(serde_json::Value::as_array)
+            .expect("all additional quota windows should be preserved");
+        assert_eq!(additional.len(), 2);
+        assert!(additional.iter().all(|window| {
+            window.get("model") == Some(&json!("GPT-5.3-Codex-Spark"))
+                && window.get("scope") == Some(&json!("model"))
+        }));
+    }
+
+    #[test]
+    fn parses_unknown_additional_quota_buckets_without_model_specific_code() {
+        let parsed = parse_codex_wham_usage_response(
+            &json!({
+                "rate_limit": {
+                    "primary_window": {"used_percent": 100.0},
+                    "secondary_window": {"used_percent": 0.0}
+                },
+                "additional_rate_limits": [{
+                    "limit_name": "Future-Model-Limit",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 100.0,
+                            "limit_window_seconds": 3600
+                        }
+                    }
+                }]
+            }),
+            1_700_000_000,
+        )
+        .expect("quota response should parse");
+        let additional = parsed["additional_quota_windows"]
+            .as_array()
+            .expect("additional windows should be an array");
+        assert_eq!(additional.len(), 1);
+        assert_eq!(additional[0]["model"], json!("Future-Model-Limit"));
+        assert_eq!(additional[0]["is_exhausted"], json!(true));
     }
 
     #[test]

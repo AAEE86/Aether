@@ -35,6 +35,7 @@ pub use providers::{
 };
 pub use quota::{
     provider_pool_key_account_quota_exhausted, provider_pool_key_quota_hard_blocked,
+    provider_pool_key_model_quota_exhausted, provider_pool_key_model_quota_hard_blocked,
     provider_pool_key_scheduling_label, provider_pool_member_quota_snapshot,
     provider_pool_quota_metadata_provider_type, provider_pool_quota_metadata_updated_at,
     provider_pool_quota_snapshot_updated_at,
@@ -561,7 +562,7 @@ mod tests {
             }
         })));
 
-        let signals = service.member_signals("windsurf", &key, None);
+        let signals = service.member_signals("windsurf", &key, None, None);
 
         assert!(!signals.quota_exhausted);
     }
@@ -588,7 +589,7 @@ mod tests {
             }
         }));
 
-        let signals = service.member_signals("windsurf", &key, None);
+        let signals = service.member_signals("windsurf", &key, None, None);
 
         assert!(signals.quota_exhausted);
     }
@@ -874,6 +875,285 @@ mod tests {
             }))),
             "codex",
         ));
+    }
+
+    #[test]
+    fn model_quota_windows_are_isolated_without_provider_specific_names() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "windows": [
+                    {
+                        "code": "alpha_short",
+                        "quota_group": "alpha",
+                        "model": "vendor-alpha-model",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    },
+                    {
+                        "code": "alpha_long",
+                        "quota_group": "alpha",
+                        "model": "vendor-alpha-model",
+                        "used_ratio": 0.2,
+                        "is_exhausted": false
+                    },
+                    {
+                        "code": "beta_short",
+                        "quota_group": "beta",
+                        "model": "vendor-beta-model",
+                        "used_ratio": 1.0,
+                        "is_exhausted": true
+                    }
+                ]
+            }
+        }));
+
+        let alpha = service.member_signals(
+            "codex",
+            &key,
+            None,
+            Some("vendor-alpha-model"),
+        );
+        let beta = service.member_signals("codex", &key, None, Some("vendor-beta-model"));
+        assert!(!alpha.quota_exhausted, "one available alpha window must keep it usable");
+        assert!(beta.quota_exhausted);
+        assert!(!beta.quota_hard_blocked);
+    }
+
+    #[test]
+    fn legacy_family_prefix_is_matched_by_model_tokens() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "windows": [
+                    { "code": "alpha_weekly", "used_ratio": 1.0, "is_exhausted": true },
+                    { "code": "default_weekly", "used_ratio": 0.1, "is_exhausted": false }
+                ]
+            }
+        }));
+
+        let alpha = service.member_signals("codex", &key, None, Some("vendor-alpha-v2"));
+        assert!(alpha.quota_exhausted);
+        // An unrelated model has no identifiable bucket and therefore falls
+        // back to the account-level snapshot rather than guessing a family.
+        let unknown = service.member_signals("codex", &key, None, Some("vendor-gamma-v2"));
+        assert!(unknown.quota_exhausted);
+    }
+
+    #[test]
+    fn compact_model_bucket_identity_matches_request_tokens() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "windows": [
+                    {
+                        "code": "additional_0_primary_window",
+                        "scope": "model",
+                        "model": "spark",
+                        "used_ratio": 0.0,
+                        "is_exhausted": false
+                    }
+                ]
+            }
+        }));
+
+        let signals = service.member_signals(
+            "codex",
+            &key,
+            None,
+            Some("gpt-5.3-codex-spark"),
+        );
+        assert!(
+            !signals.quota_exhausted,
+            "a compact bucket name should match a token in the selected model"
+        );
+    }
+
+    #[test]
+    fn model_family_token_matches_versioned_alias_without_hardcoding_name() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "windows": [{
+                    "code": "additional_0_primary_window",
+                    "scope": "model",
+                    "model": "gpt-5.3-codex-spark",
+                    "used_ratio": 1.0,
+                    "is_exhausted": true
+                }]
+            }
+        }));
+
+        let signals = service.member_signals(
+            "codex",
+            &key,
+            None,
+            Some("gpt-5.4-codex-spark"),
+        );
+        assert!(signals.quota_exhausted);
+    }
+
+    #[test]
+    fn model_only_snapshot_does_not_poison_account_fallback() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "windows": [{
+                    "code": "model:vendor-alpha",
+                    "scope": "model",
+                    "model": "vendor-alpha",
+                    "used_ratio": 1.0,
+                    "is_exhausted": true
+                }]
+            }
+        }));
+
+        let signals = service.member_signals("codex", &key, None, None);
+        assert!(
+            !signals.quota_exhausted,
+            "account-level inspection must ignore model-only buckets"
+        );
+    }
+
+    #[test]
+    fn model_map_quota_is_resolved_without_materialized_windows() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "grok",
+                "exhausted": false,
+                "quota_by_model": {
+                    "vendor-alpha": {
+                        "remaining": 0.0,
+                        "total": 10.0
+                    },
+                    "vendor-beta": {
+                        "remaining": 5.0,
+                        "total": 10.0
+                    }
+                }
+            }
+        }));
+
+        let alpha = service.member_signals("grok", &key, None, Some("vendor-alpha"));
+        let beta = service.member_signals("grok", &key, None, Some("vendor-beta"));
+        assert!(alpha.quota_exhausted);
+        assert!(!beta.quota_exhausted);
+    }
+
+    #[test]
+    fn raw_provider_metadata_model_bucket_overrides_account_snapshot() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(Some(json!({
+            "codex": {
+                "updated_at": 1_700_000_001u64,
+                "additional_quota_windows": [{
+                    "scope": "model",
+                    "model": "future-spark",
+                    "used_ratio": 0.0,
+                    "is_exhausted": false
+                }]
+            }
+        })));
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "exhausted": true,
+                "windows": [{
+                    "code": "primary",
+                    "scope": "account",
+                    "used_ratio": 1.0,
+                    "is_exhausted": true
+                }]
+            }
+        }));
+
+        let signals = service.member_signals("codex", &key, None, Some("future-spark"));
+        assert!(
+            !signals.quota_exhausted,
+            "a newer model bucket in provider metadata must not inherit an exhausted account bucket"
+        );
+    }
+
+    #[test]
+    fn model_quota_availability_suppresses_account_hard_block() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "allowed": false,
+                "limit_reached": true,
+                "exhausted": true,
+                "windows": [{
+                    "scope": "model",
+                    "model": "future-model",
+                    "used_ratio": 0.0,
+                    "is_exhausted": false
+                }]
+            }
+        }));
+
+        let signals = service.member_signals("codex", &key, None, Some("future-model"));
+        assert!(!signals.quota_exhausted);
+        assert!(!signals.quota_hard_blocked);
+    }
+
+    #[test]
+    fn newer_model_quota_observation_wins_over_stale_snapshot() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(Some(json!({
+            "codex": {
+                "updated_at": 1_700_000_200u64,
+                "additional_quota_windows": [{
+                    "scope": "model",
+                    "model": "future-model",
+                    "used_ratio": 0.0,
+                    "is_exhausted": false
+                }]
+            }
+        })));
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "observed_at": 1_700_000_100u64,
+                "exhausted": true,
+                "windows": [{
+                    "scope": "model",
+                    "model": "future-model",
+                    "used_ratio": 1.0,
+                    "is_exhausted": true
+                }]
+            }
+        }));
+
+        let signals = service.member_signals("codex", &key, None, Some("future-model"));
+        assert!(!signals.quota_exhausted);
     }
 
     #[test]

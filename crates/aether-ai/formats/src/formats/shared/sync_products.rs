@@ -7,7 +7,9 @@ use aether_ai_formats::formats::conversion::response::{
     convert_openai_chat_response_to_openai_responses,
     convert_openai_responses_response_to_openai_chat,
 };
-use aether_ai_formats::formats::openai::responses::openai_responses_synthetic_reasoning_item_id;
+use aether_ai_formats::formats::openai::responses::{
+    openai_responses_message_item_id, openai_responses_synthetic_reasoning_item_id,
+};
 use aether_ai_formats::formats::openai::responses::response::ensure_modern_openai_responses_response_fields;
 use aether_ai_formats::formats::registry::{convert_response, FormatContext, FormatError};
 use aether_ai_formats::{
@@ -2696,6 +2698,7 @@ fn aggregate_openai_responses_stream_sync_response_from_validated_terminal(
             if let Some(state) = message_states.remove(&output_index) {
                 output.push(materialize_openai_responses_message_item(
                     &response_id,
+                    output_index,
                     state,
                 ));
             }
@@ -3152,13 +3155,31 @@ fn resolve_openai_responses_tool_output_index(
 
 fn materialize_openai_responses_message_item(
     response_id: &str,
+    output_index: usize,
     state: OpenAIResponsesSyncMessageState,
 ) -> Value {
     let mut item = state.item;
     item.entry("type".to_string())
         .or_insert_with(|| Value::String("message".to_string()));
-    item.entry("id".to_string())
-        .or_insert_with(|| Value::String(format!("{response_id}_msg")));
+    let message_id_is_valid = item
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id.starts_with("msg"));
+    if !message_id_is_valid {
+        let source_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(response_id)
+            .to_string();
+        item.insert(
+            "id".to_string(),
+            Value::String(openai_responses_message_item_id(
+                source_id.as_str(),
+                output_index,
+            )),
+        );
+    }
     item.entry("role".to_string())
         .or_insert_with(|| Value::String("assistant".to_string()));
     item.entry("status".to_string())

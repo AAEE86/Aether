@@ -12,8 +12,8 @@ use crate::provider::{
 use crate::quota::{
     provider_pool_current_unix_secs, provider_pool_json_bool, provider_pool_json_f64,
     provider_pool_member_quota_snapshot, provider_pool_metadata_bucket,
-    provider_pool_quota_snapshot_exhausted_decision, provider_pool_reset_deadline_elapsed,
-    provider_pool_timestamp_unix_secs,
+    provider_pool_model_quota_exhausted, provider_pool_quota_snapshot_exhausted_decision,
+    provider_pool_reset_deadline_elapsed, provider_pool_timestamp_unix_secs,
 };
 use crate::quota_refresh::ProviderPoolQuotaRequestSpec;
 
@@ -49,6 +49,11 @@ impl ProviderPoolAdapter for CodexProviderPoolAdapter {
     }
 
     fn quota_exhausted(&self, input: &ProviderPoolMemberInput<'_>) -> bool {
+        if let Some(exhausted) = input.provider_model_name.and_then(|model| {
+            provider_pool_model_quota_exhausted(input.key, input.provider_type, model)
+        }) {
+            return exhausted;
+        }
         if let Some(quota_snapshot) =
             provider_pool_member_quota_snapshot(input.key, input.provider_type)
         {
@@ -76,6 +81,11 @@ impl ProviderPoolAdapter for CodexProviderPoolAdapter {
     }
 
     fn quota_hard_blocked(&self, input: &ProviderPoolMemberInput<'_>) -> bool {
+        if input.provider_model_name.is_some_and(|model| {
+            provider_pool_model_quota_exhausted(input.key, input.provider_type, model).is_some()
+        }) {
+            return false;
+        }
         codex_explicit_quota_block_active(input.key, input.provider_type)
     }
 

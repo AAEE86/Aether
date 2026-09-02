@@ -118,6 +118,30 @@ pub fn admin_pool_key_quota_hard_blocked(
     aether_provider_pool::provider_pool_key_quota_hard_blocked(key, provider_type)
 }
 
+pub fn admin_pool_key_model_quota_exhausted(
+    key: &StoredProviderCatalogKey,
+    provider_type: &str,
+    provider_model_name: &str,
+) -> Option<bool> {
+    aether_provider_pool::provider_pool_key_model_quota_exhausted(
+        key,
+        provider_type,
+        provider_model_name,
+    )
+}
+
+pub fn admin_pool_key_model_quota_hard_blocked(
+    key: &StoredProviderCatalogKey,
+    provider_type: &str,
+    provider_model_name: &str,
+) -> bool {
+    aether_provider_pool::provider_pool_key_model_quota_hard_blocked(
+        key,
+        provider_type,
+        provider_model_name,
+    )
+}
+
 fn admin_pool_has_proxy(key: &StoredProviderCatalogKey) -> bool {
     match key.proxy.as_ref() {
         Some(Value::Object(values)) => !values.is_empty(),

@@ -975,7 +975,7 @@ fn build_codex_quota_status_snapshot(
         .and_then(admin_provider_quota_pure::coerce_json_bool);
     let reset_credits = build_codex_reset_credits_status_snapshot(metadata, observed_at_unix_secs);
 
-    let windows = [
+    let mut windows = [
         codex_quota_window_snapshot(metadata, "primary", "weekly", "周", observed_at_unix_secs),
         codex_quota_window_snapshot(metadata, "secondary", "5h", "5H", observed_at_unix_secs),
         codex_quota_window_snapshot(
@@ -996,6 +996,17 @@ fn build_codex_quota_status_snapshot(
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
+    if let Some(additional_windows) = metadata
+        .get("additional_quota_windows")
+        .and_then(Value::as_array)
+    {
+        windows.extend(
+            additional_windows
+                .iter()
+                .filter(|window| window.is_object())
+                .cloned(),
+        );
+    }
 
     if windows.is_empty()
         && plan_type.is_none()

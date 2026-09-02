@@ -105,6 +105,7 @@ async fn schedule_pool_page_candidates(
     candidates: Vec<EligibleLocalExecutionCandidate>,
     sticky_session_token: Option<&str>,
     effective_pool_config: Option<&AdminProviderPoolConfig>,
+    provider_model_name: Option<&str>,
 ) -> (
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
@@ -128,7 +129,8 @@ async fn schedule_pool_page_candidates(
         entry.1.insert(candidate.candidate.key_id.clone());
     }
 
-    let key_context_by_id = read_pool_catalog_key_contexts_by_id(state, &candidates).await;
+    let key_context_by_id =
+        read_pool_catalog_key_contexts_by_id(state, &candidates, provider_model_name).await;
 
     let mut runtime_by_provider = BTreeMap::new();
     let mut pool_config_by_provider = BTreeMap::new();
@@ -316,7 +318,9 @@ fn active_probe_member_is_unschedulable_for_request(
     }) {
         return true;
     }
-    key_context.is_some_and(|context| context.account_blocked || context.quota_exhausted)
+    key_context.is_some_and(|context| {
+        context.account_blocked || context.quota_exhausted || context.quota_hard_blocked
+    })
 }
 
 async fn expand_pool_group_candidate(
@@ -1034,6 +1038,7 @@ impl<'a> PoolKeyCursor<'a> {
                 candidates,
                 self.sticky_session_token.as_deref(),
                 self.effective_pool_config.as_ref(),
+                Some(self.group.candidate.selected_provider_model_name.as_str()),
             )
             .await;
             self.record_skipped_candidates(&skipped);
@@ -1406,6 +1411,7 @@ fn pool_candidate_from_catalog_key(
 async fn read_pool_catalog_key_contexts_by_id(
     state: PlannerAppState<'_>,
     candidates: &[EligibleLocalExecutionCandidate],
+    provider_model_name: Option<&str>,
 ) -> BTreeMap<String, PoolCatalogKeyContext> {
     let mut key_ids = Vec::new();
     let mut provider_type_by_key_id = BTreeMap::<String, String>::new();
@@ -1437,13 +1443,30 @@ async fn read_pool_catalog_key_contexts_by_id(
                 key_count = key_ids.len(),
                 "gateway pool scheduler: failed to read catalog key metadata"
             );
-            return BTreeMap::new();
+            // Do not fail open when the quota metadata read is unavailable. A
+            // missing context must never turn an exhausted account into an
+            // eligible candidate and produce another upstream 429. The caller
+            // treats this marker as a pool quota skip and the next request will
+            // retry the metadata read.
+            return key_ids
+                .into_iter()
+                .map(|key_id| {
+                    (
+                        key_id,
+                        PoolCatalogKeyContext {
+                            quota_hard_blocked: true,
+                            ..PoolCatalogKeyContext::default()
+                        },
+                    )
+                })
+                .collect();
         }
     };
 
     let provider_pool_service = ProviderPoolService::with_builtin_adapters();
 
-    keys.into_iter()
+    let mut contexts = keys
+        .into_iter()
         .map(|key| {
             let provider_type = provider_type_by_key_id
                 .get(&key.id)
@@ -1451,10 +1474,28 @@ async fn read_pool_catalog_key_contexts_by_id(
                 .unwrap_or_default();
             (
                 key.id.clone(),
-                build_pool_catalog_key_context(state, &provider_pool_service, &key, provider_type),
+                build_pool_catalog_key_context(
+                    state,
+                    &provider_pool_service,
+                    &key,
+                    provider_type,
+                    provider_model_name,
+                ),
             )
         })
-        .collect()
+        .collect::<BTreeMap<_, _>>();
+    // A key can disappear between the candidate-row and catalog reads. Keep
+    // the snapshot non-empty and fail closed for those IDs so the caller does
+    // not interpret an incomplete read as "all accounts are healthy".
+    for key_id in key_ids {
+        contexts
+            .entry(key_id)
+            .or_insert_with(|| PoolCatalogKeyContext {
+                quota_hard_blocked: true,
+                ..PoolCatalogKeyContext::default()
+            });
+    }
+    contexts
 }
 
 fn build_pool_catalog_key_context(
@@ -1462,6 +1503,7 @@ fn build_pool_catalog_key_context(
     provider_pool_service: &ProviderPoolService,
     key: &StoredProviderCatalogKey,
     provider_type: &str,
+    provider_model_name: Option<&str>,
 ) -> PoolCatalogKeyContext {
     let (health_score, _, _, _, _) = provider_key_health_summary(key);
     let health_score = key
@@ -1480,8 +1522,12 @@ fn build_pool_catalog_key_context(
         .filter(|value| value.is_finite() && *value >= 0.0);
 
     let auth_config = parse_catalog_auth_config_json(state.app(), key);
-    let mut signals =
-        provider_pool_service.member_signals(provider_type, key, auth_config.as_ref());
+    let mut signals = provider_pool_service.member_signals(
+        provider_type,
+        key,
+        auth_config.as_ref(),
+        provider_model_name,
+    );
     signals.account_blocked |= admin_provider_pool_pure::admin_pool_key_is_known_banned(key);
     signals.account_blocked |=
         pool_key_requires_reauth_for_scheduling(key, current_unix_ms().saturating_div(1000));
@@ -1694,7 +1740,21 @@ fn run_local_execution_pool_scheduler_with_runtime_map(
         let key_context = key_context_by_id
             .get(&candidate.candidate.key_id)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                // An explicitly non-empty metadata snapshot should contain
+                // every catalog key in this page. If one disappeared between
+                // reads, fail closed for that key instead of sending traffic
+                // with an unknown quota state. Empty maps are retained for
+                // callers/tests that intentionally provide no runtime context.
+                if key_context_by_id.is_empty() {
+                    PoolCatalogKeyContext::default()
+                } else {
+                    PoolCatalogKeyContext {
+                        quota_hard_blocked: true,
+                        ..PoolCatalogKeyContext::default()
+                    }
+                }
+            });
         let admin_pool_config = effective_pool_config_by_provider
             .get(&candidate.candidate.provider_id)
             .cloned()
@@ -1968,7 +2028,7 @@ mod tests {
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
     };
-    use aether_pool_core::PoolSchedulingPreset;
+    use aether_pool_core::{PoolSchedulingPreset, POOL_ACCOUNT_EXHAUSTED_SKIP_REASON};
     use aether_provider_pool::ProviderPoolService;
     use aether_provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
@@ -2077,6 +2137,55 @@ mod tests {
                 .map(|item| item.candidate.key_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["key-older", "key-recent"]
+        );
+    }
+
+    #[test]
+    fn pool_scheduler_skips_quota_exhausted_key_when_flag_is_false() {
+        let ready = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-ready",
+            10,
+            Some(json!({ "pool_advanced": {} })),
+        );
+        let exhausted = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-exhausted",
+            10,
+            Some(json!({ "pool_advanced": { "skip_exhausted_accounts": false } })),
+        );
+        let key_context_by_id = BTreeMap::from([
+            ("key-ready".to_string(), PoolCatalogKeyContext::default()),
+            (
+                "key-exhausted".to_string(),
+                PoolCatalogKeyContext {
+                    quota_exhausted: true,
+                    ..PoolCatalogKeyContext::default()
+                },
+            ),
+        ]);
+
+        let (scheduled, skipped) = apply_local_execution_pool_scheduler_with_runtime_map(
+            vec![ready, exhausted],
+            &BTreeMap::new(),
+            &key_context_by_id,
+        );
+
+        assert_eq!(
+            scheduled
+                .iter()
+                .map(|item| item.candidate.key_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-ready"]
+        );
+        assert_eq!(
+            skipped
+                .iter()
+                .map(|item| (item.candidate.key_id.as_str(), item.skip_reason))
+                .collect::<Vec<_>>(),
+            vec![("key-exhausted", POOL_ACCOUNT_EXHAUSTED_SKIP_REASON)]
         );
     }
 
@@ -4426,6 +4535,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert_eq!(context.plan_tier.as_deref(), Some("team"));
@@ -4471,6 +4581,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(!context.quota_exhausted);
@@ -4491,6 +4602,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(context.quota_exhausted);
@@ -4521,6 +4633,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "antigravity",
+            None,
         );
 
         assert!(context.quota_exhausted);
@@ -4542,6 +4655,7 @@ mod tests {
             &ProviderPoolService::with_builtin_adapters(),
             &key,
             "codex",
+            None,
         );
 
         assert!(context.account_blocked);
