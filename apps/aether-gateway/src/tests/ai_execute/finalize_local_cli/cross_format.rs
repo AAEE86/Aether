@@ -6,6 +6,7 @@ use super::{
     EXECUTION_PATH_HEADER, TRACE_ID_HEADER,
 };
 use crate::data::GatewayDataState;
+use aether_ai_formats::openai_responses_message_item_id;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -1465,7 +1466,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
             "output_text": "Hello Antigravity",
             "output": [{
                 "type": "message",
-                "id": "resp-local-stream_msg",
+                "id": openai_responses_message_item_id("resp-local-stream", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
