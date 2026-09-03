@@ -214,6 +214,21 @@ impl GatewayDataState {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_cached_provider_catalog_reader_for_tests<T>(
+        mut self,
+        repository: Arc<T>,
+    ) -> Self
+    where
+        T: ProviderCatalogReadRepository + 'static,
+    {
+        let inner: Arc<dyn ProviderCatalogReadRepository> = repository;
+        self.provider_catalog_reader = Some(Arc::new(
+            super::provider_catalog_cache::CachedProviderCatalogReadRepository::new(inner),
+        ));
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_request_candidate_reader(
         mut self,
         repository: Arc<dyn RequestCandidateReadRepository>,

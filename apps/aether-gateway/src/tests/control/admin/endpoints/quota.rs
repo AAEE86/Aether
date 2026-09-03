@@ -2536,7 +2536,7 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
             .upstream_metadata
             .as_ref()
             .and_then(|value| value.get("antigravity"))
-            .and_then(|value| value.get("models"))
+            .and_then(|value| value.get("quota_by_model"))
             .and_then(|value| value.get("claude-sonnet-4"))
             .and_then(|value| value.get("remaining_fraction")),
         Some(&json!(0.25))
@@ -2546,7 +2546,7 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
             .upstream_metadata
             .as_ref()
             .and_then(|value| value.get("antigravity"))
-            .and_then(|value| value.get("models"))
+            .and_then(|value| value.get("quota_by_model"))
             .and_then(|value| value.get("claude-sonnet-4"))
             .and_then(|value| value.get("used_percent")),
         Some(&json!(75.0))

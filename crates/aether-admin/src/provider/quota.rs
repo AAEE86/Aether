@@ -282,7 +282,7 @@ pub fn parse_antigravity_usage_response(
         "is_forbidden": false,
         "forbidden_reason": serde_json::Value::Null,
         "forbidden_at": serde_json::Value::Null,
-        "models": quota_by_model,
+        "quota_by_model": quota_by_model,
     }))
 }
 
@@ -7026,16 +7026,17 @@ mod tests {
         .expect("antigravity quota should parse");
 
         assert_eq!(
-            parsed["models"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]
+            parsed["quota_by_model"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]
                 ["display_name"],
             json!("Key-1")
         );
         assert_eq!(
-            parsed["models"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]["reset_time"],
+            parsed["quota_by_model"]["RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb"]
+                ["reset_time"],
             json!("2030-01-01T00:00:00Z")
         );
         assert_eq!(
-            parsed["models"]["gemini-3-pro-preview"]["display_name"],
+            parsed["quota_by_model"]["gemini-3-pro-preview"]["display_name"],
             json!("Gemini 3 Pro Preview")
         );
     }
