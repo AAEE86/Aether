@@ -408,10 +408,14 @@
                   <Button
                     type="button"
                     variant="outline"
-                    size="icon"
-                    class="h-8 w-8 shrink-0"
+                    size="sm"
+                    class="h-8 min-w-0 max-w-56 shrink-0 gap-1.5 px-2.5"
                     :disabled="syncingOnlinePricing || submitting"
-                    :title="syncingOnlinePricing ? '正在同步在线价格' : '同步最新在线价格'"
+                    :title="syncingOnlinePricing
+                      ? t('models.pricingSource.syncingTitle')
+                      : currentOnlinePricingSource
+                        ? t('models.pricingSource.editCurrentTitle', { provider: currentOnlinePricingSource.provider_name })
+                        : t('models.pricingSource.editChooseTitle')"
                     aria-label="同步最新在线价格"
                     data-testid="sync-online-pricing"
                     @click="syncOnlinePricing"
@@ -420,6 +424,11 @@
                       class="h-4 w-4"
                       :class="syncingOnlinePricing ? 'animate-spin' : ''"
                     />
+                    <span class="truncate text-xs">
+                      {{ currentOnlinePricingSource
+                        ? t('models.pricingSource.buttonCurrent', { provider: currentOnlinePricingSource.provider_name })
+                        : t('models.pricingSource.choose') }}
+                    </span>
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent
@@ -771,6 +780,7 @@ import {
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useFormDialog } from '@/composables/useFormDialog'
+import { useI18n } from '@/i18n'
 import { parseNumberInput, sortResolutionEntries } from '@/utils/form'
 import { log } from '@/utils/logger'
 import { parseApiError } from '@/utils/errorParser'
@@ -797,7 +807,12 @@ import {
   tieredPricingConfigsEqual,
 } from './global-model-form-helpers'
 import { tieredPricingHasImageOutputPricing } from '../utils/tiered-pricing'
-import { useModelsDevPricingSources } from '../composables/useModelsDevPricingSources'
+import {
+  getModelsDevPricingSourceFromConfig,
+  modelsDevPricingSourcesEqual,
+  useModelsDevPricingSources,
+  withModelsDevPricingSource,
+} from '../composables/useModelsDevPricingSources'
 
 const props = defineProps<{
   open: boolean
@@ -812,6 +827,7 @@ const emit = defineEmits<{
 }>()
 
 const { success, error: showError } = useToast()
+const { t } = useI18n()
 const { getSource, setSource } = useModelsDevPricingSources()
 const submitting = ref(false)
 const syncingOnlinePricing = ref(false)
@@ -841,6 +857,9 @@ const selectedOnlinePricingCandidate = computed(() => (
   onlinePricingCandidates.value.find(candidate => (
     candidate.providerId === selectedOnlinePricingProviderId.value
   )) ?? null
+))
+const currentOnlinePricingSource = computed(() => (
+  props.model ? getSource(props.model.id, props.model.config) : null
 ))
 const firstSyncableOnlinePricingProviderId = computed(() => (
   onlinePricingCandidates.value.find(isOnlinePricingCandidateSyncable)?.providerId ?? ''
@@ -1407,7 +1426,7 @@ function resolveOnlinePricingModel(
 ): ModelsDevModelItem | null {
   const modelId = normalizeModelId(model.name)
   const transientSource = editingOnlinePricingSource.value
-  const storedSource = getSource(model.id)
+  const storedSource = getSource(model.id, model.config)
   const preferredProviderId = transientSource?.model_id && normalizeModelId(transientSource.model_id) === modelId
     ? transientSource.provider_id
     : storedSource?.provider_id
@@ -1530,28 +1549,44 @@ async function applyOnlinePricingModel(onlineModel: ModelsDevModelItem) {
     props.model.default_tiered_pricing,
     pricing,
   )
+  const pricingSource = {
+    provider_id: onlineModel.providerId,
+    provider_name: onlineModel.providerName,
+  }
+  const sourceChanged = !modelsDevPricingSourcesEqual(
+    getModelsDevPricingSourceFromConfig(props.model.config),
+    pricingSource,
+  )
+  const nextConfig = withModelsDevPricingSource(props.model.config, pricingSource)
   let syncedModel: GlobalModelResponse
-  if (pricingChanged) {
-    syncedModel = await updateGlobalModel(props.model.id, {
+  if (pricingChanged || sourceChanged) {
+    const updatedModel = await updateGlobalModel(props.model.id, {
       default_tiered_pricing: pricing,
+      config: nextConfig,
     })
+    syncedModel = {
+      ...updatedModel,
+      default_tiered_pricing: pricing,
+      config: nextConfig,
+    }
   } else {
     syncedModel = {
       ...props.model,
       default_tiered_pricing: pricing,
+      config: nextConfig,
     }
   }
   tieredPricing.value = cloneTieredPricingConfig(pricing)
+  form.value.config = { ...nextConfig }
   billingMode.value = 'token'
-  setSource(props.model.id, {
-    provider_id: onlineModel.providerId,
-    provider_name: onlineModel.providerName,
-  })
+  setSource(props.model.id, pricingSource)
   emit('pricingSynced', syncedModel)
   success(
     pricingChanged
       ? `已同步 ${onlineModel.providerName} 的最新价格`
-      : `当前价格已是 ${onlineModel.providerName} 的最新价格`,
+      : sourceChanged
+        ? t('models.pricingSource.savedNoPriceChange', { provider: onlineModel.providerName })
+        : `当前价格已是 ${onlineModel.providerName} 的最新价格`,
   )
 }
 
@@ -1725,6 +1760,12 @@ async function handleSubmit() {
       success('模型更新成功')
     } else {
       const createData = buildGlobalModelCreatePayload(form.value, finalTieredPricing)
+      if (selectedModel.value) {
+        createData.config = withModelsDevPricingSource(createData.config, {
+          provider_id: selectedModel.value.providerId,
+          provider_name: selectedModel.value.providerName,
+        })
+      }
       const createdModel = await createGlobalModel(createData)
       existingModelsCache.value.unshift(createdModel)
       if (selectedModel.value) {
