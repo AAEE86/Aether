@@ -624,6 +624,15 @@ pub fn merge_upstream_metadata(current: Option<&Value>, incoming: &Value) -> Val
             next_value.as_object_mut(),
             merged.get(namespace).and_then(Value::as_object),
         ) {
+            if namespace.eq_ignore_ascii_case("antigravity") {
+                for field in ["quota_groups", "quota_groups_updated_at"] {
+                    if !next_namespace.contains_key(field) {
+                        if let Some(value) = old_namespace.get(field) {
+                            next_namespace.insert(field.to_string(), value.clone());
+                        }
+                    }
+                }
+            }
             if let (Some(new_quota), Some(old_quota)) = (
                 next_namespace
                     .get_mut("quota_by_model")
@@ -1738,6 +1747,11 @@ mod tests {
         let merged = merge_upstream_metadata(
             Some(&json!({
                 "antigravity": {
+                    "quota_groups": [{
+                        "display_name": "Claude and GPT models",
+                        "buckets": [{"bucket_id": "3p-5h", "window": "5h"}]
+                    }],
+                    "quota_groups_updated_at": 1_777_000_000u64,
                     "quota_by_model": {
                         "gemini-2.5-pro": {
                             "remaining_fraction": 0.3,
@@ -1767,6 +1781,14 @@ mod tests {
         assert!(merged["antigravity"]["quota_by_model"]
             .get("stale-model")
             .is_none());
+        assert_eq!(
+            merged["antigravity"]["quota_groups"][0]["buckets"][0]["bucket_id"],
+            "3p-5h"
+        );
+        assert_eq!(
+            merged["antigravity"]["quota_groups_updated_at"],
+            json!(1_777_000_000u64)
+        );
     }
 
     #[test]

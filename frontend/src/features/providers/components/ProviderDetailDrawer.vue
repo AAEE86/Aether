@@ -377,7 +377,7 @@
                         />
                         <div class="grid grid-cols-2 gap-3">
                           <ProviderQuotaProgressRow
-                            v-for="item in getAntigravityQuotaSummaryForKey(key)"
+                            v-for="item in getAntigravityQuotaGroupItems(key)"
                             :key="item.model"
                             :label="item.label"
                             :title="item.label"
@@ -979,12 +979,7 @@ import ProviderMonthlyQuotaCard from '@/features/providers/components/ProviderMo
 import ProviderQuotaProgressRow from '@/features/providers/components/ProviderQuotaProgressRow.vue'
 import ProviderQuotaSectionHeader from '@/features/providers/components/ProviderQuotaSectionHeader.vue'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
-import {
-  compareAntigravityQuotaItems,
-  dedupeAntigravityQuotaItemsByLabel,
-  resolveAntigravityQuotaLabel,
-  summarizeAntigravityQuotaItems,
-} from '@/features/providers/utils/antigravityQuota'
+import { resolveAntigravityQuotaGroupLabel } from '@/features/providers/utils/antigravityQuota'
 import {
   deleteEndpointKey,
   recoverKeyHealth,
@@ -1004,7 +999,6 @@ import {
 } from '@/api/endpoints'
 import type {
   UpstreamMetadata,
-  AntigravityModelQuota,
   CodexUpstreamMetadata,
   ChatGPTWebUpstreamMetadata,
   GrokUpstreamMetadata,
@@ -1078,7 +1072,7 @@ const { error: showError, success: showSuccess, warning: showWarning } = useToas
 const { confirm } = useConfirm()
 const { copyToClipboard } = useClipboard()
 const { tick: countdownTick, start: startCountdownTimer, stop: stopCountdownTimer } = useCountdownTimer()
-const { legacyT, locale } = useI18n()
+const { legacyT, locale, t } = useI18n()
 
 function localizedApiError(err: unknown, fallback: string): string {
   return legacyT(parseApiError(err, fallback))
@@ -3398,17 +3392,8 @@ interface GeminiCliQuotaItem {
   resetSeconds: number | null
 }
 
-function hasAntigravityQuotaData(metadata: UpstreamMetadata | null | undefined): boolean {
-  const quotaByModel = metadata?.antigravity?.quota_by_model
-  return !!quotaByModel && typeof quotaByModel === 'object' && Object.keys(quotaByModel).length > 0
-}
-
 function hasAntigravityQuotaDisplayData(key: EndpointAPIKey): boolean {
-  const quota = getQuotaSnapshotForProvider(key, 'antigravity')
-  if (Array.isArray(quota?.windows) && quota.windows.length > 0) {
-    return true
-  }
-  return hasAntigravityQuotaData(key.upstream_metadata)
+  return getAntigravityQuotaGroupItems(key).length > 0
 }
 
 function getGeminiCliQuotaUpdatedAt(key: EndpointAPIKey): number | undefined {
@@ -3480,84 +3465,14 @@ function formatUpdatedAt(updatedAt: number): string {
 const formatCodexUpdatedAt = formatUpdatedAt
 const formatAntigravityUpdatedAt = formatUpdatedAt
 
-function secondsUntilReset(resetTime: string): number | null {
-  if (!resetTime) return null
-  const ts = Date.parse(resetTime)
-  if (Number.isNaN(ts)) return null
-  const diff = Math.floor((ts - Date.now()) / 1000)
-  return diff > 0 ? diff : 0
-}
-
-function secondsUntilUnixReset(resetAt: number | string | null | undefined): number | null {
-  const numericResetAt = Number(resetAt)
-  if (!Number.isFinite(numericResetAt) || numericResetAt <= 0) return null
-  const now = Math.floor(Date.now() / 1000)
-  return Math.max(Math.floor(numericResetAt - now), 0)
-}
-
-function coerceAntigravityPercent(value: number | string | null | undefined): number | undefined {
-  const numericValue = Number(value)
-  if (!Number.isFinite(numericValue)) return undefined
-  return Math.min(Math.max(numericValue, 0), 100)
-}
-
-function coerceAntigravityRemainingFraction(value: number | string | null | undefined): number | undefined {
-  const numericValue = Number(value)
-  if (!Number.isFinite(numericValue)) return undefined
-  return Math.min(Math.max(numericValue, 0), 1)
-}
-
-function getAntigravityQuotaItems(metadata: UpstreamMetadata | null | undefined): AntigravityQuotaItem[] {
-  const quotaByModel = metadata?.antigravity?.quota_by_model
-  if (!quotaByModel || typeof quotaByModel !== 'object') return []
-
-  const items: AntigravityQuotaItem[] = []
-  const opaqueDisplayIndex = { value: 1 }
-  for (const [model, rawInfo] of Object.entries(quotaByModel)) {
-    if (!model) continue
-    const info: Partial<AntigravityModelQuota> = rawInfo || {}
-
-    let usedPercent = coerceAntigravityPercent(info.used_percent)
-    if (usedPercent === undefined) {
-      const remainingFraction = coerceAntigravityRemainingFraction(info.remaining_fraction)
-      if (remainingFraction !== undefined) {
-        usedPercent = (1 - remainingFraction) * 100
-      } else {
-        continue
-      }
-    }
-
-    usedPercent = coerceAntigravityPercent(usedPercent) ?? 0
-
-    const remainingPercent = Math.max(100 - usedPercent, 0)
-
-    let resetSeconds = secondsUntilUnixReset(info.reset_at)
-    if (typeof info.reset_time === 'string' && info.reset_time.trim()) {
-      resetSeconds = secondsUntilReset(info.reset_time.trim()) ?? resetSeconds
-    }
-
-    items.push({
-      model,
-      label: resolveAntigravityQuotaLabel(model, info.display_name, opaqueDisplayIndex),
-      usedPercent,
-      remainingPercent,
-      resetSeconds,
-    })
-  }
-
-  items.sort(compareAntigravityQuotaItems)
-  return dedupeAntigravityQuotaItemsByLabel(items)
-}
-
-function getAntigravityQuotaItemsFromSnapshot(key: EndpointAPIKey): AntigravityQuotaItem[] {
+function getAntigravityQuotaGroupItems(key: EndpointAPIKey): AntigravityQuotaItem[] {
   const quota = getQuotaSnapshotForProvider(key, 'antigravity')
-  const windows = getQuotaWindowByScope(quota, 'model')
+  const windows = getQuotaWindowByScope(quota, 'quota_group')
   if (!quota || windows.length === 0) return []
-  const opaqueDisplayIndex = { value: 1 }
 
-  const items = windows
+  return windows
     .map((window) => {
-      const model = String(window.model || window.label || window.code || '').trim()
+      const model = String(window.code || window.bucket_id || window.label || '').trim()
       if (!model) return null
 
       const usedPercent = getQuotaWindowUsedPercent(window)
@@ -3577,30 +3492,13 @@ function getAntigravityQuotaItemsFromSnapshot(key: EndpointAPIKey): AntigravityQ
 
       return {
         model,
-        label: resolveAntigravityQuotaLabel(
-          model,
-          window.label || window.model,
-          opaqueDisplayIndex,
-        ),
+        label: resolveAntigravityQuotaGroupLabel(window, t),
         usedPercent: normalizedUsedPercent,
         remainingPercent: normalizedRemainingPercent,
         resetSeconds: getQuotaWindowLiveResetSeconds(quota, window),
       } satisfies AntigravityQuotaItem
     })
     .filter((item): item is AntigravityQuotaItem => item !== null)
-
-  items.sort(compareAntigravityQuotaItems)
-  return dedupeAntigravityQuotaItemsByLabel(items)
-}
-
-function getAntigravityQuotaItemsForKey(key: EndpointAPIKey): AntigravityQuotaItem[] {
-  const snapshotItems = getAntigravityQuotaItemsFromSnapshot(key)
-  if (snapshotItems.length > 0) return snapshotItems
-  return getAntigravityQuotaItems(key.upstream_metadata)
-}
-
-function getAntigravityQuotaSummaryForKey(key: EndpointAPIKey): AntigravityQuotaItem[] {
-  return summarizeAntigravityQuotaItems(getAntigravityQuotaItemsForKey(key))
 }
 
 function getResetCountdownText(

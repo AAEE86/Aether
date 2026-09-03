@@ -8,6 +8,8 @@ use tracing::{error, info, warn};
 
 use super::types::PendingBackfillInfo;
 
+// Historical backfill manifests must remain available after they are applied;
+// deployed databases retain their versions for startup compatibility checks.
 static BACKFILL_MIGRATOR: Migrator = sqlx::migrate!("./backfills/postgres");
 
 const SCHEMA_BACKFILLS_TABLE_EXISTS_SQL: &str =

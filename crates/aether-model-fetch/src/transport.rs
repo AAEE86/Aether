@@ -1185,7 +1185,7 @@ mod tests {
         );
         assert_eq!(
             plan.headers.get("x-client-version").map(String::as_str),
-            Some("1.2.3")
+            Some("4.3.0")
         );
         assert_eq!(
             plan.headers.get("x-vscode-sessionid").map(String::as_str),

@@ -1037,7 +1037,9 @@ fn parse_antigravity_models_response(body: &Value) -> Result<(Vec<Value>, Option
         }));
 
         let quota_payload = build_antigravity_quota_payload(model_object.get("quotaInfo"));
-        quota_by_model.insert(model_id.to_string(), Value::Object(quota_payload));
+        if !quota_payload.is_empty() {
+            quota_by_model.insert(model_id.to_string(), Value::Object(quota_payload));
+        }
     }
 
     let upstream_metadata = (!quota_by_model.is_empty()).then(|| {
@@ -1141,31 +1143,37 @@ fn infer_kiro_model_owner(model_id: &str) -> &'static str {
 }
 
 fn build_antigravity_quota_payload(quota_info: Option<&Value>) -> serde_json::Map<String, Value> {
-    let quota_info = quota_info.and_then(Value::as_object);
+    let Some(quota_info) = quota_info.and_then(Value::as_object) else {
+        return serde_json::Map::new();
+    };
     let reset_time = quota_info
-        .and_then(|value| value.get("resetTime"))
+        .get("resetTime")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
     let remaining_fraction = quota_info
-        .and_then(|value| value.get("remainingFraction"))
-        .and_then(Value::as_f64);
+        .get("remainingFraction")
+        .and_then(|value| {
+            value.as_f64().or_else(|| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+        })
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0));
 
     let mut payload = serde_json::Map::new();
-    match remaining_fraction {
-        Some(remaining_fraction) => {
-            let used_percent = ((1.0 - remaining_fraction) * 100.0).clamp(0.0, 100.0);
-            payload.insert(
-                "remaining_fraction".to_string(),
-                Value::from(remaining_fraction),
-            );
-            payload.insert("used_percent".to_string(), Value::from(used_percent));
-        }
-        None => {
-            payload.insert("remaining_fraction".to_string(), Value::from(0.0));
-            payload.insert("used_percent".to_string(), Value::from(100.0));
-        }
+    if let Some(remaining_fraction) = remaining_fraction {
+        let used_percent = (1.0 - remaining_fraction) * 100.0;
+        payload.insert(
+            "remaining_fraction".to_string(),
+            Value::from(remaining_fraction),
+        );
+        payload.insert("used_percent".to_string(), Value::from(used_percent));
     }
     if let Some(reset_time) = reset_time {
         payload.insert("reset_time".to_string(), Value::String(reset_time));
@@ -1618,8 +1626,8 @@ mod tests {
 
     use super::{
         build_vertex_google_list_url, build_vertex_service_account_list_url,
-        parse_codex_models_response_for_request, select_model_fetch_strategy, ModelFetchStrategy,
-        ModelFetchStrategyKind,
+        parse_antigravity_models_response, parse_codex_models_response_for_request,
+        select_model_fetch_strategy, ModelFetchStrategy, ModelFetchStrategyKind,
     };
     use crate::transport::ModelFetchTransportRuntime;
     use crate::{fetch_models_from_transports, fetch_models_from_transports_for_client_version};
@@ -2697,6 +2705,50 @@ mod tests {
                 .and_then(|value| value
                     .pointer("/antigravity/quota_by_model/chat_12345/remaining_fraction")),
             Some(&json!(0.75))
+        );
+    }
+
+    #[test]
+    fn antigravity_models_without_explicit_quota_are_not_marked_exhausted() {
+        let (models, metadata) = parse_antigravity_models_response(&json!({
+            "models": {
+                "gemini-3.7-flash-tiered": {
+                    "displayName": "Gemini 3.7 Flash"
+                },
+                "gemini-3.7-flash-high": {
+                    "displayName": "Gemini 3.7 Flash High",
+                    "quotaInfo": {
+                        "remainingFraction": "0.75",
+                        "resetTime": "2030-01-01T00:00:00Z"
+                    }
+                },
+                "gemini-3.7-flash-low": {
+                    "displayName": "Gemini 3.7 Flash Low",
+                    "quotaInfo": {
+                        "remainingFraction": 0.0
+                    }
+                }
+            }
+        }))
+        .expect("Antigravity models should parse");
+
+        assert_eq!(models.len(), 3);
+        let metadata = metadata.expect("explicit quota should produce metadata");
+        let antigravity = &metadata["antigravity"];
+        assert!(antigravity["quota_by_model"]
+            .get("gemini-3.7-flash-tiered")
+            .is_none());
+        assert_eq!(
+            antigravity["quota_by_model"]["gemini-3.7-flash-high"]["remaining_fraction"],
+            json!(0.75)
+        );
+        assert_eq!(
+            antigravity["quota_by_model"]["gemini-3.7-flash-high"]["used_percent"],
+            json!(25.0)
+        );
+        assert_eq!(
+            antigravity["quota_by_model"]["gemini-3.7-flash-low"]["used_percent"],
+            json!(100.0)
         );
     }
 

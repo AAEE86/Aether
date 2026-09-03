@@ -13,7 +13,8 @@ use crate::provider::{
 };
 use crate::quota::{
     provider_pool_json_bool, provider_pool_json_f64, provider_pool_member_quota_snapshot,
-    provider_pool_metadata_bucket, provider_pool_quota_snapshot_exhausted_decision,
+    provider_pool_metadata_bucket, provider_pool_model_quota_exhausted,
+    provider_pool_quota_snapshot_exhausted_decision,
 };
 use crate::quota_refresh::ProviderPoolQuotaRequestSpec;
 
@@ -50,6 +51,11 @@ impl ProviderPoolAdapter for WindsurfProviderPoolAdapter {
     }
 
     fn quota_exhausted(&self, input: &ProviderPoolMemberInput<'_>) -> bool {
+        if let Some(exhausted) = input.provider_model_name.and_then(|model| {
+            provider_pool_model_quota_exhausted(input.key, input.provider_type, model)
+        }) {
+            return exhausted;
+        }
         if windsurf_quota_snapshot_hard_exhausted(input.key, input.provider_type) {
             return true;
         }

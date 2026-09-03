@@ -45,11 +45,11 @@
 
     <div class="py-2">
       <div
-        v-if="items.length > 0"
+        v-if="displayItems.length > 0"
         class="grid grid-cols-2 gap-3"
       >
         <div
-          v-for="item in items"
+          v-for="item in displayItems"
           :key="item.model"
         >
           <div class="flex items-center justify-between text-[10px] mb-0.5">
@@ -117,12 +117,13 @@ import Button from '@/components/ui/button.vue'
 import { testModel } from '@/api/endpoints/providers'
 import type { UpstreamMetadata, QuotaStatusSnapshot, QuotaWindowSnapshot } from '@/api/endpoints/types'
 import { useToast } from '@/composables/useToast'
+import { useI18n } from '@/i18n'
 import { parseApiError } from '@/utils/errorParser'
 import {
   compareAntigravityQuotaItems,
   dedupeAntigravityQuotaItemsByLabel,
+  resolveAntigravityQuotaGroupLabel,
   resolveAntigravityQuotaLabel,
-  summarizeAntigravityQuotaItems,
 } from '@/features/providers/utils/antigravityQuota'
 
 const props = defineProps<{
@@ -148,6 +149,7 @@ interface QuotaItem {
 }
 
 const { error: showError, success: showSuccess } = useToast()
+const { t } = useI18n()
 const testingModel = ref<string | null>(null)
 
 function getQuotaSnapshotUpdatedAt(quota: QuotaStatusSnapshot | null | undefined): number | undefined {
@@ -238,6 +240,48 @@ function buildItemsFromQuotaSnapshot(quota: QuotaStatusSnapshot | null | undefin
   return dedupeAntigravityQuotaItemsByLabel(items)
 }
 
+function buildGroupedItemsFromQuotaSnapshot(
+  quota: QuotaStatusSnapshot | null | undefined,
+): QuotaItem[] {
+  if (!quota) return []
+
+  const providerType = String(quota.provider_type || '').trim().toLowerCase()
+  if (providerType && providerType !== 'antigravity') return []
+
+  const windows = Array.isArray(quota.windows)
+    ? quota.windows.filter(window => String(window?.scope || '').trim().toLowerCase() === 'quota_group')
+    : []
+
+  return windows
+    .map((window) => {
+      const code = String(window.code || '').trim()
+      const label = resolveAntigravityQuotaGroupLabel(window, t)
+      if (!code || !label) return null
+
+      const usedPercent =
+        typeof window.used_ratio === 'number'
+          ? Math.max(Math.min(window.used_ratio * 100, 100), 0)
+          : typeof window.remaining_ratio === 'number'
+            ? Math.max(Math.min((1 - window.remaining_ratio) * 100, 100), 0)
+            : null
+      if (usedPercent == null) return null
+
+      const remainingPercent =
+        typeof window.remaining_ratio === 'number'
+          ? Math.max(Math.min(window.remaining_ratio * 100, 100), 0)
+          : Math.max(100 - usedPercent, 0)
+
+      return {
+        model: code,
+        label,
+        usedPercent,
+        remainingPercent,
+        resetSeconds: getQuotaWindowLiveResetSeconds(quota, window),
+      } satisfies QuotaItem
+    })
+    .filter((item): item is QuotaItem => item !== null)
+}
+
 const rawItems = computed<QuotaItem[]>(() => {
   const snapshotItems = buildItemsFromQuotaSnapshot(props.quotaSnapshot)
   if (snapshotItems.length > 0) return snapshotItems
@@ -290,7 +334,8 @@ const rawItems = computed<QuotaItem[]>(() => {
   return dedupeAntigravityQuotaItemsByLabel(result)
 })
 
-const items = computed<QuotaItem[]>(() => summarizeAntigravityQuotaItems(rawItems.value))
+const groupedItems = computed<QuotaItem[]>(() => buildGroupedItemsFromQuotaSnapshot(props.quotaSnapshot))
+const displayItems = computed<QuotaItem[]>(() => groupedItems.value)
 
 async function handleTestModel(modelName: string) {
   if (!props.providerId || testingModel.value) return

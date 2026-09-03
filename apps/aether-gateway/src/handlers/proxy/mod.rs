@@ -978,6 +978,7 @@ async fn proxy_request_inner(
                 response,
                 &trace_id,
                 &remote_addr,
+                client_ip,
                 request.method(),
                 request
                     .uri()
@@ -1014,6 +1015,7 @@ async fn proxy_request_inner(
                 response,
                 &trace_id,
                 &remote_addr,
+                client_ip,
                 request.method(),
                 request
                     .uri()
@@ -1054,6 +1056,7 @@ async fn proxy_request_inner(
                 response,
                 &trace_id,
                 &remote_addr,
+                client_ip,
                 request.method(),
                 request
                     .uri()
@@ -1114,6 +1117,7 @@ async fn proxy_request_inner(
             response,
             &trace_id,
             &remote_addr,
+            client_ip,
             &parts.method,
             parts
                 .uri
@@ -1135,6 +1139,7 @@ async fn proxy_request_inner(
         &trace_id,
     )
     .await?;
+    request_context.client_ip = Some(client_ip.to_string());
     maybe_promote_management_token_admin_principal(
         &state,
         client_ip,

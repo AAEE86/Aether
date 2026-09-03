@@ -6,6 +6,7 @@ use super::{
     EXECUTION_PATH_HEADER, TRACE_ID_HEADER,
 };
 use crate::data::GatewayDataState;
+use aether_ai_formats::openai_responses_message_item_id;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -1424,7 +1425,8 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
                     Arc::clone(&request_candidate_repository),
                     Arc::clone(&usage_repository),
                     DEVELOPMENT_ENCRYPTION_KEY,
-                ),
+                )
+                .with_system_default_routing_group_for_tests(),
             )
             .with_oauth_refresh_coordinator_for_tests(oauth_refresh);
     let gateway = build_router_with_state(gateway_state);
@@ -1465,7 +1467,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
             "output_text": "Hello Antigravity",
             "output": [{
                 "type": "message",
-                "id": "resp-local-stream_msg",
+                "id": openai_responses_message_item_id("resp-local-stream", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
@@ -1537,7 +1539,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
     );
     assert_eq!(
         seen_remote_execution_runtime_request.x_client_version,
-        "1.2.3"
+        "4.3.0"
     );
     assert_eq!(
         seen_remote_execution_runtime_request.x_vscode_sessionid,
