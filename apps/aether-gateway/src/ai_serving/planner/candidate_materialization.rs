@@ -2482,14 +2482,23 @@ mod tests {
 
         assert!(should_cache_resolved_candidate_page(&cursor));
 
-        let fixed_order_app = AppState::new()
-            .expect("state should build")
-            .with_data_state_for_tests(
-                GatewayDataState::disabled().with_system_config_values_for_tests([(
-                    "scheduling_mode".to_string(),
-                    json!("fixed_order"),
-                )]),
-            );
+        let fixed_order_app = AppState::new().expect("state should build");
+        let fixed_order_policy = ResolvedRoutingPolicy {
+            group_id: Some("routing-group-fixed-order".to_string()),
+            group_version: Some(1),
+            selection_source: "test".to_string(),
+            requested_model: "gpt-5".to_string(),
+            resolved_model: "gpt-5".to_string(),
+            priority_mode: aether_routing_core::RoutingSetPriorityMode::Provider,
+            scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
+            keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
+            execution_policy: Default::default(),
+            ranking_overlay: Default::default(),
+            mutation_plan: Default::default(),
+            pool_policy_overrides: Default::default(),
+            matched_rules: Vec::new(),
+        };
         let mut page_cursor = LocalCandidatePreselectionPageCursor::new(
             PlannerAppState::new(&fixed_order_app),
             &model_directive_policy,
@@ -2499,7 +2508,7 @@ mod tests {
             true,
             None,
             &auth_snapshot,
-            None,
+            Some(&fixed_order_policy),
             None,
             None,
             false,
@@ -2517,7 +2526,7 @@ mod tests {
             auth_snapshot,
             client_session_affinity: None,
             required_capabilities: None,
-            routing_policy: None,
+            routing_policy: Some(fixed_order_policy),
             sticky_session_token: None,
             request_auth_channel: None,
             skipped_user_id: "user-1".to_string(),

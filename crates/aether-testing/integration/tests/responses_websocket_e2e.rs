@@ -823,6 +823,7 @@ impl Harness {
                 enabled: true,
                 ..UsageRuntimeConfig::default()
             })?;
+        state.ensure_system_default_routing_group().await?;
         let gateway_server = SpawnedServer::start(build_router_with_state(state)).await?;
         let websocket_url = format!(
             "{}/v1/responses",
