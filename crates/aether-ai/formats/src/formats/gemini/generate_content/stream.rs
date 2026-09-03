@@ -129,7 +129,8 @@ impl GeminiProviderState {
                     let is_reasoning = part_object
                         .get("thought")
                         .and_then(Value::as_bool)
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || (text.trim().is_empty() && reasoning_signature.is_some());
                     let previous = if is_reasoning {
                         self.reasoning_parts.entry(index).or_default()
                     } else {
@@ -957,6 +958,56 @@ mod tests {
                 }),
                 ..
             }
+        )));
+    }
+
+    #[test]
+    fn gemini_provider_state_preserves_signature_only_reasoning_terminal() {
+        let mut state = GeminiProviderState::default();
+        let report_context = json!({});
+        let frames = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "response": {
+                        "responseId": "resp_signature_only_123",
+                        "modelVersion": "gemini-3.7-flash-tiered",
+                        "candidates": [{
+                            "index": 0,
+                            "finishReason": "MAX_TOKENS",
+                            "content": {
+                                "role": "model",
+                                "parts": [{
+                                    "text": "",
+                                    "thoughtSignature": "opaque-thought-signature"
+                                }]
+                            }
+                        }],
+                        "usageMetadata": {
+                            "promptTokenCount": 22,
+                            "thoughtsTokenCount": 29,
+                            "totalTokenCount": 51
+                        }
+                    },
+                    "traceId": "trace-signature-only"
+                })),
+            )
+            .expect("signature-only reasoning terminal should parse");
+
+        assert!(frames.iter().any(|frame| matches!(
+            frame.event,
+            CanonicalStreamEvent::ReasoningSignature(ref signature)
+                if signature == "opaque-thought-signature"
+        )));
+        assert!(frames.iter().any(|frame| matches!(
+            frame.event,
+            CanonicalStreamEvent::Finish {
+                ref finish_reason,
+                usage: Some(CanonicalUsage {
+                    reasoning_tokens: 29,
+                    ..
+                }),
+            } if finish_reason.as_deref() == Some("length")
         )));
     }
 

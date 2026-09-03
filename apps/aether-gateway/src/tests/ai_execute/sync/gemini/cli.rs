@@ -2234,7 +2234,8 @@ async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_af
             provider_catalog_repository,
             Arc::clone(&request_candidate_repository),
             DEVELOPMENT_ENCRYPTION_KEY,
-        ),
+        )
+        .with_system_default_routing_group_for_tests(),
     )
     .with_oauth_refresh_coordinator_for_tests(oauth_refresh);
     let gateway = build_router_with_state(gateway_state);
@@ -2321,7 +2322,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_af
         "Bearer refreshed-antigravity-cli-access-token"
     );
     assert_eq!(seen_execution_runtime_request.x_client_name, "antigravity");
-    assert_eq!(seen_execution_runtime_request.x_client_version, "1.2.3");
+    assert_eq!(seen_execution_runtime_request.x_client_version, "4.3.0");
     assert_eq!(
         seen_execution_runtime_request.x_vscode_sessionid,
         "sess-antigravity-local-123"

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::formats::openai::responses::openai_responses_message_item_id;
 use crate::formats::openai::responses::{
     decode_gemini_tool_signature_carrier, GeminiToolSignatureCarrierDirection,
 };
@@ -1248,19 +1249,21 @@ pub(crate) fn gemini_part_to_canonical_block(
 ) -> Option<CanonicalContentBlock> {
     let part_object = part.as_object()?;
     if let Some(text) = part_object.get("text").and_then(Value::as_str) {
-        if part_object
+        let thought_signature = part_object
+            .get("thoughtSignature")
+            .or_else(|| part_object.get("thought_signature"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let is_thinking = part_object
             .get("thought")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-        {
+            || (text.trim().is_empty() && thought_signature.is_some());
+        if is_thinking {
             return Some(CanonicalContentBlock::Thinking {
                 text: text.to_string(),
-                signature: part_object
-                    .get("thoughtSignature")
-                    .or_else(|| part_object.get("thought_signature"))
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned),
+                signature: thought_signature,
                 encrypted_content: None,
                 extensions: gemini_extensions(
                     part_object,
@@ -4102,11 +4105,7 @@ pub(crate) fn flush_openai_responses_message_item(
     if message_content.is_empty() {
         return;
     }
-    let id = if *message_index == 0 {
-        format!("{response_id}_msg")
-    } else {
-        format!("{response_id}_msg_{message_index}")
-    };
+    let id = openai_responses_message_item_id(response_id, *message_index);
     output.push(json!({
         "type": "message",
         "id": id,

@@ -26,7 +26,9 @@ use crate::ai_serving::api::{
     CanonicalContentPart, CanonicalStreamEvent, CanonicalStreamFrame, ClaudeClientEmitter,
     OpenAIChatClientEmitter, OpenAIResponsesClientEmitter, StreamingCanonicalUsage,
 };
-use crate::ai_serving::openai_responses_synthetic_reasoning_item_id;
+use crate::ai_serving::{
+    openai_responses_message_item_id, openai_responses_synthetic_reasoning_item_id,
+};
 use crate::clock::current_unix_secs;
 use crate::execution_runtime::ndjson::encode_stream_frame_ndjson;
 use crate::execution_runtime::transport::{
@@ -2725,7 +2727,7 @@ fn openai_responses_body(
     };
     if !message_text.trim().is_empty() {
         output.push(json!({
-            "id": format!("{response_id}_msg"),
+            "id": openai_responses_message_item_id(response_id.as_str(), output.len()),
             "type": "message",
             "role": "assistant",
             "content": [{"type": "output_text", "text": message_text, "annotations": []}],
@@ -3774,6 +3776,9 @@ mod tests {
         );
         assert_eq!(body["output"][0]["type"], serde_json::json!("reasoning"));
         assert_eq!(body["output"][1]["type"], serde_json::json!("message"));
+        assert!(body["output"][1]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("msg_")));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use aether_ai_formats::openai_responses_message_item_id;
 use axum::body::to_bytes;
 use base64::Engine as _;
 use serde_json::json;
@@ -192,7 +193,7 @@ fn aggregates_openai_responses_stream_completed_event_to_final_response() {
             "output_text": "Hello",
             "output": [{
                 "type": "message",
-                "id": "resp_123_msg",
+                "id": openai_responses_message_item_id("resp_123", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
@@ -843,7 +844,7 @@ fn converts_claude_cli_response_to_openai_responses_response() {
             "output_text": "Hello Claude CLI",
             "output": [{
                 "type": "message",
-                "id": "msg_cli_123_msg",
+                "id": openai_responses_message_item_id("msg_cli_123", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
@@ -907,7 +908,7 @@ fn converts_claude_cli_tool_use_to_openai_responses_function_call() {
             "output": [
                 {
                     "type": "message",
-                    "id": "msg_cli_tool_123_msg",
+                    "id": openai_responses_message_item_id("msg_cli_tool_123", 0),
                     "role": "assistant",
                     "status": "completed",
                     "content": [{
@@ -977,7 +978,7 @@ fn converts_gemini_cli_response_to_openai_responses_response() {
             "output_text": "Hello Gemini CLI",
             "output": [{
                 "type": "message",
-                "id": "resp_cli_123_msg",
+                "id": openai_responses_message_item_id("resp_cli_123", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
@@ -1046,7 +1047,7 @@ fn converts_gemini_cli_function_call_to_openai_responses_function_call() {
             "output": [
                 {
                     "type": "message",
-                    "id": "resp_cli_tool_123_msg",
+                    "id": openai_responses_message_item_id("resp_cli_tool_123", 0),
                     "role": "assistant",
                     "status": "completed",
                     "content": [{
@@ -1252,7 +1253,7 @@ fn local_finalize_handles_openai_responses_openai_family_sync_response_even_when
             "model": "gpt-5",
             "output": [{
                 "type": "message",
-                "id": "resp_cli_family_123_msg",
+                "id": openai_responses_message_item_id("resp_cli_family_123", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{

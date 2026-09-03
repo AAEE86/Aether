@@ -1213,6 +1213,18 @@ fn probe_result_hard_state(item: &Value) -> Option<PoolMemberHardState> {
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    // Providers frequently encode an exhausted account as HTTP 429 with a
+    // provider-specific status/message (for example RESOURCE_EXHAUSTED or
+    // `quota exceeded`) rather than the normalized `quota_exhausted` status.
+    // Preserve that distinction in the score so the member stays out of the
+    // scheduler until a successful quota probe observes a reset.
+    let serialized_item = item.to_string().to_ascii_lowercase();
+    let status_code = item.get("status_code").and_then(Value::as_u64);
+    if status == "quota_exhausted"
+        || (status_code == Some(429) && contains_quota_exhaustion_marker(&serialized_item))
+    {
+        return Some(PoolMemberHardState::QuotaExhausted);
+    }
     match status.as_str() {
         "auth_invalid" | "forbidden" => Some(PoolMemberHardState::AuthInvalid),
         "workspace_deactivated" => Some(PoolMemberHardState::Banned),
@@ -1224,6 +1236,26 @@ fn probe_result_hard_state(item: &Value) -> Option<PoolMemberHardState> {
             _ => None,
         },
     }
+}
+
+fn contains_quota_exhaustion_marker(value: &str) -> bool {
+    [
+        "quota exhausted",
+        "quota_exhausted",
+        "quota exceeded",
+        "quota_exceeded",
+        "insufficient_quota",
+        "resource exhausted",
+        "resource has been exhausted",
+        "resource_exhausted",
+        "usage_limit_reached",
+        "limit_reached",
+        "quota limit reached",
+        "credits exhausted",
+        "insufficient credits",
+    ]
+    .iter()
+    .any(|marker| value.contains(marker))
 }
 
 async fn perform_pool_quota_probe_for_provider(
@@ -1769,6 +1801,26 @@ mod tests {
         let selected = select_pool_quota_probe_key_ids(&keys, "codex", 2_000, 600, &stamps, 2);
 
         assert_eq!(selected, vec!["never".to_string(), "old".to_string()]);
+    }
+
+    #[test]
+    fn quota_markers_in_429_probe_results_are_hard_exhaustion() {
+        assert_eq!(
+            probe_result_hard_state(&json!({
+                "status": "rate_limited",
+                "status_code": 429,
+                "message": "RESOURCE_EXHAUSTED: quota exceeded"
+            })),
+            Some(PoolMemberHardState::QuotaExhausted)
+        );
+        assert_eq!(
+            probe_result_hard_state(&json!({
+                "status": "rate_limited",
+                "status_code": 429,
+                "message": "temporary rate limit"
+            })),
+            Some(PoolMemberHardState::Cooldown)
+        );
     }
 
     fn score(

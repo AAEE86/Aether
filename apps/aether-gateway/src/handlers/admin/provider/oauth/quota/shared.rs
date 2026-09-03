@@ -240,7 +240,16 @@ fn merge_upstream_metadata(
         .unwrap_or_default();
     if let Some(update_object) = updates.as_object() {
         for (key, value) in update_object {
-            merged.insert(key.clone(), value.clone());
+            let mut next = value.clone();
+            if let (Some(current_namespace), Some(next_namespace)) = (
+                merged.get(key).and_then(serde_json::Value::as_object),
+                next.as_object_mut(),
+            ) {
+                let mut combined = current_namespace.clone();
+                combined.extend(next_namespace.clone());
+                next = serde_json::Value::Object(combined);
+            }
+            merged.insert(key.clone(), next);
         }
     }
     serde_json::Value::Object(merged)
@@ -1306,7 +1315,8 @@ where
     F: std::future::Future<Output = ()>,
 {
     let Some(mut latest_key) = state
-        .read_provider_catalog_keys_by_ids(&[key_id.to_string()])
+        .app()
+        .list_provider_catalog_keys_by_ids_strong(&[key_id.to_string()])
         .await?
         .into_iter()
         .next()
@@ -1350,9 +1360,18 @@ where
     let metadata_updates = metadata_update
         .and_then(serde_json::Value::as_object)
         .map(|updates| {
+            let merged = latest_key
+                .upstream_metadata
+                .as_ref()
+                .and_then(serde_json::Value::as_object);
             updates
-                .iter()
-                .map(|(namespace, value)| (namespace.clone(), value.clone()))
+                .keys()
+                .filter_map(|namespace| {
+                    merged
+                        .and_then(|metadata| metadata.get(namespace))
+                        .cloned()
+                        .map(|value| (namespace.clone(), value))
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -1384,7 +1403,7 @@ where
         } else {
             serde_json::json!({})
         };
-        let mut expected = observed_upstream_metadata
+        let expected = observed_upstream_metadata
             .as_ref()
             .and_then(serde_json::Value::as_object)
             .and_then(|metadata| metadata.get(namespace))
@@ -2805,6 +2824,123 @@ mod tests {
         assert_eq!(
             stored.upstream_metadata.as_ref().unwrap()["codex"],
             json!({"remaining":4})
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_refresh_strong_read_bypasses_stale_provider_catalog_cache() {
+        let mut key = StoredProviderCatalogKey::new(
+            "key-antigravity-stale-cache".to_string(),
+            "provider-antigravity-stale-cache".to_string(),
+            "Antigravity stale cache".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build");
+        key.upstream_metadata = Some(json!({
+            "antigravity": {
+                "project_id": "project-1",
+                "quota_by_model": {
+                    "gemini-3.7-flash-tiered": {"remaining_fraction": 0.9}
+                }
+            }
+        }));
+
+        let repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+            vec![],
+            vec![],
+            vec![key],
+        ));
+        let data =
+            GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(&repository))
+                .with_cached_provider_catalog_reader_for_tests(Arc::clone(&repository));
+        let app = AppState::new()
+            .expect("app should build")
+            .with_data_state_for_tests(data);
+        let admin_state = AdminAppState::new(&app);
+        let key_ids = ["key-antigravity-stale-cache".to_string()];
+
+        let cached = app
+            .read_provider_catalog_keys_by_ids(&key_ids)
+            .await
+            .expect("initial cached read should succeed");
+        assert_eq!(
+            cached[0].upstream_metadata.as_ref().unwrap()["antigravity"]["quota_by_model"]
+                ["gemini-3.7-flash-tiered"]["remaining_fraction"],
+            json!(0.9)
+        );
+
+        let current_namespace = json!({
+            "project_id": "project-1",
+            "model_fetch_revision": 2,
+            "quota_by_model": {
+                "gemini-3.7-flash-tiered": {"remaining_fraction": 0.7}
+            }
+        });
+        assert!(repository
+            .upsert_key_upstream_metadata_namespace(
+                "key-antigravity-stale-cache",
+                "antigravity",
+                &current_namespace,
+                None,
+            )
+            .await
+            .expect("out-of-band metadata update should succeed"));
+        let still_cached = app
+            .read_provider_catalog_keys_by_ids(&key_ids)
+            .await
+            .expect("stale cached read should succeed");
+        assert_eq!(
+            still_cached[0].upstream_metadata.as_ref().unwrap()["antigravity"]["quota_by_model"]
+                ["gemini-3.7-flash-tiered"]["remaining_fraction"],
+            json!(0.9),
+            "regression setup must keep the ordinary read stale"
+        );
+
+        let metadata_update = json!({
+            "antigravity": {
+                "project_id": "project-1",
+                "quota_by_model": {
+                    "gemini-3.7-flash-tiered": {"remaining_fraction": 0.6}
+                },
+                "quota_groups": [{
+                    "display_name": "Gemini models",
+                    "buckets": [{"bucket_id": "gemini-weekly", "window": "weekly"}]
+                }]
+            }
+        });
+        assert!(persist_provider_quota_refresh_state(
+            &admin_state,
+            "key-antigravity-stale-cache",
+            Some(&metadata_update),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("quota refresh persistence should not error"));
+
+        let stored = repository
+            .list_keys_by_ids(&key_ids)
+            .await
+            .expect("key should reload")
+            .pop()
+            .expect("key should exist");
+        assert_eq!(
+            stored.upstream_metadata.as_ref().unwrap()["antigravity"]["quota_groups"][0]["buckets"]
+                [0]["bucket_id"],
+            json!("gemini-weekly")
+        );
+        assert_eq!(
+            stored.upstream_metadata.as_ref().unwrap()["antigravity"]["model_fetch_revision"],
+            json!(2),
+            "quota refresh must preserve fields written by another Antigravity metadata producer"
+        );
+        assert_eq!(
+            stored.upstream_metadata.as_ref().unwrap()["antigravity"]["quota_by_model"]
+                ["gemini-3.7-flash-tiered"]["remaining_fraction"],
+            json!(0.6)
         );
     }
 }

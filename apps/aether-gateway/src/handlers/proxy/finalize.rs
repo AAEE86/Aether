@@ -50,6 +50,7 @@ pub(super) fn finalize_gateway_response(
     mut response: Response<Body>,
     trace_id: &str,
     remote_addr: &std::net::SocketAddr,
+    client_ip: std::net::IpAddr,
     method: &http::Method,
     path_and_query: &str,
     control_decision: Option<&GatewayControlDecision>,
@@ -117,6 +118,7 @@ pub(super) fn finalize_gateway_response(
             trace_id = %trace_id,
             request_id,
             remote_addr = %remote_addr,
+            client_ip = %client_ip,
             method = %method,
             path = %sanitized_path_and_query,
             user_id,
@@ -137,6 +139,7 @@ pub(super) fn finalize_gateway_response(
             trace_id = %trace_id,
             request_id,
             remote_addr = %remote_addr,
+            client_ip = %client_ip,
             method = %method,
             path = %sanitized_path_and_query,
             user_id,
@@ -157,6 +160,7 @@ pub(super) fn finalize_gateway_response(
             trace_id = %trace_id,
             request_id,
             remote_addr = %remote_addr,
+            client_ip = %client_ip,
             method = %method,
             path = %sanitized_path_and_query,
             user_id,
@@ -247,11 +251,17 @@ pub(super) fn finalize_gateway_response_with_context(
     started_at: &Instant,
     request_permit: Option<AdmissionPermit>,
 ) -> Response<Body> {
+    let client_ip = request_context
+        .client_ip
+        .as_deref()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| remote_addr.ip());
     finalize_gateway_response(
         state,
         response,
         &request_context.trace_id,
         remote_addr,
+        client_ip,
         &request_context.request_method,
         &request_context.request_path_and_query(),
         request_context.control_decision.as_ref(),
@@ -320,6 +330,7 @@ mod tests {
             request_query_string: None,
             request_content_type: Some("application/json".to_string()),
             host_header: None,
+            client_ip: None,
             control_decision: None,
         };
         let mut headers = HeaderMap::new();
@@ -373,6 +384,7 @@ mod tests {
             response,
             "trace-finalize",
             &remote_addr,
+            remote_addr.ip(),
             &Method::GET,
             "/v1beta/models/gemini-3-flash-preview:generateContent?key=secret&alt=sse",
             Some(&control_decision),

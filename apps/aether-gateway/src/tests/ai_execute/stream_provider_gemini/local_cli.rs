@@ -1915,6 +1915,7 @@ async fn gateway_executes_antigravity_gemini_cli_stream_via_local_decision_gate_
             Arc::clone(&request_candidate_repository),
             DEVELOPMENT_ENCRYPTION_KEY,
         )
+        .with_system_default_routing_group_for_tests()
         .with_system_config_values_for_tests([(
             crate::constants::ANTIGRAVITY_BEARER_BRIDGE_CONFIG_KEY.to_string(),
             json!({
@@ -2017,7 +2018,7 @@ async fn gateway_executes_antigravity_gemini_cli_stream_via_local_decision_gate_
         "Bearer refreshed-antigravity-cli-stream-access-token"
     );
     assert_eq!(seen_execution_runtime_request.x_client_name, "antigravity");
-    assert_eq!(seen_execution_runtime_request.x_client_version, "1.2.3");
+    assert_eq!(seen_execution_runtime_request.x_client_version, "4.3.0");
     assert_eq!(
         seen_execution_runtime_request.x_vscode_sessionid,
         "sess-antigravity-stream-local-123"
