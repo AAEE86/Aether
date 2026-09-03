@@ -54,13 +54,10 @@ use crate::executor::{
     record_failed_usage_for_exhausted_request, LocalExecutionExhaustion,
     LocalExecutionRequestOutcome,
 };
-use crate::handlers::shared::system_config_bool;
 use crate::request_diagnostics::{current_request_diagnostics, scope_request_diagnostics_with};
 use crate::stage_metrics::observe_gateway_stage_ms;
 use crate::{AiExecutionDecision, AppState, GatewayError};
 
-const ENABLE_OPENAI_IMAGE_SYNC_HEARTBEAT_CONFIG_KEY: &str = "enable_openai_image_sync_heartbeat";
-const ENABLE_STANDARD_TEXT_SYNC_HEARTBEAT_CONFIG_KEY: &str = "enable_standard_text_sync_heartbeat";
 const OPENAI_IMAGE_SYNC_HEARTBEAT_INTERNAL_ERROR_STATUS: u16 = 502;
 const OPENAI_IMAGE_SYNC_HEARTBEAT_EXHAUSTED_STATUS: u16 = 503;
 const OPENAI_IMAGE_SYNC_HEARTBEAT_ERROR_MESSAGE_LIMIT: usize = 4096;
@@ -107,7 +104,10 @@ pub(crate) async fn maybe_execute_sync_via_local_decision(
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
-    if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
+    if standard_text_sync_heartbeat_should_wrap(
+        plan_kind,
+        attempt_source.routing_execution_policy(),
+    ) {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
         let transfer_tracker_for_task = transfer_tracker.clone();
@@ -264,7 +264,10 @@ pub(crate) async fn maybe_execute_sync_via_local_openai_responses_decision(
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
-    if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
+    if standard_text_sync_heartbeat_should_wrap(
+        plan_kind,
+        attempt_source.routing_execution_policy(),
+    ) {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
         let transfer_tracker_for_task = transfer_tracker.clone();
@@ -381,7 +384,10 @@ pub(crate) async fn maybe_execute_sync_via_standard_family_decision(
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
-    if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
+    if standard_text_sync_heartbeat_should_wrap(
+        plan_kind,
+        attempt_source.routing_execution_policy(),
+    ) {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
         let transfer_tracker_for_task = transfer_tracker.clone();
@@ -609,7 +615,10 @@ pub(crate) async fn maybe_execute_sync_via_local_same_format_provider_decision(
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
-    if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
+    if standard_text_sync_heartbeat_should_wrap(
+        plan_kind,
+        attempt_source.routing_execution_policy(),
+    ) {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
         let transfer_tracker_for_task = transfer_tracker.clone();
@@ -746,42 +755,6 @@ pub(crate) async fn maybe_execute_sync_via_local_gemini_files_decision(
     .await
 }
 
-async fn openai_image_sync_heartbeat_enabled(state: &AppState) -> bool {
-    match state
-        .read_system_config_json_value(ENABLE_OPENAI_IMAGE_SYNC_HEARTBEAT_CONFIG_KEY)
-        .await
-    {
-        Ok(value) => system_config_bool(value.as_ref(), false),
-        Err(err) => {
-            tracing::warn!(
-                event_name = "openai_image_sync_heartbeat_config_read_failed",
-                log_type = "ops",
-                error = ?err,
-                "gateway failed to read sync image heartbeat config; defaulting disabled"
-            );
-            false
-        }
-    }
-}
-
-async fn standard_text_sync_heartbeat_enabled(state: &AppState) -> bool {
-    match state
-        .read_system_config_json_value(ENABLE_STANDARD_TEXT_SYNC_HEARTBEAT_CONFIG_KEY)
-        .await
-    {
-        Ok(value) => system_config_bool(value.as_ref(), false),
-        Err(err) => {
-            tracing::warn!(
-                event_name = "standard_text_sync_heartbeat_config_read_failed",
-                log_type = "ops",
-                error = ?err,
-                "gateway failed to read standard text sync heartbeat config; defaulting disabled"
-            );
-            false
-        }
-    }
-}
-
 fn standard_text_sync_heartbeat_applies_to_plan_kind(plan_kind: &str) -> bool {
     matches!(
         plan_kind,
@@ -795,9 +768,12 @@ fn standard_text_sync_heartbeat_applies_to_plan_kind(plan_kind: &str) -> bool {
     )
 }
 
-async fn standard_text_sync_heartbeat_should_wrap(state: &AppState, plan_kind: &str) -> bool {
+fn standard_text_sync_heartbeat_should_wrap(
+    plan_kind: &str,
+    execution_policy: Option<aether_routing_core::RoutingExecutionPolicy>,
+) -> bool {
     standard_text_sync_heartbeat_applies_to_plan_kind(plan_kind)
-        && standard_text_sync_heartbeat_enabled(state).await
+        && execution_policy.is_some_and(|policy| policy.enable_cf_heartbeat)
 }
 
 fn standard_text_sync_heartbeat_client_api_format_for_plan_kind(plan_kind: &str) -> &'static str {
@@ -1329,7 +1305,10 @@ pub(crate) async fn maybe_execute_sync_via_local_image_decision(
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
-    if openai_image_sync_heartbeat_enabled(state).await {
+    if attempt_source
+        .routing_execution_policy()
+        .is_some_and(|policy| policy.enable_cf_heartbeat)
+    {
         let mut attempts = Vec::new();
         while let Some(attempt) = attempt_source.next_execution_attempt().await? {
             attempts.push(attempt);
@@ -1867,11 +1846,10 @@ mod tests {
         assert_eq!(body, json!({"data": [{"b64_json": "x"}]}));
     }
 
-    #[tokio::test]
-    async fn openai_image_sync_heartbeat_missing_config_defaults_disabled() {
-        let state = AppState::new().expect("state should build");
-
-        assert!(!openai_image_sync_heartbeat_enabled(&state).await);
+    #[test]
+    fn openai_image_sync_heartbeat_missing_routing_policy_defaults_disabled() {
+        assert!(!Option::<aether_routing_core::RoutingExecutionPolicy>::None
+            .is_some_and(|policy| policy.enable_cf_heartbeat));
     }
 
     #[tokio::test]
@@ -2150,22 +2128,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn standard_text_sync_heartbeat_missing_config_defaults_disabled() {
-        let state = AppState::new().expect("state should build");
-
-        assert!(!standard_text_sync_heartbeat_enabled(&state).await);
-    }
-
-    #[tokio::test]
     async fn standard_text_sync_heartbeat_no_local_candidates_preserves_no_path() {
-        let state = AppState::new()
-            .expect("state should build")
-            .with_data_state_for_tests(
-                crate::data::GatewayDataState::disabled().with_system_config_values_for_tests([(
-                    ENABLE_STANDARD_TEXT_SYNC_HEARTBEAT_CONFIG_KEY.to_string(),
-                    json!(true),
-                )]),
-            );
+        let state = AppState::new().expect("state should build");
         let (parts, _) = http::Request::builder()
             .method(http::Method::POST)
             .uri("/v1/responses")

@@ -21,7 +21,8 @@ use crate::client_session_affinity::{
 };
 use crate::orchestration::{
     insert_pool_key_lease_report_context_fields, ExecutionAttemptIdentity,
-    ROUTING_POOL_POLICY_OVERRIDE_REPORT_FIELD, SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD,
+    ROUTING_EXECUTION_POLICY_REPORT_FIELD, ROUTING_POOL_POLICY_OVERRIDE_REPORT_FIELD,
+    SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD,
 };
 use crate::scheduler::affinity::insert_scheduler_affinity_policy_report_context_field;
 
@@ -112,6 +113,11 @@ pub(crate) fn build_local_execution_report_context(
     }
     insert_pool_key_lease_report_context_fields(&mut extra_fields, parts.pool_key_lease);
     insert_scheduler_affinity_policy_report_context_field(&mut extra_fields, parts.routing_policy);
+    if let Some(policy) = parts.routing_policy {
+        if let Ok(value) = serde_json::to_value(policy.execution_policy) {
+            extra_fields.insert(ROUTING_EXECUTION_POLICY_REPORT_FIELD.to_string(), value);
+        }
+    }
     if let Some(override_policy) = parts
         .routing_policy
         .and_then(|policy| policy.pool_policy_overrides.get(parts.provider_id))

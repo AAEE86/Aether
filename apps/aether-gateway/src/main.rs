@@ -77,6 +77,29 @@ enum DatabaseDriverArg {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum DatabaseModeArg {
+    Auto,
+    VerifyOnly,
+}
+
+fn resolve_database_mode(
+    configured: Option<DatabaseModeArg>,
+    legacy_auto_prepare: Option<bool>,
+) -> DatabaseModeArg {
+    if let Some(configured) = configured {
+        return configured;
+    }
+    if let Some(legacy_auto_prepare) = legacy_auto_prepare {
+        return if legacy_auto_prepare {
+            DatabaseModeArg::Auto
+        } else {
+            DatabaseModeArg::VerifyOnly
+        };
+    }
+    DatabaseModeArg::Auto
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum ExportDomainArg {
     Users,
     ApiKeys,
@@ -538,46 +561,71 @@ fn automatic_sql_pool_config_for_parallelism(
 
 #[derive(ClapArgs, Debug, Clone)]
 struct GatewayDataArgs {
-    #[arg(long, env = "AETHER_DATABASE_DRIVER")]
+    #[arg(long, env = "AETHER_DATABASE_DRIVER", global = true)]
     database_driver: Option<DatabaseDriverArg>,
 
-    #[arg(long, env = "AETHER_DATABASE_URL")]
+    #[arg(long, env = "AETHER_DATABASE_URL", global = true)]
     database_url: Option<String>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_URL")]
+    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_URL", global = true)]
     postgres_url: Option<String>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_ENCRYPTION_KEY")]
+    #[arg(long, env = "AETHER_GATEWAY_DATA_ENCRYPTION_KEY", global = true)]
     encryption_key: Option<String>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_REDIS_URL")]
+    #[arg(long, env = "AETHER_GATEWAY_DATA_REDIS_URL", global = true)]
     redis_url: Option<String>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_REDIS_KEY_PREFIX")]
+    #[arg(long, env = "AETHER_GATEWAY_DATA_REDIS_KEY_PREFIX", global = true)]
     redis_key_prefix: Option<String>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_MIN_CONNECTIONS")]
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_DATA_POSTGRES_MIN_CONNECTIONS",
+        global = true
+    )]
     postgres_min_connections: Option<u32>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS")]
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS",
+        global = true
+    )]
     postgres_max_connections: Option<u32>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS")]
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS",
+        global = true
+    )]
     postgres_acquire_timeout_ms: Option<u64>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_IDLE_TIMEOUT_MS")]
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_DATA_POSTGRES_IDLE_TIMEOUT_MS",
+        global = true
+    )]
     postgres_idle_timeout_ms: Option<u64>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_LIFETIME_MS")]
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_DATA_POSTGRES_MAX_LIFETIME_MS",
+        global = true
+    )]
     postgres_max_lifetime_ms: Option<u64>,
 
-    #[arg(long, env = "AETHER_GATEWAY_DATA_POSTGRES_STATEMENT_CACHE_CAPACITY")]
+    #[arg(
+        long,
+        env = "AETHER_GATEWAY_DATA_POSTGRES_STATEMENT_CACHE_CAPACITY",
+        global = true
+    )]
     postgres_statement_cache_capacity: Option<usize>,
 
     #[arg(
         long,
         env = "AETHER_GATEWAY_DATA_POSTGRES_REQUIRE_SSL",
-        default_value_t = false
+        default_value_t = false,
+        global = true
     )]
     postgres_require_ssl: bool,
 }
@@ -1144,13 +1192,26 @@ enum DataCommand {
     Import(DataImportArgs),
     /// Copy persistent SQL data directly between two databases without a JSONL file.
     Copy(DataCopyArgs),
+    /// Inspect or prepare the configured database.
+    Db(DatabaseCommandArgs),
+}
+
+#[derive(ClapArgs, Debug, Clone)]
+struct DatabaseCommandArgs {
+    #[command(subcommand)]
+    command: DatabaseCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum DatabaseCommand {
+    /// Show whether schema migrations and data backfills are current.
+    Status,
+    /// Apply pending schema migrations and data backfills.
+    Prepare,
 }
 
 #[derive(ClapArgs, Debug, Clone)]
 struct DataExportArgs {
-    #[command(flatten)]
-    data: GatewayDataArgs,
-
     #[arg(long)]
     output: PathBuf,
 
@@ -1160,9 +1221,6 @@ struct DataExportArgs {
 
 #[derive(ClapArgs, Debug, Clone)]
 struct DataImportArgs {
-    #[command(flatten)]
-    data: GatewayDataArgs,
-
     #[arg(long)]
     input: PathBuf,
 }
@@ -1284,18 +1342,25 @@ struct Args {
     )]
     node_role: NodeRoleArg,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, hide = true, default_value_t = false)]
     migrate: bool,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, hide = true, default_value_t = false)]
     apply_backfills: bool,
 
+    /// Database startup policy. Defaults to auto when neither this nor the legacy setting is set.
+    #[arg(long, env = "AETHER_GATEWAY_DATABASE_MODE", value_enum)]
+    database_mode: Option<DatabaseModeArg>,
+
+    /// Legacy compatibility switch. Prefer --database-mode.
     #[arg(
         long,
         env = "AETHER_GATEWAY_AUTO_PREPARE_DATABASE",
-        default_value_t = false
+        hide = true,
+        num_args = 0..=1,
+        default_missing_value = "true"
     )]
-    auto_prepare_database: bool,
+    auto_prepare_database: Option<bool>,
 
     /// Path to frontend static files directory (SPA). When set, the gateway
     /// serves the frontend directly without nginx.
@@ -1405,6 +1470,10 @@ struct Args {
 }
 
 impl Args {
+    fn effective_database_mode(&self) -> DatabaseModeArg {
+        resolve_database_mode(self.database_mode, self.auto_prepare_database)
+    }
+
     fn effective_runtime_backend(
         &self,
         database: Option<&SqlDatabaseConfig>,
@@ -1475,15 +1544,7 @@ impl Args {
     }
 
     fn runtime_config(&self) -> Result<ServiceRuntimeConfig, std::io::Error> {
-        let default_log_filter = if self.command.is_some()
-            || self.migrate
-            || self.apply_backfills
-            || self.auto_prepare_database
-        {
-            "aether_gateway=info,aether_data=info"
-        } else {
-            "aether_gateway=info"
-        };
+        let default_log_filter = "aether_gateway=info,aether_data=info";
         let config = self
             .logging
             .apply_to_runtime_config(ServiceRuntimeConfig::new(
@@ -1786,7 +1847,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     if let Some(command) = args.command.as_ref() {
         init_service_runtime(args.runtime_config()?)?;
-        return run_data_command(command).await;
+        return run_data_command(command, &args.data).await;
     }
     if args.migrate {
         init_service_runtime(args.runtime_config()?)?;
@@ -2086,7 +2147,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         execution_runtime_configured = state.execution_runtime_configured(),
         "aether-gateway data layer configured"
     );
-    prepare_database_startup_requirements(&state, args.auto_prepare_database).await?;
+    prepare_database_startup_requirements(&state, args.effective_database_mode()).await?;
     state.warm_database_pools().await?;
     let reset_stale_proxy_nodes = state.reset_stale_proxy_node_tunnel_statuses().await?;
     if reset_stale_proxy_nodes > 0 {
@@ -2101,16 +2162,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             info!(
                 group_id = %group.id,
                 group_name = %group.name,
-                "created system default routing group from legacy scheduler config"
+                "created system default routing group from routing strategy defaults"
             );
         }
         Ok(None) => {}
-        Err(err) => {
-            warn!(
-                error = %err,
-                "failed to bootstrap system default routing group; scheduler falls back to legacy system config"
-            );
-        }
+        Err(err) => return Err(err.into()),
     }
     match state.prewarm_chat_pii_redaction_runtime_config().await {
         Ok(enabled) => {
@@ -2208,12 +2264,75 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_data_command(command: &DataCommand) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_data_command(
+    command: &DataCommand,
+    data: &GatewayDataArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        DataCommand::Export(args) => run_data_export(args).await,
-        DataCommand::Import(args) => run_data_import(args).await,
+        DataCommand::Export(args) => run_data_export(args, data).await,
+        DataCommand::Import(args) => run_data_import(args, data).await,
         DataCommand::Copy(args) => run_data_copy(args).await,
+        DataCommand::Db(args) => run_database_command(args, data).await,
     }
+}
+
+async fn run_database_command(
+    args: &DatabaseCommandArgs,
+    data: &GatewayDataArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match args.command {
+        DatabaseCommand::Status => run_database_status(data).await,
+        DatabaseCommand::Prepare => run_database_prepare(data).await,
+    }
+}
+
+fn database_maintenance_state(
+    data: &GatewayDataArgs,
+) -> Result<(DatabaseDriver, AppState), Box<dyn std::error::Error>> {
+    let database = required_sql_database_config(data)?;
+    let driver = database.driver;
+    let state = AppState::new()?.with_data_config(data.to_config())?;
+    Ok((driver, state))
+}
+
+async fn run_database_status(data: &GatewayDataArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let (driver, state) = database_maintenance_state(data)?;
+    let pending_migrations = state
+        .pending_database_migrations()
+        .await?
+        .unwrap_or_default();
+
+    if let Some(next) = pending_migrations.first() {
+        println!("database {driver}: preparation required");
+        println!("pending migrations: {}", pending_migrations.len());
+        println!("next migration: {} ({})", next.version, next.description);
+        println!("pending backfills: not checked until migrations are current");
+        println!("run `aether-gateway db prepare`");
+        return Ok(());
+    }
+
+    let pending_backfills = state
+        .pending_database_backfills()
+        .await?
+        .unwrap_or_default();
+    if let Some(next) = pending_backfills.first() {
+        println!("database {driver}: preparation required");
+        println!("pending migrations: 0");
+        println!("pending backfills: {}", pending_backfills.len());
+        println!("next backfill: {} ({})", next.version, next.description);
+        println!("run `aether-gateway db prepare`");
+        return Ok(());
+    }
+
+    println!("database {driver}: ready (schema and backfills are current)");
+    Ok(())
+}
+
+async fn run_database_prepare(data: &GatewayDataArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let (driver, state) = database_maintenance_state(data)?;
+    prepare_database_startup_requirements(&state, DatabaseModeArg::Auto).await?;
+    println!("database {driver}: ready (schema and backfills are current)");
+    Ok(())
 }
 
 fn required_sql_database_config(
@@ -2242,8 +2361,11 @@ fn current_unix_secs() -> Result<u64, std::time::SystemTimeError> {
         .as_secs())
 }
 
-async fn run_data_export(args: &DataExportArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let database = required_sql_database_config(&args.data)?;
+async fn run_data_export(
+    args: &DataExportArgs,
+    data: &GatewayDataArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let database = required_sql_database_config(data)?;
     let driver = database.driver;
     let domains = requested_export_domains(args);
     let created_at_unix_secs = current_unix_secs()?;
@@ -2265,8 +2387,11 @@ async fn run_data_export(args: &DataExportArgs) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-async fn run_data_import(args: &DataImportArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let database = required_sql_database_config(&args.data)?;
+async fn run_data_import(
+    args: &DataImportArgs,
+    data: &GatewayDataArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let database = required_sql_database_config(data)?;
     let driver = database.driver;
     let input = tokio::fs::read_to_string(&args.input).await?;
     let imported = import_database_jsonl(database, &input).await?;
@@ -2426,17 +2551,15 @@ async fn run_explicit_backfills(args: &Args) -> Result<(), Box<dyn std::error::E
 
 async fn prepare_database_startup_requirements(
     state: &AppState,
-    auto_prepare_database: bool,
+    database_mode: DatabaseModeArg,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if !auto_prepare_database {
+    if matches!(database_mode, DatabaseModeArg::VerifyOnly) {
         ensure_database_schema_is_current(state).await?;
         ensure_database_backfills_are_current(state).await?;
         return Ok(());
     }
 
-    info!(
-        "auto database preparation enabled; applying pending migrations and backfills before serving traffic"
-    );
+    info!("database preparation enabled; applying pending migrations and backfills");
 
     let Some(pending_migrations) = state.prepare_database_for_startup().await? else {
         return Ok(());
@@ -2450,10 +2573,10 @@ async fn prepare_database_startup_requirements(
             next_version = next.version,
             next_description = %next.description,
             pending_versions = %format_pending_migrations(&pending_migrations),
-            "running database migrations during service startup..."
+            "running database migrations during database preparation..."
         );
         if state.run_database_migrations().await? {
-            info!("database migrations complete during service startup");
+            info!("database migrations complete");
         }
     }
 
@@ -2472,10 +2595,10 @@ async fn prepare_database_startup_requirements(
         next_version = next.version,
         next_description = %next.description,
         pending_versions = %format_pending_backfills(&pending_backfills),
-        "running database backfills during service startup..."
+        "running database backfills during database preparation..."
     );
     if state.run_database_backfills().await? {
-        info!("database backfills complete during service startup");
+        info!("database backfills complete");
     }
 
     Ok(())
@@ -2520,7 +2643,7 @@ async fn ensure_database_backfills_are_current(
 async fn ensure_database_schema_is_current(
     state: &AppState,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(pending) = state.prepare_database_for_startup().await? else {
+    let Some(pending) = state.pending_database_migrations().await? else {
         return Ok(());
     };
     if pending.is_empty() {
@@ -2539,7 +2662,7 @@ fn pending_schema_error(
     next_description: &str,
 ) -> std::io::Error {
     std::io::Error::other(format!(
-        "database schema is behind by {} migration(s); next pending migration is {} ({})\nrun `aether-gateway --migrate` before starting the service",
+        "database schema is behind by {} migration(s); next pending migration is {} ({})\nrun `aether-gateway db prepare` before starting the service",
         pending_count, next_version, next_description
     ))
 }
@@ -2550,7 +2673,7 @@ fn pending_backfills_error(
     next_description: &str,
 ) -> std::io::Error {
     std::io::Error::other(format!(
-        "database backfills are behind by {} backfill(s); next pending backfill is {} ({})\nrun `aether-gateway --apply-backfills` before starting the service",
+        "database backfills are behind by {} backfill(s); next pending backfill is {} ({})\nrun `aether-gateway db prepare` before starting the service",
         pending_count, next_version, next_description
     ))
 }
@@ -2562,8 +2685,9 @@ mod tests {
         automatic_gateway_request_concurrency_for_parallelism, automatic_sql_pool_config,
         automatic_sql_pool_config_for_parallelism, automatic_usage_queue_workers_for_parallelism,
         ensure_database_backfills_are_current, ensure_database_schema_is_current,
-        pending_backfills_error, pending_schema_error, resolve_healthcheck_url,
-        usage_database_config_for_role, Args, DatabaseDriverArg, DeploymentTopologyArg,
+        pending_backfills_error, pending_schema_error, resolve_database_mode,
+        resolve_healthcheck_url, usage_database_config_for_role, Args, DataCommand,
+        DatabaseCommand, DatabaseDriverArg, DatabaseModeArg, DeploymentTopologyArg,
         GatewayDataArgs, GatewayFrontdoorArgs, GatewayLogDestinationArg, GatewayLogFormatArg,
         GatewayLogRotationArg, GatewayLoggingArgs, GatewayRateLimitArgs, GatewayUsageArgs,
         NodeRoleArg, RuntimeBackendArg, VideoTaskTruthSourceArg,
@@ -2574,6 +2698,7 @@ mod tests {
     };
     use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
     use aether_gateway::AppState;
+    use clap::Parser;
 
     fn test_args() -> Args {
         Args {
@@ -2588,7 +2713,8 @@ mod tests {
             node_role: NodeRoleArg::All,
             migrate: false,
             apply_backfills: false,
-            auto_prepare_database: false,
+            database_mode: None,
+            auto_prepare_database: None,
             static_dir: None,
             video_task_truth_source_mode: VideoTaskTruthSourceArg::PythonSyncReport,
             video_task_poller_interval_ms: 5_000,
@@ -2688,6 +2814,19 @@ mod tests {
             },
         )
         .expect("test database config should build")
+    }
+
+    fn temporary_sqlite_args(label: &str) -> (Args, std::path::PathBuf) {
+        let mut args = test_args();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be available")
+            .as_nanos();
+        let database_path =
+            std::env::temp_dir().join(format!("aether-{label}-{}-{nonce}.db", std::process::id()));
+        args.data.database_driver = Some(DatabaseDriverArg::Sqlite);
+        args.data.database_url = Some(format!("sqlite://{}", database_path.display()));
+        (args, database_path)
     }
 
     #[test]
@@ -2801,11 +2940,14 @@ mod tests {
     }
 
     #[test]
-    fn normal_runtime_config_keeps_gateway_only_logs() {
+    fn normal_runtime_config_includes_database_lifecycle_logs() {
         let config = test_args()
             .runtime_config()
             .expect("runtime config should build");
-        assert_eq!(config.default_log_filter, "aether_gateway=info");
+        assert_eq!(
+            config.default_log_filter,
+            "aether_gateway=info,aether_data=info"
+        );
     }
 
     #[test]
@@ -2822,11 +2964,92 @@ mod tests {
     #[test]
     fn auto_prepare_database_runtime_config_enables_data_logs() {
         let mut args = test_args();
-        args.auto_prepare_database = true;
+        args.auto_prepare_database = Some(true);
         let config = args.runtime_config().expect("runtime config should build");
         assert_eq!(
             config.default_log_filter,
             "aether_gateway=info,aether_data=info"
+        );
+    }
+
+    #[test]
+    fn database_mode_defaults_to_auto_and_preserves_legacy_false() {
+        assert_eq!(resolve_database_mode(None, None), DatabaseModeArg::Auto);
+        assert_eq!(
+            resolve_database_mode(None, Some(false)),
+            DatabaseModeArg::VerifyOnly
+        );
+        assert_eq!(
+            resolve_database_mode(Some(DatabaseModeArg::Auto), Some(false)),
+            DatabaseModeArg::Auto
+        );
+    }
+
+    #[test]
+    fn parses_database_commands_and_verify_only_mode() {
+        let status = Args::try_parse_from(["aether-gateway", "db", "status"])
+            .expect("db status should parse");
+        assert!(matches!(
+            status.command,
+            Some(DataCommand::Db(args))
+                if matches!(args.command, DatabaseCommand::Status)
+        ));
+
+        let verify_only =
+            Args::try_parse_from(["aether-gateway", "--database-mode", "verify-only"])
+                .expect("verify-only mode should parse");
+        assert_eq!(
+            verify_only.effective_database_mode(),
+            DatabaseModeArg::VerifyOnly
+        );
+
+        let legacy_false =
+            Args::try_parse_from(["aether-gateway", "--auto-prepare-database=false"])
+                .expect("legacy false setting should parse");
+        assert_eq!(
+            legacy_false.effective_database_mode(),
+            DatabaseModeArg::VerifyOnly
+        );
+
+        let prepare = Args::try_parse_from(["aether-gateway", "db", "prepare"])
+            .expect("db prepare should parse");
+        assert!(matches!(
+            prepare.command,
+            Some(DataCommand::Db(args))
+                if matches!(args.command, DatabaseCommand::Prepare)
+        ));
+    }
+
+    #[test]
+    fn database_arguments_are_global_for_database_commands() {
+        let before = Args::try_parse_from([
+            "aether-gateway",
+            "--database-driver",
+            "sqlite",
+            "--database-url",
+            "sqlite:///tmp/before.db",
+            "db",
+            "status",
+        ])
+        .expect("database arguments before db should parse");
+        assert_eq!(
+            before.data.database_url.as_deref(),
+            Some("sqlite:///tmp/before.db")
+        );
+
+        let after = Args::try_parse_from([
+            "aether-gateway",
+            "db",
+            "prepare",
+            "--database-driver",
+            "sqlite",
+            "--database-url",
+            "sqlite:///tmp/after.db",
+        ])
+        .expect("database arguments after db prepare should parse");
+        assert_eq!(
+            after.data.database_url.as_deref(),
+            Some("sqlite:///tmp/after.db")
         );
     }
 
@@ -3500,17 +3723,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_schema_error_mentions_explicit_migrate_command() {
+    fn pending_schema_error_mentions_database_prepare_command() {
         let error = pending_schema_error(2, 20260413020000, "squash usage schema split");
         let message = error.to_string();
         assert!(message.contains("database schema is behind by 2 migration(s)"));
         assert!(message.contains("20260413020000"));
         assert!(message.contains("squash usage schema split"));
-        assert!(message.contains("aether-gateway --migrate"));
+        assert!(message.contains("aether-gateway db prepare"));
     }
 
     #[test]
-    fn pending_backfills_error_mentions_explicit_apply_backfills_command() {
+    fn pending_backfills_error_mentions_database_prepare_command() {
         let message = pending_backfills_error(
             1,
             20260422110000,
@@ -3520,7 +3743,7 @@ mod tests {
         assert!(message.contains("database backfills are behind by 1 backfill(s)"));
         assert!(message.contains("20260422110000"));
         assert!(message.contains("backfill stats aggregate read path support"));
-        assert!(message.contains("aether-gateway --apply-backfills"));
+        assert!(message.contains("aether-gateway db prepare"));
         assert!(message.contains("before starting the service"));
     }
 
@@ -3543,9 +3766,77 @@ mod tests {
     #[tokio::test]
     async fn auto_prepare_database_is_noop_without_database_pool() {
         let state = AppState::new().expect("state should build");
-        super::prepare_database_startup_requirements(&state, true)
+        super::prepare_database_startup_requirements(&state, DatabaseModeArg::Auto)
             .await
             .expect("disabled data backend should not block startup");
+    }
+
+    #[tokio::test]
+    async fn verify_only_does_not_prepare_fresh_sqlite_database() {
+        let (args, database_path) = temporary_sqlite_args("verify-only");
+        let state = AppState::new()
+            .expect("state should build")
+            .with_data_config(args.data.to_config())
+            .expect("sqlite state should build");
+        let pending_before = state
+            .pending_database_migrations()
+            .await
+            .expect("pending migrations should load")
+            .expect("sqlite should expose migration state");
+        assert!(!pending_before.is_empty());
+
+        let error =
+            super::prepare_database_startup_requirements(&state, DatabaseModeArg::VerifyOnly)
+                .await
+                .expect_err("verify-only should reject a fresh database");
+        assert!(error.to_string().contains("aether-gateway db prepare"));
+
+        let pending_after = state
+            .pending_database_migrations()
+            .await
+            .expect("pending migrations should reload")
+            .expect("sqlite should expose migration state");
+        assert_eq!(pending_after, pending_before);
+        drop(state);
+        let _ = std::fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_prepares_fresh_sqlite_database() {
+        let (args, database_path) = temporary_sqlite_args("auto-prepare");
+        let state = AppState::new()
+            .expect("state should build")
+            .with_data_config(args.data.to_config())
+            .expect("sqlite state should build");
+
+        super::prepare_database_startup_requirements(&state, DatabaseModeArg::Auto)
+            .await
+            .expect("auto mode should prepare a fresh database");
+        assert!(state
+            .pending_database_migrations()
+            .await
+            .expect("pending migrations should load")
+            .expect("sqlite should expose migration state")
+            .is_empty());
+        assert!(state
+            .pending_database_backfills()
+            .await
+            .expect("pending backfills should load")
+            .expect("sqlite should expose backfill state")
+            .is_empty());
+        drop(state);
+        let _ = std::fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn database_prepare_requires_database_url() {
+        let data = test_args().data;
+        let error = super::run_database_prepare(&data)
+            .await
+            .expect_err("missing database URL should fail");
+        assert!(error
+            .to_string()
+            .contains("AETHER_DATABASE_DRIVER/AETHER_DATABASE_URL"));
     }
 
     #[tokio::test]

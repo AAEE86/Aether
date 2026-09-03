@@ -780,6 +780,14 @@ async fn gateway_updates_admin_provider_locally_with_trusted_admin_principal() {
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![
             sample_provider("provider-openai", "openai", 10)
+                .with_billing_fields(
+                    Some("free_tier".to_string()),
+                    None,
+                    None,
+                    Some(30),
+                    None,
+                    None,
+                )
                 .with_transport_fields(
                     true,
                     false,
@@ -974,6 +982,7 @@ async fn gateway_updates_admin_provider_locally_with_trusted_admin_principal() {
         .iter()
         .find(|provider| provider.id == "provider-openai")
         .expect("provider should exist");
+    assert_eq!(updated_provider.billing_type.as_deref(), Some("free_tier"));
     assert_eq!(
         updated_provider.request_timeout_secs,
         Some(aether_contracts::MAX_EXECUTION_REQUEST_TIMEOUT_SECS as f64)
@@ -1106,6 +1115,7 @@ async fn gateway_creates_admin_provider_locally_with_trusted_admin_principal() {
         .find(|provider| provider.id == "provider-existing")
         .expect("existing provider should remain");
     assert_eq!(created.provider_type, "codex");
+    assert_eq!(created.billing_type.as_deref(), Some("pay_as_you_go"));
     assert_eq!(created.provider_priority, 0);
     assert_eq!(existing.provider_priority, 1);
     assert_eq!(created.website.as_deref(), Some("https://codex.example"));

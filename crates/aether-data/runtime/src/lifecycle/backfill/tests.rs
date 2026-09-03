@@ -311,6 +311,31 @@ INSERT INTO usage_settlement_snapshots (
 }
 
 #[tokio::test]
+async fn pending_sqlite_backfills_does_not_create_tracking_table() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("sqlite backfill status pool should connect");
+    run_sqlite_migrations(&pool)
+        .await
+        .expect("sqlite schema should migrate");
+
+    let pending = pending_sqlite_backfills(&pool)
+        .await
+        .expect("sqlite pending backfills should load");
+    assert!(!pending.is_empty());
+
+    let tracking_tables: i64 = query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_backfills'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("sqlite tracking table state should load");
+    assert_eq!(tracking_tables, 0);
+}
+
+#[tokio::test]
 async fn sqlite_backfills_apply_portable_repairs_and_record_versions() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)

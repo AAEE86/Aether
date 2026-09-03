@@ -37,6 +37,7 @@
               :provider-proxy-node-name="getProviderProxyNodeName()"
               :saving-provider-proxy="savingProviderProxy"
               @toggle-format-conversion="toggleFormatConversion"
+              @toggle-keep-priority-on-conversion="toggleKeepPriorityOnConversion"
               @open-failover-rules="failoverRulesDialogOpen = true"
               @set-provider-proxy="setProviderProxy"
               @clear-provider-proxy="clearProviderProxy"
@@ -1409,6 +1410,24 @@ async function toggleFormatConversion() {
     emit('refresh')
   } catch {
     showError(legacyT('切换格式转换失败'))
+  }
+}
+
+async function toggleKeepPriorityOnConversion() {
+  if (!provider.value) return
+  const formatConversionAvailable =
+    provider.value.enable_format_conversion || systemFormatConversionEnabled.value
+  if (!formatConversionAvailable) return
+  const newValue = !provider.value.keep_priority_on_conversion
+  try {
+    const updated = await updateProvider(provider.value.id, {
+      keep_priority_on_conversion: newValue,
+    })
+    applyProviderSnapshot(updated)
+    showSuccess(legacyT(newValue ? '已启用格式转换保持优先级' : '已禁用格式转换保持优先级'))
+    emit('refresh')
+  } catch {
+    showError(legacyT('切换格式转换保持优先级失败'))
   }
 }
 

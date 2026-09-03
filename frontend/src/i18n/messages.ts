@@ -3264,7 +3264,6 @@ const legacyFallbackTokens: Array<[string, string]> = [
   ['策略分组', 'policy groups'],
   ['策略', 'policy'],
   ['维度', 'dimension'],
-  ['模型范围', 'model scope'],
   ['默认策略', 'default policy'],
   ['更新时间', 'updated at'],
   ['回溯时间', 'lookback time'],

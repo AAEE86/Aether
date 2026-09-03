@@ -53,7 +53,6 @@ use crate::scheduler::affinity::{
     scheduler_affinity_policy_context_from_report_context, SCHEDULER_AFFINITY_POLICY_REPORT_FIELD,
     SCHEDULER_AFFINITY_TTL,
 };
-use crate::scheduler::config::{read_scheduler_ordering_config, SchedulerSchedulingMode};
 use crate::AppState;
 
 const POOL_SCORE_FEEDBACK_GATE_MAX_ENTRIES: usize = 50_000;
@@ -763,36 +762,19 @@ async fn local_scheduler_affinity_matches_failed_target(
     local_execution_plan_uses_pool(state, plan).await
 }
 
-async fn scheduler_cache_affinity_enabled(
-    state: &AppState,
-    report_context: Option<&Value>,
-) -> bool {
-    if report_context
+fn scheduler_cache_affinity_enabled(report_context: Option<&Value>) -> bool {
+    report_context
         .and_then(|context| context.get(SCHEDULER_AFFINITY_POLICY_REPORT_FIELD))
         .is_some()
-    {
-        return scheduler_affinity_policy_context_from_report_context(report_context)
-            .is_some_and(|context| context.cache_affinity_enabled());
-    }
-    match read_scheduler_ordering_config(state).await {
-        Ok(config) => config.scheduling_mode == SchedulerSchedulingMode::CacheAffinity,
-        Err(error) => {
-            warn!(
-                event_name = "orchestration_scheduler_affinity_config_load_failed",
-                log_type = "event",
-                error = ?error,
-                "failed to load scheduler config while checking cache affinity mode"
-            );
-            SchedulerSchedulingMode::default() == SchedulerSchedulingMode::CacheAffinity
-        }
-    }
+        && scheduler_affinity_policy_context_from_report_context(report_context)
+            .is_some_and(|context| context.cache_affinity_enabled())
 }
 
 async fn remember_successful_local_scheduler_affinity(
     state: &AppState,
     context: LocalExecutionEffectContext<'_>,
 ) {
-    if !scheduler_cache_affinity_enabled(state, context.report_context).await {
+    if !scheduler_cache_affinity_enabled(context.report_context) {
         return;
     }
     let Some(cache_key) = local_scheduler_affinity_cache_key(context.report_context) else {

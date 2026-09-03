@@ -55,7 +55,7 @@ impl Default for SchedulerOrderingConfig {
 
 impl SchedulerOrderingConfig {
     /// Ordering config derived from a resolved routing policy. The policy is
-    /// the single source of truth: no legacy system-config value is merged in.
+    /// the single source of truth for request scheduling.
     pub(crate) fn from_routing_policy(policy: &ResolvedRoutingPolicy) -> Self {
         Self {
             priority_mode: scheduler_priority_mode_from_routing(policy.priority_mode),
@@ -87,6 +87,7 @@ impl SchedulerOrderingConfig {
             },
             keep_priority_on_conversion: self.keep_priority_on_conversion,
             sticky_key_attempts: self.sticky_key_attempts,
+            execution_policy: aether_routing_core::RoutingExecutionPolicy::default(),
         }
     }
 
@@ -112,61 +113,6 @@ fn scheduler_scheduling_mode_from_routing(mode: RoutingSchedulingMode) -> Schedu
         RoutingSchedulingMode::CacheAffinity => SchedulerSchedulingMode::CacheAffinity,
         RoutingSchedulingMode::LoadBalance => SchedulerSchedulingMode::LoadBalance,
     }
-}
-
-pub(crate) fn parse_scheduler_priority_mode(
-    value: Option<&serde_json::Value>,
-) -> SchedulerPriorityMode {
-    match value
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("global_key") => SchedulerPriorityMode::GlobalKey,
-        _ => SchedulerPriorityMode::Provider,
-    }
-}
-
-pub(crate) fn parse_keep_priority_on_conversion(value: Option<&serde_json::Value>) -> bool {
-    value.and_then(serde_json::Value::as_bool).unwrap_or(false)
-}
-
-pub(crate) fn parse_scheduler_scheduling_mode(
-    value: Option<&serde_json::Value>,
-) -> SchedulerSchedulingMode {
-    match value
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("fixed_order") => SchedulerSchedulingMode::FixedOrder,
-        Some("load_balance") => SchedulerSchedulingMode::LoadBalance,
-        _ => SchedulerSchedulingMode::CacheAffinity,
-    }
-}
-
-/// Effective scheduler ordering config for requests that carry no resolved
-/// routing policy.
-///
-/// Resolution order:
-/// 1. the enabled system-default routing group's `default_policy`;
-/// 2. the legacy system-config keys (`provider_priority_mode`,
-///    `scheduling_mode`, `keep_priority_on_conversion`).
-///
-/// Step 2 only exists so deployments that never created a routing group keep
-/// their behaviour; once the legacy keys are removed this function collapses
-/// to step 1 plus `SchedulerOrderingConfig::default()`.
-pub(crate) async fn read_scheduler_ordering_config(
-    state: &AppState,
-) -> Result<SchedulerOrderingConfig, GatewayError> {
-    if let Some(config) = read_system_default_routing_ordering_config(state).await? {
-        return Ok(config);
-    }
-    read_legacy_scheduler_ordering_config(state).await
 }
 
 /// Ordering config from the enabled system-default routing group, if any.
@@ -201,38 +147,6 @@ pub(crate) async fn read_system_default_routing_ordering_config(
     )))
 }
 
-/// Legacy system-config based ordering config. Kept only as a migration
-/// fallback; see `read_scheduler_ordering_config`.
-pub(crate) async fn read_legacy_scheduler_ordering_config(
-    state: &AppState,
-) -> Result<SchedulerOrderingConfig, GatewayError> {
-    let priority_mode = parse_scheduler_priority_mode(
-        state
-            .read_system_config_json_value("provider_priority_mode")
-            .await?
-            .as_ref(),
-    );
-    let scheduling_mode = parse_scheduler_scheduling_mode(
-        state
-            .read_system_config_json_value("scheduling_mode")
-            .await?
-            .as_ref(),
-    );
-    let keep_priority_on_conversion = parse_keep_priority_on_conversion(
-        state
-            .read_system_config_json_value("keep_priority_on_conversion")
-            .await?
-            .as_ref(),
-    );
-    Ok(SchedulerOrderingConfig {
-        priority_mode,
-        scheduling_mode,
-        keep_priority_on_conversion,
-        // Legacy config never carried a sticky-key setting; use the routing default.
-        sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -247,14 +161,6 @@ mod tests {
     use super::*;
     use crate::data::GatewayDataState;
 
-    fn legacy_values() -> [(String, serde_json::Value); 3] {
-        [
-            ("provider_priority_mode".to_string(), json!("global_key")),
-            ("scheduling_mode".to_string(), json!("load_balance")),
-            ("keep_priority_on_conversion".to_string(), json!(true)),
-        ]
-    }
-
     async fn create_system_default(
         repository: &InMemoryRoutingGroupRepository,
         enabled: bool,
@@ -267,6 +173,7 @@ mod tests {
                 description: None,
                 enabled,
                 is_system_default: true,
+                sort_order: 0,
                 config_json,
                 version: 1,
                 created_at: 1,
@@ -278,7 +185,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_default_routing_group_overrides_legacy_keys() {
+    async fn system_default_routing_group_exposes_strategy_ordering() {
         let repository = Arc::new(InMemoryRoutingGroupRepository::default());
         create_system_default(
             &repository,
@@ -293,12 +200,13 @@ mod tests {
         )
         .await;
         let state = AppState::new().unwrap().with_data_state_for_tests(
-            GatewayDataState::disabled()
-                .with_system_config_values_for_tests(legacy_values())
-                .with_routing_group_repository_for_tests(repository),
+            GatewayDataState::disabled().with_routing_group_repository_for_tests(repository),
         );
 
-        let config = read_scheduler_ordering_config(&state).await.unwrap();
+        let config = read_system_default_routing_ordering_config(&state)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(config.priority_mode, SchedulerPriorityMode::Provider);
         assert_eq!(config.scheduling_mode, SchedulerSchedulingMode::FixedOrder);
@@ -310,18 +218,19 @@ mod tests {
         let repository = Arc::new(InMemoryRoutingGroupRepository::default());
         create_system_default(&repository, true, json!({})).await;
         let state = AppState::new().unwrap().with_data_state_for_tests(
-            GatewayDataState::disabled()
-                .with_system_config_values_for_tests(legacy_values())
-                .with_routing_group_repository_for_tests(repository),
+            GatewayDataState::disabled().with_routing_group_repository_for_tests(repository),
         );
 
-        let config = read_scheduler_ordering_config(&state).await.unwrap();
+        let config = read_system_default_routing_ordering_config(&state)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(config, SchedulerOrderingConfig::default());
     }
 
     #[tokio::test]
-    async fn disabled_or_missing_system_default_group_falls_back_to_legacy_keys() {
+    async fn disabled_or_missing_system_default_group_uses_routing_defaults() {
         let repository = Arc::new(InMemoryRoutingGroupRepository::default());
         create_system_default(
             &repository,
@@ -330,28 +239,25 @@ mod tests {
         )
         .await;
         let with_disabled_group = AppState::new().unwrap().with_data_state_for_tests(
-            GatewayDataState::disabled()
-                .with_system_config_values_for_tests(legacy_values())
-                .with_routing_group_repository_for_tests(repository),
+            GatewayDataState::disabled().with_routing_group_repository_for_tests(repository),
         );
-        let without_repository = AppState::new().unwrap().with_data_state_for_tests(
-            GatewayDataState::disabled().with_system_config_values_for_tests(legacy_values()),
-        );
+        let without_repository = AppState::new()
+            .unwrap()
+            .with_data_state_for_tests(GatewayDataState::disabled());
 
         for state in [with_disabled_group, without_repository] {
-            let config = read_scheduler_ordering_config(&state).await.unwrap();
-            assert_eq!(config.priority_mode, SchedulerPriorityMode::GlobalKey);
-            assert_eq!(config.scheduling_mode, SchedulerSchedulingMode::LoadBalance);
-            assert!(config.keep_priority_on_conversion);
+            let config = read_system_default_routing_ordering_config(&state)
+                .await
+                .unwrap();
+            assert!(config.is_none());
         }
     }
 
     #[tokio::test]
-    async fn bootstrap_creates_system_default_group_from_legacy_keys_once() {
+    async fn bootstrap_creates_system_default_group_from_routing_defaults_once() {
         let repository = Arc::new(InMemoryRoutingGroupRepository::default());
         let state = AppState::new().unwrap().with_data_state_for_tests(
             GatewayDataState::disabled()
-                .with_system_config_values_for_tests(legacy_values())
                 .with_routing_group_repository_for_tests(repository.clone()),
         );
 
@@ -365,9 +271,9 @@ mod tests {
         assert_eq!(
             created.config_json["default_policy"],
             json!({
-                "priority_mode": "global_key",
-                "scheduling_mode": "load_balance",
-                "keep_priority_on_conversion": true,
+                "priority_mode": "provider",
+                "scheduling_mode": "cache_affinity",
+                "keep_priority_on_conversion": false,
                 "sticky_key_attempts": DEFAULT_STICKY_KEY_ATTEMPTS
             })
         );
@@ -386,9 +292,39 @@ mod tests {
             Some(created.id)
         );
 
-        let config = read_scheduler_ordering_config(&state).await.unwrap();
-        assert_eq!(config.priority_mode, SchedulerPriorityMode::GlobalKey);
-        assert_eq!(config.scheduling_mode, SchedulerSchedulingMode::LoadBalance);
-        assert!(config.keep_priority_on_conversion);
+        let config = read_system_default_routing_ordering_config(&state)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(config, SchedulerOrderingConfig::default());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_does_not_migrate_legacy_scheduler_keys() {
+        let repository = Arc::new(InMemoryRoutingGroupRepository::default());
+        let state = AppState::new().unwrap().with_data_state_for_tests(
+            GatewayDataState::disabled()
+                .with_system_config_values_for_tests([
+                    ("provider_priority_mode".to_string(), json!("global_key")),
+                    ("scheduling_mode".to_string(), json!("load_balance")),
+                    ("keep_priority_on_conversion".to_string(), json!(true)),
+                ])
+                .with_routing_group_repository_for_tests(repository),
+        );
+
+        let created = state
+            .ensure_system_default_routing_group_inner()
+            .await
+            .unwrap()
+            .expect("bootstrap should create the strategy");
+        assert_eq!(
+            created.config_json["default_policy"],
+            json!({
+                "priority_mode": "provider",
+                "scheduling_mode": "cache_affinity",
+                "keep_priority_on_conversion": false,
+                "sticky_key_attempts": DEFAULT_STICKY_KEY_ATTEMPTS
+            })
+        );
     }
 }
