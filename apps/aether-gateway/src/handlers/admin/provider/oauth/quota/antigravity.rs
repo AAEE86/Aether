@@ -7,15 +7,20 @@ use super::shared::{
 };
 use crate::handlers::admin::request::{AdminAppState, AdminGatewayProviderTransportSnapshot};
 use crate::GatewayError;
-use aether_admin::provider::quota::parse_antigravity_usage_response;
+use aether_admin::provider::quota::{
+    parse_antigravity_quota_summary_response, parse_antigravity_usage_response,
+};
 use aether_contracts::ProxySnapshot;
 use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
-use aether_provider_pool::build_antigravity_pool_quota_request;
+use aether_provider_pool::{
+    build_antigravity_pool_quota_request, build_antigravity_pool_quota_summary_request,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 async fn execute_antigravity_quota_plan(
     state: &AdminAppState<'_>,
@@ -53,6 +58,79 @@ async fn execute_antigravity_quota_plan(
     );
 
     execute_provider_quota_plan(state, transport, plan, "antigravity").await
+}
+
+async fn fetch_antigravity_quota_summary_best_effort(
+    state: &AdminAppState<'_>,
+    transport: &AdminGatewayProviderTransportSnapshot,
+    authorization: (String, String),
+    project_id: &str,
+    identity_headers: BTreeMap<String, String>,
+    proxy_override: Option<&ProxySnapshot>,
+) -> Option<serde_json::Value> {
+    let mut request_project_id = Some(project_id);
+
+    loop {
+        let proxy = match proxy_override {
+            Some(proxy) => Some(proxy.clone()),
+            None => {
+                state
+                    .resolve_transport_proxy_snapshot_with_tunnel_affinity(transport)
+                    .await
+            }
+        };
+        let timeouts = Some(resolve_provider_quota_execution_timeouts(
+            state.resolve_transport_execution_timeouts(transport),
+            proxy.as_ref(),
+        ));
+        let spec = build_antigravity_pool_quota_summary_request(
+            &transport.key.id,
+            &transport.endpoint.base_url,
+            authorization.clone(),
+            request_project_id,
+            identity_headers.clone(),
+        );
+        let plan = build_provider_quota_execution_plan(
+            transport,
+            spec,
+            proxy,
+            state.resolve_transport_profile(transport),
+            timeouts,
+        );
+        let outcome = match execute_provider_quota_plan(state, transport, plan, "antigravity").await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                warn!(error = ?error, "Antigravity grouped quota request failed");
+                return None;
+            }
+        };
+        let result = match outcome {
+            ProviderQuotaExecutionOutcome::Response(result) => result,
+            ProviderQuotaExecutionOutcome::Failure(detail) => {
+                warn!(detail = %detail, "Antigravity grouped quota execution failed");
+                return None;
+            }
+        };
+
+        if result.status_code == 200 {
+            return result
+                .body
+                .as_ref()
+                .and_then(|body| body.json_body.as_ref())
+                .and_then(parse_antigravity_quota_summary_response);
+        }
+        if result.status_code == 403 && request_project_id.is_some() {
+            request_project_id = None;
+            continue;
+        }
+
+        warn!(
+            status_code = result.status_code,
+            "Antigravity grouped quota request returned a non-success status"
+        );
+        return None;
+    }
 }
 
 pub(crate) async fn refresh_antigravity_provider_quota_locally(
@@ -130,9 +208,9 @@ pub(crate) async fn refresh_antigravity_provider_quota_locally(
         let result = match execute_antigravity_quota_plan(
             state,
             &transport,
-            authorization,
+            authorization.clone(),
             &project_id,
-            identity_headers,
+            identity_headers.clone(),
             proxy_override.as_ref(),
         )
         .await?
@@ -168,9 +246,31 @@ pub(crate) async fn refresh_antigravity_provider_quota_locally(
                 .as_ref()
                 .and_then(|body| body.json_body.as_ref())
             {
-                metadata_update = parse_antigravity_usage_response(body_json, now_unix_secs)
-                    .map(|metadata| json!({ "antigravity": metadata }));
-                if metadata_update.is_some() {
+                if let Some(mut metadata) =
+                    parse_antigravity_usage_response(body_json, now_unix_secs)
+                {
+                    if let Some(metadata) = metadata.as_object_mut() {
+                        metadata.insert("project_id".to_string(), json!(project_id));
+                    }
+                    if let Some(quota_groups) = fetch_antigravity_quota_summary_best_effort(
+                        state,
+                        &transport,
+                        authorization,
+                        &project_id,
+                        identity_headers,
+                        proxy_override.as_ref(),
+                    )
+                    .await
+                    {
+                        if let Some(metadata) = metadata.as_object_mut() {
+                            metadata.insert("quota_groups".to_string(), quota_groups);
+                            metadata.insert(
+                                "quota_groups_updated_at".to_string(),
+                                json!(now_unix_secs),
+                            );
+                        }
+                    }
+                    metadata_update = Some(json!({ "antigravity": metadata }));
                     status = "success".to_string();
                 } else {
                     status = "no_metadata".to_string();

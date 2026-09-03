@@ -2741,7 +2741,7 @@ mod tests {
                 .provider_request_headers
                 .get("x-client-version")
                 .map(String::as_str),
-            Some("1.2.3")
+            Some("4.3.0")
         );
         assert_eq!(
             payload
@@ -2761,7 +2761,7 @@ mod tests {
         assert_eq!(payload.provider_request_body["model"], "gemini-2.5-pro");
         assert_eq!(
             payload.provider_request_body["userAgent"],
-            "antigravity/cli/1.0.16 (aidev_client; os_type=linux; arch=arm64; auth_method=consumer)"
+            "vscode/1.X.X (Antigravity/4.3.0)"
         );
         assert_eq!(payload.provider_request_body["requestType"], "agent");
         assert!(payload.provider_request_body.get("contents").is_none());

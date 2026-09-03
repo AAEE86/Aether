@@ -398,6 +398,7 @@ fn provider_pool_is_specific_model_token(token: &str) -> bool {
             "team",
             "think",
             "thinking",
+            "tiered",
             "vendor",
         ]
         .contains(&token)

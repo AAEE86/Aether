@@ -15,10 +15,11 @@ pub use presets::{
 };
 pub use provider::{ProviderPoolAdapter, ProviderPoolMemberInput};
 pub use providers::{
-    build_antigravity_pool_quota_request, build_chatgpt_web_pool_quota_request,
-    build_codex_pool_quota_request, build_codex_pool_reset_credit_consume_request,
-    build_codex_pool_reset_credits_request, build_gemini_cli_pool_quota_request,
-    build_kiro_pool_quota_request, build_windsurf_pool_model_configs_request,
+    build_antigravity_pool_quota_request, build_antigravity_pool_quota_summary_request,
+    build_chatgpt_web_pool_quota_request, build_codex_pool_quota_request,
+    build_codex_pool_reset_credit_consume_request, build_codex_pool_reset_credits_request,
+    build_gemini_cli_pool_quota_request, build_kiro_pool_quota_request,
+    build_windsurf_pool_model_configs_request,
     build_windsurf_pool_model_configs_request_with_base_url, build_windsurf_pool_quota_request,
     build_windsurf_pool_quota_request_with_base_url, build_windsurf_pool_rate_limit_request,
     build_windsurf_pool_rate_limit_request_with_base_url, enrich_chatgpt_web_quota_metadata,
@@ -27,11 +28,12 @@ pub use providers::{
     AntigravityProviderPoolAdapter, ChatGptWebProviderPoolAdapter, CodexProviderPoolAdapter,
     DefaultProviderPoolAdapter, GeminiCliProviderPoolAdapter, GrokProviderPoolAdapter,
     KiroPoolQuotaAuthInput, KiroProviderPoolAdapter, UnsupportedQuotaProviderPoolAdapter,
-    ANTIGRAVITY_FETCH_AVAILABLE_MODELS_PATH, CHATGPT_WEB_CONVERSATION_INIT_PATH,
-    CHATGPT_WEB_DEFAULT_BASE_URL, CODEX_WHAM_RESET_CREDITS_CONSUME_URL,
-    CODEX_WHAM_RESET_CREDITS_URL, CODEX_WHAM_USAGE_URL, GEMINI_CLI_RETRIEVE_USER_QUOTA_PATH,
-    GEMINI_CLI_USER_AGENT, KIRO_USAGE_LIMITS_PATH, KIRO_USAGE_SDK_VERSION,
-    WINDSURF_MODEL_CONFIGS_PATH, WINDSURF_RATE_LIMIT_PATH, WINDSURF_USER_STATUS_PATH,
+    ANTIGRAVITY_FETCH_AVAILABLE_MODELS_PATH, ANTIGRAVITY_RETRIEVE_USER_QUOTA_SUMMARY_PATH,
+    CHATGPT_WEB_CONVERSATION_INIT_PATH, CHATGPT_WEB_DEFAULT_BASE_URL,
+    CODEX_WHAM_RESET_CREDITS_CONSUME_URL, CODEX_WHAM_RESET_CREDITS_URL, CODEX_WHAM_USAGE_URL,
+    GEMINI_CLI_RETRIEVE_USER_QUOTA_PATH, GEMINI_CLI_USER_AGENT, KIRO_USAGE_LIMITS_PATH,
+    KIRO_USAGE_SDK_VERSION, WINDSURF_MODEL_CONFIGS_PATH, WINDSURF_RATE_LIMIT_PATH,
+    WINDSURF_USER_STATUS_PATH,
 };
 pub use quota::{
     provider_pool_key_account_quota_exhausted, provider_pool_key_model_quota_exhausted,
@@ -881,6 +883,66 @@ mod tests {
 
         assert!(exhausted.quota_exhausted);
         assert!(!available.quota_exhausted);
+    }
+
+    #[test]
+    fn antigravity_tiered_model_quota_wins_over_display_only_group_windows() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": true,
+                "windows": [{
+                    "code": "model:gemini-3.7-flash-tiered",
+                    "scope": "model",
+                    "model": "gemini-3.7-flash-tiered",
+                    "remaining_ratio": 0.906,
+                    "used_ratio": 0.094,
+                    "is_exhausted": false
+                }, {
+                    "code": "group:0:3p-5h",
+                    "scope": "quota_group",
+                    "quota_group": "group:0",
+                    "bucket_id": "3p-5h",
+                    "used_ratio": 1.0,
+                    "is_exhausted": true
+                }]
+            }
+        }));
+
+        let signals =
+            service.member_signals("antigravity", &key, None, Some("gemini-3.7-flash-tiered"));
+
+        assert!(!signals.quota_exhausted);
+        assert!(!signals.quota_hard_blocked);
+    }
+
+    #[test]
+    fn antigravity_tiered_variant_does_not_match_another_model_family() {
+        let service = ProviderPoolService::with_builtin_adapters();
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "antigravity",
+                "exhausted": false,
+                "windows": [{
+                    "code": "model:gemini-3.7-pro-tiered",
+                    "scope": "model",
+                    "model": "gemini-3.7-pro-tiered",
+                    "used_ratio": 1.0,
+                    "is_exhausted": true
+                }]
+            }
+        }));
+
+        let signals =
+            service.member_signals("antigravity", &key, None, Some("gemini-3.7-flash-tiered"));
+
+        assert!(!signals.quota_exhausted);
+        assert!(!signals.quota_hard_blocked);
     }
 
     #[test]

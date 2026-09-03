@@ -286,6 +286,124 @@ pub fn parse_antigravity_usage_response(
     }))
 }
 
+pub fn parse_antigravity_quota_summary_response(
+    value: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let groups = value.get("groups")?.as_array()?;
+    let mut parsed_groups = Vec::new();
+
+    for (group_index, group) in groups.iter().enumerate() {
+        let Some(group) = group.as_object() else {
+            continue;
+        };
+        let group_id = coerce_json_string(
+            group
+                .get("groupId")
+                .or_else(|| group.get("group_id"))
+                .or_else(|| group.get("id")),
+        );
+        let display_name = coerce_json_string(
+            group
+                .get("displayName")
+                .or_else(|| group.get("display_name")),
+        )
+        .unwrap_or_else(|| format!("Quota group {}", group_index + 1));
+        let description = coerce_json_string(group.get("description"));
+        let mut parsed_buckets = Vec::new();
+
+        for (bucket_index, bucket) in group
+            .get("buckets")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let Some(bucket) = bucket.as_object() else {
+                continue;
+            };
+            let bucket_id = coerce_json_string(
+                bucket
+                    .get("bucketId")
+                    .or_else(|| bucket.get("bucket_id"))
+                    .or_else(|| bucket.get("id")),
+            )
+            .unwrap_or_else(|| format!("bucket-{}", bucket_index + 1));
+            let window = coerce_json_string(bucket.get("window"));
+            let remaining_fraction = bucket
+                .get("remainingFraction")
+                .or_else(|| bucket.get("remaining_fraction"))
+                .and_then(coerce_json_f64)
+                .map(|value| value.clamp(0.0, 1.0));
+            let reset_time = bucket
+                .get("resetTime")
+                .or_else(|| bucket.get("reset_time"))
+                .cloned()
+                .filter(|value| !value.is_null());
+            let bucket_display_name = coerce_json_string(
+                bucket
+                    .get("displayName")
+                    .or_else(|| bucket.get("display_name")),
+            );
+            let bucket_description = coerce_json_string(bucket.get("description"));
+
+            if window.is_none()
+                && remaining_fraction.is_none()
+                && reset_time.is_none()
+                && bucket_display_name.is_none()
+                && bucket_description.is_none()
+            {
+                continue;
+            }
+
+            let mut parsed_bucket = serde_json::Map::new();
+            parsed_bucket.insert("bucket_id".to_string(), json!(bucket_id));
+            if let Some(window) = window {
+                parsed_bucket.insert("window".to_string(), json!(window));
+            }
+            if let Some(remaining_fraction) = remaining_fraction {
+                parsed_bucket.insert("remaining_fraction".to_string(), json!(remaining_fraction));
+                parsed_bucket.insert(
+                    "used_percent".to_string(),
+                    json!((1.0 - remaining_fraction) * 100.0),
+                );
+                parsed_bucket.insert(
+                    "is_exhausted".to_string(),
+                    json!(remaining_fraction <= 1e-6),
+                );
+            }
+            if let Some(reset_time) = reset_time {
+                parsed_bucket.insert("reset_time".to_string(), reset_time);
+            }
+            if let Some(display_name) = bucket_display_name {
+                parsed_bucket.insert("display_name".to_string(), json!(display_name));
+            }
+            if let Some(description) = bucket_description {
+                parsed_bucket.insert("description".to_string(), json!(description));
+            }
+            parsed_buckets.push(serde_json::Value::Object(parsed_bucket));
+        }
+
+        if parsed_buckets.is_empty() {
+            continue;
+        }
+        let mut parsed_group = serde_json::Map::new();
+        if let Some(group_id) = group_id {
+            parsed_group.insert("group_id".to_string(), json!(group_id));
+        }
+        parsed_group.insert("display_name".to_string(), json!(display_name));
+        if let Some(description) = description {
+            parsed_group.insert("description".to_string(), json!(description));
+        }
+        parsed_group.insert(
+            "buckets".to_string(),
+            serde_json::Value::Array(parsed_buckets),
+        );
+        parsed_groups.push(serde_json::Value::Object(parsed_group));
+    }
+
+    (!parsed_groups.is_empty()).then_some(serde_json::Value::Array(parsed_groups))
+}
+
 pub fn parse_gemini_cli_retrieve_user_quota_response(
     value: &serde_json::Value,
     updated_at_unix_secs: u64,
@@ -2042,6 +2160,13 @@ fn codex_additional_quota_windows(
         let Some(item_object) = item.as_object() else {
             continue;
         };
+        if item_object
+            .get("limit_name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| name.trim() == CODEX_SPARK_LIMIT_NAME)
+        {
+            continue;
+        }
         let Some(limit_name) = ["limit_name", "metered_feature", "name", "id"]
             .iter()
             .find_map(|key| item_object.get(*key).and_then(serde_json::Value::as_str))
@@ -3944,11 +4069,11 @@ mod tests {
         codex_rate_limit_metadata_exhausted, codex_runtime_invalid_reason,
         codex_websocket_response_has_usage_limit_error, codex_websocket_usage_limit_reset_at,
         extract_execution_error_detail, merge_codex_quota_metadata_snapshot,
-        normalize_codex_reset_credit_consume_outcome, parse_antigravity_usage_response,
-        parse_chatgpt_web_conversation_init_response, parse_codex_backend_me_response,
-        parse_codex_usage_headers, parse_codex_websocket_rate_limits_response,
-        parse_codex_wham_reset_credits_detail_response, parse_codex_wham_usage_response,
-        parse_gemini_cli_retrieve_user_quota_response,
+        normalize_codex_reset_credit_consume_outcome, parse_antigravity_quota_summary_response,
+        parse_antigravity_usage_response, parse_chatgpt_web_conversation_init_response,
+        parse_codex_backend_me_response, parse_codex_usage_headers,
+        parse_codex_websocket_rate_limits_response, parse_codex_wham_reset_credits_detail_response,
+        parse_codex_wham_usage_response, parse_gemini_cli_retrieve_user_quota_response,
         parse_gemini_cli_v1internal_credits_response, parse_windsurf_model_configs_response,
         parse_windsurf_rate_limit_response, parse_windsurf_user_status_response,
         provider_auto_remove_quota_exhausted_keys, quota_refresh_success_invalid_state,
@@ -6368,11 +6493,10 @@ mod tests {
             .get("additional_quota_windows")
             .and_then(serde_json::Value::as_array)
             .expect("all additional quota windows should be preserved");
-        assert_eq!(additional.len(), 2);
-        assert!(additional.iter().all(|window| {
-            window.get("model") == Some(&json!("GPT-5.3-Codex-Spark"))
-                && window.get("scope") == Some(&json!("model"))
-        }));
+        assert!(
+            additional.is_empty(),
+            "the Spark windows are already normalized into the dedicated spark fields"
+        );
     }
 
     #[test]
@@ -6914,6 +7038,37 @@ mod tests {
             parsed["models"]["gemini-3-pro-preview"]["display_name"],
             json!("Gemini 3 Pro Preview")
         );
+    }
+
+    #[test]
+    fn parses_antigravity_grouped_weekly_and_five_hour_quota() {
+        let groups = parse_antigravity_quota_summary_response(&json!({
+            "groups": [{
+                "displayName": "Claude and GPT models",
+                "description": "Shared quota",
+                "buckets": [{
+                    "bucketId": "3p-5h",
+                    "window": "5h",
+                    "remainingFraction": 0.25,
+                    "resetTime": "2026-05-05T05:00:00Z",
+                    "displayName": "5 hour"
+                }, {
+                    "bucketId": "3p-weekly",
+                    "window": "weekly",
+                    "remainingFraction": 0.8,
+                    "resetTime": "2026-05-11T00:00:00Z"
+                }]
+            }]
+        }))
+        .expect("grouped Antigravity quota should parse");
+
+        assert_eq!(groups[0]["display_name"], json!("Claude and GPT models"));
+        assert_eq!(groups[0]["description"], json!("Shared quota"));
+        assert_eq!(groups[0]["buckets"][0]["bucket_id"], json!("3p-5h"));
+        assert_eq!(groups[0]["buckets"][0]["window"], json!("5h"));
+        assert_eq!(groups[0]["buckets"][0]["remaining_fraction"], json!(0.25));
+        assert_eq!(groups[0]["buckets"][0]["used_percent"], json!(75.0));
+        assert_eq!(groups[0]["buckets"][1]["bucket_id"], json!("3p-weekly"));
     }
 
     #[test]

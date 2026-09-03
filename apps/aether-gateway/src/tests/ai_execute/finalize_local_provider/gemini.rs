@@ -2123,7 +2123,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_upstream_stream_via_local_
     );
     assert_eq!(
         seen_remote_execution_runtime_request.x_client_version,
-        "1.2.3"
+        "4.3.0"
     );
     assert_eq!(
         seen_remote_execution_runtime_request.x_vscode_sessionid,

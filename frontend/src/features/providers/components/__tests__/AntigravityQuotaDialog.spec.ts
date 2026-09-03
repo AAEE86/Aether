@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h } from 'vue'
 
 import AntigravityQuotaDialog from '@/features/providers/components/AntigravityQuotaDialog.vue'
-import type { UpstreamMetadata } from '@/api/endpoints/types'
+import type { QuotaStatusSnapshot, UpstreamMetadata } from '@/api/endpoints/types'
 
 vi.mock('@/components/ui', async () => {
   const { defineComponent, h } = await import('vue')
@@ -77,7 +77,7 @@ vi.mock('@/utils/errorParser', () => ({
   parseApiError: (value: unknown) => String(value),
 }))
 
-function mount(metadata: UpstreamMetadata) {
+function mount(metadata: UpstreamMetadata, quotaSnapshot?: QuotaStatusSnapshot) {
   const root = document.createElement('div')
   document.body.appendChild(root)
 
@@ -86,6 +86,7 @@ function mount(metadata: UpstreamMetadata) {
       return () => h(AntigravityQuotaDialog, {
         open: true,
         metadata,
+        quotaSnapshot,
         keyName: 'Key-1',
       })
     },
@@ -102,6 +103,35 @@ function mount(metadata: UpstreamMetadata) {
 }
 
 describe('AntigravityQuotaDialog', () => {
+  it('renders grouped five-hour and weekly quota windows', () => {
+    const { root, unmount } = mount({}, {
+      code: 'ok',
+      provider_type: 'antigravity',
+      exhausted: false,
+      windows: [{
+        code: 'group:0:3p-5h',
+        label: 'Claude and GPT models · 5 hour',
+        scope: 'quota_group',
+        used_ratio: 0.75,
+        remaining_ratio: 0.25,
+      }, {
+        code: 'group:0:3p-weekly',
+        label: 'Claude and GPT models · weekly',
+        scope: 'quota_group',
+        used_ratio: 0.2,
+        remaining_ratio: 0.8,
+      }],
+    })
+    const text = root.textContent || ''
+
+    expect(text).toContain('Claude and GPT models · 5 hour')
+    expect(text).toContain('25.0%')
+    expect(text).toContain('Claude and GPT models · weekly')
+    expect(text).toContain('80.0%')
+
+    unmount()
+  })
+
   it('hides quota buckets outside the shared pool summary families', () => {
     const rawIdentifier = 'RateLimitResetCredit_05cbb6eeeb9c81918e011d8300f9ebfb'
     const { root, unmount } = mount({

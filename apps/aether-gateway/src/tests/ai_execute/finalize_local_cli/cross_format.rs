@@ -1537,7 +1537,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
     );
     assert_eq!(
         seen_remote_execution_runtime_request.x_client_version,
-        "1.2.3"
+        "4.3.0"
     );
     assert_eq!(
         seen_remote_execution_runtime_request.x_vscode_sessionid,

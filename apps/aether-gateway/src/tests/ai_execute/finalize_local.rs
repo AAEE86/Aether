@@ -1949,7 +1949,7 @@ async fn gateway_executes_openai_chat_antigravity_cross_format_sync_via_local_fi
         "Bearer imported-antigravity-chat-token"
     );
     assert_eq!(seen_execution_runtime_request.x_client_name, "antigravity");
-    assert_eq!(seen_execution_runtime_request.x_client_version, "1.2.3");
+    assert_eq!(seen_execution_runtime_request.x_client_version, "4.3.0");
     assert_eq!(
         seen_execution_runtime_request.x_vscode_sessionid,
         "sess-antigravity-chat-local-123"

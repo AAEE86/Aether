@@ -2321,7 +2321,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_af
         "Bearer refreshed-antigravity-cli-access-token"
     );
     assert_eq!(seen_execution_runtime_request.x_client_name, "antigravity");
-    assert_eq!(seen_execution_runtime_request.x_client_version, "1.2.3");
+    assert_eq!(seen_execution_runtime_request.x_client_version, "4.3.0");
     assert_eq!(
         seen_execution_runtime_request.x_vscode_sessionid,
         "sess-antigravity-local-123"
