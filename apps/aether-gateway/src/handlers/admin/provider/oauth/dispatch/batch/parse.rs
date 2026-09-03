@@ -808,6 +808,14 @@ pub(super) fn apply_admin_provider_oauth_batch_import_hints(
         return;
     }
     if provider_type == "antigravity" {
+        // The Google refresh-token response does not include the account email.
+        // Preserve the identity supplied by the imported Antigravity credentials so
+        // account naming and duplicate detection can use it after token exchange.
+        if let Some(email) = entry.email.as_ref() {
+            auth_config
+                .entry("email".to_string())
+                .or_insert_with(|| json!(email));
+        }
         if let Some(project_id) = entry.project_id.as_ref() {
             auth_config
                 .entry("project_id".to_string())
@@ -1433,7 +1441,7 @@ mod tests {
     fn applies_antigravity_project_and_user_agent_hints_to_auth_config() {
         let entries = parse_admin_provider_oauth_batch_import_entries(
             "antigravity",
-            r#"{"refreshToken":"rt-1","cloudaicompanionProject":{"id":"project-antigravity-2"},"userAgent":"antigravity"}"#,
+            r#"{"refreshToken":"rt-1","email":"anti@example.com","cloudaicompanionProject":{"id":"project-antigravity-2"},"userAgent":"antigravity"}"#,
         );
         let mut auth_config = serde_json::Map::new();
 
@@ -1444,6 +1452,35 @@ mod tests {
             Some(&json!("project-antigravity-2"))
         );
         assert_eq!(auth_config.get("user_agent"), Some(&json!("antigravity")));
+        assert_eq!(auth_config.get("email"), Some(&json!("anti@example.com")));
+    }
+
+    #[test]
+    fn antigravity_batch_import_keeps_json_email_for_key_naming() {
+        let entries = parse_admin_provider_oauth_batch_import_entries(
+            "antigravity",
+            r#"{"access_token":"at-1","refresh_token":"rt-1","email":"anti@example.com","project_id":"project-antigravity-3","type":"antigravity"}"#,
+        );
+        // Simulate Google's refresh-token response, which carries no email.
+        let mut auth_config = json!({
+            "provider_type": "antigravity",
+            "refresh_token": "rt-1",
+        })
+        .as_object()
+        .cloned()
+        .expect("auth config should be an object");
+
+        apply_admin_provider_oauth_batch_import_hints("antigravity", &entries[0], &mut auth_config);
+
+        assert_eq!(auth_config.get("email"), Some(&json!("anti@example.com")));
+        assert_eq!(
+            super::super::super::helpers::admin_provider_oauth_key_name_from_auth_config(
+                "antigravity",
+                &auth_config,
+                Some(0),
+            ),
+            "antigravity_anti@example.com"
+        );
     }
 
     #[test]
