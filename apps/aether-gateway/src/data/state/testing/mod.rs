@@ -1,10 +1,15 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use aether_data::repository::routing_profiles::InMemoryRoutingGroupRepository;
 use aether_data_contracts::repository::candidates::RequestCandidateRepository;
 use aether_data_contracts::repository::pool_scores::PoolMemberScoreRepository;
 use aether_data_contracts::repository::quota::ProviderQuotaRepository;
+use aether_data_contracts::repository::routing_profiles::{
+    StoredRoutingGroup, StoredRoutingGroupBinding, StoredRoutingGroupVersion,
+};
 use aether_data_contracts::repository::usage::UsageRepository;
+use aether_routing_core::RoutingGroupConfig;
 
 use super::{
     AnnouncementReadRepository, AnnouncementWriteRepository, AuthApiKeyReadRepository,
@@ -890,6 +895,30 @@ impl GatewayDataState {
         self.routing_group_reader = Some(repository.clone());
         self.routing_group_writer = Some(repository);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_system_default_routing_group_for_tests(self) -> Self {
+        let now = 1;
+        let repository = Arc::new(InMemoryRoutingGroupRepository::seed(
+            [StoredRoutingGroup {
+                id: "system-default".to_string(),
+                name: "system-default".to_string(),
+                description: Some("test system default routing strategy".to_string()),
+                enabled: true,
+                is_system_default: true,
+                sort_order: 0,
+                config_json: serde_json::to_value(RoutingGroupConfig::default())
+                    .expect("default routing config should serialize"),
+                version: 1,
+                created_at: now,
+                updated_at: now,
+                published_at: Some(now),
+            }],
+            std::iter::empty::<StoredRoutingGroupBinding>(),
+            std::iter::empty::<StoredRoutingGroupVersion>(),
+        ));
+        self.with_routing_group_repository_for_tests(repository)
     }
 
     #[cfg(test)]

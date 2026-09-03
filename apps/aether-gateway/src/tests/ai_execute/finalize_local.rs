@@ -1877,7 +1877,8 @@ async fn gateway_executes_openai_chat_antigravity_cross_format_sync_via_local_fi
                     Arc::clone(&request_candidate_repository),
                     Arc::clone(&usage_repository),
                     DEVELOPMENT_ENCRYPTION_KEY,
-                ),
+                )
+                .with_system_default_routing_group_for_tests(),
             );
     let gateway = build_router_with_state(gateway_state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;

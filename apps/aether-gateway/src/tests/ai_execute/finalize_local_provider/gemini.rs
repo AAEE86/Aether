@@ -2004,7 +2004,8 @@ async fn gateway_executes_antigravity_gemini_cli_sync_upstream_stream_via_local_
                     Arc::clone(&request_candidate_repository),
                     Arc::clone(&usage_repository),
                     DEVELOPMENT_ENCRYPTION_KEY,
-                ),
+                )
+                .with_system_default_routing_group_for_tests(),
             )
             .with_oauth_refresh_coordinator_for_tests(oauth_refresh);
     let gateway = build_router_with_state(gateway_state);
