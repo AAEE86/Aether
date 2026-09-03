@@ -413,7 +413,7 @@ async fn gateway_executes_openai_responses_cross_format_upstream_stream_via_loca
             "output_text": "Hello Gemini CLI",
             "output": [{
                 "type": "message",
-                "id": "upstream-cli-stream-123_msg",
+                "id": openai_responses_message_item_id("upstream-cli-stream-123", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
@@ -882,7 +882,7 @@ async fn gateway_executes_openai_responses_cross_format_function_call_upstream_s
             "output": [
                 {
                     "type": "message",
-                    "id": "upstream-cli-tool-123_msg",
+                    "id": openai_responses_message_item_id("upstream-cli-tool-123", 0),
                     "role": "assistant",
                     "status": "completed",
                     "content": [{

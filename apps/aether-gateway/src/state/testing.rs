@@ -27,7 +27,7 @@ impl AppState {
             && !data_state.has_routing_group_reader()
             && !data_state.has_routing_group_writer()
         {
-            data_state.with_default_routing_group_for_tests()
+            data_state.with_system_default_routing_group_for_tests()
         } else {
             data_state
         };
