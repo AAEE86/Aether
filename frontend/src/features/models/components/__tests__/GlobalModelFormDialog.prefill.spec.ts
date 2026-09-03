@@ -306,6 +306,10 @@ describe('GlobalModelFormDialog preset replacement', () => {
         family: 'fresh-family',
         input_modalities: ['text'],
         output_modalities: ['text'],
+        models_dev_pricing_source: {
+          provider_id: 'openai',
+          provider_name: 'OpenAI',
+        },
       },
       default_tiered_pricing: {
         tiers: [
@@ -477,9 +481,17 @@ describe('GlobalModelFormDialog preset replacement', () => {
 
   it('refreshes and applies the latest online price from the edit dialog', async () => {
     const existingStaleModel = buildExistingStaleModel()
+    const nextConfig = {
+      ...existingStaleModel.config,
+      models_dev_pricing_source: {
+        provider_id: stalePreset.providerId,
+        provider_name: stalePreset.providerName,
+      },
+    }
     const syncedModel = {
       ...existingStaleModel,
       default_tiered_pricing: stalePreset.tieredPricing!,
+      config: nextConfig,
     }
     globalModelMocks.updateGlobalModel.mockResolvedValue(syncedModel)
     globalModelMocks.listGlobalModels.mockResolvedValue({
@@ -495,7 +507,7 @@ describe('GlobalModelFormDialog preset replacement', () => {
       '[data-testid="sync-online-pricing"]',
     )
     if (!syncButton) throw new Error('Missing online pricing sync button')
-    expect(syncButton.title).toBe('同步最新在线价格')
+    expect(syncButton.title).toBe('选择并同步在线价格来源')
     expect(syncButton.getAttribute('aria-label')).toBe('同步最新在线价格')
 
     syncButton.click()
@@ -505,7 +517,10 @@ describe('GlobalModelFormDialog preset replacement', () => {
     expect(modelsDevMocks.refreshModelsDevList).toHaveBeenCalledWith(false)
     expect(globalModelMocks.updateGlobalModel).toHaveBeenCalledWith(
       existingStaleModel.id,
-      { default_tiered_pricing: stalePreset.tieredPricing },
+      {
+        default_tiered_pricing: stalePreset.tieredPricing,
+        config: nextConfig,
+      },
     )
     expect(pricingSynced).toHaveBeenCalledWith(syncedModel)
     expect(document.body.querySelector<HTMLInputElement>('[data-testid="tier-input-price"]')?.value)
@@ -524,11 +539,62 @@ describe('GlobalModelFormDialog preset replacement', () => {
     })
   })
 
+  it('persists a newly selected source even when prices already match and keeps it on save', async () => {
+    const existingModel = {
+      ...buildExistingStaleModel(),
+      default_tiered_pricing: stalePreset.tieredPricing!,
+    }
+    const nextConfig = {
+      ...existingModel.config,
+      models_dev_pricing_source: {
+        provider_id: stalePreset.providerId,
+        provider_name: stalePreset.providerName,
+      },
+    }
+    const syncedModel = { ...existingModel, config: nextConfig }
+    globalModelMocks.updateGlobalModel.mockResolvedValue(syncedModel)
+    const { editingModel, pricingSynced } = mountDialog()
+    await settle()
+
+    editingModel.value = existingModel
+    await settle()
+    const syncButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="sync-online-pricing"]',
+    )
+    if (!syncButton) throw new Error('Missing online pricing sync button')
+    syncButton.click()
+    await settle()
+
+    expect(globalModelMocks.updateGlobalModel).toHaveBeenNthCalledWith(
+      1,
+      existingModel.id,
+      {
+        default_tiered_pricing: stalePreset.tieredPricing,
+        config: nextConfig,
+      },
+    )
+    expect(pricingSynced).toHaveBeenCalledWith(syncedModel)
+
+    findExactButton('保存').click()
+    await settle()
+
+    expect(globalModelMocks.updateGlobalModel).toHaveBeenCalledTimes(2)
+    expect(globalModelMocks.updateGlobalModel.mock.calls[1][1].config).toEqual(nextConfig)
+  })
+
   it('offers a provider choice when the remembered source is unavailable', async () => {
     const existingStaleModel = buildExistingStaleModel()
+    const nextConfig = {
+      ...existingStaleModel.config,
+      models_dev_pricing_source: {
+        provider_id: alternateStalePreset.providerId,
+        provider_name: alternateStalePreset.providerName,
+      },
+    }
     const syncedModel = {
       ...existingStaleModel,
       default_tiered_pricing: alternateStalePreset.tieredPricing!,
+      config: nextConfig,
     }
     modelsDevMocks.refreshModelsDevList.mockResolvedValue([
       unavailableStalePreset,
@@ -578,7 +644,10 @@ describe('GlobalModelFormDialog preset replacement', () => {
 
     expect(globalModelMocks.updateGlobalModel).toHaveBeenCalledWith(
       existingStaleModel.id,
-      { default_tiered_pricing: alternateStalePreset.tieredPricing },
+      {
+        default_tiered_pricing: alternateStalePreset.tieredPricing,
+        config: nextConfig,
+      },
     )
     expect(pricingSynced).toHaveBeenCalledWith(syncedModel)
     expect(document.body.textContent).not.toContain('选择在线价格来源')
