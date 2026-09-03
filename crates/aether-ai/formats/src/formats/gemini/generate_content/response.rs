@@ -127,13 +127,15 @@ pub fn from_raw(body_json: &Value) -> Option<CanonicalResponse> {
 
 fn gemini_response_output_has_visible_content(output: &CanonicalResponseOutput) -> bool {
     output.content.iter().any(|block| match block {
-        CanonicalContentBlock::Text { text, .. } => !text.trim().is_empty(),
+        CanonicalContentBlock::Text { text, .. } | CanonicalContentBlock::Thinking { text, .. } => {
+            !text.trim().is_empty()
+        }
         CanonicalContentBlock::ToolUse { .. }
         | CanonicalContentBlock::ToolResult { .. }
         | CanonicalContentBlock::Image { .. }
         | CanonicalContentBlock::File { .. }
         | CanonicalContentBlock::Audio { .. } => true,
-        CanonicalContentBlock::Thinking { .. } | CanonicalContentBlock::Unknown { .. } => false,
+        CanonicalContentBlock::Unknown { .. } => false,
     })
 }
 
@@ -430,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_response_with_only_thought_parts_is_not_success() {
+    fn gemini_response_with_only_thought_parts_is_success() {
         let body = json!({
             "candidates": [{
                 "content": {
@@ -443,7 +445,22 @@ mod tests {
             "responseId": "resp-thought-only"
         });
 
-        assert!(from_raw(&body).is_none());
+        let canonical = from_raw(&body).expect("thought text is representable output");
+        assert!(matches!(
+            canonical.content.first(),
+            Some(CanonicalContentBlock::Thinking { text, .. }) if text == "hidden plan"
+        ));
+        assert!(matches!(
+            canonical.stop_reason,
+            Some(CanonicalStopReason::MaxTokens)
+        ));
+
+        let openai = crate::canonical_to_openai_chat_response(&canonical);
+        assert_eq!(
+            openai["choices"][0]["message"]["reasoning_content"],
+            "hidden plan"
+        );
+        assert_eq!(openai["choices"][0]["finish_reason"], "length");
     }
 
     #[test]

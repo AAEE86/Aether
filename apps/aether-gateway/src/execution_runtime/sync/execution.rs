@@ -3746,6 +3746,35 @@ mod tests {
     }
 
     #[test]
+    fn invalid_gemini_provider_success_accepts_thought_only_max_tokens() {
+        let plan = test_gemini_chat_plan();
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "hidden plan", "thought": true}]
+                },
+                "finishReason": "MAX_TOKENS"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 0,
+                "thoughtsTokenCount": 24,
+                "totalTokenCount": 32
+            }
+        });
+
+        let message = invalid_gemini_provider_success_message(
+            &plan,
+            None,
+            StatusCode::OK.as_u16(),
+            Some(&body),
+        );
+
+        assert!(message.is_none());
+    }
+
+    #[test]
     fn invalid_gemini_provider_success_error_is_retryable_candidate_failure() {
         let error = invalid_gemini_provider_success_execution_error(
             INVALID_GEMINI_PROVIDER_SUCCESS_MESSAGE,
