@@ -117,12 +117,13 @@ import Button from '@/components/ui/button.vue'
 import { testModel } from '@/api/endpoints/providers'
 import type { UpstreamMetadata, QuotaStatusSnapshot, QuotaWindowSnapshot } from '@/api/endpoints/types'
 import { useToast } from '@/composables/useToast'
+import { useI18n } from '@/i18n'
 import { parseApiError } from '@/utils/errorParser'
 import {
   compareAntigravityQuotaItems,
   dedupeAntigravityQuotaItemsByLabel,
+  resolveAntigravityQuotaGroupLabel,
   resolveAntigravityQuotaLabel,
-  summarizeAntigravityQuotaItems,
 } from '@/features/providers/utils/antigravityQuota'
 
 const props = defineProps<{
@@ -148,6 +149,7 @@ interface QuotaItem {
 }
 
 const { error: showError, success: showSuccess } = useToast()
+const { t } = useI18n()
 const testingModel = ref<string | null>(null)
 
 function getQuotaSnapshotUpdatedAt(quota: QuotaStatusSnapshot | null | undefined): number | undefined {
@@ -253,7 +255,7 @@ function buildGroupedItemsFromQuotaSnapshot(
   return windows
     .map((window) => {
       const code = String(window.code || '').trim()
-      const label = String(window.label || code).trim()
+      const label = resolveAntigravityQuotaGroupLabel(window, t)
       if (!code || !label) return null
 
       const usedPercent =
@@ -332,9 +334,8 @@ const rawItems = computed<QuotaItem[]>(() => {
   return dedupeAntigravityQuotaItemsByLabel(result)
 })
 
-const items = computed<QuotaItem[]>(() => summarizeAntigravityQuotaItems(rawItems.value))
 const groupedItems = computed<QuotaItem[]>(() => buildGroupedItemsFromQuotaSnapshot(props.quotaSnapshot))
-const displayItems = computed<QuotaItem[]>(() => [...groupedItems.value, ...items.value])
+const displayItems = computed<QuotaItem[]>(() => groupedItems.value)
 
 async function handleTestModel(modelName: string) {
   if (!props.providerId || testingModel.value) return
