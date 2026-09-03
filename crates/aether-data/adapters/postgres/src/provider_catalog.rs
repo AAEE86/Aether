@@ -3672,6 +3672,17 @@ mod tests {
     }
 
     #[test]
+    fn runtime_metadata_cas_preserves_postgres_jsonb_numeric_lexemes() {
+        // PostgreSQL jsonb keeps the exact decimal value. Losing that lexeme while
+        // decoding into serde_json::Value makes a subsequent namespace CAS compare
+        // a nearby-but-different number and report a false conflict.
+        let postgres_json = r#"{"used_percent":9.373679999999995}"#;
+        let decoded: serde_json::Value = serde_json::from_str(postgres_json).unwrap();
+
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), postgres_json);
+    }
+
+    #[test]
     fn ordinary_key_update_does_not_own_runtime_observation_fields() {
         let sql = super::KEY_UPDATE_SQL.to_ascii_lowercase();
         for runtime_assignment in [
