@@ -67,11 +67,14 @@ pub(crate) async fn build_admin_global_model_routing_payload(
             .push(key);
     }
 
-    // Effective default scheduling: system-default routing group first, then
-    // legacy system-config keys.
-    let ordering_config = crate::scheduler::config::read_scheduler_ordering_config(state.app())
-        .await
-        .unwrap_or_default();
+    // The admin view reports the system-default routing strategy.
+    let ordering_config =
+        match crate::scheduler::config::read_system_default_routing_ordering_config(state.app())
+            .await
+        {
+            Ok(Some(config)) => config,
+            Ok(None) | Err(_) => crate::scheduler::config::SchedulerOrderingConfig::default(),
+        };
     let scheduling_mode = ordering_config.scheduling_mode_str().to_string();
     let priority_mode = ordering_config.priority_mode_str().to_string();
     let keep_priority_on_conversion = ordering_config.keep_priority_on_conversion;

@@ -79,12 +79,7 @@ const SYSTEM_CONFIG_CACHE_TTL: Duration = Duration::from_secs(30);
 // five minutes of total age. Direct database edits that bypass AppState
 // invalidation can therefore take at most this bounded interval to appear.
 const SYSTEM_CONFIG_CACHE_MAX_STALENESS: Duration = Duration::from_secs(5 * 60);
-const SCHEDULER_AFFECTING_SYSTEM_CONFIG_KEYS: &[&str] = &[
-    "enable_format_conversion",
-    "keep_priority_on_conversion",
-    "provider_priority_mode",
-    "scheduling_mode",
-];
+const SCHEDULER_AFFECTING_SYSTEM_CONFIG_KEYS: &[&str] = &["enable_format_conversion"];
 const AUTH_AFFECTING_SYSTEM_CONFIG_KEYS: &[&str] = &[
     crate::constants::DEFAULT_USER_GROUP_CONFIG_KEY,
     crate::constants::ANTIGRAVITY_BEARER_BRIDGE_CONFIG_KEY,
@@ -4350,12 +4345,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_config_entry_write_refreshes_cache_and_scheduler_affinity_for_routing_keys() {
+    async fn system_config_entry_write_refreshes_cache_and_scheduler_affinity_for_format_conversion(
+    ) {
         let state = AppState::new()
             .expect("app state should build")
             .with_data_state_for_tests(
                 GatewayDataState::disabled().with_system_config_values_for_tests([(
-                    "keep_priority_on_conversion".to_string(),
+                    "enable_format_conversion".to_string(),
                     json!(false),
                 )]),
             );
@@ -4364,7 +4360,7 @@ mod tests {
 
         assert_eq!(
             state
-                .read_system_config_json_value("keep_priority_on_conversion")
+                .read_system_config_json_value("enable_format_conversion")
                 .await
                 .expect("system config read should succeed"),
             Some(json!(false))
@@ -4385,13 +4381,13 @@ mod tests {
 
         let initial_epoch = state.scheduler_affinity_epoch();
         state
-            .upsert_system_config_entry("keep_priority_on_conversion", &json!(true), None)
+            .upsert_system_config_entry("enable_format_conversion", &json!(true), None)
             .await
             .expect("admin config write should succeed");
 
         assert_eq!(
             state
-                .read_system_config_json_value("keep_priority_on_conversion")
+                .read_system_config_json_value("enable_format_conversion")
                 .await
                 .expect("system config read should use refreshed cache"),
             Some(json!(true))

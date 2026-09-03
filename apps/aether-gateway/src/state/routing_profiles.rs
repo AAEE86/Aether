@@ -15,10 +15,9 @@ const BOOTSTRAP_SYSTEM_DEFAULT_ROUTING_GROUP_NAME: &str = "system-default";
 impl AppState {
     /// Make sure an enabled system-default routing group exists.
     ///
-    /// When none exists, one is created from the legacy scheduler system-config
-    /// keys so that removing those keys later does not change behaviour. Returns
-    /// the created group, or `None` when nothing had to be created (no routing
-    /// storage, no writer, or a system default already exists).
+    /// When none exists, one is created from the routing defaults.
+    /// Returns the created group, or `None` when nothing had to be created (no
+    /// routing storage, no writer, or a system default already exists).
     pub async fn ensure_system_default_routing_group(
         &self,
     ) -> Result<Option<StoredRoutingGroup>, std::io::Error> {
@@ -44,16 +43,12 @@ impl AppState {
             warn!(
                 event_name = "routing_system_default_bootstrap_skipped",
                 log_type = "event",
-                "no system default routing group exists and routing storage is read-only; scheduler falls back to legacy system config"
+                "no system default routing group exists and routing storage is read-only; scheduler uses routing defaults"
             );
             return Ok(None);
         }
 
-        let legacy = crate::scheduler::config::read_legacy_scheduler_ordering_config(self).await?;
-        let config = RoutingGroupConfig {
-            default_policy: legacy.to_routing_default_policy(),
-            ..RoutingGroupConfig::default()
-        };
+        let config = RoutingGroupConfig::default();
         let config_json = serde_json::to_value(config)
             .map_err(|err| GatewayError::Internal(format!("serialize routing config: {err}")))?;
 
@@ -75,9 +70,10 @@ impl AppState {
         self.create_routing_group(CreateRoutingGroupRecord {
             id: uuid::Uuid::new_v4().to_string(),
             name,
-            description: Some("自动从旧版调度配置迁移生成的系统默认策略".to_string()),
+            description: Some("系统默认调度策略".to_string()),
             enabled: true,
             is_system_default: true,
+            sort_order: 0,
             config_json,
             version: 1,
             created_at: now,

@@ -47,7 +47,7 @@ pub(super) fn is_exact_all_skipped_by_auth_limit(
             .all(|candidate| is_auth_api_key_concurrency_limit_skip_reason(candidate.skip_reason))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(super) async fn select_minimal_candidate(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -59,20 +59,8 @@ pub(super) async fn select_minimal_candidate(
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
     enable_model_directives: bool,
+    ordering_config: SchedulerOrderingConfig,
 ) -> Result<Option<SchedulerMinimalCandidateSelectionCandidate>, GatewayError> {
-    let affinity_epoch = runtime_state.scheduler_affinity_epoch();
-    let ordering_config = runtime_state.read_scheduler_ordering_config().await?;
-    let affinity_cache_key = build_scheduler_affinity_cache_key(
-        auth_snapshot,
-        api_format,
-        global_model_name,
-        client_session_affinity,
-    );
-    let priority_affinity_key = scheduling_priority_affinity_key(
-        auth_snapshot,
-        client_session_affinity,
-        ordering_config.scheduling_mode,
-    );
     let candidates = enumerate_scheduler_candidates(
         selection_row_source,
         api_format,
@@ -84,7 +72,7 @@ pub(super) async fn select_minimal_candidate(
         None,
     )
     .await?;
-    let selected = collect_selectable_enumerated_candidates_with_skip_reasons(
+    Ok(collect_selectable_enumerated_candidates_with_skip_reasons(
         runtime_state,
         api_format,
         global_model_name,
@@ -94,25 +82,16 @@ pub(super) async fn select_minimal_candidate(
         client_session_affinity,
         now_unix_secs,
         ordering_config,
-        priority_affinity_key,
+        scheduling_priority_affinity_key(
+            auth_snapshot,
+            client_session_affinity,
+            ordering_config.scheduling_mode,
+        ),
     )
     .await?
     .0
     .into_iter()
-    .next();
-    if ordering_config.scheduling_mode == SchedulerSchedulingMode::CacheAffinity
-        && has_explicit_session_affinity(client_session_affinity)
-    {
-        if let Some(candidate) = selected.as_ref() {
-            remember_scheduler_affinity(
-                affinity_cache_key.as_deref(),
-                runtime_state,
-                candidate,
-                Some(affinity_epoch),
-            );
-        }
-    }
-    Ok(selected)
+    .next())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -127,7 +106,7 @@ pub(super) async fn collect_selectable_candidates(
     client_session_affinity: Option<&ClientSessionAffinity>,
     now_unix_secs: u64,
     enable_model_directives: bool,
-    ordering_config: Option<SchedulerOrderingConfig>,
+    ordering_config: SchedulerOrderingConfig,
 ) -> Result<Vec<SchedulerMinimalCandidateSelectionCandidate>, GatewayError> {
     Ok(
         collect_selectable_candidates_with_skip_reasons_and_ordering(
@@ -149,10 +128,8 @@ pub(super) async fn collect_selectable_candidates(
     )
 }
 
-/// Legacy-shaped entrypoint that resolves the ordering config from the
-/// runtime state. Prefer `collect_selectable_candidates_with_skip_reasons_and_ordering`
-/// and pass the request's routing-policy config explicitly.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) async fn collect_selectable_candidates_with_skip_reasons(
     selection_row_source: &(impl MinimalCandidateSelectionRowSource + Sync),
     runtime_state: &impl SchedulerRuntimeState,
@@ -184,22 +161,9 @@ pub(super) async fn collect_selectable_candidates_with_skip_reasons(
         now_unix_secs,
         enable_model_directives,
         request_operation,
-        None,
+        SchedulerOrderingConfig::default(),
     )
     .await
-}
-
-/// Resolve the ordering config for a preselection pass: the routing-policy
-/// derived config wins when the caller has one; otherwise fall back to the
-/// runtime default (system-default routing group, then legacy keys).
-pub(super) async fn resolve_preselection_ordering_config(
-    runtime_state: &impl SchedulerRuntimeState,
-    ordering_config: Option<SchedulerOrderingConfig>,
-) -> Result<SchedulerOrderingConfig, GatewayError> {
-    match ordering_config {
-        Some(config) => Ok(config),
-        None => runtime_state.read_scheduler_ordering_config().await,
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -215,7 +179,7 @@ pub(super) async fn collect_selectable_candidates_with_skip_reasons_and_ordering
     now_unix_secs: u64,
     enable_model_directives: bool,
     request_operation: Option<&str>,
-    ordering_config: Option<SchedulerOrderingConfig>,
+    ordering_config: SchedulerOrderingConfig,
 ) -> Result<
     (
         Vec<SchedulerMinimalCandidateSelectionCandidate>,
@@ -223,8 +187,6 @@ pub(super) async fn collect_selectable_candidates_with_skip_reasons_and_ordering
     ),
     GatewayError,
 > {
-    let ordering_config =
-        resolve_preselection_ordering_config(runtime_state, ordering_config).await?;
     let priority_affinity_key = scheduling_priority_affinity_key(
         auth_snapshot,
         client_session_affinity,

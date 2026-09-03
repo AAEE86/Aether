@@ -282,19 +282,6 @@
 
         <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
           <div class="space-y-0.5">
-            <span class="text-sm font-medium">{{ legacyT('格式转换保持优先级') }}</span>
-            <p class="text-xs text-muted-foreground">
-              {{ legacyT('跨格式请求时保持原优先级排名，不降级到格式匹配的提供商之后') }}
-            </p>
-          </div>
-          <Switch
-            :model-value="form.keep_priority_on_conversion"
-            @update:model-value="(v: boolean) => form.keep_priority_on_conversion = v"
-          />
-        </div>
-
-        <div class="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
-          <div class="space-y-0.5">
             <span class="text-sm font-medium">{{ legacyT('号池调度模式') }}</span>
             <p class="text-xs text-muted-foreground">
               {{ legacyT('启用后该提供商的密钥将由号池统一调度') }}
@@ -475,7 +462,6 @@ const form = ref({
   quota_last_reset_at: '',  // 周期开始时间
   quota_expires_at: '',
   provider_priority: 100,
-  keep_priority_on_conversion: false,  // 格式转换时是否保持优先级
   // 状态配置
   is_active: true,
   rate_limit: undefined as number | undefined,
@@ -510,7 +496,6 @@ function resetForm() {
     quota_last_reset_at: '',
     quota_expires_at: '',
     provider_priority: defaultPriority.value,
-    keep_priority_on_conversion: false,
     is_active: true,
     rate_limit: undefined,
     concurrent_limit: undefined,
@@ -548,7 +533,6 @@ function loadProviderData() {
     quota_last_reset_at: formatDateTimeLocalInput(props.provider.quota_last_reset_at),
     quota_expires_at: formatDateTimeLocalInput(props.provider.quota_expires_at),
     provider_priority: props.provider.provider_priority || 999,
-    keep_priority_on_conversion: props.provider.keep_priority_on_conversion ?? false,
     is_active: props.provider.is_active,
     rate_limit: undefined,
     concurrent_limit: undefined,
@@ -625,7 +609,6 @@ const handleSubmit = async () => {
       quota_reset_day: form.value.quota_reset_day,
       quota_last_reset_at: quotaLastResetAt,
       quota_expires_at: quotaExpiresAt,
-      keep_priority_on_conversion: form.value.keep_priority_on_conversion,
       responses_websocket_enabled: form.value.responses_websocket_enabled,
       is_active: form.value.is_active,
       // 请求配置

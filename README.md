@@ -128,6 +128,7 @@ Docker Compose 用户可在部署目录的 `.env` 中设置 `APP_IMAGE=ghcr.io/f
 ## 本地开发
 
 依赖 Docker、Rust toolchain、Node.js 和 make。
+首次启动前需要在 `.env` 中设置 `ADMIN_PASSWORD`，用于创建本地管理员。
 
 ```bash
 make dev
@@ -135,6 +136,12 @@ make dev
 
 `make dev` 会同时启动后端 `aether-gateway` 和前端 `frontend` 的 Vite dev server。需要单独启动时可使用 `make dev-backend` 或 `make dev-frontend`。
 Postgres / Redis 本地依赖未就绪时，`make dev` 会自动执行 `docker compose up -d postgres redis`。
+数据库 schema 和历史数据准备也会在启动时自动完成；通常不需要手动区分 migration 与 backfill。排查或部署前预执行时可使用：
+
+```bash
+make db-status
+make db-prepare
+```
 
 ## Codex 远程协同
 
@@ -173,7 +180,8 @@ Aether Tunnel 是配套的正向代理节点，部署在海外 VPS 上，为墙�
 - `AETHER_MAX_REDACTED_SYNC_RESPONSE_BODY_MB`：可选的 PII 恢复同步响应缓冲上限；未配置或设为 `0` 时不限制
 - `REDIS_URL`：Redis 连接串；仅 Postgres + Redis 的 Docker Compose 部署需要配置
 - `AETHER_RUNTIME_BACKEND=memory|redis`：运行时缓存/协调后端。SQLite 默认用 `memory`，不会连接 Redis；多节点部署和需要跨 gateway 重启恢复 OpenAI Responses continuation history 的部署必须使用共享 Redis
-- `AETHER_GATEWAY_AUTO_PREPARE_DATABASE`：常规启动前自动执行挂起的 schema migration 和 backfill；仓库自带的 `docker-compose.yml` 默认开启
+- `AETHER_GATEWAY_DATABASE_MODE=auto|verify-only`：数据库启动策略，默认 `auto`，自动完成挂起的 schema migration 和 backfill；`verify-only` 仅检查并在数据库落后时拒绝启动
+- `AETHER_GATEWAY_AUTO_PREPARE_DATABASE`：旧版兼容开关；新配置请使用 `AETHER_GATEWAY_DATABASE_MODE`
 - `JWT_SECRET_KEY` / `ENCRYPTION_KEY`：认证和敏感数据加密所需密钥
 - `API_KEY_PREFIX`：用户和管理员新建 API Key 时使用的前缀，默认 `sk`
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_EMAIL`：首次启动时自举首个本地管理员；`install.sh` 会提示输入管理员密码

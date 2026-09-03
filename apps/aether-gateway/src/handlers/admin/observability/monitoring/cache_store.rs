@@ -265,7 +265,9 @@ pub(super) async fn build_admin_monitoring_cache_snapshot(
     state: &AdminAppState<'_>,
 ) -> Result<AdminMonitoringCacheSnapshot, GatewayError> {
     let ordering_config =
-        crate::scheduler::config::read_scheduler_ordering_config(state.app()).await?;
+        crate::scheduler::config::read_system_default_routing_ordering_config(state.app())
+            .await?
+            .unwrap_or_default();
     let scheduling_mode = ordering_config.scheduling_mode_str().to_string();
     let provider_priority_mode = ordering_config.priority_mode_str().to_string();
 

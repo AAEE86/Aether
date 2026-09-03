@@ -24,6 +24,17 @@
             <Shuffle class="w-4 h-4" />
           </Button>
         </span>
+        <span :title="keepPriorityTitle">
+          <Button
+            variant="ghost"
+            size="icon"
+            :class="provider.keep_priority_on_conversion ? 'text-primary' : ''"
+            :disabled="!formatConversionAvailable"
+            @click="$emit('toggleKeepPriorityOnConversion')"
+          >
+            <Layers class="w-4 h-4" />
+          </Button>
+        </span>
         <span :title="legacyT(hasFailoverRules ? '已配置故障转移规则（点击编辑）' : '配置故障转移规则')">
           <Button
             variant="ghost"
@@ -163,7 +174,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Edit, GitBranch, Globe, Loader2, Plus, Power, Shuffle, X } from 'lucide-vue-next'
+import { Edit, GitBranch, Globe, Layers, Loader2, Plus, Power, Shuffle, X } from 'lucide-vue-next'
 import Button from '@/components/ui/button.vue'
 import Badge from '@/components/ui/badge.vue'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui'
@@ -185,6 +196,7 @@ const props = defineProps<{
 
 defineEmits<{
   (e: 'toggleFormatConversion'): void
+  (e: 'toggleKeepPriorityOnConversion'): void
   (e: 'openFailoverRules'): void
   (e: 'update:providerProxyPopoverOpen', value: boolean): void
   (e: 'setProviderProxy', value: string): void
@@ -202,5 +214,16 @@ const formatConversionTitle = computed(() => {
   if (props.systemFormatConversionEnabled) return legacyT('系统级格式转换已启用')
   if (props.provider.enable_format_conversion) return legacyT('已启用格式转换（点击关闭）')
   return legacyT('启用格式转换')
+})
+
+const formatConversionAvailable = computed(() => (
+  props.provider.enable_format_conversion || props.systemFormatConversionEnabled
+))
+
+const keepPriorityTitle = computed(() => {
+  if (!formatConversionAvailable.value) return legacyT('请先启用格式转换')
+  return props.provider.keep_priority_on_conversion
+    ? legacyT('已启用格式转换保持优先级（点击关闭）')
+    : legacyT('启用格式转换保持优先级')
 })
 </script>
