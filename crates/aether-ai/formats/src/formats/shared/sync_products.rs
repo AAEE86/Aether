@@ -4258,6 +4258,57 @@ mod tests {
     }
 
     #[test]
+    fn aggregates_antigravity_signature_only_reasoning_exhaustion() {
+        let body = concat!(
+            "data: {\"response\":{\"responseId\":\"resp_signature_only_123\",\"modelVersion\":\"gemini-3.7-flash-tiered\",",
+            "\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\",\"thoughtSignature\":\"opaque-thought-signature\"}]},\"finishReason\":\"MAX_TOKENS\"}],",
+            "\"usageMetadata\":{\"promptTokenCount\":22,\"thoughtsTokenCount\":29,\"totalTokenCount\":51}},",
+            "\"traceId\":\"trace-signature-only\"}\n\n",
+        );
+
+        let aggregated = aggregate_gemini_stream_sync_response(body.as_bytes())
+            .expect("signature-only reasoning terminal should aggregate");
+
+        assert_eq!(
+            aggregated["candidates"][0]["content"]["parts"][0]["thought"],
+            true
+        );
+        assert_eq!(
+            aggregated["candidates"][0]["content"]["parts"][0]["thoughtSignature"],
+            "opaque-thought-signature"
+        );
+        assert_eq!(aggregated["candidates"][0]["finishReason"], "MAX_TOKENS");
+        assert_eq!(aggregated["usageMetadata"]["thoughtsTokenCount"], 29);
+        assert!(
+            crate::formats::gemini::generate_content::response::from_raw(&aggregated).is_some()
+        );
+
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "openai:chat",
+            "mapped_model": "gemini-3.7-flash-tiered",
+        });
+        let product = maybe_build_standard_cross_format_sync_product_from_normalized_payload(
+            "openai_chat_sync_finalize",
+            200,
+            Some(&report_context),
+            None,
+            Some(&base64::engine::general_purpose::STANDARD.encode(body)),
+        )
+        .expect("signature-only reasoning terminal should convert")
+        .expect("cross-format product should exist");
+
+        assert_eq!(
+            product.client_body_json["choices"][0]["finish_reason"],
+            "length"
+        );
+        assert_eq!(
+            product.client_body_json["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            29
+        );
+    }
+
+    #[test]
     fn gemini_stream_aggregation_rejects_unknown_parts() {
         let body = "data: {\"responseId\":\"resp_gem_unknown_123\",\"modelVersion\":\"gemini-2.5-pro\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"futurePart\":{\"kept\":true}}]}}]}\n\n";
 

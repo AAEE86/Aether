@@ -1249,19 +1249,21 @@ pub(crate) fn gemini_part_to_canonical_block(
 ) -> Option<CanonicalContentBlock> {
     let part_object = part.as_object()?;
     if let Some(text) = part_object.get("text").and_then(Value::as_str) {
-        if part_object
+        let thought_signature = part_object
+            .get("thoughtSignature")
+            .or_else(|| part_object.get("thought_signature"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let is_thinking = part_object
             .get("thought")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-        {
+            || (text.trim().is_empty() && thought_signature.is_some());
+        if is_thinking {
             return Some(CanonicalContentBlock::Thinking {
                 text: text.to_string(),
-                signature: part_object
-                    .get("thoughtSignature")
-                    .or_else(|| part_object.get("thought_signature"))
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned),
+                signature: thought_signature,
                 encrypted_content: None,
                 extensions: gemini_extensions(
                     part_object,
