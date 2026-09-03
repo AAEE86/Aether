@@ -384,8 +384,7 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
                 None
             } else {
                 Some(
-                    scheduler_ordering_config_for_routing_policy(state, routing_policy)
-                        .await
+                    scheduler_ordering_config_for_routing_policy(routing_policy)
                         .sticky_key_attempts,
                 )
             };

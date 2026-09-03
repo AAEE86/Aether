@@ -65,7 +65,7 @@ async fn compatible_required_capability_prefers_matching_keys_without_hard_filte
         None,
         None,
         100,
-        None,
+        crate::scheduler::config::SchedulerOrderingConfig::default(),
     )
     .await
     .expect("selection should succeed");
@@ -121,7 +121,7 @@ async fn exclusive_required_capability_keeps_hard_filtering_only_matching_keys()
         None,
         None,
         100,
-        None,
+        crate::scheduler::config::SchedulerOrderingConfig::default(),
     )
     .await
     .expect("selection should succeed");
@@ -198,7 +198,7 @@ async fn required_capability_without_model_uses_session_scoped_affinity() {
         Some(&auth_snapshot),
         Some(&client_session_affinity),
         100,
-        None,
+        crate::scheduler::config::SchedulerOrderingConfig::default(),
     )
     .await
     .expect("selection should succeed");
@@ -276,7 +276,7 @@ async fn required_capability_reports_auth_limit_signal_when_every_model_is_block
             Some(&auth_snapshot),
             None,
             100,
-            None,
+            crate::scheduler::config::SchedulerOrderingConfig::default(),
         )
         .await
         .expect("selection should succeed");

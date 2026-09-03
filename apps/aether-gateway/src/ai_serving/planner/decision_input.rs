@@ -625,21 +625,17 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
                     GatewayRoutingSelectionError::NotFound(explicit_group.unwrap_or_default()),
                 ));
             }
-            None
+            return Err(routing_selection_error(
+                GatewayRoutingSelectionError::NoDefault,
+            ));
         }
     };
 
     let Some((group_id, group_version, group_config_json, selection_source)) = selected_group
     else {
-        input.client_session_affinity = client_session_affinity_from_api_request(
-            client_api_format,
-            &parts.headers,
-            Some(body_json),
-        );
-        input.routing_policy = None;
-        input.routing_trace_seed = None;
-        input.routing_context = None;
-        return Ok(());
+        return Err(routing_selection_error(
+            GatewayRoutingSelectionError::NoDefault,
+        ));
     };
 
     if try_attach_static_default_routing_policy_to_input(
@@ -863,6 +859,10 @@ fn routing_selection_error(error: GatewayRoutingSelectionError) -> GatewayError 
         GatewayRoutingSelectionError::Repository(message) => {
             GatewayError::Internal(format!("routing group repository lookup failed: {message}"))
         }
+        GatewayRoutingSelectionError::NoDefault => GatewayError::Client {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "no enabled routing strategy is configured for this request".to_string(),
+        },
         error => GatewayError::Client {
             status: StatusCode::FORBIDDEN,
             message: error.to_string(),
@@ -1207,6 +1207,7 @@ mod tests {
                 description: None,
                 enabled: true,
                 is_system_default: false,
+                sort_order: 0,
                 config_json: json!({}),
                 version: 1,
                 created_at: 1,

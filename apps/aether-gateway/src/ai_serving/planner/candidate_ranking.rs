@@ -6,14 +6,11 @@ use aether_ai_serving::{
 use aether_routing_core::ResolvedRoutingPolicy;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use tracing::warn;
 
 use crate::ai_serving::{GatewayAuthApiKeySnapshot, PlannerAppState};
 use crate::clock::current_unix_ms;
 use crate::handlers::shared::provider_pool::admin_provider_pool_config_from_config_value;
-use crate::scheduler::config::{
-    read_scheduler_ordering_config, SchedulerOrderingConfig, SchedulerSchedulingMode,
-};
+use crate::scheduler::config::{SchedulerOrderingConfig, SchedulerSchedulingMode};
 use aether_scheduler_core::{
     matches_affinity_target, ClientSessionAffinity, SchedulerAffinityTarget,
     SchedulerMinimalCandidateSelectionCandidate, SchedulerPriorityMode, SchedulerRankableCandidate,
@@ -133,7 +130,7 @@ pub(crate) async fn rank_eligible_local_execution_candidates(
     required_capabilities: Option<&serde_json::Value>,
     routing_policy: Option<&ResolvedRoutingPolicy>,
 ) -> Vec<EligibleLocalExecutionCandidate> {
-    let ordering_config = scheduler_ordering_config_for_routing_policy(state, routing_policy).await;
+    let ordering_config = scheduler_ordering_config_for_routing_policy(routing_policy);
     let port = GatewayLocalCandidateRankingPort {
         state,
         requested_model,
@@ -184,16 +181,24 @@ fn ai_ranking_scheduling_mode(mode: SchedulerSchedulingMode) -> AiRankingSchedul
     }
 }
 
-/// Ordering config for a request. A resolved routing policy is authoritative
-/// and is never merged with legacy system-config values; without a policy the
-/// effective default (system-default routing group, then legacy keys) applies.
-pub(crate) async fn scheduler_ordering_config_for_routing_policy(
-    state: PlannerAppState<'_>,
+/// Return the immutable scheduler snapshot carried by a resolved routing
+/// policy. A missing policy is a programming error in production request
+/// paths; unit tests may use the scheduler default for isolated ranking tests.
+pub(crate) fn scheduler_ordering_config_for_routing_policy(
     routing_policy: Option<&ResolvedRoutingPolicy>,
 ) -> SchedulerOrderingConfig {
     match routing_policy {
         Some(policy) => SchedulerOrderingConfig::from_routing_policy(policy),
-        None => read_scheduler_ordering_config_or_default(state).await,
+        None => {
+            #[cfg(test)]
+            {
+                SchedulerOrderingConfig::default()
+            }
+            #[cfg(not(test))]
+            {
+                panic!("resolved routing policy is required before candidate scheduling")
+            }
+        }
     }
 }
 
@@ -238,23 +243,6 @@ fn routing_overlaid_candidate(
     overlaid
 }
 
-async fn read_scheduler_ordering_config_or_default(
-    state: PlannerAppState<'_>,
-) -> SchedulerOrderingConfig {
-    match read_scheduler_ordering_config(state.app()).await {
-        Ok(config) => config,
-        Err(error) => {
-            warn!(
-                event_name = "planner_scheduler_ordering_config_load_failed",
-                log_type = "event",
-                error = ?error,
-                "failed to load scheduler ordering config while ranking local execution candidates"
-            );
-            SchedulerOrderingConfig::default()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -263,9 +251,15 @@ mod tests {
     use aether_ai_serving::{
         ai_ranking_context, build_ai_rankable_candidate, AiRankableCandidateParts,
     };
-    use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
+    use aether_data::repository::{
+        provider_catalog::InMemoryProviderCatalogReadRepository,
+        routing_profiles::InMemoryRoutingGroupRepository,
+    };
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
+    };
+    use aether_data_contracts::repository::routing_profiles::{
+        CreateRoutingGroupRecord, RoutingGroupWriteRepository,
     };
     use aether_scheduler_core::{
         apply_scheduler_candidate_ranking,
@@ -296,7 +290,11 @@ mod tests {
         required_capabilities: Option<&serde_json::Value>,
     ) -> Vec<SchedulerMinimalCandidateSelectionCandidate> {
         let normalized_client_api_format = client_api_format.trim().to_ascii_lowercase();
-        let ordering_config = super::read_scheduler_ordering_config_or_default(state).await;
+        let ordering_config =
+            crate::scheduler::config::read_system_default_routing_ordering_config(state.app())
+                .await
+                .expect("routing strategy should load")
+                .unwrap_or_default();
         let mut candidates = candidates;
         let mut rankables = Vec::with_capacity(candidates.len());
         let mut ordering_cache = CandidateTransportRankingFactsCache::default();
@@ -372,6 +370,7 @@ mod tests {
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
             sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
+            execution_policy: Default::default(),
             ranking_overlay: aether_routing_core::RankingOverlay::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: BTreeMap::new(),
@@ -408,17 +407,14 @@ mod tests {
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::FixedOrder,
             keep_priority_on_conversion: false,
             sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
+            execution_policy: Default::default(),
             ranking_overlay: Default::default(),
             mutation_plan: Default::default(),
             pool_policy_overrides: Default::default(),
             matched_rules: Vec::new(),
         };
 
-        let ordering = super::scheduler_ordering_config_for_routing_policy(
-            PlannerAppState::new(&state),
-            Some(&policy),
-        )
-        .await;
+        let ordering = super::scheduler_ordering_config_for_routing_policy(Some(&policy));
 
         assert_eq!(
             ordering.scheduling_mode,
@@ -446,6 +442,7 @@ mod tests {
             scheduling_mode: aether_routing_core::RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
             sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
+            execution_policy: Default::default(),
             ranking_overlay: aether_routing_core::RankingOverlay {
                 pool_priority_overrides: BTreeMap::from([("provider-1".to_string(), 4)]),
                 key_priority_overrides: BTreeMap::from([("representative-key".to_string(), 1)]),
@@ -917,7 +914,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_execution_ranking_keeps_cross_format_priority_when_global_override_is_enabled() {
+    async fn local_execution_ranking_keeps_cross_format_priority_when_strategy_override_is_enabled()
+    {
         let provider_catalog = InMemoryProviderCatalogReadRepository::seed(
             vec![
                 sample_provider_with_options("provider-same", false, 10),
@@ -932,14 +930,32 @@ mod tests {
                 sample_key_for_provider("provider-cross", "key-cross", ""),
             ],
         );
+        let routing_repository = std::sync::Arc::new(InMemoryRoutingGroupRepository::default());
+        routing_repository
+            .create_routing_group(CreateRoutingGroupRecord {
+                id: "strategy-default".to_string(),
+                name: "strategy-default".to_string(),
+                description: None,
+                enabled: true,
+                is_system_default: true,
+                sort_order: 0,
+                config_json: json!({
+                    "default_policy": {
+                        "keep_priority_on_conversion": true
+                    }
+                }),
+                version: 1,
+                created_at: 1,
+                updated_at: 1,
+                published_at: None,
+            })
+            .await
+            .expect("routing strategy should be created");
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
             "development-key",
         )
-        .with_system_config_values_for_tests(vec![(
-            "keep_priority_on_conversion".to_string(),
-            json!(true),
-        )]);
+        .with_routing_group_repository_for_tests(routing_repository);
         let state = AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(data_state);

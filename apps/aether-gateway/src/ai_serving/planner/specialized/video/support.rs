@@ -29,7 +29,6 @@ use crate::ai_serving::{
 };
 use crate::client_session_affinity::client_session_affinity_from_parts;
 use crate::clock::current_unix_secs;
-use crate::scheduler::config::SchedulerOrderingConfig;
 use crate::{AppState, GatewayError};
 
 pub(super) use crate::ai_serving::planner::candidate_materialization::LocalExecutionCandidateAttempt as LocalVideoCreateCandidateAttempt;
@@ -134,10 +133,9 @@ pub(super) async fn list_local_video_create_candidate_attempts(
             input.client_session_affinity.as_ref(),
             current_unix_secs(),
             false,
-            input
-                .routing_policy
-                .as_ref()
-                .map(SchedulerOrderingConfig::from_routing_policy),
+            crate::ai_serving::planner::candidate_ranking::scheduler_ordering_config_for_routing_policy(
+                input.routing_policy.as_ref(),
+            ),
         )
         .await
     {
@@ -195,10 +193,9 @@ pub(super) async fn build_local_video_create_candidate_attempt_source<'a>(
             input.client_session_affinity.as_ref(),
             current_unix_secs(),
             false,
-            input
-                .routing_policy
-                .as_ref()
-                .map(SchedulerOrderingConfig::from_routing_policy),
+            crate::ai_serving::planner::candidate_ranking::scheduler_ordering_config_for_routing_policy(
+                input.routing_policy.as_ref(),
+            ),
         )
         .await
     {

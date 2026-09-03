@@ -10,6 +10,8 @@ export interface RoutingDefaultPolicy {
   priority_mode: RoutingPriorityMode
   scheduling_mode: RoutingSchedulingMode
   keep_priority_on_conversion: boolean
+  enable_cf_heartbeat: boolean
+  cyber_continue_failover: boolean
   /** 首个候选的总尝试次数；后续候选始终只尝试 1 次。0 或 1 表示不重试 */
   sticky_key_attempts: number
 }
@@ -60,7 +62,6 @@ export interface RoutingSetSchedulingAction {
 }
 
 export interface RoutingGroupConfig {
-  allowed_models: string[]
   default_policy: RoutingDefaultPolicy
   model_policies: RoutingModelPolicy[]
   rules: RoutingRule[]
@@ -71,11 +72,12 @@ export const MODEL_SCHEDULING_RULE_PREFIX = 'ui_model_scheduling:'
 
 export function createEmptyRoutingGroupConfig(): RoutingGroupConfig {
   return {
-    allowed_models: [],
     default_policy: {
       priority_mode: 'provider',
       scheduling_mode: 'cache_affinity',
       keep_priority_on_conversion: false,
+      enable_cf_heartbeat: false,
+      cyber_continue_failover: false,
       sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
     },
     model_policies: [],
@@ -104,14 +106,25 @@ export function createEmptyModelPolicy(model = ''): RoutingModelPolicy {
 
 export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> | null | undefined): RoutingGroupConfig {
   const base = createEmptyRoutingGroupConfig()
+  const rawDefaultPolicy = (value?.default_policy ?? {}) as Partial<RoutingDefaultPolicy> & {
+    enable_openai_image_sync_heartbeat?: boolean
+    enable_standard_text_sync_heartbeat?: boolean
+  }
+  const {
+    enable_openai_image_sync_heartbeat: legacyImageHeartbeat,
+    enable_standard_text_sync_heartbeat: legacyTextHeartbeat,
+    ...defaultPolicyWithoutLegacyHeartbeat
+  } = rawDefaultPolicy
 
   return {
-    allowed_models: Array.isArray(value?.allowed_models) ? [...value.allowed_models] : base.allowed_models,
     default_policy: {
       ...base.default_policy,
-      ...(value?.default_policy ?? {}),
+      ...defaultPolicyWithoutLegacyHeartbeat,
+      enable_cf_heartbeat: Boolean(
+        rawDefaultPolicy.enable_cf_heartbeat || legacyImageHeartbeat || legacyTextHeartbeat,
+      ),
       sticky_key_attempts: normalizeStickyKeyAttempts(
-        value?.default_policy?.sticky_key_attempts ?? DEFAULT_STICKY_KEY_ATTEMPTS,
+        rawDefaultPolicy.sticky_key_attempts ?? DEFAULT_STICKY_KEY_ATTEMPTS,
       ),
     },
     model_policies: Array.isArray(value?.model_policies)
@@ -131,74 +144,6 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
       : base.model_policies,
     rules: Array.isArray(value?.rules) ? value.rules.map(rule => ({ ...rule })) : base.rules,
   }
-}
-
-export function parseAllowedModelsInput(value: string): string[] {
-  const seen = new Set<string>()
-  return value
-    .split(/\r\n?|\n/u)
-    .map(item => item.trim())
-    .filter(Boolean)
-    .filter((model) => {
-      if (seen.has(model)) return false
-      seen.add(model)
-      return true
-    })
-}
-
-export function formatAllowedModelsInput(models: string[]): string {
-  return models.join('\n')
-}
-
-export function updateAllowedModelsFromInput(
-  config: RoutingGroupConfig,
-  value: string,
-): RoutingGroupConfig {
-  const next = normalizeRoutingGroupConfig(config)
-  // Preserve the historical "empty selector" form until the user explicitly
-  // chooses the unrestricted scope. It is distinct from an empty allowlist in
-  // the routing core, where it matches no normal model.
-  const hasHistoricalEmptySelector = next.allowed_models.length > 0
-    && next.allowed_models.every(model => model.trim() === '')
-  if (value.trim() === '' && hasHistoricalEmptySelector) {
-    return next
-  }
-  next.allowed_models = parseAllowedModelsInput(value)
-  return next
-}
-
-export function clearAllowedModels(config: RoutingGroupConfig): RoutingGroupConfig {
-  const next = normalizeRoutingGroupConfig(config)
-  next.allowed_models = []
-  return next
-}
-
-export function routingModelScopeLabel(config: RoutingGroupConfig): string {
-  const models = normalizeRoutingGroupConfig(config).allowed_models
-  if (models.length === 0 || models.some(model => model.trim() === '*')) {
-    return '全部模型'
-  }
-  return `${models.length} 个模型`
-}
-
-export function allowedModelsMirrorPerModelPolicies(config: RoutingGroupConfig): boolean {
-  const normalized = normalizeRoutingGroupConfig(config)
-  const allowedModels = normalized.allowed_models
-    .map(model => model.trim())
-    .filter(Boolean)
-  const perModelNames = normalized.model_policies
-    .map(policy => policy.model)
-    .map(model => model.trim())
-    .filter(Boolean)
-    .filter(model => model !== DEFAULT_ROUTING_POLICY_MODEL)
-
-  if (allowedModels.length === 0 || perModelNames.length === 0) return false
-  if (allowedModels.some(model => model.includes('*'))) return false
-
-  const allowedSet = new Set(allowedModels)
-  const perModelSet = new Set(perModelNames)
-  return allowedSet.size === perModelSet.size
-    && [...allowedSet].every(model => perModelSet.has(model))
 }
 
 export function upsertModelPolicy(config: RoutingGroupConfig, policy: RoutingModelPolicy): RoutingGroupConfig {
@@ -427,6 +372,8 @@ export function getModelScheduling(
     priority_mode: action?.priority_mode ?? normalized.default_policy.priority_mode,
     scheduling_mode: action?.scheduling_mode ?? normalized.default_policy.scheduling_mode,
     keep_priority_on_conversion: normalized.default_policy.keep_priority_on_conversion,
+    enable_cf_heartbeat: normalized.default_policy.enable_cf_heartbeat,
+    cyber_continue_failover: normalized.default_policy.cyber_continue_failover,
     sticky_key_attempts: action?.sticky_key_attempts ?? normalized.default_policy.sticky_key_attempts,
   }
 }

@@ -228,6 +228,6 @@ docker image prune -f >/dev/null 2>&1 || true
 
 echo ">>> Done!"
 echo ">>> Note: empty databases auto-bootstrap on first start."
-echo ">>> Note: docker compose now defaults to auto-running pending migrations/backfills on app startup."
-echo ">>> Note: set AETHER_GATEWAY_AUTO_PREPARE_DATABASE=false if you want to keep manual rollout."
+echo ">>> Note: database schema and data preparation run automatically before app startup."
+echo ">>> Note: set AETHER_GATEWAY_DATABASE_MODE=verify-only to require a separate database prepare step."
 "${DC[@]}" ps

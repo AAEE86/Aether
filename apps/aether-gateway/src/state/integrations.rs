@@ -680,10 +680,4 @@ impl SchedulerRuntimeState for AppState {
             expected_epoch,
         )
     }
-
-    async fn read_scheduler_ordering_config(
-        &self,
-    ) -> Result<crate::scheduler::config::SchedulerOrderingConfig, GatewayError> {
-        crate::scheduler::config::read_scheduler_ordering_config(self).await
-    }
 }

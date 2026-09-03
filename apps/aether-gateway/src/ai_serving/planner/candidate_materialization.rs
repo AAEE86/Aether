@@ -9,7 +9,7 @@ use aether_ai_serving::{
 use aether_dispatch_core::{DispatchSequence, DispatchSequenceItem};
 use aether_routing_core::{
     rank_vector_for_candidate, CandidateKind, ResolvedRoutingPolicy, RoutingCandidateFacts,
-    RoutingCandidateTrace, RoutingDecisionTrace,
+    RoutingCandidateTrace, RoutingDecisionTrace, RoutingExecutionPolicy,
 };
 use aether_scheduler_core::{
     ClientSessionAffinity, SchedulerMinimalCandidateSelectionCandidate, SchedulerRankingOutcome,
@@ -78,6 +78,13 @@ type DecorateSkippedCandidateFn<'a> = Arc<
 #[async_trait]
 pub(crate) trait LocalExecutionAttemptSource<T>: Send {
     async fn next_execution_attempt(&mut self) -> Result<Option<T>, GatewayError>;
+
+    /// Returns the request-scoped execution behaviour selected by routing.
+    /// Execution wrappers use this snapshot before consuming the first
+    /// attempt, avoiding a second lookup against mutable system settings.
+    fn routing_execution_policy(&self) -> Option<RoutingExecutionPolicy> {
+        None
+    }
 
     async fn drain_execution_attempts(&mut self) -> Result<Vec<T>, GatewayError>;
 
@@ -1237,9 +1244,7 @@ async fn scheduler_cache_affinity_enabled(
     state: PlannerAppState<'_>,
     routing_policy: Option<&ResolvedRoutingPolicy>,
 ) -> bool {
-    scheduler_ordering_config_for_routing_policy(state, routing_policy)
-        .await
-        .scheduling_mode
+    scheduler_ordering_config_for_routing_policy(routing_policy).scheduling_mode
         == SchedulerSchedulingMode::CacheAffinity
 }
 

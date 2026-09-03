@@ -5077,6 +5077,7 @@ mod tests {
             scheduling_mode: RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
             sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
+            execution_policy: Default::default(),
             ranking_overlay: RankingOverlay {
                 allowed_keys: key_ids.into_iter().map(str::to_string).collect(),
                 ..RankingOverlay::default()
