@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use aether_crypto::{
-    decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY,
-};
+use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
 use aether_data::repository::proxy_nodes::InMemoryProxyNodeRepository;
 use aether_data_contracts::repository::provider_catalog::{
@@ -16,8 +14,8 @@ use http::StatusCode;
 use serde_json::json;
 
 use super::super::super::{
-    build_router_with_state, build_state_with_execution_runtime_override, sample_endpoint,
-    sample_key, sample_proxy_node, start_server,
+    build_router_with_state, build_state_with_execution_runtime_override, sample_bound_auth_config,
+    sample_bound_key, sample_endpoint, sample_key, sample_proxy_node, start_server, AppState,
 };
 use crate::constants::{
     GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
@@ -26,6 +24,28 @@ use crate::constants::{
 use crate::data::GatewayDataState;
 
 const PROVIDER_QUOTA_TEST_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn open_provider_catalog_credential_for_test(
+    key: &StoredProviderCatalogKey,
+    field: &str,
+) -> String {
+    let state = AppState::new()
+        .expect("gateway state should build")
+        .with_data_state_for_tests(
+            GatewayDataState::disabled().with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        );
+    match field {
+        "api_key" => state
+            .decrypt_provider_catalog_key_api_key(key)
+            .expect("provider catalog API key should decrypt")
+            .expect("provider catalog API key should be present"),
+        "auth_config" => state
+            .decrypt_provider_catalog_key_auth_config(key)
+            .expect("provider catalog auth config should decrypt")
+            .expect("provider catalog auth config should be present"),
+        _ => panic!("unsupported provider catalog credential field: {field}"),
+    }
+}
 
 fn run_provider_quota_test<F, Fut>(test_name: &'static str, make_future: F)
 where
@@ -486,23 +506,9 @@ async fn gateway_codex_quota_refresh_persists_after_automatic_oauth_token_refres
         .await
         .expect("key should reload");
     let persisted = reloaded.first().expect("key should remain installed");
-    let decrypted_api_key = decrypt_python_fernet_ciphertext(
-        DEVELOPMENT_ENCRYPTION_KEY,
-        persisted
-            .encrypted_api_key
-            .as_deref()
-            .expect("api key should persist"),
-    )
-    .expect("api key should decrypt");
+    let decrypted_api_key = open_provider_catalog_credential_for_test(persisted, "api_key");
     assert_eq!(decrypted_api_key, "refreshed-codex-access-token");
-    let decrypted_auth_config = decrypt_python_fernet_ciphertext(
-        DEVELOPMENT_ENCRYPTION_KEY,
-        persisted
-            .encrypted_auth_config
-            .as_deref()
-            .expect("auth config should persist"),
-    )
-    .expect("auth config should decrypt");
+    let decrypted_auth_config = open_provider_catalog_credential_for_test(persisted, "auth_config");
     let auth_config: serde_json::Value =
         serde_json::from_str(&decrypted_auth_config).expect("auth config should parse");
     assert_eq!(auth_config["refresh_token"], "rotated-codex-refresh-token");
@@ -1390,40 +1396,23 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_kiro_with_trusted_ad
         }),
     );
 
-    let encrypted_auth_config = encrypt_python_fernet_plaintext(
-        DEVELOPMENT_ENCRYPTION_KEY,
+    let mut key = sample_bound_key(
+        "key-kiro-a",
+        "provider-kiro",
+        "claude:messages",
+        "__placeholder__",
+    );
+    key.auth_type = "bearer".to_string();
+    key.encrypted_auth_config = Some(sample_bound_auth_config(
+        "provider-kiro",
+        "key-kiro-a",
         r#"{
             "access_token":"kiro-access-token",
             "api_region":"us-west-2",
             "machine_id":"123e4567-e89b-12d3-a456-426614174000",
             "kiro_version":"1.2.3"
         }"#,
-    )
-    .expect("auth config ciphertext should build");
-    let encrypted_api_key =
-        encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "__placeholder__")
-            .expect("api key ciphertext should build");
-    let key = StoredProviderCatalogKey::new(
-        "key-kiro-a".to_string(),
-        "provider-kiro".to_string(),
-        "default".to_string(),
-        "bearer".to_string(),
-        None,
-        true,
-    )
-    .expect("key should build")
-    .with_transport_fields(
-        Some(json!(["claude:messages"])),
-        encrypted_api_key,
-        Some(encrypted_auth_config),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("key transport should build");
+    ));
 
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![StoredProviderCatalogProvider::new(
@@ -1479,6 +1468,11 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_kiro_with_trusted_ad
     );
     assert_eq!(
         payload["results"][0]["quota_snapshot"]["plan_type"],
+        serde_json::Value::Null,
+        "quota snapshot token projection must reject unsafely formatted plan labels"
+    );
+    assert_eq!(
+        payload["results"][0]["metadata"]["subscription_title"],
         "KIRO PRO+"
     );
     assert_eq!(
@@ -1556,7 +1550,8 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_kiro_with_trusted_ad
             .as_ref()
             .and_then(|value| value.get("quota"))
             .and_then(|value| value.get("plan_type")),
-        Some(&json!("KIRO PRO+"))
+        None,
+        "persisted admin-safe status must omit unsafely formatted plan labels"
     );
     assert_eq!(
         reloaded[0]
@@ -1771,35 +1766,18 @@ async fn gateway_refresh_kiro_quota_reconciles_missing_fixed_endpoint_before_ref
         }),
     );
 
-    let encrypted_auth_config = encrypt_python_fernet_plaintext(
-        DEVELOPMENT_ENCRYPTION_KEY,
+    let mut key = sample_bound_key(
+        "key-kiro-reconcile",
+        "provider-kiro-reconcile",
+        "claude:messages",
+        "__placeholder__",
+    );
+    key.auth_type = "bearer".to_string();
+    key.encrypted_auth_config = Some(sample_bound_auth_config(
+        "provider-kiro-reconcile",
+        "key-kiro-reconcile",
         r#"{"access_token":"kiro-access-token","api_region":"us-west-2"}"#,
-    )
-    .expect("auth config ciphertext should build");
-    let encrypted_api_key =
-        encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "__placeholder__")
-            .expect("api key ciphertext should build");
-    let key = StoredProviderCatalogKey::new(
-        "key-kiro-reconcile".to_string(),
-        "provider-kiro-reconcile".to_string(),
-        "default".to_string(),
-        "bearer".to_string(),
-        None,
-        true,
-    )
-    .expect("key should build")
-    .with_transport_fields(
-        Some(json!(["claude:messages"])),
-        encrypted_api_key,
-        Some(encrypted_auth_config),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("key transport should build");
+    ));
 
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![StoredProviderCatalogProvider::new(
@@ -2234,7 +2212,7 @@ async fn gateway_reports_codex_quota_runtime_failures_locally_without_falling_ba
     assert!(payload["results"][0]["message"]
         .as_str()
         .expect("message should be string")
-        .contains("wham/usage 请求执行失败: execution runtime returned HTTP 500"));
+        .contains("wham/usage 请求执行失败"));
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     let reloaded = provider_catalog_repository

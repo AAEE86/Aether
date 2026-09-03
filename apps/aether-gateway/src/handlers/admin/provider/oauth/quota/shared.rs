@@ -7,11 +7,13 @@ use crate::handlers::admin::request::{
 use crate::handlers::shared::{
     sync_provider_key_oauth_status_snapshot, sync_provider_key_quota_status_snapshot,
 };
+use crate::state::ProviderTransportCredentialFence;
 use crate::GatewayError;
 use aether_admin::provider::quota as admin_provider_quota_pure;
+use aether_admin::provider::redaction::admin_provider_upstream_metadata_safe_json;
 use aether_contracts::{
     ExecutionPlan, ExecutionResult, ExecutionTimeouts, ProxySnapshot, RequestBody,
-    ResolvedTransportProfile, EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER,
+    ResolvedTransportProfile, EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER,
 };
 use aether_data_contracts::repository::provider_catalog::{
     ProviderCatalogKeyOAuthCredentialFence, ProviderCatalogKeyOAuthRuntimeStateCasUpdate,
@@ -257,6 +259,40 @@ fn merge_upstream_metadata(
 
 pub(super) fn extract_execution_error_message(result: &ExecutionResult) -> Option<String> {
     admin_provider_quota_pure::extract_execution_error_message(result)
+}
+
+pub(super) fn extract_execution_error_message_ref(result: &ExecutionResult) -> Option<&str> {
+    if let Some(body_json) = result
+        .body
+        .as_ref()
+        .and_then(|body| body.json_body.as_ref())
+        .and_then(serde_json::Value::as_object)
+    {
+        if let Some(message) = body_json
+            .get("error")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            return Some(message);
+        }
+        if let Some(message) = body_json
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            return Some(message);
+        }
+    }
+
+    result
+        .error
+        .as_ref()
+        .map(|error| error.message.trim())
+        .filter(|message| !message.is_empty())
 }
 
 fn extract_execution_error_detail(result: &ExecutionResult) -> Option<String> {
@@ -705,6 +741,12 @@ pub(crate) async fn persist_codex_account_reset_fence(
     fence_id: &str,
     idempotency_key: &str,
 ) -> Result<Option<CodexAccountResetFenceInstall>, GatewayError> {
+    if expected_encrypted_auth_config.is_some() != expected_credential.is_some() {
+        return Err(GatewayError::Internal(
+            "Codex reset credential fence must include auth_config and credential identity"
+                .to_string(),
+        ));
+    }
     let fence_id = fence_id.trim();
     let idempotency_key = idempotency_key.trim();
     if fence_unix_ms == 0 || fence_id.is_empty() || idempotency_key.is_empty() {
@@ -902,14 +944,8 @@ pub(super) fn build_provider_quota_execution_plan(
         client_api_format,
         provider_api_format,
         model_name,
-        accept_invalid_certs,
     } = spec;
-    if accept_invalid_certs {
-        headers.insert(
-            EXECUTION_REQUEST_ACCEPT_INVALID_CERTS_HEADER.to_string(),
-            "true".to_string(),
-        );
-    }
+    force_provider_quota_redirects_disabled(&mut headers);
     let body = json_body
         .map(RequestBody::from_json)
         .unwrap_or(RequestBody {
@@ -938,6 +974,16 @@ pub(super) fn build_provider_quota_execution_plan(
         transport_profile,
         timeouts,
     }
+}
+
+fn force_provider_quota_redirects_disabled(
+    headers: &mut std::collections::BTreeMap<String, String>,
+) {
+    headers.retain(|name, _| !name.eq_ignore_ascii_case(EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER));
+    headers.insert(
+        EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER.to_string(),
+        "false".to_string(),
+    );
 }
 
 fn codex_reset_refresh_is_superseded(
@@ -977,6 +1023,29 @@ pub(crate) async fn persist_provider_quota_refresh_state(
         oauth_invalid_at_unix_secs,
         oauth_invalid_reason,
         encrypted_auth_config,
+        None,
+        std::future::ready(()),
+    )
+    .await
+}
+
+pub(crate) async fn persist_credential_fenced_provider_quota_refresh_state(
+    state: &AdminAppState<'_>,
+    key_id: &str,
+    metadata_update: Option<&serde_json::Value>,
+    oauth_invalid_at_unix_secs: Option<u64>,
+    oauth_invalid_reason: Option<String>,
+    encrypted_auth_config: Option<String>,
+    expected_credential_fence: &ProviderTransportCredentialFence,
+) -> Result<bool, GatewayError> {
+    persist_provider_quota_refresh_state_after_read(
+        state,
+        key_id,
+        metadata_update,
+        oauth_invalid_at_unix_secs,
+        oauth_invalid_reason,
+        encrypted_auth_config,
+        Some(expected_credential_fence),
         std::future::ready(()),
     )
     .await
@@ -986,9 +1055,6 @@ pub(crate) async fn persist_codex_provider_quota_refresh_state(
     state: &AdminAppState<'_>,
     key_id: &str,
     metadata_update: Option<&serde_json::Value>,
-    oauth_invalid_at_unix_secs: Option<u64>,
-    oauth_invalid_reason: Option<String>,
-    encrypted_auth_config: Option<String>,
     merge_context: admin_provider_quota_pure::CodexQuotaMergeContext<'_>,
 ) -> Result<bool, GatewayError> {
     let Some(incoming_codex) = metadata_update.and_then(|value| value.get("codex")) else {
@@ -996,9 +1062,9 @@ pub(crate) async fn persist_codex_provider_quota_refresh_state(
             state,
             key_id,
             metadata_update,
-            oauth_invalid_at_unix_secs,
-            oauth_invalid_reason,
-            encrypted_auth_config,
+            None,
+            None,
+            None,
         )
         .await;
     };
@@ -1039,86 +1105,32 @@ pub(crate) async fn persist_codex_provider_quota_refresh_state(
             latest_key.upstream_metadata.as_ref(),
             &merged_update,
         ));
-        let current_encrypted_auth_config = latest_key.encrypted_auth_config.clone();
-        if let Some(encrypted_auth_config) = encrypted_auth_config.as_ref() {
-            latest_key.encrypted_auth_config = Some(encrypted_auth_config.clone());
-        }
-        if encrypted_auth_config.is_some() {
-            (
-                latest_key.oauth_invalid_at_unix_secs,
-                latest_key.oauth_invalid_reason,
-            ) = merge_codex_oauth_response_state(
-                &latest_key,
-                oauth_invalid_at_unix_secs,
-                oauth_invalid_reason.as_deref(),
-                merge_context.observed_at_unix_secs,
-            );
-        }
         latest_key.status_snapshot = sync_provider_key_quota_status_snapshot(
             latest_key.status_snapshot.as_ref(),
             "codex",
             latest_key.upstream_metadata.as_ref(),
             "refresh_api",
         );
-        if encrypted_auth_config.is_some() {
-            latest_key.status_snapshot = sync_provider_key_oauth_status_snapshot(
-                latest_key.status_snapshot.as_ref(),
-                &latest_key,
-            );
-        }
         latest_key.updated_at_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
             .map(|duration| duration.as_secs());
 
-        let persisted = if let Some(encrypted_auth_config) = encrypted_auth_config.as_ref() {
-            state
-                .app()
-                .compare_and_update_provider_catalog_key_oauth_runtime_state(
-                    &ProviderCatalogKeyOAuthRuntimeStateCasUpdate {
-                        key_id: key_id.to_string(),
-                        expected_encrypted_auth_config: current_encrypted_auth_config,
-                        expected_credential: None,
-                        expected_upstream_metadata_namespace: Some(
-                            ProviderCatalogUpstreamMetadataNamespaceExpectation {
-                                namespace: "codex".to_string(),
-                                expected_value: expected_codex,
-                            },
-                        ),
-                        encrypted_auth_config: encrypted_auth_config.clone(),
-                        encrypted_api_key_update: None,
-                        expires_at_unix_secs_update: None,
-                        oauth_invalid_at_unix_secs: latest_key.oauth_invalid_at_unix_secs,
-                        oauth_invalid_reason: latest_key.oauth_invalid_reason.clone(),
-                        upstream_metadata_patch: Some(serde_json::json!({
-                            "codex": outcome.metadata
-                        })),
-                        upstream_metadata_namespace_to_remove: None,
-                        status_snapshot_patch: provider_quota_refresh_status_patch(
-                            latest_key.status_snapshot.as_ref(),
-                        ),
-                        reset_error_count: false,
-                        updated_at_unix_secs: latest_key.updated_at_unix_secs,
-                    },
-                )
-                .await?
-        } else {
-            state
-                .app()
-                .update_provider_catalog_key_runtime_metadata(
-                    &ProviderCatalogKeyRuntimeMetadataUpdate {
-                        key_id: key_id.to_string(),
-                        namespace: "codex".to_string(),
-                        expected_upstream_metadata_value: expected_codex,
-                        upstream_metadata_value: outcome.metadata,
-                        status_snapshot_patch: provider_quota_refresh_status_patch(
-                            latest_key.status_snapshot.as_ref(),
-                        ),
-                        updated_at_unix_secs: latest_key.updated_at_unix_secs,
-                    },
-                )
-                .await?
-        };
+        let persisted = state
+            .app()
+            .update_provider_catalog_key_runtime_metadata(
+                &ProviderCatalogKeyRuntimeMetadataUpdate {
+                    key_id: key_id.to_string(),
+                    namespace: "codex".to_string(),
+                    expected_upstream_metadata_value: expected_codex,
+                    upstream_metadata_value: outcome.metadata,
+                    status_snapshot_patch: provider_quota_refresh_status_patch(
+                        latest_key.status_snapshot.as_ref(),
+                    ),
+                    updated_at_unix_secs: latest_key.updated_at_unix_secs,
+                },
+            )
+            .await?;
         if persisted {
             return Ok(true);
         }
@@ -1142,7 +1154,7 @@ pub(crate) async fn persist_fenced_provider_quota_refresh_state(
     oauth_invalid_at_unix_secs: Option<u64>,
     oauth_invalid_reason: Option<String>,
     merge_context: admin_provider_quota_pure::CodexQuotaMergeContext<'_>,
-    expected_credential: Option<&ProviderCatalogKeyOAuthCredentialFence>,
+    expected_credential: &ProviderCatalogKeyOAuthCredentialFence,
 ) -> Result<bool, GatewayError> {
     let expected_encrypted_auth_config = expected_encrypted_auth_config.trim();
     if expected_encrypted_auth_config.is_empty() {
@@ -1269,7 +1281,7 @@ pub(crate) async fn persist_fenced_provider_quota_refresh_state(
                     expected_encrypted_auth_config: Some(
                         expected_encrypted_auth_config.to_string(),
                     ),
-                    expected_credential: expected_credential.cloned(),
+                    expected_credential: Some(expected_credential.clone()),
                     expected_upstream_metadata_namespace: Some(
                         ProviderCatalogUpstreamMetadataNamespaceExpectation {
                             namespace: "codex".to_string(),
@@ -1309,11 +1321,15 @@ async fn persist_provider_quota_refresh_state_after_read<F>(
     oauth_invalid_at_unix_secs: Option<u64>,
     oauth_invalid_reason: Option<String>,
     encrypted_auth_config: Option<String>,
+    expected_credential_fence: Option<&ProviderTransportCredentialFence>,
     after_read: F,
 ) -> Result<bool, GatewayError>
 where
     F: std::future::Future<Output = ()>,
 {
+    let safe_metadata_update =
+        metadata_update.map(|value| admin_provider_upstream_metadata_safe_json(Some(value)));
+    let metadata_update = safe_metadata_update.as_ref();
     let Some(mut latest_key) = state
         .app()
         .list_provider_catalog_keys_by_ids_strong(&[key_id.to_string()])
@@ -1327,6 +1343,7 @@ where
 
     // Keep the namespace values observed before applying the refresh response;
     // each runtime metadata write uses them as its CAS expectation.
+    let observed_encrypted_auth_config = latest_key.encrypted_auth_config.clone();
     let observed_upstream_metadata = latest_key.upstream_metadata.clone();
     let mut quota_snapshot_provider_type = None::<String>;
     if let Some(metadata_update) = metadata_update {
@@ -1375,13 +1392,70 @@ where
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if let Some(expected_credential_fence) = expected_credential_fence {
+        if observed_encrypted_auth_config.as_deref()
+            != Some(expected_credential_fence.encrypted_auth_config.as_str())
+            || latest_key.encrypted_api_key
+                != expected_credential_fence.credential.encrypted_api_key
+            || latest_key.auth_type != expected_credential_fence.credential.auth_type
+            || latest_key.provider_id != expected_credential_fence.credential.provider_id
+        {
+            return Ok(false);
+        }
+        if metadata_updates.len() > 1 {
+            return Err(GatewayError::Internal(
+                "credential-fenced quota refresh may update at most one metadata namespace"
+                    .to_string(),
+            ));
+        }
+        let expected_upstream_metadata_namespace =
+            metadata_updates.first().map(|(namespace, _)| {
+                ProviderCatalogUpstreamMetadataNamespaceExpectation {
+                    namespace: namespace.clone(),
+                    expected_value: observed_upstream_metadata
+                        .as_ref()
+                        .and_then(serde_json::Value::as_object)
+                        .and_then(|metadata| metadata.get(namespace))
+                        .cloned(),
+                }
+            });
+        return state
+            .app()
+            .compare_and_update_provider_catalog_key_oauth_runtime_state(
+                &ProviderCatalogKeyOAuthRuntimeStateCasUpdate {
+                    key_id: key_id.to_string(),
+                    expected_encrypted_auth_config: Some(
+                        expected_credential_fence.encrypted_auth_config.clone(),
+                    ),
+                    expected_credential: Some(expected_credential_fence.credential.clone()),
+                    expected_upstream_metadata_namespace,
+                    encrypted_auth_config: encrypted_auth_config
+                        .clone()
+                        .unwrap_or_else(|| expected_credential_fence.encrypted_auth_config.clone()),
+                    encrypted_api_key_update: None,
+                    expires_at_unix_secs_update: None,
+                    oauth_invalid_at_unix_secs: latest_key.oauth_invalid_at_unix_secs,
+                    oauth_invalid_reason: latest_key.oauth_invalid_reason.clone(),
+                    upstream_metadata_patch: metadata_update.cloned(),
+                    upstream_metadata_namespace_to_remove: None,
+                    status_snapshot_patch: status_patch,
+                    reset_error_count: false,
+                    updated_at_unix_secs: latest_key.updated_at_unix_secs,
+                },
+            )
+            .await;
+    }
+    if encrypted_auth_config.is_some() {
+        return Err(GatewayError::Internal(
+            "provider quota credential update requires a pre-request credential fence".to_string(),
+        ));
+    }
     if metadata_updates.is_empty() {
         if !state
             .update_provider_catalog_key_oauth_runtime_state(
                 key_id,
                 latest_key.oauth_invalid_at_unix_secs,
                 latest_key.oauth_invalid_reason.as_deref(),
-                encrypted_auth_config.as_deref(),
                 latest_key.updated_at_unix_secs,
             )
             .await?
@@ -1432,7 +1506,6 @@ where
             key_id,
             latest_key.oauth_invalid_at_unix_secs,
             latest_key.oauth_invalid_reason.as_deref(),
-            encrypted_auth_config.as_deref(),
             latest_key.updated_at_unix_secs,
         )
         .await
@@ -1458,6 +1531,21 @@ pub(super) async fn execute_provider_quota_plan(
     plan: ExecutionPlan,
     quota_kind: &str,
 ) -> Result<ProviderQuotaExecutionOutcome, GatewayError> {
+    let provider_name = plan.provider_name.as_deref().unwrap_or_default();
+    if !provider_quota_url_has_allowed_origin(provider_name, &plan.url) {
+        warn!(
+            key_id = %transport.key.id,
+            endpoint_id = %transport.endpoint.id,
+            provider_name,
+            quota_kind,
+            upstream_origin = %crate::handlers::shared::security_log_url_origin(&plan.url),
+            "gateway provider quota request blocked by origin policy"
+        );
+        return Ok(ProviderQuotaExecutionOutcome::Failure(
+            "Provider quota request origin is not allowed".to_string(),
+        ));
+    }
+
     match state.execute_execution_runtime_sync_plan(None, &plan).await {
         Ok(result) => {
             if !crate::provider_transport::is_codex_agent_identity_transport(transport)
@@ -1476,17 +1564,16 @@ pub(super) async fn execute_provider_quota_plan(
                         "Agent Identity 任务重注册未返回认证信息".to_string(),
                     ));
                 }
-                Err(error) => {
+                Err(_) => {
                     warn!(
                         key_id = %transport.key.id,
                         endpoint_id = %transport.endpoint.id,
                         quota_kind = %quota_kind,
-                        error = %error,
                         "gateway Agent Identity quota task recovery failed"
                     );
-                    return Ok(ProviderQuotaExecutionOutcome::Failure(format!(
-                        "Agent Identity 任务重注册失败: {error}"
-                    )));
+                    return Ok(ProviderQuotaExecutionOutcome::Failure(
+                        "Agent Identity 任务重注册失败".to_string(),
+                    ));
                 }
             };
             let header_name = refreshed_entry.auth_header_name.trim().to_ascii_lowercase();
@@ -1509,21 +1596,20 @@ pub(super) async fn execute_provider_quota_plan(
                 .await
             {
                 Ok(result) => Ok(ProviderQuotaExecutionOutcome::Response(result)),
-                Err(error) => {
-                    let error = error.into_message();
+                Err(_) => {
                     warn!(
                         key_id = %transport.key.id,
                         endpoint_id = %transport.endpoint.id,
                         quota_kind = %quota_kind,
-                        error = %error,
                         "gateway Agent Identity quota task recovery retry failed"
                     );
-                    Ok(ProviderQuotaExecutionOutcome::Failure(error))
+                    Ok(ProviderQuotaExecutionOutcome::Failure(
+                        "Provider quota request failed".to_string(),
+                    ))
                 }
             }
         }
-        Err(err) => {
-            let error = err.into_message();
+        Err(_) => {
             let proxy_node_id = plan
                 .proxy
                 .as_ref()
@@ -1543,17 +1629,70 @@ pub(super) async fn execute_provider_quota_plan(
             warn!(
                 key_id = %transport.key.id,
                 endpoint_id = %transport.endpoint.id,
-                url = %plan.url,
+                upstream_origin = %crate::handlers::shared::security_log_url_origin(&plan.url),
                 proxy_source = ?proxy_source,
                 proxy_node_id = ?proxy_node_id,
                 proxy_url_present,
-                error = %error,
                 quota_kind = %quota_kind,
                 "gateway provider quota execution runtime request failed"
             );
-            Ok(ProviderQuotaExecutionOutcome::Failure(error))
+            Ok(ProviderQuotaExecutionOutcome::Failure(
+                "Provider quota request failed".to_string(),
+            ))
         }
     }
+}
+
+fn provider_quota_url_has_allowed_origin(provider_name: &str, value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port_or_known_default() != Some(443)
+    {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+
+    match provider_name.trim().to_ascii_lowercase().as_str() {
+        "antigravity" => matches!(
+            host,
+            "cloudcode-pa.googleapis.com"
+                | "daily-cloudcode-pa.googleapis.com"
+                | "daily-cloudcode-pa.sandbox.googleapis.com"
+        ),
+        "gemini_cli" => host == "cloudcode-pa.googleapis.com",
+        "chatgpt_web" | "codex" => host == "chatgpt.com",
+        "grok" => host == "grok.com",
+        "windsurf" => host == "server.codeium.com",
+        "kiro" => kiro_quota_host_is_allowed(host),
+        _ => false,
+    }
+}
+
+fn kiro_quota_host_is_allowed(host: &str) -> bool {
+    let Some(region) = host
+        .strip_prefix("q.")
+        .and_then(|host| host.strip_suffix(".amazonaws.com"))
+    else {
+        return false;
+    };
+    !region.is_empty()
+        && region
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && region
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && region
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 #[cfg(test)]
@@ -1561,6 +1700,7 @@ mod tests {
     use super::*;
     use crate::data::GatewayDataState;
     use crate::AppState;
+    use aether_crypto::DEVELOPMENT_ENCRYPTION_KEY;
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data_contracts::repository::provider_catalog::{
         ProviderCatalogReadRepository, ProviderCatalogWriteRepository, StoredProviderCatalogKey,
@@ -1568,6 +1708,124 @@ mod tests {
     };
     use serde_json::json;
     use std::sync::Arc;
+
+    #[test]
+    fn quota_plans_cannot_enable_redirects_through_header_overrides() {
+        let mut headers = std::collections::BTreeMap::from([
+            (
+                "X-Aether-Execution-Follow-Redirects".to_string(),
+                "true".to_string(),
+            ),
+            ("authorization".to_string(), "Bearer secret".to_string()),
+        ]);
+
+        force_provider_quota_redirects_disabled(&mut headers);
+
+        assert_eq!(
+            headers
+                .get(EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER)
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            headers
+                .keys()
+                .filter(|name| {
+                    name.eq_ignore_ascii_case(EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER)
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            headers.get("authorization").map(String::as_str),
+            Some("Bearer secret")
+        );
+    }
+
+    #[test]
+    fn quota_origin_policy_accepts_only_provider_owned_https_origins() {
+        for (provider_name, url) in [
+            (
+                "antigravity",
+                "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+            ),
+            (
+                "antigravity",
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+            ),
+            (
+                "antigravity",
+                "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
+            ),
+            (
+                "gemini_cli",
+                "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+            ),
+            (
+                "chatgpt_web",
+                "https://chatgpt.com/backend-api/conversation/init",
+            ),
+            ("codex", "https://chatgpt.com/backend-api/wham/usage"),
+            ("grok", "https://grok.com/rest/rate-limits"),
+            (
+                "windsurf",
+                "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus",
+            ),
+            (
+                "kiro",
+                "https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR",
+            ),
+        ] {
+            assert!(
+                provider_quota_url_has_allowed_origin(provider_name, url),
+                "expected {provider_name} quota URL to be allowed: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn quota_origin_policy_rejects_ssrf_and_credential_redirect_origins() {
+        for (provider_name, url) in [
+            (
+                "chatgpt_web",
+                "http://chatgpt.com/backend-api/conversation/init",
+            ),
+            ("codex", "https://chatgpt.com:444/backend-api/wham/usage"),
+            (
+                "codex",
+                "https://user:secret@chatgpt.com/backend-api/wham/usage",
+            ),
+            (
+                "codex",
+                "https://chatgpt.com.attacker.test/backend-api/wham/usage",
+            ),
+            ("grok", "https://grok.com.attacker.test/rest/rate-limits"),
+            ("windsurf", "https://server.codeium.com.attacker.test/quota"),
+            (
+                "gemini_cli",
+                "https://quota-proxy.internal/retrieveUserQuota",
+            ),
+            (
+                "antigravity",
+                "https://cloudcode-pa.googleapis.com.attacker.test/quota",
+            ),
+            ("kiro", "https://q.localhost:8443/getUsageLimits"),
+            (
+                "kiro",
+                "https://q.us-east-1.evil.amazonaws.com/getUsageLimits",
+            ),
+            (
+                "kiro",
+                "https://q.us-east-1.amazonaws.com.attacker.test/getUsageLimits",
+            ),
+            ("unknown", "https://chatgpt.com/backend-api/wham/usage"),
+        ] {
+            assert!(
+                !provider_quota_url_has_allowed_origin(provider_name, url),
+                "expected {provider_name} quota URL to be rejected: {url}"
+            );
+        }
+    }
 
     fn codex_merge_context(
         request_started_at_unix_ms: u64,
@@ -1609,18 +1867,41 @@ mod tests {
 
     fn codex_refresh_test_state(
         key_id: &str,
-        encrypted_auth_config: Option<&str>,
-    ) -> (AppState, Arc<InMemoryProviderCatalogReadRepository>) {
+        auth_config: Option<&str>,
+    ) -> (
+        AppState,
+        Arc<InMemoryProviderCatalogReadRepository>,
+        Option<ProviderTransportCredentialFence>,
+    ) {
+        let provider = StoredProviderCatalogProvider::new(
+            "provider-codex-refresh".to_string(),
+            "Codex Refresh".to_string(),
+            None,
+            "codex".to_string(),
+        )
+        .expect("provider should build");
+        let bootstrap = AppState::new()
+            .expect("bootstrap app should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let encrypted_auth_config = auth_config
+            .map(|plaintext| {
+                bootstrap.seal_provider_catalog_key_auth_config(&provider.id, key_id, plaintext)
+            })
+            .transpose()
+            .expect("auth config should seal");
         let mut key = StoredProviderCatalogKey::new(
             key_id.to_string(),
-            "provider-codex-refresh".to_string(),
+            provider.id.clone(),
             "Codex Refresh".to_string(),
             "oauth".to_string(),
             None,
             true,
         )
         .expect("key should build");
-        key.encrypted_auth_config = encrypted_auth_config.map(ToOwned::to_owned);
+        key.encrypted_auth_config = encrypted_auth_config.clone();
         key.upstream_metadata = Some(json!({
             "codex": {
                 "plan_type": "plus",
@@ -1631,8 +1912,18 @@ mod tests {
                 "updated_at": 200u64
             }
         }));
+        let credential_fence =
+            encrypted_auth_config.map(|encrypted_auth_config| ProviderTransportCredentialFence {
+                encrypted_auth_config,
+                credential: ProviderCatalogKeyOAuthCredentialFence {
+                    encrypted_api_key: key.encrypted_api_key.clone(),
+                    auth_type: key.auth_type.clone(),
+                    provider_id: key.provider_id.clone(),
+                    provider_type: provider.provider_type.clone(),
+                },
+            });
         let repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
-            vec![],
+            vec![provider],
             vec![],
             vec![key],
         ));
@@ -1641,9 +1932,10 @@ mod tests {
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
                     &repository,
-                )),
+                ))
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
             );
-        (app, repository)
+        (app, repository, credential_fence)
     }
 
     fn codex_reset_state_machine_test_state(
@@ -1651,7 +1943,7 @@ mod tests {
     ) -> (
         AppState,
         Arc<InMemoryProviderCatalogReadRepository>,
-        ProviderCatalogKeyOAuthCredentialFence,
+        ProviderTransportCredentialFence,
     ) {
         let provider = StoredProviderCatalogProvider::new(
             "provider-codex-reset-state".to_string(),
@@ -1660,6 +1952,15 @@ mod tests {
             "codex".to_string(),
         )
         .expect("provider should build");
+        let bootstrap = AppState::new()
+            .expect("bootstrap app should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let encrypted_auth_config = bootstrap
+            .seal_provider_catalog_key_auth_config(&provider.id, key_id, "auth-v1")
+            .expect("auth config should seal");
         let mut key = StoredProviderCatalogKey::new(
             key_id.to_string(),
             provider.id.clone(),
@@ -1669,15 +1970,18 @@ mod tests {
             true,
         )
         .expect("key should build");
-        key.encrypted_auth_config = Some("auth-v1".to_string());
+        key.encrypted_auth_config = Some(encrypted_auth_config.clone());
         key.upstream_metadata = Some(json!({
             "codex": {"credential_generation": "credential-v1"}
         }));
-        let credential = ProviderCatalogKeyOAuthCredentialFence {
-            encrypted_api_key: None,
-            auth_type: key.auth_type.clone(),
-            provider_id: provider.id.clone(),
-            provider_type: provider.provider_type.clone(),
+        let credential_fence = ProviderTransportCredentialFence {
+            encrypted_auth_config,
+            credential: ProviderCatalogKeyOAuthCredentialFence {
+                encrypted_api_key: None,
+                auth_type: key.auth_type.clone(),
+                provider_id: provider.id.clone(),
+                provider_type: provider.provider_type.clone(),
+            },
         };
         let repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
             vec![provider],
@@ -1689,9 +1993,10 @@ mod tests {
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
                     &repository,
-                )),
+                ))
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
             );
-        (app, repository, credential)
+        (app, repository, credential_fence)
     }
 
     #[tokio::test]
@@ -1703,8 +2008,8 @@ mod tests {
         let first = reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-a",
         )
@@ -1718,8 +2023,8 @@ mod tests {
         let same = reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-a",
         )
@@ -1733,8 +2038,8 @@ mod tests {
         let other = reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-b",
         )
@@ -1769,8 +2074,8 @@ mod tests {
         let result = reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-before-rebind"),
             "reset-from-old-account",
         )
@@ -1802,8 +2107,8 @@ mod tests {
         let reservation = match reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-noop",
         )
@@ -1818,8 +2123,8 @@ mod tests {
             complete_codex_account_reset(
                 &admin_state,
                 key_id,
-                "auth-v1",
-                &credential,
+                credential.encrypted_auth_config.as_str(),
+                &credential.credential,
                 &reservation,
                 "nothing_to_reset",
                 200_000,
@@ -1831,8 +2136,8 @@ mod tests {
         let next = reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-next",
         )
@@ -1866,8 +2171,8 @@ mod tests {
         let reservation = match reserve_codex_account_reset(
             &admin_state,
             &key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "same-id",
         )
@@ -1881,8 +2186,8 @@ mod tests {
         complete_codex_account_reset(
             &admin_state,
             &key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             &reservation,
             first_outcome,
             200_000,
@@ -1893,8 +2198,8 @@ mod tests {
         complete_codex_account_reset(
             &admin_state,
             &key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             &reservation,
             second_outcome,
             210_000,
@@ -1937,8 +2242,8 @@ mod tests {
         let first = match reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-first",
         )
@@ -1952,8 +2257,8 @@ mod tests {
         complete_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             &first,
             "nothing_to_reset",
             200_000,
@@ -1964,8 +2269,8 @@ mod tests {
         let second = match reserve_codex_account_reset(
             &admin_state,
             key_id,
-            "auth-v1",
-            &credential,
+            credential.encrypted_auth_config.as_str(),
+            &credential.credential,
             Some("credential-v1"),
             "reset-second",
         )
@@ -1982,8 +2287,8 @@ mod tests {
             complete_codex_account_reset(
                 &admin_state,
                 key_id,
-                "auth-v1",
-                &credential,
+                credential.encrypted_auth_config.as_str(),
+                &credential.credential,
                 &first,
                 "reset",
                 210_000,
@@ -2013,8 +2318,8 @@ mod tests {
             complete_codex_account_reset(
                 &admin_state,
                 key_id,
-                "auth-v1",
-                &credential,
+                credential.encrypted_auth_config.as_str(),
+                &credential.credential,
                 &second,
                 "reset",
                 220_000,
@@ -2039,7 +2344,7 @@ mod tests {
     #[tokio::test]
     async fn stale_codex_refresh_cannot_lower_realtime_usage() {
         let key_id = "key-codex-refresh-monotonic";
-        let (app, repository) = codex_refresh_test_state(key_id, None);
+        let (app, repository, _) = codex_refresh_test_state(key_id, None);
         let admin_state = AdminAppState::new(&app);
         let stale_refresh = json!({"codex": {
             "plan_type": "plus",
@@ -2053,9 +2358,6 @@ mod tests {
             &admin_state,
             key_id,
             Some(&stale_refresh),
-            None,
-            None,
-            None,
             codex_merge_context(100_000),
         )
         .await
@@ -2078,7 +2380,7 @@ mod tests {
     #[tokio::test]
     async fn codex_reset_fence_is_idempotent_and_rejects_pre_reset_response() {
         let key_id = "key-codex-reset-fence";
-        let (app, repository) = codex_refresh_test_state(key_id, None);
+        let (app, repository, _) = codex_refresh_test_state(key_id, None);
         let admin_state = AdminAppState::new(&app);
 
         let initial_fence = persist_codex_account_reset_fence(
@@ -2128,9 +2430,6 @@ mod tests {
             &admin_state,
             key_id,
             Some(&stale),
-            None,
-            None,
-            None,
             codex_merge_context(200_000),
         )
         .await
@@ -2145,9 +2444,6 @@ mod tests {
             &admin_state,
             key_id,
             Some(&baseline),
-            None,
-            None,
-            None,
             codex_reset_merge_context(260_000, "fence-a"),
         )
         .await
@@ -2168,7 +2464,7 @@ mod tests {
     #[tokio::test]
     async fn codex_reset_fence_barrier_never_moves_backward_and_remembers_processed_ids() {
         let key_id = "key-codex-reset-fence-order";
-        let (app, repository) = codex_refresh_test_state(key_id, None);
+        let (app, repository, _) = codex_refresh_test_state(key_id, None);
         let admin_state = AdminAppState::new(&app);
 
         let newer = persist_codex_account_reset_fence(
@@ -2228,7 +2524,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_codex_reset_fences_converge_on_newest_barrier() {
         let key_id = "key-codex-reset-fence-concurrent";
-        let (app, repository) = codex_refresh_test_state(key_id, None);
+        let (app, repository, _) = codex_refresh_test_state(key_id, None);
         let admin_state = AdminAppState::new(&app);
 
         let (older, newer) = tokio::join!(
@@ -2292,7 +2588,7 @@ mod tests {
     #[tokio::test]
     async fn superseded_codex_reset_refresh_cannot_confirm_newer_fence() {
         let key_id = "key-codex-reset-fence-stale-refresh";
-        let (app, repository) = codex_refresh_test_state(key_id, None);
+        let (app, repository, _) = codex_refresh_test_state(key_id, None);
         let admin_state = AdminAppState::new(&app);
 
         for (fence_unix_ms, fence_id, redeem_id) in [
@@ -2323,9 +2619,6 @@ mod tests {
             &admin_state,
             key_id,
             Some(&stale_baseline),
-            None,
-            None,
-            None,
             admin_provider_quota_pure::CodexQuotaMergeContext {
                 observed_at_unix_secs: 310,
                 request_started_at_unix_ms: Some(310_000),
@@ -2355,7 +2648,7 @@ mod tests {
     #[tokio::test]
     async fn replaying_historical_codex_reset_does_not_reopen_pending() {
         let key_id = "key-codex-reset-fence-replay";
-        let (app, repository) = codex_refresh_test_state(key_id, None);
+        let (app, repository, _) = codex_refresh_test_state(key_id, None);
         let admin_state = AdminAppState::new(&app);
 
         for (fence_unix_ms, fence_id, redeem_id, request_started_at_unix_ms, usage) in [
@@ -2384,9 +2677,6 @@ mod tests {
                 &admin_state,
                 key_id,
                 Some(&baseline),
-                None,
-                None,
-                None,
                 admin_provider_quota_pure::CodexQuotaMergeContext {
                     observed_at_unix_secs: request_started_at_unix_ms / 1_000,
                     request_started_at_unix_ms: Some(request_started_at_unix_ms),
@@ -2435,7 +2725,8 @@ mod tests {
     #[tokio::test]
     async fn fenced_stale_codex_refresh_keeps_usage_and_oauth_state() {
         let key_id = "key-codex-fenced-refresh-monotonic";
-        let (app, repository) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let (app, repository, credential_fence) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let credential_fence = credential_fence.expect("credential fence should exist");
         let admin_state = AdminAppState::new(&app);
         let stale_refresh = json!({"codex": {
             "primary_used_percent": 50.0,
@@ -2446,12 +2737,12 @@ mod tests {
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&stale_refresh),
             Some(300),
             Some("refresh-state".to_string()),
             codex_merge_context(100_000),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("fenced refresh persistence should complete"));
@@ -2473,7 +2764,8 @@ mod tests {
     #[tokio::test]
     async fn fenced_older_refresh_cannot_overwrite_newer_oauth_state() {
         let key_id = "key-codex-fenced-oauth-watermark";
-        let (app, repository) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let (app, repository, credential_fence) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let credential_fence = credential_fence.expect("credential fence should exist");
         let admin_state = AdminAppState::new(&app);
         let quota = |used_percent| {
             json!({"codex": {
@@ -2486,24 +2778,24 @@ mod tests {
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota(70.0)),
             None,
             None,
             codex_merge_context(300_000),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("newer refresh should persist"));
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota(65.0)),
             Some(250),
             Some("stale-invalid".to_string()),
             codex_merge_context(250_000),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("older refresh should merge without replacing OAuth state"));
@@ -2526,7 +2818,8 @@ mod tests {
     #[tokio::test]
     async fn fenced_same_millisecond_refresh_uses_request_id_for_oauth_order() {
         let key_id = "key-codex-fenced-oauth-id-watermark";
-        let (app, repository) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let (app, repository, credential_fence) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let credential_fence = credential_fence.expect("credential fence should exist");
         let admin_state = AdminAppState::new(&app);
         let quota = json!({"codex": {
             "primary_used_percent": 70.0,
@@ -2537,24 +2830,24 @@ mod tests {
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             None,
             None,
             codex_merge_context_with_id(300_000, Some("request-b")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("newer same-millisecond refresh should persist"));
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             Some(300),
             Some("stale-invalid".to_string()),
             codex_merge_context_with_id(300_000, Some("request-a")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("older same-millisecond refresh should merge without replacing OAuth state"));
@@ -2581,7 +2874,8 @@ mod tests {
     #[tokio::test]
     async fn fenced_same_millisecond_newer_request_id_can_replace_oauth_state() {
         let key_id = "key-codex-fenced-oauth-id-watermark-newer-invalid";
-        let (app, repository) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let (app, repository, credential_fence) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let credential_fence = credential_fence.expect("credential fence should exist");
         let admin_state = AdminAppState::new(&app);
         let quota = json!({"codex": {
             "primary_used_percent": 70.0,
@@ -2592,24 +2886,24 @@ mod tests {
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             None,
             None,
             codex_merge_context_with_id(300_000, Some("request-a")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("older same-millisecond refresh should persist"));
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             Some(300),
             Some("newer-invalid".to_string()),
             codex_merge_context_with_id(300_000, Some("request-b")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("newer same-millisecond refresh should replace OAuth state"));
@@ -2639,7 +2933,8 @@ mod tests {
     #[tokio::test]
     async fn fenced_older_success_cannot_clear_newer_oauth_invalid_state() {
         let key_id = "key-codex-newer-invalid-older-success";
-        let (app, repository) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let (app, repository, credential_fence) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let credential_fence = credential_fence.expect("credential fence should exist");
         let admin_state = AdminAppState::new(&app);
         let quota = json!({"codex": {
             "primary_used_percent": 70.0,
@@ -2650,24 +2945,24 @@ mod tests {
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             Some(300),
             Some("newer-invalid".to_string()),
             codex_merge_context_with_id(300_000, Some("request-newer")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("newer invalid response should persist"));
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             None,
             None,
             codex_merge_context_with_id(250_000, Some("request-older")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("older success should be harmlessly acknowledged"));
@@ -2697,7 +2992,8 @@ mod tests {
     #[tokio::test]
     async fn fenced_same_millisecond_older_success_cannot_clear_newer_invalid_state() {
         let key_id = "key-codex-same-ms-newer-invalid-older-success";
-        let (app, repository) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let (app, repository, credential_fence) = codex_refresh_test_state(key_id, Some("auth-v1"));
+        let credential_fence = credential_fence.expect("credential fence should exist");
         let admin_state = AdminAppState::new(&app);
         let quota = json!({"codex": {
             "primary_used_percent": 70.0,
@@ -2708,24 +3004,24 @@ mod tests {
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             Some(300),
             Some("newer-invalid".to_string()),
             codex_merge_context_with_id(300_000, Some("request-b")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("newer same-millisecond invalid response should persist"));
         assert!(persist_fenced_provider_quota_refresh_state(
             &admin_state,
             key_id,
-            "auth-v1",
+            credential_fence.encrypted_auth_config.as_str(),
             Some(&quota),
             None,
             None,
             codex_merge_context_with_id(300_000, Some("request-a")),
-            None,
+            &credential_fence.credential,
         )
         .await
         .expect("older same-millisecond success should be acknowledged"));
@@ -2750,23 +3046,43 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_cas_conflict_does_not_persist_stale_oauth_runtime_state() {
+        let provider_id = "provider-codex-cas";
+        let key_id = "key-codex-cas";
+        let bootstrap = AppState::new()
+            .expect("bootstrap app should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let old_auth_config = bootstrap
+            .seal_provider_catalog_key_auth_config(provider_id, key_id, "old-auth-config")
+            .expect("old auth config should seal");
+        let new_auth_config = bootstrap
+            .seal_provider_catalog_key_auth_config(provider_id, key_id, "new-auth-config")
+            .expect("new auth config should seal");
         let mut key = StoredProviderCatalogKey::new(
-            "key-codex-cas".to_string(),
-            "provider-codex-cas".to_string(),
+            key_id.to_string(),
+            provider_id.to_string(),
             "Codex CAS".to_string(),
             "oauth".to_string(),
             None,
             true,
         )
         .expect("key should build");
-        key.encrypted_auth_config = Some("old-auth-config".to_string());
+        key.encrypted_auth_config = Some(old_auth_config.clone());
         key.oauth_invalid_at_unix_secs = Some(100);
         key.oauth_invalid_reason = Some("old-invalid-reason".to_string());
         key.upstream_metadata = Some(json!({"codex":{"remaining":5}}));
         key.status_snapshot = Some(json!({"oauth":{"invalid":true}}));
 
         let repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
-            vec![],
+            vec![StoredProviderCatalogProvider::new(
+                provider_id.to_string(),
+                "Codex CAS".to_string(),
+                None,
+                "codex".to_string(),
+            )
+            .expect("provider should build")],
             vec![],
             vec![key],
         ));
@@ -2775,19 +3091,30 @@ mod tests {
             .with_data_state_for_tests(
                 GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
                     &repository,
-                )),
+                ))
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
             );
         let admin_state = AdminAppState::new(&app);
+        let credential_fence = ProviderTransportCredentialFence {
+            encrypted_auth_config: old_auth_config.clone(),
+            credential: ProviderCatalogKeyOAuthCredentialFence {
+                encrypted_api_key: None,
+                auth_type: "oauth".to_string(),
+                provider_id: provider_id.to_string(),
+                provider_type: "codex".to_string(),
+            },
+        };
         let concurrent_repository = Arc::clone(&repository);
         let metadata_update = json!({"codex":{"remaining":3}});
 
         let persisted = persist_provider_quota_refresh_state_after_read(
             &admin_state,
-            "key-codex-cas",
+            key_id,
             Some(&metadata_update),
             Some(200),
             Some("new-invalid-reason".to_string()),
-            Some("new-auth-config".to_string()),
+            Some(new_auth_config),
+            Some(&credential_fence),
             async move {
                 assert!(concurrent_repository
                     .update_key_runtime_metadata(&ProviderCatalogKeyRuntimeMetadataUpdate {
@@ -2814,7 +3141,7 @@ mod tests {
             .expect("key should remain");
         assert_eq!(
             stored.encrypted_auth_config.as_deref(),
-            Some("old-auth-config")
+            Some(old_auth_config.as_str())
         );
         assert_eq!(stored.oauth_invalid_at_unix_secs, Some(100));
         assert_eq!(

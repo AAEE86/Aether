@@ -44,7 +44,10 @@ pub(crate) fn spawn_model_fetch_worker(state: AppState) -> Option<tokio::task::J
                     tokio::time::sleep(Duration::from_secs(startup_delay)).await;
                 }
                 if let Err(err) = run_model_fetch_cycle(&state, "startup").await {
-                    warn!(error = ?err, "gateway model fetch startup failed");
+                    warn!(
+                        error = %safe_model_fetch_error(&err.clone().into_message()),
+                        "gateway model fetch startup failed"
+                    );
                 }
             } else {
                 info!("gateway model fetch startup disabled");
@@ -58,7 +61,10 @@ pub(crate) fn spawn_model_fetch_worker(state: AppState) -> Option<tokio::task::J
             loop {
                 interval.tick().await;
                 if let Err(err) = run_model_fetch_cycle(&state, "tick").await {
-                    warn!(error = ?err, "gateway model fetch tick failed");
+                    warn!(
+                        error = %safe_model_fetch_error(&err.clone().into_message()),
+                        "gateway model fetch tick failed"
+                    );
                 }
             }
         },
@@ -336,11 +342,13 @@ async fn fetch_and_persist_key_models(
     {
         Ok(result) => result,
         Err(err) => {
-            persist_key_fetch_failure(state, &target.key, now_unix_secs, err.clone()).await?;
+            let safe_error = safe_model_fetch_error(&err);
+            persist_key_fetch_failure(state, &target.key, now_unix_secs, safe_error.clone())
+                .await?;
             warn!(
                 provider_id = %target.provider.id,
                 key_id = %target.key.id,
-                message = %err,
+                error = %safe_error,
                 "gateway model fetch failed"
             );
             return Ok(KeyFetchDisposition::Failed);
@@ -353,11 +361,12 @@ async fn fetch_and_persist_key_models(
         } else {
             result.errors.join("; ")
         };
-        persist_key_fetch_failure(state, &target.key, now_unix_secs, error.clone()).await?;
+        let safe_error = safe_model_fetch_error(&error);
+        persist_key_fetch_failure(state, &target.key, now_unix_secs, safe_error.clone()).await?;
         warn!(
             provider_id = %target.provider.id,
             key_id = %target.key.id,
-            message = %error,
+            error = %safe_error,
             "gateway model fetch failed"
         );
         return Ok(KeyFetchDisposition::Failed);
@@ -392,16 +401,109 @@ async fn persist_key_fetch_failure(
     now_unix_secs: u64,
     error: String,
 ) -> Result<(), GatewayError> {
+    let safe_error = safe_model_fetch_error(&error);
     state
         .update_provider_catalog_key_model_fetch_state(
             &key.id,
             key.allowed_models.as_ref(),
             Some(now_unix_secs),
-            Some(&error),
+            Some(&safe_error),
             Some(now_unix_secs),
         )
         .await?;
     Ok(())
+}
+
+pub(crate) fn safe_model_fetch_error(error: &str) -> String {
+    let trimmed = error.trim();
+    match trimmed {
+        "No supported endpoint for Rust models fetch"
+        | "Provider transport snapshot unavailable" => return trimmed.to_string(),
+        _ => {}
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(status) = model_fetch_error_http_status(&lower) {
+        return match status {
+            401 => "Upstream models fetch authentication failed (status 401)".to_string(),
+            403 => "Upstream models fetch authorization failed (status 403)".to_string(),
+            404 => "Upstream models fetch endpoint not found (status 404)".to_string(),
+            408 => "Upstream models fetch timed out (status 408)".to_string(),
+            429 => "Upstream models fetch rate limited (status 429)".to_string(),
+            _ => format!("Upstream models fetch failed (status {status})"),
+        };
+    }
+    if lower.contains("unauthorized")
+        || lower.contains("authentication failed")
+        || lower.contains("invalid api key")
+        || lower.contains("invalid token")
+    {
+        return "Upstream models fetch authentication failed".to_string();
+    }
+    if lower.contains("forbidden") || lower.contains("authorization failed") {
+        return "Upstream models fetch authorization failed".to_string();
+    }
+    if lower.contains("rate limit") || lower.contains("too many requests") {
+        return "Upstream models fetch rate limited".to_string();
+    }
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return "Upstream models fetch timed out".to_string();
+    }
+    if lower.contains("missing api key")
+        || lower.contains("missing access token")
+        || (lower.contains("requires") && lower.contains("auth"))
+    {
+        return "Provider credentials unavailable for models fetch".to_string();
+    }
+    if lower.contains("private_key")
+        || lower.contains("auth_config")
+        || lower.contains("configuration")
+    {
+        return "Provider models fetch configuration is invalid".to_string();
+    }
+    if lower.contains("response body")
+        || lower.contains("json")
+        || lower.contains("malformed")
+        || lower.contains("parse")
+        || lower.contains("no models")
+        || lower.contains("invalid response")
+    {
+        return "Upstream models fetch response was invalid".to_string();
+    }
+    if lower.contains("connect")
+        || lower.contains("connection")
+        || lower.contains("network")
+        || lower.contains("dns")
+        || lower.contains("tls")
+        || lower.contains("certificate")
+    {
+        return "Upstream models fetch connection failed".to_string();
+    }
+    "Upstream models fetch failed".to_string()
+}
+
+fn model_fetch_error_http_status(error: &str) -> Option<u16> {
+    [
+        "http ",
+        "status ",
+        "status=",
+        "status:",
+        "status_code=",
+        "status_code:",
+    ]
+    .into_iter()
+    .find_map(|marker| {
+        let suffix = error.split_once(marker)?.1.trim_start();
+        let digits = suffix
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .take(3)
+            .collect::<Vec<_>>();
+        (digits.len() == 3)
+            .then(|| std::str::from_utf8(&digits).ok()?.parse::<u16>().ok())
+            .flatten()
+            .filter(|status| (400..600).contains(status))
+    })
 }
 
 async fn persist_key_fetch_success(
@@ -450,7 +552,9 @@ fn now_unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{perform_model_fetch_once_with_state, state::ModelFetchRuntimeState};
+    use super::{
+        perform_model_fetch_once_with_state, safe_model_fetch_error, state::ModelFetchRuntimeState,
+    };
     use aether_contracts::{ExecutionPlan, ExecutionResult, ProxySnapshot};
     use aether_data_contracts::repository::global_models::{
         AdminGlobalModelListQuery, AdminProviderModelListQuery, StoredAdminGlobalModelPage,
@@ -880,10 +984,14 @@ mod tests {
     }
 
     fn execution_result(body: Value) -> ExecutionResult {
+        execution_result_with_status(200, body)
+    }
+
+    fn execution_result_with_status(status_code: u16, body: Value) -> ExecutionResult {
         ExecutionResult {
             request_id: "req-1".to_string(),
             candidate_id: None,
-            status_code: 200,
+            status_code,
             headers: Default::default(),
             response_observation: None,
             body: Some(aether_contracts::ResponseBody {
@@ -892,6 +1000,47 @@ mod tests {
             }),
             telemetry: None,
             error: None,
+        }
+    }
+
+    #[test]
+    fn model_fetch_error_projection_discards_transport_credentials_and_urls() {
+        let error = "connection failed for https://user:password@example.test/v1/models?key=\
+                     query-secret: Authorization: Bearer transport-secret-token-value";
+
+        let safe_error = safe_model_fetch_error(error);
+
+        assert_eq!(safe_error, "Upstream models fetch connection failed");
+        for secret in [
+            "user",
+            "password",
+            "query-secret",
+            "transport-secret-token-value",
+            "Bearer",
+            "example.test",
+        ] {
+            assert!(!safe_error.contains(secret));
+        }
+    }
+
+    #[test]
+    fn model_fetch_error_projection_discards_unclassified_details() {
+        let error =
+            "opaque failure at https://user:password@example.test/private?key=query-secret; \
+                     Authorization: Bearer transport-secret-token-value";
+
+        let safe_error = safe_model_fetch_error(error);
+
+        assert_eq!(safe_error, "Upstream models fetch failed");
+        for secret in [
+            "user",
+            "password",
+            "query-secret",
+            "transport-secret-token-value",
+            "Bearer",
+            "example.test",
+        ] {
+            assert!(!safe_error.contains(secret));
         }
     }
 
@@ -1232,5 +1381,78 @@ mod tests {
             updated.last_models_fetch_error.as_deref(),
             Some("Provider transport snapshot unavailable")
         );
+    }
+
+    #[tokio::test]
+    async fn model_fetch_failure_does_not_persist_upstream_error_body_credentials() {
+        const UPSTREAM_SECRET: &str = "upstream-secret-token-value";
+        let provider = sample_provider("provider-openai", "openai");
+        let endpoint = sample_endpoint(
+            "endpoint-openai-responses",
+            "provider-openai",
+            "openai:responses",
+        );
+        let key = sample_key(
+            "key-openai-responses",
+            "provider-openai",
+            "api_key",
+            &["openai:responses"],
+        );
+        let transport = sample_transport(
+            "openai",
+            "provider-openai",
+            "endpoint-openai-responses",
+            "key-openai-responses",
+            "openai:responses",
+            "api_key",
+            None,
+        );
+        let state = TestState::new(
+            vec![provider],
+            vec![endpoint],
+            vec![key],
+            HashMap::from([(
+                (
+                    "provider-openai".to_string(),
+                    "endpoint-openai-responses".to_string(),
+                    "key-openai-responses".to_string(),
+                ),
+                transport,
+            )]),
+            vec![execution_result_with_status(
+                401,
+                json!({
+                    "error": {
+                        "message": format!(
+                            "Authorization: Bearer {UPSTREAM_SECRET}; api_key=query-secret; \
+                             config=/srv/provider/private.json"
+                        )
+                    }
+                }),
+            )],
+        );
+
+        let summary = perform_model_fetch_once_with_state(&state)
+            .await
+            .expect("fetch should finish with a projected failure");
+
+        assert_eq!(summary.failed, 1);
+        let persisted = state
+            .key("key-openai-responses")
+            .last_models_fetch_error
+            .expect("safe failure should be persisted");
+        assert_eq!(
+            persisted,
+            "Upstream models fetch authentication failed (status 401)"
+        );
+        for secret in [
+            UPSTREAM_SECRET,
+            "query-secret",
+            "/srv/provider/private.json",
+            "Bearer",
+            "api_key",
+        ] {
+            assert!(!persisted.contains(secret));
+        }
     }
 }

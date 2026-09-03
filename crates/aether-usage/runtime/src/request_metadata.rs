@@ -134,6 +134,7 @@ pub(crate) fn retain_first_byte_request_metadata(value: Option<Value>) -> Option
                 | "upstream_is_stream"
                 | "client_session_affinity"
                 | "api_key_is_standalone"
+                | "plan_usage_reservation_token"
                 | "websocket_mode"
                 | "websocket_transport"
                 | "usage_available"
@@ -357,6 +358,8 @@ fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<St
     copy_bool(source, target, UPSTREAM_IS_STREAM_KEY);
     copy_non_null_value(source, target, "client_session_affinity");
     copy_bool(source, target, "api_key_is_standalone");
+    copy_non_empty_string(source, target, "plan_usage_reservation_token");
+    copy_bool(source, target, "plan_usage_reservation_deferred");
     copy_bool(source, target, WEBSOCKET_MODE_METADATA_KEY);
     copy_non_empty_string(source, target, WEBSOCKET_TRANSPORT_METADATA_KEY);
     copy_bool(source, target, USAGE_AVAILABLE_METADATA_KEY);
@@ -417,6 +420,8 @@ fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map
     remove_bool(&mut source, target, UPSTREAM_IS_STREAM_KEY);
     remove_non_null_value(&mut source, target, "client_session_affinity");
     remove_bool(&mut source, target, "api_key_is_standalone");
+    remove_non_empty_string(&mut source, target, "plan_usage_reservation_token");
+    remove_bool(&mut source, target, "plan_usage_reservation_deferred");
     remove_bool(&mut source, target, WEBSOCKET_MODE_METADATA_KEY);
     remove_non_empty_string(&mut source, target, WEBSOCKET_TRANSPORT_METADATA_KEY);
     remove_bool(&mut source, target, USAGE_AVAILABLE_METADATA_KEY);
@@ -739,8 +744,7 @@ mod tests {
         build_usage_request_metadata_seed, merge_usage_request_metadata,
         merge_usage_request_metadata_owned, refresh_provider_response_body_metadata,
         retain_first_byte_request_metadata, sanitize_usage_request_metadata,
-        sanitize_usage_request_metadata_ref, MAX_USAGE_REQUEST_METADATA_BYTES,
-        MAX_USAGE_REQUEST_METADATA_DEPTH, MAX_USAGE_REQUEST_METADATA_NODES,
+        sanitize_usage_request_metadata_ref,
     };
 
     fn sample_plan() -> ExecutionPlan {
@@ -767,38 +771,8 @@ mod tests {
         }
     }
 
-    fn sample_stage_timings_metadata() -> Value {
-        json!({
-            "stream_candidate_slot": 1,
-            "stream_provider_in_flight": 2,
-            "stream_upstream_headers": 180,
-            "stream_first_data": 8210
-        })
-    }
-
-    fn sample_db_timings_metadata() -> Value {
-        json!({
-            "query_count": 2,
-            "query_total": 950,
-            "query_max": 650,
-            "operations": {
-                "request_candidate_upsert": {"count": 1, "sum": 650, "max": 650},
-                "usage_upsert": {"count": 1, "sum": 300, "max": 300}
-            },
-            "pool": {
-                "max_checked_out": 20,
-                "max_pool_size": 20,
-                "min_idle": 0,
-                "max_connections": 20,
-                "max_usage_rate": 100.0
-            }
-        })
-    }
-
     #[test]
     fn sanitizes_request_metadata_to_allowlist() {
-        let stage_timings_ms = sample_stage_timings_metadata();
-        let db_timings_ms = sample_db_timings_metadata();
         let metadata = sanitize_usage_request_metadata(Some(json!({
             "request_id": "req-1",
             "provider_id": "provider-1",
@@ -844,8 +818,8 @@ mod tests {
             "cache_creation_price_per_1m": 3.75,
             "cache_read_price_per_1m": 0.3,
             "price_per_request": 0.02,
-            "stage_timings_ms": stage_timings_ms.clone(),
-            "db_timings_ms": db_timings_ms.clone(),
+            "stage_timings_ms": {"planning": 12},
+            "db_timings_ms": {"query": "SELECT credential"},
             "original_headers": {"authorization": "Bearer secret"},
             "original_request_body": {"messages": []},
             "provider_request_headers": {"authorization": "Bearer secret"},
@@ -858,7 +832,7 @@ mod tests {
             json!({
                 "trace_id": "trace-1",
                 "client_ip": "203.0.113.8",
-                "user_agent": "Claude-Code/1.0",
+                "client_family": "claude_code",
                 "client_requested_stream": false,
                 "upstream_is_stream": true,
                 "api_key_is_standalone": true,
@@ -884,9 +858,7 @@ mod tests {
                 "routing_candidate_skip_reason": "provider_request_body_build_failed",
                 "routing_failure_diagnostic": {
                     "kind": "request_body_build",
-                    "path": "$.reasoning.summary",
-                    "message": "invalid reasoning summary",
-                    "safe_to_show": true
+                    "path": "$.reasoning.summary"
                 },
                 "rate_multiplier": 1.25,
                 "is_free_tier": false,
@@ -894,9 +866,7 @@ mod tests {
                 "output_price_per_1m": 15.0,
                 "cache_creation_price_per_1m": 3.75,
                 "cache_read_price_per_1m": 0.3,
-                "price_per_request": 0.02,
-                "stage_timings_ms": stage_timings_ms,
-                "db_timings_ms": db_timings_ms
+                "price_per_request": 0.02
             })
         );
     }
@@ -922,8 +892,7 @@ mod tests {
                 "client_ip": "203.0.113.8",
                 "request_path": "/v1/chat/completions",
                 "request_path_and_query": "/v1/chat/completions",
-                "upstream_is_stream": true,
-                "proxy": {"mode": "manual", "node_id": "proxy-1"}
+                "upstream_is_stream": true
             })
         );
     }
@@ -947,6 +916,20 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_plan_usage_reservation_deferred_as_a_boolean() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "plan_usage_reservation_deferred": true,
+        })))
+        .expect("deferred marker should remain");
+        assert_eq!(metadata, json!({"plan_usage_reservation_deferred": true}));
+
+        assert!(sanitize_usage_request_metadata(Some(json!({
+            "plan_usage_reservation_deferred": "true",
+        })))
+        .is_none());
+    }
+
+    #[test]
     fn sanitizes_request_path_query_metadata() {
         let metadata = sanitize_usage_request_metadata(Some(json!({
             "request_path": "/v1beta/models/gemini-2.5-pro:streamGenerateContent?key=secret",
@@ -966,35 +949,19 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_large_allowed_metadata_values_to_bounded_representations() {
-        let metadata = sanitize_usage_request_metadata(Some(json!({
+    fn rejects_oversized_tokens_and_unknown_nested_objects() {
+        assert!(sanitize_usage_request_metadata(Some(json!({
             "trace_id": "t".repeat(2_048),
             "billing_snapshot": {
                 "payload": "x".repeat(32 * 1024)
             }
         })))
-        .expect("metadata should remain");
-
-        assert!(metadata
-            .get("trace_id")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.ends_with("...[truncated]")));
-        assert_eq!(
-            metadata.get("billing_snapshot"),
-            Some(&json!({
-                "truncated": true,
-                "reason": "usage_request_metadata_limits_exceeded",
-                "max_depth": MAX_USAGE_REQUEST_METADATA_DEPTH,
-                "max_nodes": MAX_USAGE_REQUEST_METADATA_NODES,
-                "max_bytes": MAX_USAGE_REQUEST_METADATA_BYTES,
-                "value_kind": "object",
-            }))
-        );
+        .is_none());
     }
 
     #[test]
-    fn sanitizes_request_metadata_preserves_tls_fingerprint() {
-        let metadata = sanitize_usage_request_metadata(Some(json!({
+    fn sanitizes_request_metadata_drops_tls_fingerprint() {
+        assert!(sanitize_usage_request_metadata(Some(json!({
             "tls_fingerprint": {
                 "incoming": {
                     "source": "forwarded_header",
@@ -1011,25 +978,7 @@ mod tests {
                 "ja3": "spoofed"
             }
         })))
-        .expect("metadata should remain");
-
-        assert_eq!(
-            metadata,
-            json!({
-                "tls_fingerprint": {
-                    "incoming": {
-                        "source": "forwarded_header",
-                        "ja3": "incoming-ja3",
-                        "ja4": "incoming-ja4"
-                    },
-                    "outgoing": {
-                        "source": "aether_transport_config",
-                        "backend": "reqwest_rustls",
-                        "observed": false
-                    }
-                }
-            })
-        );
+        .is_none());
     }
 
     #[test]
@@ -1052,6 +1001,7 @@ mod tests {
                     "global_model_id": "global-model-1",
                     "global_model_name": "gpt-5",
                     "client_ip": "203.0.113.8",
+                    "client_family": "claude_code",
                     "user_agent": "Claude-Code/1.0",
                     "billing_snapshot": {"status": "complete"},
                     "stage_timings_ms": {
@@ -1088,21 +1038,9 @@ mod tests {
                 "global_model_id": "global-model-1",
                 "global_model_name": "gpt-5",
                 "client_ip": "203.0.113.8",
-                "user_agent": "Claude-Code/1.0",
+                "client_family": "claude_code",
                 "billing_snapshot": {"status": "complete"},
-                "stage_timings_ms": {
-                    "stream_candidate_slot": 0,
-                    "stream_upstream_headers": 180,
-                    "stream_first_data": 8210
-                },
-                "db_timings_ms": {
-                    "query_count": 1,
-                    "query_total": 42,
-                    "query_max": 42,
-                    "operations": {
-                        "auth_api_key_snapshot": {"count": 1, "sum": 42, "max": 42}
-                    }
-                }
+                "billing_snapshot_status": "complete"
             })
         );
     }

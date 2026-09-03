@@ -20,8 +20,8 @@ use http::{HeaderMap, HeaderValue, StatusCode};
 use serde_json::json;
 
 use super::super::{
-    build_router_with_state, issue_test_admin_access_token, sample_endpoint, sample_key,
-    sample_provider, start_server, AppState,
+    build_router_with_state, issue_test_admin_access_token, sample_bound_key, sample_endpoint,
+    sample_key, sample_provider, start_server, AppState,
 };
 use crate::admin_api::{
     maybe_build_local_admin_usage_response, AdminAppState, AdminRequestContext,
@@ -986,7 +986,8 @@ async fn gateway_handles_admin_usage_active_locally_with_trusted_admin_principal
             DAY_1_UNIX_SECS,
         ),
     ]));
-    let mut provider_key = sample_key("provider-key-1", "provider-1", "openai:chat", "sk-upstream");
+    let mut provider_key =
+        sample_bound_key("provider-key-1", "provider-1", "openai:chat", "sk-upstream");
     provider_key.name = "upstream-primary".to_string();
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider("provider-1", "OpenAI", 10)],
@@ -1283,7 +1284,8 @@ async fn gateway_handles_admin_usage_records_locally_with_trusted_admin_principa
             DAY_2_UNIX_SECS,
         ),
     ]));
-    let mut provider_key = sample_key("provider-key-1", "provider-1", "openai:chat", "sk-upstream");
+    let mut provider_key =
+        sample_bound_key("provider-key-1", "provider-1", "openai:chat", "sk-upstream");
     provider_key.name = "upstream-primary".to_string();
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider("provider-1", "OpenAI", 10)],
@@ -3460,6 +3462,7 @@ async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_with_legac
                 allowed_models_mode: "unrestricted".to_string(),
                 is_active: true,
                 is_deleted: false,
+                security_version: 0,
                 created_at: None,
                 last_login_at: None,
             }]),

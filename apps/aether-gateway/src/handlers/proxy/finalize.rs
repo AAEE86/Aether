@@ -58,6 +58,7 @@ pub(super) fn finalize_gateway_response(
     started_at: &Instant,
     request_permit: Option<AdmissionPermit>,
 ) -> Response<Body> {
+    apply_sensitive_route_cache_policy(response.headers_mut(), path_and_query, control_decision);
     attach_control_decision_headers(&mut response, control_decision);
     if !response.headers().contains_key(TRACE_ID_HEADER) {
         response.headers_mut().insert(
@@ -178,6 +179,45 @@ pub(super) fn finalize_gateway_response(
     maybe_hold_axum_response_permit(response, request_permit)
 }
 
+fn apply_sensitive_route_cache_policy(
+    headers: &mut http::HeaderMap,
+    path_and_query: &str,
+    control_decision: Option<&GatewayControlDecision>,
+) {
+    let is_admin_route = path_and_query
+        .split_once('?')
+        .map_or(path_and_query, |(path, _)| path)
+        .starts_with("/api/admin/")
+        || control_decision
+            .is_some_and(|decision| decision.route_class.as_deref() == Some("admin_proxy"));
+    let has_authenticated_principal = control_decision.is_some_and(|decision| {
+        decision.auth_context.is_some() || decision.admin_principal.is_some()
+    });
+    let is_sensitive_public_support = control_decision.is_some_and(|decision| {
+        if decision.route_class.as_deref() != Some("public_support") {
+            return false;
+        }
+        match decision.route_family.as_deref() {
+            Some(
+                "auth" | "dashboard" | "monitoring_user" | "announcement_user" | "wallet"
+                | "ccswitch" | "users_me" | "models" | "oauth" | "install",
+            ) => true,
+            Some("billing") => decision.route_kind.as_deref() != Some("plans"),
+            Some("system_catalog") => decision.route_kind.as_deref() == Some("test_connection"),
+            _ => false,
+        }
+    });
+    if !(is_admin_route || has_authenticated_principal || is_sensitive_public_support) {
+        return;
+    }
+
+    headers.insert(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    headers.insert(http::header::PRAGMA, HeaderValue::from_static("no-cache"));
+}
+
 fn attach_control_decision_headers(
     response: &mut Response<Body>,
     control_decision: Option<&GatewayControlDecision>,
@@ -273,7 +313,9 @@ pub(super) fn finalize_gateway_response_with_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_gateway_response, request_wants_stream};
+    use super::{
+        apply_sensitive_route_cache_policy, finalize_gateway_response, request_wants_stream,
+    };
     use crate::control::{GatewayControlDecision, GatewayPublicRequestContext};
     use crate::AppState;
     use axum::body::{Body, Bytes};
@@ -287,6 +329,102 @@ mod tests {
     struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
 
     struct SharedBufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    #[test]
+    fn admin_responses_are_never_cacheable() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=3600"),
+        );
+
+        apply_sensitive_route_cache_policy(
+            &mut headers,
+            "/api/admin/endpoints/keys/key-1/reveal?include_key=true",
+            None,
+        );
+
+        assert_eq!(
+            headers.get(http::header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store"))
+        );
+        assert_eq!(
+            headers.get(http::header::PRAGMA),
+            Some(&HeaderValue::from_static("no-cache"))
+        );
+    }
+
+    #[test]
+    fn authenticated_user_data_responses_are_never_cacheable() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=3600"),
+        );
+        let decision = GatewayControlDecision::synthetic(
+            "/api/wallet/transactions",
+            Some("public_support".to_string()),
+            Some("wallet".to_string()),
+            Some("transactions".to_string()),
+            None,
+        );
+
+        apply_sensitive_route_cache_policy(
+            &mut headers,
+            "/api/wallet/transactions",
+            Some(&decision),
+        );
+
+        assert_eq!(
+            headers.get(http::header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store"))
+        );
+        assert_eq!(
+            headers.get(http::header::PRAGMA),
+            Some(&HeaderValue::from_static("no-cache"))
+        );
+    }
+
+    #[test]
+    fn public_catalog_responses_keep_their_existing_cache_policy() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=3600"),
+        );
+        let decision = GatewayControlDecision::synthetic(
+            "/api/public/models",
+            Some("public_support".to_string()),
+            Some("public_catalog".to_string()),
+            Some("models".to_string()),
+            None,
+        );
+
+        apply_sensitive_route_cache_policy(&mut headers, "/api/public/models", Some(&decision));
+
+        assert_eq!(
+            headers.get(http::header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("public, max-age=3600"))
+        );
+        assert!(headers.get(http::header::PRAGMA).is_none());
+    }
+
+    #[test]
+    fn non_admin_responses_keep_their_existing_cache_policy() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=3600"),
+        );
+
+        apply_sensitive_route_cache_policy(&mut headers, "/api/models", None);
+
+        assert_eq!(
+            headers.get(http::header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("public, max-age=3600"))
+        );
+        assert!(headers.get(http::header::PRAGMA).is_none());
+    }
 
     impl SharedBuffer {
         fn lines(&self) -> Vec<serde_json::Value> {

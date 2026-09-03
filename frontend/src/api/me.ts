@@ -234,6 +234,7 @@ export const meApi = {
   // 更新个人信息
   async updateProfile(data: {
     email?: string
+    email_verification_token?: string
     username?: string
     feature_settings?: FeatureSettingsMap | null
   }): Promise<{ message: string }> {

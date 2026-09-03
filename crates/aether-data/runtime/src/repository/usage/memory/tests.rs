@@ -789,6 +789,64 @@ async fn upsert_allows_completed_recovery_after_void_failure() {
 }
 
 #[tokio::test]
+async fn stale_terminal_event_cannot_replace_usage_routing_or_counter_contribution() {
+    let auth_api_keys = sample_auth_api_key_repository(&["api-key-1"]);
+    let repository = InMemoryUsageReadRepository::default()
+        .with_auth_api_key_repository(Arc::clone(&auth_api_keys));
+
+    let mut newer = sample_upsert_usage_record("req-stale-terminal");
+    newer.api_key_id = Some("api-key-1".to_string());
+    newer.status = "completed".to_string();
+    newer.status_code = Some(200);
+    newer.total_tokens = Some(5);
+    newer.total_cost_usd = Some(0.5);
+    newer.candidate_id = Some("candidate-new".to_string());
+    newer.route_kind = Some("route-new".to_string());
+    newer.updated_at_unix_secs = 200;
+    newer.finalized_at_unix_secs = Some(200);
+    repository
+        .upsert(newer)
+        .await
+        .expect("newer terminal usage should upsert");
+
+    let mut stale = sample_upsert_usage_record("req-stale-terminal");
+    stale.api_key_id = Some("api-key-1".to_string());
+    stale.status = "failed".to_string();
+    stale.billing_status = "void".to_string();
+    stale.status_code = Some(503);
+    stale.total_tokens = Some(999);
+    stale.total_cost_usd = Some(99.0);
+    stale.candidate_id = Some("candidate-stale".to_string());
+    stale.route_kind = Some("route-stale".to_string());
+    stale.updated_at_unix_secs = 199;
+    stale.finalized_at_unix_secs = Some(199);
+    let stored = repository
+        .upsert(stale)
+        .await
+        .expect("stale terminal usage should be ignored");
+
+    assert_eq!(stored.status, "completed");
+    assert_eq!(stored.billing_status, "pending");
+    assert_eq!(stored.status_code, Some(200));
+    assert_eq!(stored.total_tokens, 5);
+    assert_eq!(stored.total_cost_usd, 0.5);
+    assert_eq!(stored.routing_candidate_id(), Some("candidate-new"));
+    assert_eq!(stored.routing_route_kind(), Some("route-new"));
+    assert_eq!(stored.updated_at_unix_secs, 200);
+
+    let key = auth_api_keys
+        .list_export_api_keys_by_ids(&["api-key-1".to_string()])
+        .await
+        .expect("api key stats should load")
+        .into_iter()
+        .next()
+        .expect("api key should exist");
+    assert_eq!(key.total_requests, 1);
+    assert_eq!(key.total_tokens, 5);
+    assert_eq!(key.total_cost_usd, 0.5);
+}
+
+#[tokio::test]
 async fn upsert_rejects_non_authoritative_void_failure_recovery() {
     let repository = InMemoryUsageReadRepository::default();
     for (request_id, status, billing_status, status_code) in [
@@ -1190,6 +1248,23 @@ async fn detached_body_seed_moves_large_payloads_behind_usage_refs() {
 }
 
 #[tokio::test]
+async fn seed_discards_cross_request_and_cross_field_body_refs() {
+    let mut usage = sample_usage("req-ref-target", 100);
+    usage.request_body_ref = Some("usage://request/req-ref-owner/request_body".to_string());
+    usage.response_body_ref = Some("usage://request/req-ref-target/request_body".to_string());
+
+    let repository = InMemoryUsageReadRepository::seed(vec![usage]);
+    let stored = repository
+        .find_by_request_id("req-ref-target")
+        .await
+        .expect("find should succeed")
+        .expect("usage should exist");
+
+    assert!(stored.request_body_ref.is_none());
+    assert!(stored.response_body_ref.is_none());
+}
+
+#[tokio::test]
 async fn upsert_writes_usage_record() {
     let repository = InMemoryUsageReadRepository::default();
     let stored = repository
@@ -1520,12 +1595,7 @@ async fn upsert_does_not_backfill_typed_body_refs_from_request_metadata() {
         .expect("upsert should succeed");
 
     assert_eq!(stored.request_body_ref, None);
-    assert_eq!(
-        stored.request_metadata,
-        Some(json!({
-            "request_body_ref": "usage://request/req-upsert-body-ref-metadata/request_body"
-        }))
-    );
+    assert_eq!(stored.request_metadata, None);
 }
 
 #[tokio::test]

@@ -8,7 +8,6 @@ use aether_data_contracts::repository::usage::{
     WEBSOCKET_MODE_METADATA_KEY, WEBSOCKET_TRANSPORT_METADATA_KEY,
 };
 use aether_data_contracts::DataLayerError;
-use base64::Engine as _;
 use serde_json::{json, Map, Value};
 
 use crate::body_capture::{
@@ -24,11 +23,11 @@ use crate::request_metadata::{
     sanitize_usage_request_metadata_ref,
 };
 use crate::{
-    map_usage_from_response, stream_capture_terminal_state, GatewayStreamReportRequest,
-    GatewaySyncReportRequest, StandardizedUsage, StreamCapturedTerminalState, UsageEvent,
-    UsageEventData, UsageEventType, STREAM_MISSING_TERMINAL_EVENT_CATEGORY,
-    STREAM_MISSING_TERMINAL_EVENT_MESSAGE, STREAM_TERMINAL_ERROR_CATEGORY,
-    STREAM_TERMINAL_ERROR_MESSAGE,
+    decode_internal_report_body_base64, map_usage_from_response, stream_capture_terminal_state,
+    GatewayStreamReportRequest, GatewaySyncReportRequest, StandardizedUsage,
+    StreamCapturedTerminalState, UsageEvent, UsageEventData, UsageEventType,
+    STREAM_MISSING_TERMINAL_EVENT_CATEGORY, STREAM_MISSING_TERMINAL_EVENT_MESSAGE,
+    STREAM_TERMINAL_ERROR_CATEGORY, STREAM_TERMINAL_ERROR_MESSAGE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2130,6 +2129,12 @@ fn build_runtime_request_metadata_seed_from_parts(
             Value::String(websocket_transport),
         );
     }
+    if let Some(reservation_token) = context_string(context, "plan_usage_reservation_token") {
+        metadata.insert(
+            "plan_usage_reservation_token".to_string(),
+            Value::String(reservation_token),
+        );
+    }
     if let Some(usage_available) = context_bool(context, USAGE_AVAILABLE_METADATA_KEY) {
         metadata.insert(
             USAGE_AVAILABLE_METADATA_KEY.to_string(),
@@ -2416,22 +2421,14 @@ fn sanitize_usage_event_capture_fields(mut data: UsageEventData) -> UsageEventDa
     data
 }
 
-fn sanitize_usage_event_capture_fields_trusted(mut data: UsageEventData) -> UsageEventData {
-    data.request_headers = capture_usage_header_capture(data.request_headers);
-    data.provider_request_headers = capture_usage_header_capture(data.provider_request_headers);
-    data.response_headers = capture_usage_header_capture(data.response_headers);
-    data.client_response_headers = capture_usage_header_capture(data.client_response_headers);
-    data
+fn sanitize_usage_event_capture_fields_trusted(data: UsageEventData) -> UsageEventData {
+    sanitize_usage_event_capture_fields(data)
 }
 
 fn sanitize_usage_event_data(mut data: UsageEventData) -> UsageEventData {
     data = sanitize_usage_event_capture_fields(data);
     data.request_metadata = sanitize_usage_request_metadata(data.request_metadata);
     data
-}
-
-fn capture_usage_header_capture(value: Option<Value>) -> Option<Value> {
-    value.map(capture_usage_storage_value)
 }
 
 fn sanitize_usage_header_capture(value: Option<Value>) -> Option<Value> {
@@ -2662,29 +2659,29 @@ fn headers_to_json(headers: &BTreeMap<String, String>) -> Option<Value> {
     ))))
 }
 
-/// 默认敏感请求头清单。与
-/// `apps/aether-gateway/src/handlers/admin/system/shared/configs.rs` 中
-/// `sensitive_headers` 系统配置默认值保持一致。
-const DEFAULT_SENSITIVE_HEADERS: &[&str] = &[
-    "authorization",
-    "x-api-key",
-    "api-key",
-    "x-goog-api-key",
-    "cookie",
-    "set-cookie",
-    "proxy-authorization",
+const REDACTED_USAGE_VALUE: &str = "[redacted]";
+
+/// Only headers whose values are protocol metadata are persisted verbatim.
+/// Unknown headers are treated as credentials because providers commonly use
+/// custom `X-*` names for authentication.
+const SAFE_USAGE_HEADER_VALUE_NAMES: &[&str] = &[
+    "accept",
+    "accept-encoding",
+    "content-encoding",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+    "x-request-id",
+    "x-trace-id",
 ];
 
-/// 判断 header 名是否属于敏感字段（大小写不敏感）。
 fn is_sensitive_header(name: &str) -> bool {
     let trimmed = name.trim();
-    DEFAULT_SENSITIVE_HEADERS
+    !SAFE_USAGE_HEADER_VALUE_NAMES
         .iter()
         .any(|candidate| trimmed.eq_ignore_ascii_case(candidate))
 }
 
-/// 对单个 header value 进行脱敏：保留前 4 + 后 4 字符，中间替换为 `****`。
-/// 长度小于等于 8 时整体替换为 `****`。
 fn mask_header_value(name: &str, value: &str) -> String {
     if !is_sensitive_header(name) {
         return value.to_string();
@@ -2692,28 +2689,16 @@ fn mask_header_value(name: &str, value: &str) -> String {
     mask_sensitive_header_value(value)
 }
 
-fn mask_sensitive_header_value(value: &str) -> String {
-    if value.len() <= 8 {
-        return "****".to_string();
-    }
-    let prefix: String = value.chars().take(4).collect();
-    let suffix: String = value
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{prefix}****{suffix}")
+fn mask_sensitive_header_value(_value: &str) -> String {
+    REDACTED_USAGE_VALUE.to_string()
 }
 
-/// 对 JSON 形式的 headers 做就地脱敏。仅当 value 是 Object 时才会处理；
-/// 其它形式的值保持不变。
+/// Non-object values cannot be established as a valid header map and are
+/// discarded instead of being persisted verbatim.
 fn mask_sensitive_headers_in_json_value(value: Option<Value>) -> Option<Value> {
     let mut value = value?;
     let Value::Object(map) = &mut value else {
-        return Some(value);
+        return None;
     };
     for (key, val) in map.iter_mut() {
         if !is_sensitive_header(key) {
@@ -2941,9 +2926,7 @@ fn extract_generic_error_message_from_json(value: &Value) -> Option<String> {
 
 fn decode_body_for_storage(body_base64: Option<&str>) -> Option<Value> {
     let body_base64 = body_base64?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(body_base64)
-        .ok()?;
+    let bytes = decode_internal_report_body_base64(body_base64).ok()?;
     if let Some(error_body) =
         aether_ai_formats::api::extract_provider_private_stream_error_body(None, &bytes)
     {
@@ -3499,6 +3482,7 @@ mod tests {
         parse_sse_body_for_storage, resolve_error_message, trim_owned_non_empty_string,
         LifecycleUsageSeed, TerminalUsageSeed, UsageBodyRefsSeed, UsageBodyStatesSeed,
         UsageRoutingSeed, UsageTerminalState, MAX_USAGE_CAPTURE_BYTES, MAX_USAGE_CAPTURE_DEPTH,
+        REDACTED_USAGE_VALUE,
     };
     use crate::{
         build_upsert_usage_record_from_event, GatewayStreamReportRequest, GatewaySyncReportRequest,
@@ -3934,7 +3918,8 @@ mod tests {
             .expect("pending usage should keep request metadata");
         assert_eq!(metadata.get("api_key_is_standalone"), Some(&json!(true)));
         assert_eq!(metadata.get("client_ip"), Some(&json!("203.0.113.8")));
-        assert_eq!(metadata.get("user_agent"), Some(&json!("Claude-Code/1.0")));
+        assert_eq!(metadata.get("client_family"), Some(&json!("claude_code")));
+        assert!(metadata.get("user_agent").is_none());
         let body_size = metadata
             .get("body_size")
             .and_then(Value::as_object)
@@ -5644,14 +5629,14 @@ mod tests {
         assert_eq!(
             event.data.response_headers,
             Some(json!({
-                "authorization": "Bear****oken",
+                "authorization": REDACTED_USAGE_VALUE,
                 "content-type": "application/json"
             }))
         );
         assert_eq!(
             event.data.client_response_headers,
             Some(json!({
-                "authorization": "Bear****oken",
+                "authorization": REDACTED_USAGE_VALUE,
                 "content-type": "application/json"
             }))
         );
@@ -6615,26 +6600,26 @@ mod tests {
         assert_eq!(
             event.data.request_headers,
             Some(json!({
-                "authorization": "Bear****oken",
+                "authorization": REDACTED_USAGE_VALUE,
                 "accept": "application/json"
             }))
         );
         assert_eq!(
             event.data.provider_request_headers,
             Some(json!({
-                "x-api-key": "sk-p****cret"
+                "x-api-key": REDACTED_USAGE_VALUE
             }))
         );
         assert_eq!(
             event.data.response_headers,
             Some(json!({
-                "set-cookie": "sess****okie"
+                "set-cookie": REDACTED_USAGE_VALUE
             }))
         );
         assert_eq!(
             event.data.client_response_headers,
             Some(json!({
-                "authorization": "Bear****cret"
+                "authorization": REDACTED_USAGE_VALUE
             }))
         );
         assert_eq!(
@@ -6661,14 +6646,7 @@ mod tests {
                 .request_metadata
                 .as_ref()
                 .and_then(|value| value.get("billing_snapshot")),
-            Some(&json!({
-                "truncated": true,
-                "reason": "usage_request_metadata_limits_exceeded",
-                "max_depth": 32,
-                "max_nodes": 4_000,
-                "max_bytes": 16 * 1024,
-                "value_kind": "object"
-            }))
+            None
         );
     }
 
@@ -6714,19 +6692,7 @@ mod tests {
         .expect("pending record should build");
 
         assert_eq!(record.candidate_id.as_deref(), Some("cand-1"));
-        assert_eq!(
-            record.request_metadata,
-            Some(json!({
-                "billing_snapshot": {
-                    "truncated": true,
-                    "reason": "usage_request_metadata_limits_exceeded",
-                    "max_depth": 32,
-                    "max_nodes": 4_000,
-                    "max_bytes": 16 * 1024,
-                    "value_kind": "object"
-                }
-            }))
-        );
+        assert_eq!(record.request_metadata, None);
     }
 
     #[test]
@@ -6769,7 +6735,7 @@ mod tests {
         assert_eq!(
             data.request_headers,
             Some(json!({
-                "authorization": "Bear****cret",
+                "authorization": REDACTED_USAGE_VALUE,
                 "accept": "application/json"
             }))
         );
@@ -6826,10 +6792,7 @@ mod tests {
             metadata.get("end_to_end_first_byte_time_ms"),
             Some(&json!(10_120))
         );
-        assert_eq!(
-            metadata.get("db_timings_ms"),
-            Some(&json!({"query_count": 2}))
-        );
+        assert_eq!(metadata.get("db_timings_ms"), None);
         assert_eq!(
             metadata.get("trace_id"),
             Some(&json!("trace-seed-metadata-1"))
@@ -6846,23 +6809,30 @@ mod tests {
     fn masks_known_sensitive_header_values() {
         let token = "Bearer eyJhbGciOiJSUzI1NiJ9.payload-here.signature-tail";
         let masked = mask_header_value("authorization", token);
-        assert!(masked.starts_with("Bear"));
-        assert!(masked.ends_with("tail"));
-        assert!(masked.contains("****"));
-        assert!(!masked.contains("payload-here"));
+        assert_eq!(masked, REDACTED_USAGE_VALUE);
 
         // 大小写不敏感
         assert_eq!(
             mask_header_value("Authorization", "12345678"),
-            "****",
-            "短值整体替换为 ****",
+            REDACTED_USAGE_VALUE,
         );
-        assert_eq!(mask_header_value("X-Api-Key", "abcdefghij"), "abcd****ghij",);
+        assert_eq!(
+            mask_header_value("X-Api-Key", "abcdefghij"),
+            REDACTED_USAGE_VALUE,
+        );
 
-        // 非敏感头保持原样
+        // Unknown custom headers are redacted by default.
         assert_eq!(
             mask_header_value("user-agent", "codex-tui/0.1"),
-            "codex-tui/0.1",
+            REDACTED_USAGE_VALUE,
+        );
+        assert_eq!(
+            mask_header_value("x-custom-auth", "tenant-secret"),
+            REDACTED_USAGE_VALUE,
+        );
+        assert_eq!(
+            mask_header_value("content-type", "application/json"),
+            "application/json",
         );
     }
 
@@ -6886,21 +6856,17 @@ mod tests {
             .get("authorization")
             .and_then(|v| v.as_str())
             .expect("authorization should be string");
-        assert!(auth.starts_with("Bear"));
-        assert!(auth.contains("****"));
-        assert!(!auth.contains("eyJhbGciOiJSUzI1NiJ9"));
+        assert_eq!(auth, REDACTED_USAGE_VALUE);
 
         let api_key = object
             .get("x-api-key")
             .and_then(|v| v.as_str())
             .expect("x-api-key should be string");
-        assert!(api_key.starts_with("sk-p"));
-        assert!(api_key.contains("****"));
-        assert!(!api_key.contains("1234567890"));
+        assert_eq!(api_key, REDACTED_USAGE_VALUE);
 
         assert_eq!(
             object.get("user-agent").and_then(|v| v.as_str()),
-            Some("codex-tui/0.1"),
+            Some(REDACTED_USAGE_VALUE),
         );
     }
 
@@ -6924,15 +6890,13 @@ mod tests {
             .get("Authorization")
             .and_then(|v| v.as_str())
             .expect("Authorization should be string");
-        assert!(auth.contains("****"));
-        assert!(!auth.contains("eyJhbGciOiJSUzI1NiJ9"));
+        assert_eq!(auth, REDACTED_USAGE_VALUE);
 
         let cookie = object
             .get("Cookie")
             .and_then(|v| v.as_str())
             .expect("Cookie should be string");
-        assert!(cookie.contains("****"));
-        assert!(!cookie.contains("verylongcookievalue"));
+        assert_eq!(cookie, REDACTED_USAGE_VALUE);
 
         assert_eq!(
             object.get("Accept").and_then(|v| v.as_str()),
@@ -6941,12 +6905,12 @@ mod tests {
     }
 
     #[test]
-    fn mask_sensitive_headers_passthrough_for_non_object() {
+    fn mask_sensitive_headers_discards_non_object() {
         // None 输入返回 None
         assert!(mask_sensitive_headers_in_json_value(None).is_none());
-        // 非 object 输入原样返回
+        // 非 object 不是可验证的 header map，直接丢弃。
         let masked = mask_sensitive_headers_in_json_value(Some(json!("not an object")));
-        assert_eq!(masked, Some(json!("not an object")));
+        assert_eq!(masked, None);
     }
 
     #[test]

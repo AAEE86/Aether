@@ -1070,12 +1070,12 @@ fn map_candidate_selection_row(row: &SqliteRow) -> Result<CandidateSelectionRow,
             key_name: row.try_get("key_name").map_sql_err()?,
             key_auth_type: row.try_get("key_auth_type").map_sql_err()?,
             key_is_active: row.try_get("key_is_active").map_sql_err()?,
-            key_api_formats: parse_string_list(
-                parse_json(row.try_get("key_api_formats").ok().flatten())?,
+            key_api_formats: parse_stored_key_policy_string_list(
+                row.try_get("key_api_formats").map_sql_err()?,
                 "provider_api_keys.api_formats",
             )?,
-            key_allowed_models: parse_string_list(
-                parse_json(row.try_get("key_allowed_models").ok().flatten())?,
+            key_allowed_models: parse_stored_key_policy_string_list(
+                row.try_get("key_allowed_models").map_sql_err()?,
                 "provider_api_keys.allowed_models",
             )?,
             key_capabilities: parse_json(row.try_get("key_capabilities").ok().flatten())?,
@@ -1132,6 +1132,82 @@ fn parse_string_list(
         return Ok(None);
     };
     parse_string_list_value(&value, field_name)
+}
+
+fn parse_stored_key_policy_string_list(
+    raw: Option<String>,
+    field_name: &str,
+) -> Result<Option<Vec<String>>, DataLayerError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value = serde_json::from_str::<serde_json::Value>(&raw).map_err(|err| {
+        DataLayerError::UnexpectedValue(format!("{field_name} contains invalid JSON: {err}"))
+    })?;
+    parse_key_policy_string_list_value(&value, field_name)
+}
+
+fn parse_key_policy_string_list_value(
+    value: &serde_json::Value,
+    field_name: &str,
+) -> Result<Option<Vec<String>>, DataLayerError> {
+    match value {
+        serde_json::Value::Null => Err(DataLayerError::UnexpectedValue(format!(
+            "{field_name} contains JSON null; use SQL NULL for an unset policy"
+        ))),
+        serde_json::Value::Array(array) => {
+            parse_key_policy_string_list_array(array, field_name).map(Some)
+        }
+        serde_json::Value::String(raw) => parse_embedded_key_policy_string_list(raw, field_name),
+        _ => Err(DataLayerError::UnexpectedValue(format!(
+            "{field_name} is not a JSON array"
+        ))),
+    }
+}
+
+fn parse_embedded_key_policy_string_list(
+    raw: &str,
+    field_name: &str,
+) -> Result<Option<Vec<String>>, DataLayerError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(DataLayerError::UnexpectedValue(format!(
+            "{field_name} contains an empty string"
+        )));
+    }
+    if raw.eq_ignore_ascii_case("null") {
+        return Err(DataLayerError::UnexpectedValue(format!(
+            "{field_name} contains stringified JSON null; use SQL NULL for an unset policy"
+        )));
+    }
+
+    if let Ok(decoded) = serde_json::from_str::<serde_json::Value>(raw) {
+        return parse_key_policy_string_list_value(&decoded, field_name);
+    }
+
+    Ok(Some(vec![raw.to_string()]))
+}
+
+fn parse_key_policy_string_list_array(
+    array: &[serde_json::Value],
+    field_name: &str,
+) -> Result<Vec<String>, DataLayerError> {
+    let mut items = Vec::with_capacity(array.len());
+    for item in array {
+        let Some(item) = item.as_str() else {
+            return Err(DataLayerError::UnexpectedValue(format!(
+                "{field_name} contains a non-string item"
+            )));
+        };
+        let item = item.trim();
+        if item.is_empty() {
+            return Err(DataLayerError::UnexpectedValue(format!(
+                "{field_name} contains an empty item"
+            )));
+        }
+        items.push(item.to_string());
+    }
+    Ok(items)
 }
 
 fn parse_string_list_value(
@@ -1338,9 +1414,10 @@ fn sql_match_aliases(api_formats: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_model_mapping_api_format_covers, push_key_auth_channel_sql_filter,
-        push_pool_key_order, vertex_key_auth_channel_matches, ExactPageAccumulator,
-        SqliteMinimalCandidateSelectionReadRepository, REQUESTED_MODEL_RAW_SCAN_LIMIT,
+        parse_stored_key_policy_string_list, provider_model_mapping_api_format_covers,
+        push_key_auth_channel_sql_filter, push_pool_key_order, vertex_key_auth_channel_matches,
+        ExactPageAccumulator, SqliteMinimalCandidateSelectionReadRepository,
+        REQUESTED_MODEL_RAW_SCAN_LIMIT,
     };
     use crate::run_migrations;
     use aether_data_contracts::repository::candidate_selection::{
@@ -1376,6 +1453,25 @@ mod tests {
         assert!(!vertex_clause.contains("claude:messages"));
         assert!(vertex_clause.contains("gemini:generate_content"));
         assert!(vertex_clause.contains("gemini:embedding"));
+    }
+
+    #[test]
+    fn malformed_key_policy_never_degrades_to_unrestricted() {
+        for raw in ["null", "\"null\"", "\"\"", "[\"openai:chat\",null]"] {
+            assert!(parse_stored_key_policy_string_list(
+                Some(raw.to_string()),
+                "provider_api_keys.api_formats",
+            )
+            .is_err());
+        }
+        assert_eq!(
+            parse_stored_key_policy_string_list(
+                Some("[\"openai:chat\"]".to_string()),
+                "provider_api_keys.api_formats",
+            )
+            .expect("valid key policy should parse"),
+            Some(vec!["openai:chat".to_string()])
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ use aether_ai_formats::{
 };
 use serde_json::{json, Map, Value};
 
-use super::AiSurfaceFinalizeError;
+use super::{decode_sync_report_body_base64, AiSurfaceFinalizeError};
 use crate::formats::claude::messages::stream::ClaudeProviderState;
 use crate::formats::gemini::generate_content::stream::GeminiProviderState;
 use crate::formats::openai::chat::stream::{OpenAIChatProviderState, OpenAIResponsesProviderState};
@@ -79,7 +79,7 @@ pub fn maybe_build_standard_cross_format_sync_product_from_normalized_payload(
 
     let (aggregated_stream_body, aggregated_stream_api_format) = match body_base64 {
         Some(body_base64) => {
-            let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+            let body_bytes = decode_sync_report_body_base64(body_base64)?;
             let provider_stream_event_api_format =
                 provider_stream_event_api_format_for_report_context(
                     report_context,
@@ -598,7 +598,7 @@ pub fn maybe_build_embedding_cross_format_sync_product_from_normalized_payload(
 
     let provider_body_json = match body_base64 {
         Some(body_base64) => {
-            let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+            let body_bytes = decode_sync_report_body_base64(body_base64)?;
             serde_json::from_slice::<Value>(&body_bytes).ok()
         }
         None => body_json.cloned(),
@@ -743,7 +743,7 @@ fn maybe_build_standard_same_format_stream_sync_body(
     let Some(body_base64) = body_base64 else {
         return Ok(None);
     };
-    let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+    let body_bytes = decode_sync_report_body_base64(body_base64)?;
     let provider_stream_event_api_format =
         provider_stream_event_api_format_for_report_context(report_context, &provider_api_format);
     let Some(mut body) = try_aggregate_standard_chat_stream_sync_response(
@@ -892,7 +892,7 @@ fn maybe_build_openai_responses_same_family_stream_sync_body(
     let Some(body_base64) = body_base64 else {
         return Ok(None);
     };
-    let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+    let body_bytes = decode_sync_report_body_base64(body_base64)?;
     // Same-family clients retain the authoritative terminal body verbatim, including future
     // output item fields, but unknown intermediate event types still fail closed.
     ensure_no_unknown_openai_responses_stream_events(&body_bytes, true)?;
@@ -984,7 +984,7 @@ fn maybe_build_openai_cross_format_provider_body_from_normalized_payload(
 ) -> Result<Option<OpenAiCrossFormatProviderBody>, AiSurfaceFinalizeError> {
     let aggregated_stream_body = match body_base64 {
         Some(body_base64) => {
-            let body_bytes = base64::engine::general_purpose::STANDARD.decode(body_base64)?;
+            let body_bytes = decode_sync_report_body_base64(body_base64)?;
             let normalized_provider_api_format =
                 normalize_openai_responses_family_api_format(provider_api_format);
             match normalized_provider_api_format.as_str() {

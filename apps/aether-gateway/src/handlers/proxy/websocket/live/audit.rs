@@ -1027,6 +1027,7 @@ mod tests {
             local_rejection: None,
             allowed_models: None,
             ip_rules: None,
+            verified_api_key_hash: None,
         });
         let diagnostic = LocalExecutionRuntimeMissDiagnostic {
             reason: "candidate_list_empty".to_string(),
@@ -1207,6 +1208,7 @@ mod tests {
             local_rejection: None,
             allowed_models: None,
             ip_rules: None,
+            verified_api_key_hash: None,
         });
 
         record_live_websocket_preflight_failure(

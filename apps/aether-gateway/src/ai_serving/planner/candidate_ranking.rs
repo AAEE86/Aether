@@ -251,6 +251,7 @@ mod tests {
     use aether_ai_serving::{
         ai_ranking_context, build_ai_rankable_candidate, AiRankableCandidateParts,
     };
+    use aether_crypto::DEVELOPMENT_ENCRYPTION_KEY;
     use aether_data::repository::{
         provider_catalog::InMemoryProviderCatalogReadRepository,
         routing_profiles::InMemoryRoutingGroupRepository,
@@ -566,6 +567,15 @@ mod tests {
         api_formats: Option<serde_json::Value>,
         allowed_models: Option<serde_json::Value>,
     ) -> StoredProviderCatalogKey {
+        let credential_state = AppState::new()
+            .expect("credential state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let encrypted_api_key = credential_state
+            .seal_provider_catalog_key_api_key(provider_id, id, "plain-upstream-key")
+            .expect("api key should encrypt");
         StoredProviderCatalogKey::new(
             id.to_string(),
             provider_id.to_string(),
@@ -577,7 +587,7 @@ mod tests {
         .expect("key should build")
         .with_transport_fields(
             api_formats,
-            "plain-upstream-key".to_string(),
+            encrypted_api_key,
             None,
             None,
             Some(json!({"openai:chat": 1})),
@@ -691,7 +701,7 @@ mod tests {
         let observed_at_unix_secs = current_unix_secs();
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         )
         .with_system_config_values_for_tests(vec![
             ("provider_priority_mode".to_string(), json!("provider")),
@@ -700,6 +710,7 @@ mod tests {
                 serde_json::to_value(TunnelAttachmentRecord {
                     gateway_instance_id: "gateway-b".to_string(),
                     relay_base_url: "http://gateway-b:8080".to_string(),
+                    tunnel_generation: "test-generation-remote".to_string(),
                     conn_count: 1,
                     observed_at_unix_secs,
                 })
@@ -710,6 +721,7 @@ mod tests {
                 serde_json::to_value(TunnelAttachmentRecord {
                     gateway_instance_id: "gateway-a".to_string(),
                     relay_base_url: "http://gateway-a:8080".to_string(),
+                    tunnel_generation: "test-generation-local".to_string(),
                     conn_count: 1,
                     observed_at_unix_secs,
                 })
@@ -768,7 +780,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -821,7 +833,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         )
         .with_system_config_values_for_tests(vec![(
             "scheduling_mode".to_string(),
@@ -878,7 +890,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -953,7 +965,7 @@ mod tests {
             .expect("routing strategy should be created");
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         )
         .with_routing_group_repository_for_tests(routing_repository);
         let state = AppState::new()
@@ -1015,7 +1027,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         )
         .with_system_config_values_for_tests(vec![(
             "provider_priority_mode".to_string(),
@@ -1081,7 +1093,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1134,7 +1146,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1208,7 +1220,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1288,7 +1300,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1364,7 +1376,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1431,7 +1443,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1514,7 +1526,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1579,7 +1591,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1668,7 +1680,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1754,7 +1766,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1851,7 +1863,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -1956,7 +1968,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")
@@ -2050,7 +2062,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         let state = AppState::new()
             .expect("state should build")

@@ -91,7 +91,6 @@ pub fn build_antigravity_pool_quota_request(
         client_api_format: "gemini:generate_content".to_string(),
         provider_api_format: "antigravity:fetch_available_models".to_string(),
         model_name: Some("fetchAvailableModels".to_string()),
-        accept_invalid_certs: false,
     }
 }
 
@@ -131,7 +130,6 @@ pub fn build_antigravity_pool_quota_summary_request(
         client_api_format: "gemini:generate_content".to_string(),
         provider_api_format: "antigravity:retrieve_user_quota_summary".to_string(),
         model_name: Some("retrieveUserQuotaSummary".to_string()),
-        accept_invalid_certs: false,
     }
 }
 

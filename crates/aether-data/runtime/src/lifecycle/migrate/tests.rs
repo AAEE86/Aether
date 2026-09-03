@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use sqlx::{
     migrate::{AppliedMigration, Migrate},
-    query, query_scalar, Connection, PgConnection, PgPool, SqlitePool,
+    query, query_scalar, Connection, PgConnection, PgPool, Row, SqlitePool,
 };
 
 use aether_data_contracts::repository::{
@@ -23,7 +23,8 @@ use super::{
     prepare_database_for_startup,
 };
 use crate::lifecycle::bootstrap::postgres::{
-    snapshot_migrations as empty_database_snapshot_migrations, EMPTY_DATABASE_SNAPSHOT_SQL,
+    snapshot_migrations as empty_database_snapshot_migrations,
+    EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION, EMPTY_DATABASE_SNAPSHOT_SQL,
 };
 
 #[derive(Debug)]
@@ -411,8 +412,12 @@ fn empty_database_snapshot_covers_current_cutoff_versions() {
             20260720000000,
             20260727000000,
             20260731000000,
+            20260814000000,
+            20260815000000,
+            20260816000000,
             20260821000000,
-            20260903000000,
+            20260821120000,
+            20260821130000,
         ]
     );
 }
@@ -490,6 +495,9 @@ fn portable_driver_migrations_create_the_postgres_table_set() {
         .iter()
         .filter(|migration| migration.migration_type.is_up_migration())
         .flat_map(|migration| create_table_names(migration.sql.as_ref()))
+        // SQLite rebuilds tables to add foreign keys. These staging tables are
+        // renamed to the canonical table names before the migration finishes.
+        .filter(|table| !table.ends_with("_with_user_fk"))
         .collect::<BTreeSet<_>>();
 
     assert_eq!(mysql_tables, postgres_tables, "MySQL table set drifted");
@@ -1024,6 +1032,487 @@ fn worker_boot_cleanup_migration_is_enabled_for_every_driver() {
 }
 
 #[test]
+fn request_candidate_sensitive_diagnostic_purge_is_enabled_for_every_driver() {
+    const VERSION: i64 = 20260822000000;
+
+    for (driver, migrator) in [
+        ("postgres", &POSTGRES_MIGRATOR),
+        ("mysql", &super::mysql::MIGRATOR),
+        ("sqlite", &super::sqlite::MIGRATOR),
+    ] {
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == VERSION)
+            .unwrap_or_else(|| {
+                panic!("{driver} request candidate diagnostic purge should be embedded")
+            });
+        let sql = migration.sql.as_ref();
+
+        for required in [
+            "UPDATE request_candidates",
+            "username = NULL",
+            "api_key_name = NULL",
+            "extra_data = NULL",
+            "required_capabilities = NULL",
+            "error_message = NULL",
+            "error_type = NULL",
+            "skip_reason = NULL",
+        ] {
+            assert!(
+                sql.contains(required),
+                "{driver} request candidate diagnostic purge is missing {required}"
+            );
+        }
+    }
+}
+
+#[test]
+fn deleted_user_history_anonymization_is_enabled_for_every_driver() {
+    const VERSION: i64 = 20260827050000;
+    const HISTORY_TABLES: &[&str] = &[
+        "request_candidates",
+        "video_tasks",
+        "usage",
+        "stats_user_daily",
+        "stats_user_summary",
+        "stats_user_daily_model",
+        "stats_user_daily_provider",
+        "stats_user_daily_api_format",
+        "stats_user_daily_model_provider",
+        "stats_user_daily_cost_savings",
+        "stats_user_daily_cost_savings_provider",
+        "stats_user_daily_cost_savings_model",
+        "stats_user_daily_cost_savings_model_provider",
+    ];
+    for (driver, migrator) in [
+        ("postgres", &POSTGRES_MIGRATOR),
+        ("mysql", &super::mysql::MIGRATOR),
+        ("sqlite", &super::sqlite::MIGRATOR),
+    ] {
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == VERSION)
+            .unwrap_or_else(|| panic!("{driver} user-history anonymization should be embedded"));
+        let sql = migration.sql.as_ref();
+
+        for table in HISTORY_TABLES {
+            assert!(
+                sql.contains(&format!("UPDATE {table}"))
+                    || sql.contains(&format!("UPDATE `{table}`"))
+                    || sql.contains(&format!("UPDATE public.{table}")),
+                "{driver} user-history anonymization is missing {table}"
+            );
+        }
+        assert_eq!(
+            sql.matches("SET username = NULL").count(),
+            HISTORY_TABLES.len(),
+            "{driver} must erase every username snapshot"
+        );
+        assert!(
+            sql.matches("api_key_name = NULL").count() >= 4,
+            "{driver} must erase API key names from request, video, usage, and API key aggregates"
+        );
+        assert!(
+            sql.matches("WHERE NOT EXISTS").count() >= HISTORY_TABLES.len() + 1,
+            "{driver} migration must leave existing users untouched"
+        );
+        assert!(
+            sql.contains("UPDATE stats_daily_api_key")
+                || sql.contains("UPDATE public.stats_daily_api_key"),
+            "{driver} migration must anonymize orphaned API key aggregate names"
+        );
+        for fact_table in [
+            "user_plan_entitlements",
+            "wallets",
+            "user_referrals",
+            "referral_rewards",
+        ] {
+            assert!(
+                sql.contains(&format!("UPDATE {fact_table}"))
+                    || sql.contains(&format!("UPDATE public.{fact_table}")),
+                "{driver} deleted-user fact migration is missing {fact_table}"
+            );
+        }
+        for required in [
+            "THEN 'revoked'",
+            "status = 'disabled'",
+            "THEN 'voided'",
+            "source_json = NULL",
+            "failure_reason = NULL",
+            "admin_note = NULL",
+            "payment_callbacks",
+            "payload = NULL",
+            "error_message = NULL",
+        ] {
+            assert!(
+                sql.contains(required),
+                "{driver} deleted-user fact migration is missing {required}"
+            );
+        }
+    }
+
+    let postgres_migration = POSTGRES_MIGRATOR
+        .iter()
+        .find(|migration| migration.version == VERSION)
+        .expect("postgres user-history anonymization should be embedded");
+    for constraint in [
+        "request_candidates_user_id_fkey",
+        "video_tasks_user_id_fkey",
+        "usage_user_id_fkey",
+        "stats_user_daily_user_id_fkey",
+        "stats_user_summary_user_id_fkey",
+        "stats_user_daily_model_user_id_fkey",
+        "stats_user_daily_provider_user_id_fkey",
+        "stats_user_daily_api_format_user_id_fkey",
+        "stats_user_daily_model_provider_user_id_fkey",
+        "stats_user_daily_cost_savings_user_id_fkey",
+        "stats_user_daily_cost_savings_provider_user_id_fkey",
+        "stats_user_daily_cost_savings_model_user_id_fkey",
+        "stats_user_daily_cost_savings_model_provider_user_id_fkey",
+        "stats_hourly_user_model_user_id_fkey",
+        "user_model_usage_counts_user_id_fkey",
+        "request_candidates_api_key_id_fkey",
+        "video_tasks_api_key_id_fkey",
+        "usage_api_key_id_fkey",
+        "stats_daily_api_key_api_key_id_fkey",
+        "audit_logs_user_id_fkey",
+        "payment_orders_user_id_fkey",
+        "refund_requests_user_id_fkey",
+        "wallet_transactions_operator_id_fkey",
+        "wallets_user_id_fkey",
+        "wallets_api_key_id_fkey",
+        "user_plan_entitlements_user_id_fkey",
+        "entitlement_usage_ledgers_user_id_fkey",
+        "user_referrals_inviter_user_id_fkey",
+        "user_referrals_invitee_user_id_fkey",
+        "referral_rewards_inviter_user_id_fkey",
+        "referral_rewards_invitee_user_id_fkey",
+    ] {
+        assert!(
+            postgres_migration
+                .sql
+                .contains(&format!("DROP CONSTRAINT IF EXISTS {constraint}")),
+            "postgres migration must decouple {constraint}"
+        );
+    }
+}
+
+#[test]
+fn deleted_user_history_anonymization_remediation_is_enabled_for_every_driver() {
+    const VERSION: i64 = 20260829000000;
+    const HISTORY_TABLES: &[&str] = &[
+        "request_candidates",
+        "video_tasks",
+        "usage",
+        "stats_user_daily",
+        "stats_user_summary",
+        "stats_user_daily_model",
+        "stats_user_daily_provider",
+        "stats_user_daily_api_format",
+        "stats_user_daily_model_provider",
+        "stats_user_daily_cost_savings",
+        "stats_user_daily_cost_savings_provider",
+        "stats_user_daily_cost_savings_model",
+        "stats_user_daily_cost_savings_model_provider",
+    ];
+    const OWNER_HISTORY_TABLES: &[&str] = &[
+        "wallets",
+        "audit_logs",
+        "wallet_transactions",
+        "payment_orders",
+        "payment_callbacks",
+        "refund_requests",
+        "redeem_code_batches",
+    ];
+
+    for (driver, migrator) in [
+        ("postgres", &POSTGRES_MIGRATOR),
+        ("mysql", &super::mysql::MIGRATOR),
+        ("sqlite", &super::sqlite::MIGRATOR),
+    ] {
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == VERSION)
+            .unwrap_or_else(|| panic!("{driver} history remediation should be embedded"));
+        let sql = migration.sql.as_ref();
+        for table in HISTORY_TABLES {
+            assert!(
+                sql.contains(&format!("UPDATE {table}"))
+                    || sql.contains(&format!("UPDATE `{table}`"))
+                    || sql.contains(&format!("UPDATE public.{table}")),
+                "{driver} remediation is missing {table}"
+            );
+        }
+        for table in OWNER_HISTORY_TABLES {
+            assert!(
+                sql.contains(&format!("UPDATE {table}"))
+                    || sql.contains(&format!("UPDATE `{table}`"))
+                    || sql.contains(&format!("UPDATE public.{table}")),
+                "{driver} remediation is missing owner-linked history table {table}"
+            );
+        }
+        for table in ["request_candidates", "video_tasks", "usage"] {
+            let has_api_key_projection = sql.split(';').any(|statement| {
+                let statement = statement.replace('`', "");
+                (statement.contains(&format!("UPDATE {table}"))
+                    || statement.contains(&format!("UPDATE public.{table}")))
+                    && statement.contains("SET api_key_name = NULL")
+                    && statement.contains("api_key_id IS NOT NULL")
+            });
+            assert!(
+                has_api_key_projection,
+                "{driver} remediation must clear orphaned api_key_name values in {table}"
+            );
+        }
+        for field in ["requested_by", "approved_by", "processed_by"] {
+            assert!(
+                sql.contains(&format!("SET {field} = NULL"))
+                    && sql.contains(&format!("{field} IS NOT NULL")),
+                "{driver} remediation must clear only orphaned {field} references"
+            );
+        }
+        let normalized_sql = sql.replace("public.", "").replace('`', "");
+        assert!(
+            normalized_sql.split(';').any(|statement| {
+                statement.contains("UPDATE payment_callbacks")
+                    && statement.contains("SET payload = NULL")
+                    && statement.contains("WHERE payload IS NOT NULL")
+            }),
+            "{driver} remediation must purge every persisted callback payload"
+        );
+        assert!(
+            normalized_sql.contains("NOT EXISTS (\n       SELECT 1 FROM wallets")
+                || normalized_sql.contains("NOT EXISTS (\n        SELECT 1 FROM wallets"),
+            "{driver} remediation must clear sensitive fields for missing wallets"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_history_remediation_fails_closed_for_orphaned_financial_records() {
+    const VERSION: i64 = 20260829000000;
+
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    let mut connection = pool.acquire().await.expect("sqlite connection should open");
+    connection
+        .ensure_migrations_table()
+        .await
+        .expect("migration table should be created");
+    for migration in super::sqlite::MIGRATOR
+        .iter()
+        .filter(|migration| migration.version < VERSION)
+    {
+        connection
+            .apply(migration)
+            .await
+            .expect("pre-remediation migration should apply");
+    }
+    drop(connection);
+
+    query(
+        r#"
+INSERT INTO users (id, username, email, auth_source, created_at, updated_at)
+VALUES ('remediation-live-user', 'remediation-live', 'remediation-live@example.com', 'local', 1, 1);
+
+INSERT INTO wallets (
+  id, user_id, balance, gift_balance, limit_mode, currency, status,
+  total_recharged, total_consumed, total_refunded, total_adjusted,
+  created_at, updated_at
+) VALUES (
+  'remediation-live-wallet', 'remediation-live-user', 0, 0, 'finite', 'USD', 'active',
+  0, 0, 0, 0, 1, 1
+);
+
+INSERT INTO payment_orders (
+  id, order_no, wallet_id, user_id, amount_usd, refunded_amount_usd,
+  refundable_amount_usd, payment_method, gateway_response, status, created_at
+) VALUES
+  ('remediation-orphan-order', 'remediation-orphan-order-no', 'missing-wallet', NULL,
+   10, 0, 0, 'epay', '{"secret":"orphan"}', 'pending', 1),
+  ('remediation-live-order', 'remediation-live-order-no', 'remediation-live-wallet',
+   'remediation-live-user', 10, 0, 0, 'epay', '{"secret":"live"}', 'pending', 1);
+
+INSERT INTO payment_callbacks (
+  id, payment_order_id, payment_method, callback_key, order_no,
+  payload_hash, signature_valid, status, payload, error_message, created_at
+) VALUES
+  ('remediation-unmatched-callback', NULL, 'epay', 'remediation-unmatched-key',
+   'remediation-unmatched-order-no', 'hash-unmatched', 0, 'failed',
+   'SECRET-UNMATCHED', 'private unmatched error', 1),
+  ('remediation-orphan-callback', 'remediation-orphan-order', 'epay',
+   'remediation-orphan-key', 'remediation-orphan-order-no', 'hash-orphan', 0,
+   'failed', 'SECRET-ORPHAN', 'private orphan error', 1),
+  ('remediation-live-callback', 'remediation-live-order', 'epay',
+   'remediation-live-key', 'remediation-live-order-no', 'hash-live', 0,
+   'failed', 'SECRET-LIVE', 'retain diagnostic', 1);
+
+INSERT INTO wallet_transactions (
+  id, wallet_id, category, reason_code, amount, balance_before, balance_after,
+  recharge_balance_before, recharge_balance_after, gift_balance_before,
+  gift_balance_after, description, created_at
+) VALUES (
+  'remediation-orphan-wallet-tx', 'missing-wallet', 'adjust', 'manual', 1,
+  0, 1, 0, 1, 0, 0, 'private orphan transaction note', 1
+);
+
+INSERT INTO refund_requests (
+  id, refund_no, wallet_id, user_id, source_type, refund_mode, amount_usd,
+  status, reason, payout_reference, payout_proof, failure_reason,
+  created_at, updated_at
+) VALUES (
+  'remediation-orphan-refund', 'remediation-orphan-refund-no', 'missing-wallet',
+  NULL, 'payment_order', 'original', 1, 'pending_approval', 'private refund reason',
+  'private payout reference', 'private payout proof', 'private failure', 1, 1
+);
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("orphan financial fixtures should insert");
+
+    let migration = super::sqlite::MIGRATOR
+        .iter()
+        .find(|migration| migration.version == VERSION)
+        .expect("history remediation migration should be embedded");
+    sqlx::raw_sql(migration.sql.as_ref())
+        .execute(&pool)
+        .await
+        .expect("history remediation should apply");
+
+    let payload_count: i64 =
+        query_scalar("SELECT COUNT(*) FROM payment_callbacks WHERE payload IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("callback payload count should query");
+    assert_eq!(
+        payload_count, 0,
+        "raw callback payloads must be purged globally"
+    );
+
+    let orphan_error_count: i64 = query_scalar(
+        "SELECT COUNT(*) FROM payment_callbacks WHERE id IN ('remediation-unmatched-callback', 'remediation-orphan-callback') AND error_message IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("orphan callback errors should query");
+    assert_eq!(
+        orphan_error_count, 0,
+        "orphan callback diagnostics must be purged"
+    );
+
+    let live_error: Option<String> = query_scalar(
+        "SELECT error_message FROM payment_callbacks WHERE id = 'remediation-live-callback'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("live callback error should query");
+    assert_eq!(live_error.as_deref(), Some("retain diagnostic"));
+
+    let orphan_gateway_response: Option<String> = query_scalar(
+        "SELECT gateway_response FROM payment_orders WHERE id = 'remediation-orphan-order'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("orphan gateway response should query");
+    assert_eq!(orphan_gateway_response, None);
+
+    let orphan_description: Option<String> = query_scalar(
+        "SELECT description FROM wallet_transactions WHERE id = 'remediation-orphan-wallet-tx'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("orphan transaction description should query");
+    assert_eq!(orphan_description, None);
+
+    let orphan_refund = query(
+        "SELECT reason, payout_reference, payout_proof, failure_reason FROM refund_requests WHERE id = 'remediation-orphan-refund'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("orphan refund should query");
+    for column in [
+        "reason",
+        "payout_reference",
+        "payout_proof",
+        "failure_reason",
+    ] {
+        assert_eq!(
+            orphan_refund
+                .try_get::<Option<String>, _>(column)
+                .expect("orphan refund column should decode"),
+            None,
+            "orphan refund {column} must be anonymized"
+        );
+    }
+}
+
+#[test]
+fn background_task_sensitive_diagnostic_purge_is_enabled_for_every_driver() {
+    const VERSION: i64 = 20260822020000;
+
+    for (driver, migrator) in [
+        ("postgres", &POSTGRES_MIGRATOR),
+        ("mysql", &super::mysql::MIGRATOR),
+        ("sqlite", &super::sqlite::MIGRATOR),
+    ] {
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == VERSION)
+            .unwrap_or_else(|| {
+                panic!("{driver} background task diagnostic purge should be embedded")
+            });
+        let sql = migration.sql.as_ref();
+
+        for required in [
+            "owner_instance = NULL",
+            "created_by = CASE",
+            "progress_message = NULL",
+            "payload_json = NULL",
+            "result_json = NULL",
+            "error_message = CASE",
+            "payload_json = NULL",
+            "unclassified_event",
+        ] {
+            assert!(
+                sql.contains(required),
+                "{driver} background task diagnostic purge is missing {required}"
+            );
+        }
+    }
+}
+
+#[test]
+fn identity_oauth_raw_userinfo_purge_is_enabled_for_every_driver() {
+    const VERSION: i64 = 20260827030000;
+
+    for (driver, migrator) in [
+        ("postgres", &POSTGRES_MIGRATOR),
+        ("mysql", &super::mysql::MIGRATOR),
+        ("sqlite", &super::sqlite::MIGRATOR),
+    ] {
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == VERSION)
+            .unwrap_or_else(|| panic!("{driver} identity OAuth userinfo purge should be embedded"));
+        let sql = migration.sql.as_ref();
+
+        for required in [
+            "UPDATE",
+            "user_oauth_links",
+            "SET extra_data = NULL",
+            "WHERE extra_data IS NOT NULL",
+        ] {
+            assert!(
+                sql.contains(required),
+                "{driver} identity OAuth userinfo purge is missing {required}"
+            );
+        }
+    }
+}
+
+#[test]
 fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
     let mysql_versions = super::mysql::MIGRATOR
         .iter()
@@ -1066,8 +1555,29 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260725030000,
             20260727000000,
             20260731000000,
+            20260814000000,
+            20260815000000,
+            20260816000000,
+            20260817000000,
             20260821000000,
+            20260821120000,
+            20260821130000,
+            20260822000000,
+            20260822010000,
+            20260822020000,
+            20260827000000,
+            20260827010000,
+            20260827020000,
+            20260827030000,
+            20260827040000,
+            20260827050000,
+            20260829000000,
+            20260831000000,
+            20260831010000,
+            20260831020000,
+            20260831030000,
             20260903000000,
+            20260903010000,
         ]
     );
     assert_eq!(
@@ -1102,10 +1612,222 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260725040000,
             20260727000000,
             20260731000000,
+            20260814000000,
+            20260815000000,
+            20260816000000,
             20260821000000,
+            20260821120000,
+            20260821130000,
+            20260822000000,
+            20260822010000,
+            20260822020000,
+            20260827000000,
+            20260827010000,
+            20260827020000,
+            20260827030000,
+            20260827040000,
+            20260827050000,
+            20260829000000,
+            20260831000000,
+            20260831010000,
+            20260831020000,
+            20260831030000,
             20260903000000,
+            20260903010000,
         ]
     );
+}
+
+#[tokio::test]
+async fn sqlite_legacy_oauth_email_verification_migration_fails_closed() {
+    const VERSION: i64 = 20260903010000;
+
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    super::run_sqlite_migrations(&pool)
+        .await
+        .expect("sqlite migrations should run");
+    query(
+        r#"
+INSERT INTO users (
+  id, email, username, auth_source, email_verified, created_at, updated_at
+) VALUES
+  ('legacy-oauth', 'oauth@example.com', 'legacy-oauth', 'oauth', 1, 1, 1),
+  ('local-user', 'local@example.com', 'local-user', 'local', 1, 1, 1),
+  ('ldap-user', 'ldap@example.com', 'ldap-user', 'ldap', 1, 1, 1)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("email verification fixtures should insert");
+
+    let migration = super::sqlite::MIGRATOR
+        .iter()
+        .find(|migration| migration.version == VERSION)
+        .expect("legacy OAuth verification migration should be embedded");
+    sqlx::raw_sql(migration.sql.as_ref())
+        .execute(&pool)
+        .await
+        .expect("legacy OAuth verification migration should apply");
+
+    for (user_id, expected) in [
+        ("legacy-oauth", 0_i64),
+        ("local-user", 1_i64),
+        ("ldap-user", 1_i64),
+    ] {
+        let verified: i64 = query_scalar("SELECT email_verified FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("user verification state should load");
+        assert_eq!(verified, expected, "unexpected state for {user_id}");
+    }
+}
+
+#[tokio::test]
+async fn sqlite_gateway_order_uniqueness_migration_rejects_historical_duplicates() {
+    const VERSION: i64 = 20260821120000;
+
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    let mut connection = pool.acquire().await.expect("sqlite connection should open");
+    connection
+        .ensure_migrations_table()
+        .await
+        .expect("migration table should be created");
+    for migration in super::sqlite::MIGRATOR
+        .iter()
+        .filter(|migration| migration.version < VERSION)
+    {
+        connection
+            .apply(migration)
+            .await
+            .expect("pre-uniqueness migration should apply");
+    }
+    drop(connection);
+
+    query(
+        r#"
+INSERT INTO wallets (
+  id, user_id, balance, gift_balance, limit_mode, currency, status,
+  total_recharged, total_consumed, total_refunded, total_adjusted,
+  created_at, updated_at
+) VALUES
+  ('duplicate-wallet-a', 'duplicate-user-a', 0, 0, 'finite', 'USD', 'active', 0, 0, 0, 0, 1, 1),
+  ('duplicate-wallet-b', 'duplicate-user-b', 0, 0, 'finite', 'USD', 'active', 0, 0, 0, 0, 1, 1);
+
+INSERT INTO payment_orders (
+  id, order_no, wallet_id, user_id, amount_usd, refunded_amount_usd,
+  refundable_amount_usd, payment_method, gateway_order_id, status, created_at
+) VALUES
+  ('duplicate-order-a', 'duplicate-no-a', 'duplicate-wallet-a', 'duplicate-user-a', 1, 0, 0, ' EPAY ', 'duplicate-gateway-id', 'pending', 1),
+  ('duplicate-order-b', 'duplicate-no-b', 'duplicate-wallet-b', 'duplicate-user-b', 1, 0, 0, 'epay', 'duplicate-gateway-id', 'pending', 1);
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("historical duplicate fixtures should insert");
+
+    let migration = super::sqlite::MIGRATOR
+        .iter()
+        .find(|migration| migration.version == VERSION)
+        .expect("gateway-order uniqueness migration should be embedded");
+    let error = sqlx::raw_sql(migration.sql.as_ref())
+        .execute(&pool)
+        .await
+        .expect_err("historical financial duplicates must block migration");
+    assert!(error.to_string().to_ascii_lowercase().contains("unique"));
+
+    let order_count: i64 = query_scalar(
+        "SELECT COUNT(*) FROM payment_orders WHERE gateway_order_id = 'duplicate-gateway-id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("duplicate financial records should remain intact");
+    assert_eq!(order_count, 2);
+}
+
+#[tokio::test]
+async fn sqlite_gateway_order_uniqueness_migration_normalizes_legacy_payment_methods() {
+    const VERSION: i64 = 20260821120000;
+
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    let mut connection = pool.acquire().await.expect("sqlite connection should open");
+    connection
+        .ensure_migrations_table()
+        .await
+        .expect("migration table should be created");
+    for migration in super::sqlite::MIGRATOR
+        .iter()
+        .filter(|migration| migration.version < VERSION)
+    {
+        connection
+            .apply(migration)
+            .await
+            .expect("pre-uniqueness migration should apply");
+    }
+    drop(connection);
+
+    query(
+        r#"
+INSERT INTO wallets (
+  id, user_id, balance, gift_balance, limit_mode, currency, status,
+  total_recharged, total_consumed, total_refunded, total_adjusted,
+  created_at, updated_at
+) VALUES ('legacy-method-wallet', 'legacy-method-user', 0, 0, 'finite', 'USD', 'active', 0, 0, 0, 0, 1, 1);
+
+INSERT INTO payment_orders (
+  id, order_no, wallet_id, user_id, amount_usd, refunded_amount_usd,
+  refundable_amount_usd, payment_method, gateway_order_id, status, created_at
+) VALUES ('legacy-method-order', 'legacy-method-no', 'legacy-method-wallet', 'legacy-method-user', 1, 0, 0, ' EPAY ', 'CaseSensitiveTxn', 'pending', 1);
+
+INSERT INTO payment_callbacks (
+  id, payment_method, callback_key, signature_valid, status, created_at
+) VALUES ('legacy-method-callback', ' EPAY ', 'legacy-method-key', 0, 'received', 1);
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy payment methods should insert");
+
+    let migration = super::sqlite::MIGRATOR
+        .iter()
+        .find(|migration| migration.version == VERSION)
+        .expect("gateway-order uniqueness migration should be embedded");
+    sqlx::raw_sql(migration.sql.as_ref())
+        .execute(&pool)
+        .await
+        .expect("non-conflicting legacy payment methods should normalize");
+
+    let order_method: String =
+        query_scalar("SELECT payment_method FROM payment_orders WHERE id = 'legacy-method-order'")
+            .fetch_one(&pool)
+            .await
+            .expect("normalized order should load");
+    let callback_method: String = query_scalar(
+        "SELECT payment_method FROM payment_callbacks WHERE id = 'legacy-method-callback'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("normalized callback should load");
+    assert_eq!(order_method, "epay");
+    assert_eq!(callback_method, "epay");
+
+    query(
+        r#"
+INSERT INTO payment_orders (
+  id, order_no, wallet_id, user_id, amount_usd, refunded_amount_usd,
+  refundable_amount_usd, payment_method, gateway_order_id, status, created_at
+) VALUES ('case-sensitive-order', 'case-sensitive-no', 'legacy-method-wallet', 'legacy-method-user', 1, 0, 0, 'epay', 'casesensitivetxn', 'pending', 1);
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("case-distinct opaque gateway identifiers should remain distinct");
 }
 
 #[tokio::test]
@@ -2210,14 +2932,34 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260720000000,
             20260727000000,
             20260731000000,
+            20260814000000,
+            20260815000000,
+            20260816000000,
             20260821000000,
+            20260821120000,
+            20260821130000,
+            20260822000000,
+            20260822010000,
+            20260822020000,
+            20260827000000,
+            20260827010000,
+            20260827020000,
+            20260827030000,
+            20260827040000,
+            20260827050000,
+            20260829000000,
+            20260831000000,
+            20260831010000,
+            20260831030000,
+            20260901000000,
             20260903000000,
+            20260903010000,
         ]
     );
 }
 
 #[test]
-fn pending_migrations_from_applied_is_empty_after_empty_database_snapshot_stamp() {
+fn pending_migrations_from_applied_only_returns_post_snapshot_migrations() {
     let applied = empty_database_snapshot_migrations(&POSTGRES_MIGRATOR)
         .expect("empty database snapshot migrations should resolve")
         .into_iter()
@@ -2228,11 +2970,15 @@ fn pending_migrations_from_applied_is_empty_after_empty_database_snapshot_stamp(
         .collect::<Vec<_>>();
 
     let pending = pending_migrations_from_applied(&applied);
+    let expected = all_up_migrations()
+        .into_iter()
+        .filter(|migration| migration.version > EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION)
+        .collect::<Vec<_>>();
 
-    assert!(
-            pending.is_empty(),
-            "empty database snapshot-stamped databases should not require a manual migration before first startup"
-        );
+    assert_eq!(pending, expected);
+    assert!(pending
+        .iter()
+        .all(|migration| migration.version > EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION));
 }
 
 #[tokio::test]

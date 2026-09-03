@@ -76,7 +76,7 @@ describe('useSystemConfig', () => {
     const state = useSystemConfig()
     await state.loadSystemConfig()
 
-    expect(state.systemConfig.value.request_record_level).toBe('full')
+    expect(state.systemConfig.value.request_record_level).toBe('basic')
     expect(state.systemConfig.value).not.toHaveProperty('max_request_body_size')
     expect(state.systemConfig.value).not.toHaveProperty('max_response_body_size')
   })

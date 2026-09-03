@@ -2325,16 +2325,11 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].key_id.as_deref(), Some("normal-key"));
         assert_eq!(stored[0].candidate_index, 2);
-        assert_eq!(
-            stored[0]
-                .extra_data
-                .as_ref()
-                .and_then(|value| value.get("dispatch_ref"))
-                .and_then(|value| value.get("SingleKey"))
-                .and_then(|value| value.get("key"))
-                .and_then(|value| value.get("key_id")),
-            Some(&json!("normal-key"))
-        );
+        assert!(stored[0]
+            .extra_data
+            .as_ref()
+            .and_then(|value| value.get("dispatch_ref"))
+            .is_none());
     }
 
     #[test]
@@ -2624,16 +2619,11 @@ mod tests {
         );
         assert_eq!(stored[1].key_id.as_deref(), Some("normal-key"));
         assert_eq!(stored[1].candidate_index, 1);
-        assert_eq!(
-            stored[1]
-                .extra_data
-                .as_ref()
-                .and_then(|value| value.get("dispatch_ref"))
-                .and_then(|value| value.get("SingleKey"))
-                .and_then(|value| value.get("key"))
-                .and_then(|value| value.get("key_id")),
-            Some(&json!("normal-key"))
-        );
+        assert!(stored[1]
+            .extra_data
+            .as_ref()
+            .and_then(|value| value.get("dispatch_ref"))
+            .is_none());
     }
 
     #[test]
@@ -2703,7 +2693,7 @@ mod tests {
             .as_ref()
             .and_then(serde_json::Value::as_object)
             .expect("ranking metadata should persist as object extra data");
-        assert_eq!(extra_data.get("existing"), Some(&json!("value")));
+        assert!(extra_data.get("existing").is_none());
         assert_eq!(
             extra_data.get("ranking_mode"),
             Some(&json!("CacheAffinity"))
@@ -2716,14 +2706,7 @@ mod tests {
             Some(&json!("cached_affinity"))
         );
         assert_eq!(extra_data.get("demoted_by"), Some(&json!("cross_format")));
-        assert_eq!(
-            extra_data
-                .get("dispatch_ref")
-                .and_then(|value| value.get("SingleKey"))
-                .and_then(|value| value.get("key"))
-                .and_then(|value| value.get("key_id")),
-            Some(&json!("ranked-key"))
-        );
+        assert!(extra_data.get("dispatch_ref").is_none());
     }
 
     #[tokio::test]
@@ -3061,7 +3044,7 @@ mod tests {
             .as_ref()
             .and_then(serde_json::Value::as_object)
             .expect("skipped ranking metadata should persist");
-        assert_eq!(extra_data.get("existing"), Some(&json!("value")));
+        assert!(extra_data.get("existing").is_none());
         assert_eq!(
             extra_data.get("ranking_mode"),
             Some(&json!("CacheAffinity"))

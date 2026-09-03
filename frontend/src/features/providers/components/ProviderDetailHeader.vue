@@ -120,16 +120,16 @@
     </div>
 
     <div
-      v-if="provider.website"
+      v-if="safeProviderWebsite"
       class="-mt-0.5"
     >
       <a
-        :href="provider.website"
+        :href="safeProviderWebsite"
         target="_blank"
         rel="noopener noreferrer"
         class="text-xs text-muted-foreground hover:text-primary hover:underline transition-colors truncate block"
-        :title="provider.website"
-      >{{ provider.website }}</a>
+        :title="safeProviderWebsite"
+      >{{ safeProviderWebsite }}</a>
     </div>
 
     <div class="flex items-center gap-1.5 flex-wrap mt-3">
@@ -181,6 +181,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui'
 import { useI18n } from '@/i18n'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
 import type { ProviderEndpoint, ProviderWithEndpointsSummary } from '@/api/endpoints'
+import { safeExternalWebUrl } from '@/utils/navigationSecurity'
 import ProxyNodeSelect from './ProxyNodeSelect.vue'
 
 const props = defineProps<{
@@ -209,6 +210,7 @@ defineEmits<{
 }>()
 
 const { legacyT } = useI18n()
+const safeProviderWebsite = computed(() => safeExternalWebUrl(props.provider.website))
 
 const formatConversionTitle = computed(() => {
   if (props.systemFormatConversionEnabled) return legacyT('系统级格式转换已启用')

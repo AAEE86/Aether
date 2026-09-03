@@ -9,12 +9,12 @@
         <div class="flex items-center gap-1.5">
           <span class="font-medium text-foreground truncate">{{ provider.name }}</span>
           <a
-            v-if="provider.website"
-            :href="provider.website"
+            v-if="safeProviderWebsite"
+            :href="safeProviderWebsite"
             target="_blank"
             rel="noopener noreferrer"
             class="text-muted-foreground hover:text-primary transition-colors shrink-0"
-            :title="provider.website"
+            :title="safeProviderWebsite"
             @click.stop
           >
             <ExternalLink class="w-3.5 h-3.5" />
@@ -221,7 +221,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   Edit,
   Eye,
@@ -241,6 +241,7 @@ import { formatBillingType } from '@/utils/format'
 import { sortEndpoints, isEndpointAvailable, getEndpointDotColor, getEndpointTooltip } from '@/features/providers/composables/useEndpointStatus'
 import { isKeyManagedProviderType } from '../utils/providerTypeUtils'
 import { useI18n } from '@/i18n'
+import { safeExternalWebUrl } from '@/utils/navigationSecurity'
 
 const props = defineProps<{
   provider: ProviderWithEndpointsSummary
@@ -272,6 +273,7 @@ const vAutoFocus = {
 
 const localDescriptionValue = ref('')
 const { legacyT, locale } = useI18n()
+const safeProviderWebsite = computed(() => safeExternalWebUrl(props.provider.website))
 
 watch(
   () => props.editingDescriptionId,

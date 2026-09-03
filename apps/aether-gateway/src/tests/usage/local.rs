@@ -12,7 +12,6 @@ use super::{
     UsageReadRepository, UsageRuntimeConfig, DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
 };
 use crate::constants::LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER;
-use aether_data_contracts::repository::usage::UsageBodyCaptureState;
 
 fn deep_nested_metadata(levels: usize) -> serde_json::Value {
     let mut current = json!({"leaf": "value"});
@@ -403,32 +402,10 @@ async fn gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage_im
     let stored_usage = stored_usage.expect("usage should be recorded");
     assert_eq!(stored_usage.status, "completed");
     assert_eq!(stored_usage.total_tokens, 5);
-    assert_eq!(
-        stored_usage
-            .request_body
-            .as_ref()
-            .and_then(|value| value.get("messages"))
-            .and_then(|value| value.as_array())
-            .and_then(|messages| messages.first())
-            .and_then(|value| value.get("content"))
-            .and_then(|value| value.as_str())
-            .map(str::len),
-        Some(128 * 1024)
-    );
-    assert_eq!(
-        stored_usage
-            .request_body
-            .as_ref()
-            .and_then(|value| value.get("metadata"))
-            .and_then(|value| value.get("child"))
-            .and_then(|value| value.get("child"))
-            .and_then(|value| value.get("child"))
-            .and_then(|value| value.get("child"))
-            .and_then(|value| value.get("child"))
-            .and_then(|value| value.as_object())
-            .map(|value| value.contains_key("depth")),
-        Some(true)
-    );
+    assert!(stored_usage.request_body.is_none());
+    assert!(stored_usage.request_body_ref.is_none());
+    assert!(stored_usage.request_body_state.is_none());
+    assert!(stored_usage.request_headers.is_none());
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
@@ -558,22 +535,12 @@ async fn gateway_ignores_legacy_max_request_body_size_for_local_openai_chat_sync
     )
     .await;
     assert_eq!(stored_usage.total_tokens, 5);
-    assert_eq!(
-        stored_usage.request_body_state,
-        Some(UsageBodyCaptureState::Inline)
-    );
-    assert_eq!(
-        stored_usage.provider_request_body_state,
-        Some(UsageBodyCaptureState::Inline)
-    );
-    assert_ne!(
-        stored_usage
-            .request_body
-            .as_ref()
-            .and_then(|value| value.get("truncated"))
-            .and_then(|value| value.as_bool()),
-        Some(true)
-    );
+    assert!(stored_usage.request_body.is_none());
+    assert!(stored_usage.request_body_ref.is_none());
+    assert!(stored_usage.request_body_state.is_none());
+    assert!(stored_usage.provider_request_body.is_none());
+    assert!(stored_usage.provider_request_body_ref.is_none());
+    assert!(stored_usage.provider_request_body_state.is_none());
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
@@ -856,24 +823,12 @@ async fn gateway_records_failed_usage_when_all_local_openai_chat_candidates_exha
             .and_then(|value| value.as_str()),
         Some("trace-openai-chat-local-report-sync-failure-123")
     );
-    assert_eq!(
-        stored_usage
-            .response_body
-            .as_ref()
-            .and_then(|value| value.get("error"))
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.as_str()),
-        Some("upstream_error")
-    );
-    assert_eq!(
-        stored_usage
-            .client_response_body
-            .as_ref()
-            .and_then(|value| value.get("error"))
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.as_str()),
-        Some("http_error")
-    );
+    assert!(stored_usage.response_body.is_none());
+    assert!(stored_usage.response_body_ref.is_none());
+    assert!(stored_usage.response_body_state.is_none());
+    assert!(stored_usage.client_response_body.is_none());
+    assert!(stored_usage.client_response_body_ref.is_none());
+    assert!(stored_usage.client_response_body_state.is_none());
 
     let stored_candidates = request_candidate_repository
         .list_by_request_id("trace-openai-chat-local-report-sync-failure-123")
@@ -973,15 +928,9 @@ async fn gateway_records_failed_usage_when_sync_runtime_transport_is_unavailable
     assert_eq!(stored_usage.status, "failed");
     assert_eq!(stored_usage.billing_status, "void");
     assert_eq!(stored_usage.status_code, Some(503));
-    assert_eq!(
-        stored_usage
-            .response_body
-            .as_ref()
-            .and_then(|value| value.get("error"))
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.as_str()),
-        Some("execution_runtime_unavailable")
-    );
+    assert!(stored_usage.response_body.is_none());
+    assert!(stored_usage.response_body_ref.is_none());
+    assert!(stored_usage.response_body_state.is_none());
 
     let stored_candidates = request_candidate_repository
         .list_by_request_id("trace-openai-chat-local-transport-unavailable-123")
@@ -1321,15 +1270,10 @@ async fn gateway_records_failed_usage_for_claude_runtime_miss_without_execution_
             .and_then(|value| value.as_str()),
         Some("trace-claude-runtime-miss-usage-123")
     );
-    assert_eq!(
-        stored_usage
-            .client_response_body
-            .as_ref()
-            .and_then(|value| value.get("error"))
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.as_str()),
-        Some("overloaded_error")
-    );
+    assert!(stored_usage.client_response_body.is_none());
+    assert!(stored_usage.client_response_body_ref.is_none());
+    assert!(stored_usage.client_response_body_state.is_none());
+    assert!(stored_usage.error_message.is_none());
 
     let stored_candidates = request_candidate_repository
         .list_by_request_id("trace-claude-runtime-miss-usage-123")
@@ -1680,22 +1624,12 @@ async fn gateway_ignores_legacy_max_response_body_size_for_stream_usage_impl() {
     )
     .await;
     assert_eq!(stored_usage.total_tokens, 6);
-    assert_eq!(
-        stored_usage.response_body_state,
-        Some(UsageBodyCaptureState::Inline)
-    );
-    assert_eq!(
-        stored_usage.client_response_body_state,
-        Some(UsageBodyCaptureState::Inline)
-    );
-    assert_ne!(
-        stored_usage
-            .response_body
-            .as_ref()
-            .and_then(|value| value.get("truncated"))
-            .and_then(|value| value.as_bool()),
-        Some(true)
-    );
+    assert!(stored_usage.response_body.is_none());
+    assert!(stored_usage.response_body_ref.is_none());
+    assert!(stored_usage.response_body_state.is_none());
+    assert!(stored_usage.client_response_body.is_none());
+    assert!(stored_usage.client_response_body_ref.is_none());
+    assert!(stored_usage.client_response_body_state.is_none());
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
@@ -1968,36 +1902,11 @@ async fn gateway_records_failed_usage_when_all_local_claude_cli_candidates_are_s
         stored_usage.routing_local_execution_runtime_miss_reason(),
         Some("all_candidates_skipped")
     );
-    assert_eq!(
-        stored_usage.error_message.as_deref(),
-        Some(
-            "找到 1 个支持模型 gpt-5.4 的候选提供商，但本次同步请求全部不可用：格式转换未启用 2 次（原因代码: all_candidates_skipped）"
-        )
-    );
-    assert_eq!(
-        stored_usage
-            .request_headers
-            .as_ref()
-            .and_then(|value| value.get("authorization"))
-            .and_then(|value| value.as_str()),
-        Some("Bear****miss")
-    );
-    assert_eq!(
-        stored_usage
-            .request_headers
-            .as_ref()
-            .and_then(|value| value.get("content-type"))
-            .and_then(|value| value.as_str()),
-        Some("application/json")
-    );
-    assert_eq!(
-        stored_usage
-            .request_body
-            .as_ref()
-            .and_then(|value| value.get("model"))
-            .and_then(|value| value.as_str()),
-        Some("gpt-5.4")
-    );
+    assert!(stored_usage.error_message.is_none());
+    assert!(stored_usage.request_headers.is_none());
+    assert!(stored_usage.request_body.is_none());
+    assert!(stored_usage.request_body_ref.is_none());
+    assert!(stored_usage.request_body_state.is_none());
     assert!(stored_usage.provider_request_body.is_none());
     assert_eq!(
         stored_usage
@@ -2260,18 +2169,9 @@ fn gateway_keeps_failed_usage_request_capture_lightweight_for_large_local_claude
         )
         .await;
         assert_eq!(stored_usage.status, "failed");
-        assert_eq!(
-            stored_usage.request_body_state,
-            Some(UsageBodyCaptureState::Inline)
-        );
-        assert_eq!(
-            stored_usage
-                .request_body
-                .as_ref()
-                .and_then(|value| value.get("model"))
-                .and_then(|value| value.as_str()),
-            Some("gpt-5.4")
-        );
+        assert!(stored_usage.request_body_state.is_none());
+        assert!(stored_usage.request_body.is_none());
+        assert!(stored_usage.request_body_ref.is_none());
         assert!(stored_usage.provider_request_body.is_none());
         assert_eq!(
             stored_usage

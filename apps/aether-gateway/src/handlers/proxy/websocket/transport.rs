@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use aether_contracts::ProxySnapshot;
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumWsMessage, WebSocket};
 use axum::http::header::{
     ACCEPT, ACCEPT_ENCODING, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST,
@@ -64,7 +65,7 @@ pub(crate) async fn connect_upstream_websocket(
     )?;
     let headers =
         websocket_handshake_headers(&decision.provider_request_headers, errors.headers_invalid)?;
-    let client = build_websocket_client(decision, errors)?;
+    let client = build_websocket_client(decision, &upstream_url, errors).await?;
     let response = client
         .websocket(upstream_url.as_str())
         .headers(headers)
@@ -100,14 +101,26 @@ fn guarded_websocket_upstream_url(
 }
 
 fn websocket_response_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
+    let connection_declared = aether_http::connection_declared_header_names(
+        headers
+            .get_all(http::header::CONNECTION)
+            .iter()
+            .filter_map(|value| value.to_str().ok()),
+    );
     headers
         .iter()
         .filter(|(name, _)| websocket_response_header_is_safe_to_retain(name))
         .filter_map(|(name, value)| {
+            let normalized = name.as_str().to_ascii_lowercase();
+            if crate::headers::should_skip_response_header(&normalized)
+                || connection_declared.contains(&normalized)
+            {
+                return None;
+            }
             value
                 .to_str()
                 .ok()
-                .map(|value| (name.as_str().to_string(), value.to_string()))
+                .map(|value| (normalized, value.to_string()))
         })
         .collect()
 }
@@ -135,16 +148,25 @@ pub(crate) fn websocket_upstream_url(
     invalid_code: &'static str,
 ) -> Result<Url, &'static str> {
     let mut url = Url::parse(raw).map_err(|_| invalid_code)?;
-    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+    if url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
         return Err(invalid_code);
     }
     let websocket_scheme = match url.scheme() {
         "https" => "wss",
         "http" => "ws",
-        "wss" | "ws" => return Ok(url),
+        "wss" => return Ok(url),
+        "ws" if aether_http::url_has_literal_loopback_host(&url) => return Ok(url),
+        "ws" => return Err(invalid_code),
         _ => return Err(invalid_code),
     };
     url.set_scheme(websocket_scheme).map_err(|_| invalid_code)?;
+    if url.scheme() == "ws" && !aether_http::url_has_literal_loopback_host(&url) {
+        return Err(invalid_code);
+    }
     Ok(url)
 }
 
@@ -200,11 +222,13 @@ pub(crate) fn websocket_handshake_headers(
     Ok(headers)
 }
 
-fn build_websocket_client(
+async fn build_websocket_client(
     decision: &AiExecutionDecision,
+    upstream_url: &Url,
     errors: UpstreamWebSocketErrorCodes,
 ) -> Result<wreq::Client, &'static str> {
     let timeouts = websocket_timeouts(decision);
+    let proxy_url = resolve_websocket_proxy_url(decision.proxy.as_ref(), errors)?;
     if let Some(profile) = decision.transport_profile.as_ref() {
         return build_browser_wreq_client(
             timeouts.as_ref(),
@@ -216,28 +240,95 @@ fn build_websocket_client(
         .map_err(|_| errors.client_build_failed);
     }
 
-    let mut builder = wreq::Client::builder();
+    let mut builder = wreq::Client::builder().no_proxy();
     if let Some(connect_ms) = timeouts.as_ref().and_then(|timeouts| timeouts.connect_ms) {
         builder = builder.connect_timeout(Duration::from_millis(connect_ms));
     }
-    if let Some(proxy) = decision
-        .proxy
-        .as_ref()
-        .filter(|proxy| proxy.enabled != Some(false))
-    {
-        if let Some(proxy_url) = proxy
-            .url
-            .as_deref()
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let proxy = wreq::Proxy::all(proxy_url).map_err(|_| errors.proxy_invalid)?;
-            builder = builder.proxy(proxy);
-        } else if proxy.node_id.is_some() || proxy.mode.as_deref() == Some("tunnel") {
-            return Err(errors.tunnel_proxy_unsupported);
+    if let Some(proxy_url) = proxy_url {
+        let proxy = wreq::Proxy::all(proxy_url).map_err(|_| errors.proxy_invalid)?;
+        builder = builder.proxy(proxy);
+    } else {
+        // Pin every direct WebSocket connection to the DNS answers validated
+        // here. This also covers the explicitly permitted loopback `ws://`
+        // form; otherwise the client would perform a second lookup and a
+        // rebinding could escape the loopback-only policy.
+        let host = upstream_url.host_str().ok_or(errors.upstream_url_invalid)?;
+        let port = upstream_url
+            .port_or_known_default()
+            .ok_or(errors.upstream_url_invalid)?;
+        let addresses = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            vec![std::net::SocketAddr::new(ip, port)]
+        } else {
+            aether_http::lookup_host_with_limits(
+                host,
+                port,
+                aether_http::DEFAULT_DNS_LOOKUP_TIMEOUT,
+            )
+            .await
+            .map_err(|_| errors.upstream_url_invalid)?
+        };
+        let allows_loopback = host.trim_end_matches('.').eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false);
+        let unsafe_answer = if allows_loopback {
+            addresses.iter().any(|address| !address.ip().is_loopback())
+        } else {
+            addresses
+                .iter()
+                .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
+        };
+        if addresses.is_empty() || unsafe_answer {
+            return Err(errors.upstream_url_invalid);
         }
+        builder = builder.resolve_to_addrs(host.to_string(), addresses.iter().copied());
     }
     builder.build().map_err(|_| errors.client_build_failed)
+}
+
+fn resolve_websocket_proxy_url<'a>(
+    proxy: Option<&'a ProxySnapshot>,
+    errors: UpstreamWebSocketErrorCodes,
+) -> Result<Option<&'a str>, &'static str> {
+    let Some(proxy) = proxy else {
+        return Ok(None);
+    };
+    if proxy.enabled == Some(false) {
+        return Ok(None);
+    }
+    if let Some(proxy_url) = proxy
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        let parsed = Url::parse(proxy_url).map_err(|_| errors.proxy_invalid)?;
+        if !matches!(
+            parsed.scheme().to_ascii_lowercase().as_str(),
+            "http" | "https" | "socks5" | "socks5h"
+        ) || parsed.host_str().is_none()
+            || !matches!(parsed.path(), "" | "/")
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(errors.proxy_invalid);
+        }
+        // Manual proxy nodes bind credentials to the node identity before a
+        // snapshot reaches this path. Reject userinfo on an otherwise
+        // unbound snapshot so an arbitrary decision cannot smuggle proxy
+        // credentials through a URL; preserve the established node-auth URL
+        // form for authenticated manual proxy nodes.
+        if (!parsed.username().is_empty() || parsed.password().is_some()) && proxy.node_id.is_none()
+        {
+            return Err(errors.proxy_invalid);
+        }
+        return Ok(Some(proxy_url));
+    }
+    if proxy.node_id.is_some() || proxy.mode.as_deref() == Some("tunnel") {
+        return Err(errors.tunnel_proxy_unsupported);
+    }
+    Err(errors.proxy_invalid)
 }
 
 pub(crate) fn websocket_timeouts(
@@ -353,6 +444,23 @@ pub(crate) async fn send_upstream_message(
     message: WreqWsMessage,
 ) -> Result<(), WebSocketWriteError> {
     bounded_send(RELAY_WRITE_TIMEOUT, upstream.send(message).map_err(|_| ())).await
+}
+
+/// Queues one frame in the upstream sink without flushing it. Completion means
+/// `start_send` succeeded, so callers must conservatively treat the frame as
+/// possibly delivered even when a later flush fails or is cancelled.
+pub(crate) async fn feed_upstream_message(
+    upstream: &mut wreq::ws::WebSocket,
+    message: WreqWsMessage,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send(RELAY_WRITE_TIMEOUT, upstream.feed(message).map_err(|_| ())).await
+}
+
+/// Flushes frames previously queued with [`feed_upstream_message`].
+pub(crate) async fn flush_upstream_messages(
+    upstream: &mut wreq::ws::WebSocket,
+) -> Result<(), WebSocketWriteError> {
+    bounded_send(RELAY_WRITE_TIMEOUT, upstream.flush().map_err(|_| ())).await
 }
 
 /// Best-effort teardown write.  The caller is already ending the session, so
@@ -567,13 +675,15 @@ pub(crate) async fn close_client_socket(client_socket: &mut WebSocket, code: u16
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_send, guarded_websocket_upstream_url, responses_websocket_error_event,
-        responses_websocket_error_event_with_stream_id, websocket_handshake_headers,
-        websocket_relay_frame_queue, websocket_response_headers, websocket_upstream_url,
-        WebSocketRelayPumpControl, WebSocketRelayQueueError, WebSocketWriteError,
-        RELAY_FRAME_QUEUE_CAPACITY, RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
+        bounded_send, guarded_websocket_upstream_url, resolve_websocket_proxy_url,
+        responses_websocket_error_event, responses_websocket_error_event_with_stream_id,
+        websocket_handshake_headers, websocket_relay_frame_queue, websocket_response_headers,
+        websocket_upstream_url, UpstreamWebSocketErrorCodes, WebSocketRelayPumpControl,
+        WebSocketRelayQueueError, WebSocketWriteError, RELAY_FRAME_QUEUE_CAPACITY,
+        RELAY_WRITE_TIMEOUT, TEARDOWN_WRITE_TIMEOUT,
     };
     use crate::frontdoor_loop_guard::configured_gateway_frontdoor_base_url;
+    use aether_contracts::ProxySnapshot;
     use axum::http::HeaderMap;
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -748,6 +858,68 @@ mod tests {
     }
 
     #[test]
+    fn remote_websocket_requires_wss_but_loopback_ws_is_allowed() {
+        for allowed in [
+            "wss://example.test/v1/responses",
+            "https://example.test/v1/responses",
+            "ws://localhost:8080/v1/responses",
+            "http://127.42.0.1:8080/v1/responses",
+            "ws://[::1]:8080/v1/responses",
+        ] {
+            assert!(
+                websocket_upstream_url(allowed, "invalid").is_ok(),
+                "{allowed}"
+            );
+        }
+        for rejected in [
+            "ws://example.test/v1/responses",
+            "http://10.0.0.1/v1/responses",
+            "ws://0.0.0.0:8080/v1/responses",
+            "ws://[::ffff:127.0.0.1]:8080/v1/responses",
+            "wss://example.test/v1/responses#secret",
+        ] {
+            assert!(
+                websocket_upstream_url(rejected, "invalid").is_err(),
+                "{rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn active_websocket_proxy_without_a_target_fails_closed() {
+        let errors = UpstreamWebSocketErrorCodes {
+            upstream_url_missing: "missing",
+            upstream_url_invalid: "upstream_invalid",
+            frontdoor_self_loop: "frontdoor_self_loop",
+            headers_invalid: "headers_invalid",
+            client_build_failed: "client_build_failed",
+            proxy_invalid: "proxy_invalid",
+            tunnel_proxy_unsupported: "tunnel_unsupported",
+            handshake_failed: "handshake_failed",
+            upgrade_rejected: "upgrade_rejected",
+            upgrade_failed: "upgrade_failed",
+        };
+        let missing = ProxySnapshot {
+            enabled: Some(true),
+            ..ProxySnapshot::default()
+        };
+        assert_eq!(
+            resolve_websocket_proxy_url(Some(&missing), errors),
+            Err("proxy_invalid")
+        );
+
+        let tunnel = ProxySnapshot {
+            enabled: Some(true),
+            mode: Some("tunnel".to_string()),
+            ..ProxySnapshot::default()
+        };
+        assert_eq!(
+            resolve_websocket_proxy_url(Some(&tunnel), errors),
+            Err("tunnel_unsupported")
+        );
+    }
+
+    #[test]
     fn rejects_responses_websocket_frontdoor_self_loop_before_connecting() {
         let base_url = configured_gateway_frontdoor_base_url();
         let raw_url = format!("{base_url}/v1/responses");
@@ -759,6 +931,52 @@ mod tests {
                 "responses_websocket_frontdoor_self_loop",
             ),
             Err("responses_websocket_frontdoor_self_loop")
+        );
+    }
+
+    #[test]
+    fn websocket_proxy_url_must_be_an_allowed_origin() {
+        let errors = UpstreamWebSocketErrorCodes {
+            upstream_url_missing: "missing",
+            upstream_url_invalid: "upstream_invalid",
+            frontdoor_self_loop: "frontdoor_self_loop",
+            headers_invalid: "headers_invalid",
+            client_build_failed: "client_build_failed",
+            proxy_invalid: "proxy_invalid",
+            tunnel_proxy_unsupported: "tunnel_unsupported",
+            handshake_failed: "handshake_failed",
+            upgrade_rejected: "upgrade_rejected",
+            upgrade_failed: "upgrade_failed",
+        };
+
+        for value in [
+            "file:///tmp/proxy",
+            "http://proxy.example:8080/path",
+            "http://proxy.example:8080?token=secret",
+            "http://proxy.example:8080#fragment",
+            "http://alice:password@proxy.example:8080",
+        ] {
+            let proxy = ProxySnapshot {
+                enabled: Some(true),
+                url: Some(value.to_string()),
+                ..ProxySnapshot::default()
+            };
+            assert_eq!(
+                resolve_websocket_proxy_url(Some(&proxy), errors),
+                Err("proxy_invalid"),
+                "proxy URL should be rejected: {value}"
+            );
+        }
+
+        let authenticated_node = ProxySnapshot {
+            enabled: Some(true),
+            node_id: Some("manual-node-1".to_string()),
+            url: Some("http://alice:password@proxy.example:8080".to_string()),
+            ..ProxySnapshot::default()
+        };
+        assert_eq!(
+            resolve_websocket_proxy_url(Some(&authenticated_node), errors),
+            Ok(Some("http://alice:password@proxy.example:8080"))
         );
     }
 

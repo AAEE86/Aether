@@ -2,9 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
+use aether_data::repository::routing_profiles::InMemoryRoutingGroupRepository;
 use aether_data_contracts::repository::global_models::{
     AdminProviderModelListQuery, GlobalModelReadRepository,
 };
+use aether_data_contracts::repository::routing_profiles::StoredRoutingGroup;
 use axum::body::Body;
 use axum::routing::any;
 use axum::{extract::Request, Router};
@@ -13,7 +15,7 @@ use serde_json::json;
 
 use super::super::super::{
     build_router_with_state, issue_test_admin_access_token, sample_admin_global_model,
-    sample_admin_provider_model, sample_endpoint, sample_key, sample_provider, start_server,
+    sample_admin_provider_model, sample_bound_key, sample_endpoint, sample_provider, start_server,
     AppState,
 };
 use crate::constants::{
@@ -772,7 +774,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
             ),
         ],
         {
-            let mut primary_key = sample_key(
+            let mut primary_key = sample_bound_key(
                 "key-openai-routing",
                 "provider-openai",
                 "openai:chat",
@@ -792,7 +794,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
                 "openai:chat": {"open": true, "next_probe_at": "2099-03-27T15:00:00Z"}
             }));
 
-            let mut mapped_key = sample_key(
+            let mut mapped_key = sample_bound_key(
                 "key-alt-routing",
                 "provider-alt",
                 "openai:chat",
@@ -804,7 +806,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
             mapped_key.allowed_models = Some(json!(["gpt-5-upstream"]));
             mapped_key.rpm_limit = Some(120);
 
-            let mut unlinked_key = sample_key(
+            let mut unlinked_key = sample_bound_key(
                 "key-unlinked-routing",
                 "provider-unlinked",
                 "openai:chat",
@@ -841,6 +843,29 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
             ]),
     );
 
+    let routing_group_repository = Arc::new(InMemoryRoutingGroupRepository::seed(
+        [StoredRoutingGroup {
+            id: "system-default".to_string(),
+            name: "system-default".to_string(),
+            description: Some("test system default routing strategy".to_string()),
+            enabled: true,
+            is_system_default: true,
+            sort_order: 0,
+            config_json: json!({
+                "default_policy": {
+                    "priority_mode": "global_key",
+                    "scheduling_mode": "fixed_order"
+                }
+            }),
+            version: 1,
+            created_at: 1,
+            updated_at: 1,
+            published_at: Some(1),
+        }],
+        std::iter::empty(),
+        std::iter::empty(),
+    ));
+
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
         AppState::new()
@@ -850,10 +875,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
                     provider_catalog_repository,
                 )
                 .with_global_model_repository_for_tests(global_model_repository)
-                .with_system_config_values_for_tests(vec![
-                    ("scheduling_mode".to_string(), json!("fixed_order")),
-                    ("provider_priority_mode".to_string(), json!("global_key")),
-                ]),
+                .with_routing_group_repository_for_tests(routing_group_repository),
             ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -898,7 +920,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
     let openai_keys = openai_endpoints[0]["keys"].as_array().expect("keys array");
     assert_eq!(openai_keys.len(), 1);
     assert_eq!(openai_keys[0]["name"], "primary");
-    assert_eq!(openai_keys[0]["masked_key"], "sk-opena***1234");
+    assert_eq!(openai_keys[0]["masked_key"], "sk-open***1234");
     assert_eq!(openai_keys[0]["is_adaptive"], true);
     assert_eq!(openai_keys[0]["effective_rpm"], 77);
     assert_eq!(openai_keys[0]["allowed_models"], json!(["gpt-5"]));
@@ -955,7 +977,7 @@ async fn gateway_global_model_routing_counts_image_provider_keys_by_provider_mod
     image_provider.provider_type = "chatgpt_web".to_string();
     let grok_provider = sample_provider("provider-grok", "grok2api", 20);
 
-    let mut image_key = sample_key(
+    let mut image_key = sample_bound_key(
         "key-image-routing",
         "provider-image",
         "legacy:mismatch",
@@ -965,7 +987,7 @@ async fn gateway_global_model_routing_counts_image_provider_keys_by_provider_mod
     image_key.auth_type = "oauth".to_string();
     image_key.allowed_models = Some(json!(["gpt-image-2"]));
 
-    let mut grok_key = sample_key(
+    let mut grok_key = sample_bound_key(
         "key-grok-routing",
         "provider-grok",
         "openai:chat",

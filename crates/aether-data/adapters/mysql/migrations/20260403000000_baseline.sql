@@ -578,7 +578,7 @@ CREATE TABLE IF NOT EXISTS proxy_nodes (
     is_manual TINYINT(1) NOT NULL DEFAULT 0,
     proxy_url VARCHAR(500),
     proxy_username VARCHAR(255),
-    proxy_password VARCHAR(500),
+    proxy_password TEXT,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
     remote_config TEXT,

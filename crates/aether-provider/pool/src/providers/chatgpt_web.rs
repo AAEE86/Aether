@@ -144,7 +144,6 @@ pub fn build_chatgpt_web_pool_quota_request(
         client_api_format: "openai:image".to_string(),
         provider_api_format: "chatgpt_web:conversation_init".to_string(),
         model_name: Some("chatgpt-web-conversation-init".to_string()),
-        accept_invalid_certs: true,
     }
 }
 

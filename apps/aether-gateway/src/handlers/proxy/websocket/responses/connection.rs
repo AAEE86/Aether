@@ -17,6 +17,7 @@ use super::lifecycle::{
     await_pending_adapter_observation, finalize_active_turn, queue_turn_finalization,
     settle_turn_finalization, spawn_bounded_adapter_observation, PreviousAttemptSettled,
 };
+use super::plan_admission::terminate_responses_websocket_for_plan_permit_loss;
 use super::quota::{
     detach_exhausted_upstream, is_usage_limit_error_event, mark_active_response_retry_unsafe,
     observe_active_response_rebind_safety, retry_active_turn_after_quota_exhaustion,
@@ -142,6 +143,19 @@ pub(super) async fn relay_bound_connection(
                             state,
                             ResponsesWebSocketTurnOutcome::client_disconnected(),
                         ).await;
+                        break;
+                    }
+                    RelayDisposition::PlanUsagePermitLost => {
+                        warn!(
+                            event_name = "responses_websocket_plan_usage_concurrency_lost_before_send",
+                            log_type = "ops",
+                            transport = WEBSOCKET_LOG_TRANSPORT,
+                            websocket = true,
+                            trace_id = %context.trace_id,
+                            "gateway stopped a Responses WebSocket turn before its upstream send after the subscription plan concurrency lease became unhealthy"
+                        );
+                        close_bound_upstream(bound).await;
+                        terminate_responses_websocket_for_plan_permit_loss(client_socket).await;
                         break;
                     }
                     RelayDisposition::UpstreamError(code) => {
@@ -469,18 +483,33 @@ pub(super) async fn relay_bound_connection(
                             )
                             .await
                         }
-                        None => PreviousAttemptSettled::nothing_to_settle(),
+                        None => Some(PreviousAttemptSettled::nothing_to_settle()),
                     };
                     // Planning and binding a replacement carries the complete
                     // scheduler/provider state machine. Keep that large future
                     // off the relay task's stack; the default Tokio/test worker
                     // stack is otherwise easy to exhaust on this rare branch.
-                    if Box::pin(retry_active_turn_after_quota_exhaustion(
-                        bound, state, context, settled,
-                    ))
-                    .await
-                    {
-                        continue;
+                    if let Some(settled) = settled {
+                        match Box::pin(retry_active_turn_after_quota_exhaustion(
+                            bound, state, context, settled,
+                        ))
+                        .await
+                        {
+                            Ok(true) => continue,
+                            Ok(false) => {}
+                            Err(()) => {
+                                finalize_active_turn(
+                                    bound,
+                                    state,
+                                    ResponsesWebSocketTurnOutcome::connection_admission_lost(),
+                                )
+                                .await;
+                                close_bound_upstream(bound).await;
+                                terminate_responses_websocket_for_plan_permit_loss(client_socket)
+                                    .await;
+                                break;
+                            }
+                        }
                     }
                     // 重试失败。旧 attempt 已经结算，logical turn 仍停在
                     // Replanning，所以后面分支里的 end() / finalize_active_turn
@@ -531,27 +560,32 @@ pub(super) async fn relay_bound_connection(
                 let mut relay_serialization_failed = false;
                 match relay_directive {
                     Some(ResponsesWebSocketRelayDirective::ForwardOriginal) => {
-                        let restored = parsed_upstream_frame
-                            .as_ref()
-                            .and_then(|frame| {
-                                bound
-                                    .redaction_restorer
-                                    .restore_provider_frame_text(frame.event())
-                            });
-                        let client_frame = match restored {
-                            Some(text) => AxumWsMessage::Text(text.into()),
-                            None => upstream_message_to_client(upstream_message.clone()),
-                        };
-                        match send_client_message(client_socket, client_frame).await {
-                            Ok(()) => {
-                                if let (Some(turn), Some(frame)) = (
-                                    bound.turn_state.attempt_mut(),
-                                    parsed_upstream_frame.as_ref(),
-                                ) {
-                                    turn.capture_client_frame(frame.event());
-                                }
+                        let client_frame = match parsed_upstream_frame.as_ref().map(|frame| {
+                            bound
+                                .redaction_restorer
+                                .restore_provider_frame_text(frame.event())
+                        }) {
+                            Some(Ok(Some(text))) => Some(AxumWsMessage::Text(text.into())),
+                            Some(Ok(None)) | None => {
+                                Some(upstream_message_to_client(upstream_message.clone()))
                             }
-                            Err(error) => relay_send_error = Some(error),
+                            Some(Err(_)) => {
+                                relay_serialization_failed = true;
+                                None
+                            }
+                        };
+                        if let Some(client_frame) = client_frame {
+                            match send_client_message(client_socket, client_frame).await {
+                                Ok(()) => {
+                                    if let (Some(turn), Some(frame)) = (
+                                        bound.turn_state.attempt_mut(),
+                                        parsed_upstream_frame.as_ref(),
+                                    ) {
+                                        turn.capture_client_frame(frame.event());
+                                    }
+                                }
+                                Err(error) => relay_send_error = Some(error),
+                            }
                         }
                     }
                     Some(ResponsesWebSocketRelayDirective::ForwardEvents(events)) => {
@@ -560,14 +594,18 @@ pub(super) async fn relay_bound_connection(
                                 .redaction_restorer
                                 .restore_provider_frame_text(event)
                             {
-                                Some(restored) => restored,
-                                None => match encode_opaque_websocket_event(event) {
+                                Ok(Some(restored)) => restored,
+                                Ok(None) => match encode_opaque_websocket_event(event) {
                                     Ok(encoded) => encoded,
                                     Err(_) => {
                                         relay_serialization_failed = true;
                                         break;
                                     }
                                 },
+                                Err(_) => {
+                                    relay_serialization_failed = true;
+                                    break;
+                                }
                             };
                             match send_client_message(
                                 client_socket,

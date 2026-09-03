@@ -37,6 +37,10 @@ const ROUTING_GROUP_SELECTION_CACHE_TTL: Duration = Duration::from_secs(30);
 const ROUTING_GROUP_SELECTION_CACHE_STALE_TTL: Duration = Duration::from_secs(120);
 const CODEX_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const CODEX_FEDRAMP_HEADER: &str = "x-openai-fedramp";
+const INVALID_ROUTING_PROVIDER_CONTRACT_MESSAGE: &str =
+    "routing provider request violates provider contract";
+const INVALID_ROUTING_PROVIDER_HEADERS_MESSAGE: &str =
+    "invalid provider request headers in routing mutation";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedLocalDecisionAuthInput {
@@ -312,10 +316,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
                 )
             }
         }
-        .map_err(|violation| GatewayError::Client {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("routing provider_request violates provider contract: {violation:?}"),
-        })?;
+        .map_err(|_| invalid_routing_provider_contract())?;
     }
     let provider_model = provider_request_body
         .get("model")
@@ -863,10 +864,32 @@ fn routing_selection_error(error: GatewayRoutingSelectionError) -> GatewayError 
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: "no enabled routing strategy is configured for this request".to_string(),
         },
-        error => GatewayError::Client {
+        GatewayRoutingSelectionError::NotFound(_) => GatewayError::Client {
             status: StatusCode::FORBIDDEN,
-            message: error.to_string(),
+            message: "requested routing group was not found".to_string(),
         },
+        GatewayRoutingSelectionError::Disabled(_) => GatewayError::Client {
+            status: StatusCode::FORBIDDEN,
+            message: "requested routing group is not enabled".to_string(),
+        },
+        GatewayRoutingSelectionError::Forbidden(_) => GatewayError::Client {
+            status: StatusCode::FORBIDDEN,
+            message: "requested routing group is not allowed for this principal".to_string(),
+        },
+    }
+}
+
+fn invalid_routing_provider_contract() -> GatewayError {
+    GatewayError::Client {
+        status: StatusCode::BAD_REQUEST,
+        message: INVALID_ROUTING_PROVIDER_CONTRACT_MESSAGE.to_string(),
+    }
+}
+
+fn invalid_routing_provider_headers() -> GatewayError {
+    GatewayError::Client {
+        status: StatusCode::BAD_REQUEST,
+        message: INVALID_ROUTING_PROVIDER_HEADERS_MESSAGE.to_string(),
     }
 }
 
@@ -921,14 +944,9 @@ fn btree_headers_to_header_map(
 ) -> Result<HeaderMap, GatewayError> {
     let mut output = HeaderMap::new();
     for (name, value) in headers {
-        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| GatewayError::Client {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("invalid provider request header name in routing mutation: {err}"),
-        })?;
-        let value = HeaderValue::from_str(value).map_err(|err| GatewayError::Client {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("invalid provider request header value in routing mutation: {err}"),
-        })?;
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| invalid_routing_provider_headers())?;
+        let value = HeaderValue::from_str(value).map_err(|_| invalid_routing_provider_headers())?;
         output.insert(name, value);
     }
     Ok(output)
@@ -1148,6 +1166,50 @@ mod tests {
                 assert!(message.contains("database unavailable"));
             }
             other => panic!("unexpected routing repository error mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routing_selection_errors_do_not_echo_explicit_group() {
+        let secret = "private-group?token=Bearer-secret";
+
+        for error in [
+            GatewayRoutingSelectionError::NotFound(secret.to_string()),
+            GatewayRoutingSelectionError::Disabled(secret.to_string()),
+            GatewayRoutingSelectionError::Forbidden(secret.to_string()),
+        ] {
+            let error = routing_selection_error(error);
+            assert!(matches!(
+                error,
+                GatewayError::Client {
+                    status: StatusCode::FORBIDDEN,
+                    ref message,
+                } if !message.contains(secret)
+            ));
+        }
+    }
+
+    #[test]
+    fn routing_provider_errors_do_not_echo_dynamic_details() {
+        let secret = "https://internal.example/?token=Bearer-secret";
+        let contract_error = invalid_routing_provider_contract();
+        let header_error = btree_headers_to_header_map(&BTreeMap::from([(
+            format!("Authorization: {secret}"),
+            secret.to_string(),
+        )]))
+        .expect_err("invalid header should fail");
+
+        for (error, expected_message) in [
+            (contract_error, INVALID_ROUTING_PROVIDER_CONTRACT_MESSAGE),
+            (header_error, INVALID_ROUTING_PROVIDER_HEADERS_MESSAGE),
+        ] {
+            assert!(matches!(
+                error,
+                GatewayError::Client {
+                    status: StatusCode::BAD_REQUEST,
+                    ref message,
+                } if message == expected_message && !message.contains(secret)
+            ));
         }
     }
 

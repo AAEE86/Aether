@@ -355,6 +355,7 @@ pub(crate) fn resolve_core_stream_direct_finalize_report_kind(plan_kind: &str) -
 
 #[cfg(test)]
 mod tests {
+    use aether_crypto::DEVELOPMENT_ENCRYPTION_KEY;
     use std::collections::BTreeSet;
 
     use aether_contracts::{ExecutionError, ExecutionErrorKind, ExecutionPhase, ExecutionResult};
@@ -435,6 +436,15 @@ mod tests {
     }
 
     fn sample_key() -> StoredProviderCatalogKey {
+        let credential_state = AppState::new()
+            .expect("credential state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let encrypted_api_key = credential_state
+            .seal_provider_catalog_key_api_key("provider-1", "key-1", "plain-upstream-key")
+            .expect("api key should encrypt");
         StoredProviderCatalogKey::new(
             "key-1".to_string(),
             "provider-1".to_string(),
@@ -446,7 +456,7 @@ mod tests {
         .expect("key should build")
         .with_transport_fields(
             Some(serde_json::json!(["openai:chat"])),
-            "plain-upstream-key".to_string(),
+            encrypted_api_key,
             None,
             None,
             Some(serde_json::json!({"openai:chat": 1})),
@@ -466,7 +476,7 @@ mod tests {
         );
         let data_state = GatewayDataState::with_provider_transport_reader_for_tests(
             std::sync::Arc::new(provider_catalog),
-            "development-key",
+            DEVELOPMENT_ENCRYPTION_KEY,
         );
         AppState::new()
             .expect("state should build")

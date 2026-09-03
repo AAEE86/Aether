@@ -1412,7 +1412,12 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
         crate::provider_transport::LocalOAuthRefreshCoordinator::with_adapters_for_tests(vec![
             Arc::new(
                 crate::provider_transport::oauth_refresh::GenericOAuthRefreshAdapter::default()
-                    .with_token_url_for_tests("antigravity", format!("{refresh_url}/oauth/token")),
+                    .with_token_url_for_tests("antigravity", format!("{refresh_url}/oauth/token"))
+                    .with_oauth_credentials_for_tests(
+                        "antigravity",
+                        "test-antigravity-client-id",
+                        "test-antigravity-client-secret",
+                    ),
             ),
         ]);
     let gateway_state =
@@ -1502,12 +1507,12 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
     assert!(seen_refresh_request
         .body
         .contains("grant_type=refresh_token"));
-    assert!(seen_refresh_request.body.contains(
-        "client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-    ));
     assert!(seen_refresh_request
         .body
-        .contains("client_secret=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"));
+        .contains("client_id=test-antigravity-client-id"));
+    assert!(seen_refresh_request
+        .body
+        .contains("client_secret=test-antigravity-client-secret"));
     assert!(seen_refresh_request
         .body
         .contains("refresh_token=rt-antigravity-cli-local-123"));

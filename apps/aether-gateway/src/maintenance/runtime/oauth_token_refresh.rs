@@ -128,7 +128,7 @@ pub(crate) async fn perform_oauth_token_refresh_once(
                 Ok(None) => {
                     summary.skipped = summary.skipped.saturating_add(1);
                 }
-                Err(err) => {
+                Err(_) => {
                     summary.failed = summary.failed.saturating_add(1);
                     warn!(
                         event_name = "oauth_token_refresh_failed",
@@ -136,7 +136,6 @@ pub(crate) async fn perform_oauth_token_refresh_once(
                         worker = "oauth_token_refresh",
                         provider_id = %provider.id,
                         key_id = %key.id,
-                        error = ?err,
                         "gateway oauth token auto refresh failed"
                     );
                 }

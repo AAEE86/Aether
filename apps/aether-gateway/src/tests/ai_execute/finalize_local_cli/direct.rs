@@ -984,6 +984,11 @@ async fn gateway_executes_kiro_claude_cli_sync_upstream_stream_via_local_finaliz
                     Arc::clone(&request_candidate_repository),
                     Arc::clone(&usage_repository),
                     DEVELOPMENT_ENCRYPTION_KEY,
+                )
+                .attach_proxy_node_repository_for_tests(
+                    crate::tests::ai_execute::ai_execute_proxy_node_repository([
+                        "proxy-node-kiro-cli-finalize-local",
+                    ]),
                 ),
             );
     let gateway = build_router_with_state(gateway_state);

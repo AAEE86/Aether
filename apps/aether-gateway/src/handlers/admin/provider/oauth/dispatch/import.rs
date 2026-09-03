@@ -225,10 +225,9 @@ async fn prepare_codex_agent_identity_enrollment(
                     "该 ChatGPT 账号正在创建 Agent Identity，请稍后重试",
                 ));
             }
-            Err(error) => {
+            Err(_) => {
                 tracing::warn!(
                     provider_id = %provider_id,
-                    error = ?error,
                     "gateway Agent Identity enrollment lock unavailable"
                 );
                 release_codex_agent_identity_leases(state, leases).await;
@@ -296,11 +295,10 @@ fn spawn_codex_agent_identity_enrollment_heartbeat(
                         );
                         return;
                     }
-                    Err(error) => {
+                    Err(_) => {
                         lease_lost.store(true, Ordering::Release);
                         tracing::error!(
                             lock_key = %lease.key,
-                            error = ?error,
                             "gateway Agent Identity enrollment lock renewal failed"
                         );
                         return;
@@ -316,10 +314,9 @@ async fn release_codex_agent_identity_leases(
     leases: Vec<RuntimeLockLease>,
 ) {
     for lease in leases {
-        if let Err(error) = state.runtime_state().lock_release(&lease).await {
+        if let Err(_) = state.runtime_state().lock_release(&lease).await {
             tracing::warn!(
                 lock_key = %lease.key,
-                error = ?error,
                 "gateway Agent Identity enrollment lock release failed"
             );
         }
@@ -1201,11 +1198,10 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
                     match state.resolve_local_oauth_request_auth(&transport).await {
                         Ok(Some(_)) => true,
                         Ok(None) => false,
-                        Err(error) => {
+                        Err(_) => {
                             tracing::warn!(
                                 provider_id = %provider_id,
                                 key_id = %persisted_key.id,
-                                error = ?error,
                                 "gateway Agent Identity initial task registration failed"
                             );
                             false
@@ -1213,11 +1209,10 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
                     }
                 }
                 Ok(None) => false,
-                Err(error) => {
+                Err(_) => {
                     tracing::warn!(
                         provider_id = %provider_id,
                         key_id = %persisted_key.id,
-                        error = ?error,
                         "gateway Agent Identity pending transport reload failed"
                     );
                     false

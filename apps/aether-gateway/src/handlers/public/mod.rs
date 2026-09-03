@@ -13,8 +13,9 @@ pub(crate) use self::catalog_helpers::{
     build_public_health_timeline, build_public_health_timeline_details,
     build_public_providers_payload, build_related_health_monitor_payload, normalize_admin_base_url,
     provider_key_api_formats, request_candidate_event_unix_ms, request_candidate_status_label,
-    sanitize_public_model_config_for_user, ApiFormatHealthMonitorOptions,
-    HealthMonitorRelationDimension, ModelHealthMonitorOptions,
+    sanitize_public_model_capabilities, sanitize_public_model_config_for_user,
+    sanitize_public_tiered_pricing, ApiFormatHealthMonitorOptions, HealthMonitorRelationDimension,
+    ModelHealthMonitorOptions,
 };
 pub(crate) use self::system_modules_helpers::{
     build_admin_keys_grouped_by_format_payload, build_public_auth_modules_status_payload,

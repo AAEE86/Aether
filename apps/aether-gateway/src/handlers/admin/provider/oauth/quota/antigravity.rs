@@ -10,13 +10,13 @@ use crate::GatewayError;
 use aether_admin::provider::quota::{
     parse_antigravity_quota_summary_response, parse_antigravity_usage_response,
 };
+use aether_admin::provider::redaction::admin_provider_metadata_bucket_safe_json;
 use aether_contracts::ProxySnapshot;
 use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
-use aether_provider_pool::{
-    build_antigravity_pool_quota_request, build_antigravity_pool_quota_summary_request,
-};
+use aether_provider_pool::build_antigravity_pool_quota_request;
+use aether_provider_pool::build_antigravity_pool_quota_summary_request;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -216,13 +216,13 @@ pub(crate) async fn refresh_antigravity_provider_quota_locally(
         .await?
         {
             ProviderQuotaExecutionOutcome::Response(result) => result,
-            ProviderQuotaExecutionOutcome::Failure(detail) => {
+            ProviderQuotaExecutionOutcome::Failure(_) => {
                 failed_count += 1;
                 results.push(json!({
                     "key_id": key.id,
                     "key_name": key.name,
                     "status": "error",
-                    "message": format!("fetchAvailableModels 请求执行失败: {detail}"),
+                    "message": "fetchAvailableModels 请求执行失败",
                     "status_code": 502,
                 }));
                 continue;
@@ -281,21 +281,12 @@ pub(crate) async fn refresh_antigravity_provider_quota_locally(
                 message = Some("响应中未包含配额信息".to_string());
             }
         } else {
-            let err_msg = extract_execution_error_message(&result);
-            message = Some(match err_msg.as_deref() {
-                Some(detail) if !detail.is_empty() => {
-                    format!(
-                        "fetchAvailableModels 返回状态码 {}: {}",
-                        result.status_code, detail
-                    )
-                }
-                _ => format!("fetchAvailableModels 返回状态码 {}", result.status_code),
-            });
+            message = Some(format!(
+                "fetchAvailableModels 返回状态码 {}",
+                result.status_code
+            ));
             if result.status_code == 403 {
-                let reason = err_msg
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| "账户访问被禁止".to_string());
+                let reason = "账户访问被禁止".to_string();
                 oauth_invalid_at_unix_secs = Some(now_unix_secs);
                 oauth_invalid_reason = Some(format!("账户访问被禁止: {reason}"));
                 metadata_update = Some(json!({
@@ -346,9 +337,11 @@ pub(crate) async fn refresh_antigravity_provider_quota_locally(
         if let Some(metadata) = metadata_update
             .as_ref()
             .and_then(|value| value.get("antigravity"))
-            .cloned()
         {
-            payload.insert("metadata".to_string(), metadata);
+            payload.insert(
+                "metadata".to_string(),
+                admin_provider_metadata_bucket_safe_json("antigravity", Some(metadata)),
+            );
         }
         if let Some(quota_snapshot) = build_quota_snapshot_payload(
             "antigravity",

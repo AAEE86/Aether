@@ -433,7 +433,8 @@ impl AttemptBodyCapture {
         if bytes.is_empty() || self.truncated {
             return;
         }
-        let max_bytes = DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES;
+        let max_bytes = DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
+            .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES);
         if self.buffer.len() >= max_bytes {
             self.truncated = true;
             return;
@@ -447,11 +448,22 @@ impl AttemptBodyCapture {
     }
 
     pub(crate) fn encode(&self) -> (Option<String>, Option<UsageBodyCaptureState>) {
-        let body = (!self.buffer.is_empty())
-            .then(|| base64::engine::general_purpose::STANDARD.encode(&self.buffer));
-        let state = if self.truncated {
+        self.encode_with_limit(
+            DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
+                .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES),
+        )
+    }
+
+    fn encode_with_limit(
+        &self,
+        max_bytes: usize,
+    ) -> (Option<String>, Option<UsageBodyCaptureState>) {
+        let captured = &self.buffer[..self.buffer.len().min(max_bytes)];
+        let body = (!captured.is_empty())
+            .then(|| base64::engine::general_purpose::STANDARD.encode(captured));
+        let state = if self.truncated || captured.len() < self.buffer.len() {
             UsageBodyCaptureState::Truncated
-        } else if self.buffer.is_empty() {
+        } else if captured.is_empty() {
             UsageBodyCaptureState::None
         } else {
             UsageBodyCaptureState::Inline
@@ -1418,15 +1430,14 @@ mod stage_tests {
         );
     }
 
-    /// body capture 的编码状态。截断分支这里到不了：共享的
-    /// `DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES` 是 `usize::MAX`，
-    /// 也就是默认不限长；截断只在 usage 侧把上限调低后才可能发生。
+    /// body capture 的编码状态。Full 记录级别仍受 gateway 的硬上限约束，
+    /// 这样长连接不会把审计副本无限累积。
     #[test]
     fn body_capture_encodes_inline_and_empty_states() {
         assert_eq!(
-            super::DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
-            usize::MAX,
-            "the default capture limit is unbounded; truncation is not reachable here"
+            super::DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
+                .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES),
+            crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES
         );
 
         let mut capture = AttemptBodyCapture::default();
@@ -1453,6 +1464,20 @@ mod stage_tests {
         assert_eq!(
             state,
             Some(aether_data_contracts::repository::usage::UsageBodyCaptureState::None)
+        );
+
+        let defensive = AttemptBodyCapture {
+            buffer: b"abcdef".to_vec(),
+            truncated: false,
+        };
+        let (body, state) = defensive.encode_with_limit(3);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(body.expect("bounded capture should be encoded"))
+            .expect("capture is valid base64");
+        assert_eq!(decoded, b"abc");
+        assert_eq!(
+            state,
+            Some(aether_data_contracts::repository::usage::UsageBodyCaptureState::Truncated)
         );
     }
 

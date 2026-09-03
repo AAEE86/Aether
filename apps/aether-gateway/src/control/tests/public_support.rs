@@ -948,6 +948,34 @@ fn classifies_auth_routes_as_public_support_route() {
 }
 
 #[test]
+fn does_not_classify_state_changing_auth_routes_for_get() {
+    for path in [
+        "/api/auth/login",
+        "/api/auth/refresh",
+        "/api/auth/register",
+        "/api/auth/logout",
+        "/api/auth/send-verification-code",
+        "/api/auth/verify-email",
+        "/api/auth/verification-status",
+    ] {
+        let headers = headers(&[]);
+        let uri: Uri = path.parse().expect("uri should parse");
+        assert!(
+            classify_control_route(&http::Method::GET, &uri, &headers).is_none(),
+            "state-changing auth route {path} must not accept GET"
+        );
+    }
+
+    let headers = headers(&[]);
+    let uri: Uri = "/api/auth/me".parse().expect("uri should parse");
+    assert_eq!(
+        classify_control_route(&http::Method::GET, &uri, &headers)
+            .and_then(|decision| decision.route_kind),
+        Some("me".to_string())
+    );
+}
+
+#[test]
 fn classifies_oauth_public_providers_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/oauth/providers".parse().expect("uri should parse");
