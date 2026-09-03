@@ -12,12 +12,15 @@ import {
   getModelScheduling,
   modelSchedulingRuleId,
   normalizeRoutingGroupConfig,
+  normalizeStickyKeyAttempts,
   parseAllowedModelsInput,
   removePerModelRoutingConfig,
+  resolveModelKeyPriorityOverride,
   routingModelScopeLabel,
   savePerModelRoutingConfig,
   setDefaultPoolPriorityOverrides,
   setDefaultProviderPriorityOverrides,
+  setModelKeyPriorityOverridesForFormat,
   setRoutingSortingScope,
   updateAllowedModelsFromInput,
   upsertModelSchedulingRule,
@@ -73,6 +76,65 @@ describe('routingPolicy', () => {
       'provider-pool': 3,
     })
     expect(policy.key_priority_overrides).toEqual({})
+  })
+
+  it('defaults sticky key attempts to 2 and normalizes invalid values', () => {
+    expect(createEmptyRoutingGroupConfig().default_policy.sticky_key_attempts).toBe(2)
+    expect(normalizeRoutingGroupConfig({}).default_policy.sticky_key_attempts).toBe(2)
+    expect(normalizeRoutingGroupConfig({
+      default_policy: { priority_mode: 'provider', scheduling_mode: 'cache_affinity', keep_priority_on_conversion: false, sticky_key_attempts: 3 },
+    }).default_policy.sticky_key_attempts).toBe(3)
+    expect(normalizeStickyKeyAttempts('5')).toBe(5)
+    expect(normalizeStickyKeyAttempts(-1)).toBe(2)
+    expect(normalizeStickyKeyAttempts('abc')).toBe(2)
+    expect(normalizeStickyKeyAttempts(500)).toBe(99)
+    expect(getModelScheduling(createEmptyRoutingGroupConfig(), 'gpt-5').sticky_key_attempts).toBe(2)
+  })
+
+  it('keeps key priority overrides independent per api format', () => {
+    let config = setModelKeyPriorityOverridesForFormat(
+      createEmptyRoutingGroupConfig(),
+      DEFAULT_ROUTING_POLICY_MODEL,
+      'OpenAI:Chat',
+      { 'key-a': 0, 'key-b': 1 },
+    )
+    config = setModelKeyPriorityOverridesForFormat(
+      config,
+      DEFAULT_ROUTING_POLICY_MODEL,
+      'claude:messages',
+      { 'key-a': 3 },
+    )
+
+    const policy = getDefaultModelPolicy(config)
+    expect(policy.key_priority_overrides).toEqual({})
+    expect(policy.key_priority_overrides_by_format).toEqual({
+      'openai:chat': { 'key-a': 0, 'key-b': 1 },
+      'claude:messages': { 'key-a': 3 },
+    })
+    expect(resolveModelKeyPriorityOverride(config, DEFAULT_ROUTING_POLICY_MODEL, 'openai:chat', 'key-a')).toBe(0)
+    expect(resolveModelKeyPriorityOverride(config, DEFAULT_ROUTING_POLICY_MODEL, 'claude:messages', 'key-a')).toBe(3)
+    expect(resolveModelKeyPriorityOverride(config, DEFAULT_ROUTING_POLICY_MODEL, 'claude:messages', 'key-b')).toBeUndefined()
+
+    const cleared = setModelKeyPriorityOverridesForFormat(config, DEFAULT_ROUTING_POLICY_MODEL, 'claude:messages', {})
+    expect(getDefaultModelPolicy(cleared).key_priority_overrides_by_format).toEqual({
+      'openai:chat': { 'key-a': 0, 'key-b': 1 },
+    })
+  })
+
+  it('falls back to format-agnostic key overrides and normalizes legacy configs', () => {
+    const config = normalizeRoutingGroupConfig({
+      model_policies: [{
+        ...createEmptyModelPolicy('gpt-5'),
+        key_priority_overrides: { 'key-a': 7 },
+        key_priority_overrides_by_format: { ' OpenAI:Chat ': { 'key-a': 1 } },
+      }],
+    })
+
+    expect(config.model_policies[0].key_priority_overrides_by_format).toEqual({
+      'openai:chat': { 'key-a': 1 },
+    })
+    expect(resolveModelKeyPriorityOverride(config, 'gpt-5', 'openai:chat', 'key-a')).toBe(1)
+    expect(resolveModelKeyPriorityOverride(config, 'gpt-5', 'gemini:generate_content', 'key-a')).toBe(7)
   })
 
   it('stores per-model scheduling as generated routing rules', () => {

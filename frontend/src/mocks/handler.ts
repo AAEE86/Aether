@@ -977,6 +977,7 @@ const MOCK_ROUTING_GROUPS: MockRoutingGroup[] = [
         priority_mode: 'provider',
         scheduling_mode: 'cache_affinity',
         keep_priority_on_conversion: false,
+        sticky_key_attempts: 2,
       },
       model_policies: [
         {
@@ -985,6 +986,8 @@ const MOCK_ROUTING_GROUPS: MockRoutingGroup[] = [
           allowed_keys: [],
           provider_priority_overrides: { 'provider-002': 0 },
           key_priority_overrides: {},
+          key_priority_overrides_by_format: {},
+          pool_priority_overrides: {},
           pool_policy_overrides: {},
         },
       ],

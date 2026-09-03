@@ -155,17 +155,6 @@
               </SelectContent>
             </Select>
           </div>
-          <div class="space-y-1.5">
-            <Label>{{ legacyT('最大重试次数') }}</Label>
-            <Input
-              :model-value="form.max_retries ?? ''"
-              type="number"
-              min="0"
-              max="999"
-              :placeholder="legacyT('默认 2')"
-              @update:model-value="(v) => form.max_retries = parseNumberInput(v)"
-            />
-          </div>
         </div>
 
         <!-- 超时配置 -->

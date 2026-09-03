@@ -272,6 +272,8 @@ import {
   type ProviderWithEndpointsSummary,
 } from '@/api/endpoints'
 import { adminApi } from '@/api/admin'
+import { listRoutingGroups } from '@/api/routing-profiles'
+import { normalizeRoutingGroupConfig } from '@/features/routing/utils/routingPolicy'
 import { parseApiError } from '@/utils/errorParser'
 import { useI18n } from '@/i18n'
 
@@ -533,8 +535,18 @@ const maxProviderPriority = computed(() => {
   return priorities.length > 0 ? Math.max(...priorities) : undefined
 })
 
-// 加载优先级模式
+// 加载优先级模式：优先使用启用中的系统默认调度策略，旧的系统配置键仅作兜底
 async function loadPriorityMode(options: { cacheTtlMs?: number } = {}) {
+  try {
+    const groups = await listRoutingGroups()
+    const systemDefault = groups.items.find(group => group.is_system_default && group.enabled)
+    if (systemDefault) {
+      priorityMode.value = normalizeRoutingGroupConfig(systemDefault.config_json).default_policy.priority_mode
+      return
+    }
+  } catch {
+    // 路由策略不可用时继续尝试旧配置
+  }
   try {
     const response = await adminApi.getSystemConfig('provider_priority_mode', {
       cacheTtlMs: options.cacheTtlMs ?? 0,

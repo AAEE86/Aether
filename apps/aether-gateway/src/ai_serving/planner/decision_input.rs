@@ -1073,6 +1073,7 @@ fn ensure_report_context_routing_trace(
                 endpoint_id: decision.endpoint_id.clone().unwrap_or_default(),
                 model_id,
                 key_id,
+                api_format: decision.provider_api_format.clone(),
                 provider_priority,
                 key_priority,
             },

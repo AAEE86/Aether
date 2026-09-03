@@ -23,7 +23,11 @@ pub struct RoutingPoolPolicyOverride {
     pub scheduling_presets: Vec<RoutingSchedulingPreset>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Default number of attempts on the first-ranked (sticky) candidate before
+/// failing over: one retry on the same key.
+pub const DEFAULT_STICKY_KEY_ATTEMPTS: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingDefaultPolicy {
     #[serde(default)]
     pub priority_mode: RoutingSetPriorityMode,
@@ -31,6 +35,26 @@ pub struct RoutingDefaultPolicy {
     pub scheduling_mode: RoutingSchedulingMode,
     #[serde(default)]
     pub keep_priority_on_conversion: bool,
+    /// Total attempts on the first-ranked candidate before moving on. Later
+    /// candidates always get a single attempt so failover keeps advancing.
+    /// `0` and `1` both mean no same-key retry.
+    #[serde(default = "default_sticky_key_attempts")]
+    pub sticky_key_attempts: u32,
+}
+
+impl Default for RoutingDefaultPolicy {
+    fn default() -> Self {
+        Self {
+            priority_mode: RoutingSetPriorityMode::default(),
+            scheduling_mode: RoutingSchedulingMode::default(),
+            keep_priority_on_conversion: false,
+            sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
+        }
+    }
+}
+
+fn default_sticky_key_attempts() -> u32 {
+    DEFAULT_STICKY_KEY_ATTEMPTS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -44,6 +68,13 @@ pub struct RoutingModelPolicy {
     pub provider_priority_overrides: BTreeMap<String, i32>,
     #[serde(default)]
     pub key_priority_overrides: BTreeMap<String, i32>,
+    /// Key priority overrides scoped to one API format: `api_format -> key_id -> priority`.
+    ///
+    /// A key can serve several API formats and legacy `global_priority_by_format`
+    /// ranks it independently per format. Entries here take precedence over
+    /// `key_priority_overrides` when the candidate format matches.
+    #[serde(default)]
+    pub key_priority_overrides_by_format: BTreeMap<String, BTreeMap<String, i32>>,
     #[serde(default)]
     pub pool_priority_overrides: BTreeMap<String, i32>,
     #[serde(default)]

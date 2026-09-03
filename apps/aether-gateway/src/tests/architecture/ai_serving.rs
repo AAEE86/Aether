@@ -1714,7 +1714,6 @@ fn ai_serving_candidate_materialization_owns_affinity_and_candidate_runtime_pers
         "pub fn ai_should_persist_available_candidate_for_pool_key",
         "pub fn ai_should_persist_skipped_candidate_for_pool_membership",
         "pub fn ai_candidate_extra_data_with_ranking",
-        "attempt_slot_count",
         "should_persist_available_candidate",
         "persist_available_candidate",
         "build_attempt",

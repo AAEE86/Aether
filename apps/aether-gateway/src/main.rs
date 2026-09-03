@@ -2096,6 +2096,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     state.bootstrap_admin_from_env().await?;
+    match state.ensure_system_default_routing_group().await {
+        Ok(Some(group)) => {
+            info!(
+                group_id = %group.id,
+                group_name = %group.name,
+                "created system default routing group from legacy scheduler config"
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to bootstrap system default routing group; scheduler falls back to legacy system config"
+            );
+        }
+    }
     match state.prewarm_chat_pii_redaction_runtime_config().await {
         Ok(enabled) => {
             info!(
