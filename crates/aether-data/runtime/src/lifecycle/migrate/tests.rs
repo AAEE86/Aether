@@ -1066,6 +1066,7 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260727000000,
             20260731000000,
             20260821000000,
+            20260903000000,
         ]
     );
     assert_eq!(
@@ -1101,6 +1102,7 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260727000000,
             20260731000000,
             20260821000000,
+            20260903000000,
         ]
     );
 }
