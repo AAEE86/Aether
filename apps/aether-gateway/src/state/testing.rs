@@ -17,6 +17,20 @@ use crate::{provider_transport, usage};
 #[cfg(test)]
 impl AppState {
     pub(crate) fn with_data_state_for_tests(mut self, data_state: GatewayDataState) -> Self {
+        // Request-execution fixtures provide candidate and provider data but
+        // bypass the production startup bootstrap that creates the enabled
+        // system-default routing group. Keep those isolated states aligned
+        // with the real gateway contract while leaving intentionally disabled
+        // or routing-only fixtures untouched.
+        let data_state = if data_state.has_minimal_candidate_selection_reader()
+            && data_state.has_provider_catalog_reader()
+            && !data_state.has_routing_group_reader()
+            && !data_state.has_routing_group_writer()
+        {
+            data_state.with_default_routing_group_for_tests()
+        } else {
+            data_state
+        };
         self.replace_data_state(Arc::new(data_state));
         self.request_candidate_queue = None;
         self

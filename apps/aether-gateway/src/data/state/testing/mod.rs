@@ -877,6 +877,34 @@ impl GatewayDataState {
         self
     }
 
+    /// Attach the minimal enabled system-default strategy needed by request
+    /// execution tests. Production startup creates this row during database
+    /// bootstrap; isolated test data states bypass that startup path.
+    #[cfg(test)]
+    pub(crate) fn with_default_routing_group_for_tests(self) -> Self {
+        use aether_data::repository::routing_profiles::InMemoryRoutingGroupRepository;
+        use aether_data_contracts::repository::routing_profiles::StoredRoutingGroup;
+
+        let repository = Arc::new(InMemoryRoutingGroupRepository::seed(
+            vec![StoredRoutingGroup {
+                id: "test-system-default".to_string(),
+                name: "test-system-default".to_string(),
+                description: None,
+                enabled: true,
+                is_system_default: true,
+                sort_order: 0,
+                config_json: serde_json::json!({}),
+                version: 1,
+                created_at: 1,
+                updated_at: 1,
+                published_at: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+        ));
+        self.with_routing_group_repository_for_tests(repository)
+    }
+
     #[cfg(test)]
     pub(crate) fn with_auth_api_key_reader(
         mut self,
