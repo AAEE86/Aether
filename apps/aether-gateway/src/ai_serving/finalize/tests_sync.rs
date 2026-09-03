@@ -844,7 +844,7 @@ fn converts_claude_cli_response_to_openai_responses_response() {
             "output_text": "Hello Claude CLI",
             "output": [{
                 "type": "message",
-                "id": "msg_cli_123_msg",
+                "id": openai_responses_message_item_id("msg_cli_123", 0),
                 "role": "assistant",
                 "status": "completed",
                 "content": [{
@@ -908,7 +908,7 @@ fn converts_claude_cli_tool_use_to_openai_responses_function_call() {
             "output": [
                 {
                     "type": "message",
-                    "id": "msg_cli_tool_123_msg",
+                    "id": openai_responses_message_item_id("msg_cli_tool_123", 0),
                     "role": "assistant",
                     "status": "completed",
                     "content": [{
