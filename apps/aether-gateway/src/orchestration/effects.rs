@@ -2256,6 +2256,9 @@ mod tests {
             "api_key_id": "api-key-1",
             "client_api_format": "openai:chat",
             "model": "gpt-5",
+            "scheduler_affinity_policy": {
+                "scheduling_mode": "cache_affinity"
+            },
             "client_session_affinity": {
                 "client_family": "generic",
                 "session_key": "session=session-1;agent=coder"
@@ -2266,6 +2269,17 @@ mod tests {
             },
             "original_request_body": {
                 "model": "gpt-5"
+            }
+        })
+    }
+
+    fn cache_affinity_report_context() -> Value {
+        json!({
+            "api_key_id": "api-key-1",
+            "client_api_format": "openai:chat",
+            "model": "gpt-5",
+            "scheduler_affinity_policy": {
+                "scheduling_mode": "cache_affinity"
             }
         })
     }
@@ -2989,11 +3003,7 @@ mod tests {
     async fn stream_success_effect_helper_projects_health_and_scheduler_affinity() {
         let state = AppState::new().expect("gateway state should build");
         let plan = sample_plan();
-        let report_context = json!({
-            "api_key_id": "api-key-1",
-            "client_api_format": "openai:chat",
-            "model": "gpt-5",
-        });
+        let report_context = cache_affinity_report_context();
         let cache_key =
             build_scheduler_affinity_cache_key_for_api_key_id("api-key-1", "openai:chat", "gpt-5")
                 .expect("scheduler affinity cache key should build");
@@ -3104,11 +3114,7 @@ mod tests {
     async fn success_remembers_scheduler_affinity_cache_for_final_candidate() {
         let state = AppState::new().expect("gateway state should build");
         let plan = sample_plan();
-        let report_context = json!({
-            "api_key_id": "api-key-1",
-            "client_api_format": "openai:chat",
-            "model": "gpt-5",
-        });
+        let report_context = cache_affinity_report_context();
         let cache_key =
             build_scheduler_affinity_cache_key_for_api_key_id("api-key-1", "openai:chat", "gpt-5")
                 .expect("scheduler affinity cache key should build");
@@ -3275,11 +3281,7 @@ mod tests {
     async fn health_success_keeps_scheduler_affinity_after_health_state_update() {
         let state = health_state();
         let plan = sample_plan();
-        let report_context = json!({
-            "api_key_id": "api-key-1",
-            "client_api_format": "openai:chat",
-            "model": "gpt-5",
-        });
+        let report_context = cache_affinity_report_context();
         let cache_key =
             build_scheduler_affinity_cache_key_for_api_key_id("api-key-1", "openai:chat", "gpt-5")
                 .expect("scheduler affinity cache key should build");
@@ -3306,19 +3308,15 @@ mod tests {
 
     #[tokio::test]
     async fn load_balance_success_does_not_remember_scheduler_affinity_cache() {
-        let state = AppState::new()
-            .expect("gateway state should build")
-            .with_data_state_for_tests(
-                GatewayDataState::disabled().with_system_config_values_for_tests(vec![(
-                    "scheduling_mode".to_string(),
-                    json!("load_balance"),
-                )]),
-            );
+        let state = AppState::new().expect("gateway state should build");
         let plan = sample_plan();
         let report_context = json!({
             "api_key_id": "api-key-1",
             "client_api_format": "openai:chat",
             "model": "gpt-5",
+            "scheduler_affinity_policy": {
+                "scheduling_mode": "load_balance"
+            }
         });
         let cache_key =
             build_scheduler_affinity_cache_key_for_api_key_id("api-key-1", "openai:chat", "gpt-5")
@@ -3381,11 +3379,7 @@ mod tests {
         success_plan.provider_id = "prov-2".to_string();
         success_plan.endpoint_id = "ep-2".to_string();
         success_plan.key_id = "key-2".to_string();
-        let report_context = json!({
-            "api_key_id": "api-key-1",
-            "client_api_format": "openai:chat",
-            "model": "gpt-5",
-        });
+        let report_context = cache_affinity_report_context();
         let cache_key =
             build_scheduler_affinity_cache_key_for_api_key_id("api-key-1", "openai:chat", "gpt-5")
                 .expect("scheduler affinity cache key should build");
