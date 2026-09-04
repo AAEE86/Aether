@@ -89,6 +89,24 @@ pub fn is_private_or_reserved_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Return whether an address belongs to RFC 2544's IPv4 benchmarking range.
+///
+/// Local DNS interception tools (for example, Surge in Fake-IP mode) commonly
+/// synthesize answers from `198.18.0.0/15`.  The range is intentionally still
+/// classified as reserved by [`is_private_or_reserved_ip`]; callers may use
+/// this predicate only when they have independently established that the
+/// hostname is a trusted, fixed destination.  Keeping the predicates separate
+/// prevents a compatibility exception from weakening the generic SSRF guard.
+pub fn is_ipv4_benchmarking_fake_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 198 && (18..=19).contains(&octets[1])
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
 /// Return true only when a URL names loopback without relying on DNS.
 ///
 /// This is intentionally stricter than accepting names that currently resolve
@@ -110,8 +128,8 @@ pub fn is_https_or_loopback_http_url(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_declared_header_names, is_https_or_loopback_http_url, is_private_or_reserved_ip,
-        url_has_literal_loopback_host,
+        connection_declared_header_names, is_https_or_loopback_http_url,
+        is_ipv4_benchmarking_fake_ip, is_private_or_reserved_ip, url_has_literal_loopback_host,
     };
 
     #[test]
@@ -149,6 +167,19 @@ mod tests {
         assert!(!is_private_or_reserved_ip(
             "2606:4700:4700::1111".parse().unwrap()
         ));
+    }
+
+    #[test]
+    fn benchmarking_fake_ip_predicate_is_narrow_and_does_not_change_private_policy() {
+        for address in ["198.18.0.1", "198.19.255.254"] {
+            let ip = address.parse().expect("benchmarking address");
+            assert!(is_ipv4_benchmarking_fake_ip(ip));
+            assert!(is_private_or_reserved_ip(ip));
+        }
+        for address in ["198.17.255.254", "198.20.0.1", "2001:db8::1"] {
+            let ip = address.parse().expect("non-benchmarking address");
+            assert!(!is_ipv4_benchmarking_fake_ip(ip));
+        }
     }
 
     #[test]
