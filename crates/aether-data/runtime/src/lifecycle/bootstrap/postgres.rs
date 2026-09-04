@@ -8,8 +8,7 @@ use tracing::info;
 pub(crate) static EMPTY_DATABASE_SNAPSHOT_SQL: &str =
     include_str!(concat!(env!("OUT_DIR"), "/empty_database_snapshot.sql"));
 // Keep post-snapshot migrations executable on a fresh database so required
-// schema changes still run. Compatibility migrations after this frontier are
-// explicit no-ops and must not rewrite legacy rows.
+// schema changes after this frontier still run.
 pub(crate) const EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION: i64 = 20260821130000;
 
 const PUBLIC_BASE_TABLE_COUNT_SQL: &str = r#"
