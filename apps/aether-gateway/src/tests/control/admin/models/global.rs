@@ -2,11 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
-use aether_data::repository::routing_profiles::InMemoryRoutingGroupRepository;
 use aether_data_contracts::repository::global_models::{
     AdminProviderModelListQuery, GlobalModelReadRepository,
 };
-use aether_data_contracts::repository::routing_profiles::StoredRoutingGroup;
 use axum::body::Body;
 use axum::routing::any;
 use axum::{extract::Request, Router};
@@ -843,29 +841,6 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
             ]),
     );
 
-    let routing_group_repository = Arc::new(InMemoryRoutingGroupRepository::seed(
-        [StoredRoutingGroup {
-            id: "system-default".to_string(),
-            name: "system-default".to_string(),
-            description: Some("test system default routing strategy".to_string()),
-            enabled: true,
-            is_system_default: true,
-            sort_order: 0,
-            config_json: json!({
-                "default_policy": {
-                    "priority_mode": "global_key",
-                    "scheduling_mode": "fixed_order"
-                }
-            }),
-            version: 1,
-            created_at: 1,
-            updated_at: 1,
-            published_at: Some(1),
-        }],
-        std::iter::empty(),
-        std::iter::empty(),
-    ));
-
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
         AppState::new()
@@ -875,7 +850,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
                     provider_catalog_repository,
                 )
                 .with_global_model_repository_for_tests(global_model_repository)
-                .with_routing_group_repository_for_tests(routing_group_repository),
+                .with_system_default_routing_group_for_tests(),
             ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -898,8 +873,8 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
     assert_eq!(payload["global_model_name"], "gpt-5");
     assert_eq!(payload["display_name"], "GPT 5");
     assert_eq!(payload["global_model_mappings"], json!(["gpt-5-upstream"]));
-    assert_eq!(payload["scheduling_mode"], "fixed_order");
-    assert_eq!(payload["priority_mode"], "global_key");
+    assert_eq!(payload["scheduling_mode"], "cache_affinity");
+    assert_eq!(payload["priority_mode"], "provider");
     assert_eq!(payload["total_providers"], 2);
     assert_eq!(payload["active_providers"], 2);
 

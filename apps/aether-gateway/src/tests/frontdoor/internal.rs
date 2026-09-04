@@ -6,6 +6,7 @@ use super::{
     InMemoryVideoTaskRepository, UpsertVideoTask, VideoTaskStatus, VideoTaskWriteRepository,
     DEVELOPMENT_ENCRYPTION_KEY,
 };
+use crate::data::GatewayDataState;
 use crate::tests::{
     any, build_router, build_router_with_state, build_state_with_execution_runtime_override, json,
     start_server, strip_sse_keepalive_comments, AppState, Arc, Body, HeaderValue, Json, Mutex,
@@ -1850,7 +1851,7 @@ async fn gateway_returns_internal_gateway_decision_sync_fallback_with_resolved_a
         AppState::new()
             .expect("gateway should build")
             .with_data_state_for_tests(
-                crate::data::GatewayDataState::with_auth_api_key_reader_for_tests(auth_repository)
+                GatewayDataState::with_auth_api_key_reader_for_tests(auth_repository)
                     .with_system_default_routing_group_for_tests(),
             ),
     );

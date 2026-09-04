@@ -1346,7 +1346,7 @@ fn parse_antigravity_models_response(body: &Value) -> Result<(Vec<Value>, Option
     let mut quota_by_model = serde_json::Map::new();
     for (model_id, model_data) in models_object {
         let model_id = model_id.trim();
-        if model_id.is_empty() || ANTIGRAVITY_BLOCKED_MODELS.contains(&model_id) {
+        if !antigravity_model_id_is_routable(model_id) {
             continue;
         }
         let model_object = model_data.as_object().cloned().unwrap_or_default();
@@ -1380,6 +1380,14 @@ fn parse_antigravity_models_response(body: &Value) -> Result<(Vec<Value>, Option
     });
 
     Ok((models, upstream_metadata))
+}
+
+pub fn antigravity_model_id_is_routable(model_id: &str) -> bool {
+    let model_id = model_id.trim();
+    !model_id.is_empty()
+        && !ANTIGRAVITY_BLOCKED_MODELS
+            .iter()
+            .any(|blocked| blocked.eq_ignore_ascii_case(model_id))
 }
 
 fn parse_kiro_available_models_response(

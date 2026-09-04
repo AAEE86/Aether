@@ -27,6 +27,10 @@ use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
 use aether_runtime_state::{RedisClientConfig, RuntimeState};
+use aether_scheduler_core::{
+    build_scheduler_affinity_cache_key_for_api_key_id_with_client_session_and_scope,
+    SchedulerAffinityScope,
+};
 use aether_test_support::ManagedRedisServer;
 use sha2::{Digest, Sha256};
 
@@ -39,6 +43,18 @@ fn hash_api_key(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn system_default_affinity_cache_key(api_key_id: &str, api_format: &str, model: &str) -> String {
+    let scope = SchedulerAffinityScope::new("system-default", Some(1));
+    build_scheduler_affinity_cache_key_for_api_key_id_with_client_session_and_scope(
+        api_key_id,
+        api_format,
+        model,
+        None,
+        Some(&scope),
+    )
+    .expect("system-default affinity cache key should build")
 }
 
 fn sample_auth_snapshot(

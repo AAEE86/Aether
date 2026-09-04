@@ -1887,6 +1887,46 @@ fn codex_quota_is_account_status_key(key: &str) -> bool {
     matches!(key, "allowed" | "limit_reached")
 }
 
+fn codex_quota_merge_reset_credits(
+    current_object: &serde_json::Map<String, serde_json::Value>,
+    incoming: &serde_json::Value,
+) -> serde_json::Value {
+    let Some(incoming_object) = incoming.as_object() else {
+        return incoming.clone();
+    };
+    let mut merged = current_object
+        .get("reset_credits")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let failed_detail = incoming_object
+        .get("detail_status")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|status| status.trim().eq_ignore_ascii_case("failed"));
+    if !failed_detail {
+        return incoming.clone();
+    }
+
+    for (key, value) in incoming_object {
+        // A failed readonly-detail request contributes diagnostics, not an
+        // authoritative empty list. Keep the last known items and count so a
+        // transient 429 cannot make reset credits disappear from the UI.
+        if failed_detail
+            && key == "credits"
+            && value.as_array().is_some_and(|credits| credits.is_empty())
+            && merged
+                .get("credits")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|credits| !credits.is_empty())
+        {
+            continue;
+        }
+        merged.insert(key.clone(), value.clone());
+    }
+
+    serde_json::Value::Object(merged)
+}
+
 /// Merge a parsed Codex quota observation into the stored flat metadata.
 ///
 /// Positive `window_minutes` values identify windows independently of the
@@ -1961,7 +2001,12 @@ pub fn merge_codex_quota_metadata_snapshot(
             {
                 continue;
             }
-            merged.insert(key.clone(), value.clone());
+            let value = if key == "reset_credits" {
+                codex_quota_merge_reset_credits(&current_object, value)
+            } else {
+                value.clone()
+            };
+            merged.insert(key.clone(), value);
         }
         if let Some(incoming_order) = context.request_order().filter(|incoming| {
             codex_quota_request_order_is_newer(*incoming, stored_metadata_watermark)
@@ -4715,6 +4760,60 @@ mod tests {
 
         assert_eq!(outcome.metadata["primary_used_percent"], json!(100.0));
         assert_eq!(outcome.metadata["primary_reset_at"], json!(20_000u64));
+    }
+
+    #[test]
+    fn codex_quota_failed_reset_credit_detail_preserves_last_known_count_and_items() {
+        let current = json!({
+            "reset_credits": {
+                "available_count": 2,
+                "updated_at": 100u64,
+                "detail_source": "wham_readonly",
+                "detail_status": "available",
+                "credits": [{
+                    "id": "credit-1",
+                    "display_key": "credit",
+                    "status": "available",
+                    "expires_at": 20_000u64
+                }]
+            },
+            "updated_at": 100u64
+        });
+        let incoming = json!({
+            "reset_credits": {
+                "updated_at": 110u64,
+                "detail_source": "wham_readonly",
+                "detail_status": "failed",
+                "detail_error": "HTTP 429",
+                "credits": []
+            }
+        });
+
+        let outcome = merge_codex_quota(
+            Some(&current),
+            &incoming,
+            110,
+            110_000,
+            CodexQuotaWindowCoverage::Patch,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(
+            outcome.metadata["reset_credits"]["available_count"],
+            json!(2u64)
+        );
+        assert_eq!(
+            outcome.metadata["reset_credits"]["credits"][0]["id"],
+            json!("credit-1")
+        );
+        assert_eq!(
+            outcome.metadata["reset_credits"]["detail_status"],
+            json!("failed")
+        );
+        assert_eq!(
+            outcome.metadata["reset_credits"]["detail_error"],
+            json!("HTTP 429")
+        );
     }
 
     #[test]

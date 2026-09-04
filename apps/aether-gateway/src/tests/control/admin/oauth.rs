@@ -3913,6 +3913,175 @@ async fn gateway_completes_admin_provider_oauth_provider_locally_with_trusted_ad
 }
 
 #[test]
+fn gateway_names_new_antigravity_oauth_account_from_google_userinfo_email() {
+    run_admin_oauth_test(
+        "gateway_names_new_antigravity_oauth_account_from_google_userinfo_email",
+        gateway_names_new_antigravity_oauth_account_from_google_userinfo_email_impl,
+    );
+}
+
+async fn gateway_names_new_antigravity_oauth_account_from_google_userinfo_email_impl() {
+    let upstream_hits = Arc::new(Mutex::new(0usize));
+    let upstream_hits_clone = Arc::clone(&upstream_hits);
+    let upstream = Router::new().fallback(any(move |_request: Request| {
+        let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
+        async move {
+            *upstream_hits_inner.lock().expect("mutex should lock") += 1;
+            (StatusCode::OK, Body::from("unexpected upstream hit"))
+        }
+    }));
+
+    let token_hits = Arc::new(Mutex::new(0usize));
+    let token_hits_clone = Arc::clone(&token_hits);
+    let user_info_hits = Arc::new(Mutex::new(0usize));
+    let user_info_hits_clone = Arc::clone(&user_info_hits);
+    let seen_user_info_authorization = Arc::new(Mutex::new(None::<String>));
+    let seen_user_info_authorization_clone = Arc::clone(&seen_user_info_authorization);
+    let google_server = Router::new()
+        .route(
+            "/oauth/token",
+            post(move || {
+                let token_hits_inner = Arc::clone(&token_hits_clone);
+                async move {
+                    *token_hits_inner.lock().expect("mutex should lock") += 1;
+                    Json(json!({
+                        "access_token": "antigravity-access-token",
+                        "refresh_token": "antigravity-refresh-token",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "scope": "https://www.googleapis.com/auth/userinfo.email"
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/oauth/userinfo",
+            get(move |headers: HeaderMap| {
+                let user_info_hits_inner = Arc::clone(&user_info_hits_clone);
+                let seen_authorization_inner = Arc::clone(&seen_user_info_authorization_clone);
+                async move {
+                    *user_info_hits_inner.lock().expect("mutex should lock") += 1;
+                    *seen_authorization_inner.lock().expect("mutex should lock") = headers
+                        .get(http::header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToOwned::to_owned);
+                    Json(json!({
+                        "email": "new-antigravity@example.com",
+                        "verified_email": true,
+                        "name": "Antigravity User"
+                    }))
+                }
+            }),
+        );
+
+    let mut provider = sample_provider("provider-antigravity", "antigravity", 10);
+    provider.provider_type = "antigravity".to_string();
+    let endpoint = sample_endpoint(
+        "endpoint-antigravity",
+        "provider-antigravity",
+        "gemini:generate_content",
+        "https://daily-cloudcode-pa.googleapis.com",
+    );
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![],
+    ));
+
+    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let (google_url, google_handle) = start_server(google_server).await;
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(
+                    provider_catalog_repository.clone(),
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            )
+            .with_provider_oauth_state_entry_for_tests(
+                "nonce-antigravity-123",
+                json!({
+                    "nonce": "nonce-antigravity-123",
+                    "key_id": "",
+                    "provider_id": "provider-antigravity",
+                    "provider_type": "antigravity",
+                    "pkce_verifier": "verifier-antigravity-123",
+                }),
+            )
+            .with_provider_oauth_token_url_for_tests(
+                "antigravity",
+                format!("{google_url}/oauth/token"),
+            )
+            .with_provider_oauth_token_url_for_tests(
+                "antigravity_user_info",
+                format!("{google_url}/oauth/userinfo"),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{gateway_url}/api/admin/provider-oauth/providers/provider-antigravity/complete"
+        ))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "callback_url": "http://localhost:51121/oauth2callback?code=antigravity-code-123&state=nonce-antigravity-123"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    let status = response.status();
+    let payload: Value = response.json().await.expect("json body should parse");
+    assert_eq!(status, StatusCode::OK, "payload={payload}");
+    assert_eq!(payload["provider_type"], "antigravity");
+    assert_eq!(payload["email"], "new-antigravity@example.com");
+    assert_eq!(payload["replaced"], false);
+    assert_eq!(*token_hits.lock().expect("mutex should lock"), 1);
+    assert_eq!(*user_info_hits.lock().expect("mutex should lock"), 1);
+    assert_eq!(
+        seen_user_info_authorization
+            .lock()
+            .expect("mutex should lock")
+            .as_deref(),
+        Some("Bearer antigravity-access-token")
+    );
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    let key_id = payload["key_id"]
+        .as_str()
+        .expect("created key id should be returned")
+        .to_string();
+    let persisted_keys = provider_catalog_repository
+        .list_keys_by_ids(std::slice::from_ref(&key_id))
+        .await
+        .expect("created key should load");
+    let persisted = persisted_keys.first().expect("created key should exist");
+    assert_eq!(persisted.name, "new-antigravity@example.com");
+    let decrypted_auth_config = decrypt_python_fernet_ciphertext(
+        DEVELOPMENT_ENCRYPTION_KEY,
+        persisted
+            .encrypted_auth_config
+            .as_deref()
+            .expect("auth config should be stored"),
+    )
+    .expect("auth config should decrypt");
+    let auth_config: Value =
+        serde_json::from_str(&decrypted_auth_config).expect("auth config json should parse");
+    assert_eq!(auth_config["email"], "new-antigravity@example.com");
+    assert_eq!(auth_config["refresh_token"], "antigravity-refresh-token");
+
+    gateway_handle.abort();
+    google_handle.abort();
+    upstream_handle.abort();
+    drop(upstream_url);
+}
+
+#[test]
 fn gateway_imports_admin_provider_oauth_refresh_token_locally_with_trusted_admin_principal() {
     run_admin_oauth_test(
         "gateway_imports_admin_provider_oauth_refresh_token_locally_with_trusted_admin_principal",

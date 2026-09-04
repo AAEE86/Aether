@@ -1,9 +1,15 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+use aether_crypto::{
+    decrypt_python_fernet_ciphertext, encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY,
+};
+use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
 use aether_data::repository::proxy_nodes::InMemoryProxyNodeRepository;
+use aether_data_contracts::repository::global_models::{
+    AdminProviderModelListQuery, GlobalModelReadRepository,
+};
 use aether_data_contracts::repository::provider_catalog::{
     ProviderCatalogReadRepository, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
@@ -2308,6 +2314,12 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
                                 },
                                 "gemini-2.5-pro": {
                                     "displayName": "Gemini 2.5 Pro"
+                                },
+                                "gemini-3.7-flash-tiered": {
+                                    "displayName": "Gemini 3.7 Flash"
+                                },
+                                "chat_23310": {
+                                    "displayName": "Internal Chat"
                                 }
                             }
                         }),
@@ -2409,6 +2421,7 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
         )],
         vec![key],
     ));
+    let global_model_repository = Arc::new(InMemoryGlobalModelReadRepository::default());
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
@@ -2418,6 +2431,7 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
                 GatewayDataState::with_provider_catalog_repository_for_tests(
                     provider_catalog_repository.clone(),
                 )
+                .with_global_model_repository_for_tests(global_model_repository.clone())
                 .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
             ),
     );
@@ -2519,6 +2533,23 @@ async fn gateway_refreshes_admin_provider_quota_locally_for_antigravity_with_tru
             .and_then(|value| value.get("remaining_fraction")),
         Some(&json!(0.25))
     );
+    let imported_provider_models = global_model_repository
+        .list_admin_provider_models(&AdminProviderModelListQuery {
+            provider_id: "provider-antigravity".to_string(),
+            is_active: None,
+            offset: 0,
+            limit: 100,
+        })
+        .await
+        .expect("imported Antigravity provider models should read");
+    let imported_model_names = imported_provider_models
+        .iter()
+        .map(|model| model.provider_model_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(imported_model_names.contains("claude-sonnet-4"));
+    assert!(imported_model_names.contains("gemini-2.5-pro"));
+    assert!(imported_model_names.contains("gemini-3.7-flash-tiered"));
+    assert!(!imported_model_names.contains("chat_23310"));
     assert_eq!(
         reloaded[0]
             .upstream_metadata

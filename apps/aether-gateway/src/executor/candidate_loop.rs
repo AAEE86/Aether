@@ -522,6 +522,7 @@ where
             decision,
             plan_kind,
             transfer_tracker,
+            request_first_byte_started_at: Instant::now(),
         };
         let loop_result = run_ai_attempt_loop(&port, plan_and_reports).await;
         if loop_result.is_err() {
@@ -602,6 +603,7 @@ where
             decision,
             plan_kind,
             transfer_tracker,
+            request_first_byte_started_at: Instant::now(),
         };
         let loop_result = run_dynamic_attempt_loop(
             &port,
@@ -1119,6 +1121,10 @@ struct StreamAttemptLoopPort<'a> {
     decision: &'a GatewayControlDecision,
     plan_kind: &'a str,
     transfer_tracker: &'a ProviderTransferTracker,
+    /// All candidates in one downstream stream request share this origin.
+    /// Without it every retry receives a fresh full first-byte timeout and a
+    /// 30-second provider timeout can accumulate into a 60-120 second stall.
+    request_first_byte_started_at: Instant,
 }
 
 #[async_trait]
@@ -1248,6 +1254,7 @@ where
             self.plan_kind,
             plan,
             watchdog_report_context,
+            self.request_first_byte_started_at,
             stop_on_transport_errors,
             move || async move {
                 if let Some(response) = execution_plan_cost_capacity_response(
@@ -1301,7 +1308,7 @@ where
                         http::StatusCode::GATEWAY_TIMEOUT.as_u16(),
                         "local_stream_candidate_watchdog_timeout",
                         stream_candidate_watchdog_timeout_message(),
-                        watchdog_started_at.elapsed().as_millis() as u64,
+                        self.request_first_byte_started_at.elapsed().as_millis() as u64,
                     )
                     .await?,
                 )
@@ -1751,6 +1758,7 @@ async fn execute_stream_candidate_with_watchdog<Fut>(
     plan_kind: &str,
     plan: &aether_contracts::ExecutionPlan,
     report_context: Option<&serde_json::Value>,
+    request_first_byte_started_at: Instant,
     stop_on_transport_errors: bool,
     execute: impl FnOnce() -> Fut,
 ) -> Result<StreamCandidateWatchdogOutcome, GatewayError>
@@ -1760,6 +1768,7 @@ where
         > + Send,
 {
     let timeout_duration = resolve_stream_candidate_watchdog_timeout(plan, report_context);
+    let request_first_byte_deadline = request_first_byte_started_at + timeout_duration;
     let candidate_started_at = std::time::Instant::now();
     let candidate_started_unix_ms = current_unix_ms();
     let permit = match acquire_upstream_execution_gate(state, trace_id).await {
@@ -1785,7 +1794,14 @@ where
     let watchdog_progress = StreamCandidateWatchdogProgress::shared();
     let execution = watchdog_progress.clone().scope(execute());
     tokio::pin!(execution);
-    let deadline = tokio::time::sleep(timeout_duration);
+    // This is an absolute request-level deadline, not a new timeout for this
+    // candidate. Retries therefore consume only the budget left by earlier
+    // candidates instead of resetting the full provider timeout.
+    let candidate_budget_ms = request_first_byte_deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let deadline = tokio::time::sleep_until(request_first_byte_deadline);
     tokio::pin!(deadline);
     let execution_result = tokio::select! {
         biased;
@@ -1801,6 +1817,10 @@ where
     let outcome = match execution_result {
         Some(result) => result.map(StreamCandidateWatchdogOutcome::Executed),
         None => {
+            // The abandoned attempt is dropped when this function returns.
+            // Claim its settlement before that so its cancellation guard does
+            // not race the watchdog rows written just below.
+            watchdog_progress.mark_abandoned();
             let finished_at_unix_ms = current_unix_ms();
             let request_id = short_request_id(plan.request_id.as_str());
             let provider_name = plan.provider_name.as_deref().unwrap_or("-");
@@ -1810,6 +1830,10 @@ where
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string());
             let timeout_ms = u64::try_from(timeout_duration.as_millis()).unwrap_or(u64::MAX);
+            let request_elapsed_ms = request_first_byte_started_at
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
             record_local_request_candidate_status(
                 state,
                 plan,
@@ -1838,6 +1862,8 @@ where
                 model_name,
                 candidate_index = candidate_index.as_str(),
                 timeout_ms,
+                candidate_budget_ms,
+                request_elapsed_ms,
                 "gateway local stream candidate watchdog timed out"
             );
             if stop_on_transport_errors {
@@ -3124,6 +3150,7 @@ mod tests {
                 "claude_cli_stream",
                 &plan,
                 Some(&report_context),
+                Instant::now(),
                 false,
                 || {
                     std::future::pending::<
@@ -3163,6 +3190,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_candidate_retry_does_not_reset_an_expired_request_first_byte_budget() {
+        let writer = Arc::new(TestRequestCandidateWriter::default());
+        let plan = test_plan(Some(ExecutionTimeouts {
+            first_byte_ms: Some(250),
+            ..ExecutionTimeouts::default()
+        }));
+        let report_context = test_report_context();
+        // Stand in for earlier candidates having already consumed the request's
+        // complete first-byte budget. A per-candidate watchdog would wait a new
+        // 250 ms here; the shared absolute deadline must settle immediately.
+        let request_first_byte_started_at = Instant::now() - Duration::from_millis(300);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            execute_stream_candidate_with_watchdog(
+                writer.as_ref(),
+                "trace_watchdog_shared_budget",
+                "claude_cli_stream",
+                &plan,
+                Some(&report_context),
+                request_first_byte_started_at,
+                false,
+                || {
+                    std::future::pending::<
+                        Result<AiAttemptExecutionOutcome<Response<Body>>, GatewayError>,
+                    >()
+                },
+            ),
+        )
+        .await
+        .expect("an expired request-level first-byte budget must not restart per candidate");
+
+        assert!(matches!(
+            result,
+            Ok(StreamCandidateWatchdogOutcome::Executed(
+                AiAttemptExecutionOutcome::Retry {
+                    scope: AiAttemptRetryScope::Candidate,
+                    fallback_response: None,
+                }
+            ))
+        ));
+        let records = writer.records.lock().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].error_type.as_deref(),
+            Some("local_stream_candidate_watchdog_timeout")
+        );
+    }
+
+    #[tokio::test]
     async fn stream_candidate_watchdog_can_stop_on_transport_error() {
         let writer = Arc::new(TestRequestCandidateWriter::default());
         let plan = test_plan(Some(ExecutionTimeouts {
@@ -3177,6 +3254,7 @@ mod tests {
             "claude_cli_stream",
             &plan,
             Some(&report_context),
+            Instant::now(),
             true,
             || {
                 std::future::pending::<
@@ -3214,6 +3292,7 @@ mod tests {
             "claude_cli_stream",
             &plan,
             Some(&report_context),
+            Instant::now(),
             true,
             || async {
                 mark_stream_candidate_watchdog_terminal_started();
@@ -3246,6 +3325,7 @@ mod tests {
             "claude_cli_stream",
             &plan,
             Some(&report_context),
+            Instant::now(),
             true,
             || async {
                 Err(GatewayError::UpstreamUnavailable {
@@ -3285,6 +3365,7 @@ mod tests {
             "claude_cli_stream",
             &plan,
             Some(&report_context),
+            Instant::now(),
             false,
             || async {
                 panic!("execute future should not run while upstream execution gate is saturated")
@@ -3332,6 +3413,7 @@ mod tests {
             "claude_cli_stream",
             &plan,
             Some(&report_context),
+            Instant::now(),
             false,
             || async {
                 Err(GatewayError::AdmissionTimeout {
