@@ -356,6 +356,9 @@ if ! ensure_dev_infra; then
 	exit 1
 fi
 
+echo "=> 编译 aether-gateway..."
+cargo build -p aether-gateway --bin aether-gateway
+
 GATEWAY_PID=""
 GATEWAY_LOG_DIR=""
 GATEWAY_LOG_FILE=""
@@ -364,8 +367,8 @@ create_gateway_log_file
 
 echo "=> 启动 aether-gateway (Rust frontdoor: 0.0.0.0:$${APP_PORT})..."
 echo "=> 日志过滤: $${RUST_LOG}"
-echo "=> 执行命令: cargo run -p aether-gateway --bin aether-gateway -- --app-port $${APP_PORT}"
-cargo run -p aether-gateway --bin aether-gateway -- --app-port "$${APP_PORT}" > >(
+echo "=> 执行命令: target/debug/aether-gateway --app-port $${APP_PORT}"
+target/debug/aether-gateway --app-port "$${APP_PORT}" > >(
 	tee -a "$${GATEWAY_LOG_FILE}"
 ) 2>&1 &
 GATEWAY_PID=$$!
@@ -456,7 +459,7 @@ if [ -f .env ]; then
 fi
 export APP_PORT="$${APP_PORT:-8084}"
 
-echo "=> 启动后端: RUST_LOG=$${DEV_RUST_LOG} cargo run -p aether-gateway --bin aether-gateway -- --app-port $${APP_PORT:-8084}"
+echo "=> 启动后端: 先编译 aether-gateway，再运行 target/debug/aether-gateway --app-port $${APP_PORT:-8084}"
 /bin/bash -euo pipefail -c "$$DEV_BACKEND_SCRIPT" &
 backend_pid=$$!
 

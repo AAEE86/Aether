@@ -163,7 +163,7 @@ make dev
 
 `make dev` 会同时启动后端 `aether-gateway` 和前端 `frontend` 的 Vite dev server。需要单独启动时可使用 `make dev-backend` 或 `make dev-frontend`。
 Postgres / Redis 本地依赖未就绪时，`make dev` 会自动执行 `docker compose up -d postgres redis`。
-数据库 schema 和历史数据准备也会在启动时自动完成；通常不需要手动区分 migration 与 backfill。排查或部署前预执行时可使用：
+`make dev` 会先完成后端编译，再开始计算服务健康检查超时。数据库 schema 和必要的派生数据准备也会在启动时自动完成；通常不需要手动区分 migration 与 backfill。升级不会主动重写或清除已有业务历史记录，新写入会直接遵循当前的数据持久化策略。排查或部署前预执行时可使用：
 
 ```bash
 make db-status
