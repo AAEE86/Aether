@@ -39,7 +39,11 @@ fn admin_oauth_secret_status(has_secret: bool) -> &'static str {
     }
 }
 
-async fn admin_oauth_endpoint_reachable(url: &str, allowed_domains: &[&str]) -> bool {
+async fn admin_oauth_endpoint_reachable(
+    url: &str,
+    allowed_domains: &[&str],
+    allow_benchmarking_ip: bool,
+) -> bool {
     let Ok(mut current) = reqwest::Url::parse(url) else {
         return false;
     };
@@ -47,7 +51,9 @@ async fn admin_oauth_endpoint_reachable(url: &str, allowed_domains: &[&str]) -> 
         if validate_admin_oauth_url_override(current.as_str(), allowed_domains).is_err() {
             return false;
         }
-        let Ok((host, addrs)) = resolve_public_admin_oauth_endpoint(&current).await else {
+        let Ok((host, addrs)) =
+            resolve_public_admin_oauth_endpoint_with_policy(&current, allow_benchmarking_ip).await
+        else {
             return false;
         };
         let mut builder = reqwest::Client::builder()
@@ -96,6 +102,13 @@ async fn admin_oauth_endpoint_reachable(url: &str, allowed_domains: &[&str]) -> 
 async fn resolve_public_admin_oauth_endpoint(
     url: &reqwest::Url,
 ) -> Result<(String, Vec<SocketAddr>), ()> {
+    resolve_public_admin_oauth_endpoint_with_policy(url, false).await
+}
+
+async fn resolve_public_admin_oauth_endpoint_with_policy(
+    url: &reqwest::Url,
+    allow_benchmarking_ip: bool,
+) -> Result<(String, Vec<SocketAddr>), ()> {
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
@@ -112,14 +125,41 @@ async fn resolve_public_admin_oauth_endpoint(
             .await
             .map_err(|_| ())?
     };
-    if addrs.is_empty()
-        || addrs
-            .iter()
-            .any(|addr| aether_http::is_private_or_reserved_ip(addr.ip()))
-    {
+    if validate_public_admin_oauth_resolved_addrs(url, &addrs, allow_benchmarking_ip).is_err() {
         return Err(());
     }
     Ok((host.to_string(), addrs))
+}
+
+fn validate_public_admin_oauth_resolved_addrs(
+    url: &reqwest::Url,
+    addrs: &[SocketAddr],
+    allow_benchmarking_ip: bool,
+) -> Result<(), ()> {
+    if addrs.is_empty()
+        || addrs.iter().any(|addr| {
+            aether_http::is_private_or_reserved_ip(addr.ip())
+                && !(allow_benchmarking_ip
+                    && is_fixed_linuxdo_oauth_origin(url)
+                    && aether_http::is_ipv4_benchmarking_fake_ip(addr.ip()))
+        })
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn is_fixed_linuxdo_oauth_origin(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str().is_some_and(|host| {
+            host.trim_end_matches('.')
+                .eq_ignore_ascii_case("connect.linux.do")
+        })
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 fn admin_oauth_test_allowed_domains(
@@ -275,9 +315,14 @@ async fn build_admin_oauth_test_payload(
         }));
     }
 
+    let allow_benchmarking_ip = provider_type.eq_ignore_ascii_case("linuxdo");
     let (authorization_url_reachable, token_url_reachable) = tokio::join!(
-        admin_oauth_endpoint_reachable(&authorization_url, &allowed_domain_refs),
-        admin_oauth_endpoint_reachable(&token_url, &allowed_domain_refs),
+        admin_oauth_endpoint_reachable(
+            &authorization_url,
+            &allowed_domain_refs,
+            allow_benchmarking_ip,
+        ),
+        admin_oauth_endpoint_reachable(&token_url, &allowed_domain_refs, allow_benchmarking_ip),
     );
 
     let details = if authorization_url_reachable && token_url_reachable {
@@ -296,13 +341,52 @@ async fn build_admin_oauth_test_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_public_admin_oauth_endpoint;
+    use super::{
+        is_fixed_linuxdo_oauth_origin, resolve_public_admin_oauth_endpoint,
+        validate_public_admin_oauth_resolved_addrs,
+    };
+    use std::net::SocketAddr;
 
     #[tokio::test]
     async fn oauth_test_endpoint_rejects_loopback_https_targets_before_connecting() {
         let url = reqwest::Url::parse("https://127.0.0.1/oauth/token").expect("URL");
 
         assert!(resolve_public_admin_oauth_endpoint(&url).await.is_err());
+    }
+
+    #[test]
+    fn linuxdo_builtin_origin_allows_only_benchmarking_addresses() {
+        let fixed = reqwest::Url::parse("https://connect.linux.do/oauth2/token")
+            .expect("LinuxDo URL should parse");
+        let fake = SocketAddr::from(([198, 18, 75, 234], 443));
+        assert!(is_fixed_linuxdo_oauth_origin(&fixed));
+        assert!(validate_public_admin_oauth_resolved_addrs(&fixed, &[fake], true).is_ok());
+        assert!(validate_public_admin_oauth_resolved_addrs(&fixed, &[fake], false).is_err());
+        assert!(validate_public_admin_oauth_resolved_addrs(
+            &fixed,
+            &[fake, SocketAddr::from(([127, 0, 0, 1], 443))],
+            true,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn custom_or_non_default_oauth_origins_reject_benchmarking_addresses() {
+        let fake = SocketAddr::from(([198, 18, 75, 234], 443));
+        for raw_url in [
+            "https://oauth.example.test/token",
+            "https://connect.linux.do:8443/oauth2/token",
+            "https://connect.linuxdo.org/oauth2/token",
+            "https://connect.linux.do.evil.test/oauth2/token",
+            "https://connect.linux.do/oauth2/token?tenant=unexpected",
+        ] {
+            let url = reqwest::Url::parse(raw_url).expect("test URL should parse");
+            assert!(
+                !is_fixed_linuxdo_oauth_origin(&url),
+                "must not trust {raw_url}"
+            );
+            assert!(validate_public_admin_oauth_resolved_addrs(&url, &[fake], true).is_err());
+        }
     }
 }
 

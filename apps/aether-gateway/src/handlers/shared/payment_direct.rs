@@ -899,13 +899,7 @@ pub(crate) async fn public_payment_http_client(url: &url::Url) -> Result<reqwest
             .await
             .map_err(|_| "支付网关 DNS 解析失败".to_string())?
     };
-    if addrs.is_empty()
-        || addrs
-            .iter()
-            .any(|addr| aether_http::is_private_or_reserved_ip(addr.ip()))
-    {
-        return Err("支付网关解析到私有或保留地址".to_string());
-    }
+    validate_public_payment_resolved_addrs(url, &addrs)?;
 
     let mut builder = reqwest::Client::builder()
         .no_proxy()
@@ -916,6 +910,35 @@ pub(crate) async fn public_payment_http_client(url: &url::Url) -> Result<reqwest
     builder
         .build()
         .map_err(|_| "支付网关 HTTP 客户端初始化失败".to_string())
+}
+
+fn validate_public_payment_resolved_addrs(
+    url: &url::Url,
+    addrs: &[SocketAddr],
+) -> Result<(), String> {
+    if addrs.is_empty()
+        || addrs.iter().any(|addr| {
+            aether_http::is_private_or_reserved_ip(addr.ip())
+                && !(is_fixed_stripe_api_origin(url)
+                    && aether_http::is_ipv4_benchmarking_fake_ip(addr.ip()))
+        })
+    {
+        return Err("支付网关解析到私有或保留地址".to_string());
+    }
+    Ok(())
+}
+
+fn is_fixed_stripe_api_origin(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str().is_some_and(|host| {
+            host.trim_end_matches('.')
+                .eq_ignore_ascii_case("api.stripe.com")
+        })
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 fn wxpay_config_string(config: &DirectGatewayConfig, key: &str) -> Result<String, String> {
@@ -1746,8 +1769,9 @@ mod tests {
         alipay_precreate_business_refusal, decode_payment_base64_with_limit, gateway_refund_proof,
         payment_callback_key, payment_callback_projection, payment_payload_hash,
         public_payment_http_client, rsa_sha256_sign_base64, rsa_sha256_verify_base64,
-        validated_payment_identifier, wxpay_notify_payment_channel, wxpay_refund_status,
-        DirectGatewayConfig, DirectGatewayRefundResult, MAX_PAYMENT_GATEWAY_ID_BYTES,
+        validate_public_payment_resolved_addrs, validated_payment_identifier,
+        wxpay_notify_payment_channel, wxpay_refund_status, DirectGatewayConfig,
+        DirectGatewayRefundResult, MAX_PAYMENT_GATEWAY_ID_BYTES,
     };
     use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der, PublicKeyX509Der};
     use aws_lc_rs::rsa::{KeyPair as AwsRsaKeyPair, KeySize};
@@ -1755,6 +1779,7 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
     use serde_json::json;
+    use std::net::SocketAddr;
 
     #[test]
     fn direct_gateway_config_debug_output_redacts_decrypted_secrets() {
@@ -2072,6 +2097,39 @@ mod tests {
                 public_payment_http_client(&url).await.is_err(),
                 "private payment target should fail: {target}"
             );
+        }
+    }
+
+    #[test]
+    fn stripe_api_origin_allows_only_benchmarking_addresses() {
+        let fake = SocketAddr::from(([198, 18, 75, 234], 443));
+        for raw_url in [
+            "https://api.stripe.com/v1/payment_intents",
+            "https://API.STRIPE.COM:443/v1/payment_intents",
+        ] {
+            let url = url::Url::parse(raw_url).expect("Stripe URL should parse");
+            assert!(validate_public_payment_resolved_addrs(&url, &[fake]).is_ok());
+        }
+        assert!(validate_public_payment_resolved_addrs(
+            &url::Url::parse("https://api.stripe.com/v1/payment_intents").unwrap(),
+            &[fake, SocketAddr::from(([127, 0, 0, 1], 443))],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn custom_or_non_default_payment_origins_reject_benchmarking_addresses() {
+        let fake = SocketAddr::from(([198, 18, 75, 234], 443));
+        for raw_url in [
+            "https://payments.example.test/v1/payment_intents",
+            "https://api.stripe.com:8443/v1/payment_intents",
+            "http://api.stripe.com/v1/payment_intents",
+            "https://api.stripe.com.evil.test/v1/payment_intents",
+            "https://api.stripe.com/v1/payment_intents?redirect=internal",
+            "https://api.stripe.com/v1/payment_intents#fragment",
+        ] {
+            let url = url::Url::parse(raw_url).expect("test URL should parse");
+            assert!(validate_public_payment_resolved_addrs(&url, &[fake]).is_err());
         }
     }
 }
