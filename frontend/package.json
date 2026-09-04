@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "sync:vscodex": "npm --prefix ../aether-vscodex/web run build && node scripts/sync-vscodex.mjs",
+    "sync:vscodex": "node scripts/sync-vscodex.mjs",
     "predev": "npm run sync:vscodex",
     "dev": "vite --host",
     "prebuild": "npm run sync:vscodex",
