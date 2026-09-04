@@ -21,6 +21,8 @@ use aether_data_contracts::repository::usage::UsageBodyCaptureState;
 use aether_scheduler_core::{
     parse_request_candidate_report_context, SchedulerRequestCandidateStatusUpdate,
 };
+#[cfg(test)]
+use aether_usage_runtime::DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES;
 use aether_usage_runtime::{
     build_lifecycle_usage_seed, build_stream_terminal_usage_payload_seed,
     build_sync_terminal_usage_payload_seed, build_terminal_usage_context_seed, LifecycleUsageSeed,
