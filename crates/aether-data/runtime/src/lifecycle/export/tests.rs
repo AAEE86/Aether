@@ -1961,12 +1961,15 @@ async fn postgres_core_export_reads_migrated_database_rows_when_url_is_set() {
     assert_eq!(imported, import_plan_row_count(&import_plan));
 
     let imported_api_key =
-        sqlx::query_as::<_, (String,)>("SELECT key_encrypted FROM api_keys WHERE id = $1")
+        sqlx::query_as::<_, (Option<String>,)>("SELECT key_encrypted FROM api_keys WHERE id = $1")
             .bind(&api_key_id)
             .fetch_one(&target_pool)
             .await
             .expect("imported sqlite api key should load");
-    assert_eq!(imported_api_key.0, "ciphertext-1");
+    assert_eq!(
+        imported_api_key.0, None,
+        "cross-driver imports must revoke recoverable API-key ciphertext"
+    );
     let imported_global_model_timestamps = sqlx::query_as::<_, (i64, i64, String, String)>(
         "SELECT created_at, updated_at, typeof(created_at), typeof(updated_at) FROM global_models WHERE id = ?",
     )
