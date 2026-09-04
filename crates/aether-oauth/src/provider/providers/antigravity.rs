@@ -326,7 +326,8 @@ mod tests {
 
     #[tokio::test]
     async fn antigravity_exchange_fetches_google_email_for_account_identity() {
-        let adapter = AntigravityProviderOAuthAdapter::default();
+        let adapter = AntigravityProviderOAuthAdapter::default()
+            .with_oauth_credentials_for_tests("test-client-id", "test-client-secret");
         let ctx = transport_context();
         let executor = GoogleOAuthExecutor::default();
 
