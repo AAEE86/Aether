@@ -31,9 +31,22 @@
         <div class="flex-1 min-h-0 overflow-hidden border rounded-lg flex flex-col">
           <div
             v-if="loading"
-            class="flex items-center justify-center flex-1"
+            class="flex flex-col items-center justify-center gap-3 flex-1"
           >
             <Loader2 class="w-5 h-5 animate-spin text-muted-foreground" />
+            <p class="text-xs text-muted-foreground">
+              正在加载在线目录；也可以先手动填写模型
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-8"
+              data-testid="models-catalog-manual-entry-loading"
+              @click="enterManualEntryMode"
+            >
+              手动填写
+            </Button>
           </div>
           <div
             v-else-if="catalogLoadError"

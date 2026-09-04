@@ -302,6 +302,25 @@ describe('GlobalModelFormDialog preset replacement', () => {
     expect(document.body.querySelector('#model-name')).not.toBeNull()
   })
 
+  it('allows manual model creation while the external catalog request is still pending', async () => {
+    modelsDevMocks.getModelsDevList.mockReturnValueOnce(
+      new Promise<ModelsDevModelItem[]>(() => {}),
+    )
+
+    mountDialog()
+    await settle()
+
+    const manualEntryButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="models-catalog-manual-entry-loading"]',
+    )
+    if (!manualEntryButton) throw new Error('Missing loading-state manual-entry button')
+    manualEntryButton.click()
+    await settle()
+
+    expect(document.body.textContent).toContain('手动填写模式')
+    expect(document.body.querySelector('#model-name')).not.toBeNull()
+  })
+
   it('drops the previous draft and submits only the newly selected model preset', async () => {
     mountDialog()
     await settle()
