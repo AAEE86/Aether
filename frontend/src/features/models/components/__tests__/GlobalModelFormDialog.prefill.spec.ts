@@ -279,6 +279,29 @@ describe('GlobalModelFormDialog preset replacement', () => {
     expect(document.body.textContent).toContain('Fresh Model')
   })
 
+  it('keeps manual model creation available when the external catalog is unavailable', async () => {
+    modelsDevMocks.getModelsDevList.mockRejectedValueOnce({
+      response: {
+        status: 503,
+        data: { detail: 'External models catalog unavailable' },
+      },
+    })
+
+    mountDialog()
+    await settle()
+
+    const manualEntryButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="models-catalog-manual-entry"]',
+    )
+    if (!manualEntryButton) throw new Error('Missing catalog manual-entry button')
+    manualEntryButton.click()
+    await settle()
+
+    expect(document.body.querySelector('[data-testid="models-catalog-load-error"]')).toBeNull()
+    expect(document.body.textContent).toContain('手动填写模式')
+    expect(document.body.querySelector('#model-name')).not.toBeNull()
+  })
+
   it('drops the previous draft and submits only the newly selected model preset', async () => {
     mountDialog()
     await settle()

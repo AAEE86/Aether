@@ -63,6 +63,16 @@
               <RefreshCw class="h-3.5 w-3.5" />
               重试
             </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-8"
+              data-testid="models-catalog-manual-entry"
+              @click="enterManualEntryMode"
+            >
+              直接手动填写
+            </Button>
           </div>
           <template v-else>
             <!-- 提供商 Logo 横向选择 -->
