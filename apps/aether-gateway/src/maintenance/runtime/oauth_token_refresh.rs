@@ -407,7 +407,8 @@ fn is_nonfatal_legacy_provider_key_credential_error(error: &GatewayError) -> boo
         || message.contains("provider catalog credential contains reserved framing")
         || message.contains("provider catalog credential authentication failed")
         || message.contains("provider catalog credential envelope")
-        || message.contains("provider catalog key provider binding changed during credential migration")
+        || message
+            .contains("provider catalog key provider binding changed during credential migration")
 }
 
 /// Stored provider/endpoint/key proxy secrets are opened independently by the
@@ -525,7 +526,9 @@ mod tests {
             &GatewayError::Internal("stored provider catalog credential is empty".to_string())
         ));
         assert!(is_nonfatal_legacy_catalog_credential_error(
-            &GatewayError::Internal("Aether secret envelope has the wrong record binding".to_string())
+            &GatewayError::Internal(
+                "Aether secret envelope has the wrong record binding".to_string()
+            )
         ));
         for field in ["api_formats", "allowed_models"] {
             assert!(is_nonfatal_legacy_catalog_credential_error(

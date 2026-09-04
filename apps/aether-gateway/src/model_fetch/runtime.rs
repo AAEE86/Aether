@@ -129,7 +129,7 @@ where
     }
 
     let providers = state
-        .list_provider_catalog_providers(true)
+        .list_provider_catalog_providers_for_model_fetch(true)
         .await?
         .into_iter()
         .filter(|provider| provider_id_filter.is_none_or(|provider_id| provider.id == provider_id))
@@ -144,7 +144,7 @@ where
         .collect::<Vec<_>>();
     let mut endpoints_by_provider = HashMap::<String, Vec<StoredProviderCatalogEndpoint>>::new();
     for endpoint in state
-        .list_provider_catalog_endpoints_by_provider_ids(&provider_ids)
+        .list_provider_catalog_endpoints_for_model_fetch(&provider_ids)
         .await?
     {
         endpoints_by_provider
@@ -168,8 +168,12 @@ where
     for provider in providers {
         let endpoints = endpoints_by_provider
             .remove(&provider.id)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .map(sanitize_model_fetch_endpoint)
+            .collect::<Vec<_>>();
         let keys = keys_by_provider.remove(&provider.id).unwrap_or_default();
+        let provider = sanitize_model_fetch_provider(provider);
         for key in keys {
             if key_id_filter.is_some_and(|key_ids| !key_ids.contains(&key.id)) {
                 continue;
@@ -237,6 +241,32 @@ fn sanitize_model_fetch_key(mut key: StoredProviderCatalogKey) -> StoredProvider
     key.oauth_invalid_reason = None;
     key.status_snapshot = None;
     key
+}
+
+/// Keep only non-secret provider metadata in a background fetch target.  The
+/// authoritative transport snapshot is reopened by ID immediately before a
+/// request, so carrying stored proxy/config JSON here would needlessly retain
+/// credentials and could expose malformed historical values to later stages.
+fn sanitize_model_fetch_provider(
+    mut provider: StoredProviderCatalogProvider,
+) -> StoredProviderCatalogProvider {
+    provider.proxy = None;
+    provider.config = None;
+    provider
+}
+
+/// Endpoint selection needs only activity, format, and identity.  Clear
+/// transport rules/proxy data because those are reloaded from the snapshot
+/// just before execution.
+fn sanitize_model_fetch_endpoint(
+    mut endpoint: StoredProviderCatalogEndpoint,
+) -> StoredProviderCatalogEndpoint {
+    endpoint.header_rules = None;
+    endpoint.body_rules = None;
+    endpoint.config = None;
+    endpoint.format_acceptance_config = None;
+    endpoint.proxy = None;
+    endpoint
 }
 
 async fn execute_fetch_targets<S>(
@@ -569,6 +599,15 @@ fn is_nonfatal_legacy_credential_error(error: &GatewayError) -> bool {
     }
     message.contains("provider_api_keys.api_key")
         || message.contains("provider_api_keys.auth_config")
+        || message.contains("stored provider proxy credentials cannot be decrypted")
+        || message.contains("stored endpoint proxy credentials cannot be decrypted")
+        || message.contains("stored key proxy credentials cannot be decrypted")
+        || message.contains("stored provider proxy changed during credential migration")
+        || message.contains("stored endpoint proxy changed during credential migration")
+        || message.contains("stored key changed during credential migration")
+        || message.contains("stored provider proxy credential migration did not stabilize")
+        || message.contains("stored endpoint proxy credential migration did not stabilize")
+        || message.contains("stored key proxy credential migration did not stabilize")
         || message.contains("legacy provider catalog credential")
         || message.contains("provider catalog credential is not an authenticated ciphertext")
         || message.contains("provider catalog credential contains reserved framing")
@@ -1610,6 +1649,32 @@ mod tests {
             sanitized.upstream_metadata,
             Some(json!({"provider": {"quota": 1}}))
         );
+    }
+
+    #[test]
+    fn sanitized_model_fetch_provider_and_endpoint_drop_transport_secrets() {
+        let mut provider = sample_provider("provider-sanitize", "openai");
+        provider.proxy = Some(json!({"url": "http://user:pass@example.test"}));
+        provider.config = Some(json!({"api_key": "provider-secret"}));
+        let sanitized_provider = super::sanitize_model_fetch_provider(provider);
+        assert_eq!(sanitized_provider.proxy, None);
+        assert_eq!(sanitized_provider.config, None);
+
+        let mut endpoint =
+            sample_endpoint("endpoint-sanitize", "provider-sanitize", "openai:responses");
+        endpoint.header_rules = Some(json!({"authorization": "Bearer endpoint-secret"}));
+        endpoint.body_rules = Some(json!({"token": "endpoint-secret"}));
+        endpoint.config = Some(json!({"password": "endpoint-secret"}));
+        endpoint.format_acceptance_config = Some(json!({"secret": "endpoint-secret"}));
+        endpoint.proxy = Some(json!({"url": "http://user:pass@example.test"}));
+        let sanitized_endpoint = super::sanitize_model_fetch_endpoint(endpoint);
+        assert_eq!(sanitized_endpoint.header_rules, None);
+        assert_eq!(sanitized_endpoint.body_rules, None);
+        assert_eq!(sanitized_endpoint.config, None);
+        assert_eq!(sanitized_endpoint.format_acceptance_config, None);
+        assert_eq!(sanitized_endpoint.proxy, None);
+        assert_eq!(sanitized_endpoint.id, "endpoint-sanitize");
+        assert_eq!(sanitized_endpoint.api_format, "openai:responses");
     }
 
     #[tokio::test]

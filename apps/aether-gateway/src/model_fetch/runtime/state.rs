@@ -26,10 +26,31 @@ pub(crate) trait ModelFetchRuntimeState:
         active_only: bool,
     ) -> Result<Vec<StoredProviderCatalogProvider>, GatewayError>;
 
+    /// Return provider rows for the background fetcher without opening or
+    /// migrating stored proxy credentials.  Production implementations should
+    /// use the raw repository projection so one malformed historical row does
+    /// not abort the entire cycle and a read does not rewrite old data.
+    async fn list_provider_catalog_providers_for_model_fetch(
+        &self,
+        active_only: bool,
+    ) -> Result<Vec<StoredProviderCatalogProvider>, GatewayError> {
+        self.list_provider_catalog_providers(active_only).await
+    }
+
     async fn list_provider_catalog_endpoints_by_provider_ids(
         &self,
         provider_ids: &[String],
     ) -> Result<Vec<StoredProviderCatalogEndpoint>, GatewayError>;
+
+    /// Raw endpoint counterpart to
+    /// [`Self::list_provider_catalog_providers_for_model_fetch`].
+    async fn list_provider_catalog_endpoints_for_model_fetch(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogEndpoint>, GatewayError> {
+        self.list_provider_catalog_endpoints_by_provider_ids(provider_ids)
+            .await
+    }
 
     /// Return raw catalog key rows for the background fetcher. Production
     /// implementations should avoid the normal bulk credential-opening

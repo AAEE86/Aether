@@ -397,11 +397,31 @@ impl ModelFetchRuntimeState for AppState {
         AppState::list_provider_catalog_providers(self, active_only).await
     }
 
+    async fn list_provider_catalog_providers_for_model_fetch(
+        &self,
+        active_only: bool,
+    ) -> Result<Vec<StoredProviderCatalogProvider>, GatewayError> {
+        self.data
+            .list_provider_catalog_providers(active_only)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     async fn list_provider_catalog_endpoints_by_provider_ids(
         &self,
         provider_ids: &[String],
     ) -> Result<Vec<StoredProviderCatalogEndpoint>, GatewayError> {
         AppState::list_provider_catalog_endpoints_by_provider_ids(self, provider_ids).await
+    }
+
+    async fn list_provider_catalog_endpoints_for_model_fetch(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogEndpoint>, GatewayError> {
+        self.data
+            .list_provider_catalog_endpoints_by_provider_ids(provider_ids)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
     }
 
     async fn list_provider_catalog_keys_for_model_fetch(
