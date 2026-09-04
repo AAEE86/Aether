@@ -2279,6 +2279,10 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "email_suffix_list" => Some(json!([])),
         "enable_format_conversion" => Some(json!(false)),
         "enable_model_directives" => Some(json!(false)),
+        // Failover after a provider-side Cyber policy refusal is an explicit
+        // opt-in.  Keep the system-config fallback aligned with the routing
+        // policy default so an unset value cannot accidentally enable it.
+        "cyber_continue_failover" => Some(json!(false)),
         "model_directives" => Some(aether_ai_formats::default_model_directives_config()),
         "audit_log_retention_days" => Some(json!(30)),
         "enable_db_maintenance" => Some(json!(true)),
@@ -2780,6 +2784,7 @@ pub fn parse_admin_system_config_update(
 
     match normalized_key.as_str() {
         "enable_model_directives"
+        | "cyber_continue_failover"
         | "module.important_notification.enabled"
         | "module.important_notification.email_enabled"
         | "module.server_chan_push.enabled"
