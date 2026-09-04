@@ -90,7 +90,10 @@ function isDefinitiveRefreshRejection(error: unknown): boolean {
     return false
   }
   const status = (response as { status?: unknown }).status
-  return status === 401 || status === 403
+  // Refresh uses 409 exclusively for a previous-token rotation race. Every
+  // other client-side rejection is deterministic and cannot be repaired by
+  // waiting for another tab.
+  return status >= 400 && status < 500 && status !== 409
 }
 
 export class CrossTabRefreshCoordinator {
@@ -197,8 +200,8 @@ export class CrossTabRefreshCoordinator {
       }
 
       // The refresh endpoint reserves 409 for a concurrent token rotation.
-      // A direct 401/403 is authoritative, so waiting for the HTTP timeout
-      // cannot recover the session and would block initial navigation.
+      // Other 4xx responses are authoritative, so waiting for the HTTP
+      // timeout cannot recover the session and would block initial navigation.
       if (isDefinitiveRefreshRejection(error)) {
         throw error
       }

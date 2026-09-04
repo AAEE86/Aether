@@ -198,6 +198,26 @@ describe('CrossTabRefreshCoordinator', () => {
     coordinator.destroy()
   })
 
+  it('does not wait on other deterministic client-side refresh rejections', async () => {
+    const refreshError = createHttpError(400, 'invalid refresh request')
+    const executor = vi.fn(() => Promise.reject(refreshError))
+    const coordinator = new CrossTabRefreshCoordinator({
+      storage: localStorage,
+      channelFactory: createChannel,
+      waitTimeoutMs: 500,
+    })
+
+    const outcome = await Promise.race([
+      coordinator.run(executor).catch((error: unknown) => error),
+      new Promise<symbol>((resolve) => setTimeout(() => resolve(Symbol('timeout')), 0)),
+    ])
+
+    expect(outcome).toBe(refreshError)
+    expect(executor).toHaveBeenCalledTimes(1)
+
+    coordinator.destroy()
+  })
+
   it('keeps the coordination window for a refresh-token rotation conflict', async () => {
     const refreshError = createHttpError(409, 'refresh token was rotated concurrently')
     const executor = vi.fn(() => Promise.reject(refreshError))
