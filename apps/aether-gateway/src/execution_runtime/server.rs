@@ -578,8 +578,14 @@ fn harden_execution_runtime_socket(
         || metadata.uid() != effective_uid
         || metadata.nlink() != 1
         || metadata.mode() & 0o777 != 0o600
-        || (cfg!(target_os = "linux")
-            && (metadata.dev() != stat.st_dev as u64 || metadata.ino() != stat.st_ino as u64))
+        // On Linux a pathname socket is represented by the filesystem's
+        // dentry while `fstat` reports the corresponding sockfs inode.  The
+        // inode number is shared, but the device id is intentionally not;
+        // comparing `st_dev` would reject every valid socket on overlay/tmpfs
+        // runners.  The validated canonical parent and inode identity still
+        // close the replacement window without relying on that differing
+        // device number.
+        || (cfg!(target_os = "linux") && metadata.ino() != stat.st_ino as u64)
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
