@@ -25,7 +25,7 @@ const ADMIN_EXTERNAL_MODELS_OFFICIAL_PATH: &str = "/api.json";
 pub(in crate::handlers::admin) const ADMIN_EXTERNAL_MODELS_PROXY_NODE_CONFIG_KEY: &str =
     "external_models_proxy_node_id";
 const ADMIN_EXTERNAL_MODELS_CONNECT_TIMEOUT_MS: u64 = 10_000;
-const ADMIN_EXTERNAL_MODELS_TOTAL_TIMEOUT_MS: u64 = 300_000;
+const ADMIN_EXTERNAL_MODELS_TOTAL_TIMEOUT_MS: u64 = 30_000;
 const ADMIN_EXTERNAL_MODELS_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 // Keep the cache envelope bounded independently of the upstream body limit.
 // Normalization adds a small amount of metadata, while a corrupted/shared
