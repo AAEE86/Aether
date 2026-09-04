@@ -20,6 +20,8 @@ const ADMIN_EXTERNAL_MODELS_CACHE_VERSION: u8 = 2;
 const ADMIN_EXTERNAL_MODELS_CACHE_TTL_SECS: u64 = 15 * 60;
 const ADMIN_EXTERNAL_MODELS_SOURCE_URL_ENV: &str = "AETHER_GATEWAY_EXTERNAL_MODELS_URL";
 const ADMIN_EXTERNAL_MODELS_SOURCE_URL_DEFAULT: &str = "https://models.dev/api.json";
+const ADMIN_EXTERNAL_MODELS_OFFICIAL_HOST: &str = "models.dev";
+const ADMIN_EXTERNAL_MODELS_OFFICIAL_PATH: &str = "/api.json";
 pub(in crate::handlers::admin) const ADMIN_EXTERNAL_MODELS_PROXY_NODE_CONFIG_KEY: &str =
     "external_models_proxy_node_id";
 const ADMIN_EXTERNAL_MODELS_CONNECT_TIMEOUT_MS: u64 = 10_000;
@@ -119,6 +121,7 @@ fn parse_admin_external_models_source_url(
 }
 
 fn validate_admin_external_models_source_addresses(
+    url: &url::Url,
     addresses: &[SocketAddr],
     allow_insecure_test_target: bool,
 ) -> Result<(), GatewayError> {
@@ -128,15 +131,40 @@ fn validate_admin_external_models_source_addresses(
         ));
     }
     if !allow_insecure_test_target
-        && addresses
-            .iter()
-            .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
+        && addresses.iter().any(|address| {
+            aether_http::is_private_or_reserved_ip(address.ip())
+                && !(is_official_external_models_catalog_url(url)
+                    && is_ipv4_benchmarking_fake_ip(address.ip()))
+        })
     {
         return Err(GatewayError::Internal(
             "external models source resolves to a private or reserved address".to_string(),
         ));
     }
     Ok(())
+}
+
+fn is_official_external_models_catalog_url(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case(ADMIN_EXTERNAL_MODELS_OFFICIAL_HOST))
+        && url.port_or_known_default() == Some(443)
+        && url.path() == ADMIN_EXTERNAL_MODELS_OFFICIAL_PATH
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+fn is_ipv4_benchmarking_fake_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 198 && (18..=19).contains(&octets[1])
+        }
+        IpAddr::V6(_) => false,
+    }
 }
 
 async fn resolve_admin_external_models_source(
@@ -158,7 +186,7 @@ async fn resolve_admin_external_models_source(
             GatewayError::Internal("external models source DNS resolution failed".to_string())
         })?
     };
-    validate_admin_external_models_source_addresses(&addresses, allow_insecure_test_target)?;
+    validate_admin_external_models_source_addresses(&url, &addresses, allow_insecure_test_target)?;
     Ok(ResolvedAdminExternalModelsSource {
         url,
         host,
@@ -672,7 +700,8 @@ mod tests {
         normalize_admin_external_models_payload, normalize_admin_external_models_proxy_node_id,
         parse_admin_external_models_cache, parse_admin_external_models_source_url,
         read_admin_external_models_cache, resolve_admin_external_models_source,
-        set_admin_external_models_source_url_for_tests, ADMIN_EXTERNAL_MODELS_CACHE_MAX_BYTES,
+        set_admin_external_models_source_url_for_tests,
+        validate_admin_external_models_source_addresses, ADMIN_EXTERNAL_MODELS_CACHE_MAX_BYTES,
     };
     use crate::handlers::admin::request::AdminAppState;
     use crate::tests::{start_server, AppState};
@@ -785,6 +814,57 @@ mod tests {
                     .await
                     .is_err(),
                 "private source URL should be rejected: {source_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn official_external_models_catalog_allows_benchmarking_fake_ip_addresses() {
+        let url = url::Url::parse("https://models.dev/api.json")
+            .expect("official catalog URL should parse");
+
+        for address in ["198.18.75.234:443", "198.19.255.254:443"] {
+            let address = address
+                .parse()
+                .expect("fake IP socket address should parse");
+            assert!(
+                validate_admin_external_models_source_addresses(&url, &[address], false).is_ok(),
+                "official catalog should accept local proxy fake IP {address}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_external_models_sources_reject_benchmarking_fake_ip_addresses() {
+        let fake_ip = "198.18.75.234:443"
+            .parse()
+            .expect("fake IP socket address should parse");
+
+        for source_url in [
+            "https://catalog.example/api.json",
+            "https://models.dev/other.json",
+            "https://models.dev:444/api.json",
+        ] {
+            let url = url::Url::parse(source_url).expect("custom catalog URL should parse");
+            assert!(
+                validate_admin_external_models_source_addresses(&url, &[fake_ip], false).is_err(),
+                "custom source must reject the benchmarking fake IP: {source_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn official_external_models_catalog_still_rejects_private_addresses() {
+        let url = url::Url::parse("https://models.dev/api.json")
+            .expect("official catalog URL should parse");
+
+        for address in ["127.0.0.1:443", "10.0.0.1:443", "169.254.169.254:443"] {
+            let address = address
+                .parse()
+                .expect("private socket address should parse");
+            assert!(
+                validate_admin_external_models_source_addresses(&url, &[address], false).is_err(),
+                "official catalog must reject private address {address}"
             );
         }
     }
