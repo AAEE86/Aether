@@ -977,7 +977,7 @@ async fn web_download_image(
     let payload = match trust {
         WebImageDownloadTrust::UntrustedInput => {
             let url = parse_absolute_web_image_url(raw_url)?;
-            download_public_web_image(url, plan.timeouts.as_ref()).await?
+            download_public_web_image(url, plan.timeouts.as_ref(), false).await?
         }
         WebImageDownloadTrust::ProviderOutput => {
             download_provider_web_image(plan, base_url, fp, token, raw_url).await?
@@ -1136,7 +1136,12 @@ async fn download_provider_web_image(
 
     loop {
         if !web_download_url_is_same_origin(&base, &current) {
-            return download_public_web_image(current, plan.timeouts.as_ref()).await;
+            // Provider-generated storage URLs may be resolved to RFC 2544
+            // synthetic addresses by a local DNS interception tool.  The
+            // public downloader still decides whether the exact storage
+            // origin is eligible; this flag is never enabled for untrusted
+            // request input.
+            return download_public_web_image(current, plan.timeouts.as_ref(), true).await;
         }
         let path = match current.query() {
             Some(query) => format!("{}?{query}", current.path()),
@@ -1195,6 +1200,7 @@ async fn download_provider_web_image(
 async fn download_public_web_image(
     mut current: url::Url,
     timeouts: Option<&ExecutionTimeouts>,
+    allow_benchmarking_fake_ip: bool,
 ) -> Result<WebImageHttpPayload, ExecutionRuntimeTransportError> {
     let mut redirects = 0usize;
     let total_timeout = bounded_chatgpt_web_image_timeout(
@@ -1214,8 +1220,12 @@ async fn download_public_web_image(
             timeouts.and_then(|value| value.connect_ms),
             CHATGPT_WEB_IMAGE_PUBLIC_CONNECT_TIMEOUT_MS,
         );
-        let (host, resolved) =
-            resolve_public_web_image_addrs(&current, connect_timeout.min(remaining)).await?;
+        let (host, resolved) = resolve_public_web_image_addrs(
+            &current,
+            connect_timeout.min(remaining),
+            allow_benchmarking_fake_ip,
+        )
+        .await?;
         let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none());
@@ -1311,6 +1321,7 @@ fn bounded_chatgpt_web_image_timeout(configured_ms: Option<u64>, default_ms: u64
 async fn resolve_public_web_image_addrs(
     url: &url::Url,
     lookup_timeout: Duration,
+    allow_benchmarking_fake_ip: bool,
 ) -> Result<(String, Vec<SocketAddr>), ExecutionRuntimeTransportError> {
     let host = url.host_str().ok_or_else(|| {
         ExecutionRuntimeTransportError::UpstreamRequest(
@@ -1345,15 +1356,41 @@ async fn resolve_public_web_image_addrs(
             "ChatGPT-Web image URL DNS resolution returned no addresses".to_string(),
         ));
     }
-    if resolved
-        .iter()
-        .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
-    {
+    validate_public_web_image_addresses(url, &resolved, allow_benchmarking_fake_ip)?;
+    Ok((host.to_string(), resolved))
+}
+
+fn validate_public_web_image_addresses(
+    url: &url::Url,
+    addresses: &[SocketAddr],
+    allow_benchmarking_fake_ip: bool,
+) -> Result<(), ExecutionRuntimeTransportError> {
+    let allows_benchmarking_fake_ip =
+        allow_benchmarking_fake_ip && web_image_storage_origin_allows_benchmarking_fake_ip(url);
+    if addresses.iter().any(|address| {
+        aether_http::is_private_or_reserved_ip(address.ip())
+            && !(allows_benchmarking_fake_ip
+                && aether_http::is_ipv4_benchmarking_fake_ip(address.ip()))
+    }) {
         return Err(ExecutionRuntimeTransportError::UpstreamRequest(
             "ChatGPT-Web image URL resolves to a private or reserved address".to_string(),
         ));
     }
-    Ok((host.to_string(), resolved))
+    Ok(())
+}
+
+/// Synthetic DNS is accepted only for the storage origins that ChatGPT uses
+/// for generated assets and upload blobs.  In particular, a user-supplied URL
+/// on an arbitrary host cannot opt into this exception merely by resolving to
+/// the RFC 2544 benchmark range.
+fn web_image_storage_origin_allows_benchmarking_fake_ip(url: &url::Url) -> bool {
+    url.scheme().eq_ignore_ascii_case("https")
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url
+            .host_str()
+            .is_some_and(chatgpt_web_upload_host_is_allowed)
 }
 
 /// Validate the destination returned by ChatGPT's upload-metadata endpoint.
@@ -1452,7 +1489,8 @@ async fn upload_chatgpt_web_blob(
         CHATGPT_WEB_IMAGE_PUBLIC_READ_TIMEOUT_MS,
     )
     .min(total_timeout);
-    let (host, resolved) = resolve_public_web_image_addrs(upload_url, connect_timeout).await?;
+    let (host, resolved) =
+        resolve_public_web_image_addrs(upload_url, connect_timeout, true).await?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -5214,7 +5252,7 @@ data: [DONE]
             "http://169.254.169.254/latest/meta-data",
         ] {
             let url = url::Url::parse(private_url).expect("private URL should parse");
-            let error = resolve_public_web_image_addrs(&url, Duration::from_secs(5))
+            let error = resolve_public_web_image_addrs(&url, Duration::from_secs(5), false)
                 .await
                 .expect_err("private address must be rejected");
             assert!(
@@ -5225,11 +5263,32 @@ data: [DONE]
 
         let public_url =
             url::Url::parse("https://8.8.8.8/image.png").expect("public URL should parse");
-        let (host, addresses) = resolve_public_web_image_addrs(&public_url, Duration::from_secs(5))
-            .await
-            .expect("public IP literal should be accepted");
+        let (host, addresses) =
+            resolve_public_web_image_addrs(&public_url, Duration::from_secs(5), false)
+                .await
+                .expect("public IP literal should be accepted");
         assert_eq!(host, "8.8.8.8");
         assert_eq!(addresses, vec!["8.8.8.8:443".parse().unwrap()]);
+    }
+
+    #[test]
+    fn chatgpt_web_image_fake_ip_exception_is_limited_to_storage_origins() {
+        let storage =
+            url::Url::parse("https://files.oaiusercontent.com/generated/image.png?sig=test")
+                .expect("storage URL should parse");
+        let fake = vec!["198.18.75.234:443".parse().unwrap()];
+        assert!(validate_public_web_image_addresses(&storage, &fake, true).is_ok());
+        assert!(validate_public_web_image_addresses(&storage, &fake, false).is_err());
+
+        let arbitrary = url::Url::parse("https://cdn.example/generated/image.png")
+            .expect("arbitrary URL should parse");
+        assert!(validate_public_web_image_addresses(&arbitrary, &fake, true).is_err());
+
+        let mixed = vec![
+            "198.18.75.234:443".parse().unwrap(),
+            "10.0.0.1:443".parse().unwrap(),
+        ];
+        assert!(validate_public_web_image_addresses(&storage, &mixed, true).is_err());
     }
 
     #[test]
