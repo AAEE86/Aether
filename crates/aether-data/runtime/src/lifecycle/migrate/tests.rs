@@ -3230,8 +3230,8 @@ INSERT INTO public.usage (
     .await
     .expect("daily stats API key name snapshot should be readable");
     assert_eq!(
-        stats_api_key_name.as_deref(),
-        Some("Deleted API Key Snapshot")
+        stats_api_key_name, None,
+        "deleting an API key must anonymize its historical name while preserving its ID"
     );
 
     query(
