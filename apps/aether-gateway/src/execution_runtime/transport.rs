@@ -503,15 +503,30 @@ fn execution_host_allows_benchmarking_dns_answer(host: &str) -> bool {
         return looks_like_cloud_region_label(region);
     }
 
-    // Kiro uses q.<region>.amazonaws.com.  Match exactly that three-label
-    // service shape; this intentionally does not allow arbitrary AWS
-    // subdomains or lookalikes such as q.us-east-1.evil.amazonaws.com.
-    let labels = host.split('.').collect::<Vec<_>>();
-    labels.len() == 4
-        && labels[0] == "q"
-        && labels[2] == "amazonaws"
-        && labels[3] == "com"
-        && looks_like_cloud_region_label(labels[1])
+    // Kiro uses a small, fixed set of regional service origins. Match each
+    // supported AWS partition explicitly; never use a broad suffix check that
+    // could accept an attacker-controlled subdomain.
+    matches_regional_service_host(&host, "q", ".amazonaws.com")
+        || matches_regional_service_host(&host, "q-fips", ".amazonaws.com")
+        || matches_regional_service_host(&host, "codewhisperer", ".amazonaws.com")
+        || matches_regional_service_host(&host, "oidc", ".amazonaws.com")
+        || matches_regional_service_host(&host, "prod", ".auth.desktop.kiro.dev")
+        || matches_regional_service_host(&host, "q", ".c2s.ic.gov")
+        || matches_regional_service_host(&host, "q", ".sc2s.sgov.gov")
+        || matches_regional_service_host(&host, "q", ".csp.hci.ic.gov")
+}
+
+fn matches_regional_service_host(host: &str, service: &str, suffix: &str) -> bool {
+    let Some(region) = host
+        .strip_prefix(service)
+        .and_then(|value| value.strip_prefix('.'))
+        .and_then(|value| value.strip_suffix(suffix))
+    else {
+        return false;
+    };
+    // A single region label is required. This rejects values such as
+    // `q.us-east-1.evil.amazonaws.com` and suffix lookalikes.
+    !region.contains('.') && looks_like_cloud_region_label(region)
 }
 
 fn looks_like_cloud_region_label(value: &str) -> bool {
@@ -5527,6 +5542,13 @@ mod tests {
             "CHATGPT.COM.",
             "us-central1-aiplatform.googleapis.com",
             "q.us-east-1.amazonaws.com",
+            "q-fips.us-gov-west-1.amazonaws.com",
+            "codewhisperer.us-west-2.amazonaws.com",
+            "oidc.us-east-1.amazonaws.com",
+            "prod.us-east-1.auth.desktop.kiro.dev",
+            "q.us-iso-east-1.c2s.ic.gov",
+            "q.us-isob-east-1.sc2s.sgov.gov",
+            "q.us-isof-east-1.csp.hci.ic.gov",
         ] {
             assert!(
                 super::validate_execution_dns_answers(host, vec![fake]).is_ok(),
@@ -5541,6 +5563,14 @@ mod tests {
             "q.us-east-1.evil.amazonaws.com",
             "q.us-east-1.amazonaws.com.attacker.test",
             "q.localhost.amazonaws.com",
+            "q-fips.us-gov-west-1.evil.amazonaws.com",
+            "codewhisperer.us-west-2.evil.amazonaws.com",
+            "oidc.us-east-1.evil.amazonaws.com",
+            "prod.us-east-1.auth.desktop.kiro.dev.attacker.test",
+            "prod.us-east-1.evil.auth.desktop.kiro.dev",
+            "q.us-iso-east-1.evil.c2s.ic.gov",
+            "q.us-iso-east-1.c2s.ic.gov.attacker.test",
+            "q.us-iso-east-1.c2s.ic.gov.evil",
             "198.18.75.234",
         ] {
             assert!(
