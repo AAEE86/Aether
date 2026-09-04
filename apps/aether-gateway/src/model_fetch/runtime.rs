@@ -153,12 +153,10 @@ where
             .push(endpoint);
     }
     let mut keys_by_provider = HashMap::<String, Vec<StoredProviderCatalogKey>>::new();
-    for key in <S as ModelFetchAssociationStore>::list_provider_catalog_keys_by_provider_ids(
-        state,
-        &provider_ids,
-    )
-    .await
-    .map_err(GatewayError::Internal)?
+    for key in state
+        .list_provider_catalog_keys_for_model_fetch(&provider_ids)
+        .await
+        .map_err(GatewayError::Internal)?
     {
         keys_by_provider
             .entry(key.provider_id.clone())
@@ -180,6 +178,7 @@ where
                 continue;
             }
             let selected_endpoints = selected_models_fetch_endpoints(&endpoints, &key);
+            let key = sanitize_model_fetch_key(key);
             targets.push(SelectedFetchTarget {
                 provider: provider.clone(),
                 key,
@@ -188,6 +187,56 @@ where
         }
     }
     Ok(targets)
+}
+
+/// Keep only the key metadata needed after target collection. Raw catalog
+/// rows contain encrypted credentials and transport secrets; model discovery
+/// reopens a single snapshot by id when it actually needs to make a request.
+fn sanitize_model_fetch_key(mut key: StoredProviderCatalogKey) -> StoredProviderCatalogKey {
+    // `SelectedFetchTarget` lives across endpoint selection and the complete
+    // fetch/persist operation.  Keep only fields consumed by that operation;
+    // in particular, do not retain historical diagnostics, scheduling state,
+    // usage counters, or transport configuration copied from a raw database
+    // row.  The actual credential/proxy snapshot is reopened by id for one
+    // endpoint at a time.
+    key.capabilities = None;
+    key.auth_type_by_format = None;
+    key.allow_auth_channel_mismatch_formats = None;
+    key.encrypted_api_key = None;
+    key.encrypted_auth_config = None;
+    key.note = None;
+    key.internal_priority = 0;
+    key.rate_multipliers = None;
+    key.global_priority_by_format = None;
+    key.expires_at_unix_secs = None;
+    key.cache_ttl_minutes = 0;
+    key.max_probe_interval_minutes = 0;
+    key.proxy = None;
+    key.fingerprint = None;
+    key.rpm_limit = None;
+    key.concurrent_limit = None;
+    key.learned_rpm_limit = None;
+    key.concurrent_429_count = None;
+    key.rpm_429_count = None;
+    key.last_429_at_unix_secs = None;
+    key.last_429_type = None;
+    key.adjustment_history = None;
+    key.utilization_samples = None;
+    key.last_probe_increase_at_unix_secs = None;
+    key.last_rpm_peak = None;
+    key.request_count = None;
+    key.total_tokens = 0;
+    key.total_cost_usd = 0.0;
+    key.success_count = None;
+    key.error_count = None;
+    key.total_response_time_ms = None;
+    key.last_used_at_unix_secs = None;
+    key.last_models_fetch_at_unix_secs = None;
+    key.last_models_fetch_error = None;
+    key.oauth_invalid_at_unix_secs = None;
+    key.oauth_invalid_reason = None;
+    key.status_snapshot = None;
+    key
 }
 
 async fn execute_fetch_targets<S>(
@@ -293,13 +342,14 @@ async fn fetch_and_persist_key_models(
     }
 
     let mut transports = Vec::new();
+    let mut skipped_invalid_credential = false;
     for endpoint in &target.endpoints {
         match state
             .read_provider_transport_snapshot(&target.provider.id, &endpoint.id, &target.key.id)
-            .await?
+            .await
         {
-            Some(transport) => transports.push(transport),
-            None => {
+            Ok(Some(transport)) => transports.push(transport),
+            Ok(None) => {
                 warn!(
                     provider_id = %target.provider.id,
                     endpoint_id = %endpoint.id,
@@ -307,7 +357,27 @@ async fn fetch_and_persist_key_models(
                     "gateway model fetch transport snapshot unavailable"
                 );
             }
+            Err(error) if is_nonfatal_legacy_credential_error(&error) => {
+                skipped_invalid_credential = true;
+                warn!(
+                    event_name = "model_fetch_skipped_invalid_credential",
+                    log_type = "ops",
+                    provider_id = %target.provider.id,
+                    endpoint_id = %endpoint.id,
+                    key_id = %target.key.id,
+                    reason = "invalid_stored_credential",
+                    "gateway skipped model fetch for an invalid stored credential"
+                );
+            }
+            Err(error) => return Err(error),
         }
+    }
+
+    // A malformed legacy credential is isolated to its key. Do not turn it
+    // into a cycle-wide failure (or rewrite the row merely to record a fetch
+    // error), and let other eligible keys continue through the worker.
+    if transports.is_empty() && skipped_invalid_credential {
+        return Ok(KeyFetchDisposition::Skipped);
     }
 
     if transports.is_empty() {
@@ -482,6 +552,30 @@ pub(crate) fn safe_model_fetch_error(error: &str) -> String {
     "Upstream models fetch failed".to_string()
 }
 
+/// Credential decoding failures from old catalog rows are isolated by the
+/// background model-fetch worker. Normal request/admin paths remain fail
+/// closed; this predicate only controls whether one maintenance item may be
+/// skipped without aborting the whole cycle.
+fn is_nonfatal_legacy_credential_error(error: &GatewayError) -> bool {
+    let GatewayError::Internal(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    // Missing encryption configuration is an operational failure and must
+    // remain fail-closed.  Only errors that identify a stored field or a
+    // malformed legacy ciphertext are safe to isolate to one key.
+    if message.contains("encryption key is not configured") {
+        return false;
+    }
+    message.contains("provider_api_keys.api_key")
+        || message.contains("provider_api_keys.auth_config")
+        || message.contains("legacy provider catalog credential")
+        || message.contains("provider catalog credential is not an authenticated ciphertext")
+        || message.contains("provider catalog credential contains reserved framing")
+        || message.contains("provider catalog credential authentication failed")
+        || message.contains("provider catalog credential envelope")
+}
+
 fn model_fetch_error_http_status(error: &str) -> Option<u16> {
     [
         "http ",
@@ -553,7 +647,8 @@ fn now_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        perform_model_fetch_once_with_state, safe_model_fetch_error, state::ModelFetchRuntimeState,
+        perform_model_fetch_once_with_state, safe_model_fetch_error, sanitize_model_fetch_key,
+        state::ModelFetchRuntimeState,
     };
     use aether_contracts::{ExecutionPlan, ExecutionResult, ProxySnapshot};
     use aether_data_contracts::repository::global_models::{
@@ -585,6 +680,7 @@ mod tests {
         endpoints: Arc<Vec<StoredProviderCatalogEndpoint>>,
         keys: Arc<Mutex<Vec<StoredProviderCatalogKey>>>,
         transports: Arc<HashMap<(String, String, String), GatewayProviderTransportSnapshot>>,
+        transport_errors: Arc<HashMap<(String, String, String), String>>,
         execution_results: Arc<Mutex<VecDeque<ExecutionResult>>>,
         executed_plans: Arc<Mutex<Vec<ExecutionPlan>>>,
         cached_models: Arc<Mutex<HashMap<(String, String), Vec<Value>>>>,
@@ -604,11 +700,20 @@ mod tests {
                 endpoints: Arc::new(endpoints),
                 keys: Arc::new(Mutex::new(keys)),
                 transports: Arc::new(transports),
+                transport_errors: Arc::new(HashMap::new()),
                 execution_results: Arc::new(Mutex::new(VecDeque::from(execution_results))),
                 executed_plans: Arc::new(Mutex::new(Vec::new())),
                 cached_models: Arc::new(Mutex::new(HashMap::new())),
                 upstream_metadata_updates: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn with_transport_errors(
+            mut self,
+            transport_errors: HashMap<(String, String, String), String>,
+        ) -> Self {
+            self.transport_errors = Arc::new(transport_errors);
+            self
         }
 
         fn key(&self, key_id: &str) -> StoredProviderCatalogKey {
@@ -758,6 +863,13 @@ mod tests {
             endpoint_id: &str,
             key_id: &str,
         ) -> Result<Option<GatewayProviderTransportSnapshot>, GatewayError> {
+            if let Some(error) = self.transport_errors.get(&(
+                provider_id.to_string(),
+                endpoint_id.to_string(),
+                key_id.to_string(),
+            )) {
+                return Err(GatewayError::Internal(error.clone()));
+            }
             Ok(self
                 .transports
                 .get(&(
@@ -1042,6 +1154,15 @@ mod tests {
         ] {
             assert!(!safe_error.contains(secret));
         }
+    }
+
+    #[test]
+    fn invalid_credential_classifier_does_not_swallow_missing_key_configuration() {
+        assert!(!super::is_nonfatal_legacy_credential_error(
+            &GatewayError::Internal(
+                "provider catalog credential encryption key is not configured".to_string(),
+            )
+        ));
     }
 
     #[tokio::test]
@@ -1380,6 +1501,114 @@ mod tests {
         assert_eq!(
             updated.last_models_fetch_error.as_deref(),
             Some("Provider transport snapshot unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn model_fetch_isolates_malformed_legacy_key_from_healthy_key() {
+        let provider = sample_provider("provider-openai", "openai");
+        let endpoint = sample_endpoint(
+            "endpoint-openai-responses",
+            "provider-openai",
+            "openai:responses",
+        );
+        let mut malformed = sample_key(
+            "key-openai-malformed",
+            "provider-openai",
+            "api_key",
+            &["openai:responses"],
+        );
+        malformed.encrypted_api_key = Some("legacy-plaintext-or-corrupt".to_string());
+        malformed.allowed_models = Some(json!(["legacy-model"]));
+        malformed.last_models_fetch_error = Some("previous error".to_string());
+        let malformed_ciphertext = malformed.encrypted_api_key.clone();
+        let healthy = sample_key(
+            "key-openai-healthy",
+            "provider-openai",
+            "api_key",
+            &["openai:responses"],
+        );
+        let healthy_transport = sample_transport(
+            "openai",
+            "provider-openai",
+            "endpoint-openai-responses",
+            "key-openai-healthy",
+            "openai:responses",
+            "api_key",
+            None,
+        );
+        let state = TestState::new(
+            vec![provider],
+            vec![endpoint],
+            vec![malformed, healthy],
+            HashMap::from([(
+                (
+                    "provider-openai".to_string(),
+                    "endpoint-openai-responses".to_string(),
+                    "key-openai-healthy".to_string(),
+                ),
+                healthy_transport,
+            )]),
+            vec![execution_result(json!({
+                "data": [{"id": "gpt-healthy"}]
+            }))],
+        )
+        .with_transport_errors(HashMap::from([(
+            (
+                "provider-openai".to_string(),
+                "endpoint-openai-responses".to_string(),
+                "key-openai-malformed".to_string(),
+            ),
+            "provider_api_keys.api_key is not an authenticated ciphertext".to_string(),
+        )]));
+
+        let summary = perform_model_fetch_once_with_state(&state)
+            .await
+            .expect("one malformed key must not abort the cycle");
+
+        assert_eq!(summary.attempted, 2);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.succeeded, 1);
+        let malformed_after = state.key("key-openai-malformed");
+        assert_eq!(malformed_after.encrypted_api_key, malformed_ciphertext);
+        assert_eq!(
+            malformed_after.allowed_models,
+            Some(json!(["legacy-model"]))
+        );
+        assert_eq!(
+            malformed_after.last_models_fetch_error.as_deref(),
+            Some("previous error")
+        );
+        assert_eq!(
+            state.key("key-openai-healthy").allowed_models,
+            Some(json!(["gpt-healthy"]))
+        );
+    }
+
+    #[test]
+    fn sanitized_model_fetch_key_drops_raw_transport_and_diagnostic_state() {
+        let mut key = sample_key("key-sanitize", "provider", "api_key", &["openai:responses"]);
+        key.capabilities = Some(json!({"secret": "capability"}));
+        key.note = Some("operator note".to_string());
+        key.proxy = Some(json!({"url": "http://user:pass@example.test"}));
+        key.last_models_fetch_error = Some("upstream detail".to_string());
+        key.oauth_invalid_reason = Some("token detail".to_string());
+        key.allowed_models = Some(json!(["keep-model-filter"]));
+        key.upstream_metadata = Some(json!({"provider": {"quota": 1}}));
+
+        let sanitized = sanitize_model_fetch_key(key);
+
+        assert_eq!(sanitized.encrypted_api_key, None);
+        assert_eq!(sanitized.encrypted_auth_config, None);
+        assert_eq!(sanitized.proxy, None);
+        assert_eq!(sanitized.fingerprint, None);
+        assert_eq!(sanitized.note, None);
+        assert_eq!(sanitized.last_models_fetch_error, None);
+        assert_eq!(sanitized.oauth_invalid_reason, None);
+        assert_eq!(sanitized.allowed_models, Some(json!(["keep-model-filter"])));
+        assert_eq!(
+            sanitized.upstream_metadata,
+            Some(json!({"provider": {"quota": 1}}))
         );
     }
 

@@ -404,6 +404,16 @@ impl ModelFetchRuntimeState for AppState {
         AppState::list_provider_catalog_endpoints_by_provider_ids(self, provider_ids).await
     }
 
+    async fn list_provider_catalog_keys_for_model_fetch(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogKey>, String> {
+        self.data
+            .list_provider_catalog_keys_by_provider_ids(provider_ids)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
     async fn read_provider_transport_snapshot(
         &self,
         provider_id: &str,

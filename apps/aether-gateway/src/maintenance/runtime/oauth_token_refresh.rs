@@ -51,9 +51,15 @@ pub(crate) async fn perform_oauth_token_refresh_once(
     let endpoints = state
         .list_provider_catalog_endpoints_by_provider_ids(&provider_ids)
         .await?;
+    // Read the catalog rows without opening/decrypting credentials in bulk.
+    // A single legacy/plaintext row must not abort refresh for every healthy
+    // key, and this maintenance scan must not trigger the normal lazy v2
+    // credential rewrite path. Each candidate is opened in isolation below.
     let keys = state
+        .data
         .list_provider_catalog_keys_by_provider_ids(&provider_ids)
-        .await?;
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))?;
     let endpoints_by_provider = group_endpoints_by_provider(endpoints);
     let keys_by_provider = group_keys_by_provider(keys);
     let mut summary = OAuthTokenRefreshRunSummary::default();
@@ -85,12 +91,31 @@ pub(crate) async fn perform_oauth_token_refresh_once(
                 continue;
             };
 
-            let Some(transport) = state
+            let transport = match state
                 .read_provider_transport_snapshot(&provider.id, &endpoint.id, &key.id)
-                .await?
-            else {
-                summary.skipped = summary.skipped.saturating_add(1);
-                continue;
+                .await
+            {
+                Ok(Some(transport)) => transport,
+                Ok(None) => {
+                    summary.skipped = summary.skipped.saturating_add(1);
+                    continue;
+                }
+                Err(err) if is_nonfatal_legacy_credential_error(&err) => {
+                    // Keep malformed historical credentials untouched. They
+                    // are intentionally skipped while other keys continue.
+                    summary.skipped = summary.skipped.saturating_add(1);
+                    warn!(
+                        event_name = "oauth_token_refresh_skipped_invalid_credential",
+                        log_type = "ops",
+                        worker = "oauth_token_refresh",
+                        provider_id = %provider.id,
+                        key_id = %key.id,
+                        reason = "invalid_stored_credential",
+                        "gateway skipped oauth refresh for an invalid stored credential"
+                    );
+                    continue;
+                }
+                Err(err) => return Err(err),
             };
             let is_agent_identity =
                 crate::provider_transport::is_codex_agent_identity_transport(&transport);
@@ -236,8 +261,10 @@ async fn provider_key_credentials_changed(
     before: &StoredProviderCatalogKey,
 ) -> Result<bool, GatewayError> {
     let Some(after) = state
+        .data
         .list_provider_catalog_keys_by_ids(std::slice::from_ref(&before.id))
-        .await?
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))?
         .into_iter()
         .next()
     else {
@@ -274,6 +301,29 @@ fn now_unix_secs() -> u64 {
         .unwrap_or_default()
 }
 
+/// Credential decoding errors are expected for rows written by older
+/// versions of the service. They are non-fatal for a best-effort maintenance
+/// scan, but normal request/admin paths still fail closed on the same error.
+fn is_nonfatal_legacy_credential_error(error: &GatewayError) -> bool {
+    let GatewayError::Internal(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    // Missing encryption configuration is an operational failure and must
+    // remain fail-closed.  Only errors that identify a stored field or a
+    // malformed legacy ciphertext are safe to isolate to one key.
+    if message.contains("encryption key is not configured") {
+        return false;
+    }
+    message.contains("provider_api_keys.api_key")
+        || message.contains("provider_api_keys.auth_config")
+        || message.contains("legacy provider catalog credential")
+        || message.contains("provider catalog credential is not an authenticated ciphertext")
+        || message.contains("provider catalog credential contains reserved framing")
+        || message.contains("provider catalog credential authentication failed")
+        || message.contains("provider catalog credential envelope")
+}
+
 #[cfg(test)]
 mod tests {
     use aether_data_contracts::repository::provider_catalog::{
@@ -281,8 +331,10 @@ mod tests {
     };
 
     use super::{
-        agent_identity_needs_task_recovery, auth_config_has_refresh_token, oauth_refresh_candidate,
+        agent_identity_needs_task_recovery, auth_config_has_refresh_token,
+        is_nonfatal_legacy_credential_error, oauth_refresh_candidate,
     };
+    use crate::GatewayError;
 
     #[test]
     fn legacy_antigravity_refresh_token_is_refreshable() {
@@ -333,6 +385,29 @@ mod tests {
         assert!(agent_identity_needs_task_recovery(
             Some("{}"),
             Some("[REFRESH_FAILED] temporary"),
+        ));
+    }
+
+    #[test]
+    fn only_stored_provider_credential_errors_are_non_fatal() {
+        assert!(is_nonfatal_legacy_credential_error(
+            &GatewayError::Internal(
+                "provider catalog credential is not an authenticated ciphertext".to_string(),
+            )
+        ));
+        assert!(is_nonfatal_legacy_credential_error(
+            &GatewayError::Internal(
+                "provider_api_keys.auth_config has an invalid provider catalog credential envelope"
+                    .to_string(),
+            )
+        ));
+        assert!(!is_nonfatal_legacy_credential_error(
+            &GatewayError::Internal("postgres error: connection refused".to_string(),)
+        ));
+        assert!(!is_nonfatal_legacy_credential_error(
+            &GatewayError::Internal(
+                "provider catalog credential encryption key is not configured".to_string(),
+            )
         ));
     }
 }

@@ -31,6 +31,20 @@ pub(crate) trait ModelFetchRuntimeState:
         provider_ids: &[String],
     ) -> Result<Vec<StoredProviderCatalogEndpoint>, GatewayError>;
 
+    /// Return raw catalog key rows for the background fetcher. Production
+    /// implementations should avoid the normal bulk credential-opening
+    /// wrapper here: one malformed legacy row must not prevent healthy keys
+    /// from being considered, and a maintenance scan must not lazily rewrite
+    /// historical ciphertext. Test implementations can use the association
+    /// store's existing method via this default.
+    async fn list_provider_catalog_keys_for_model_fetch(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<Vec<StoredProviderCatalogKey>, String> {
+        self.list_provider_catalog_keys_by_provider_ids(provider_ids)
+            .await
+    }
+
     async fn read_provider_transport_snapshot(
         &self,
         provider_id: &str,
