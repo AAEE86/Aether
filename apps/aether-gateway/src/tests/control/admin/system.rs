@@ -1948,7 +1948,7 @@ async fn gateway_validates_chat_pii_redaction_system_config_locally_with_trusted
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_system_provider_priority_mode_locally_with_bearer_admin_session() {
+async fn gateway_rejects_removed_admin_system_provider_priority_mode_with_bearer_admin_session() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
@@ -1962,7 +1962,7 @@ async fn gateway_handles_admin_system_provider_priority_mode_locally_with_bearer
         }),
     );
 
-    let (upstream_url, upstream_handle) = start_server(upstream).await;
+    let (_upstream_url, upstream_handle) = start_server(upstream).await;
     let state = AppState::new().expect("gateway should build");
     let access_token = issue_test_admin_access_token(&state, "device-admin-config").await;
     let gateway = build_router_with_state(state);
@@ -1978,10 +1978,7 @@ async fn gateway_handles_admin_system_provider_priority_mode_locally_with_bearer
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["key"], "provider_priority_mode");
-    assert_eq!(payload["value"], "provider");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

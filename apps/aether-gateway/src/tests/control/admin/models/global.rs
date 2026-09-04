@@ -850,10 +850,7 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
                     provider_catalog_repository,
                 )
                 .with_global_model_repository_for_tests(global_model_repository)
-                .with_system_config_values_for_tests(vec![
-                    ("scheduling_mode".to_string(), json!("fixed_order")),
-                    ("provider_priority_mode".to_string(), json!("global_key")),
-                ]),
+                .with_system_default_routing_group_for_tests(),
             ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
@@ -876,8 +873,8 @@ async fn gateway_handles_admin_global_model_routing_locally_with_trusted_admin_p
     assert_eq!(payload["global_model_name"], "gpt-5");
     assert_eq!(payload["display_name"], "GPT 5");
     assert_eq!(payload["global_model_mappings"], json!(["gpt-5-upstream"]));
-    assert_eq!(payload["scheduling_mode"], "fixed_order");
-    assert_eq!(payload["priority_mode"], "global_key");
+    assert_eq!(payload["scheduling_mode"], "cache_affinity");
+    assert_eq!(payload["priority_mode"], "provider");
     assert_eq!(payload["total_providers"], 2);
     assert_eq!(payload["active_providers"], 2);
 
