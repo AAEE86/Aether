@@ -1824,6 +1824,13 @@ mod tests {
         let key_id = "key-codex-reset-credential-generation";
         let (app, repository, credential) = codex_reset_state_machine_test_state(key_id);
         let admin_state = AdminAppState::new(&app);
+        let original_metadata = repository
+            .list_keys_by_ids(&[key_id.to_string()])
+            .await
+            .expect("key should load before reservation")
+            .pop()
+            .expect("key should exist before reservation")
+            .upstream_metadata;
 
         let result = reserve_codex_account_reset(
             &admin_state,
@@ -1847,10 +1854,7 @@ mod tests {
             .expect("key should reload")
             .pop()
             .expect("key should exist");
-        assert_eq!(
-            stored.upstream_metadata.unwrap()["codex"],
-            json!({"credential_generation":"credential-v1"})
-        );
+        assert_eq!(stored.upstream_metadata, original_metadata);
     }
 
     #[tokio::test]
