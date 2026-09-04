@@ -64,6 +64,12 @@ const TUNNEL_ATTACHMENT_KEY_PREFIX: &str = "tunnel.attachments.";
 const TUNNEL_ATTACHMENT_REDIS_KEY_PREFIX: &str = "tunnel:attachments:";
 const TUNNEL_INSTANCE_ID_ENV: &str = "AETHER_GATEWAY_INSTANCE_ID";
 const TUNNEL_RELAY_BASE_URL_ENV: &str = "AETHER_TUNNEL_RELAY_BASE_URL";
+// Owner-forward relay URLs are deployment metadata, but a corrupted or
+// stale attachment record must not turn the gateway into a generic internal
+// network client.  Private HTTPS relay targets therefore require an explicit
+// operator opt-in, just like the tunnel's private upstream target escape
+// hatch.  Loopback HTTP remains supported for the local single-process path.
+const TUNNEL_RELAY_ALLOW_PRIVATE_TARGETS_ENV: &str = "AETHER_TUNNEL_RELAY_ALLOW_PRIVATE_TARGETS";
 const TUNNEL_ATTACHMENT_TTL_ENV: &str = "AETHER_TUNNEL_ATTACHMENT_TTL_SECS";
 const TUNNEL_RELAY_AUTH_SECRET_ENV: &str = "AETHER_TUNNEL_RELAY_AUTH_SECRET";
 const TUNNEL_HEARTBEAT_STATE_KEY_PREFIX: &str = "tunnel:heartbeat:session:";
@@ -236,7 +242,23 @@ fn build_owner_forward_target(
     scheme: &str,
     host: &str,
     port: u16,
+    addresses: Vec<SocketAddr>,
+) -> Result<ResolvedOwnerForwardTarget, String> {
+    build_owner_forward_target_with_policy(
+        scheme,
+        host,
+        port,
+        addresses,
+        tunnel_relay_allows_private_targets(),
+    )
+}
+
+fn build_owner_forward_target_with_policy(
+    scheme: &str,
+    host: &str,
+    port: u16,
     mut addresses: Vec<SocketAddr>,
+    allow_private_targets: bool,
 ) -> Result<ResolvedOwnerForwardTarget, String> {
     let host = host.trim();
     if host.is_empty() {
@@ -266,6 +288,19 @@ fn build_owner_forward_target(
     {
         return Err("loopback HTTP owner gateway resolved to a non-loopback address".to_string());
     }
+    if !allow_private_targets
+        && addresses.iter().any(|address| {
+            aether_http::is_private_or_reserved_ip(address.ip())
+                // The existing local-development exception is deliberately
+                // narrow: HTTPS never gets an implicit loopback/private
+                // exemption, while literal/localhost HTTP is checked above.
+                && !(scheme.eq_ignore_ascii_case("http") && address.ip().is_loopback())
+        })
+    {
+        return Err(format!(
+            "owner gateway DNS resolution returned a private or reserved address; set {TUNNEL_RELAY_ALLOW_PRIVATE_TARGETS_ENV}=true only for a trusted internal relay"
+        ));
+    }
 
     Ok(ResolvedOwnerForwardTarget {
         scheme: scheme.to_ascii_lowercase(),
@@ -274,6 +309,17 @@ fn build_owner_forward_target(
         addresses,
         literal_host: host.parse::<std::net::IpAddr>().is_ok(),
     })
+}
+
+fn tunnel_relay_allows_private_targets() -> bool {
+    std::env::var(TUNNEL_RELAY_ALLOW_PRIVATE_TARGETS_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 fn build_owner_forward_pinned_client(
@@ -2695,9 +2741,9 @@ fn parse_embedded_tunnel_heartbeat_request(
 mod tests {
     use super::{
         apply_embedded_tunnel_heartbeat, apply_embedded_tunnel_node_status,
-        build_owner_forward_target, build_tunnel_affinity_auth_metadata,
-        build_tunnel_owner_relay_url, build_tunnel_probe_meta, current_unix_secs,
-        encode_tunnel_relay_envelope, owner_forward_client_for_url,
+        build_owner_forward_target, build_owner_forward_target_with_policy,
+        build_tunnel_affinity_auth_metadata, build_tunnel_owner_relay_url, build_tunnel_probe_meta,
+        current_unix_secs, encode_tunnel_relay_envelope, owner_forward_client_for_url,
         prepare_owner_relay_request_body, prepare_owner_relay_request_body_with_limits,
         resolve_owner_forward_target, resolve_tunnel_relay_auth_secret_value,
         tunnel_attachment_key, validate_tunnel_relay_transport_url, AppState, GatewayDataState,
@@ -2797,9 +2843,9 @@ mod tests {
             "gateway.example.com",
             8443,
             vec![
-                "[2001:db8::2]:8443".parse().unwrap(),
-                "192.0.2.10:8443".parse().unwrap(),
-                "192.0.2.10:8443".parse().unwrap(),
+                "[2001:4860:4860::8888]:8443".parse().unwrap(),
+                "8.8.8.8:8443".parse().unwrap(),
+                "8.8.8.8:8443".parse().unwrap(),
             ],
         )
         .expect("valid DNS answers should produce a target");
@@ -2851,12 +2897,21 @@ mod tests {
         )
         .is_ok());
 
-        // Private HTTPS owner deployments remain supported.
+        // Private HTTPS owner deployments require an explicit deployment
+        // opt-in; the default path must not be an SSRF primitive.
         assert!(build_owner_forward_target(
             "https",
             "gateway.internal",
             8443,
             vec!["10.0.0.8:8443".parse().unwrap()],
+        )
+        .is_err());
+        assert!(build_owner_forward_target_with_policy(
+            "https",
+            "gateway.internal",
+            8443,
+            vec!["10.0.0.8:8443".parse().unwrap()],
+            true,
         )
         .is_ok());
     }
