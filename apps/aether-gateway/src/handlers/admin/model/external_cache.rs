@@ -212,7 +212,19 @@ fn normalize_admin_external_models_payload(payload: serde_json::Value) -> serde_
 
 fn classify_admin_external_models_transport_error(message: &str) -> &'static str {
     let message = message.to_ascii_lowercase();
-    if message.contains("timed out") || message.contains("timeout") {
+    if message.contains("dns resolution")
+        || message.contains("dns lookup")
+        || (message.contains("resolve") && message.contains("host"))
+    {
+        "dns_resolution"
+    } else if message.contains("private or reserved")
+        || message.contains("ssrf")
+        || message.contains("address policy")
+    {
+        "ssrf_blocked"
+    } else if message.contains("invalid") && message.contains("url") {
+        "invalid_url"
+    } else if message.contains("timed out") || message.contains("timeout") {
         "timeout"
     } else if message.contains("relay") || message.contains("tunnel") {
         "relay"
@@ -226,6 +238,8 @@ fn classify_admin_external_models_transport_error(message: &str) -> &'static str
         "response_decode"
     } else if message.contains("connect") || message.contains("dns") || message.contains("tcp") {
         "connect"
+    } else if message.contains("source returned http") || message.contains("status ") {
+        "upstream_http"
     } else if message.contains("header") || message.contains("method") || message.contains("build")
     {
         "request_build"
@@ -694,8 +708,20 @@ pub(crate) async fn read_admin_external_models_cache(
             }
             Ok(Some(payload))
         }
-        Err(_) => {
-            warn!("failed to fetch external models catalog");
+        Err(error) => {
+            // Keep the client-facing response generic, but leave an actionable,
+            // low-cardinality diagnostic for operators.  The underlying error
+            // is intentionally not logged here because a future transport
+            // implementation could include URL, proxy, or credential details.
+            let error_message = error.into_message();
+            let transport_error_kind =
+                classify_admin_external_models_transport_error(&error_message);
+            warn!(
+                request_id = %request_id,
+                proxy_mode = if proxy_node_id.is_some() { "configured_node" } else { "direct" },
+                transport_error_kind,
+                "failed to fetch external models catalog"
+            );
             Ok(None)
         }
     }
@@ -765,12 +791,22 @@ mod tests {
     fn classifies_external_models_transport_errors_without_exposing_details() {
         for (message, expected) in [
             ("request timeout after 300000ms", "timeout"),
+            (
+                "external models source DNS resolution failed",
+                "dns_resolution",
+            ),
+            (
+                "external models source resolves to a private or reserved address",
+                "ssrf_blocked",
+            ),
+            ("external models source URL is invalid", "invalid_url"),
             ("hub relay request failed", "relay"),
             ("invalid proxy configuration", "proxy_config"),
             ("upstream response body exceeds limit", "response_too_large"),
             ("upstream response is not valid JSON", "invalid_json"),
             ("failed to decode content-encoding gzip", "response_decode"),
             ("tcp connect error", "connect"),
+            ("external models source returned HTTP 503", "upstream_http"),
             ("invalid upstream header value", "request_build"),
             ("opaque execution failure", "unknown_transport"),
         ] {
