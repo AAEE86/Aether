@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use aether_ai_formats::openai_responses_message_item_id;
 use axum::body::to_bytes;
 use base64::Engine as _;
 use serde_json::json;
@@ -12,10 +11,10 @@ use super::{
     convert_gemini_chat_response_to_openai_chat, convert_gemini_response_to_openai_responses,
     maybe_build_local_core_sync_finalize_response,
 };
-use crate::ai_serving::GatewayControlDecision;
 use crate::ai_serving::{
     convert_openai_chat_response_to_openai_responses,
-    convert_openai_responses_response_to_openai_chat,
+    convert_openai_responses_response_to_openai_chat, openai_responses_message_item_id,
+    GatewayControlDecision,
 };
 use crate::usage::GatewaySyncReportRequest;
 
