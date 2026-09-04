@@ -947,7 +947,12 @@ mod tests {
             hits: Arc::clone(&hits),
         };
         let adapter = GenericOAuthRefreshAdapter::default()
-            .with_token_url_for_tests("antigravity", "https://oauth.example/token");
+            .with_token_url_for_tests("antigravity", "https://oauth.example/token")
+            .with_oauth_credentials_for_tests(
+                "antigravity",
+                "test-client-id",
+                "test-client-secret",
+            );
 
         assert!(adapter.supports(&transport));
         assert!(adapter.should_refresh(&transport, None));

@@ -19,6 +19,24 @@ impl Default for AntigravityProviderOAuthAdapter {
     }
 }
 
+impl AntigravityProviderOAuthAdapter {
+    /// Supply deterministic OAuth client credentials for tests without
+    /// requiring a process-wide environment variable. Production callers
+    /// continue to resolve the secret from the configured environment.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn with_oauth_credentials_for_tests(
+        mut self,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
+        self.inner = self
+            .inner
+            .with_oauth_credentials_for_tests(client_id, client_secret);
+        self
+    }
+}
+
 #[async_trait::async_trait]
 impl ProviderOAuthAdapter for AntigravityProviderOAuthAdapter {
     fn provider_type(&self) -> &'static str {
@@ -150,7 +168,8 @@ mod tests {
 
     #[test]
     fn antigravity_authorize_requests_offline_refresh_token() {
-        let adapter = AntigravityProviderOAuthAdapter::default();
+        let adapter = AntigravityProviderOAuthAdapter::default()
+            .with_oauth_credentials_for_tests("test-client-id", "test-client-secret");
         let response = adapter
             .build_authorize_url(&transport_context(), "state-1", Some("challenge-1"))
             .expect("authorize url should build");
