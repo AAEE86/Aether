@@ -904,19 +904,19 @@ pub(crate) enum ExecutionRuntimeTransportError {
     BodyDecode(base64::DecodeError),
     #[error("request body exceeds {limit_bytes} decoded bytes")]
     BodyTooLarge { limit_bytes: usize },
-    #[error("request content-encoding is not supported: {0}")]
+    #[error("request content-encoding is not supported: {}", sanitize_error_detail(.0))]
     UnsupportedContentEncoding(String),
     #[error("proxy execution is not supported")]
     ProxyUnsupported,
-    #[error("invalid method: {0}")]
+    #[error("invalid method: {}", sanitize_error_detail(&.0.to_string()))]
     InvalidMethod(#[from] http::method::InvalidMethod),
-    #[error("invalid upstream header name: {0}")]
+    #[error("invalid upstream header name: {}", sanitize_error_detail(.0))]
     InvalidHeaderName(String),
-    #[error("invalid upstream header value for {0}")]
+    #[error("invalid upstream header value for {}", sanitize_error_detail(.0))]
     InvalidHeaderValue(String),
     #[error("invalid proxy configuration")]
     InvalidProxy(#[source] reqwest::Error),
-    #[error("unsupported transport profile backend: {0}")]
+    #[error("unsupported transport profile backend: {}", sanitize_error_detail(.0))]
     UnsupportedTransportProfile(String),
     #[error("failed to encode request body")]
     BodyEncode(#[source] serde_json::Error),
@@ -924,20 +924,24 @@ pub(crate) enum ExecutionRuntimeTransportError {
     ClientBuild(#[source] reqwest::Error),
     #[error("failed to build browser impersonation HTTP client")]
     BrowserClientBuild(#[source] wreq::Error),
-    #[error("browser impersonation response body failed: {0}")]
+    #[error("browser impersonation response body failed: {}", sanitize_error_detail(.0))]
     BrowserBody(String),
-    #[error("{message}")]
+    #[error("{}", sanitize_error_detail(message))]
     UpstreamHttpStatus { status_code: u16, message: String },
-    #[error("failed to execute upstream request: {0}")]
+    #[error("failed to execute upstream request: {}", sanitize_error_detail(.0))]
     UpstreamRequest(String),
     #[error("upstream response {phase} body exceeds {limit_bytes} bytes")]
     UpstreamResponseTooLarge {
         phase: UpstreamResponseBodyPhase,
         limit_bytes: usize,
     },
-    #[error("failed to decode upstream response body with content-encoding {encoding}: {message}")]
+    #[error(
+        "failed to decode upstream response body with content-encoding {}: {}",
+        sanitize_error_detail(encoding),
+        sanitize_error_detail(message)
+    )]
     UpstreamResponseDecode { encoding: String, message: String },
-    #[error("hub relay request failed: {0}")]
+    #[error("hub relay request failed: {}", sanitize_error_detail(.0))]
     RelayError(String),
     #[error("upstream response is not valid JSON: {0}")]
     InvalidJson(serde_json::Error),
@@ -946,10 +950,10 @@ pub(crate) enum ExecutionRuntimeTransportError {
 // `reqwest::Error` and `wreq::Error` retain the URL associated with a failed
 // request.  Their derived `Debug` implementations therefore may include
 // proxy credentials or query-string tokens.  This error is logged with
-// structured `?error` fields in a few execution paths, so keep `Display`
-// (which is intentionally stable for callers) separate from a safe diagnostic
-// representation.  Dynamic details are passed through the same URL-aware,
-// bounded sanitizer used by the upstream request formatters.
+// structured `?error` fields in a few execution paths, so both `Debug` and
+// `Display` must be safe if a caller accidentally crosses that boundary.
+// Dynamic details are passed through the same URL-aware, bounded sanitizer
+// used by the upstream request formatters.
 impl std::fmt::Debug for ExecutionRuntimeTransportError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -5828,6 +5832,16 @@ mod tests {
         assert!(!upstream_message.contains("fragment-secret"));
         assert!(!upstream_message.contains("127.0.0.1"));
         assert!(upstream_message.contains("redacted.invalid"));
+        // Display is used by a few legacy error/logging boundaries.  Keep it
+        // safe as well, so a missed `?error`/`safe_transport_error_message`
+        // conversion cannot reintroduce URL credential leakage.
+        let upstream_display = format!("{upstream}");
+        assert!(!upstream_display.contains("upstream-user"));
+        assert!(!upstream_display.contains("upstream-password"));
+        assert!(!upstream_display.contains("query-secret"));
+        assert!(!upstream_display.contains("fragment-secret"));
+        assert!(!upstream_display.contains("127.0.0.1"));
+        assert!(upstream_display.contains("redacted.invalid"));
 
         let status = ExecutionRuntimeTransportError::UpstreamHttpStatus {
             status_code: 502,
@@ -5837,6 +5851,33 @@ mod tests {
         assert!(!status_debug.contains("upstream-password"));
         assert!(!status_debug.contains("query-secret"));
         assert!(!status_debug.contains("127.0.0.1"));
+        let status_display = format!("{status}");
+        assert!(!status_display.contains("upstream-user"));
+        assert!(!status_display.contains("upstream-password"));
+        assert!(!status_display.contains("query-secret"));
+        assert!(!status_display.contains("fragment-secret"));
+        assert!(!status_display.contains("127.0.0.1"));
+
+        let decode = ExecutionRuntimeTransportError::UpstreamResponseDecode {
+            encoding: "gzip".to_string(),
+            message: format!("decode failed for {secret_url}"),
+        };
+        let decode_display = format!("{decode}");
+        assert!(!decode_display.contains("upstream-user"));
+        assert!(!decode_display.contains("upstream-password"));
+        assert!(!decode_display.contains("query-secret"));
+        assert!(!decode_display.contains("fragment-secret"));
+        assert!(!decode_display.contains("127.0.0.1"));
+
+        let relay = ExecutionRuntimeTransportError::RelayError(format!(
+            "relay failed while contacting {secret_url}"
+        ));
+        let relay_display = format!("{relay}");
+        assert!(!relay_display.contains("upstream-user"));
+        assert!(!relay_display.contains("upstream-password"));
+        assert!(!relay_display.contains("query-secret"));
+        assert!(!relay_display.contains("fragment-secret"));
+        assert!(!relay_display.contains("127.0.0.1"));
 
         let source = reqwest::Proxy::all("http://[")
             .expect_err("malformed proxy should produce a reqwest error")
