@@ -104,10 +104,25 @@ impl GeminiProviderState {
             let Some(candidate_object) = candidate.as_object() else {
                 continue;
             };
+            let (response_id, response_model) = self.identity(report_context);
+            let terminal_error = gemini_stream_terminal_error_payload(
+                candidate_object,
+                response_id.as_str(),
+                response_model.as_str(),
+                event_object.get("usageMetadata"),
+            );
             let Some(content) = candidate_object.get("content").and_then(Value::as_object) else {
+                if let Some(payload) = terminal_error {
+                    out.push(self.unknown_frame(report_context, payload));
+                    self.finished = true;
+                }
                 continue;
             };
             let Some(parts) = content.get("parts").and_then(Value::as_array) else {
+                if let Some(payload) = terminal_error {
+                    out.push(self.unknown_frame(report_context, payload));
+                    self.finished = true;
+                }
                 continue;
             };
             if !parts.is_empty() {
@@ -306,6 +321,11 @@ impl GeminiProviderState {
                     });
                 }
             }
+            if let Some(payload) = terminal_error {
+                out.push(self.unknown_frame(report_context, payload));
+                self.finished = true;
+                continue;
+            }
             if let Some(finish_reason) =
                 candidate_object.get("finishReason").and_then(Value::as_str)
             {
@@ -348,6 +368,60 @@ impl GeminiProviderState {
             },
         }])
     }
+}
+
+fn gemini_stream_terminal_error_payload(
+    candidate: &Map<String, Value>,
+    response_id: &str,
+    model: &str,
+    usage_metadata: Option<&Value>,
+) -> Option<Value> {
+    let finish_reason = candidate
+        .get("finishReason")
+        .or_else(|| candidate.get("finish_reason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| {
+            matches!(
+                *value,
+                "MALFORMED_FUNCTION_CALL"
+                    | "UNEXPECTED_TOOL_CALL"
+                    | "TOO_MANY_TOOL_CALLS"
+                    | "MISSING_THOUGHT_SIGNATURE"
+                    | "MALFORMED_RESPONSE"
+            )
+        })?;
+    let message = candidate
+        .get("finishMessage")
+        .or_else(|| candidate.get("finish_message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("Gemini stream ended with {finish_reason}"));
+
+    let mut response = json!({
+        "id": response_id,
+        "object": "response",
+        "model": model,
+        "status": "failed",
+        "error": {
+            "type": "upstream_gemini_finish_error",
+            "code": finish_reason,
+            "message": message,
+            "upstream_status": 200
+        }
+    });
+    if let Some(usage) = canonical_usage_from_gemini_usage(usage_metadata)
+        .map(|usage| openai_responses_usage_from_usage(&usage))
+    {
+        response["usage"] = usage;
+    }
+
+    Some(json!({
+        "type": "response.failed",
+        "response": response
+    }))
 }
 
 fn map_gemini_stream_finish_reason(value: &str) -> Option<&str> {
@@ -1009,6 +1083,63 @@ mod tests {
                 }),
             } if finish_reason.as_deref() == Some("length")
         )));
+    }
+
+    #[test]
+    fn gemini_provider_state_emits_terminal_error_for_malformed_function_call() {
+        let mut state = GeminiProviderState::default();
+        let report_context = json!({});
+        let frames = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "response": {
+                        "responseId": "resp_malformed_tool_call",
+                        "modelVersion": "gemini-3.7-flash-tiered",
+                        "candidates": [{
+                            "index": 0,
+                            "content": {
+                                "role": "model",
+                                "parts": [{
+                                    "text": "",
+                                    "thoughtSignature": "opaque-thought-signature"
+                                }]
+                            },
+                            "finishReason": "MALFORMED_FUNCTION_CALL",
+                            "finishMessage": "Malformed function call: Function call is empty - no input to parse."
+                        }],
+                        "usageMetadata": {
+                            "promptTokenCount": 206744,
+                            "cachedContentTokenCount": 203947,
+                            "thoughtsTokenCount": 1130,
+                            "totalTokenCount": 207874
+                        }
+                    }
+                })),
+            )
+            .expect("malformed function call terminal should parse");
+
+        assert!(frames.iter().any(|frame| matches!(
+            &frame.event,
+            CanonicalStreamEvent::UnknownEvent(payload)
+                if payload["type"] == "response.failed"
+                    && payload["response"]["status"] == "failed"
+                    && payload["response"]["id"] == "resp_malformed_tool_call"
+                    && payload["response"]["model"] == "gemini-3.7-flash-tiered"
+                    && payload["response"]["error"]["code"] == "MALFORMED_FUNCTION_CALL"
+                    && payload["response"]["error"]["message"]
+                        == "Malformed function call: Function call is empty - no input to parse."
+                    && payload["response"]["usage"]["input_tokens"] == 206744
+                    && payload["response"]["usage"]["output_tokens"] == 1130
+                    && payload["response"]["usage"]["total_tokens"] == 207874
+        )));
+        assert!(!frames
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::Finish { .. })));
+        assert!(state
+            .finish(&report_context)
+            .expect("finished error stream should not synthesize success")
+            .is_empty());
     }
 
     #[test]

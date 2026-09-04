@@ -381,10 +381,21 @@ mod tests {
 
     #[test]
     fn finalization_strips_non_replayable_responses_reasoning_history() {
+        let gemini_carrier =
+            crate::formats::openai::responses::encode_gemini_tool_signature_carrier(
+                "opaque-gemini-thought-signature",
+            )
+            .expect("Gemini signature carrier");
         let mut body = json!({
             "model": "gpt-5.4",
             "input": [
                 {"type": "reasoning", "id": "rs_provider_123", "summary": []},
+                {
+                    "type": "reasoning",
+                    "id": "rs_aether_55070860f6d45c6b8f6fa11efd9dff8a",
+                    "summary": [],
+                    "encrypted_content": gemini_carrier
+                },
                 {
                     "type": "reasoning",
                     "id": "item_72d3bd8d367d01977ace23f1",

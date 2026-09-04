@@ -17,8 +17,9 @@ use crate::formats::shared::error_body::{
 };
 use crate::formats::shared::sse::encode_json_sse;
 use crate::formats::shared::stream_core::common::{
-    decode_json_data_line, openai_stream_terminal_error_body, openai_stream_terminal_error_message,
-    unsupported_stream_event_message, CanonicalStreamEvent, CanonicalStreamFrame, CanonicalUsage,
+    canonical_usage_from_openai_usage, decode_json_data_line, openai_stream_terminal_error_body,
+    openai_stream_terminal_error_message, unsupported_stream_event_message, CanonicalStreamEvent,
+    CanonicalStreamFrame, CanonicalUsage,
 };
 use crate::formats::shared::AiSurfaceFinalizeError;
 
@@ -134,7 +135,11 @@ impl StreamingStandardFormatMatrix {
             }
             if let CanonicalStreamEvent::UnknownEvent(payload) = &frame.event {
                 self.terminated = true;
-                out.extend(client.emit_unknown_event(payload)?);
+                if openai_stream_terminal_error_body(payload).is_some() {
+                    out.extend(client.emit_terminal_error_frame(frame)?);
+                } else {
+                    out.extend(client.emit_unknown_event(payload)?);
+                }
                 break;
             }
             if let CanonicalStreamEvent::OpenAiResponsesOutputItem { raw_event, .. } = &frame.event
@@ -368,6 +373,10 @@ impl StreamingStandardTerminalObserver {
                 summary.observed_finish = true;
                 summary.finish_reason = Some("error".to_string());
                 summary.parser_error = openai_stream_terminal_error_message(&payload);
+                summary.standardized_usage = payload
+                    .pointer("/response/usage")
+                    .and_then(|usage| canonical_usage_from_openai_usage(Some(usage)))
+                    .map(standardized_usage_from_canonical);
             }
             CanonicalStreamEvent::UnknownEvent(_) => {
                 summary.unknown_event_count = summary.unknown_event_count.saturating_add(1);
@@ -613,6 +622,44 @@ impl ClientStreamEmitter {
         self.emit_error(error_body)
     }
 
+    fn emit_terminal_error_frame(
+        &mut self,
+        frame: CanonicalStreamFrame,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        if matches!(
+            self,
+            ClientStreamEmitter::OpenAIChat(_) | ClientStreamEmitter::OpenAIResponses(_)
+        ) {
+            return self.emit(frame);
+        }
+        let CanonicalStreamEvent::UnknownEvent(payload) = frame.event else {
+            return self.emit(frame);
+        };
+        let Some(source_error_body) = openai_stream_terminal_error_body(&payload) else {
+            return self.emit_unknown_event(&payload);
+        };
+        let Some(error) = source_error_body.get("error") else {
+            return self.emit_unknown_event(&payload);
+        };
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Upstream stream ended with an error");
+        let code = error.get("code").and_then(|value| match value {
+            Value::String(value) => Some(value.as_str()),
+            _ => None,
+        });
+        let Some(error_body) = build_core_error_body_for_client_format(
+            self.api_format(),
+            message,
+            code,
+            LocalCoreSyncErrorKind::ServerError,
+        ) else {
+            return Ok(Vec::new());
+        };
+        self.emit_error(error_body)
+    }
+
     fn emit_unsupported_finish_reason(
         &mut self,
         finish_reason: &str,
@@ -811,7 +858,13 @@ mod tests {
                             },
                             "finishReason": "MALFORMED_FUNCTION_CALL",
                             "finishMessage": "Malformed function call: Function call is empty - no input to parse."
-                        }]
+                        }],
+                        "usageMetadata": {
+                            "promptTokenCount": 206744,
+                            "cachedContentTokenCount": 203947,
+                            "thoughtsTokenCount": 1130,
+                            "totalTokenCount": 207874
+                        }
                     },
                     "responseId": "resp_malformed_tool_call"
                 })),
@@ -824,14 +877,105 @@ mod tests {
             .expect("Gemini terminal frame should produce a summary");
 
         assert!(summary.observed_finish);
-        assert_eq!(
-            summary.finish_reason.as_deref(),
-            Some("MALFORMED_FUNCTION_CALL")
-        );
+        assert_eq!(summary.finish_reason.as_deref(), Some("error"));
         assert_eq!(
             summary.parser_error.as_deref(),
-            Some("unsupported provider stream finish reason: MALFORMED_FUNCTION_CALL")
+            Some("Malformed function call: Function call is empty - no input to parse.")
         );
+        let usage = summary
+            .standardized_usage
+            .expect("failed Gemini terminal should preserve usage");
+        assert_eq!(usage.input_tokens, 206744);
+        assert_eq!(usage.output_tokens, 1130);
+        assert_eq!(usage.cache_read_tokens, 203947);
+    }
+
+    #[test]
+    fn streams_gemini_thought_text_to_openai_responses_immediately() {
+        let context = report_context("gemini:generate_content", "openai:responses");
+        let mut matrix = StreamingStandardFormatMatrix::default();
+        let output = matrix
+            .transform_line(
+                &context,
+                data_line(json!({
+                    "response": {
+                        "responseId": "resp_reasoning_123",
+                        "modelVersion": "gemini-3.7-flash-tiered",
+                        "candidates": [{
+                            "index": 0,
+                            "content": {
+                                "role": "model",
+                                "parts": [{"thought": true, "text": "checking"}]
+                            }
+                        }]
+                    }
+                })),
+            )
+            .expect("first Gemini thought chunk should transform");
+        let sse = String::from_utf8(output).expect("reasoning SSE should be utf8");
+
+        assert!(
+            sse.contains("event: response.reasoning_summary_text.delta\n"),
+            "{sse}"
+        );
+        assert!(sse.contains("\"delta\":\"checking\""), "{sse}");
+    }
+
+    #[test]
+    fn transforms_malformed_gemini_function_call_to_responses_failed() {
+        let context = report_context("gemini:generate_content", "openai:responses");
+        let mut matrix = StreamingStandardFormatMatrix::default();
+        let output = matrix
+            .transform_line(
+                &context,
+                data_line(json!({
+                    "response": {
+                        "responseId": "resp_malformed_tool_call",
+                        "modelVersion": "gemini-3.7-flash-tiered",
+                        "candidates": [{
+                            "index": 0,
+                            "content": {
+                                "role": "model",
+                                "parts": [{
+                                    "text": "",
+                                    "thoughtSignature": "opaque-thought-signature"
+                                }]
+                            },
+                            "finishReason": "MALFORMED_FUNCTION_CALL",
+                            "finishMessage": "Malformed function call: Function call is empty - no input to parse."
+                        }],
+                        "usageMetadata": {
+                            "promptTokenCount": 206744,
+                            "cachedContentTokenCount": 203947,
+                            "thoughtsTokenCount": 1130,
+                            "totalTokenCount": 207874
+                        }
+                    }
+                })),
+            )
+            .expect("malformed Gemini terminal should transform to a stream error");
+        let sse = String::from_utf8(output).expect("failed response SSE should be utf8");
+
+        assert!(sse.contains("event: response.failed\n"), "{sse}");
+        assert!(sse.contains("\"type\":\"response.failed\""), "{sse}");
+        assert!(
+            sse.contains("\"code\":\"MALFORMED_FUNCTION_CALL\""),
+            "{sse}"
+        );
+        assert!(
+            sse.contains(
+                "\"message\":\"Malformed function call: Function call is empty - no input to parse.\""
+            ),
+            "{sse}"
+        );
+        assert!(sse.contains("\"input_tokens\":206744"), "{sse}");
+        assert!(sse.contains("\"output_tokens\":1130"), "{sse}");
+        assert!(sse.contains("\"cached_tokens\":203947"), "{sse}");
+        assert!(!sse.contains("unsupported_finish_reason"), "{sse}");
+        assert!(matrix
+            .finish(&context)
+            .expect("failed matrix should stay terminated")
+            .is_empty());
     }
 
     #[test]
