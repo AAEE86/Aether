@@ -21,8 +21,9 @@ pub use logic::{
     upstream_metadata_namespace_updates, ModelFetchRunSummary, ModelsFetchPage, ModelsFetchSuccess,
 };
 pub use strategy::{
-    fetch_models_from_transports, fetch_models_from_transports_for_client_version,
-    ModelFetchStrategy, ModelFetchStrategyKind, ModelsFetchOutcome, SelectedModelFetchStrategy,
+    antigravity_model_id_is_routable, fetch_models_from_transports,
+    fetch_models_from_transports_for_client_version, ModelFetchStrategy, ModelFetchStrategyKind,
+    ModelsFetchOutcome, SelectedModelFetchStrategy,
 };
 pub use transport::{
     build_antigravity_fetch_available_models_plan, build_antigravity_load_code_assist_plan,

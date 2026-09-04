@@ -1153,6 +1153,7 @@ import {
   getCodexResetCreditAvailableCount,
   getCodexResetCreditReservationIdempotencyKey,
   getVisibleCodexResetCreditItems,
+  mergeCodexQuotaDisplays,
   readPendingCodexResetCreditIdempotencyKey,
   rememberPendingCodexResetCreditIdempotencyKey,
 } from '@/features/providers/components/codex-reset-credit-display'
@@ -2235,9 +2236,17 @@ function applyQuotaRefreshResultToCurrentPage(result: Awaited<ReturnType<typeof 
 }
 
 function getCodexResetCredits(key: PoolKeyDetail) {
-  return getQuotaSnapshotProviderType(key) === 'codex'
-    ? key.status_snapshot?.quota?.reset_credits ?? null
+  if (getQuotaSnapshotProviderType(key) !== 'codex') return null
+
+  const snapshot = key.status_snapshot?.quota?.reset_credits
+  const snapshotUpdatedAt = key.status_snapshot?.quota?.updated_at
+  const snapshotDisplay = snapshot
+    ? {
+        ...(typeof snapshotUpdatedAt === 'number' ? { updated_at: snapshotUpdatedAt } : {}),
+        reset_credits: snapshot,
+      }
     : null
+  return mergeCodexQuotaDisplays(snapshotDisplay, key.upstream_metadata?.codex)?.reset_credits ?? null
 }
 
 function getCodexCredentialGeneration(key: PoolKeyDetail): string | null | undefined {
