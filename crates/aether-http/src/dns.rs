@@ -42,7 +42,7 @@ fn collect_resolved_addresses_with_limit(
     resolved: &mut impl Iterator<Item = SocketAddr>,
 ) -> io::Result<Vec<SocketAddr>> {
     let mut addresses = Vec::with_capacity(MAX_DNS_RESOLVED_ADDRESSES.min(8));
-    while let Some(address) = resolved.next() {
+    for address in resolved.by_ref() {
         if addresses.len() >= MAX_DNS_RESOLVED_ADDRESSES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

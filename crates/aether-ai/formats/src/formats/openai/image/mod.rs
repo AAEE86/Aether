@@ -22,7 +22,10 @@ pub(crate) fn is_safe_openai_image_base64_payload(value: &str) -> bool {
     let first_padding = bytes.iter().position(|byte| *byte == b'=');
     if let Some(index) = first_padding {
         let padding = bytes.len() - index;
-        if padding > 2 || bytes[index..].iter().any(|byte| *byte != b'=') || bytes.len() % 4 != 0 {
+        if padding > 2
+            || bytes[index..].iter().any(|byte| *byte != b'=')
+            || !bytes.len().is_multiple_of(4)
+        {
             return false;
         }
     }
