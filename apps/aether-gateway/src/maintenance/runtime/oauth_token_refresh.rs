@@ -39,7 +39,11 @@ pub(crate) async fn perform_oauth_token_refresh_once(
         return Ok(OAuthTokenRefreshRunSummary::default());
     }
 
-    let providers = state.list_provider_catalog_providers(true).await?;
+    // Maintenance must not let one malformed historical proxy credential
+    // abort the scan for every provider. Read the rows first, then open each
+    // row in isolation so a bad record can be skipped while database errors
+    // and missing encryption configuration still fail closed.
+    let providers = read_oauth_maintenance_providers(state).await?;
     let provider_ids = providers
         .iter()
         .map(|provider| provider.id.clone())
@@ -48,9 +52,7 @@ pub(crate) async fn perform_oauth_token_refresh_once(
         return Ok(OAuthTokenRefreshRunSummary::default());
     }
 
-    let endpoints = state
-        .list_provider_catalog_endpoints_by_provider_ids(&provider_ids)
-        .await?;
+    let endpoints = read_oauth_maintenance_endpoints(state, &provider_ids).await?;
     // Read the catalog rows without opening/decrypting credentials in bulk.
     // A single legacy/plaintext row must not abort refresh for every healthy
     // key, and this maintenance scan must not trigger the normal lazy v2
@@ -100,7 +102,7 @@ pub(crate) async fn perform_oauth_token_refresh_once(
                     summary.skipped = summary.skipped.saturating_add(1);
                     continue;
                 }
-                Err(err) if is_nonfatal_legacy_credential_error(&err) => {
+                Err(err) if is_nonfatal_legacy_catalog_credential_error(&err) => {
                     // Keep malformed historical credentials untouched. They
                     // are intentionally skipped while other keys continue.
                     summary.skipped = summary.skipped.saturating_add(1);
@@ -184,6 +186,81 @@ pub(crate) async fn perform_oauth_token_refresh_once(
     }
 
     Ok(summary)
+}
+
+async fn read_oauth_maintenance_providers(
+    state: &AppState,
+) -> Result<Vec<StoredProviderCatalogProvider>, GatewayError> {
+    let stored = state
+        .data
+        .list_provider_catalog_providers(true)
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))?;
+    let mut opened = Vec::with_capacity(stored.len());
+    for provider in stored {
+        let provider_id = provider.id.clone();
+        match state
+            .read_provider_catalog_providers_by_ids(std::slice::from_ref(&provider_id))
+            .await
+        {
+            Ok(mut rows) => {
+                if let Some(row) = rows.pop() {
+                    opened.push(row);
+                }
+            }
+            Err(error) if is_nonfatal_stored_proxy_error(&error) => {
+                warn!(
+                    event_name = "oauth_token_refresh_skipped_invalid_provider_proxy",
+                    log_type = "ops",
+                    worker = "oauth_token_refresh",
+                    provider_id = %provider_id,
+                    reason = "invalid_stored_proxy_credential",
+                    "gateway skipped oauth refresh for a provider with an invalid stored proxy credential"
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(opened)
+}
+
+async fn read_oauth_maintenance_endpoints(
+    state: &AppState,
+    provider_ids: &[String],
+) -> Result<Vec<StoredProviderCatalogEndpoint>, GatewayError> {
+    let stored = state
+        .data
+        .list_provider_catalog_endpoints_by_provider_ids(provider_ids)
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))?;
+    let mut opened = Vec::with_capacity(stored.len());
+    for endpoint in stored {
+        let provider_id = endpoint.provider_id.clone();
+        let endpoint_id = endpoint.id.clone();
+        match state
+            .read_provider_catalog_endpoints_by_ids(std::slice::from_ref(&endpoint_id))
+            .await
+        {
+            Ok(mut rows) => {
+                if let Some(row) = rows.pop() {
+                    opened.push(row);
+                }
+            }
+            Err(error) if is_nonfatal_stored_proxy_error(&error) => {
+                warn!(
+                    event_name = "oauth_token_refresh_skipped_invalid_endpoint_proxy",
+                    log_type = "ops",
+                    worker = "oauth_token_refresh",
+                    provider_id = %provider_id,
+                    endpoint_id = %endpoint_id,
+                    reason = "invalid_stored_proxy_credential",
+                    "gateway skipped oauth refresh for an endpoint with an invalid stored proxy credential"
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(opened)
 }
 
 fn group_endpoints_by_provider(
@@ -304,7 +381,11 @@ fn now_unix_secs() -> u64 {
 /// Credential decoding errors are expected for rows written by older
 /// versions of the service. They are non-fatal for a best-effort maintenance
 /// scan, but normal request/admin paths still fail closed on the same error.
-fn is_nonfatal_legacy_credential_error(error: &GatewayError) -> bool {
+fn is_nonfatal_legacy_catalog_credential_error(error: &GatewayError) -> bool {
+    is_nonfatal_legacy_provider_key_credential_error(error) || is_nonfatal_stored_proxy_error(error)
+}
+
+fn is_nonfatal_legacy_provider_key_credential_error(error: &GatewayError) -> bool {
     let GatewayError::Internal(message) = error else {
         return false;
     };
@@ -317,11 +398,35 @@ fn is_nonfatal_legacy_credential_error(error: &GatewayError) -> bool {
     }
     message.contains("provider_api_keys.api_key")
         || message.contains("provider_api_keys.auth_config")
+        || message.contains("provider_api_keys.api_formats")
+        || message.contains("provider_api_keys.allowed_models")
         || message.contains("legacy provider catalog credential")
+        || message.contains("stored provider catalog credential is empty")
+        || message.contains("aether secret envelope has the wrong record binding")
         || message.contains("provider catalog credential is not an authenticated ciphertext")
         || message.contains("provider catalog credential contains reserved framing")
         || message.contains("provider catalog credential authentication failed")
         || message.contains("provider catalog credential envelope")
+        || message.contains("provider catalog key provider binding changed during credential migration")
+}
+
+/// Stored provider/endpoint/key proxy secrets are opened independently by the
+/// maintenance scan. A malformed historical row is safe to isolate, while
+/// encryption/configuration failures remain fatal so operators are alerted.
+fn is_nonfatal_stored_proxy_error(error: &GatewayError) -> bool {
+    let GatewayError::Internal(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("stored provider proxy credentials cannot be decrypted")
+        || message.contains("stored endpoint proxy credentials cannot be decrypted")
+        || message.contains("stored key proxy credentials cannot be decrypted")
+        || message.contains("stored provider proxy changed during credential migration")
+        || message.contains("stored endpoint proxy changed during credential migration")
+        || message.contains("stored key changed during credential migration")
+        || message.contains("stored provider proxy credential migration did not stabilize")
+        || message.contains("stored endpoint proxy credential migration did not stabilize")
+        || message.contains("stored key proxy credential migration did not stabilize")
 }
 
 #[cfg(test)]
@@ -332,7 +437,7 @@ mod tests {
 
     use super::{
         agent_identity_needs_task_recovery, auth_config_has_refresh_token,
-        is_nonfatal_legacy_credential_error, oauth_refresh_candidate,
+        is_nonfatal_legacy_catalog_credential_error, oauth_refresh_candidate,
     };
     use crate::GatewayError;
 
@@ -389,24 +494,49 @@ mod tests {
     }
 
     #[test]
-    fn only_stored_provider_credential_errors_are_non_fatal() {
-        assert!(is_nonfatal_legacy_credential_error(
+    fn only_stored_catalog_credential_errors_are_non_fatal() {
+        assert!(is_nonfatal_legacy_catalog_credential_error(
             &GatewayError::Internal(
                 "provider catalog credential is not an authenticated ciphertext".to_string(),
             )
         ));
-        assert!(is_nonfatal_legacy_credential_error(
+        assert!(is_nonfatal_legacy_catalog_credential_error(
             &GatewayError::Internal(
                 "provider_api_keys.auth_config has an invalid provider catalog credential envelope"
                     .to_string(),
             )
         ));
-        assert!(!is_nonfatal_legacy_credential_error(
+        assert!(!is_nonfatal_legacy_catalog_credential_error(
             &GatewayError::Internal("postgres error: connection refused".to_string(),)
         ));
-        assert!(!is_nonfatal_legacy_credential_error(
+        assert!(!is_nonfatal_legacy_catalog_credential_error(
             &GatewayError::Internal(
                 "provider catalog credential encryption key is not configured".to_string(),
+            )
+        ));
+        for scope in ["provider", "endpoint", "key"] {
+            assert!(is_nonfatal_legacy_catalog_credential_error(
+                &GatewayError::Internal(format!(
+                    "stored {scope} proxy credentials cannot be decrypted"
+                ))
+            ));
+        }
+        assert!(is_nonfatal_legacy_catalog_credential_error(
+            &GatewayError::Internal("stored provider catalog credential is empty".to_string())
+        ));
+        assert!(is_nonfatal_legacy_catalog_credential_error(
+            &GatewayError::Internal("Aether secret envelope has the wrong record binding".to_string())
+        ));
+        for field in ["api_formats", "allowed_models"] {
+            assert!(is_nonfatal_legacy_catalog_credential_error(
+                &GatewayError::Internal(format!(
+                    "provider_api_keys.{field} contains a malformed value"
+                ))
+            ));
+        }
+        assert!(!is_nonfatal_legacy_catalog_credential_error(
+            &GatewayError::Internal(
+                "endpoint proxy credential encryption is unavailable".to_string(),
             )
         ));
     }
