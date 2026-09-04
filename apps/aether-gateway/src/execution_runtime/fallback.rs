@@ -156,7 +156,22 @@ pub(crate) fn should_fallback_to_control_sync(
         return true;
     };
 
-    body_json.get("error").is_some()
+    sync_body_has_embedded_error(Some(body_json))
+}
+
+/// Mirrors the error-like body markers used by the formats layer. Successful OpenAI Responses
+/// bodies contain `"error": null`, which must not route them through error finalization.
+fn sync_body_has_embedded_error(body_json: Option<&serde_json::Value>) -> bool {
+    let Some(object) = body_json.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+
+    object.get("error").is_some_and(|error| !error.is_null())
+        || object.get("status").and_then(serde_json::Value::as_str) == Some("failed")
+        || object
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == "error")
 }
 
 pub(crate) fn should_finalize_sync_response(report_kind: Option<&str>) -> bool {
@@ -168,7 +183,7 @@ pub(crate) fn resolve_core_sync_error_finalize_report_kind(
     result: &ExecutionResult,
     body_json: Option<&serde_json::Value>,
 ) -> Option<String> {
-    let has_embedded_error = body_json.is_some_and(|value| value.get("error").is_some());
+    let has_embedded_error = sync_body_has_embedded_error(body_json);
     if result.status_code < 400 && !has_embedded_error {
         return None;
     }
@@ -498,6 +513,74 @@ mod tests {
             resolve_core_sync_error_finalize_report_kind("openai_chat_sync", &result, None),
             Some("openai_chat_sync_finalize".to_string())
         );
+    }
+
+    #[test]
+    fn successful_responses_body_with_null_error_stays_on_success_path() {
+        let result = ExecutionResult {
+            request_id: "req-1".to_string(),
+            candidate_id: None,
+            status_code: 200,
+            headers: Default::default(),
+            response_observation: None,
+            body: None,
+            telemetry: None,
+            error: None,
+        };
+        let body_json = serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "status": "completed",
+            "error": null,
+            "output": [],
+        });
+
+        assert_eq!(
+            resolve_core_sync_error_finalize_report_kind(
+                "openai_responses_sync",
+                &result,
+                Some(&body_json)
+            ),
+            None
+        );
+        assert!(!should_fallback_to_control_sync(
+            "openai_responses_sync",
+            &result,
+            Some(&body_json),
+            true,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn error_like_success_status_bodies_still_map_to_error_finalize() {
+        let result = ExecutionResult {
+            request_id: "req-1".to_string(),
+            candidate_id: None,
+            status_code: 200,
+            headers: Default::default(),
+            response_observation: None,
+            body: None,
+            telemetry: None,
+            error: None,
+        };
+
+        for body_json in [
+            serde_json::json!({"status": "failed", "error": null}),
+            serde_json::json!({"type": "error"}),
+            serde_json::json!({"error": {"message": "boom"}}),
+        ] {
+            assert_eq!(
+                resolve_core_sync_error_finalize_report_kind(
+                    "openai_responses_sync",
+                    &result,
+                    Some(&body_json)
+                ),
+                Some("openai_responses_sync_finalize".to_string()),
+                "error-like body must not escape through the success path: {body_json}"
+            );
+        }
     }
 
     #[test]
