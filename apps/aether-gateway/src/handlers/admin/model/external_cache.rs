@@ -134,7 +134,7 @@ fn validate_admin_external_models_source_addresses(
         && addresses.iter().any(|address| {
             aether_http::is_private_or_reserved_ip(address.ip())
                 && !(is_official_external_models_catalog_url(url)
-                    && is_ipv4_benchmarking_fake_ip(address.ip()))
+                    && aether_http::is_ipv4_benchmarking_fake_ip(address.ip()))
         })
     {
         return Err(GatewayError::Internal(
@@ -155,16 +155,6 @@ fn is_official_external_models_catalog_url(url: &url::Url) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-}
-
-fn is_ipv4_benchmarking_fake_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let octets = ip.octets();
-            octets[0] == 198 && (18..=19).contains(&octets[1])
-        }
-        IpAddr::V6(_) => false,
-    }
 }
 
 async fn resolve_admin_external_models_source(

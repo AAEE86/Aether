@@ -91,8 +91,8 @@ pub fn is_private_or_reserved_ip(ip: IpAddr) -> bool {
 
 /// Return whether an address belongs to RFC 2544's IPv4 benchmarking range.
 ///
-/// Local DNS interception tools (for example, Surge in Fake-IP mode) commonly
-/// synthesize answers from `198.18.0.0/15`.  The range is intentionally still
+/// Local DNS interception tools commonly synthesize answers from
+/// `198.18.0.0/15`. The range is intentionally still
 /// classified as reserved by [`is_private_or_reserved_ip`]; callers may use
 /// this predicate only when they have independently established that the
 /// hostname is a trusted, fixed destination.  Keeping the predicates separate

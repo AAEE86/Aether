@@ -37,14 +37,17 @@ fn build_server_chan_client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
-fn validate_server_chan_resolved_addresses(addresses: &[SocketAddr]) -> Result<(), &'static str> {
+fn validate_server_chan_resolved_addresses(
+    addresses: &[SocketAddr],
+    allow_benchmarking_ip: bool,
+) -> Result<(), &'static str> {
     if addresses.is_empty() {
         return Err("Server Chan API DNS resolution returned no addresses");
     }
-    if addresses
-        .iter()
-        .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
-    {
+    if addresses.iter().any(|address| {
+        aether_http::is_private_or_reserved_ip(address.ip())
+            && !(allow_benchmarking_ip && aether_http::is_ipv4_benchmarking_fake_ip(address.ip()))
+    }) {
         return Err("Server Chan API resolved to a private or reserved address");
     }
     Ok(())
@@ -65,7 +68,7 @@ async fn build_pinned_server_chan_client() -> Result<reqwest::Client, &'static s
         std::io::ErrorKind::TimedOut => "Server Chan API DNS resolution timed out",
         _ => "Server Chan API DNS resolution failed",
     })?;
-    validate_server_chan_resolved_addresses(&addresses)?;
+    validate_server_chan_resolved_addresses(&addresses, true)?;
 
     reqwest::Client::builder()
         .no_proxy()
@@ -480,21 +483,34 @@ mod tests {
 
     #[test]
     fn server_chan_dns_answers_must_be_public() {
-        assert!(
-            validate_server_chan_resolved_addresses(&[SocketAddr::from(([1, 1, 1, 1], 443)),])
-                .is_ok()
-        );
+        assert!(validate_server_chan_resolved_addresses(
+            &[SocketAddr::from(([1, 1, 1, 1], 443))],
+            false,
+        )
+        .is_ok());
         for address in [
             SocketAddr::from(([127, 0, 0, 1], 443)),
             SocketAddr::from(([10, 0, 0, 1], 443)),
             SocketAddr::from(([169, 254, 169, 254], 443)),
         ] {
             assert!(
-                validate_server_chan_resolved_addresses(&[address]).is_err(),
+                validate_server_chan_resolved_addresses(&[address], false).is_err(),
                 "private Server Chan DNS answer should be rejected: {address}"
             );
         }
-        assert!(validate_server_chan_resolved_addresses(&[]).is_err());
+        assert!(validate_server_chan_resolved_addresses(&[], false).is_err());
+    }
+
+    #[test]
+    fn server_chan_dns_allows_benchmarking_ip_for_builtin_host() {
+        let fake = SocketAddr::from(([198, 18, 75, 234], 443));
+        assert!(validate_server_chan_resolved_addresses(&[fake], true).is_ok());
+        assert!(validate_server_chan_resolved_addresses(
+            &[fake, SocketAddr::from(([127, 0, 0, 1], 443))],
+            true,
+        )
+        .is_err());
+        assert!(validate_server_chan_resolved_addresses(&[fake], false).is_err());
     }
 
     #[test]

@@ -162,6 +162,11 @@ struct SafeGithubDnsResolver;
 impl Resolve for SafeGithubDnsResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().trim_end_matches('.').to_ascii_lowercase();
+        // Transparent DNS interception may map public domains into RFC 2544's
+        // 198.18.0.0/15 benchmark range. This resolver is used exclusively for
+        // built-in GitHub update hosts, so permit that synthetic range only for
+        // the same trusted host set used by redirect validation.
+        let allow_benchmarking_ip = is_trusted_github_host(&host);
         Box::pin(async move {
             let addresses = aether_http::lookup_host_with_limits(
                 host.as_str(),
@@ -170,25 +175,52 @@ impl Resolve for SafeGithubDnsResolver {
             )
             .await
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
-            validate_github_resolved_addrs(&addresses).map_err(|message| {
-                Box::new(std::io::Error::other(message)) as Box<dyn std::error::Error + Send + Sync>
-            })?;
+            validate_github_resolved_addrs_with_fake_ip(&addresses, allow_benchmarking_ip)
+                .map_err(|message| {
+                    Box::new(std::io::Error::other(message))
+                        as Box<dyn std::error::Error + Send + Sync>
+                })?;
             Ok(Box::new(addresses.into_iter()) as Addrs)
         })
     }
 }
 
+#[cfg(test)]
 fn validate_github_resolved_addrs(addresses: &[SocketAddr]) -> Result<(), &'static str> {
+    validate_github_resolved_addrs_with_fake_ip(addresses, false)
+}
+
+fn validate_github_resolved_addrs_with_fake_ip(
+    addresses: &[SocketAddr],
+    allow_benchmarking_ip: bool,
+) -> Result<(), &'static str> {
     if addresses.is_empty() {
         return Err("GitHub DNS resolution returned no addresses");
     }
-    if addresses
-        .iter()
-        .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
-    {
+    if addresses.iter().any(|address| {
+        aether_http::is_private_or_reserved_ip(address.ip())
+            && !(allow_benchmarking_ip && aether_http::is_ipv4_benchmarking_fake_ip(address.ip()))
+    }) {
         return Err("GitHub DNS resolution returned a private or reserved address");
     }
     Ok(())
+}
+
+fn is_trusted_github_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("github.com")
+        || host.eq_ignore_ascii_case("api.github.com")
+        || host.eq_ignore_ascii_case("objects.githubusercontent.com")
+        || host.ends_with(".objects.githubusercontent.com")
+        || host.eq_ignore_ascii_case("release-assets.githubusercontent.com")
+        || host.ends_with(".release-assets.githubusercontent.com")
+}
+
+fn is_trusted_github_download_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("github.com")
+        || host.eq_ignore_ascii_case("objects.githubusercontent.com")
+        || host.ends_with(".objects.githubusercontent.com")
+        || host.eq_ignore_ascii_case("release-assets.githubusercontent.com")
+        || host.ends_with(".release-assets.githubusercontent.com")
 }
 
 fn is_trusted_github_download_url(url: &url::Url) -> bool {
@@ -203,11 +235,7 @@ fn is_trusted_github_download_url(url: &url::Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    host.eq_ignore_ascii_case("github.com")
-        || host.eq_ignore_ascii_case("objects.githubusercontent.com")
-        || host.ends_with(".objects.githubusercontent.com")
-        || host.eq_ignore_ascii_case("release-assets.githubusercontent.com")
-        || host.ends_with(".release-assets.githubusercontent.com")
+    is_trusted_github_download_host(host)
 }
 
 // ── Release fetching ─────────────────────────────────────────────────────────
@@ -951,9 +979,10 @@ pub async fn perform_upgrade(version: &str) -> anyhow::Result<()> {
 mod tests {
     use super::{
         append_bounded_download_chunk, atomic_replace_paths, extract_binary,
-        is_trusted_github_download_url, normalize_requested_release_tag, parse_checksum,
-        probe_upgrade_directory_write, restore_tunnel_backup_paths, summarize_remote_error_body,
-        tunnel_release_semver, validate_github_resolved_addrs, validate_upgrade_storage,
+        is_trusted_github_download_url, is_trusted_github_host, normalize_requested_release_tag,
+        parse_checksum, probe_upgrade_directory_write, restore_tunnel_backup_paths,
+        summarize_remote_error_body, tunnel_release_semver, validate_github_resolved_addrs,
+        validate_github_resolved_addrs_with_fake_ip, validate_upgrade_storage,
     };
     use flate2::{write::GzEncoder, Compression};
     use std::net::SocketAddr;
@@ -1007,6 +1036,21 @@ mod tests {
         assert!(validate_github_resolved_addrs(&[private]).is_err());
         assert!(validate_github_resolved_addrs(&[public, private]).is_err());
         assert!(validate_github_resolved_addrs(&[]).is_err());
+    }
+
+    #[test]
+    fn github_dns_allows_benchmarking_ip_only_for_trusted_hosts() {
+        let fake = "198.18.75.234:443".parse::<SocketAddr>().unwrap();
+        assert!(validate_github_resolved_addrs_with_fake_ip(&[fake], true).is_ok());
+        assert!(validate_github_resolved_addrs_with_fake_ip(
+            &[fake, "127.0.0.1:443".parse().unwrap()],
+            true,
+        )
+        .is_err());
+        assert!(validate_github_resolved_addrs_with_fake_ip(&[fake], false).is_err());
+        assert!(is_trusted_github_host("api.github.com"));
+        assert!(is_trusted_github_host("foo.objects.githubusercontent.com"));
+        assert!(!is_trusted_github_host("github.com.evil.example"));
     }
 
     #[test]

@@ -90,6 +90,12 @@ impl Resolve for SafeUpdateDnsResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().trim_end_matches('.').to_ascii_lowercase();
         let allow_private = self.private_allowed_host.as_deref() == Some(host.as_str());
+        // Transparent DNS proxies may use RFC 2544's 198.18.0.0/15 benchmark
+        // range as a synthetic address. Update destinations are compiled-in
+        // GitHub hosts, so accepting that range
+        // for those exact hosts preserves proxy compatibility without opening
+        // the resolver to arbitrary custom destinations.
+        let allow_benchmarking_ip = is_trusted_update_host(&host);
         Box::pin(async move {
             let addresses = aether_http::lookup_host_with_limits(
                 host.as_str(),
@@ -98,9 +104,11 @@ impl Resolve for SafeUpdateDnsResolver {
             )
             .await
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
-            validate_update_resolved_addrs(&addresses, allow_private).map_err(|message| {
-                Box::new(std::io::Error::other(message)) as Box<dyn std::error::Error + Send + Sync>
-            })?;
+            validate_update_resolved_addrs(&addresses, allow_private, allow_benchmarking_ip)
+                .map_err(|message| {
+                    Box::new(std::io::Error::other(message))
+                        as Box<dyn std::error::Error + Send + Sync>
+                })?;
             Ok(Box::new(addresses.into_iter()) as Addrs)
         })
     }
@@ -109,18 +117,30 @@ impl Resolve for SafeUpdateDnsResolver {
 fn validate_update_resolved_addrs(
     addresses: &[SocketAddr],
     allow_private: bool,
+    allow_benchmarking_ip: bool,
 ) -> Result<(), &'static str> {
     if addresses.is_empty() {
         return Err("update DNS resolution returned no addresses");
     }
     if !allow_private
-        && addresses
-            .iter()
-            .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
+        && addresses.iter().any(|address| {
+            aether_http::is_private_or_reserved_ip(address.ip())
+                && !(allow_benchmarking_ip
+                    && aether_http::is_ipv4_benchmarking_fake_ip(address.ip()))
+        })
     {
         return Err("update DNS resolution returned a private or reserved address");
     }
     Ok(())
+}
+
+fn is_trusted_update_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("github.com")
+        || host.eq_ignore_ascii_case("api.github.com")
+        || host.eq_ignore_ascii_case("objects.githubusercontent.com")
+        || host.ends_with(".objects.githubusercontent.com")
+        || host.eq_ignore_ascii_case("release-assets.githubusercontent.com")
+        || host.ends_with(".release-assets.githubusercontent.com")
 }
 
 pub(crate) fn is_trusted_update_url(url: &url::Url) -> bool {
@@ -130,12 +150,7 @@ pub(crate) fn is_trusted_update_url(url: &url::Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    host.eq_ignore_ascii_case("github.com")
-        || host.eq_ignore_ascii_case("api.github.com")
-        || host.eq_ignore_ascii_case("objects.githubusercontent.com")
-        || host.ends_with(".objects.githubusercontent.com")
-        || host.eq_ignore_ascii_case("release-assets.githubusercontent.com")
-        || host.ends_with(".release-assets.githubusercontent.com")
+    is_trusted_update_host(host)
 }
 
 fn update_proxy_url_from_env() -> Option<String> {
@@ -165,7 +180,10 @@ fn read_nonempty_env_value(keys: &[&str]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_trusted_update_url, update_proxy_host, validate_update_resolved_addrs};
+    use super::{
+        is_trusted_update_host, is_trusted_update_url, update_proxy_host,
+        validate_update_resolved_addrs,
+    };
     use std::net::SocketAddr;
 
     #[test]
@@ -193,11 +211,27 @@ mod tests {
         let public = "8.8.8.8:443".parse::<SocketAddr>().unwrap();
         let private = "127.0.0.1:443".parse::<SocketAddr>().unwrap();
 
-        assert!(validate_update_resolved_addrs(&[public], false).is_ok());
-        assert!(validate_update_resolved_addrs(&[private], false).is_err());
-        assert!(validate_update_resolved_addrs(&[public, private], false).is_err());
-        assert!(validate_update_resolved_addrs(&[private], true).is_ok());
-        assert!(validate_update_resolved_addrs(&[], false).is_err());
+        assert!(validate_update_resolved_addrs(&[public], false, false).is_ok());
+        assert!(validate_update_resolved_addrs(&[private], false, false).is_err());
+        assert!(validate_update_resolved_addrs(&[public, private], false, false).is_err());
+        assert!(validate_update_resolved_addrs(&[private], true, false).is_ok());
+        assert!(validate_update_resolved_addrs(&[], false, false).is_err());
+    }
+
+    #[test]
+    fn update_dns_allows_benchmarking_ip_only_for_trusted_github_hosts() {
+        let fake = "198.18.75.234:443".parse::<SocketAddr>().unwrap();
+        assert!(validate_update_resolved_addrs(&[fake], false, true).is_ok());
+        assert!(validate_update_resolved_addrs(
+            &[fake, "127.0.0.1:443".parse().unwrap()],
+            false,
+            true,
+        )
+        .is_err());
+        assert!(validate_update_resolved_addrs(&[fake], false, false).is_err());
+        assert!(is_trusted_update_host("api.github.com"));
+        assert!(is_trusted_update_host("foo.objects.githubusercontent.com"));
+        assert!(!is_trusted_update_host("github.com.evil.example"));
     }
 
     #[test]

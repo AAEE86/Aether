@@ -221,7 +221,14 @@ async fn build_bark_push_client_and_url(
         .take(MAX_BARK_RESOLVED_ADDRESSES)
         .collect::<Vec<_>>()
     };
-    validate_bark_resolved_addresses(&addresses, env_flag_enabled(BARK_ALLOW_PRIVATE_TARGETS_ENV))?;
+    let allow_benchmarking_ip = push_url.scheme() == "https"
+        && push_url.port_or_known_default() == Some(443)
+        && host.eq_ignore_ascii_case("api.day.app");
+    validate_bark_resolved_addresses(
+        &addresses,
+        env_flag_enabled(BARK_ALLOW_PRIVATE_TARGETS_ENV),
+        allow_benchmarking_ip,
+    )?;
 
     push_url
         .path_segments_mut()
@@ -261,6 +268,7 @@ fn validate_bark_transport_policy(url: &url::Url, allow_http: bool) -> Result<()
 fn validate_bark_resolved_addresses(
     addresses: &[SocketAddr],
     allow_private: bool,
+    allow_benchmarking_ip: bool,
 ) -> Result<(), GatewayError> {
     if addresses.is_empty() {
         return Err(GatewayError::Internal(
@@ -268,9 +276,11 @@ fn validate_bark_resolved_addresses(
         ));
     }
     if !allow_private
-        && addresses
-            .iter()
-            .any(|address| aether_http::is_private_or_reserved_ip(address.ip()))
+        && addresses.iter().any(|address| {
+            aether_http::is_private_or_reserved_ip(address.ip())
+                && !(allow_benchmarking_ip
+                    && aether_http::is_ipv4_benchmarking_fake_ip(address.ip()))
+        })
     {
         return Err(GatewayError::Internal(format!(
             "Bark 服务器解析到私有或保留地址；如确需内网自建服务，请显式设置 {BARK_ALLOW_PRIVATE_TARGETS_ENV}=true"
@@ -428,8 +438,21 @@ mod tests {
     #[test]
     fn bark_private_targets_require_explicit_opt_in() {
         let private = [SocketAddr::from(([127, 0, 0, 1], 443))];
-        assert!(validate_bark_resolved_addresses(&private, false).is_err());
-        assert!(validate_bark_resolved_addresses(&private, true).is_ok());
+        assert!(validate_bark_resolved_addresses(&private, false, false).is_err());
+        assert!(validate_bark_resolved_addresses(&private, true, false).is_ok());
+    }
+
+    #[test]
+    fn bark_builtin_server_allows_benchmarking_ip_only_with_https_default_port() {
+        let fake = [SocketAddr::from(([198, 18, 75, 234], 443))];
+        assert!(validate_bark_resolved_addresses(&fake, false, true).is_ok());
+        assert!(validate_bark_resolved_addresses(
+            &[fake[0], SocketAddr::from(([127, 0, 0, 1], 443))],
+            false,
+            true,
+        )
+        .is_err());
+        assert!(validate_bark_resolved_addresses(&fake, false, false).is_err());
     }
 
     #[tokio::test]
