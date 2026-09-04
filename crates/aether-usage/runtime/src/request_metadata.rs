@@ -1,26 +1,16 @@
-use aether_ai_formats::api::{
-    sanitize_request_path, sanitize_request_path_and_query, sanitize_request_query_string,
-};
-use aether_ai_formats::UPSTREAM_IS_STREAM_KEY;
 use aether_contracts::ExecutionPlan;
 use aether_data_contracts::repository::usage::{
     extract_provider_actual_service_tier_from_response,
     extract_provider_reasoning_effort_from_body, extract_provider_service_tier_from_body,
-    normalize_provider_service_tier, resolve_provider_cache_ttl_minutes, UsageBodyCaptureState,
-    LIVE_SESSION_METADATA_KEY, PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY,
+    normalize_provider_service_tier, resolve_provider_cache_ttl_minutes,
+    sanitize_usage_request_metadata as project_usage_request_metadata,
+    sanitize_usage_request_metadata_object as project_usage_request_metadata_object,
+    sanitize_usage_request_metadata_ref as project_usage_request_metadata_ref,
+    UsageBodyCaptureState, PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY,
     PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY, PROVIDER_REASONING_EFFORT_METADATA_KEY,
-    PROVIDER_SERVICE_TIER_METADATA_KEY, REALTIME_SESSION_METADATA_KEY,
-    REQUESTED_REASONING_EFFORT_METADATA_KEY, ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY,
-    ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY, USAGE_AVAILABLE_METADATA_KEY,
-    USAGE_PRICING_AVAILABLE_METADATA_KEY, WEBSOCKET_MODE_METADATA_KEY,
-    WEBSOCKET_TRANSPORT_METADATA_KEY,
+    PROVIDER_SERVICE_TIER_METADATA_KEY, REQUESTED_REASONING_EFFORT_METADATA_KEY,
 };
-use serde_json::{json, Map, Value};
-
-const MAX_USAGE_REQUEST_METADATA_DEPTH: usize = 32;
-const MAX_USAGE_REQUEST_METADATA_NODES: usize = 4_000;
-const MAX_USAGE_REQUEST_METADATA_BYTES: usize = 16 * 1024;
-const MAX_USAGE_REQUEST_METADATA_STRING_BYTES: usize = 1_024;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RequestBodyDerivedFactsAction {
@@ -73,24 +63,15 @@ pub(crate) fn build_usage_request_metadata_seed(
     _plan: &ExecutionPlan,
     context: Option<&Map<String, Value>>,
 ) -> Option<Value> {
-    let mut metadata = Map::new();
-    if let Some(context) = context {
-        copy_allowed_metadata_fields(context, &mut metadata);
-    }
-    (!metadata.is_empty()).then_some(Value::Object(metadata))
+    context.and_then(project_usage_request_metadata_object)
 }
 
 pub(crate) fn merge_usage_request_metadata(
     base: Option<Value>,
     override_value: Option<Value>,
 ) -> Option<Value> {
-    let mut metadata = Map::new();
-    if let Some(Value::Object(base)) = base.as_ref() {
-        copy_allowed_metadata_fields(base, &mut metadata);
-    }
-    if let Some(Value::Object(override_object)) = override_value.as_ref() {
-        copy_allowed_metadata_fields(override_object, &mut metadata);
-    }
+    let mut metadata = projected_metadata_object(base.as_ref());
+    metadata.extend(projected_metadata_object(override_value.as_ref()));
     (!metadata.is_empty()).then_some(Value::Object(metadata))
 }
 
@@ -98,25 +79,11 @@ pub(crate) fn merge_usage_request_metadata_owned(
     base: Option<Value>,
     override_value: Option<Value>,
 ) -> Option<Value> {
-    let mut metadata = match base {
-        Some(Value::Object(base)) => base,
-        _ => Map::new(),
-    };
-    if let Some(Value::Object(override_object)) = override_value {
-        move_allowed_metadata_fields(override_object, &mut metadata);
-    }
-    (!metadata.is_empty()).then_some(Value::Object(metadata))
+    merge_usage_request_metadata(base, override_value)
 }
 
 pub(crate) fn sanitize_usage_request_metadata(value: Option<Value>) -> Option<Value> {
-    let Value::Object(object) = value? else {
-        return None;
-    };
-
-    let mut filtered = Map::new();
-    move_allowed_metadata_fields(object, &mut filtered);
-
-    (!filtered.is_empty()).then_some(Value::Object(filtered))
+    project_usage_request_metadata(value)
 }
 
 pub(crate) fn retain_first_byte_request_metadata(value: Option<Value>) -> Option<Value> {
@@ -128,19 +95,11 @@ pub(crate) fn retain_first_byte_request_metadata(value: Option<Value>) -> Option
             key.as_str(),
             "trace_id"
                 | "client_ip"
-                | "user_agent"
                 | "client_family"
                 | "client_requested_stream"
                 | "upstream_is_stream"
-                | "client_session_affinity"
                 | "api_key_is_standalone"
                 | "plan_usage_reservation_token"
-                | "websocket_mode"
-                | "websocket_transport"
-                | "usage_available"
-                | "usage_pricing_available"
-                | "live_session"
-                | "realtime_session"
                 | "request_path"
                 | "request_query_string"
                 | "request_path_and_query"
@@ -151,19 +110,20 @@ pub(crate) fn retain_first_byte_request_metadata(value: Option<Value>) -> Option
                 | "model_id"
                 | "global_model_id"
                 | "global_model_name"
-                | "proxy"
         )
     });
     (!metadata.is_empty()).then_some(Value::Object(metadata))
 }
 
 pub(crate) fn sanitize_usage_request_metadata_ref(value: Option<&Value>) -> Option<Value> {
-    let object = value.and_then(Value::as_object)?;
+    project_usage_request_metadata_ref(value)
+}
 
-    let mut filtered = Map::new();
-    copy_allowed_metadata_fields(object, &mut filtered);
-
-    (!filtered.is_empty()).then_some(Value::Object(filtered))
+fn projected_metadata_object(value: Option<&Value>) -> Map<String, Value> {
+    match project_usage_request_metadata_ref(value) {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    }
 }
 
 pub(crate) fn attach_client_request_body_metadata(
@@ -347,384 +307,6 @@ pub(crate) fn attach_provider_actual_service_tier_metadata(
         Value::String(actual_service_tier),
     );
     (!object.is_empty()).then_some(Value::Object(object))
-}
-
-fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<String, Value>) {
-    copy_non_empty_string(source, target, "trace_id");
-    copy_non_empty_string(source, target, "client_ip");
-    copy_non_empty_string(source, target, "user_agent");
-    copy_non_empty_string(source, target, "client_family");
-    copy_bool(source, target, "client_requested_stream");
-    copy_bool(source, target, UPSTREAM_IS_STREAM_KEY);
-    copy_non_null_value(source, target, "client_session_affinity");
-    copy_bool(source, target, "api_key_is_standalone");
-    copy_non_empty_string(source, target, "plan_usage_reservation_token");
-    copy_bool(source, target, "plan_usage_reservation_deferred");
-    copy_bool(source, target, WEBSOCKET_MODE_METADATA_KEY);
-    copy_non_empty_string(source, target, WEBSOCKET_TRANSPORT_METADATA_KEY);
-    copy_bool(source, target, USAGE_AVAILABLE_METADATA_KEY);
-    copy_bool(source, target, USAGE_PRICING_AVAILABLE_METADATA_KEY);
-    copy_non_null_value(source, target, LIVE_SESSION_METADATA_KEY);
-    copy_non_null_value(source, target, REALTIME_SESSION_METADATA_KEY);
-    copy_non_empty_string(source, target, "request_path");
-    copy_non_empty_string(source, target, "request_query_string");
-    copy_non_empty_string(source, target, "request_path_and_query");
-    copy_non_empty_string(source, target, REQUESTED_REASONING_EFFORT_METADATA_KEY);
-    copy_non_empty_string(source, target, PROVIDER_REASONING_EFFORT_METADATA_KEY);
-    copy_non_empty_string(source, target, PROVIDER_SERVICE_TIER_METADATA_KEY);
-    copy_non_empty_string(source, target, PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY);
-    copy_number(source, target, PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY);
-    copy_number(source, target, "provider_request_body_base64_bytes");
-    copy_number(source, target, "provider_response_body_base64_bytes");
-    copy_number(source, target, "client_response_body_base64_bytes");
-    copy_non_null_value(source, target, "body_size");
-    copy_number(source, target, "client_response_status_code");
-    copy_number(source, target, "end_to_end_time_ms");
-    copy_number(source, target, "end_to_end_first_byte_time_ms");
-    copy_bool(source, target, "transport_error");
-    copy_non_empty_string(source, target, "transport_error_type");
-    copy_non_null_value(source, target, "billing_snapshot");
-    copy_non_empty_string(source, target, "billing_snapshot_schema_version");
-    copy_non_empty_string(source, target, "billing_snapshot_status");
-    copy_non_null_value(source, target, "settlement_snapshot");
-    copy_non_empty_string(source, target, "settlement_snapshot_schema_version");
-    copy_non_null_value(source, target, "billing_dimensions");
-    copy_non_empty_string(source, target, "model_id");
-    copy_non_empty_string(source, target, "global_model_id");
-    copy_non_empty_string(source, target, "global_model_name");
-    copy_non_null_value(source, target, "dimensions");
-    copy_non_null_value(source, target, "billing_rule_snapshot");
-    copy_non_null_value(source, target, "scheduling_audit");
-    copy_non_empty_string(source, target, ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY);
-    copy_non_null_value(source, target, ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY);
-    copy_non_null_value(source, target, "tls_fingerprint");
-    copy_number(source, target, "rate_multiplier");
-    copy_bool(source, target, "is_free_tier");
-    copy_number(source, target, "input_price_per_1m");
-    copy_number(source, target, "output_price_per_1m");
-    copy_number(source, target, "cache_creation_price_per_1m");
-    copy_number(source, target, "cache_read_price_per_1m");
-    copy_number(source, target, "price_per_request");
-    copy_non_null_value(source, target, "proxy");
-    copy_non_null_value(source, target, "stage_timings_ms");
-    copy_non_null_value(source, target, "db_timings_ms");
-    sanitize_request_path_metadata_fields(target);
-}
-
-fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map<String, Value>) {
-    remove_non_empty_string(&mut source, target, "trace_id");
-    remove_non_empty_string(&mut source, target, "client_ip");
-    remove_non_empty_string(&mut source, target, "user_agent");
-    remove_non_empty_string(&mut source, target, "client_family");
-    remove_bool(&mut source, target, "client_requested_stream");
-    remove_bool(&mut source, target, UPSTREAM_IS_STREAM_KEY);
-    remove_non_null_value(&mut source, target, "client_session_affinity");
-    remove_bool(&mut source, target, "api_key_is_standalone");
-    remove_non_empty_string(&mut source, target, "plan_usage_reservation_token");
-    remove_bool(&mut source, target, "plan_usage_reservation_deferred");
-    remove_bool(&mut source, target, WEBSOCKET_MODE_METADATA_KEY);
-    remove_non_empty_string(&mut source, target, WEBSOCKET_TRANSPORT_METADATA_KEY);
-    remove_bool(&mut source, target, USAGE_AVAILABLE_METADATA_KEY);
-    remove_bool(&mut source, target, USAGE_PRICING_AVAILABLE_METADATA_KEY);
-    remove_non_null_value(&mut source, target, LIVE_SESSION_METADATA_KEY);
-    remove_non_null_value(&mut source, target, REALTIME_SESSION_METADATA_KEY);
-    remove_non_empty_string(&mut source, target, "request_path");
-    remove_non_empty_string(&mut source, target, "request_query_string");
-    remove_non_empty_string(&mut source, target, "request_path_and_query");
-    remove_non_empty_string(&mut source, target, REQUESTED_REASONING_EFFORT_METADATA_KEY);
-    remove_non_empty_string(&mut source, target, PROVIDER_REASONING_EFFORT_METADATA_KEY);
-    remove_non_empty_string(&mut source, target, PROVIDER_SERVICE_TIER_METADATA_KEY);
-    remove_non_empty_string(
-        &mut source,
-        target,
-        PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY,
-    );
-    remove_number(&mut source, target, PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY);
-    remove_number(&mut source, target, "provider_request_body_base64_bytes");
-    remove_number(&mut source, target, "provider_response_body_base64_bytes");
-    remove_number(&mut source, target, "client_response_body_base64_bytes");
-    remove_non_null_value(&mut source, target, "body_size");
-    remove_number(&mut source, target, "client_response_status_code");
-    remove_number(&mut source, target, "end_to_end_time_ms");
-    remove_number(&mut source, target, "end_to_end_first_byte_time_ms");
-    remove_bool(&mut source, target, "transport_error");
-    remove_non_empty_string(&mut source, target, "transport_error_type");
-    remove_non_null_value(&mut source, target, "billing_snapshot");
-    remove_non_empty_string(&mut source, target, "billing_snapshot_schema_version");
-    remove_non_empty_string(&mut source, target, "billing_snapshot_status");
-    remove_non_null_value(&mut source, target, "settlement_snapshot");
-    remove_non_empty_string(&mut source, target, "settlement_snapshot_schema_version");
-    remove_non_null_value(&mut source, target, "billing_dimensions");
-    remove_non_empty_string(&mut source, target, "model_id");
-    remove_non_empty_string(&mut source, target, "global_model_id");
-    remove_non_empty_string(&mut source, target, "global_model_name");
-    remove_non_null_value(&mut source, target, "dimensions");
-    remove_non_null_value(&mut source, target, "billing_rule_snapshot");
-    remove_non_null_value(&mut source, target, "scheduling_audit");
-    remove_non_empty_string(
-        &mut source,
-        target,
-        ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY,
-    );
-    remove_non_null_value(&mut source, target, ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY);
-    remove_non_null_value(&mut source, target, "tls_fingerprint");
-    remove_number(&mut source, target, "rate_multiplier");
-    remove_bool(&mut source, target, "is_free_tier");
-    remove_number(&mut source, target, "input_price_per_1m");
-    remove_number(&mut source, target, "output_price_per_1m");
-    remove_number(&mut source, target, "cache_creation_price_per_1m");
-    remove_number(&mut source, target, "cache_read_price_per_1m");
-    remove_number(&mut source, target, "price_per_request");
-    remove_non_null_value(&mut source, target, "proxy");
-    remove_non_null_value(&mut source, target, "stage_timings_ms");
-    remove_non_null_value(&mut source, target, "db_timings_ms");
-    sanitize_request_path_metadata_fields(target);
-}
-
-fn sanitize_request_path_metadata_fields(target: &mut Map<String, Value>) {
-    let path = target
-        .get("request_path")
-        .and_then(Value::as_str)
-        .and_then(sanitize_request_path);
-    let query = target
-        .get("request_query_string")
-        .and_then(Value::as_str)
-        .and_then(sanitize_request_query_string);
-    let path_and_query = target
-        .get("request_path_and_query")
-        .and_then(Value::as_str)
-        .and_then(|value| sanitize_request_path_and_query(value, None))
-        .or_else(|| {
-            path.as_deref()
-                .and_then(|path| sanitize_request_path_and_query(path, query.as_deref()))
-        });
-
-    apply_optional_string_field(target, "request_path", path.as_deref());
-    apply_optional_string_field(target, "request_query_string", query.as_deref());
-    apply_optional_string_field(target, "request_path_and_query", path_and_query.as_deref());
-}
-
-fn apply_optional_string_field(target: &mut Map<String, Value>, key: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        target.insert(key.to_string(), Value::String(value.to_string()));
-    } else {
-        target.remove(key);
-    }
-}
-
-fn copy_non_empty_string(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    let Some(value) = source
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    target.insert(
-        key.to_string(),
-        Value::String(truncate_usage_request_metadata_string(value)),
-    );
-}
-
-fn remove_non_empty_string(
-    source: &mut Map<String, Value>,
-    target: &mut Map<String, Value>,
-    key: &str,
-) {
-    let Some(Value::String(value)) = source.remove(key) else {
-        return;
-    };
-    let Some(value) = trim_and_truncate_usage_request_metadata_string_owned(value) else {
-        return;
-    };
-    target.insert(key.to_string(), Value::String(value));
-}
-
-fn copy_number(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    let Some(value) = source.get(key).filter(|value| value.is_number()) else {
-        return;
-    };
-    target.insert(key.to_string(), value.clone());
-}
-
-fn remove_number(source: &mut Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    let Some(value) = source.remove(key).filter(|value| value.is_number()) else {
-        return;
-    };
-    target.insert(key.to_string(), value);
-}
-
-fn copy_bool(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    let Some(value) = source.get(key).filter(|value| value.is_boolean()) else {
-        return;
-    };
-    target.insert(key.to_string(), value.clone());
-}
-
-fn remove_bool(source: &mut Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    let Some(value) = source.remove(key).filter(|value| value.is_boolean()) else {
-        return;
-    };
-    target.insert(key.to_string(), value);
-}
-
-fn copy_non_null_value(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    let Some(value) = source.get(key).filter(|value| !value.is_null()) else {
-        return;
-    };
-    target.insert(
-        key.to_string(),
-        sanitize_usage_request_metadata_value(value),
-    );
-}
-
-fn remove_non_null_value(
-    source: &mut Map<String, Value>,
-    target: &mut Map<String, Value>,
-    key: &str,
-) {
-    let Some(value) = source.remove(key).filter(|value| !value.is_null()) else {
-        return;
-    };
-    target.insert(
-        key.to_string(),
-        sanitize_usage_request_metadata_value_owned(value),
-    );
-}
-
-fn sanitize_usage_request_metadata_value(value: &Value) -> Value {
-    match value {
-        Value::String(text) => Value::String(truncate_usage_request_metadata_string(text)),
-        _ if usage_request_metadata_within_limits(value) => value.clone(),
-        _ => truncated_usage_request_metadata_value(value),
-    }
-}
-
-fn sanitize_usage_request_metadata_value_owned(value: Value) -> Value {
-    match value {
-        Value::String(text) => Value::String(truncate_usage_request_metadata_string_owned(text)),
-        _ if usage_request_metadata_within_limits(&value) => value,
-        _ => truncated_usage_request_metadata_value(&value),
-    }
-}
-
-fn truncate_usage_request_metadata_string(value: &str) -> String {
-    const TRUNCATED_SUFFIX: &str = "...[truncated]";
-
-    if value.len() <= MAX_USAGE_REQUEST_METADATA_STRING_BYTES {
-        return value.to_string();
-    }
-
-    let target_bytes =
-        MAX_USAGE_REQUEST_METADATA_STRING_BYTES.saturating_sub(TRUNCATED_SUFFIX.len());
-    let mut end = 0usize;
-    for (idx, ch) in value.char_indices() {
-        let next = idx + ch.len_utf8();
-        if next > target_bytes {
-            break;
-        }
-        end = next;
-    }
-
-    if end == 0 {
-        return TRUNCATED_SUFFIX.to_string();
-    }
-
-    format!("{}{TRUNCATED_SUFFIX}", &value[..end])
-}
-
-fn trim_and_truncate_usage_request_metadata_string_owned(value: String) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.len() == value.len() {
-        return Some(truncate_usage_request_metadata_string_owned(value));
-    }
-    Some(truncate_usage_request_metadata_string(trimmed))
-}
-
-fn truncate_usage_request_metadata_string_owned(value: String) -> String {
-    if value.len() <= MAX_USAGE_REQUEST_METADATA_STRING_BYTES {
-        return value;
-    }
-    truncate_usage_request_metadata_string(value.as_str())
-}
-
-fn truncated_usage_request_metadata_value(value: &Value) -> Value {
-    json!({
-        "truncated": true,
-        "reason": "usage_request_metadata_limits_exceeded",
-        "max_depth": MAX_USAGE_REQUEST_METADATA_DEPTH,
-        "max_nodes": MAX_USAGE_REQUEST_METADATA_NODES,
-        "max_bytes": MAX_USAGE_REQUEST_METADATA_BYTES,
-        "value_kind": usage_request_metadata_value_kind(value),
-    })
-}
-
-fn usage_request_metadata_within_limits(value: &Value) -> bool {
-    let mut nodes = 0usize;
-    let mut estimated_bytes = 0usize;
-    let mut stack = vec![(value, 1usize)];
-
-    while let Some((current, depth)) = stack.pop() {
-        nodes = nodes.saturating_add(1);
-        estimated_bytes =
-            estimated_bytes.saturating_add(usage_request_metadata_value_size_hint(current));
-        if depth > MAX_USAGE_REQUEST_METADATA_DEPTH
-            || nodes > MAX_USAGE_REQUEST_METADATA_NODES
-            || estimated_bytes > MAX_USAGE_REQUEST_METADATA_BYTES
-        {
-            return false;
-        }
-        match current {
-            Value::Array(items) => {
-                estimated_bytes = estimated_bytes.saturating_add(items.len().saturating_mul(2));
-                for item in items.iter().rev() {
-                    stack.push((item, depth + 1));
-                }
-            }
-            Value::Object(object) => {
-                estimated_bytes = estimated_bytes
-                    .saturating_add(object.len().saturating_mul(3))
-                    .saturating_add(
-                        object
-                            .keys()
-                            .map(|key| key.len().saturating_add(2))
-                            .sum::<usize>(),
-                    );
-                for item in object.values() {
-                    stack.push((item, depth + 1));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    true
-}
-
-fn usage_request_metadata_value_kind(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-    }
-}
-
-fn usage_request_metadata_value_size_hint(value: &Value) -> usize {
-    match value {
-        Value::Null => 4,
-        Value::Bool(false) => 5,
-        Value::Bool(true) => 4,
-        Value::Number(number) => number.to_string().len(),
-        Value::String(text) => text.len().saturating_add(2),
-        Value::Array(_) | Value::Object(_) => 2,
-    }
 }
 
 #[cfg(test)]
