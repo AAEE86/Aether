@@ -20,6 +20,25 @@ use std::time::Duration;
 
 const OAUTH_RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
+// Some local DNS interception deployments return RFC 2544's benchmarking
+// range (198.18.0.0/15) for well-known public services.  Identity OAuth is a
+// sensitive direct-connection path, so the range is never accepted globally:
+// only exact, built-in public origins may use it.  URL validation below still
+// requires HTTPS, strips credentials/fragments, pins the resolved addresses,
+// and disables redirects.
+const TRUSTED_IDENTITY_BENCHMARKING_DNS_HOSTS: &[&str] = &[
+    "accounts.google.com",
+    "auth.openai.com",
+    "claude.ai",
+    "connect.linux.do",
+    "connect.linuxdo.org",
+    "oauth2.googleapis.com",
+    "platform.claude.com",
+    "register.windsurf.com",
+    "server.self-serve.windsurf.com",
+    "windsurf.com",
+];
+
 #[derive(Clone)]
 pub(crate) struct GatewayOAuthHttpExecutor<'a> {
     app: AppState,
@@ -289,6 +308,7 @@ fn parse_identity_oauth_endpoint(
 }
 
 fn validate_identity_oauth_resolved_addrs(
+    url: &reqwest::Url,
     addrs: &[SocketAddr],
     policy: IdentityOAuthEndpointPolicy,
 ) -> Result<(), OAuthError> {
@@ -306,15 +326,31 @@ fn validate_identity_oauth_resolved_addrs(
             "test identity OAuth endpoint must resolve only to loopback addresses",
         ));
     }
-    if addrs
-        .iter()
-        .any(|addr| aether_http::is_private_or_reserved_ip(addr.ip()))
-    {
+    let allows_benchmarking_dns = policy == IdentityOAuthEndpointPolicy::PublicHttps
+        && identity_oauth_origin_allows_benchmarking_dns(url);
+    if addrs.iter().any(|addr| {
+        aether_http::is_private_or_reserved_ip(addr.ip())
+            && !(allows_benchmarking_dns && aether_http::is_ipv4_benchmarking_fake_ip(addr.ip()))
+    }) {
         return Err(OAuthError::transport(
             "identity OAuth endpoint resolves to a private or reserved address",
         ));
     }
     Ok(())
+}
+
+fn identity_oauth_origin_allows_benchmarking_dns(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && url.host_str().is_some_and(|host| {
+            let host = host.trim_end_matches('.');
+            TRUSTED_IDENTITY_BENCHMARKING_DNS_HOSTS
+                .iter()
+                .any(|trusted| trusted.eq_ignore_ascii_case(host))
+        })
 }
 
 async fn resolve_identity_oauth_endpoint(
@@ -333,7 +369,7 @@ async fn resolve_identity_oauth_endpoint(
         .await
         .map_err(|_| OAuthError::transport("identity OAuth endpoint DNS resolution failed"))?
     };
-    validate_identity_oauth_resolved_addrs(&addrs, policy)?;
+    validate_identity_oauth_resolved_addrs(&url, &addrs, policy)?;
     Ok(ResolvedIdentityOAuthEndpoint { url, host, addrs })
 }
 
@@ -563,9 +599,10 @@ fn gateway_error_to_oauth_error(error: GatewayError) -> OAuthError {
 mod tests {
     use super::{
         decode_response_bytes_with_limit, execution_body_bytes, identity_oauth_endpoint_policy,
-        identity_oauth_redirect_policy, identity_oauth_route, oauth_execution_plan,
-        parse_identity_oauth_endpoint, resolve_identity_oauth_endpoint,
-        validate_identity_oauth_resolved_addrs, IdentityOAuthEndpointPolicy, IdentityOAuthRoute,
+        identity_oauth_origin_allows_benchmarking_dns, identity_oauth_redirect_policy,
+        identity_oauth_route, oauth_execution_plan, parse_identity_oauth_endpoint,
+        resolve_identity_oauth_endpoint, validate_identity_oauth_resolved_addrs,
+        IdentityOAuthEndpointPolicy, IdentityOAuthRoute,
     };
     use aether_contracts::{
         ProxySnapshot, ResponseBody, EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER,
@@ -620,8 +657,12 @@ mod tests {
         assert_eq!(url.scheme(), "https");
         assert_eq!(host, "oauth.example.test");
         assert_eq!(port, 443);
-        validate_identity_oauth_resolved_addrs(&addrs, IdentityOAuthEndpointPolicy::PublicHttps)
-            .expect("controlled public address should pass validation");
+        validate_identity_oauth_resolved_addrs(
+            &url,
+            &addrs,
+            IdentityOAuthEndpointPolicy::PublicHttps,
+        )
+        .expect("controlled public address should pass validation");
     }
 
     #[test]
@@ -647,6 +688,7 @@ mod tests {
             "10.0.0.4:443".parse::<SocketAddr>().unwrap(),
         ];
         assert!(validate_identity_oauth_resolved_addrs(
+            &reqwest::Url::parse("https://example.test/token").unwrap(),
             &mixed,
             IdentityOAuthEndpointPolicy::PublicHttps,
         )
@@ -663,6 +705,7 @@ mod tests {
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 32123);
         validate_identity_oauth_resolved_addrs(
+            &reqwest::Url::parse("http://127.0.0.1:32123/token").unwrap(),
             &["127.0.0.1:32123".parse().unwrap()],
             IdentityOAuthEndpointPolicy::ExplicitTestLoopback,
         )
@@ -679,8 +722,46 @@ mod tests {
         )
         .is_err());
         assert!(validate_identity_oauth_resolved_addrs(
+            &reqwest::Url::parse("http://10.0.0.1/token").unwrap(),
             &["10.0.0.1:80".parse().unwrap()],
             IdentityOAuthEndpointPolicy::ExplicitTestLoopback,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn identity_oauth_benchmarking_dns_is_exact_origin_only() {
+        let fake = "198.18.75.234:443".parse::<SocketAddr>().unwrap();
+        let trusted = reqwest::Url::parse("https://CONNECT.LINUX.DO/oauth2/token").unwrap();
+        assert!(identity_oauth_origin_allows_benchmarking_dns(&trusted));
+        assert!(validate_identity_oauth_resolved_addrs(
+            &trusted,
+            &[fake],
+            IdentityOAuthEndpointPolicy::PublicHttps,
+        )
+        .is_ok());
+
+        for raw_url in [
+            "https://connect.linux.do:8443/oauth2/token",
+            "https://connect.linux.do.evil.test/oauth2/token",
+            "http://connect.linux.do/oauth2/token",
+            "https://oauth.example.test/token",
+        ] {
+            let url = reqwest::Url::parse(raw_url).unwrap();
+            assert!(!identity_oauth_origin_allows_benchmarking_dns(&url));
+            assert!(validate_identity_oauth_resolved_addrs(
+                &url,
+                &[fake],
+                IdentityOAuthEndpointPolicy::PublicHttps,
+            )
+            .is_err());
+        }
+
+        let mixed = [fake, "127.0.0.1:443".parse::<SocketAddr>().unwrap()];
+        assert!(validate_identity_oauth_resolved_addrs(
+            &trusted,
+            &mixed,
+            IdentityOAuthEndpointPolicy::PublicHttps,
         )
         .is_err());
     }
