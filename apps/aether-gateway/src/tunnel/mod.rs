@@ -70,6 +70,11 @@ const TUNNEL_RELAY_BASE_URL_ENV: &str = "AETHER_TUNNEL_RELAY_BASE_URL";
 // operator opt-in, just like the tunnel's private upstream target escape
 // hatch.  Loopback HTTP remains supported for the local single-process path.
 const TUNNEL_RELAY_ALLOW_PRIVATE_TARGETS_ENV: &str = "AETHER_TUNNEL_RELAY_ALLOW_PRIVATE_TARGETS";
+// Prefer this narrow host allowlist for private owner relay deployments. The
+// legacy *_ALLOW_PRIVATE_TARGETS switch remains available for operators that
+// intentionally trust every private address in their deployment, but an exact
+// hostname list limits the blast radius of a stale or corrupted attachment.
+const TUNNEL_RELAY_PRIVATE_HOST_ALLOWLIST_ENV: &str = "AETHER_TUNNEL_RELAY_PRIVATE_HOST_ALLOWLIST";
 const TUNNEL_ATTACHMENT_TTL_ENV: &str = "AETHER_TUNNEL_ATTACHMENT_TTL_SECS";
 const TUNNEL_RELAY_AUTH_SECRET_ENV: &str = "AETHER_TUNNEL_RELAY_AUTH_SECRET";
 const TUNNEL_HEARTBEAT_STATE_KEY_PREFIX: &str = "tunnel:heartbeat:session:";
@@ -249,7 +254,7 @@ fn build_owner_forward_target(
         host,
         port,
         addresses,
-        tunnel_relay_allows_private_targets(),
+        tunnel_relay_allows_private_targets() || tunnel_relay_private_host_is_allowlisted(host),
     )
 }
 
@@ -319,6 +324,33 @@ fn tunnel_relay_allows_private_targets() -> bool {
                 value.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
             )
+        })
+}
+
+/// Return whether a private owner relay hostname was explicitly allowlisted.
+///
+/// Entries are comma-separated exact DNS names (case-insensitive); a trailing
+/// dot is ignored for DNS canonicalisation.  We intentionally do not support
+/// arbitrary suffix or wildcard matching: allowing `.internal` would let a
+/// compromised attachment redirect traffic to any sibling service in that
+/// namespace.  The broad `*_ALLOW_PRIVATE_TARGETS=true` switch above remains
+/// the explicit escape hatch for deployments that need that behaviour.
+fn tunnel_relay_private_host_is_allowlisted(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    std::env::var(TUNNEL_RELAY_PRIVATE_HOST_ALLOWLIST_ENV)
+        .ok()
+        .is_some_and(|value| tunnel_relay_private_host_matches_allowlist(&host, &value))
+}
+
+fn tunnel_relay_private_host_matches_allowlist(host: &str, allowlist: &str) -> bool {
+    let host = host.trim().trim_end_matches('.');
+    !host.is_empty()
+        && allowlist.split(',').any(|entry| {
+            let entry = entry.trim().trim_end_matches('.');
+            !entry.is_empty() && entry.eq_ignore_ascii_case(host)
         })
 }
 
@@ -2746,8 +2778,9 @@ mod tests {
         current_unix_secs, encode_tunnel_relay_envelope, owner_forward_client_for_url,
         prepare_owner_relay_request_body, prepare_owner_relay_request_body_with_limits,
         resolve_owner_forward_target, resolve_tunnel_relay_auth_secret_value,
-        tunnel_attachment_key, validate_tunnel_relay_transport_url, AppState, GatewayDataState,
-        TunnelAttachmentDirectory, TunnelAttachmentRecord, MAX_OWNER_FORWARD_DNS_ADDRESSES,
+        tunnel_attachment_key, tunnel_relay_private_host_matches_allowlist,
+        validate_tunnel_relay_transport_url, AppState, GatewayDataState, TunnelAttachmentDirectory,
+        TunnelAttachmentRecord, MAX_OWNER_FORWARD_DNS_ADDRESSES,
     };
     use aether_contracts::tunnel::{
         try_decode_tunnel_relay_request_meta, TUNNEL_RELAY_FORWARDED_BY_HEADER,
@@ -2914,6 +2947,26 @@ mod tests {
             true,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn private_relay_host_allowlist_matches_exact_dns_names_only() {
+        assert!(tunnel_relay_private_host_matches_allowlist(
+            "gateway-a.internal.",
+            "gateway-a.internal, gateway-b.internal"
+        ));
+        assert!(tunnel_relay_private_host_matches_allowlist(
+            "GATEWAY-B.INTERNAL",
+            "gateway-a.internal, gateway-b.internal."
+        ));
+        assert!(!tunnel_relay_private_host_matches_allowlist(
+            "api.gateway-a.internal",
+            "gateway-a.internal"
+        ));
+        assert!(!tunnel_relay_private_host_matches_allowlist(
+            "gateway-a.internal.evil.example",
+            ".internal"
+        ));
     }
 
     #[test]
