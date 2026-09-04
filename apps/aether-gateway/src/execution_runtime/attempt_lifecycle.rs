@@ -39,7 +39,6 @@ use aether_scheduler_core::SchedulerRequestCandidateStatusUpdate;
 use aether_usage_runtime::{
     build_lifecycle_usage_seed, build_stream_terminal_usage_payload_seed,
     build_terminal_usage_context_seed, stream_report_represents_failure,
-    DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
 };
 use base64::Engine as _;
 use serde_json::Value;
@@ -433,8 +432,7 @@ impl AttemptBodyCapture {
         if bytes.is_empty() || self.truncated {
             return;
         }
-        let max_bytes = DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
-            .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES);
+        let max_bytes = crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES;
         if self.buffer.len() >= max_bytes {
             self.truncated = true;
             return;
@@ -448,10 +446,7 @@ impl AttemptBodyCapture {
     }
 
     pub(crate) fn encode(&self) -> (Option<String>, Option<UsageBodyCaptureState>) {
-        self.encode_with_limit(
-            DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
-                .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES),
-        )
+        self.encode_with_limit(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES)
     }
 
     fn encode_with_limit(
@@ -1435,8 +1430,7 @@ mod stage_tests {
     #[test]
     fn body_capture_encodes_inline_and_empty_states() {
         assert_eq!(
-            super::DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
-                .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES),
+            crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES,
             crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES
         );
 

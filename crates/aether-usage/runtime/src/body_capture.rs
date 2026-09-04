@@ -790,6 +790,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assert_sensitive_bodies_disabled(
         request_body: &Option<Value>,
         request_body_ref: &Option<String>,

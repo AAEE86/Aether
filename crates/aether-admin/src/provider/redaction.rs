@@ -468,7 +468,7 @@ fn normalized_proxy_url_identity(value: &str) -> Option<(String, String, u16)> {
         return None;
     }
     let host = parsed.host_str()?.to_ascii_lowercase();
-    let port = parsed.port().or_else(|| match scheme.as_str() {
+    let port = parsed.port().or(match scheme.as_str() {
         "http" => Some(80),
         "https" => Some(443),
         "socks5" | "socks5h" => Some(1080),
@@ -629,9 +629,7 @@ fn project_chatgpt_web_metadata(value: &Value) -> Value {
     // This is an opaque idempotency key, not a diagnostic or credential. Keep it
     // bounded and token-safe so quota request de-duplication survives persistence.
     copy_safe_token_string_or_null(source, &mut projected, "image_quota_last_local_request_key");
-    for field in ["image_quota_blocked"] {
-        copy_json_bool_or_null(source, &mut projected, field);
-    }
+    copy_json_bool_or_null(source, &mut projected, "image_quota_blocked");
     for field in [
         "default_model_slug",
         "plan_type",
@@ -1757,9 +1755,7 @@ fn trimmed_string_field(object: &Map<String, Value>, key: &str) -> Option<String
 fn sanitize_network_url(value: &str) -> Option<String> {
     let value = value.trim();
     let mut parsed = url::Url::parse(value).ok()?;
-    if parsed.host_str().is_none() {
-        return None;
-    }
+    parsed.host_str()?;
     parsed.set_username("").ok()?;
     parsed.set_password(None).ok()?;
     parsed.set_query(None);
@@ -1916,13 +1912,12 @@ fn body_path_key_segments(path: &str) -> Vec<String> {
                     .trim()
                     .trim_matches(['\'', '"'])
                     .to_string();
-                if !inner.is_empty()
+                if (!inner.is_empty()
                     && inner != "*"
                     && inner.parse::<isize>().is_err()
-                    && !inner.contains('-')
+                    && !inner.contains('-'))
+                    || inner.contains(|character: char| character.is_ascii_alphabetic())
                 {
-                    segments.push(inner);
-                } else if inner.contains(|character: char| character.is_ascii_alphabetic()) {
                     segments.push(inner);
                 }
                 index = close + 1;

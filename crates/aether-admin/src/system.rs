@@ -3358,9 +3358,7 @@ pub fn build_admin_proxy_node_payload(node: &StoredProxyNode) -> serde_json::Val
 fn redact_admin_proxy_node_metadata(
     metadata: Option<&serde_json::Value>,
 ) -> Option<serde_json::Value> {
-    let Some(metadata) = metadata else {
-        return None;
-    };
+    let metadata = metadata?;
     let mut metadata = metadata.clone();
     if let Some(tunnel_security) = metadata
         .as_object_mut()

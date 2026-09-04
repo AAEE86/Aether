@@ -166,7 +166,7 @@ async fn enforce_postgres_identity_import_invariants(
         let auth_source = sqlx::query_scalar::<_, String>(
             "SELECT auth_source::text FROM public.users WHERE id = $1 LIMIT 1",
         )
-        .bind(&user_id)
+        .bind(user_id)
         .fetch_optional(&mut **tx)
         .await
         .map_sql_err()?
@@ -182,7 +182,7 @@ async fn enforce_postgres_identity_import_invariants(
         }
         if auth_source == "oauth" {
             sqlx::query("UPDATE public.users SET email_verified = FALSE WHERE id = $1")
-                .bind(&user_id)
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await
                 .map_sql_err()?;

@@ -1825,9 +1825,9 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             ));
         }
         let now_secs = current_unix_secs();
-        if !current_order
+        if current_order
             .expires_at_unix_secs
-            .is_some_and(|expires_at| expires_at > now_secs)
+            .is_none_or(|expires_at| expires_at <= now_secs)
         {
             return Ok(WalletMutationOutcome::Invalid(
                 "wallet recharge order is expired".to_string(),

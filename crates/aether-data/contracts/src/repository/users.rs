@@ -311,6 +311,10 @@ impl BindUserOAuthLinkSessionExpectation {
     }
 }
 
+// Returning the full linked-user record avoids a second repository lookup and
+// is the established public contract. Keep the success value inline rather
+// than changing every adapter/caller to an allocated box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolveOAuthLinkedUserOutcome {
     Linked(StoredUserAuthRecord),

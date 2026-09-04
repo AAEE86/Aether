@@ -455,6 +455,10 @@ impl std::fmt::Debug for UpsertOAuthProviderConfigRecord {
     }
 }
 
+// Keep the returned provider value inline: this outcome is part of the
+// repository API and the successful value is consumed immediately by callers.
+// Boxing would be an API/ownership change for no security benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpsertOAuthProviderConfigOutcome {
     Upserted(StoredOAuthProviderConfig),
@@ -513,6 +517,10 @@ impl UpsertOAuthProviderConfigRecord {
     }
 }
 
+// Validation tests are kept beside the validation implementation so changes
+// to endpoint policy are reviewed together. The repository traits below are
+// intentionally declared after this focused test module for API readability.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::{

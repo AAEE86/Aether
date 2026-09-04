@@ -315,7 +315,7 @@ fn canonicalize_internal_report_json(value: &Value) -> Value {
         ),
         Value::Object(object) => {
             let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_unstable_by_key(|(left, _)| *left);
             Value::Object(Map::from_iter(entries.into_iter().map(|(key, value)| {
                 (key.clone(), canonicalize_internal_report_json(value))
             })))

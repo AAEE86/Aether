@@ -1617,7 +1617,7 @@ where
                         redirect_count,
                         request_body_size.load(Ordering::Relaxed),
                     ),
-                    &error_message,
+                    error_message,
                     total_elapsed,
                 );
                 send_error(frame_tx, stream_id, error_message).await;
@@ -2091,10 +2091,10 @@ async fn handle_stream_inner(
                             redirects_followed,
                             request_body_size.load(Ordering::Relaxed),
                         ),
-                        &error_message,
+                        error_message,
                         overall_start.elapsed(),
                     );
-                    send_error(frame_tx, stream_id, &error_message).await;
+                    send_error(frame_tx, stream_id, error_message).await;
                     return None;
                 }
             }

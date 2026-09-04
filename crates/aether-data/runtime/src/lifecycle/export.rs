@@ -643,22 +643,22 @@ fn deactivate_imported_credentials(
         .trim_matches(|ch| matches!(ch, '"' | '`'));
 
     match table_name {
-        "users" => {
+        "users"
             if object
                 .get("password_hash")
-                .is_some_and(|value| !value.is_null())
-            {
-                set_supported_import_value(
-                    object,
-                    &target_has_column,
-                    "password_hash",
-                    Value::String(format!(
-                        "$aether-import-revoked${}",
-                        imported_credential_tombstone()
-                    )),
-                );
-            }
+                .is_some_and(|value| !value.is_null()) =>
+        {
+            set_supported_import_value(
+                object,
+                &target_has_column,
+                "password_hash",
+                Value::String(format!(
+                    "$aether-import-revoked${}",
+                    imported_credential_tombstone()
+                )),
+            );
         }
+        "users" => {}
         "api_keys" => {
             if object.contains_key("key_hash") {
                 set_supported_import_value(

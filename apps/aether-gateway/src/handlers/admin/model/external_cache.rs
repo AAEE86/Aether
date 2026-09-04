@@ -686,8 +686,9 @@ pub(crate) async fn read_admin_external_models_cache(
     match fetch_admin_external_models_from_source(state, request_id, proxy_node_id.as_deref()).await
     {
         Ok(payload) => {
-            if let Err(_) =
-                store_admin_external_models_cache(state, proxy_node_id.as_deref(), &payload).await
+            if store_admin_external_models_cache(state, proxy_node_id.as_deref(), &payload)
+                .await
+                .is_err()
             {
                 warn!("failed to store fetched external models cache");
             }

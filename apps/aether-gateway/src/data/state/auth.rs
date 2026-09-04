@@ -914,7 +914,7 @@ impl GatewayDataState {
 
         Ok(Some(LdapAuthProvisioningResult {
             user: outcome.user,
-            owned_wallet_id: initialized.created.then(|| initialized.wallet.id),
+            owned_wallet_id: initialized.created.then_some(initialized.wallet.id),
         }))
     }
 

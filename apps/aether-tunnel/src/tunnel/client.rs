@@ -563,6 +563,10 @@ fn insert_ascii_header(
     Ok(())
 }
 
+// The handshake transcript has a fixed set of wire fields. Keep the explicit
+// arguments and ordering so the client remains interoperable with existing
+// tunnel servers.
+#[allow(clippy::too_many_arguments)]
 fn insert_tunnel_security_handshake_headers(
     headers: &mut http::HeaderMap,
     key: &str,

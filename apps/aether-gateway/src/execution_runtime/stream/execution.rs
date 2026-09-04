@@ -25,7 +25,6 @@ use aether_usage_runtime::{
     build_lifecycle_usage_seed, build_stream_terminal_usage_payload_seed,
     build_sync_terminal_usage_payload_seed, build_terminal_usage_context_seed, LifecycleUsageSeed,
     SyncTerminalUsagePayloadSeed, TerminalUsageContextSeed, UsageRequestRecordLevel,
-    DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
 };
 use async_stream::stream;
 use axum::body::{Body, Bytes};
@@ -399,8 +398,7 @@ fn direct_passthrough_mode() -> DirectPassthroughMode {
 fn stream_body_buffer_limit_for_record_level(record_level: UsageRequestRecordLevel) -> usize {
     match record_level {
         UsageRequestRecordLevel::Basic => BASIC_STREAM_BODY_ANALYSIS_LIMIT_BYTES,
-        UsageRequestRecordLevel::Full => DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES
-            .min(crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES),
+        UsageRequestRecordLevel::Full => crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES,
     }
 }
 

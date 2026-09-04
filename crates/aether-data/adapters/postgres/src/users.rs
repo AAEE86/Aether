@@ -2049,6 +2049,10 @@ WHERE id = $1
         self.find_user_auth_by_id(user_id).await
     }
 
+    // This operation compares and restores four correlated snapshots in one
+    // transaction. Keep the explicit arguments visible at the call site so a
+    // future restore cannot accidentally omit one consistency boundary.
+    #[allow(clippy::too_many_arguments)]
     pub async fn restore_local_auth_user_state_if_matches(
         &self,
         expected_auth: &StoredUserAuthRecord,

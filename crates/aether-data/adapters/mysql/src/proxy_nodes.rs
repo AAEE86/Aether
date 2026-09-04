@@ -1421,9 +1421,11 @@ WHERE id = ?
             && current
                 .tunnel_connected_at_unix_secs
                 .is_some_and(|last_transition| event_time < last_transition);
-        let persisted_detail = stale
-            .then(|| format!("[stale_ignored] {event_detail}"))
-            .unwrap_or(event_detail);
+        let persisted_detail = if stale {
+            format!("[stale_ignored] {event_detail}")
+        } else {
+            event_detail
+        };
         self.insert_event(
             &mutation.node_id,
             Some(node.tunnel_generation.as_str()),
@@ -1744,23 +1746,23 @@ fn proxy_node_registration_matches(
         && current.heartbeat_interval == mutation.heartbeat_interval
         && mutation
             .active_connections
-            .map_or(true, |value| current.active_connections == value)
+            .is_none_or(|value| current.active_connections == value)
         && mutation
             .total_requests
-            .map_or(true, |value| current.total_requests == value)
+            .is_none_or(|value| current.total_requests == value)
         && mutation
             .avg_latency_ms
-            .map_or(true, |value| current.avg_latency_ms == Some(value))
+            .is_none_or(|value| current.avg_latency_ms == Some(value))
         && mutation
             .hardware_info
             .as_ref()
-            .map_or(true, |value| current.hardware_info.as_ref() == Some(value))
-        && mutation.estimated_max_concurrency.map_or(true, |value| {
-            current.estimated_max_concurrency == Some(value)
-        })
+            .is_none_or(|value| current.hardware_info.as_ref() == Some(value))
+        && mutation
+            .estimated_max_concurrency
+            .is_none_or(|value| current.estimated_max_concurrency == Some(value))
         && current.tunnel_mode == mutation.tunnel_mode
         && replacement_proxy_metadata
-            .map_or(true, |value| current.proxy_metadata.as_ref() == Some(value))
+            .is_none_or(|value| current.proxy_metadata.as_ref() == Some(value))
         && current.updated_at_unix_secs == Some(now)
 }
 

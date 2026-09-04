@@ -79,9 +79,11 @@ fn config_f64(value: Option<&serde_json::Value>, default: f64) -> f64 {
 
 fn config_percent(value: Option<&serde_json::Value>) -> f64 {
     let value = config_f64(value, 0.0);
-    (value.is_finite() && value > 0.0 && value <= 100.0)
-        .then_some(value)
-        .unwrap_or(0.0)
+    if value.is_finite() && value > 0.0 && value <= 100.0 {
+        value
+    } else {
+        0.0
+    }
 }
 
 impl AppState {

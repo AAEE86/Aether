@@ -171,7 +171,7 @@ impl FileVideoTaskStore {
                 .strip_prefix(VIDEO_TASK_STORE_PURPOSE)
                 .and_then(|value| value.strip_prefix('\0'))
                 .ok_or_else(|| invalid_store_data("video task store purpose mismatch"))?;
-            let mut registry: VideoTaskRegistry = serde_json::from_str(&plaintext)
+            let mut registry: VideoTaskRegistry = serde_json::from_str(plaintext)
                 .map_err(|_| invalid_store_data("decrypted video task store is invalid"))?;
             let needs_rewrite = registry.sanitize_persisted_diagnostics();
             return Ok(LoadedVideoTaskRegistry {

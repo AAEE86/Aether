@@ -1054,11 +1054,14 @@ fn redirect_to(target: &str, params: Option<RedirectParams>) -> Response<Body> {
 fn build_redirect_location(target: &str, params: Option<RedirectParams>) -> String {
     let relative_target =
         url::Url::parse(target).is_err() && target.starts_with('/') && !target.starts_with("//");
-    let Ok(mut url) = url::Url::parse(target).or_else(|_| {
-        relative_target
-            .then(|| url::Url::parse("http://aether.invalid").and_then(|base| base.join(target)))
-            .unwrap_or_else(|| Err(url::ParseError::RelativeUrlWithoutBase))
-    }) else {
+    let parsed_target = url::Url::parse(target).or_else(|_| {
+        if relative_target {
+            url::Url::parse("http://aether.invalid").and_then(|base| base.join(target))
+        } else {
+            Err(url::ParseError::RelativeUrlWithoutBase)
+        }
+    });
+    let Ok(mut url) = parsed_target else {
         return target.to_string();
     };
     match params {

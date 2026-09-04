@@ -147,7 +147,7 @@ async fn enforce_sqlite_identity_import_invariants(
     for user_id in &scope.user_ids {
         let auth_source =
             sqlx::query_scalar::<_, String>("SELECT auth_source FROM users WHERE id = ? LIMIT 1")
-                .bind(&user_id)
+                .bind(user_id)
                 .fetch_optional(&mut **tx)
                 .await
                 .map_sql_err()?
@@ -163,7 +163,7 @@ async fn enforce_sqlite_identity_import_invariants(
         }
         if auth_source == "oauth" {
             sqlx::query("UPDATE users SET email_verified = 0 WHERE id = ?")
-                .bind(&user_id)
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await
                 .map_sql_err()?;

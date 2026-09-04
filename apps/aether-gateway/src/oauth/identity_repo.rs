@@ -258,7 +258,7 @@ pub(crate) async fn resolve_identity_oauth_login_user(
         .initialize_auth_user_wallet_with_outcome(&user.id, initial_gift, false)
         .await
     {
-        Ok(Some(outcome)) => outcome.created.then(|| outcome.wallet.id),
+        Ok(Some(outcome)) => outcome.created.then_some(outcome.wallet.id),
         Ok(None) => {
             let _ = state
                 .rollback_provisional_auth_user_with_wallet(&user.id, None)

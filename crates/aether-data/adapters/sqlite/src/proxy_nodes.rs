@@ -1401,9 +1401,11 @@ WHERE id = ?
             && current
                 .tunnel_connected_at_unix_secs
                 .is_some_and(|last_transition| event_time < last_transition);
-        let persisted_detail = stale
-            .then(|| format!("[stale_ignored] {event_detail}"))
-            .unwrap_or(event_detail);
+        let persisted_detail = if stale {
+            format!("[stale_ignored] {event_detail}")
+        } else {
+            event_detail
+        };
         self.insert_event(
             &mutation.node_id,
             Some(node.tunnel_generation.as_str()),

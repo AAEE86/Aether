@@ -1638,9 +1638,11 @@ WHERE id = $1 AND proxy_metadata::jsonb = $3::jsonb
             .await
             .map_postgres_err()?;
         let stale = result.rows_affected() == 0;
-        let persisted_detail = stale
-            .then(|| format!("[stale_ignored] {event_detail}"))
-            .unwrap_or(event_detail);
+        let persisted_detail = if stale {
+            format!("[stale_ignored] {event_detail}")
+        } else {
+            event_detail
+        };
 
         sqlx::query(INSERT_PROXY_NODE_EVENT_SQL)
             .bind(&mutation.node_id)

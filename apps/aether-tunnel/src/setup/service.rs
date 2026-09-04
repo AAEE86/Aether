@@ -781,7 +781,7 @@ fn write_service_definition(path: &str, content: &str, mode: u32) -> anyhow::Res
         if result.is_err() {
             let _ = std::fs::remove_file(&temporary);
         }
-        return result;
+        result
     }
 
     #[cfg(not(unix))]
@@ -831,7 +831,7 @@ fn validate_private_service_directory(path: &Path) -> anyhow::Result<()> {
             }
             ancestor = directory.parent();
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -864,7 +864,7 @@ fn validate_replaceable_service_file(path: &Path) -> anyhow::Result<()> {
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -910,7 +910,7 @@ fn ensure_private_service_directory(path: &Path, mode: u32) -> anyhow::Result<()
         }
         directory.set_permissions(std::fs::Permissions::from_mode(mode))?;
         directory.sync_all()?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -949,7 +949,7 @@ fn open_private_service_log(path: &Path, mode: u32) -> anyhow::Result<()> {
         }
         file.set_permissions(std::fs::Permissions::from_mode(mode))?;
         file.sync_all()?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

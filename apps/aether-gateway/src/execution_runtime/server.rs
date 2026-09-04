@@ -585,7 +585,7 @@ fn harden_execution_runtime_socket(
         // runners.  The validated canonical parent and inode identity still
         // close the replacement window without relying on that differing
         // device number.
-        || (cfg!(target_os = "linux") && metadata.ino() != stat.st_ino as u64)
+        || (cfg!(target_os = "linux") && metadata.ino() != stat.st_ino)
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

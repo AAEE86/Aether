@@ -349,6 +349,9 @@ fn load_and_sanitize_update_history(path: &Path) -> (Vec<UpdateHistoryEntry>, bo
 }
 
 fn sanitize_update_history_entries(entries: &mut Vec<UpdateHistoryEntry>) -> bool {
+    // Deliberately use a non-short-circuiting fold: every historical entry
+    // must be sanitized even after one entry changes.
+    #[allow(clippy::unnecessary_fold)]
     let mut changed = entries.iter_mut().fold(false, |changed, entry| {
         sanitize_update_history_entry(entry) || changed
     });
@@ -455,7 +458,7 @@ fn read_update_metadata_file(path: &Path, max_bytes: usize) -> Result<Option<Vec
         if bytes.len() > max_bytes {
             return Err("更新元数据超过大小限制".to_string());
         }
-        return Ok(Some(bytes));
+        Ok(Some(bytes))
     }
 
     #[cfg(not(unix))]
@@ -536,7 +539,7 @@ fn write_update_metadata_atomic(path: &Path, bytes: &[u8]) -> Result<(), String>
         if result.is_err() {
             let _ = unix_update_unlink_at(&parent, &temp_name);
         }
-        return result;
+        result
     }
 
     #[cfg(not(unix))]
@@ -711,7 +714,7 @@ fn remove_update_metadata_file(path: &Path) -> Result<(), String> {
         parent
             .sync_all()
             .map_err(|err| format!("同步更新元数据目录失败: {err}"))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -1867,7 +1870,7 @@ fn switch_current_symlink_at(base_dir: &Path, version: &str) -> Result<(), Strin
         parent
             .sync_all()
             .map_err(|err| format!("同步版本入口目录失败: {err}"))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

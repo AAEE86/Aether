@@ -383,8 +383,7 @@ fn forwarded_header_last(headers: &http::HeaderMap, name: &str) -> Option<String
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .last()
+        .rfind(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
 

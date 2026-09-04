@@ -552,7 +552,13 @@ pub(super) async fn seed_provider_oauth_pool_score(
         now_unix_secs,
         pool_config.score_rules,
     );
-    if let Err(_) = state.app().data.upsert_pool_member_score(upsert).await {
+    if state
+        .app()
+        .data
+        .upsert_pool_member_score(upsert)
+        .await
+        .is_err()
+    {
         tracing::debug!(
             provider_id = %provider_id,
             key_id = %key.id,

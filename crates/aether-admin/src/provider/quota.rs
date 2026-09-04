@@ -3913,9 +3913,11 @@ fn chatgpt_web_blocked_features(value: &serde_json::Value) -> Vec<String> {
         .flatten()
         .filter_map(serde_json::Value::as_str)
         .any(chatgpt_web_is_image_quota_feature);
-    image_blocked
-        .then(|| vec!["image_generation".to_string()])
-        .unwrap_or_default()
+    if image_blocked {
+        vec!["image_generation".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn parse_chatgpt_web_conversation_init_response(

@@ -314,7 +314,7 @@ async fn release_codex_agent_identity_leases(
     leases: Vec<RuntimeLockLease>,
 ) {
     for lease in leases {
-        if let Err(_) = state.runtime_state().lock_release(&lease).await {
+        if state.runtime_state().lock_release(&lease).await.is_err() {
             tracing::warn!(
                 lock_key = %lease.key,
                 "gateway Agent Identity enrollment lock release failed"

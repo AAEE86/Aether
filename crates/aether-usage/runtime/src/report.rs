@@ -1412,8 +1412,12 @@ mod tests {
 
     #[test]
     fn bounded_report_body_decode_rejects_oversized_encoded_values_before_allocation() {
-        let encoded =
-            "A".repeat(((super::MAX_INTERNAL_REPORT_BODY_BYTES + 2) / 3 * 4).saturating_add(4));
+        let encoded = "A".repeat(
+            super::MAX_INTERNAL_REPORT_BODY_BYTES
+                .div_ceil(3)
+                .saturating_mul(4)
+                .saturating_add(4),
+        );
         let error = super::decode_internal_report_body_base64(&encoded)
             .expect_err("oversized report body must be rejected before decoding");
         assert!(error.contains("internal report body exceeds"));

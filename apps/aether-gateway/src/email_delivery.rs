@@ -433,7 +433,7 @@ fn smtp_read_response<T: std::io::BufRead>(reader: &mut T) -> Result<(u16, Strin
         if message
             .len()
             .checked_add(additional)
-            .map_or(true, |length| length > SMTP_MAX_RESPONSE_BYTES)
+            .is_none_or(|length| length > SMTP_MAX_RESPONSE_BYTES)
         {
             return Err(GatewayError::Internal(
                 "smtp response exceeds the allowed size".to_string(),
@@ -476,7 +476,7 @@ fn read_smtp_response_line<T: std::io::BufRead>(
         if line
             .len()
             .checked_add(take)
-            .map_or(true, |length| length > SMTP_MAX_RESPONSE_LINE_BYTES)
+            .is_none_or(|length| length > SMTP_MAX_RESPONSE_LINE_BYTES)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

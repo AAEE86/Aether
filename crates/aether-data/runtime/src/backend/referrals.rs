@@ -21,7 +21,7 @@ const REFERRAL_RECONCILIATION_LIMIT: usize = 200;
 // The list tests intentionally build one page larger than the historical
 // in-memory fetch cap. Keep the fixture cap test-only now that production
 // queries paginate directly in SQL.
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 const REFERRAL_FETCH_LIMIT: usize = 5_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,6 +367,10 @@ fn referral_amounts_match(left: f64, right: f64) -> bool {
 /// `applying` reward into `applied` without ever increasing the inviter's gift
 /// balance.  The normal credit path writes a complete before/after snapshot,
 /// so recovery can require those same invariants before trusting the fact.
+// The fact validator compares the complete before/after ledger snapshot. Keep
+// each value explicit so a caller cannot accidentally substitute a bucket or
+// omit one of the persisted invariants.
+#[allow(clippy::too_many_arguments)]
 fn referral_credit_transaction_fact_valid(
     reward_amount_usd: f64,
     amount: f64,

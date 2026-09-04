@@ -118,6 +118,11 @@ impl std::fmt::Debug for LdapBindPasswordUpdate {
     }
 }
 
+// The successful branch intentionally returns the complete persisted
+// configuration so callers can continue with the exact CAS snapshot. Boxing
+// it would change this public repository contract and add needless allocation
+// on the normal (successful) path.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompareAndSwapLdapConfigResult {
     Applied(StoredLdapModuleConfig),

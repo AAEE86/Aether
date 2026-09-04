@@ -147,7 +147,7 @@ fn validate_gateway_data_encryption_key(value: Option<&str>) -> Result<(), &'sta
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(());
     };
-    if value.as_bytes().len() < MIN_GATEWAY_DATA_ENCRYPTION_KEY_BYTES {
+    if value.len() < MIN_GATEWAY_DATA_ENCRYPTION_KEY_BYTES {
         return Err("gateway data encryption key must contain at least 32 bytes");
     }
     if INSECURE_GATEWAY_DATA_ENCRYPTION_KEYS.contains(&value) {
@@ -2984,7 +2984,7 @@ fn read_data_import_input_with_limit(path: &Path, limit: usize) -> io::Result<St
     // A file can grow after metadata() returns. Reading one extra byte catches
     // that race without allowing the input buffer to exceed the configured
     // parser budget.
-    let read_limit = limit.checked_add(1).unwrap_or(usize::MAX);
+    let read_limit = limit.saturating_add(1);
     // Do not reserve the whole metadata length: sparse or concurrently grown
     // files can advertise a huge size while containing little data, and a
     // single capacity reservation would otherwise become a local DoS vector.

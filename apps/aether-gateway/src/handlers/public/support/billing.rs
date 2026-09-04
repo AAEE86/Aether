@@ -607,17 +607,15 @@ fn payment_order_payload(
     // A gateway response is a live checkout capability, not durable order
     // history. Once the order is paid, terminal, or expired, suppress URLs,
     // form parameters, and provider metadata from the public payload.
-    let gateway_response = record
-        .status
-        .eq_ignore_ascii_case("pending")
-        .then(|| {
-            record
-                .expires_at_unix_secs
-                .is_some_and(|expires_at| expires_at > Utc::now().timestamp().max(0) as u64)
-        })
-        .unwrap_or(false)
-        .then(|| record.gateway_response.clone())
-        .flatten();
+    let gateway_response = if record.status.eq_ignore_ascii_case("pending")
+        && record
+            .expires_at_unix_secs
+            .is_some_and(|expires_at| expires_at > Utc::now().timestamp().max(0) as u64)
+    {
+        record.gateway_response.clone()
+    } else {
+        None
+    };
     json!({
         "id": record.id,
         "order_no": record.order_no,

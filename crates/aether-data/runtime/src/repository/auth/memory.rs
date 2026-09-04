@@ -83,6 +83,10 @@ impl From<&StoredUserAuthRecord> for MemoryAuthApiKeyOwnerSnapshot {
     }
 }
 
+// The trusted snapshot is returned on the common path so callers can use the
+// complete immutable view without another lookup. Preserve this established
+// in-memory registry representation rather than introducing heap allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum MemoryAuthApiKeyOwnerRegistryEntry {
     Trusted(MemoryAuthApiKeyOwnerSnapshot),

@@ -2420,6 +2420,7 @@ mod tests {
         assert!(same_subject.try_acquire().await.is_ok());
     }
 
+    #[tokio::test]
     async fn memory_keyed_semaphores_isolate_resource_capacity() {
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
         let first = runtime

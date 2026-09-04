@@ -1538,7 +1538,7 @@ impl AppState {
                     body_excerpt,
                     ..
                 }) if matches!(status_code, 400 | 401 | 403) => {
-                    if let Err(_) = self
+                    if self
                         .persist_local_oauth_refresh_failure_state(
                             &current_transport,
                             status_code,
@@ -1546,6 +1546,7 @@ impl AppState {
                             false,
                         )
                         .await
+                        .is_err()
                     {
                         tracing::warn!(
                             key_id = %current_transport.key.id,
@@ -1596,13 +1597,14 @@ impl AppState {
                     .await;
                     return Ok(None);
                 }
-                if let Err(_) = self
+                if self
                     .persist_local_oauth_refresh_entry(
                         &current_transport,
                         &refreshed_entry,
                         expected_credential_fence.as_ref(),
                     )
                     .await
+                    .is_err()
                 {
                     tracing::warn!(
                         key_id = %current_transport.key.id,
@@ -1792,13 +1794,14 @@ impl AppState {
                     .await;
                     return Ok(None);
                 }
-                if let Err(_) = self
+                if self
                     .persist_local_oauth_refresh_entry(
                         &current_transport,
                         &refreshed_entry,
                         expected_credential_fence.as_ref(),
                     )
                     .await
+                    .is_err()
                 {
                     tracing::warn!(
                         key_id = %current_transport.key.id,
@@ -1854,7 +1857,7 @@ impl AppState {
         let Some(lease) = lease else {
             return;
         };
-        if let Err(_) = self.runtime_state.lock_release(&lease).await {
+        if self.runtime_state.lock_release(&lease).await.is_err() {
             tracing::warn!(
                 key_id = %lease.key,
                 "gateway local oauth refresh distributed lease release failed"

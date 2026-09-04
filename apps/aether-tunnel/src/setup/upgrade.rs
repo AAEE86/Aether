@@ -739,7 +739,7 @@ fn atomic_replace_paths(current_exe: &Path, new_binary: &Path) -> anyhow::Result
         }
 
         eprintln!("  Binary replaced: {}", current_exe.display());
-        return Ok(backup_path);
+        Ok(backup_path)
     }
 
     #[cfg(not(unix))]
@@ -792,7 +792,7 @@ fn restore_tunnel_backup_paths(current_exe: &Path, backup_path: &Path) -> anyhow
                 error
             );
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

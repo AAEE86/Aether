@@ -1887,9 +1887,9 @@ ON DUPLICATE KEY UPDATE id = id
             ));
         }
         let now = current_unix_secs_i64();
-        if !current
+        if current
             .expires_at_unix_secs
-            .is_some_and(|expires_at| expires_at > now.max(0) as u64)
+            .is_none_or(|expires_at| expires_at <= now.max(0) as u64)
         {
             tx.commit().await.map_sql_err()?;
             return Ok(WalletMutationOutcome::Invalid(

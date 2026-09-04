@@ -7632,10 +7632,11 @@ impl<'a> AdminAppState<'a> {
                 // Legacy uploads historically normalize an omitted rate limit to zero. Rollback
                 // checkpoints instead preserve the nullable database value exactly.
                 let rate_limit = imported_rate_limit.unwrap_or(0);
-                let rate_limit_value = mode
-                    .is_rollback_checkpoint()
-                    .then_some(imported_rate_limit)
-                    .unwrap_or(Some(rate_limit));
+                let rate_limit_value = if mode.is_rollback_checkpoint() {
+                    imported_rate_limit
+                } else {
+                    Some(rate_limit)
+                };
                 let concurrent_limit = invalid_value!(imported_optional_i32(
                     key.get("concurrent_limit"),
                     "concurrent_limit"
@@ -8364,7 +8365,7 @@ impl<'a> AdminAppState<'a> {
             )));
         }
         if let Some(wallet_id) = created_wallet_id {
-            if let Some(journal) = mutation_journal.as_deref_mut() {
+            if let Some(journal) = mutation_journal {
                 journal
                     .user_wallet_snapshots
                     .insert((user_id.to_string(), wallet_id), synced);
@@ -8433,7 +8434,7 @@ impl<'a> AdminAppState<'a> {
             )));
         }
         if let Some(wallet_id) = created_wallet_id {
-            if let Some(journal) = mutation_journal.as_deref_mut() {
+            if let Some(journal) = mutation_journal {
                 journal
                     .api_key_wallet_snapshots
                     .insert((api_key_id.to_string(), wallet_id), synced);
