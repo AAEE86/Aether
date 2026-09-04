@@ -573,19 +573,21 @@ fn harden_execution_runtime_socket(
         return Err(io::Error::last_os_error());
     }
     let stat = unsafe { stat.assume_init() };
+    let fd_mode = stat.st_mode as libc::mode_t;
     if metadata.file_type().is_symlink()
         || !metadata.file_type().is_socket()
         || metadata.uid() != effective_uid
         || metadata.nlink() != 1
         || metadata.mode() & 0o777 != 0o600
-        // On Linux a pathname socket is represented by the filesystem's
-        // dentry while `fstat` reports the corresponding sockfs inode.  The
-        // inode number is shared, but the device id is intentionally not;
-        // comparing `st_dev` would reject every valid socket on overlay/tmpfs
-        // runners.  The validated canonical parent and inode identity still
-        // close the replacement window without relying on that differing
-        // device number.
-        || (cfg!(target_os = "linux") && metadata.ino() != stat.st_ino)
+        // A pathname Unix socket and its connected sockfs inode do not have
+        // portable pathname identity.  In particular, Linux can report a
+        // different inode number (and always reports a different device) for
+        // the descriptor than for the dentry.  Validate the descriptor's own
+        // type and owner instead; the canonical, owner-checked
+        // parent and the path checks above prevent an untrusted user from
+        // replacing this private socket.
+        || (fd_mode & libc::S_IFMT) != libc::S_IFSOCK
+        || stat.st_uid != effective_uid
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

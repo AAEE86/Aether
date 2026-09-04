@@ -167,6 +167,30 @@ impl ManagedPostgresServer {
     }
 }
 
+/// A clean PostgreSQL database is bootstrapped from the schema snapshot first;
+/// migrations after the privacy/security frontier are intentionally left
+/// pending so their data-preserving changes still execute. Exercise the same
+/// prepare-then-run sequence used by gateway startup before asserting that the
+/// database is current.
+async fn prepare_and_apply_clean_postgres_database(pool: &PgPool) {
+    let pending = prepare_database_for_startup(pool)
+        .await
+        .expect("clean database bootstrap should succeed");
+    if !pending.is_empty() {
+        super::run_migrations(pool)
+            .await
+            .expect("pending PostgreSQL migrations should apply");
+    }
+
+    let pending = prepare_database_for_startup(pool)
+        .await
+        .expect("PostgreSQL startup preparation should re-check migrations");
+    assert!(
+        pending.is_empty(),
+        "clean PostgreSQL database should be current after migrations: {pending:?}"
+    );
+}
+
 fn local_postgres_tests_required() -> bool {
     // CI can opt into failing when the isolated local PostgreSQL fixture is unavailable.
     std::env::var("AETHER_REQUIRE_LOCAL_POSTGRES_TESTS")
@@ -3046,14 +3070,7 @@ async fn prepare_database_for_startup_bootstraps_clean_database() {
     let pool = PgPool::connect(server.database_url())
         .await
         .expect("pool should connect");
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("clean database bootstrap should succeed");
-
-    assert!(
-        pending.is_empty(),
-        "fresh databases should not report pending migrations after startup preparation"
-    );
+    prepare_and_apply_clean_postgres_database(&pool).await;
     assert!(table_exists(&pool, "users")
         .await
         .expect("users lookup should succeed"));
@@ -3081,9 +3098,8 @@ async fn prepare_database_for_startup_bootstraps_clean_database() {
         .expect("migration count query should succeed");
     assert_eq!(
         applied_count,
-        empty_database_snapshot_migrations(&POSTGRES_MIGRATOR)
-            .expect("baseline migrations should resolve")
-            .len() as i64
+        all_up_migrations().len() as i64,
+        "fresh database should record the snapshot and every post-snapshot migration"
     );
 }
 
@@ -3099,13 +3115,7 @@ async fn postgres_request_candidates_preserve_deleted_api_key_identity() {
     let pool = PgPool::connect(server.database_url())
         .await
         .expect("pool should connect");
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("clean database bootstrap should succeed");
-    assert!(
-        pending.is_empty(),
-        "clean database bootstrap should not leave pending migrations: {pending:?}"
-    );
+    prepare_and_apply_clean_postgres_database(&pool).await;
 
     query(
         r#"
@@ -3318,13 +3328,7 @@ async fn postgres_expired_api_key_cleanup_preserves_historical_identity() {
     let pool = PgPool::connect(database_url)
         .await
         .expect("pool should connect");
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("clean database bootstrap should succeed");
-    assert!(
-        pending.is_empty(),
-        "clean database bootstrap should not leave pending migrations: {pending:?}"
-    );
+    prepare_and_apply_clean_postgres_database(&pool).await;
 
     query(
         r#"
@@ -3482,13 +3486,7 @@ async fn postgres_api_key_leaderboard_user_filter_preserves_aggregate_history() 
     let pool = PgPool::connect(database_url)
         .await
         .expect("pool should connect");
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("clean database bootstrap should succeed");
-    assert!(
-        pending.is_empty(),
-        "clean database bootstrap should not leave pending migrations: {pending:?}"
-    );
+    prepare_and_apply_clean_postgres_database(&pool).await;
 
     query(
         r#"
@@ -3808,10 +3806,7 @@ async fn postgres_usage_billing_facts_total_tokens_counts_cached_input_once() {
     let pool = PgPool::connect(server.database_url())
         .await
         .expect("pool should connect");
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("clean database bootstrap should succeed");
-    assert!(pending.is_empty());
+    prepare_and_apply_clean_postgres_database(&pool).await;
 
     let legacy_view_migration = POSTGRES_MIGRATOR
         .iter()
@@ -4011,10 +4006,7 @@ async fn postgres_migrations_repair_invalid_concurrent_cleanup_index() {
     let pool = PgPool::connect(server.database_url())
         .await
         .expect("pool should connect");
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("clean database bootstrap should succeed");
-    assert!(pending.is_empty());
+    prepare_and_apply_clean_postgres_database(&pool).await;
 
     query("DROP INDEX CONCURRENTLY public.idx_usage_legacy_body_ref_cleanup_created_at")
         .execute(&pool)
@@ -4104,14 +4096,7 @@ async fn prepare_database_for_startup_bootstraps_when_only_unrelated_public_tabl
         .await
         .expect("fixture table should be created");
 
-    let pending = prepare_database_for_startup(&pool)
-        .await
-        .expect("startup preparation should tolerate unrelated public tables");
-
-    assert!(
-        pending.is_empty(),
-        "unrelated public tables should not block baseline bootstrap on first startup"
-    );
+    prepare_and_apply_clean_postgres_database(&pool).await;
     assert!(table_exists(&pool, "vendor_bootstrap_marker")
         .await
         .expect("fixture table lookup should succeed"));
