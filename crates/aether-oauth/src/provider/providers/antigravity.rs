@@ -31,7 +31,6 @@ impl AntigravityProviderOAuthAdapter {
     /// Supply deterministic OAuth client credentials for tests without
     /// requiring a process-wide environment variable. Production callers
     /// continue to resolve the secret from the configured environment.
-    #[cfg(test)]
     #[doc(hidden)]
     pub fn with_oauth_credentials_for_tests(
         mut self,

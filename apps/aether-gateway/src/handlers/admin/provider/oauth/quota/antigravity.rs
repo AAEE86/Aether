@@ -16,8 +16,9 @@ use aether_contracts::ProxySnapshot;
 use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
-use aether_provider_pool::build_antigravity_pool_quota_request;
-use aether_provider_pool::build_antigravity_pool_quota_summary_request;
+use aether_provider_pool::{
+    build_antigravity_pool_quota_request, build_antigravity_pool_quota_summary_request,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};

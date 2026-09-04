@@ -122,6 +122,7 @@ define_candidate_diagnostic_categories!(
         "invalid_request_error",
         "kiro_web_search_mcp_unavailable",
         "local_stream_candidate_watchdog_timeout",
+        "local_stream_attempt_cancelled",
         "local_sync_attempt_aborted",
         "local_sync_attempt_cancelled",
         "not_found_error",

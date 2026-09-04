@@ -289,18 +289,6 @@ fn tunnel_attachment_key(node_id: &str) -> String {
     format!("tunnel.attachments.{node_id}")
 }
 
-fn system_default_affinity_cache_key(api_key_id: &str, api_format: &str, model: &str) -> String {
-    let scope = aether_scheduler_core::SchedulerAffinityScope::new("system-default", Some(1));
-    aether_scheduler_core::build_scheduler_affinity_cache_key_for_api_key_id_with_client_session_and_scope(
-        api_key_id,
-        api_format,
-        model,
-        None,
-        Some(&scope),
-    )
-    .expect("system-default affinity cache key should build")
-}
-
 fn sample_tunnel_proxy_node(node_id: &str, tunnel_generation: &str) -> StoredProxyNode {
     StoredProxyNode::new(
         node_id.to_string(),

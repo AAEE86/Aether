@@ -426,11 +426,11 @@ mod tests {
         assert!(candidate.finished_at_unix_ms.is_some());
     }
 
-    /// The guard holds no request body, so its settlement write must describe the
-    /// capture rather than deny it: a typed `none` capture state would clear the
-    /// stored request body instead of leaving it alone.
+    /// The guard holds no request body, and the persistence boundary intentionally
+    /// rejects request/response capture material. A dropped-attempt settlement
+    /// must not re-introduce an inline body or a caller-controlled body reference.
     #[tokio::test]
-    async fn settling_a_dropped_attempt_leaves_the_captured_request_body_alone() {
+    async fn settling_a_dropped_attempt_does_not_reintroduce_request_body_capture() {
         let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
         let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
         let state = test_state(&usage_repository, &request_candidate_repository);
@@ -444,7 +444,8 @@ mod tests {
             candidate_started_unix_ms,
         )
         .await;
-        // Stand in for a write that already captured this request's body.
+        // This deliberately supplies capture material to prove that the usage
+        // persistence boundary strips it before either lifecycle write stores it.
         let captured_body = json!({"stream": true, "service_tier": "priority"});
         let mut capture = build_pending_usage_record(
             &plan,
@@ -478,11 +479,9 @@ mod tests {
         )
         .await
         .expect("cancelled usage should be recorded");
-        assert_eq!(usage.provider_request_body, Some(captured_body));
-        assert_ne!(
-            usage.provider_request_body_state,
-            Some(UsageBodyCaptureState::None)
-        );
+        assert_eq!(usage.provider_request_body, None);
+        assert_eq!(usage.provider_request_body_ref, None);
+        assert_eq!(usage.provider_request_body_state, None);
     }
 
     #[tokio::test]

@@ -46,6 +46,11 @@ fn provider_oauth_service_for_template(
         let adapter = AntigravityProviderOAuthAdapter::default()
             .with_token_url_override(token_url)
             .with_user_info_url_override(antigravity_user_info_url);
+        #[cfg(test)]
+        let adapter = adapter.with_oauth_credentials_for_tests(
+            "gateway-test-antigravity-client-id",
+            "gateway-test-antigravity-client-secret",
+        );
         return Ok(ProviderOAuthService::new().with_adapter(Arc::new(adapter)));
     }
     GenericProviderOAuthAdapter::for_provider_type(template.provider_type)

@@ -47,8 +47,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::oneshot;
 use wreq::ws::message::Message as WreqWsMessage;
 
-use crate::data::GatewayDataState;
-
 fn codex_models_snapshot(
     api_key_id: &str,
     user_id: &str,

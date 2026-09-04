@@ -4000,13 +4000,16 @@ async fn gateway_names_new_antigravity_oauth_account_from_google_userinfo_email_
                 .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
             )
             .with_provider_oauth_state_entry_for_tests(
-                "nonce-antigravity-123",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                 json!({
-                    "nonce": "nonce-antigravity-123",
+                    "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                     "key_id": "",
                     "provider_id": "provider-antigravity",
                     "provider_type": "antigravity",
                     "pkce_verifier": "verifier-antigravity-123",
+                    "initiated_by_user_id": "admin-user-123",
+                    "initiated_by_session_id": "session-123",
+                    "created_at": aether_admin::provider::state::current_unix_secs(),
                 }),
             )
             .with_provider_oauth_token_url_for_tests(
@@ -4029,7 +4032,7 @@ async fn gateway_names_new_antigravity_oauth_account_from_google_userinfo_email_
         .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
         .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
         .json(&json!({
-            "callback_url": "http://localhost:51121/oauth2callback?code=antigravity-code-123&state=nonce-antigravity-123"
+            "callback_url": "http://localhost:51121/oauth2callback?code=antigravity-code-123&state=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         }))
         .send()
         .await
@@ -4062,14 +4065,7 @@ async fn gateway_names_new_antigravity_oauth_account_from_google_userinfo_email_
         .expect("created key should load");
     let persisted = persisted_keys.first().expect("created key should exist");
     assert_eq!(persisted.name, "new-antigravity@example.com");
-    let decrypted_auth_config = decrypt_python_fernet_ciphertext(
-        DEVELOPMENT_ENCRYPTION_KEY,
-        persisted
-            .encrypted_auth_config
-            .as_deref()
-            .expect("auth config should be stored"),
-    )
-    .expect("auth config should decrypt");
+    let decrypted_auth_config = decrypt_persisted_provider_auth_config(persisted);
     let auth_config: Value =
         serde_json::from_str(&decrypted_auth_config).expect("auth config json should parse");
     assert_eq!(auth_config["email"], "new-antigravity@example.com");
