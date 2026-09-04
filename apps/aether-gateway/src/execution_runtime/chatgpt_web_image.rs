@@ -1106,9 +1106,10 @@ fn detected_web_image_mime(data: &[u8]) -> Option<&'static str> {
     if data.len() >= 24 && data.starts_with(b"\x89PNG\r\n\x1a\n") && &data[12..16] == b"IHDR" {
         return Some("image/png");
     }
-    // JPEG's SOI marker is unambiguous for this boundary; a decoder downstream
-    // remains responsible for full JPEG structural validation.
-    if data.len() >= 4 && data.starts_with(&[0xff, 0xd8]) {
+    // JPEG's SOI marker must be followed by a marker prefix.  This rejects a
+    // bare/truncated `ff d8` body while leaving full structural validation to
+    // the image decoder downstream.
+    if data.len() >= 3 && data.starts_with(&[0xff, 0xd8, 0xff]) {
         return Some("image/jpeg");
     }
     // WebP is a RIFF container with a WEBP form type.
@@ -2667,18 +2668,28 @@ fn flush_sse_data(data_lines: &mut Vec<String>, summary: &mut WebImageSseSummary
         if let Some(text) = extract_assistant_text(&value) {
             summary.last_text = Some(text);
         }
-        if let Some(result) = value
-            .get("item")
-            .filter(|item| {
-                item.get("type").and_then(Value::as_str) == Some("image_generation_call")
-            })
-            .and_then(|item| item.get("result"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            if let Some(url) = bounded_web_image_data_url("image/png", result) {
-                summary.add_values(WebImageSummaryCollection::DirectUrl, [url]);
+        if let Some(item) = value.get("item").filter(|item| {
+            item.get("type").and_then(Value::as_str) == Some("image_generation_call")
+        }) {
+            // Keep the provider's declared output format when constructing a
+            // data URL.  The bytes are still verified by `parse_data_url`
+            // before download, but labelling every output as PNG would create
+            // an avoidable MIME/signature mismatch (and an extra failed
+            // download attempt) for JPEG/WebP results.
+            if let Some(result) = item
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let mime = mime_for_web_output_format(
+                    item.get("output_format")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                );
+                if let Some(url) = bounded_web_image_data_url(mime, result) {
+                    summary.add_values(WebImageSummaryCollection::DirectUrl, [url]);
+                }
             }
         }
         summary.add_values(
@@ -4861,6 +4872,22 @@ data: [DONE]
     }
 
     #[test]
+    fn parse_web_image_sse_preserves_inline_output_format() {
+        let jpeg_payload =
+            base64::engine::general_purpose::STANDARD.encode([0xff, 0xd8, 0xff, 0xd9]);
+        let event = format!(
+            "data: {{\"type\":\"response.output_item.done\",\"item\":{{\"type\":\"image_generation_call\",\"result\":\"{jpeg_payload}\",\"output_format\":\"jpeg\"}}}}\n\n"
+        );
+
+        let summary = parse_web_image_sse(event.as_bytes());
+
+        assert_eq!(
+            summary.direct_urls,
+            vec![format!("data:image/jpeg;base64,{jpeg_payload}")]
+        );
+    }
+
+    #[test]
     fn parse_web_image_sse_preserves_response_failed_event() {
         let summary = parse_web_image_sse(
             br#"data: {"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"limited"}}}
@@ -5214,6 +5241,7 @@ data: [DONE]
                 .expect("webp signature should pass"),
             "image/webp"
         );
+        assert!(validate_web_image_payload(&[0xff, 0xd8], Some("image/jpeg")).is_err());
     }
 
     #[test]
