@@ -488,8 +488,14 @@ async fn fetch_admin_external_models_from_source(
     proxy_node_id: Option<&str>,
 ) -> Result<serde_json::Value, GatewayError> {
     let source_url = admin_external_models_source_url();
-    let source = resolve_admin_external_models_source(&source_url, cfg!(test)).await?;
+    // A proxy/tunnel resolves the target in its own network namespace. Do not
+    // resolve it locally first: local DNS may be unavailable, may intentionally
+    // return synthetic addresses, or may not be able to see an internal target
+    // that the configured proxy can reach. URL shape is still validated below,
+    // and the direct path retains the local DNS validation/pinning guard.
+    let parsed_source = parse_admin_external_models_source_url(&source_url, cfg!(test))?;
     if let Some(node_id) = proxy_node_id {
+        let (source_url, _host, _port) = parsed_source;
         let Some(proxy) = state.resolve_admin_proxy_node_snapshot(Some(node_id)).await else {
             warn!(
                 request_id = %request_id,
@@ -528,7 +534,7 @@ async fn fetch_admin_external_models_from_source(
             endpoint_id: String::new(),
             key_id: String::new(),
             method: http::Method::GET.as_str().to_string(),
-            url: source.url.to_string(),
+            url: source_url.to_string(),
             headers,
             content_type: None,
             content_encoding: None,
@@ -590,6 +596,27 @@ async fn fetch_admin_external_models_from_source(
         })?;
         return Ok(normalize_admin_external_models_payload(payload));
     }
+
+    let (url, host, port) = parsed_source;
+    let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
+        vec![SocketAddr::new(ip, port)]
+    } else {
+        aether_http::lookup_host_with_limits(
+            host.as_str(),
+            port,
+            aether_http::DEFAULT_DNS_LOOKUP_TIMEOUT,
+        )
+        .await
+        .map_err(|_| {
+            GatewayError::Internal("external models source DNS resolution failed".to_string())
+        })?
+    };
+    validate_admin_external_models_source_addresses(&url, &addresses, cfg!(test))?;
+    let source = ResolvedAdminExternalModelsSource {
+        url,
+        host,
+        addresses,
+    };
 
     let client = build_admin_external_models_direct_client(&source)?;
     let response = client
