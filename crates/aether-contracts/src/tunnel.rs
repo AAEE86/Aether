@@ -100,6 +100,10 @@ pub fn tunnel_relay_payload_digest_from_hashes(
     }
 }
 
+// Keep the explicit protocol arguments in this public API: their order is
+// reflected in the relay authentication MAC and changing it would break
+// interoperability with deployed tunnel peers.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_tunnel_relay_request(
     secret: &[u8],
     sender_instance_id: &str,
@@ -126,6 +130,9 @@ pub fn sign_tunnel_relay_request(
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
+// The verifier mirrors `sign_tunnel_relay_request` field-for-field so the
+// authenticated transcript remains stable across crate versions.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_tunnel_relay_request_signature(
     secret: &[u8],
     sender_instance_id: &str,
@@ -162,6 +169,9 @@ pub fn verify_tunnel_relay_request_signature(
     mac.verify_slice(&signature).is_ok()
 }
 
+// This helper deliberately accepts the wire fields separately to make the
+// authenticated-field order visible next to the MAC construction.
+#[allow(clippy::too_many_arguments)]
 fn update_tunnel_relay_auth_mac(
     mac: &mut Hmac<Sha256>,
     sender_instance_id: &str,

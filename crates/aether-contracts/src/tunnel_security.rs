@@ -227,6 +227,9 @@ pub fn sign_tunnel_security_handshake(
     )
 }
 
+// These arguments are the versioned handshake transcript. Keep them explicit
+// and ordered so existing clients and servers compute the same MAC.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_tunnel_security_handshake_for_generation(
     key: &str,
     node_id: &str,
@@ -253,6 +256,9 @@ pub fn sign_tunnel_security_handshake_for_generation(
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
 
+// The verifier preserves the legacy public signature while delegating to the
+// generation-aware transcript implementation.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_tunnel_security_handshake(
     key: &str,
     node_id: &str,
@@ -276,6 +282,9 @@ pub fn verify_tunnel_security_handshake(
     )
 }
 
+// This mirrors the signing API exactly; the argument order is part of the
+// authenticated handshake format.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_tunnel_security_handshake_for_generation(
     key: &str,
     node_id: &str,
@@ -333,6 +342,9 @@ pub fn sign_tunnel_control_plane_request(
     )
 }
 
+// Control-plane authentication signs these fields in this fixed order. Keep
+// the public API stable instead of introducing a reordered parameter object.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_tunnel_control_plane_request_for_generation(
     key: &str,
     method: &str,
@@ -359,6 +371,9 @@ pub fn sign_tunnel_control_plane_request_for_generation(
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
 
+// Preserve the legacy verifier signature; it must feed the same transcript as
+// the corresponding signing function.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_tunnel_control_plane_request(
     key: &str,
     method: &str,
@@ -382,6 +397,9 @@ pub fn verify_tunnel_control_plane_request(
     )
 }
 
+// The generation-aware verifier intentionally mirrors the signer field order,
+// which is part of the control-plane wire contract.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_tunnel_control_plane_request_for_generation(
     key: &str,
     method: &str,
@@ -418,6 +436,9 @@ pub fn verify_tunnel_control_plane_request_for_generation(
     mac.verify_slice(&signature).is_ok()
 }
 
+// Keep the MAC input fields separate and visibly ordered to avoid accidental
+// changes to the authenticated control-plane transcript.
+#[allow(clippy::too_many_arguments)]
 fn update_control_plane_auth_mac(
     mac: &mut HmacSha256,
     method: &str,
@@ -438,6 +459,9 @@ fn update_control_plane_auth_mac(
     mac.update(&Sha256::digest(body));
 }
 
+// This helper encodes the handshake transcript in a fixed cryptographic order;
+// grouping arguments into a struct would obscure that wire-level contract.
+#[allow(clippy::too_many_arguments)]
 fn update_handshake_proof_mac(
     mac: &mut HmacSha256,
     node_id: &str,
