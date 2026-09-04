@@ -745,6 +745,7 @@
                     <RoutingPriorityPolicyEditor
                       :config="activeConfigForReading"
                       :model="activePerModelPolicy.model"
+                      :model-id="globalModelIdFor(activePerModelPolicy.model)"
                       :priority-mode="modelPriorityMode(activePerModelPolicy.model)"
                       :scheduling-mode="modelSchedulingMode(activePerModelPolicy.model)"
                       :show-priority-mode="false"
@@ -1456,6 +1457,11 @@ function globalModelLabel(modelName: string): string {
   if (!model) return modelName
   if (!model.display_name || model.display_name === model.name) return model.name
   return `${model.display_name} (${model.name})`
+}
+
+function globalModelIdFor(modelName: string): string | undefined {
+  const normalizedName = modelName.trim()
+  return globalModels.value.find(item => item.name.trim() === normalizedName)?.id
 }
 
 function replaceGroup(group: RoutingGroupRecord, select = true): void {
