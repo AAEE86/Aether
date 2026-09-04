@@ -30,5 +30,9 @@ BEGIN
         ADD CONSTRAINT ldap_configs_singleton_key_key UNIQUE (singleton_key);
 EXCEPTION
     WHEN duplicate_object THEN NULL;
+    -- The empty-database snapshot already materializes this constraint. PostgreSQL
+    -- reports the existing constraint's backing relation as duplicate_table (42P07)
+    -- rather than duplicate_object, so treat that known idempotent case the same way.
+    WHEN duplicate_table THEN NULL;
 END
 $migration$;
