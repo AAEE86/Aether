@@ -1272,7 +1272,25 @@ async fn test_manual_proxy_connectivity_with_probe_url(
     timeout_secs: u64,
 ) -> Value {
     let started_at = Instant::now();
-    let proxy = match reqwest::Proxy::all(proxy_url) {
+    // reqwest resolves the destination locally for `socks5://`, which would
+    // bypass the gateway's private-address/DNS-rebinding guard.  Normalize
+    // legacy SOCKS URLs to the remote-DNS form before probing; HTTP/HTTPS and
+    // already-normalized `socks5h://` URLs are unchanged.
+    let proxy_url =
+        match crate::execution_runtime::transport::normalize_execution_proxy_url(proxy_url) {
+            Ok(proxy_url) => proxy_url,
+            Err(_) => {
+                return build_proxy_connectivity_result(
+                    probe_url,
+                    timeout_secs,
+                    false,
+                    None,
+                    None,
+                    Some("代理 URL 无效".to_string()),
+                );
+            }
+        };
+    let proxy = match reqwest::Proxy::all(&proxy_url) {
         Ok(proxy) => proxy,
         Err(error) => {
             return build_proxy_connectivity_result(

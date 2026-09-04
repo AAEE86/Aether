@@ -5036,14 +5036,38 @@ fn resolve_proxy_url(
         .map(|url| url.trim())
         .filter(|url| !url.is_empty())
     {
-        validate_execution_proxy_url(proxy_url)?;
-        return Ok(Some(proxy_url.to_string()));
+        return normalize_execution_proxy_url(proxy_url).map(Some);
     }
 
     Err(ExecutionRuntimeTransportError::ProxyUnsupported)
 }
 
 fn validate_execution_proxy_url(raw_url: &str) -> Result<(), ExecutionRuntimeTransportError> {
+    parse_execution_proxy_url(raw_url).map(|_| ())
+}
+
+/// Normalize a configured proxy URL before handing it to reqwest/wreq.
+///
+/// `socks5://` has a particularly dangerous ambiguity in a gateway: reqwest
+/// and wreq interpret it as *local* target-name resolution, while
+/// `socks5h://` delegates target resolution to the proxy.  Local resolution
+/// would bypass the execution DNS guard (and could turn a rebinding hostname
+/// into a private address).  Keep accepting the established `socks5` config
+/// syntax for compatibility, but make its runtime semantics the safe remote
+/// DNS variant.  HTTP/HTTPS and already-remote `socks5h` URLs are unchanged.
+pub(crate) fn normalize_execution_proxy_url(
+    raw_url: &str,
+) -> Result<String, ExecutionRuntimeTransportError> {
+    let mut parsed = parse_execution_proxy_url(raw_url)?;
+    if parsed.scheme().eq_ignore_ascii_case("socks5") {
+        parsed
+            .set_scheme("socks5h")
+            .map_err(|_| ExecutionRuntimeTransportError::ProxyUnsupported)?;
+    }
+    Ok(parsed.to_string())
+}
+
+fn parse_execution_proxy_url(raw_url: &str) -> Result<url::Url, ExecutionRuntimeTransportError> {
     let parsed =
         url::Url::parse(raw_url).map_err(|_| ExecutionRuntimeTransportError::ProxyUnsupported)?;
     if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h")
@@ -5054,7 +5078,7 @@ fn validate_execution_proxy_url(raw_url: &str) -> Result<(), ExecutionRuntimeTra
     {
         return Err(ExecutionRuntimeTransportError::ProxyUnsupported);
     }
-    Ok(())
+    Ok(parsed)
 }
 
 pub(crate) fn build_request_headers(
@@ -5625,6 +5649,25 @@ mod tests {
             "http://alice:password@proxy.example.test:8080"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn execution_proxy_url_normalizes_local_socks_dns_to_remote_dns() {
+        assert_eq!(
+            super::normalize_execution_proxy_url("socks5://alice:password@proxy.example.test:1080")
+                .expect("socks5 URL should normalize"),
+            "socks5h://alice:password@proxy.example.test:1080"
+        );
+        assert_eq!(
+            super::normalize_execution_proxy_url("socks5h://proxy.example.test:1080")
+                .expect("socks5h URL should remain valid"),
+            "socks5h://proxy.example.test:1080"
+        );
+        assert_eq!(
+            super::normalize_execution_proxy_url("https://proxy.example.test:8443")
+                .expect("https URL should remain valid"),
+            "https://proxy.example.test:8443/"
+        );
     }
 
     #[test]

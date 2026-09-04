@@ -23,7 +23,8 @@ use wreq::ws::message::{CloseFrame as WreqCloseFrame, Message as WreqWsMessage};
 
 use crate::ai_serving::AiExecutionDecision;
 use crate::execution_runtime::transport::{
-    build_browser_wreq_client, build_request_headers, ExecutionTransportControls,
+    build_browser_wreq_client, build_request_headers, normalize_execution_proxy_url,
+    ExecutionTransportControls,
 };
 use crate::frontdoor_loop_guard::gateway_frontdoor_self_loop_guard_error;
 use crate::handlers::proxy::websocket::session::{
@@ -287,10 +288,10 @@ async fn build_websocket_client(
     builder.build().map_err(|_| errors.client_build_failed)
 }
 
-fn resolve_websocket_proxy_url<'a>(
-    proxy: Option<&'a ProxySnapshot>,
+fn resolve_websocket_proxy_url(
+    proxy: Option<&ProxySnapshot>,
     errors: UpstreamWebSocketErrorCodes,
-) -> Result<Option<&'a str>, &'static str> {
+) -> Result<Option<String>, &'static str> {
     let Some(proxy) = proxy else {
         return Ok(None);
     };
@@ -323,7 +324,9 @@ fn resolve_websocket_proxy_url<'a>(
         {
             return Err(errors.proxy_invalid);
         }
-        return Ok(Some(proxy_url));
+        let normalized =
+            normalize_execution_proxy_url(proxy_url).map_err(|_| errors.proxy_invalid)?;
+        return Ok(Some(normalized));
     }
     if proxy.node_id.is_some() || proxy.mode.as_deref() == Some("tunnel") {
         return Err(errors.tunnel_proxy_unsupported);
@@ -976,7 +979,19 @@ mod tests {
         };
         assert_eq!(
             resolve_websocket_proxy_url(Some(&authenticated_node), errors),
-            Ok(Some("http://alice:password@proxy.example:8080"))
+            Ok(Some(
+                "http://alice:password@proxy.example:8080/".to_string()
+            ))
+        );
+
+        let socks = ProxySnapshot {
+            enabled: Some(true),
+            url: Some("socks5://proxy.example:1080".to_string()),
+            ..ProxySnapshot::default()
+        };
+        assert_eq!(
+            resolve_websocket_proxy_url(Some(&socks), errors),
+            Ok(Some("socks5h://proxy.example:1080".to_string()))
         );
     }
 
