@@ -324,6 +324,7 @@ import {
   type RoutingPriorityMode,
   type RoutingSchedulingMode,
 } from '../utils/routingPolicy'
+import { buildRoutingProviderSummaryQuery } from '../utils/providerQuery'
 
 interface ProviderPriorityRow {
   id: string
@@ -367,6 +368,7 @@ interface GlobalKeySource {
 const props = defineProps<{
   config: RoutingGroupConfig
   model?: string
+  modelId?: string
   priorityMode?: RoutingPriorityMode
   schedulingMode?: RoutingSchedulingMode
   showPriorityMode?: boolean
@@ -398,6 +400,7 @@ const draggedKeyId = ref<string | null>(null)
 const dragOverKeyId = ref<string | null>(null)
 const providerMultiSelectEnabled = ref(false)
 const selectedProviderIds = ref<Set<string>>(new Set())
+let providerLoadRequestId = 0
 
 const config = computed(() => normalizeRoutingGroupConfig(props.config))
 const targetModel = computed(() => props.model?.trim() || DEFAULT_ROUTING_POLICY_MODEL)
@@ -505,6 +508,12 @@ watch(effectivePriorityMode, mode => {
     providerMultiSelectEnabled.value = false
     selectedProviderIds.value = new Set()
   }
+  void loadProviders()
+})
+
+// 父组件异步解析全局模型 ID 后，重新加载对应模型的提供商列表。
+watch([targetModel, () => props.modelId], () => {
+  void loadProviders()
 })
 
 watch(providerRows, rows => {
@@ -561,16 +570,31 @@ function updateSchedulingMode(mode: RoutingSchedulingMode): void {
 }
 
 async function loadProviders(): Promise<void> {
+  const requestId = ++providerLoadRequestId
   loadingProviders.value = true
   loadError.value = null
   try {
-    const response = await getProvidersSummary({ page: 1, page_size: 9999 })
+    const query = buildRoutingProviderSummaryQuery(
+      targetModel.value,
+      props.modelId,
+      effectivePriorityMode.value,
+    )
+    if (!query) {
+      providers.value = []
+      return
+    }
+
+    const response = await getProvidersSummary(query)
+    if (requestId !== providerLoadRequestId) return
     providers.value = response.items
   } catch (err) {
+    if (requestId !== providerLoadRequestId) return
     loadError.value = parseApiError(err, '加载 Provider 失败')
     providers.value = []
   } finally {
-    loadingProviders.value = false
+    if (requestId === providerLoadRequestId) {
+      loadingProviders.value = false
+    }
   }
 }
 
