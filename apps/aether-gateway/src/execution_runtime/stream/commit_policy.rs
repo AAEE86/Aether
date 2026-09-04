@@ -455,7 +455,10 @@ fn gemini_part_is_client_semantic(part: &Value) -> bool {
         return true;
     }
     if part.get("thought").and_then(Value::as_bool) == Some(true) {
-        return false;
+        return part
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty());
     }
     if part.keys().all(|key| key == "thoughtSignature") {
         return false;
@@ -584,17 +587,12 @@ mod tests {
     }
 
     #[test]
-    fn gemini_gate_waits_through_thought_and_commits_on_text() {
+    fn gemini_gate_commits_on_first_nonempty_thought() {
         let mut gate = StreamCommitGate::new(gemini_policy());
         let thought = b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"thought\":true,\"text\":\"checking\"}]}}]}}\n\n";
-        let text = b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"answer\"}]}}]}}\n\n";
 
         assert_eq!(
             gate.observe_provider_bytes(thought),
-            StreamPrecommitObservation::Pending
-        );
-        assert_eq!(
-            gate.observe_provider_bytes(text),
             StreamPrecommitObservation::Commit
         );
         assert_eq!(gate.state(), StreamCommitState::Committed);
@@ -615,7 +613,7 @@ mod tests {
     #[test]
     fn gemini_gate_rejects_malformed_function_call_before_commit() {
         let mut gate = StreamCommitGate::new(gemini_policy());
-        let thought = b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"thought\":true,\"text\":\"calling\"}]}}]}}\n\n";
+        let thought = b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"thoughtSignature\":\"signature\",\"text\":\"\"}]}}]}}\n\n";
         let malformed = b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"thoughtSignature\":\"signature\",\"text\":\"\"}]},\"finishReason\":\"MALFORMED_FUNCTION_CALL\",\"finishMessage\":\"Malformed function call: Function call is empty - no input to parse.\"}]}}\n\n";
 
         assert_eq!(

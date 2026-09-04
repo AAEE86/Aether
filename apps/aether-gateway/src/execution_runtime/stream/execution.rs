@@ -10561,7 +10561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_antigravity_function_call_retries_before_stream_commit() {
+    async fn malformed_antigravity_function_call_streams_thought_then_fails_in_band() {
         let request_id = "req-antigravity-malformed-function-call";
         let plan = antigravity_gemini_stream_plan(request_id);
         let provider_catalog = provider_catalog_for_plan(
@@ -10640,10 +10640,35 @@ mod tests {
             None,
         )
         .await
-        .expect("malformed Antigravity stream should resolve through failover");
+        .expect("malformed Antigravity stream should return a client stream")
+        .expect("the first reasoning delta should commit the selected candidate");
 
-        assert!(response.is_none());
-        assert_eq!(retry_scope, AiAttemptRetryScope::Candidate);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let body = String::from_utf8(body.to_vec()).expect("response body should be utf8");
+        assert!(
+            body.contains("event: response.reasoning_summary_text.delta\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("\"delta\":\"Validating the document.\""),
+            "{body}"
+        );
+        assert!(body.contains("event: response.failed\n"), "{body}");
+        assert!(
+            body.contains("\"code\":\"MALFORMED_FUNCTION_CALL\""),
+            "{body}"
+        );
+        assert!(
+            body.contains(
+                "\"message\":\"Malformed function call: Function call is empty - no input to parse.\""
+            ),
+            "{body}"
+        );
+        assert!(!body.contains("unsupported_finish_reason"), "{body}");
+        assert_eq!(retry_scope, AiAttemptRetryScope::Provider);
     }
 
     fn tunnel_proxy_snapshot(base_url: String) -> aether_contracts::ProxySnapshot {
