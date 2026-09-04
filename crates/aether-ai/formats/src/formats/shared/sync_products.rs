@@ -471,6 +471,20 @@ pub fn maybe_build_standard_sync_finalize_product_from_normalized_payload(
     };
     let body_base64 = body_base64.or(capture_stream_body_base64.as_deref());
 
+    // Cross-format sync attempts can contain raw bytes because the plan requested a stream even
+    // though the provider returned one complete JSON response. Do not feed that response into an
+    // SSE aggregator. Capture envelopes and same-format responses retain their existing precedence.
+    let non_stream_capture_body_json =
+        if capture_envelope_used || !sync_finalize_needs_conversion(report_context) {
+            None
+        } else {
+            body_base64.and_then(decode_non_stream_sync_capture_body)
+        };
+    let (body_json, body_base64) = match non_stream_capture_body_json.as_ref() {
+        Some(capture_body_json) => (body_json.or(Some(capture_body_json)), None),
+        None => (body_json, body_base64),
+    };
+
     if let Some(body_json) = maybe_build_standard_same_format_sync_body_from_normalized_payload(
         report_kind,
         status_code,
@@ -1009,6 +1023,48 @@ fn maybe_build_openai_cross_format_provider_body_from_normalized_payload(
             body_json,
             aggregated_from_stream,
         }))
+}
+
+fn sync_finalize_needs_conversion(report_context: Option<&Value>) -> bool {
+    report_context
+        .and_then(|report_context| report_context.get("needs_conversion"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn decode_non_stream_sync_capture_body(body_base64: &str) -> Option<Value> {
+    let body_bytes = base64::engine::general_purpose::STANDARD
+        .decode(body_base64)
+        .ok()?;
+    serde_json::from_slice::<Value>(&body_bytes)
+        .ok()
+        .filter(Value::is_object)
+        .filter(|body_json| !is_stream_event_object(body_json))
+}
+
+/// Unframed JSON events are accepted by the stream parsers and must not be mistaken for complete
+/// provider response bodies merely because the entire capture parses as one JSON object.
+fn is_stream_event_object(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object
+        .get("object")
+        .and_then(Value::as_str)
+        .is_some_and(|object| object.ends_with(".chunk"))
+    {
+        return true;
+    }
+
+    object
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|event_type| {
+            event_type.contains('.')
+                || ["response", "message", "item", "delta", "content_block"]
+                    .iter()
+                    .any(|nested| object.contains_key(*nested))
+        })
 }
 
 fn is_error_like_sync_body(value: &Value) -> bool {
@@ -3979,7 +4035,8 @@ mod tests {
         aggregate_claude_stream_sync_response, aggregate_gemini_stream_sync_response,
         aggregate_openai_chat_stream_sync_response,
         aggregate_openai_responses_stream_sync_response, convert_standard_chat_response,
-        convert_standard_cli_response, materialize_openai_responses_reasoning_item,
+        convert_standard_cli_response, decode_non_stream_sync_capture_body,
+        materialize_openai_responses_reasoning_item,
         maybe_build_openai_chat_cross_format_sync_product_from_normalized_payload,
         maybe_build_openai_responses_cross_format_sync_product_from_normalized_payload,
         maybe_build_openai_responses_same_family_sync_body_from_normalized_payload,
@@ -4525,6 +4582,132 @@ mod tests {
             product.expect("product should exist").provider_body_json,
             provider_body_json
         );
+    }
+
+    #[test]
+    fn unframed_stream_events_are_not_mistaken_for_provider_bodies() {
+        for event in [
+            json!({"type": "response.completed", "response": {"status": "completed"}}),
+            json!({"type": "response.output_text.delta", "delta": "hi"}),
+            json!({"type": "message_start", "message": {"id": "msg_1"}}),
+            json!({"type": "content_block_delta", "index": 0, "delta": {"text": "hi"}}),
+            json!({"object": "chat.completion.chunk", "choices": []}),
+        ] {
+            let body_base64 = base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_vec(&event).expect("serialize event"));
+            assert!(
+                decode_non_stream_sync_capture_body(&body_base64).is_none(),
+                "stream events belong to the aggregators: {event}"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_provider_bodies_are_recovered_from_cross_format_captures() {
+        for body in [
+            json!({"id": "resp_1", "object": "response", "status": "completed", "output": []}),
+            json!({"id": "chatcmpl_1", "object": "chat.completion", "choices": []}),
+            json!({"id": "msg_1", "type": "message", "role": "assistant", "content": []}),
+            json!({"candidates": [], "modelVersion": "probe-model"}),
+        ] {
+            let body_base64 = base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_vec(&body).expect("serialize provider body"));
+            assert_eq!(
+                decode_non_stream_sync_capture_body(&body_base64),
+                Some(body.clone()),
+                "a complete provider body is not a stream: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovers_cross_format_capture_that_is_a_complete_json_body() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "claude:messages",
+            "needs_conversion": true,
+            "upstream_is_stream": true,
+        });
+        let provider_body_json = json!({
+            "id": "resp_1",
+            "object": "response",
+            "status": "completed",
+            "error": null,
+            "model": "probe-model",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hello"}]
+            }],
+            "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12}
+        });
+        let body_base64 = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&provider_body_json).expect("serialize provider body"));
+
+        let product = maybe_build_standard_sync_finalize_product_from_normalized_payload(
+            "claude_chat_sync_finalize",
+            200,
+            Some(&report_context),
+            None,
+            Some(&body_base64),
+        )
+        .expect("a complete provider body must not fail the stream aggregator")
+        .expect("product should exist");
+
+        let StandardSyncFinalizeNormalizedProduct::CrossFormat(product) = product else {
+            panic!("cross-format attempt should produce a cross-format product");
+        };
+        assert_eq!(product.provider_body_json, provider_body_json);
+        assert_eq!(product.client_body_json["type"], "message");
+        assert_eq!(product.client_body_json["content"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn keeps_unframed_stream_event_on_the_aggregation_path() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "claude:messages",
+            "needs_conversion": true,
+            "upstream_is_stream": true,
+        });
+        let provider_body_json = json!({
+            "id": "resp_1",
+            "object": "response",
+            "status": "completed",
+            "model": "probe-model",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hello"}]
+            }],
+            "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12}
+        });
+        let event = json!({
+            "type": "response.completed",
+            "response": provider_body_json.clone(),
+        });
+        let body_base64 = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&event).expect("serialize stream event"));
+
+        let product = maybe_build_standard_sync_finalize_product_from_normalized_payload(
+            "claude_chat_sync_finalize",
+            200,
+            Some(&report_context),
+            None,
+            Some(&body_base64),
+        )
+        .expect("unframed stream event should aggregate")
+        .expect("product should exist");
+
+        let StandardSyncFinalizeNormalizedProduct::CrossFormat(product) = product else {
+            panic!("cross-format attempt should produce a cross-format product");
+        };
+        assert_eq!(product.provider_body_json["id"], provider_body_json["id"]);
+        assert_eq!(product.provider_body_json["object"], "response");
+        assert!(product.provider_body_json.get("response").is_none());
+        assert_eq!(product.client_body_json["type"], "message");
     }
 
     #[test]
