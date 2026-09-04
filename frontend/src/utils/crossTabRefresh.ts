@@ -81,6 +81,18 @@ function defaultChannelFactory(name: string): BroadcastChannelLike | null {
   return new BroadcastChannel(name)
 }
 
+function isDefinitiveRefreshRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  const response = (error as { response?: unknown }).response
+  if (!response || typeof response !== 'object') {
+    return false
+  }
+  const status = (response as { status?: unknown }).status
+  return status === 401 || status === 403
+}
+
 export class CrossTabRefreshCoordinator {
   private readonly storage: Storage | null
   private readonly waitTimeoutMs: number
@@ -182,6 +194,13 @@ export class CrossTabRefreshCoordinator {
           status: 'failure',
           emittedAt: Date.now(),
         })
+      }
+
+      // The refresh endpoint reserves 409 for a concurrent token rotation.
+      // A direct 401/403 is authoritative, so waiting for the HTTP timeout
+      // cannot recover the session and would block initial navigation.
+      if (isDefinitiveRefreshRejection(error)) {
+        throw error
       }
 
       // A failure is a hint, never a cross-tab verdict. Give a concurrent
@@ -296,8 +315,7 @@ export class CrossTabRefreshCoordinator {
       }
       this.successObservers.add(onSuccess)
       // A competing request can legitimately run until the HTTP client timeout.
-      // The coordinator timeout includes that budget, so do not surface a local
-      // 401 while an undetectable best-effort lock contender may still succeed.
+      // The coordinator timeout includes that budget for retryable failures.
       const timeoutId = setTimeout(() => finish(hasSuccess()), this.waitTimeoutMs)
       // A result may have arrived between the initial check and observer
       // registration, so check once more synchronously.

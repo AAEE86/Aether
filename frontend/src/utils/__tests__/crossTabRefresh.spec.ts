@@ -53,6 +53,10 @@ function createDeferred<T>() {
   return { promise, resolve, reject }
 }
 
+function createHttpError(status: number, message: string): Error & { response: { status: number } } {
+  return Object.assign(new Error(message), { response: { status } })
+}
+
 function createRacyStorage(): Storage {
   let hiddenInitialLockReads = 2
   let ownLockWrite: string | null = null
@@ -169,16 +173,49 @@ describe('CrossTabRefreshCoordinator', () => {
     second.destroy()
   })
 
-  it('surfaces a genuine single-tab refresh failure after the coordination window', async () => {
-    const refreshError = new Error('authoritative refresh rejection')
+  it('surfaces a genuine single-tab refresh failure without waiting for the request timeout', async () => {
+    const refreshError = createHttpError(401, 'authoritative refresh rejection')
     const executor = vi.fn(() => Promise.reject(refreshError))
     const coordinator = new CrossTabRefreshCoordinator({
       storage: localStorage,
       channelFactory: createChannel,
-      waitTimeoutMs: 10,
+      waitTimeoutMs: 500,
     })
 
-    await expect(coordinator.run(executor)).rejects.toBe(refreshError)
+    const nextTimerTick = Symbol('next-timer-tick')
+    let timerId: ReturnType<typeof setTimeout> | undefined
+    const outcome = await Promise.race([
+      coordinator.run(executor).catch((error: unknown) => error),
+      new Promise<symbol>((resolve) => {
+        timerId = setTimeout(() => resolve(nextTimerTick), 0)
+      }),
+    ])
+    if (timerId !== undefined) clearTimeout(timerId)
+
+    expect(outcome).toBe(refreshError)
+    expect(executor).toHaveBeenCalledTimes(1)
+
+    coordinator.destroy()
+  })
+
+  it('keeps the coordination window for a refresh-token rotation conflict', async () => {
+    const refreshError = createHttpError(409, 'refresh token was rotated concurrently')
+    const executor = vi.fn(() => Promise.reject(refreshError))
+    const coordinator = new CrossTabRefreshCoordinator({
+      storage: localStorage,
+      channelFactory: createChannel,
+      waitTimeoutMs: 20,
+    })
+
+    let settled = false
+    const outcome = coordinator.run(executor).catch((error: unknown) => error)
+    void outcome.then(() => {
+      settled = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(settled).toBe(false)
+    await expect(outcome).resolves.toBe(refreshError)
     expect(executor).toHaveBeenCalledTimes(1)
 
     coordinator.destroy()
@@ -208,7 +245,7 @@ describe('CrossTabRefreshCoordinator', () => {
     expect(firstExecutor).toHaveBeenCalledTimes(1)
     expect(secondExecutor).toHaveBeenCalledTimes(1)
 
-    failedAttempt.reject(new Error('lost refresh-token rotation'))
+    failedAttempt.reject(createHttpError(409, 'lost refresh-token rotation'))
     await Promise.resolve()
     successfulAttempt.resolve('access-from-winner')
 
@@ -244,7 +281,7 @@ describe('CrossTabRefreshCoordinator', () => {
     successfulAttempt.resolve('access-from-first-winner')
     await expect(firstRun).resolves.toBe('access-from-first-winner')
 
-    failedAttempt.reject(new Error('stale rotated cookie'))
+    failedAttempt.reject(createHttpError(409, 'stale rotated cookie'))
     await expect(secondRun).resolves.toBe('verified-after-failure-hint')
     expect(secondExecutor).toHaveBeenCalledTimes(2)
     expect(localStorage.getItem('aether_auth_refresh_result')).not.toContain('access-from')
@@ -274,7 +311,7 @@ describe('CrossTabRefreshCoordinator', () => {
 
     const firstRun = first.run(firstExecutor)
     const secondRun = second.run(secondExecutor)
-    failedAttempt.reject(new Error('stale rotated cookie'))
+    failedAttempt.reject(createHttpError(409, 'stale rotated cookie'))
     await new Promise((resolve) => setTimeout(resolve, 300))
     successfulAttempt.resolve('access-from-delayed-winner')
 
