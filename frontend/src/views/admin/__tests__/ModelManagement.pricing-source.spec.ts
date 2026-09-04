@@ -254,7 +254,7 @@ describe('ModelManagement pricing-source workflow', () => {
     setI18nLocale('en-US')
     await settle()
 
-    expect(document.body.textContent).toContain('Price source')
+    expect(document.body.textContent).toContain('Online pricing source')
     expect(document.body.textContent).toContain('Batch manage')
     expect(document.body.querySelector(
       '[aria-label="Select model Test Model"]',
