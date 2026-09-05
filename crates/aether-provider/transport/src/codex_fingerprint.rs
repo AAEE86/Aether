@@ -5,72 +5,17 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::outbound_request_policy::{
+    ProviderOutboundRequestContext, ProviderOutboundRequestIdentityScope,
+    ProviderOutboundRequestMutationScope, ProviderOutboundRequestPolicy,
+    ProviderOutboundRequestPolicyReason, ProviderOutboundRequestPolicyResult,
+};
 use crate::snapshot::GatewayProviderTransportSnapshot;
 
 pub const CODEX_FINGERPRINT_CONFIG_NAMESPACE: &str = "codex";
 pub const CODEX_FINGERPRINT_ENABLED_CONFIG_KEY: &str = "fingerprint_convergence_enabled";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexFingerprintConvergenceContext {
-    logical_turn_id: String,
-    original_turn_id: Option<String>,
-    original_client_session_id: Option<String>,
-    original_prompt_cache_key: Option<String>,
-    turn_started_at_unix_ms: u64,
-}
-
-impl CodexFingerprintConvergenceContext {
-    pub fn new(logical_turn_id: impl Into<String>, turn_started_at_unix_ms: u64) -> Self {
-        Self {
-            logical_turn_id: logical_turn_id.into().trim().to_string(),
-            original_turn_id: None,
-            original_client_session_id: None,
-            original_prompt_cache_key: None,
-            turn_started_at_unix_ms,
-        }
-    }
-
-    pub fn with_original_turn_id(mut self, original_turn_id: impl Into<String>) -> Self {
-        self.original_turn_id = non_empty_owned(original_turn_id.into());
-        self
-    }
-
-    pub fn with_original_client_session_id(
-        mut self,
-        original_client_session_id: impl Into<String>,
-    ) -> Self {
-        self.original_client_session_id = non_empty_owned(original_client_session_id.into());
-        self
-    }
-
-    pub fn with_original_prompt_cache_key(
-        mut self,
-        original_prompt_cache_key: impl Into<String>,
-    ) -> Self {
-        self.original_prompt_cache_key = non_empty_owned(original_prompt_cache_key.into());
-        self
-    }
-
-    pub fn logical_turn_id(&self) -> &str {
-        self.logical_turn_id.as_str()
-    }
-
-    pub fn original_turn_id(&self) -> Option<&str> {
-        self.original_turn_id.as_deref()
-    }
-
-    pub fn original_client_session_id(&self) -> Option<&str> {
-        self.original_client_session_id.as_deref()
-    }
-
-    pub fn original_prompt_cache_key(&self) -> Option<&str> {
-        self.original_prompt_cache_key.as_deref()
-    }
-
-    pub fn turn_started_at_unix_ms(&self) -> u64 {
-        self.turn_started_at_unix_ms
-    }
-}
+pub type CodexFingerprintConvergenceContext = ProviderOutboundRequestContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CodexConvergedFingerprint {
@@ -125,36 +70,82 @@ pub fn apply_codex_fingerprint_convergence_with_context(
     provider_request_headers: &mut BTreeMap<String, String>,
     provider_request_body: &mut Value,
 ) -> bool {
-    let is_responses = aether_ai_formats::is_openai_responses_format(provider_api_format);
-    let is_live = aether_ai_formats::api_format_alias_matches(provider_api_format, "codex:live");
-    // Convergence is a Codex provider policy, independent of whether the key
-    // uses OAuth, an API key, or another ordinary auth channel. Agent Identity
-    // uses a separate signed-identity protocol and is excluded here.
+    apply_codex_fingerprint_convergence_policy(
+        transport,
+        provider_api_format,
+        context,
+        provider_request_headers,
+        provider_request_body,
+    )
+    .was_applied()
+}
+
+pub(crate) fn apply_codex_fingerprint_convergence_policy(
+    transport: &GatewayProviderTransportSnapshot,
+    provider_api_format: &str,
+    context: &ProviderOutboundRequestContext,
+    provider_request_headers: &mut BTreeMap<String, String>,
+    provider_request_body: &mut Value,
+) -> ProviderOutboundRequestPolicyResult {
+    let policy = ProviderOutboundRequestPolicy::CodexFingerprintConvergence;
     if !transport
         .provider
         .provider_type
         .trim()
         .eq_ignore_ascii_case("codex")
-        || crate::agent_identity::is_codex_agent_identity_transport(transport)
-        || (!is_responses && !is_live)
-        || is_responses
-            && aether_ai_formats::openai_responses_request_operation(
-                provider_api_format,
-                provider_request_body,
-            ) == Some(aether_ai_formats::OPENAI_RESPONSES_OPERATION_COMPACT)
-        || !codex_fingerprint_convergence_enabled(
-            transport.provider.provider_type.as_str(),
-            transport.provider.config.as_ref(),
-        )
-        || !provider_request_body.is_object()
     {
-        return false;
+        return ProviderOutboundRequestPolicyResult::skipped(
+            policy,
+            ProviderOutboundRequestPolicyReason::ProviderTypeMismatch,
+        );
+    }
+    if crate::agent_identity::is_codex_agent_identity_transport(transport) {
+        return ProviderOutboundRequestPolicyResult::skipped(
+            policy,
+            ProviderOutboundRequestPolicyReason::AgentIdentityExcluded,
+        );
+    }
+
+    let is_responses = aether_ai_formats::is_openai_responses_format(provider_api_format);
+    let is_live = aether_ai_formats::api_format_alias_matches(provider_api_format, "codex:live");
+    if !is_responses && !is_live {
+        return ProviderOutboundRequestPolicyResult::skipped(
+            policy,
+            ProviderOutboundRequestPolicyReason::UnsupportedApiFormat,
+        );
+    }
+    if is_responses
+        && aether_ai_formats::openai_responses_request_operation(
+            provider_api_format,
+            provider_request_body,
+        ) == Some(aether_ai_formats::OPENAI_RESPONSES_OPERATION_COMPACT)
+    {
+        return ProviderOutboundRequestPolicyResult::skipped(
+            policy,
+            ProviderOutboundRequestPolicyReason::CompactOperationExcluded,
+        );
+    }
+    if !codex_fingerprint_convergence_enabled(
+        transport.provider.provider_type.as_str(),
+        transport.provider.config.as_ref(),
+    ) {
+        return ProviderOutboundRequestPolicyResult::skipped(
+            policy,
+            ProviderOutboundRequestPolicyReason::Disabled,
+        );
+    }
+    if !provider_request_body.is_object() {
+        return ProviderOutboundRequestPolicyResult::skipped(
+            policy,
+            ProviderOutboundRequestPolicyReason::RequestBodyNotObject,
+        );
     }
 
     let auth_identity = aether_ai_formats::parse_codex_auth_identity(
         transport.key.decrypted_auth_config.as_deref(),
     );
-    let account_seed = resolve_codex_account_seed(&auth_identity, transport.key.id.as_str());
+    let (account_seed, identity_scope) =
+        resolve_codex_account_seed_with_scope(&auth_identity, transport.key.id.as_str());
     // Only namespace a cache key that survived all provider-body conversion and
     // routing rules. The client-side value in `context` is a retry signal, not
     // permission to resurrect a field that the terminal body deliberately
@@ -178,7 +169,15 @@ pub fn apply_codex_fingerprint_convergence_with_context(
     if is_responses {
         apply_converged_client_metadata(provider_request_body, &fingerprint);
     }
-    true
+    ProviderOutboundRequestPolicyResult::applied(
+        policy,
+        if is_responses {
+            ProviderOutboundRequestMutationScope::HeadersAndBody
+        } else {
+            ProviderOutboundRequestMutationScope::Headers
+        },
+        identity_scope,
+    )
 }
 
 #[cfg(test)]
@@ -242,11 +241,6 @@ fn resolve_converged_fingerprint_with_prompt_cache(
     }
 }
 
-fn non_empty_owned(value: String) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
-}
-
 fn current_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -261,32 +255,62 @@ fn normalized_identity_part(value: Option<&str>) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+#[cfg(test)]
 fn resolve_codex_account_seed(
     identity: &aether_ai_formats::CodexAuthIdentity,
     fallback_key_id: &str,
 ) -> String {
-    let fingerprint = normalized_identity_part(identity.codex_identity_fingerprint.as_deref())
-        .or_else(|| {
-            aether_oauth::provider::providers::derive_codex_identity_fingerprint(
-                identity.account_id.as_deref(),
-                identity.account_user_id.as_deref(),
-                identity.user_id.as_deref(),
-                identity.email.as_deref(),
-            )
-        });
-    if let Some(fingerprint) = fingerprint {
-        return format!("persisted:v1:{fingerprint}");
+    resolve_codex_account_seed_with_scope(identity, fallback_key_id).0
+}
+
+fn resolve_codex_account_seed_with_scope(
+    identity: &aether_ai_formats::CodexAuthIdentity,
+    fallback_key_id: &str,
+) -> (String, ProviderOutboundRequestIdentityScope) {
+    if let Some(fingerprint) =
+        normalized_identity_part(identity.codex_identity_fingerprint.as_deref())
+    {
+        return (
+            format!("persisted:v1:{fingerprint}"),
+            ProviderOutboundRequestIdentityScope::PersistedFingerprint,
+        );
     }
 
     let account = normalized_identity_part(identity.account_id.as_deref());
     let member = normalized_identity_part(identity.account_user_id.as_deref())
         .or_else(|| normalized_identity_part(identity.user_id.as_deref()))
         .or_else(|| normalized_identity_part(identity.email.as_deref()));
+    if let Some(fingerprint) = aether_oauth::provider::providers::derive_codex_identity_fingerprint(
+        account.as_deref(),
+        member.as_deref(),
+        None,
+        None,
+    ) {
+        let scope = if account.is_some() {
+            ProviderOutboundRequestIdentityScope::AccountMember
+        } else {
+            ProviderOutboundRequestIdentityScope::Member
+        };
+        return (format!("persisted:v1:{fingerprint}"), scope);
+    }
+
     match (account, member) {
-        (Some(account), Some(member)) => format!("account-member:v1:{account}\0{member}"),
-        (None, Some(member)) => format!("member:v1:{member}"),
-        (Some(account), None) => format!("account:v1:{account}"),
-        (None, None) => format!("key:v1:{}", fallback_key_id.trim()),
+        (Some(account), Some(member)) => (
+            format!("account-member:v1:{account}\0{member}"),
+            ProviderOutboundRequestIdentityScope::AccountMember,
+        ),
+        (None, Some(member)) => (
+            format!("member:v1:{member}"),
+            ProviderOutboundRequestIdentityScope::Member,
+        ),
+        (Some(account), None) => (
+            format!("account:v1:{account}"),
+            ProviderOutboundRequestIdentityScope::Account,
+        ),
+        (None, None) => (
+            format!("key:v1:{}", fallback_key_id.trim()),
+            ProviderOutboundRequestIdentityScope::Key,
+        ),
     }
 }
 
@@ -1201,5 +1225,131 @@ mod tests {
         ));
         assert_eq!(headers, original_headers);
         assert_eq!(body, original_body);
+
+        let context = ProviderOutboundRequestContext::new("logical-turn", 1_700_000_000_123);
+        let result = apply_codex_fingerprint_convergence_policy(
+            &transport,
+            "openai:responses",
+            &context,
+            &mut headers,
+            &mut body,
+        );
+        assert_eq!(
+            result.reason,
+            ProviderOutboundRequestPolicyReason::AgentIdentityExcluded
+        );
+        assert_eq!(headers, original_headers);
+        assert_eq!(body, original_body);
+    }
+
+    #[test]
+    fn policy_result_reports_applied_scopes_without_identity_values() {
+        let transport = sample_transport();
+        let context = ProviderOutboundRequestContext::new("logical-turn", 1_700_000_000_123);
+        let mut headers = BTreeMap::new();
+        let mut body = json!({"model": "gpt-5.4"});
+
+        let result = apply_codex_fingerprint_convergence_policy(
+            &transport,
+            "openai:responses",
+            &context,
+            &mut headers,
+            &mut body,
+        );
+
+        assert_eq!(
+            result,
+            ProviderOutboundRequestPolicyResult {
+                policy: ProviderOutboundRequestPolicy::CodexFingerprintConvergence,
+                outcome:
+                    crate::outbound_request_policy::ProviderOutboundRequestPolicyOutcome::Applied,
+                reason: ProviderOutboundRequestPolicyReason::Applied,
+                mutation_scope: Some(ProviderOutboundRequestMutationScope::HeadersAndBody),
+                identity_scope: Some(ProviderOutboundRequestIdentityScope::Account),
+            }
+        );
+        let serialized = serde_json::to_value(result).expect("serialize policy result");
+        let serialized = serialized.as_object().expect("policy result object");
+        assert_eq!(serialized.len(), 5);
+        assert!(!serialized.contains_key("installation_id"));
+        assert!(!serialized.contains_key("session_id"));
+        assert!(!serialized.contains_key("turn_id"));
+    }
+
+    #[test]
+    fn policy_result_distinguishes_codex_skip_reasons_without_mutation() {
+        let context = ProviderOutboundRequestContext::new("logical-turn", 1_700_000_000_123);
+        let original_headers = BTreeMap::from([("x-custom".to_string(), "preserve".to_string())]);
+        let original_body = json!({"model": "gpt-5.4"});
+
+        let cases = [
+            (
+                "provider_type_mismatch",
+                "openai",
+                Some(json!({"codex": {"fingerprint_convergence_enabled": true}})),
+                "openai:responses",
+                original_body.clone(),
+                ProviderOutboundRequestPolicyReason::ProviderTypeMismatch,
+            ),
+            (
+                "unsupported_api_format",
+                "codex",
+                Some(json!({"codex": {"fingerprint_convergence_enabled": true}})),
+                "openai:chat",
+                original_body.clone(),
+                ProviderOutboundRequestPolicyReason::UnsupportedApiFormat,
+            ),
+            (
+                "compact_operation",
+                "codex",
+                Some(json!({"codex": {"fingerprint_convergence_enabled": true}})),
+                "openai:responses",
+                json!({"model": "gpt-5.4", "input": [{"type": "compaction_trigger"}]}),
+                ProviderOutboundRequestPolicyReason::CompactOperationExcluded,
+            ),
+            (
+                "disabled",
+                "codex",
+                None,
+                "openai:responses",
+                original_body.clone(),
+                ProviderOutboundRequestPolicyReason::Disabled,
+            ),
+            (
+                "request_body_not_object",
+                "codex",
+                Some(json!({"codex": {"fingerprint_convergence_enabled": true}})),
+                "openai:responses",
+                json!(["not-an-object"]),
+                ProviderOutboundRequestPolicyReason::RequestBodyNotObject,
+            ),
+        ];
+
+        for (name, provider_type, config, api_format, body, expected_reason) in cases {
+            let mut transport = sample_transport();
+            transport.provider.provider_type = provider_type.to_string();
+            transport.provider.config = config;
+            let mut headers = original_headers.clone();
+            let mut request_body = body.clone();
+
+            let result = apply_codex_fingerprint_convergence_policy(
+                &transport,
+                api_format,
+                &context,
+                &mut headers,
+                &mut request_body,
+            );
+
+            assert_eq!(
+                result.outcome,
+                crate::outbound_request_policy::ProviderOutboundRequestPolicyOutcome::Skipped,
+                "case={name}"
+            );
+            assert_eq!(result.reason, expected_reason, "case={name}");
+            assert_eq!(result.mutation_scope, None, "case={name}");
+            assert_eq!(result.identity_scope, None, "case={name}");
+            assert_eq!(headers, original_headers, "case={name}");
+            assert_eq!(request_body, body, "case={name}");
+        }
     }
 }

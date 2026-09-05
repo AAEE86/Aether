@@ -17,6 +17,7 @@ pub mod kiro;
 mod network;
 pub mod oauth_refresh;
 mod openai_image;
+mod outbound_request_policy;
 pub mod policy;
 pub mod provider_types;
 mod request_body;
@@ -119,6 +120,13 @@ pub use openai_image::{
     build_openai_image_headers, build_openai_image_upstream_url,
     openai_image_transport_unsupported_reason, resolve_openai_image_auth,
     ProviderOpenAiImageHeadersInput,
+};
+pub use outbound_request_policy::{
+    apply_provider_outbound_request_policies, ProviderOutboundRequestContext,
+    ProviderOutboundRequestIdentityScope, ProviderOutboundRequestMutationScope,
+    ProviderOutboundRequestPolicy, ProviderOutboundRequestPolicyOutcome,
+    ProviderOutboundRequestPolicyReason, ProviderOutboundRequestPolicyResult,
+    PROVIDER_OUTBOUND_CONTEXT_MAX_VALUE_BYTES,
 };
 pub use policy::{
     local_gemini_transport_unsupported_reason,

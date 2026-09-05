@@ -2183,7 +2183,7 @@ mod tests {
             client_surface: None,
             gateway_credential_carrier: None,
             client_session_affinity: None,
-            codex_fingerprint_context: None,
+            provider_outbound_context: None,
             routing_policy: None,
             routing_trace_seed: None,
             routing_context: None,

@@ -189,6 +189,7 @@ async fn handle_live_http(
         client_model,
         dialect,
         None,
+        None,
     )
     .await
     {
@@ -243,6 +244,12 @@ async fn handle_live_http(
         );
     };
     let lease = LivePoolLeaseGuard::new(state, &candidate);
+    let provider_outbound_context = candidate
+        .execution
+        .provider_type
+        .as_deref()
+        .is_some_and(|provider_type| provider_type.trim().eq_ignore_ascii_case("codex"))
+        .then(|| candidate.provider_outbound_context.clone());
     let binding = LiveCallBinding::from_candidate(&candidate);
     let mut provider_session = offer.session.clone();
     provider_session
@@ -528,6 +535,7 @@ async fn handle_live_http(
             auth_context.api_key_id.as_str(),
             call_id.as_str(),
             &binding,
+            provider_outbound_context.as_ref(),
         )
         .await
     {
