@@ -589,7 +589,7 @@ async fn provider_query_fetch_models_for_key(
         codex_catalog
             .as_ref()
             .map(|catalog| catalog.client_version.as_str())
-            .unwrap_or(aether_ai_formats::CODEX_CLIENT_VERSION)
+            .unwrap_or(crate::ai_serving::CODEX_CLIENT_VERSION)
     });
     let outcome =
         match fetch_models_from_transports_for_management(state.app(), &transports, client_version)
