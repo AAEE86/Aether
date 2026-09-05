@@ -70,6 +70,14 @@ pub const ADMIN_SYSTEM_CONFIG_SUPPORTED_VERSIONS: &[&str] =
 pub const EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_CONFIG_KEY: &str = "execution_extra_trusted_dns_hosts";
 pub const EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_MAX_ENTRIES: usize = 128;
 pub const EXECUTION_EXTRA_TRUSTED_DNS_HOST_MAX_BYTES: usize = 253;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionExtraTrustedDnsHostsConfigError {
+    InvalidValue,
+    TooManyEntries,
+    InvalidHost,
+}
+
 pub const ADMIN_SYSTEM_USERS_EXPORT_VERSION: &str = "1.6";
 pub const ADMIN_SYSTEM_USERS_SUPPORTED_VERSIONS: &[&str] =
     &["1.3", "1.4", "1.5", ADMIN_SYSTEM_USERS_EXPORT_VERSION];
@@ -2323,22 +2331,25 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
 
 pub fn normalize_execution_extra_trusted_dns_hosts_config_value(
     value: serde_json::Value,
-) -> Result<serde_json::Value, ()> {
+) -> Result<serde_json::Value, ExecutionExtraTrustedDnsHostsConfigError> {
     let values = match value {
         Value::Null => Vec::new(),
         Value::Array(values) => values,
-        _ => return Err(()),
+        _ => return Err(ExecutionExtraTrustedDnsHostsConfigError::InvalidValue),
     };
     if values.len() > EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_MAX_ENTRIES {
-        return Err(());
+        return Err(ExecutionExtraTrustedDnsHostsConfigError::TooManyEntries);
     }
 
     let mut hosts = BTreeSet::new();
     for value in values {
-        let host = value.as_str().map(str::trim).ok_or(())?;
+        let host = value
+            .as_str()
+            .map(str::trim)
+            .ok_or(ExecutionExtraTrustedDnsHostsConfigError::InvalidHost)?;
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         if !execution_extra_trusted_dns_host_is_valid(&host) {
-            return Err(());
+            return Err(ExecutionExtraTrustedDnsHostsConfigError::InvalidHost);
         }
         hosts.insert(host);
     }
