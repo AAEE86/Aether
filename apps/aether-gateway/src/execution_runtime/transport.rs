@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error as _;
 use std::future::Future;
 use std::io::Read;
@@ -63,6 +63,8 @@ use crate::upstream_admission::UpstreamTargetAdmissionPermit;
 use crate::{AppState, GatewayError};
 
 const HUB_RELAY_CONTENT_TYPE: &str = "application/vnd.aether.tunnel-envelope";
+pub(crate) const EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_CONFIG_KEY: &str =
+    aether_admin::system::EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_CONFIG_KEY;
 const HUB_RELAY_ERROR_HEADER: &str = "x-aether-tunnel-error";
 const MAX_SAFE_REDIRECTS: usize = 10;
 const MAX_UPSTREAM_ERROR_DETAIL_BYTES: usize = 2_048;
@@ -479,8 +481,116 @@ const TRUSTED_EXECUTION_BENCHMARKING_DNS_EXACT_HOSTS: &[&str] = &[
     "generativelanguage.googleapis.com",
     "grok.com",
     "open.bigmodel.cn",
+    "q.us-iso-east-1.c2s.ic.gov",
+    "q.us-isob-east-1.sc2s.sgov.gov",
+    "q.us-isof-east-1.csp.hci.ic.gov",
+    "q.us-isof-south-1.csp.hci.ic.gov",
     "server.codeium.com",
 ];
+
+const TRUSTED_EXECUTION_VERTEX_DNS_REGIONS: &[&str] = &[
+    "africa-south1",
+    "asia-east1",
+    "asia-east2",
+    "asia-northeast1",
+    "asia-northeast2",
+    "asia-northeast3",
+    "asia-south1",
+    "asia-south2",
+    "asia-southeast1",
+    "asia-southeast2",
+    "australia-southeast1",
+    "australia-southeast2",
+    "europe-central2",
+    "europe-north1",
+    "europe-southwest1",
+    "europe-west1",
+    "europe-west2",
+    "europe-west3",
+    "europe-west4",
+    "europe-west6",
+    "europe-west8",
+    "europe-west9",
+    "europe-west10",
+    "europe-west12",
+    "me-central1",
+    "me-central2",
+    "me-west1",
+    "northamerica-northeast1",
+    "northamerica-northeast2",
+    "southamerica-east1",
+    "southamerica-west1",
+    "us-central1",
+    "us-east1",
+    "us-east4",
+    "us-east5",
+    "us-south1",
+    "us-west1",
+    "us-west2",
+    "us-west3",
+    "us-west4",
+];
+
+const TRUSTED_EXECUTION_AWS_DNS_REGIONS: &[&str] = &[
+    "af-south-1",
+    "ap-east-1",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-northeast-3",
+    "ap-south-1",
+    "ap-south-2",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-southeast-3",
+    "ap-southeast-4",
+    "ca-central-1",
+    "ca-west-1",
+    "eu-central-1",
+    "eu-central-2",
+    "eu-north-1",
+    "eu-south-1",
+    "eu-south-2",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "il-central-1",
+    "me-central-1",
+    "me-south-1",
+    "mx-central-1",
+    "sa-east-1",
+    "us-east-1",
+    "us-east-2",
+    "us-gov-east-1",
+    "us-gov-west-1",
+    "us-west-1",
+    "us-west-2",
+];
+
+static EXECUTION_EXTRA_TRUSTED_DNS_HOSTS: LazyLock<StdRwLock<BTreeSet<String>>> =
+    LazyLock::new(|| StdRwLock::new(BTreeSet::new()));
+
+pub(crate) fn refresh_execution_extra_trusted_dns_hosts(value: Option<&Value>) {
+    let hosts = value
+        .cloned()
+        .and_then(|value| {
+            aether_admin::system::normalize_execution_extra_trusted_dns_hosts_config_value(value)
+                .ok()
+        })
+        .and_then(|value| {
+            value.as_array().map(|hosts| {
+                hosts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<BTreeSet<_>>()
+            })
+        })
+        .unwrap_or_default();
+
+    if let Ok(mut current) = EXECUTION_EXTRA_TRUSTED_DNS_HOSTS.write() {
+        *current = hosts;
+    }
+}
 
 /// Return whether `host` is one of the fixed provider origins for which a
 /// local RFC-2544 synthetic answer can be accepted. The resolver receives only
@@ -488,19 +598,30 @@ const TRUSTED_EXECUTION_BENCHMARKING_DNS_EXACT_HOSTS: &[&str] = &[
 /// here is intentionally host based.  URL validation still requires HTTPS for
 /// non-loopback upstreams before this resolver is used.
 fn execution_host_allows_benchmarking_dns_answer(host: &str) -> bool {
+    let extra_hosts = EXECUTION_EXTRA_TRUSTED_DNS_HOSTS
+        .read()
+        .map(|hosts| hosts.clone())
+        .unwrap_or_default();
+    execution_host_allows_benchmarking_dns_answer_with_extra_hosts(host, &extra_hosts)
+}
+
+fn execution_host_allows_benchmarking_dns_answer_with_extra_hosts(
+    host: &str,
+    extra_hosts: &BTreeSet<String>,
+) -> bool {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if TRUSTED_EXECUTION_BENCHMARKING_DNS_EXACT_HOSTS
-        .iter()
-        .any(|trusted| *trusted == host)
+    if extra_hosts.contains(&host)
+        || TRUSTED_EXECUTION_BENCHMARKING_DNS_EXACT_HOSTS
+            .iter()
+            .any(|trusted| *trusted == host)
     {
         return true;
     }
 
     // Vertex service-account requests use `<region>-aiplatform.googleapis.com`.
-    // Keep the interpolated region to one DNS label and reuse the provider's
-    // existing conservative region syntax validator.
+    // Keep this compatibility exception limited to known provider regions.
     if let Some(region) = host.strip_suffix("-aiplatform.googleapis.com") {
-        return looks_like_cloud_region_label(region);
+        return TRUSTED_EXECUTION_VERTEX_DNS_REGIONS.contains(&region);
     }
 
     // Kiro uses a small, fixed set of regional service origins. Match each
@@ -511,9 +632,6 @@ fn execution_host_allows_benchmarking_dns_answer(host: &str) -> bool {
         || matches_regional_service_host(&host, "codewhisperer", ".amazonaws.com")
         || matches_regional_service_host(&host, "oidc", ".amazonaws.com")
         || matches_regional_service_host(&host, "prod", ".auth.desktop.kiro.dev")
-        || matches_regional_service_host(&host, "q", ".c2s.ic.gov")
-        || matches_regional_service_host(&host, "q", ".sc2s.sgov.gov")
-        || matches_regional_service_host(&host, "q", ".csp.hci.ic.gov")
 }
 
 fn matches_regional_service_host(host: &str, service: &str, suffix: &str) -> bool {
@@ -524,21 +642,7 @@ fn matches_regional_service_host(host: &str, service: &str, suffix: &str) -> boo
     else {
         return false;
     };
-    // A single region label is required. This rejects values such as
-    // `q.us-east-1.evil.amazonaws.com` and suffix lookalikes.
-    !region.contains('.') && looks_like_cloud_region_label(region)
-}
-
-fn looks_like_cloud_region_label(value: &str) -> bool {
-    value.len() >= 3
-        && value.len() <= 63
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && !value.starts_with('-')
-        && !value.ends_with('-')
-        && value.contains('-')
-        && value.bytes().any(|byte| byte.is_ascii_digit())
+    TRUSTED_EXECUTION_AWS_DNS_REGIONS.contains(&region)
 }
 
 fn dns_host_explicitly_allows_loopback(host: &str) -> bool {
@@ -5569,6 +5673,7 @@ mod tests {
             "api.openai.com",
             "CHATGPT.COM.",
             "us-central1-aiplatform.googleapis.com",
+            "me-central2-aiplatform.googleapis.com",
             "q.us-east-1.amazonaws.com",
             "q-fips.us-gov-west-1.amazonaws.com",
             "codewhisperer.us-west-2.amazonaws.com",
@@ -5591,6 +5696,16 @@ mod tests {
             "q.us-east-1.evil.amazonaws.com",
             "q.us-east-1.amazonaws.com.attacker.test",
             "q.localhost.amazonaws.com",
+            "evil-1-aiplatform.googleapis.com",
+            "q.evil-1.amazonaws.com",
+            "q-fips.evil-1.amazonaws.com",
+            "codewhisperer.evil-1.amazonaws.com",
+            "prod.evil-1.auth.desktop.kiro.dev",
+            "oidc.evil-1.amazonaws.com",
+            "q.us-central1.amazonaws.com",
+            "us-east-1-aiplatform.googleapis.com",
+            "q.us-east-1.c2s.ic.gov",
+            "q.us-iso-east-1.sc2s.sgov.gov",
             "q-fips.us-gov-west-1.evil.amazonaws.com",
             "codewhisperer.us-west-2.evil.amazonaws.com",
             "oidc.us-east-1.evil.amazonaws.com",
@@ -5606,6 +5721,20 @@ mod tests {
                 "untrusted or lookalike host must reject a benchmarking DNS answer: {host}"
             );
         }
+    }
+
+    #[test]
+    fn execution_dns_answers_allow_benchmarking_range_for_configured_exact_hosts() {
+        let fake = "198.18.75.234:443".parse().unwrap();
+        super::refresh_execution_extra_trusted_dns_hosts(Some(&json!(["custom.example.com",])));
+
+        assert!(super::validate_execution_dns_answers("custom.example.com", vec![fake]).is_ok());
+        assert!(
+            super::validate_execution_dns_answers("api.custom.example.com", vec![fake]).is_err()
+        );
+
+        super::refresh_execution_extra_trusted_dns_hosts(None);
+        assert!(super::validate_execution_dns_answers("custom.example.com", vec![fake]).is_err());
     }
 
     #[test]

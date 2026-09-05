@@ -2434,6 +2434,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    match state.prewarm_execution_extra_trusted_dns_hosts().await {
+        Ok(_) => info!("prewarmed execution Fake-IP DNS allowlist"),
+        Err(err) => warn!(error = %err, "failed to prewarm execution Fake-IP DNS allowlist"),
+    }
     match prewarm_direct_h2c_sender_cache_from_env_for_startup().await {
         Ok(Some(report)) => {
             if report.failed_targets > 0 {

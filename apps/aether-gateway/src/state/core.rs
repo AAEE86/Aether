@@ -154,6 +154,15 @@ impl AppState {
             .map_err(|err| format!("{err:?}"))
     }
 
+    pub async fn prewarm_execution_extra_trusted_dns_hosts(&self) -> Result<(), String> {
+        self.read_system_config_json_value(
+            aether_admin::system::EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_CONFIG_KEY,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|err| format!("{err:?}"))
+    }
+
     fn usage_worker_queue_for(
         runtime_state: &Arc<RuntimeState>,
     ) -> Option<Arc<dyn RuntimeQueueStore>> {
@@ -769,6 +778,18 @@ impl AppState {
             .expect("admin monitoring error stats reset cache should lock")
     }
 
+    fn refresh_execution_extra_trusted_dns_hosts(
+        &self,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) {
+        if key.eq_ignore_ascii_case(
+            aether_admin::system::EXECUTION_EXTRA_TRUSTED_DNS_HOSTS_CONFIG_KEY,
+        ) {
+            crate::execution_runtime::transport::refresh_execution_extra_trusted_dns_hosts(value);
+        }
+    }
+
     pub(crate) fn mark_admin_monitoring_error_stats_reset(&self, now_unix_secs: u64) {
         let mut reset_at = self
             .admin_monitoring_error_stats_reset_at
@@ -781,22 +802,28 @@ impl AppState {
         &self,
         key: &str,
     ) -> Result<Option<serde_json::Value>, GatewayError> {
-        self.read_system_config_json_value_with_cache_windows(
-            key,
-            SYSTEM_CONFIG_CACHE_TTL,
-            SYSTEM_CONFIG_CACHE_MAX_STALENESS,
-        )
-        .await
+        let value = self
+            .read_system_config_json_value_with_cache_windows(
+                key,
+                SYSTEM_CONFIG_CACHE_TTL,
+                SYSTEM_CONFIG_CACHE_MAX_STALENESS,
+            )
+            .await?;
+        self.refresh_execution_extra_trusted_dns_hosts(key, value.as_ref());
+        Ok(value)
     }
 
     pub(crate) async fn read_system_config_json_value_strong(
         &self,
         key: &str,
     ) -> Result<Option<serde_json::Value>, GatewayError> {
-        self.data
+        let value = self
+            .data
             .find_system_config_value_strong(key)
             .await
-            .map_err(|err| GatewayError::Internal(err.to_string()))
+            .map_err(|err| GatewayError::Internal(err.to_string()))?;
+        self.refresh_execution_extra_trusted_dns_hosts(key, value.as_ref());
+        Ok(value)
     }
 
     pub(crate) async fn compare_and_set_system_config_string_value(
@@ -934,6 +961,7 @@ impl AppState {
             .map_err(|err| GatewayError::Internal(err.to_string()))?;
         self.system_config_cache
             .insert(key.to_string(), None, SYSTEM_CONFIG_CACHE_MAX_STALENESS);
+        self.refresh_execution_extra_trusted_dns_hosts(key, None);
         if deleted && system_config_key_affects_scheduler(key) {
             self.invalidate_scheduler_affinity_cache();
         }
@@ -1015,6 +1043,7 @@ impl AppState {
     }
 
     fn remember_system_config_write(&self, key: &str, value: Option<serde_json::Value>) {
+        self.refresh_execution_extra_trusted_dns_hosts(key, value.as_ref());
         self.system_config_cache
             .insert(key.to_string(), value, SYSTEM_CONFIG_CACHE_MAX_STALENESS);
         if system_config_key_affects_scheduler(key) {
@@ -1062,6 +1091,7 @@ impl AppState {
                 | aether_data::repository::system::AdminSystemPurgeTarget::Stats
         ) {
             self.system_config_cache.clear();
+            crate::execution_runtime::transport::refresh_execution_extra_trusted_dns_hosts(None);
             self.invalidate_provider_routing_caches();
         }
         Ok(summary)
