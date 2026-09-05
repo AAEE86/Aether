@@ -95,6 +95,9 @@ impl LiveRelayAdmissionError {
             Self::BalanceRejected | Self::Gateway(GatewayError::AdmissionTimeout { .. }) => {
                 StatusCode::TOO_MANY_REQUESTS
             }
+            Self::Gateway(GatewayError::PlanUsageLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
+            Self::Gateway(GatewayError::LastActiveAdminUpdateDenied)
+            | Self::Gateway(GatewayError::LastActiveAdminDeleteDenied) => StatusCode::BAD_REQUEST,
             Self::Gateway(GatewayError::Client { status, .. }) => *status,
             Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => {
                 StatusCode::GATEWAY_TIMEOUT
@@ -114,6 +117,13 @@ impl LiveRelayAdmissionError {
             Self::Gateway(GatewayError::AdmissionTimeout { .. }) => {
                 "Gateway capacity is busy; retry this Live connection"
             }
+            Self::Gateway(GatewayError::PlanUsageLimited(_)) => {
+                "Subscription plan usage limit reached"
+            }
+            Self::Gateway(GatewayError::LastActiveAdminUpdateDenied)
+            | Self::Gateway(GatewayError::LastActiveAdminDeleteDenied) => {
+                "Codex Live request was not allowed"
+            }
             Self::Gateway(GatewayError::Client { .. }) => "Codex Live request was not allowed",
             Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => {
                 "Codex Live admission planning timed out"
@@ -127,6 +137,9 @@ impl LiveRelayAdmissionError {
             Self::PlanUnavailable => "admission_plan_unavailable",
             Self::BalanceRejected => "balance_rejected",
             Self::Gateway(GatewayError::AdmissionTimeout { .. }) => "admission_timeout",
+            Self::Gateway(GatewayError::PlanUsageLimited(_)) => "plan_usage_limited",
+            Self::Gateway(GatewayError::LastActiveAdminUpdateDenied) => "last_admin_update_denied",
+            Self::Gateway(GatewayError::LastActiveAdminDeleteDenied) => "last_admin_delete_denied",
             Self::Gateway(GatewayError::Client { .. }) => "request_rejected",
             Self::Gateway(GatewayError::LocalExecutionPlanningTimeout { .. }) => {
                 "admission_planning_timeout"
@@ -1226,6 +1239,9 @@ fn gateway_error_kind(error: &GatewayError) -> &'static str {
         GatewayError::ControlUnavailable { .. } => "control_unavailable",
         GatewayError::LocalExecutionPlanningTimeout { .. } => "planning_timeout",
         GatewayError::AdmissionTimeout { .. } => "admission_timeout",
+        GatewayError::PlanUsageLimited(_) => "plan_usage_limited",
+        GatewayError::LastActiveAdminUpdateDenied => "last_admin_update_denied",
+        GatewayError::LastActiveAdminDeleteDenied => "last_admin_delete_denied",
         GatewayError::Client { .. } => "client_error",
         GatewayError::Internal(_) => "internal_error",
     }
@@ -1238,6 +1254,10 @@ fn gateway_error_status(error: &GatewayError) -> StatusCode {
         }
         GatewayError::LocalExecutionPlanningTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
         GatewayError::AdmissionTimeout { .. } => StatusCode::TOO_MANY_REQUESTS,
+        GatewayError::PlanUsageLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+        GatewayError::LastActiveAdminUpdateDenied | GatewayError::LastActiveAdminDeleteDenied => {
+            StatusCode::BAD_REQUEST
+        }
         GatewayError::Client { status, .. } => *status,
         GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }

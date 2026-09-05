@@ -22,8 +22,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{
-    any, build_router_with_state, json, start_server, AppState, Json, Request, Router, StatusCode,
-    UsageRuntimeConfig, CONTROL_CANDIDATE_ID_HEADER, CONTROL_REQUEST_ID_HEADER, TRACE_ID_HEADER,
+    any, authenticated_operational_client, json, start_authenticated_operational_server,
+    start_server, AppState, Json, Request, Router, StatusCode, UsageRuntimeConfig,
+    CONTROL_CANDIDATE_ID_HEADER, CONTROL_REQUEST_ID_HEADER, TRACE_ID_HEADER,
 };
 
 fn hash_api_key(value: &str) -> String {
@@ -239,8 +240,9 @@ async fn gateway_exposes_request_id_header_for_local_execution_response_impl() {
             enabled: true,
             ..UsageRuntimeConfig::default()
         });
-    let gateway = build_router_with_state(gateway_state);
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (gateway_url, gateway_handle, access_token) =
+        start_authenticated_operational_server(gateway_state).await;
+    let operational_client = authenticated_operational_client(&access_token);
 
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/v1/chat/completions"))
@@ -276,7 +278,7 @@ async fn gateway_exposes_request_id_header_for_local_execution_response_impl() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let audit_response = reqwest::Client::new()
+    let audit_response = operational_client
         .get(format!(
             "{gateway_url}/_gateway/audit/request-audit/{request_id}?attempted_only=true"
         ))
@@ -444,10 +446,11 @@ async fn gateway_exposes_request_usage_via_internal_audit_endpoint() {
     let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_usage_data_reader_for_tests(repository);
-    let gateway = build_router_with_state(gateway_state);
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (gateway_url, gateway_handle, access_token) =
+        start_authenticated_operational_server(gateway_state).await;
+    let operational_client = authenticated_operational_client(&access_token);
 
-    let response = reqwest::Client::new()
+    let response = operational_client
         .get(format!(
             "{gateway_url}/_gateway/audit/request-usage/req-usage-2"
         ))
@@ -501,10 +504,11 @@ async fn gateway_exposes_request_audit_bundle_via_internal_audit_endpoint() {
             provider_catalog,
             usage_repository,
         );
-    let gateway = build_router_with_state(gateway_state);
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (gateway_url, gateway_handle, access_token) =
+        start_authenticated_operational_server(gateway_state).await;
+    let operational_client = authenticated_operational_client(&access_token);
 
-    let response = reqwest::Client::new()
+    let response = operational_client
         .get(format!(
             "{gateway_url}/_gateway/audit/request-audit/req-audit-1?attempted_only=true"
         ))
@@ -554,10 +558,11 @@ async fn gateway_exposes_request_candidate_trace_via_internal_audit_endpoint() {
     let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_request_candidate_data_reader_for_tests(repository);
-    let gateway = build_router_with_state(gateway_state);
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (gateway_url, gateway_handle, access_token) =
+        start_authenticated_operational_server(gateway_state).await;
+    let operational_client = authenticated_operational_client(&access_token);
 
-    let response = reqwest::Client::new()
+    let response = operational_client
         .get(format!(
             "{gateway_url}/_gateway/audit/request-candidates/req-trace-1?attempted_only=true"
         ))
@@ -603,10 +608,11 @@ async fn gateway_exposes_decision_trace_via_internal_audit_endpoint() {
     let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_decision_trace_data_readers_for_tests(request_candidates, provider_catalog);
-    let gateway = build_router_with_state(gateway_state);
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (gateway_url, gateway_handle, access_token) =
+        start_authenticated_operational_server(gateway_state).await;
+    let operational_client = authenticated_operational_client(&access_token);
 
-    let response = reqwest::Client::new()
+    let response = operational_client
         .get(format!(
             "{gateway_url}/_gateway/audit/decision-trace/req-trace-2?attempted_only=true"
         ))
@@ -621,7 +627,7 @@ async fn gateway_exposes_decision_trace_via_internal_audit_endpoint() {
     assert_eq!(payload["candidates"][0]["provider_name"], "OpenAI");
     assert_eq!(
         payload["candidates"][0]["provider_website"],
-        "https://openai.com"
+        "https://openai.com/"
     );
     assert_eq!(
         payload["candidates"][0]["endpoint_api_format"],
@@ -650,10 +656,11 @@ async fn gateway_exposes_auth_api_key_snapshot_via_internal_audit_endpoint() {
     let gateway_state = AppState::new()
         .expect("gateway state should build")
         .with_auth_api_key_data_reader_for_tests(repository);
-    let gateway = build_router_with_state(gateway_state);
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (gateway_url, gateway_handle, access_token) =
+        start_authenticated_operational_server(gateway_state).await;
+    let operational_client = authenticated_operational_client(&access_token);
 
-    let response = reqwest::Client::new()
+    let response = operational_client
         .get(format!(
             "{gateway_url}/_gateway/audit/auth/users/user-1/api-keys/key-1"
         ))

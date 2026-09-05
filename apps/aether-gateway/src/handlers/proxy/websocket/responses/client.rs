@@ -17,6 +17,9 @@ use super::ownership::{
     await_owned_responses_websocket_plan, begin_responses_websocket_turn_with_planned_lease,
     spawn_owned_responses_websocket_plan, OwnedResponsesWebSocketDecision,
 };
+use super::plan_admission::{
+    acquire_responses_websocket_plan_admission, send_responses_websocket_plan_admission_error,
+};
 use super::quota::mark_active_response_retry_unsafe;
 use super::redaction::redact_responses_websocket_client_event_with_reasoning_replay_policy;
 use super::request::{
@@ -35,6 +38,8 @@ use super::turn::{
 use super::turn_state::LogicalTurn;
 use super::upstream::{
     bind_responses_upstream, decision_bound_upstream_change_fields, decision_reuses_bound_upstream,
+    send_responses_websocket_upstream_message, ResponsesWebSocketUpstreamBindError,
+    ResponsesWebSocketUpstreamSendError,
 };
 use crate::ai_serving::ResponsesWebSocketPinnedCandidate;
 use crate::clock::current_unix_secs;
@@ -44,8 +49,9 @@ use crate::handlers::proxy::websocket::session::{CLOSE_INTERNAL_ERROR, WEBSOCKET
 use crate::handlers::proxy::websocket::transport::{
     close_client_socket, close_upstream_socket, send_client_message, send_gateway_error,
     send_gateway_error_with_status, send_gateway_error_with_stream_id,
-    send_responses_websocket_error_with_param, send_upstream_message,
+    send_responses_websocket_error_with_param,
 };
+use crate::plan_usage_policy::PlanUsagePolicySnapshot;
 use crate::privacy::RedactionSession;
 use crate::rate_limit::FrontdoorUserRpmOutcome;
 use crate::AppState;
@@ -69,6 +75,7 @@ pub(super) enum RelayDisposition {
     Continue,
     Close,
     UpstreamError(&'static str),
+    PlanUsagePermitLost,
 }
 
 pub(super) fn adapter_drain_ready(
@@ -317,6 +324,37 @@ pub(super) async fn forward_client_message(
                 }
             }
 
+            // Subscription-plan concurrency is admitted per logical
+            // response.create. Keep the permit and policy snapshot attached
+            // to this turn through any transparent provider rebind.
+            let plan_usage_admission = match acquire_responses_websocket_plan_admission(
+                state,
+                &turn_control.decision,
+                &logical_turn_id,
+            )
+            .await
+            {
+                Ok(admission) => admission,
+                Err(error) => {
+                    warn!(
+                        event_name = "responses_websocket_followup_plan_usage_rejected",
+                        log_type = "event",
+                        transport = WEBSOCKET_LOG_TRANSPORT,
+                        websocket = true,
+                        trace_id = %context.trace_id,
+                        logical_turn_id = %logical_turn_id,
+                        error = ?error,
+                        "gateway rejected a Responses WebSocket follow-up at its subscription plan limit"
+                    );
+                    send_responses_websocket_plan_admission_error(client_socket, &error).await;
+                    return RelayDisposition::Continue;
+                }
+            };
+            let crate::plan_usage_policy::PlanUsageAdmission {
+                permit: plan_usage_permit,
+                policy_snapshot: plan_usage_policy_snapshot,
+            } = plan_usage_admission;
+
             let response_id_owned_by_connection = client_event
                 .get("previous_response_id")
                 .and_then(Value::as_str)
@@ -465,6 +503,8 @@ pub(super) async fn forward_client_message(
                     codex_fingerprint_context,
                     turn_control,
                     turn_redaction_session,
+                    plan_usage_permit,
+                    plan_usage_policy_snapshot,
                 )
                 .await;
             }
@@ -482,6 +522,8 @@ pub(super) async fn forward_client_message(
                 raw_responses_lite_static_config
                     .expect("independent turns always retain their raw static config"),
                 turn_redaction_session,
+                plan_usage_permit,
+                plan_usage_policy_snapshot,
             )
             .await
         }
@@ -529,6 +571,8 @@ async fn forward_pinned_continuation(
     codex_fingerprint_context: CodexFingerprintConvergenceContext,
     turn_control: ResponsesWebSocketTurnControl,
     turn_redaction_session: Option<RedactionSession>,
+    plan_usage_permit: Option<aether_runtime::AdmissionPermit>,
+    plan_usage_policy_snapshot: Option<PlanUsagePolicySnapshot>,
 ) -> RelayDisposition {
     let Some(pinned_candidate) =
         ResponsesWebSocketPinnedCandidate::from_decision(&bound.decision_template)
@@ -725,6 +769,7 @@ async fn forward_pinned_continuation(
         &turn_control.decision,
         turn_decision,
         &client_event,
+        plan_usage_policy_snapshot.clone(),
         planned_lease,
     )
     .await
@@ -755,21 +800,42 @@ async fn forward_pinned_continuation(
         .await;
         return RelayDisposition::UpstreamError("responses_websocket_send_failed");
     };
-    if send_upstream_message(upstream, WreqWsMessage::text(outbound))
-        .await
-        .is_err()
+    match send_responses_websocket_upstream_message(
+        upstream,
+        WreqWsMessage::text(outbound),
+        plan_usage_permit.as_ref(),
+        |request_state| turn.record_upstream_request_state(request_state),
+    )
+    .await
     {
-        queue_turn_finalization(
-            bound,
-            state,
-            turn,
-            ResponsesWebSocketTurnOutcome::upstream_send_failed(),
-        )
-        .await;
-        return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+        Ok(()) => {}
+        Err(ResponsesWebSocketUpstreamSendError::PlanUsagePermitLost) => {
+            turn.release_plan_usage_cost_before_upstream_send(
+                state,
+                "continuation_plan_usage_permit_lost",
+            )
+            .await;
+            queue_turn_finalization(
+                bound,
+                state,
+                turn,
+                ResponsesWebSocketTurnOutcome::connection_admission_lost(),
+            )
+            .await;
+            return RelayDisposition::PlanUsagePermitLost;
+        }
+        Err(ResponsesWebSocketUpstreamSendError::Transport(_)) => {
+            queue_turn_finalization(
+                bound,
+                state,
+                turn,
+                ResponsesWebSocketTurnOutcome::upstream_send_failed(),
+            )
+            .await;
+            return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+        }
     }
 
-    turn.mark_upstream_request_sent();
     turn.set_provider_response_headers(bound.upstream_response_headers.clone());
     if let Some(session) = turn_redaction_session {
         bound.redaction_restorer.register(session);
@@ -781,7 +847,9 @@ async fn forward_pinned_continuation(
         LogicalTurn::new(client_event, turn_index, logical_turn_id)
             .with_codex_fingerprint_context(codex_fingerprint_context)
             .with_provider_store(provider_event.get("store") == Some(&Value::Bool(true)))
-            .with_turn_control(turn_control),
+            .with_turn_control(turn_control)
+            .with_plan_usage_permit(plan_usage_permit)
+            .with_plan_usage_policy_snapshot(plan_usage_policy_snapshot),
         turn,
     );
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);
@@ -819,6 +887,8 @@ async fn forward_replanned_response_create(
     turn_control: ResponsesWebSocketTurnControl,
     raw_responses_lite_static_config: ResponsesLiteStaticConfig,
     turn_redaction_session: Option<RedactionSession>,
+    plan_usage_permit: Option<aether_runtime::AdmissionPermit>,
+    plan_usage_policy_snapshot: Option<PlanUsagePolicySnapshot>,
 ) -> RelayDisposition {
     let turn_request_id = Uuid::new_v4().to_string();
     let now_unix_secs = current_unix_secs();
@@ -919,6 +989,7 @@ async fn forward_replanned_response_create(
         &turn_control.decision,
         turn_decision,
         &client_event,
+        plan_usage_policy_snapshot.clone(),
         planned_lease,
     )
     .await
@@ -970,18 +1041,40 @@ async fn forward_replanned_response_create(
             .await;
             return RelayDisposition::UpstreamError("responses_websocket_send_failed");
         };
-        if send_upstream_message(upstream, WreqWsMessage::text(outbound))
-            .await
-            .is_err()
+        match send_responses_websocket_upstream_message(
+            upstream,
+            WreqWsMessage::text(outbound),
+            plan_usage_permit.as_ref(),
+            |request_state| turn.record_upstream_request_state(request_state),
+        )
+        .await
         {
-            queue_turn_finalization(
-                bound,
-                state,
-                turn,
-                ResponsesWebSocketTurnOutcome::upstream_send_failed(),
-            )
-            .await;
-            return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+            Ok(()) => {}
+            Err(ResponsesWebSocketUpstreamSendError::PlanUsagePermitLost) => {
+                turn.release_plan_usage_cost_before_upstream_send(
+                    state,
+                    "replanned_reuse_plan_usage_permit_lost",
+                )
+                .await;
+                queue_turn_finalization(
+                    bound,
+                    state,
+                    turn,
+                    ResponsesWebSocketTurnOutcome::connection_admission_lost(),
+                )
+                .await;
+                return RelayDisposition::PlanUsagePermitLost;
+            }
+            Err(ResponsesWebSocketUpstreamSendError::Transport(_)) => {
+                queue_turn_finalization(
+                    bound,
+                    state,
+                    turn,
+                    ResponsesWebSocketTurnOutcome::upstream_send_failed(),
+                )
+                .await;
+                return RelayDisposition::UpstreamError("responses_websocket_send_failed");
+            }
         }
 
         // A response.create without previous_response_id starts a new chain.
@@ -991,7 +1084,6 @@ async fn forward_replanned_response_create(
         bound
             .redaction_restorer
             .start_new_chain(turn_redaction_session);
-        turn.mark_upstream_request_sent();
         turn.set_provider_response_headers(bound.upstream_response_headers.clone());
         let provider_model =
             provider_model_from_decision(&decision).unwrap_or_else(|| bound.provider_model.clone());
@@ -1009,7 +1101,9 @@ async fn forward_replanned_response_create(
             LogicalTurn::new(client_event.clone(), turn_index, logical_turn_id.clone())
                 .with_codex_fingerprint_context(codex_fingerprint_context.clone())
                 .with_provider_store(provider_event.get("store") == Some(&Value::Bool(true)))
-                .with_turn_control(turn_control),
+                .with_turn_control(turn_control)
+                .with_plan_usage_permit(plan_usage_permit)
+                .with_plan_usage_policy_snapshot(plan_usage_policy_snapshot),
             turn,
         );
         bound.next_turn_index = bound.next_turn_index.saturating_add(1);
@@ -1031,42 +1125,64 @@ async fn forward_replanned_response_create(
         return RelayDisposition::Continue;
     }
 
-    let mut replacement =
-        match bind_responses_upstream(&decision, normalization, &client_event, adapter).await {
-            Ok(connection) => connection,
-            Err(code) => {
-                queue_turn_finalization(
-                    bound,
-                    state,
-                    turn,
-                    ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
-                )
-                .await;
-                warn!(
-                    event_name = "responses_websocket_followup_model_rebind_failed",
-                    log_type = "ops",
-                    transport = WEBSOCKET_LOG_TRANSPORT,
-                    websocket = true,
-                    trace_id = %context.trace_id,
-                    requested_model = %requested_model,
-                    error_code = code,
-                    "gateway failed to rebind Responses WebSocket follow-up model"
-                );
-                send_gateway_error_with_status(
-                    client_socket,
-                    502,
-                    code,
-                    "Gateway could not establish the requested model",
-                )
-                .await;
-                return RelayDisposition::Continue;
-            }
-        };
+    let mut replacement = match bind_responses_upstream(
+        &decision,
+        normalization,
+        &client_event,
+        adapter,
+        plan_usage_permit.as_ref(),
+        |request_state| turn.record_upstream_request_state(request_state),
+    )
+    .await
+    {
+        Ok(connection) => connection,
+        Err(ResponsesWebSocketUpstreamBindError::PlanUsagePermitLost) => {
+            turn.release_plan_usage_cost_before_upstream_send(
+                state,
+                "replanned_rebind_plan_usage_permit_lost",
+            )
+            .await;
+            queue_turn_finalization(
+                bound,
+                state,
+                turn,
+                ResponsesWebSocketTurnOutcome::connection_admission_lost(),
+            )
+            .await;
+            return RelayDisposition::PlanUsagePermitLost;
+        }
+        Err(ResponsesWebSocketUpstreamBindError::Transport(code)) => {
+            queue_turn_finalization(
+                bound,
+                state,
+                turn,
+                ResponsesWebSocketTurnOutcome::upstream_connect_failed(code),
+            )
+            .await;
+            warn!(
+                event_name = "responses_websocket_followup_model_rebind_failed",
+                log_type = "ops",
+                transport = WEBSOCKET_LOG_TRANSPORT,
+                websocket = true,
+                trace_id = %context.trace_id,
+                requested_model = %requested_model,
+                error_code = code,
+                "gateway failed to rebind Responses WebSocket follow-up model"
+            );
+            send_gateway_error_with_status(
+                client_socket,
+                502,
+                code,
+                "Gateway could not establish the requested model",
+            )
+            .await;
+            return RelayDisposition::Continue;
+        }
+    };
     if replacement.responses_lite_static_config.is_some() {
         replacement.responses_lite_static_config = Some(raw_responses_lite_static_config);
     }
 
-    turn.mark_upstream_request_sent();
     turn.set_provider_response_headers(replacement.upstream_response_headers.clone());
     let previous_client_model = bound.client_model.clone();
     let previous_provider_model = bound.provider_model.clone();
@@ -1094,7 +1210,9 @@ async fn forward_replanned_response_create(
         LogicalTurn::new(client_event, turn_index, logical_turn_id)
             .with_codex_fingerprint_context(codex_fingerprint_context)
             .with_provider_store(provider_event.get("store") == Some(&Value::Bool(true)))
-            .with_turn_control(turn_control),
+            .with_turn_control(turn_control)
+            .with_plan_usage_permit(plan_usage_permit)
+            .with_plan_usage_policy_snapshot(plan_usage_policy_snapshot),
         turn,
     );
     bound.next_turn_index = bound.next_turn_index.saturating_add(1);

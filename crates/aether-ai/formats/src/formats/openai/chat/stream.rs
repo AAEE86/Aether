@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 
 use crate::formats::openai::namespace::NamespaceToolAliases;
 use crate::formats::openai::responses::{
-    encode_gemini_tool_signature_carrier_with_direction,
+    encode_gemini_tool_signature_carrier_with_direction, openai_responses_message_item_id,
     openai_responses_synthetic_reasoning_item_id,
     response::{
         ensure_modern_openai_responses_response_fields, openai_responses_current_timestamp,
@@ -1840,7 +1840,7 @@ impl OpenAIResponsesProviderState {
                 });
                 self.finished = true;
             }
-            "keepalive" => {}
+            "keepalive" | "ping" => {}
             event_type if openai_responses_stream_event_is_known_noop(event_type) => {
                 self.ensure_started(report_context, &mut out);
             }
@@ -2328,7 +2328,7 @@ impl OpenAIResponsesClientEmitter {
     fn message_item_id(&self) -> String {
         self.message_item_id
             .clone()
-            .unwrap_or_else(|| format!("{}_msg", self.response_id()))
+            .unwrap_or_else(|| openai_responses_message_item_id(self.response_id(), 0))
     }
 
     fn reasoning_item_id(&self) -> String {
@@ -2347,7 +2347,7 @@ impl OpenAIResponsesClientEmitter {
 
     fn ensure_message_item_id(&mut self) -> String {
         if self.message_item_id.is_none() {
-            self.message_item_id = Some(format!("{}_msg", self.response_id()));
+            self.message_item_id = Some(openai_responses_message_item_id(self.response_id(), 0));
         }
         self.message_item_id()
     }
@@ -4357,7 +4357,7 @@ mod tests {
         assert!(sse.contains("event: response.output_item.done\n"));
         assert!(sse.contains("event: response.completed\n"));
         assert!(sse.contains("\"response_id\":\"resp_stream_123\""));
-        assert!(sse.contains("\"item_id\":\"resp_stream_123_msg\""));
+        assert!(sse.contains("\"item_id\":\"msg_aether_"));
         assert!(sse.contains("\"text\":\"Hello\""));
         assert!(sse.contains("\"output_text\":\"Hello\""));
         assert!(sse.contains("\"created_at\":"));
@@ -4421,8 +4421,8 @@ mod tests {
         );
 
         let sse = String::from_utf8(bytes).expect("sse should be utf8");
-        assert!(sse.contains("\"item_id\":\"msg_first_msg\""));
-        assert!(!sse.contains("\"item_id\":\"msg_second_msg\""));
+        assert!(sse.contains("\"item_id\":\"msg_aether_"));
+        assert!(!sse.contains("msg_second_msg"));
     }
 
     #[test]

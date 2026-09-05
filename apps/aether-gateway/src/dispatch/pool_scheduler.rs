@@ -318,7 +318,9 @@ fn active_probe_member_is_unschedulable_for_request(
     }) {
         return true;
     }
-    key_context.is_some_and(|context| context.account_blocked || context.quota_exhausted)
+    key_context.is_some_and(|context| {
+        context.account_blocked || context.quota_exhausted || context.quota_hard_blocked
+    })
 }
 
 async fn expand_pool_group_candidate(
@@ -598,11 +600,17 @@ impl<'a> PoolKeyCursor<'a> {
             return;
         };
         self.exhaustion_skip_recorded = true;
-        record_local_runtime_candidate_skip_reason(
-            self.state.app(),
-            trace_id,
-            self.runtime_miss_pool_exhaustion_skip_reason(),
-        );
+        if self.skip_reason_counts.is_empty() {
+            record_local_runtime_candidate_skip_reason(
+                self.state.app(),
+                trace_id,
+                "pool_group_exhausted",
+            );
+            return;
+        }
+        for reason in self.skip_reason_counts.keys() {
+            record_local_runtime_candidate_skip_reason(self.state.app(), trace_id, reason);
+        }
     }
 
     fn runtime_miss_pool_exhaustion_skip_reason(&self) -> &'static str {
@@ -748,19 +756,28 @@ impl<'a> PoolKeyCursor<'a> {
                         return None;
                     }
                 };
+                let api_format = self.group.candidate.endpoint_api_format.as_str();
                 rows.sort_by(|left, right| {
-                    let left_priority = self
-                        .routing_overlay
-                        .as_ref()
-                        .map_or(left.key_internal_priority, |overlay| {
-                            overlay.key_priority(&left.key_id, left.key_internal_priority)
-                        });
-                    let right_priority = self
-                        .routing_overlay
-                        .as_ref()
-                        .map_or(right.key_internal_priority, |overlay| {
-                            overlay.key_priority(&right.key_id, right.key_internal_priority)
-                        });
+                    let left_priority = self.routing_overlay.as_ref().map_or(
+                        left.key_internal_priority,
+                        |overlay| {
+                            overlay.key_priority_for_format(
+                                &left.key_id,
+                                api_format,
+                                left.key_internal_priority,
+                            )
+                        },
+                    );
+                    let right_priority = self.routing_overlay.as_ref().map_or(
+                        right.key_internal_priority,
+                        |overlay| {
+                            overlay.key_priority_for_format(
+                                &right.key_id,
+                                api_format,
+                                right.key_internal_priority,
+                            )
+                        },
+                    );
                     left_priority
                         .cmp(&right_priority)
                         .then(left.key_id.cmp(&right.key_id))
@@ -1441,13 +1458,30 @@ async fn read_pool_catalog_key_contexts_by_id(
                 key_count = key_ids.len(),
                 "gateway pool scheduler: failed to read catalog key metadata"
             );
-            return BTreeMap::new();
+            // Do not fail open when the quota metadata read is unavailable. A
+            // missing context must never turn an exhausted account into an
+            // eligible candidate and produce another upstream 429. The caller
+            // treats this marker as a pool quota skip and the next request will
+            // retry the metadata read.
+            return key_ids
+                .into_iter()
+                .map(|key_id| {
+                    (
+                        key_id,
+                        PoolCatalogKeyContext {
+                            quota_hard_blocked: true,
+                            ..PoolCatalogKeyContext::default()
+                        },
+                    )
+                })
+                .collect();
         }
     };
 
     let provider_pool_service = ProviderPoolService::with_builtin_adapters();
 
-    keys.into_iter()
+    let mut contexts = keys
+        .into_iter()
         .map(|key| {
             let provider_type = provider_type_by_key_id
                 .get(&key.id)
@@ -1464,7 +1498,19 @@ async fn read_pool_catalog_key_contexts_by_id(
                 ),
             )
         })
-        .collect()
+        .collect::<BTreeMap<_, _>>();
+    // A key can disappear between the candidate-row and catalog reads. Keep
+    // the snapshot non-empty and fail closed for those IDs so the caller does
+    // not interpret an incomplete read as "all accounts are healthy".
+    for key_id in key_ids {
+        contexts
+            .entry(key_id)
+            .or_insert_with(|| PoolCatalogKeyContext {
+                quota_hard_blocked: true,
+                ..PoolCatalogKeyContext::default()
+            });
+    }
+    contexts
 }
 
 fn build_pool_catalog_key_context(
@@ -1709,7 +1755,21 @@ fn run_local_execution_pool_scheduler_with_runtime_map(
         let key_context = key_context_by_id
             .get(&candidate.candidate.key_id)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                // An explicitly non-empty metadata snapshot should contain
+                // every catalog key in this page. If one disappeared between
+                // reads, fail closed for that key instead of sending traffic
+                // with an unknown quota state. Empty maps are retained for
+                // callers/tests that intentionally provide no runtime context.
+                if key_context_by_id.is_empty() {
+                    PoolCatalogKeyContext::default()
+                } else {
+                    PoolCatalogKeyContext {
+                        quota_hard_blocked: true,
+                        ..PoolCatalogKeyContext::default()
+                    }
+                }
+            });
         let admin_pool_config = effective_pool_config_by_provider
             .get(&candidate.candidate.provider_id)
             .cloned()
@@ -1936,11 +1996,13 @@ fn apply_pool_orchestration(
     orchestration: PoolCandidateOrchestration,
 ) -> EligibleLocalExecutionCandidate {
     let scheduler_affinity_epoch = candidate.orchestration.scheduler_affinity_epoch;
+    let sticky_key_attempts = candidate.orchestration.sticky_key_attempts;
     candidate.orchestration = LocalExecutionCandidateMetadata {
         candidate_group_id: orchestration.candidate_group_id,
         pool_key_index: orchestration.pool_key_index,
         pool_key_lease: None,
         scheduler_affinity_epoch,
+        sticky_key_attempts,
     };
     candidate
 }
@@ -1983,7 +2045,7 @@ mod tests {
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
     };
-    use aether_pool_core::PoolSchedulingPreset;
+    use aether_pool_core::{PoolSchedulingPreset, POOL_ACCOUNT_EXHAUSTED_SKIP_REASON};
     use aether_provider_pool::ProviderPoolService;
     use aether_provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
@@ -2096,6 +2158,55 @@ mod tests {
     }
 
     #[test]
+    fn pool_scheduler_skips_quota_exhausted_key_when_flag_is_false() {
+        let ready = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-ready",
+            10,
+            Some(json!({ "pool_advanced": {} })),
+        );
+        let exhausted = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "key-exhausted",
+            10,
+            Some(json!({ "pool_advanced": { "skip_exhausted_accounts": false } })),
+        );
+        let key_context_by_id = BTreeMap::from([
+            ("key-ready".to_string(), PoolCatalogKeyContext::default()),
+            (
+                "key-exhausted".to_string(),
+                PoolCatalogKeyContext {
+                    quota_exhausted: true,
+                    ..PoolCatalogKeyContext::default()
+                },
+            ),
+        ]);
+
+        let (scheduled, skipped) = apply_local_execution_pool_scheduler_with_runtime_map(
+            vec![ready, exhausted],
+            &BTreeMap::new(),
+            &key_context_by_id,
+        );
+
+        assert_eq!(
+            scheduled
+                .iter()
+                .map(|item| item.candidate.key_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-ready"]
+        );
+        assert_eq!(
+            skipped
+                .iter()
+                .map(|item| (item.candidate.key_id.as_str(), item.skip_reason))
+                .collect::<Vec<_>>(),
+            vec![("key-exhausted", POOL_ACCOUNT_EXHAUSTED_SKIP_REASON)]
+        );
+    }
+
+    #[test]
     fn pool_scheduler_attaches_group_and_pool_metadata_to_ranked_candidates() {
         let pool_first = sample_eligible_candidate(
             "provider-pool",
@@ -2144,6 +2255,7 @@ mod tests {
                 pool_key_index: Some(0),
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                sticky_key_attempts: None,
             }
         );
         assert_eq!(reordered[1].orchestration.pool_key_index, Some(1));
@@ -2161,6 +2273,7 @@ mod tests {
                 pool_key_index: None,
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                sticky_key_attempts: None,
             }
         );
     }
@@ -3245,8 +3358,12 @@ mod tests {
             .take_local_execution_runtime_miss_diagnostic(trace_id)
             .expect("runtime miss diagnostic should exist");
         assert_eq!(diagnostic.reason, "all_candidates_skipped");
-        assert_eq!(diagnostic.skipped_candidate_count, Some(1));
+        assert_eq!(diagnostic.skipped_candidate_count, Some(2));
         assert_eq!(diagnostic.skip_reasons.get("pool_cooldown"), Some(&1));
+        assert_eq!(
+            diagnostic.skip_reasons.get("transport_snapshot_missing"),
+            Some(&1)
+        );
     }
 
     #[tokio::test]
@@ -4689,6 +4806,15 @@ mod tests {
             ))
     }
 
+    fn provider_catalog_credential_state() -> AppState {
+        AppState::new()
+            .expect("credential state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY),
+            )
+    }
+
     fn large_pool_fixture(
         key_count: usize,
         provider_config: Option<serde_json::Value>,
@@ -4739,10 +4865,18 @@ mod tests {
         )
         .expect("endpoint transport should build");
 
+        let credential_state = provider_catalog_credential_state();
         let mut keys = Vec::with_capacity(key_count);
         let mut rows = Vec::with_capacity(key_count);
         for index in 0..key_count {
             let key_id = format!("key-{index:05}");
+            let encrypted_api_key = credential_state
+                .seal_provider_catalog_key_api_key(
+                    "provider-pool",
+                    &key_id,
+                    &format!("secret-{index}"),
+                )
+                .expect("api key should encrypt");
             let mut key = StoredProviderCatalogKey::new(
                 key_id.clone(),
                 "provider-pool".to_string(),
@@ -4754,7 +4888,7 @@ mod tests {
             .expect("key should build")
             .with_transport_fields(
                 Some(json!(["openai:chat"])),
-                Some(format!("secret-{index}")),
+                encrypted_api_key,
                 None,
                 None,
                 None,
@@ -4890,6 +5024,9 @@ mod tests {
     }
 
     fn sample_codex_pool_key(provider_id: &str, key_id: &str) -> StoredProviderCatalogKey {
+        let encrypted_api_key = provider_catalog_credential_state()
+            .seal_provider_catalog_key_api_key(provider_id, key_id, &format!("secret-{key_id}"))
+            .expect("api key should encrypt");
         let mut key = StoredProviderCatalogKey::new(
             key_id.to_string(),
             provider_id.to_string(),
@@ -4901,7 +5038,7 @@ mod tests {
         .expect("key should build")
         .with_transport_fields(
             Some(json!(["openai:responses"])),
-            Some(format!("secret-{key_id}")),
+            encrypted_api_key,
             None,
             None,
             Some(json!({"openai:responses": 1})),
@@ -5053,6 +5190,8 @@ mod tests {
             priority_mode: RoutingSetPriorityMode::Provider,
             scheduling_mode: RoutingSchedulingMode::CacheAffinity,
             keep_priority_on_conversion: false,
+            sticky_key_attempts: aether_routing_core::DEFAULT_STICKY_KEY_ATTEMPTS,
+            execution_policy: Default::default(),
             ranking_overlay: RankingOverlay {
                 allowed_keys: key_ids.into_iter().map(str::to_string).collect(),
                 ..RankingOverlay::default()

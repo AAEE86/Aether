@@ -110,6 +110,54 @@ mod tests {
             .is_empty());
     }
 
+    #[tokio::test]
+    async fn legacy_proxy_node_inserts_receive_non_empty_tunnel_generations() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+
+        run_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        // Simulate an older writer that does not know about tunnel_generation.
+        sqlx::query(
+            "INSERT INTO proxy_nodes (id, name, ip, port, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("legacy-node-a")
+        .bind("legacy node a")
+        .bind("127.0.0.1")
+        .bind(18080_i32)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("legacy proxy node insert should succeed");
+        sqlx::query(
+            "INSERT INTO proxy_nodes (id, name, ip, port, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("legacy-node-b")
+        .bind("legacy node b")
+        .bind("127.0.0.2")
+        .bind(18081_i32)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("second legacy proxy node insert should succeed");
+
+        let generations = sqlx::query_scalar::<_, String>(
+            "SELECT tunnel_generation FROM proxy_nodes ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("proxy node generations should load");
+        assert_eq!(generations.len(), 2);
+        assert!(generations.iter().all(|generation| !generation.is_empty()));
+        assert_ne!(generations[0], generations[1]);
+    }
+
     #[test]
     fn rejects_applied_migration_versions_unknown_to_this_binary() {
         let version = MIGRATOR
@@ -675,6 +723,85 @@ ORDER BY id
                 "manual-event".to_string(),
                 "ownerless-event".to_string(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn ldap_singleton_migration_keeps_legacy_min_id_and_enforces_one_fixed_row() {
+        const LDAP_SINGLETON_VERSION: i64 = 20260831000000;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        for migration in MIGRATOR
+            .iter()
+            .filter(|migration| migration.version < LDAP_SINGLETON_VERSION)
+        {
+            sqlx::raw_sql(migration.sql.as_ref())
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|err| panic!("migration {} should run: {err}", migration.version));
+        }
+
+        sqlx::query(
+            r#"
+INSERT INTO ldap_configs (
+  server_url, bind_dn, bind_password_encrypted, base_dn, created_at, updated_at
+) VALUES
+  ('ldaps://first.example.com', 'cn=first', 'first-ciphertext', 'dc=first', 1, 1),
+  ('ldaps://second.example.com', 'cn=second', 'second-ciphertext', 'dc=second', 2, 2)
+"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy duplicate LDAP rows should seed");
+
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == LDAP_SINGLETON_VERSION)
+            .expect("LDAP singleton migration should be embedded");
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&pool)
+            .await
+            .expect("LDAP singleton migration should run");
+
+        let surviving = sqlx::query_as::<_, (String, Option<String>, i64)>(
+            "SELECT server_url, bind_password_encrypted, singleton_key FROM ldap_configs",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("singleton LDAP row should load");
+        assert_eq!(
+            surviving,
+            vec![(
+                "ldaps://first.example.com".to_string(),
+                Some("first-ciphertext".to_string()),
+                1,
+            )]
+        );
+
+        let duplicate = sqlx::query(
+            r#"
+INSERT INTO ldap_configs (
+  server_url, bind_dn, bind_password_encrypted, base_dn, created_at, updated_at
+) VALUES ('ldaps://third.example.com', 'cn=third', 'third-ciphertext', 'dc=third', 3, 3)
+"#,
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            duplicate.is_err(),
+            "a second singleton row must be rejected"
+        );
+
+        let invalid_key = sqlx::query("UPDATE ldap_configs SET singleton_key = 2")
+            .execute(&pool)
+            .await;
+        assert!(
+            invalid_key.is_err(),
+            "the singleton discriminator must remain fixed at one"
         );
     }
 

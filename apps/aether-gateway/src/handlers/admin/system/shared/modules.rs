@@ -248,7 +248,7 @@ pub(crate) fn oauth_module_config_is_valid(
 pub(crate) fn ldap_module_config_is_valid(
     config: Option<&aether_data::repository::auth_modules::StoredLdapModuleConfig>,
 ) -> bool {
-    admin_system_kernel::ldap_module_config_is_valid(config)
+    crate::handlers::shared::ldap_module_config_is_valid(config)
 }
 
 pub(crate) async fn build_admin_module_runtime_state(

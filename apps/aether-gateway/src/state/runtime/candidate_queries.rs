@@ -111,8 +111,9 @@ impl AppState {
 
     pub(crate) async fn upsert_request_candidate(
         &self,
-        candidate: candidates::UpsertRequestCandidateRecord,
+        mut candidate: candidates::UpsertRequestCandidateRecord,
     ) -> Result<Option<candidates::StoredRequestCandidate>, GatewayError> {
+        candidate.sanitize_for_persistence();
         if let Some(queue) = self.request_candidate_queue.as_ref() {
             let stored = stored_request_candidate_from_upsert(&candidate)?;
             queue
@@ -136,8 +137,9 @@ impl AppState {
     /// the async queue is enabled.
     pub(crate) async fn enqueue_request_candidate_status(
         &self,
-        candidate: candidates::UpsertRequestCandidateRecord,
+        mut candidate: candidates::UpsertRequestCandidateRecord,
     ) -> Result<Option<()>, GatewayError> {
+        candidate.sanitize_for_persistence();
         if let Some(queue) = self.request_candidate_queue.as_ref() {
             queue
                 .enqueue_or_fallback(candidate)
@@ -158,8 +160,9 @@ impl AppState {
     /// when the queue is disabled or closed.
     pub(crate) fn try_enqueue_request_candidate_status(
         &self,
-        candidate: candidates::UpsertRequestCandidateRecord,
+        mut candidate: candidates::UpsertRequestCandidateRecord,
     ) -> Result<(), candidates::UpsertRequestCandidateRecord> {
+        candidate.sanitize_for_persistence();
         let Some(queue) = self.request_candidate_queue.as_ref() else {
             return Err(candidate);
         };

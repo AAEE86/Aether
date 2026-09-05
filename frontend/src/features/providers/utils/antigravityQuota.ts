@@ -1,3 +1,5 @@
+import type { QuotaWindowSnapshot } from '@/api/endpoints/types'
+
 export interface AntigravityQuotaSortableItem {
   model: string
   label: string
@@ -6,13 +8,11 @@ export interface AntigravityQuotaSortableItem {
   detail?: string
 }
 
-const ANTIGRAVITY_QUOTA_GROUPS = [
-  { label: 'Gemini额度', matches: (model: string) => model.startsWith('gemini-') },
-  {
-    label: 'Claude额度',
-    matches: (model: string) => model.startsWith('claude-') || model.startsWith('gpt-'),
-  },
-] as const
+type AntigravityQuotaPeriodMessageKey =
+  | 'providers.antigravity.quota.period.weekly'
+  | 'providers.antigravity.quota.period.fiveHours'
+
+type AntigravityQuotaTranslator = (key: AntigravityQuotaPeriodMessageKey) => string
 
 const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
   'gemini-pro-agent': 'Gemini 3.1 Pro (High)',
@@ -125,39 +125,63 @@ export function dedupeAntigravityQuotaItemsByLabel<T extends AntigravityQuotaSor
   return Array.from(selectedByLabel.values()).sort(compareAntigravityQuotaItems)
 }
 
-export function summarizeAntigravityQuotaItems<T extends AntigravityQuotaSortableItem>(
-  items: T[],
-): T[] {
-  const itemsByGroup = new Map<string, T[]>()
-  for (const item of items) {
-    const normalizedModel = item.model.trim().toLowerCase().replace(/^model:/, '')
-    const group = ANTIGRAVITY_QUOTA_GROUPS.find(candidate => candidate.matches(normalizedModel))
-    if (!group) continue
-    const groupedItems = itemsByGroup.get(group.label) ?? []
-    groupedItems.push(item)
-    itemsByGroup.set(group.label, groupedItems)
-  }
+function canonicalizeAntigravityQuotaGroupLabel(rawLabel: string): string {
+  const normalized = rawLabel
+    .trim()
+    .toLowerCase()
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
 
-  return ANTIGRAVITY_QUOTA_GROUPS.map(group => group.label)
-    .map((label) => {
-      const groupedItems = itemsByGroup.get(label)
-      if (!groupedItems?.length) return undefined
-      const remainingValues = groupedItems
-        .map(item => item.remainingPercent)
-        .sort((left, right) => left - right)
-      const minRemaining = remainingValues[0] ?? 0
-      const maxRemaining = remainingValues.at(-1) ?? minRemaining
-      const selected = groupedItems.find(item => item.remainingPercent === minRemaining) ?? groupedItems[0]
-      const detail = Math.abs(maxRemaining - minRemaining) < 1e-6
-        ? formatAntigravityQuotaValue(minRemaining)
-        : `${formatAntigravityQuotaValue(minRemaining)}–${formatAntigravityQuotaValue(maxRemaining)}`
-      return { ...selected, label, remainingPercent: minRemaining, detail }
-    })
-    .filter((item): item is T => item !== undefined)
+  if (normalized === 'gemini额度' || /^gemini(?: models?)?$/.test(normalized)) {
+    return 'Gemini Models'
+  }
+  if (
+    normalized === 'claude & chatgpt'
+    || /^claude\s*(?:&|and)\s*(?:gpt|chatgpt)(?: models?)?$/.test(normalized)
+  ) {
+    return 'Claude and GPT models'
+  }
+  return rawLabel.trim()
 }
 
-function formatAntigravityQuotaValue(value: number): string {
-  const rounded = Math.round(value)
-  const formatted = Math.abs(value - rounded) < 1e-6 ? String(rounded) : value.toFixed(1)
-  return `${formatted}%`
+function getAntigravityQuotaGroupName(window: QuotaWindowSnapshot): string {
+  const explicitGroupLabel = String(window.quota_group_label || '').trim()
+  if (explicitGroupLabel) {
+    return canonicalizeAntigravityQuotaGroupLabel(explicitGroupLabel)
+  }
+
+  const rawLabel = String(window.label || '').trim()
+  const groupLabel = rawLabel.split(/\s*·\s*/, 1)[0]
+    ?.replace(/\s+(?:weekly limit remaining|weekly|5\s*hours?|5h)$/i, '')
+    .trim()
+  return canonicalizeAntigravityQuotaGroupLabel(groupLabel || rawLabel)
+}
+
+function getAntigravityQuotaPeriodLabel(
+  window: QuotaWindowSnapshot,
+  translate: AntigravityQuotaTranslator,
+): string {
+  const periodCandidates = [window.window, window.bucket_id, window.code, window.label]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+  const normalized = periodCandidates.join(' ').toLowerCase()
+
+  if (/(?:^|[^a-z])weekly(?:[^a-z]|$)/.test(normalized)) {
+    return translate('providers.antigravity.quota.period.weekly')
+  }
+  if (/(?:^|[^a-z0-9])5\s*(?:h|hours?)(?:[^a-z0-9]|$)/.test(normalized)) {
+    return translate('providers.antigravity.quota.period.fiveHours')
+  }
+
+  return String(window.window || '').trim()
+}
+
+export function resolveAntigravityQuotaGroupLabel(
+  window: QuotaWindowSnapshot,
+  translate: AntigravityQuotaTranslator,
+): string {
+  const groupName = getAntigravityQuotaGroupName(window)
+  const periodLabel = getAntigravityQuotaPeriodLabel(window, translate)
+  if (groupName && periodLabel) return `${groupName} · ${periodLabel}`
+  return groupName || String(window.label || window.code || '').trim()
 }

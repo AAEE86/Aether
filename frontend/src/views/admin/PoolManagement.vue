@@ -593,8 +593,8 @@
                   <button
                     v-if="item.key === 'priority'"
                     type="button"
-                    class="inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-4"
-                    :class="`${getMobileTagClass(item)} hover:border-primary/40 hover:text-foreground`"
+                    class="inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-4 hover:border-primary/40 hover:text-foreground"
+                    :class="getMobileTagClass(item)"
                     :title="`${item.label}，点击编辑优先级`"
                     @click="quickEditInternalPriority(key)"
                   >
@@ -1143,11 +1143,7 @@ import {
 } from '@/features/pool/utils/poolStatsDisplay'
 import { resetCodexCycleUsageWindows } from '@/features/pool/utils/poolCycleStats'
 import { mergePoolKeyQuotaSnapshots } from '@/features/pool/utils/poolQuotaRefresh'
-import {
-  dedupeAntigravityQuotaItemsByLabel,
-  resolveAntigravityQuotaLabel,
-  summarizeAntigravityQuotaItems,
-} from '@/features/providers/utils/antigravityQuota'
+import { resolveAntigravityQuotaGroupLabel } from '@/features/providers/utils/antigravityQuota'
 import {
   clearPendingCodexResetCreditIdempotencyKey,
   clearPendingCodexResetCreditIdempotencyKeyForOutcome,
@@ -1157,6 +1153,7 @@ import {
   getCodexResetCreditAvailableCount,
   getCodexResetCreditReservationIdempotencyKey,
   getVisibleCodexResetCreditItems,
+  mergeCodexQuotaDisplays,
   readPendingCodexResetCreditIdempotencyKey,
   rememberPendingCodexResetCreditIdempotencyKey,
 } from '@/features/providers/components/codex-reset-credit-display'
@@ -1197,7 +1194,7 @@ function prefetchProviderDetailDrawer(): void {
 type PoolKeyScore = NonNullable<PoolKeyDetail['pool_score']>
 
 const { success, error: showError, warning: showWarning } = useToast()
-const { legacyT } = useI18n()
+const { legacyT, t } = useI18n()
 const { confirm } = useConfirm()
 const { copyToClipboard } = useClipboard()
 const { tick: countdownTick, start: startCountdownTimer } = useCountdownTimer()
@@ -2239,9 +2236,17 @@ function applyQuotaRefreshResultToCurrentPage(result: Awaited<ReturnType<typeof 
 }
 
 function getCodexResetCredits(key: PoolKeyDetail) {
-  return getQuotaSnapshotProviderType(key) === 'codex'
-    ? key.status_snapshot?.quota?.reset_credits ?? null
+  if (getQuotaSnapshotProviderType(key) !== 'codex') return null
+
+  const snapshot = key.status_snapshot?.quota?.reset_credits
+  const snapshotUpdatedAt = key.status_snapshot?.quota?.updated_at
+  const snapshotDisplay = snapshot
+    ? {
+        ...(typeof snapshotUpdatedAt === 'number' ? { updated_at: snapshotUpdatedAt } : {}),
+        reset_credits: snapshot,
+      }
     : null
+  return mergeCodexQuotaDisplays(snapshotDisplay, key.upstream_metadata?.codex)?.reset_credits ?? null
 }
 
 function getCodexCredentialGeneration(key: PoolKeyDetail): string | null | undefined {
@@ -3864,17 +3869,17 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
   }
 
   if (providerType === 'antigravity') {
-    const windows = getQuotaSnapshotWindowsByScope(quota, 'model')
+    const windows = getQuotaSnapshotWindowsByScope(quota, 'quota_group')
     if (windows.length === 0) return []
-    const opaqueDisplayIndex = { value: 1 }
-    return summarizeAntigravityQuotaItems(dedupeAntigravityQuotaItemsByLabel(windows
-      .map((window): (QuotaProgressItem & { model: string, resetSeconds: number | null }) | null => {
+    return windows
+      .map((window, index): QuotaProgressItem | null => {
         const remainingPercent = getQuotaWindowRemainingPercent(window)
         if (remainingPercent == null) return null
-        const model = String(window.model || window.code || '').trim().replace(/^model:/i, '')
+        const label = resolveAntigravityQuotaGroupLabel(window, t)
+        if (!label) return null
         return {
-          model,
-          label: resolveAntigravityQuotaLabel(model, window.label, opaqueDisplayIndex),
+          label,
+          sortOrder: index,
           remainingPercent,
           resetAtSeconds: normalizeUnixSeconds(window.reset_at ?? quota.reset_at ?? null),
           resetSeconds: normalizeRemainingSeconds(window.reset_seconds ?? quota.reset_seconds ?? null),
@@ -3882,7 +3887,7 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
           allowDynamicReset: true,
         }
       })
-        .filter((item): item is QuotaProgressItem & { model: string, resetSeconds: number | null } => item != null)))
+      .filter((item): item is QuotaProgressItem => item != null)
   }
 
   if (providerType === 'gemini_cli') {

@@ -6,6 +6,7 @@ use crate::handlers::admin::shared::unix_secs_to_rfc3339;
 use crate::handlers::public::{request_candidate_event_unix_ms, request_candidate_status_label};
 use crate::orchestration::{codex_cyber_flag_passthrough_enabled, responses_websocket_adapter};
 use crate::provider_key_auth::provider_key_effective_api_formats;
+use aether_admin::provider::redaction::{admin_secret_safe_json, admin_secret_safe_proxy};
 use aether_data_contracts::repository::candidates::{
     RequestCandidateStatus, StoredRequestCandidate,
 };
@@ -196,13 +197,13 @@ pub(crate) fn build_admin_provider_summary_value(
         "max_retries": provider.max_retries,
         "max_transfer_count": max_transfer_count,
         "max_transfer_timeout_seconds": max_transfer_timeout_seconds,
-        "proxy": provider.proxy.clone(),
+        "proxy": admin_secret_safe_proxy(provider.proxy.as_ref()),
         "stream_first_byte_timeout": provider.stream_first_byte_timeout_secs,
         "request_timeout": provider.request_timeout_secs,
-        "claude_code_advanced": config.and_then(|cfg| cfg.get("claude_code_advanced")).cloned(),
-        "pool_advanced": config.and_then(|cfg| cfg.get("pool_advanced")).cloned(),
-        "failover_rules": config.and_then(|cfg| cfg.get("failover_rules")).cloned(),
-        "chat_pii_redaction": config.and_then(|cfg| cfg.get("chat_pii_redaction")).cloned(),
+        "claude_code_advanced": admin_secret_safe_json(config.and_then(|cfg| cfg.get("claude_code_advanced"))),
+        "pool_advanced": admin_secret_safe_json(config.and_then(|cfg| cfg.get("pool_advanced"))),
+        "failover_rules": admin_secret_safe_json(config.and_then(|cfg| cfg.get("failover_rules"))),
+        "chat_pii_redaction": admin_secret_safe_json(config.and_then(|cfg| cfg.get("chat_pii_redaction"))),
         "total_endpoints": total_endpoints,
         "active_endpoints": active_endpoints,
         "total_keys": total_keys,

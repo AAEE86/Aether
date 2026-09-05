@@ -3,17 +3,19 @@ use super::{
     build_public_auth_modules_status_payload, build_public_catalog_models_payload,
     build_public_catalog_search_models_payload, build_public_providers_payload,
     build_related_health_monitor_payload, capability_detail_by_name, ldap_module_config_is_valid,
-    sanitize_public_model_config_for_user, serialize_public_capability, supported_capability_names,
+    sanitize_public_model_capabilities, sanitize_public_model_config_for_user,
+    sanitize_public_tiered_pricing, serialize_public_capability, supported_capability_names,
     ApiFormatHealthMonitorOptions, HealthMonitorRelationDimension, ModelHealthMonitorOptions,
     PUBLIC_CAPABILITY_DEFINITIONS,
 };
 use crate::control::GatewayPublicRequestContext;
 use crate::handlers::shared::{
-    decrypt_catalog_secret_with_fallbacks, encrypt_catalog_secret_with_fallbacks,
-    escape_admin_email_template_html, module_available_from_env, query_param_bool,
-    query_param_optional_bool, query_param_value, read_admin_email_template_payload,
-    render_admin_email_template_html, system_config_bool, system_config_string,
-    unix_secs_to_rfc3339,
+    decrypt_catalog_secret_with_fallbacks, decrypt_or_migrate_auth_api_key_secret,
+    decrypt_or_migrate_ldap_bind_password, decrypt_or_migrate_system_config_secret,
+    encrypt_catalog_secret_with_fallbacks, escape_admin_email_template_html,
+    module_available_from_env, query_param_bool, query_param_optional_bool, query_param_value,
+    read_admin_email_template_payload, render_admin_email_template_html, system_config_bool,
+    system_config_string, unix_secs_to_rfc3339,
 };
 use crate::{AppState, GatewayError};
 use aether_data_contracts::repository::global_models::PublicGlobalModelQuery;
@@ -48,6 +50,8 @@ mod support_payment;
 mod support_test_connection;
 #[path = "support/user_me.rs"]
 mod support_user_me;
+#[path = "support/user_me_vscodex.rs"]
+mod support_vscodex;
 #[path = "support/wallet.rs"]
 mod support_wallet;
 
@@ -66,9 +70,11 @@ use self::support_auth::auth_session::{
     build_auth_wallet_summary_payload, handle_auth_me, resolve_authenticated_local_user,
     AuthenticatedLocalUserContext,
 };
+use self::support_auth::{auth_email_is_verified, consume_auth_email_registration_proof};
 use self::support_auth::{
-    build_auth_error_response, build_auth_json_response, build_auth_registration_settings_payload,
-    build_auth_settings_payload, extract_client_device_id, maybe_build_local_auth_response,
+    build_auth_error_response, build_auth_json_response, build_auth_refresh_cookie_clear_header,
+    build_auth_registration_settings_payload, build_auth_settings_payload,
+    extract_client_device_id, mark_sensitive_response_no_store, maybe_build_local_auth_response,
 };
 use self::support_billing::maybe_build_local_billing_response;
 use self::support_ccswitch::maybe_build_local_ccswitch_response;
@@ -89,12 +95,16 @@ use self::support_oauth::maybe_build_local_oauth_response;
 use self::support_payment::maybe_build_local_payment_callback_response;
 use self::support_test_connection::maybe_build_local_test_connection_response;
 use self::support_user_me::maybe_build_local_users_me_response;
+pub(crate) use self::support_vscodex::vscodex_ws_proxy;
+use self::support_vscodex::{handle_users_me_vscodex_request, maybe_build_local_vscodex_response};
 use self::support_wallet::{
     build_wallet_balance_payload_for_auth_scope, build_wallet_balance_payload_for_user,
     build_wallet_live_today_usage_payload_for_api_key,
     build_wallet_live_today_usage_payload_for_user, direct_gateway_channels,
-    maybe_build_local_wallet_response, sanitize_wallet_gateway_response,
-    wallet_normalize_optional_string_field,
+    maybe_build_local_wallet_response, prepare_billing_gateway_response_for_storage,
+    prepare_wallet_gateway_response_for_storage, resolve_direct_gateway_channel,
+    sanitize_wallet_gateway_response, wallet_normalize_optional_string_field,
+    wallet_payment_instructions_from_checkout, wallet_payment_instructions_from_stored,
 };
 
 pub(crate) fn build_unhandled_public_support_response(
@@ -120,7 +130,8 @@ pub(crate) async fn maybe_build_local_public_support_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    remote_addr: &std::net::SocketAddr,
+    client_ip: std::net::IpAddr,
     request_body: Option<&Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
@@ -133,15 +144,21 @@ pub(crate) async fn maybe_build_local_public_support_response(
             state,
             request_context,
             headers,
-            cf_connecting_ip,
+            client_ip,
             request_body,
         )
         .await;
     }
 
     if decision.route_family.as_deref() == Some("oauth") {
-        return maybe_build_local_oauth_response(state, request_context, headers, request_body)
-            .await;
+        return maybe_build_local_oauth_response(
+            state,
+            request_context,
+            headers,
+            client_ip,
+            request_body,
+        )
+        .await;
     }
 
     if decision.route_family.as_deref() == Some("dashboard") {
@@ -163,8 +180,14 @@ pub(crate) async fn maybe_build_local_public_support_response(
     }
 
     if decision.route_family.as_deref() == Some("wallet") {
-        if let Some(response) =
-            maybe_build_local_wallet_response(state, request_context, headers, request_body).await
+        if let Some(response) = maybe_build_local_wallet_response(
+            state,
+            request_context,
+            headers,
+            client_ip,
+            request_body,
+        )
+        .await
         {
             return Some(response);
         }
@@ -172,8 +195,14 @@ pub(crate) async fn maybe_build_local_public_support_response(
     }
 
     if decision.route_family.as_deref() == Some("billing") {
-        if let Some(response) =
-            maybe_build_local_billing_response(state, request_context, headers, request_body).await
+        if let Some(response) = maybe_build_local_billing_response(
+            state,
+            request_context,
+            headers,
+            client_ip,
+            request_body,
+        )
+        .await
         {
             return Some(response);
         }
@@ -188,7 +217,18 @@ pub(crate) async fn maybe_build_local_public_support_response(
     }
 
     if decision.route_family.as_deref() == Some("users_me") {
-        return maybe_build_local_users_me_response(state, request_context, headers, request_body)
+        return maybe_build_local_users_me_response(
+            state,
+            request_context,
+            headers,
+            remote_addr,
+            request_body,
+        )
+        .await;
+    }
+
+    if decision.route_family.as_deref() == Some("vscodex") {
+        return maybe_build_local_vscodex_response(state, request_context, client_ip, request_body)
             .await;
     }
 
@@ -369,10 +409,6 @@ pub(crate) async fn maybe_build_local_public_support_response(
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|value| *value > 0 && *value <= 1000)
                 .unwrap_or(100);
-            let is_active = query_param_optional_bool(
-                request_context.request_query_string.as_deref(),
-                "is_active",
-            );
             let search =
                 query_param_value(request_context.request_query_string.as_deref(), "search");
 
@@ -380,7 +416,7 @@ pub(crate) async fn maybe_build_local_public_support_response(
                 .list_public_global_models(&PublicGlobalModelQuery {
                     offset: skip,
                     limit,
-                    is_active,
+                    is_active: Some(true),
                     search,
                 })
                 .await
@@ -396,8 +432,8 @@ pub(crate) async fn maybe_build_local_public_support_response(
                         "display_name": model.display_name,
                         "is_active": model.is_active,
                         "default_price_per_request": model.default_price_per_request,
-                        "default_tiered_pricing": model.default_tiered_pricing,
-                        "supported_capabilities": model.supported_capabilities,
+                        "default_tiered_pricing": sanitize_public_tiered_pricing(model.default_tiered_pricing),
+                        "supported_capabilities": sanitize_public_model_capabilities(model.supported_capabilities),
                         "config": sanitize_public_model_config_for_user(model.config),
                         "usage_count": model.usage_count,
                     })
@@ -743,16 +779,11 @@ pub(crate) async fn maybe_build_local_public_support_response(
                 "include_endpoints",
                 false,
             );
-            let active_only = query_param_bool(
-                request_context.request_query_string.as_deref(),
-                "active_only",
-                true,
-            );
             if include_models {
                 return None;
             }
             let providers = state
-                .list_provider_catalog_providers(active_only)
+                .list_provider_catalog_providers(true)
                 .await
                 .ok()
                 .unwrap_or_default();
@@ -784,7 +815,10 @@ pub(crate) async fn maybe_build_local_public_support_response(
                                 payload["endpoints"] = serde_json::Value::Array(
                                     endpoints
                                         .iter()
-                                        .filter(|endpoint| endpoint.provider_id == provider_id)
+                                        .filter(|endpoint| {
+                                            endpoint.provider_id == provider_id
+                                                && endpoint.is_active
+                                        })
                                         .map(|endpoint| json!({
                                             "id": endpoint.id,
                                             "api_format": endpoint.api_format,
@@ -833,8 +867,17 @@ pub(crate) async fn maybe_build_local_public_support_response(
                 None
             };
             let provider = match provider {
-                Some(provider) => provider,
+                Some(provider) if provider.is_active => provider,
                 None => {
+                    return Some(
+                        (
+                            http::StatusCode::NOT_FOUND,
+                            Json(json!({ "detail": "Provider not found" })),
+                        )
+                            .into_response(),
+                    );
+                }
+                Some(_) => {
                     return Some(
                         (
                             http::StatusCode::NOT_FOUND,
@@ -861,6 +904,7 @@ pub(crate) async fn maybe_build_local_public_support_response(
                 payload["endpoints"] = serde_json::Value::Array(
                     endpoints
                         .into_iter()
+                        .filter(|endpoint| endpoint.is_active)
                         .map(|endpoint| {
                             json!({
                                 "id": endpoint.id,
@@ -877,7 +921,8 @@ pub(crate) async fn maybe_build_local_public_support_response(
         if decision.route_kind.as_deref() == Some("test_connection")
             && request_context.request_path == "/v1/test-connection"
         {
-            return maybe_build_local_test_connection_response(state, request_context).await;
+            return maybe_build_local_test_connection_response(state, request_context, headers)
+                .await;
         }
 
         if decision.route_kind.as_deref() == Some("test_connection")
