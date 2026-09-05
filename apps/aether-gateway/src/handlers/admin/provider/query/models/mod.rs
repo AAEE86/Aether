@@ -63,7 +63,7 @@ use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
 use aether_model_fetch::{
-    aggregate_models_for_cache, fetch_models_from_transports, json_string_list,
+    aggregate_models_for_cache, fetch_models_from_transports_for_management, json_string_list,
     model_catalog_upstream_metadata, preset_models_for_provider, selected_models_fetch_endpoints,
     upstream_metadata_namespace_updates,
 };
@@ -496,10 +496,34 @@ async fn provider_query_fetch_models_for_key(
     key: &StoredProviderCatalogKey,
     force_refresh: bool,
 ) -> Result<ProviderQueryKeyFetchResult, GatewayError> {
+    let is_codex = provider.provider_type.trim().eq_ignore_ascii_case("codex");
+    let codex_catalog = if is_codex {
+        crate::model_fetch::read_codex_management_catalog(state.app(), &provider.id, &key.id).await
+    } else {
+        None
+    };
     if !force_refresh {
-        if let Some(cached_models) =
+        // Read through the live, credential-scoped directory before the admin cache.
+        // Never reuse the old versionless cache for Codex (including cached presets).
+        let cached_models = if is_codex {
+            codex_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.models.as_ref())
+                .filter(|_| {
+                    selected_models_fetch_endpoints(endpoints, key)
+                        .iter()
+                        .any(|endpoint| endpoint.api_format == "openai:responses")
+                })
+                .map(|models| {
+                    aether_model_fetch::project_codex_models_for_legacy_cache([(
+                        "openai:responses",
+                        models.as_slice(),
+                    )])
+                })
+        } else {
             provider_query_read_cached_models(state, &provider.id, &key.id).await
-        {
+        };
+        if let Some(cached_models) = cached_models {
             let models = provider_query_filter_models_for_key(provider, key, cached_models);
             return Ok(ProviderQueryKeyFetchResult {
                 models,
@@ -561,30 +585,51 @@ async fn provider_query_fetch_models_for_key(
         });
     }
 
-    let outcome = match fetch_models_from_transports(state.app(), &transports).await {
-        Ok(outcome) => outcome,
-        Err(err) => {
-            all_errors.push(err);
-            if let Some(fallback) =
-                provider_query_codex_preset_fallback(provider, &all_errors.join("; "))
-            {
-                provider_query_persist_preset_models(state, provider, key, &fallback.models)
-                    .await?;
-                return Ok(fallback);
+    let client_version = is_codex.then(|| {
+        codex_catalog
+            .as_ref()
+            .map(|catalog| catalog.client_version.as_str())
+            .unwrap_or(aether_ai_formats::CODEX_CLIENT_VERSION)
+    });
+    let outcome =
+        match fetch_models_from_transports_for_management(state.app(), &transports, client_version)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                all_errors.push(err);
+                if let Some(fallback) =
+                    provider_query_codex_preset_fallback(provider, &all_errors.join("; "))
+                {
+                    provider_query_persist_preset_models(state, provider, key, &fallback.models)
+                        .await?;
+                    return Ok(fallback);
+                }
+                return Ok(ProviderQueryKeyFetchResult {
+                    models: Vec::new(),
+                    error: Some(all_errors.join("; ")),
+                    warning: None,
+                    from_cache: false,
+                    has_success: false,
+                });
             }
-            return Ok(ProviderQueryKeyFetchResult {
-                models: Vec::new(),
-                error: Some(all_errors.join("; ")),
-                warning: None,
-                from_cache: false,
-                has_success: false,
-            });
-        }
-    };
+        };
 
     all_errors.extend(outcome.errors);
     let unique_models = outcome.legacy_models;
     if outcome.has_success && !unique_models.is_empty() {
+        if all_errors.is_empty() && outcome.native_codex_catalog {
+            if let Some(catalog) = codex_catalog.as_ref() {
+                crate::model_fetch::store_codex_management_catalog(
+                    state.app(),
+                    catalog,
+                    &transports,
+                    outcome.cached_models,
+                    outcome.etag.as_deref(),
+                )
+                .await;
+            }
+        }
         <AppState as ModelFetchRuntimeState>::write_upstream_models_cache(
             state.app(),
             &provider.id,
