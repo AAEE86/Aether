@@ -329,7 +329,10 @@ async fn run_vscodex_gateway_integration() {
         .json()
         .await
         .expect("internal auth failure body should be JSON");
-    assert_eq!(internal_denied_payload["detail"], "VS Codex 服务鉴权失败");
+    assert_eq!(
+        internal_denied_payload["detail"],
+        "服务暂不可用，请稍后重试"
+    );
 
     let redirected = client
         .delete(format!(
@@ -562,7 +565,7 @@ async fn run_vscodex_gateway_integration() {
     assert_eq!(disabled.status(), StatusCode::SERVICE_UNAVAILABLE);
     let disabled_payload: serde_json::Value =
         disabled.json().await.expect("disabled body should be JSON");
-    assert_eq!(disabled_payload["detail"], "VS Codex 服务未启用");
+    assert_eq!(disabled_payload["detail"], "服务暂不可用，请稍后重试");
     assert_eq!(
         captured_requests
             .lock()

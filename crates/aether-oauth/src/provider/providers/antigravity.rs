@@ -28,6 +28,21 @@ impl Default for AntigravityProviderOAuthAdapter {
 }
 
 impl AntigravityProviderOAuthAdapter {
+    /// Supply deterministic OAuth client credentials for tests without
+    /// requiring a process-wide environment variable. Production callers
+    /// continue to resolve the secret from the configured environment.
+    #[doc(hidden)]
+    pub fn with_oauth_credentials_for_tests(
+        mut self,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
+        self.inner = self
+            .inner
+            .with_oauth_credentials_for_tests(client_id, client_secret);
+        self
+    }
+
     pub fn with_token_url_override(mut self, token_url: impl Into<String>) -> Self {
         self.inner = self.inner.with_token_url_override(token_url);
         self
@@ -287,7 +302,8 @@ mod tests {
 
     #[test]
     fn antigravity_authorize_requests_offline_refresh_token() {
-        let adapter = AntigravityProviderOAuthAdapter::default();
+        let adapter = AntigravityProviderOAuthAdapter::default()
+            .with_oauth_credentials_for_tests("test-client-id", "test-client-secret");
         let response = adapter
             .build_authorize_url(&transport_context(), "state-1", Some("challenge-1"))
             .expect("authorize url should build");
@@ -310,7 +326,8 @@ mod tests {
 
     #[tokio::test]
     async fn antigravity_exchange_fetches_google_email_for_account_identity() {
-        let adapter = AntigravityProviderOAuthAdapter::default();
+        let adapter = AntigravityProviderOAuthAdapter::default()
+            .with_oauth_credentials_for_tests("test-client-id", "test-client-secret");
         let ctx = transport_context();
         let executor = GoogleOAuthExecutor::default();
 

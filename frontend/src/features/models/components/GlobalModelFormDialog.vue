@@ -31,9 +31,61 @@
         <div class="flex-1 min-h-0 overflow-hidden border rounded-lg flex flex-col">
           <div
             v-if="loading"
-            class="flex items-center justify-center flex-1"
+            class="flex flex-col items-center justify-center gap-3 flex-1"
           >
             <Loader2 class="w-5 h-5 animate-spin text-muted-foreground" />
+            <p class="text-xs text-muted-foreground">
+              正在加载在线目录；也可以先手动填写模型
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-8"
+              data-testid="models-catalog-manual-entry-loading"
+              @click="enterManualEntryMode"
+            >
+              手动填写
+            </Button>
+          </div>
+          <div
+            v-else-if="catalogLoadError"
+            class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+            role="alert"
+            data-testid="models-catalog-load-error"
+          >
+            <div class="flex h-9 w-9 items-center justify-center rounded-md border bg-muted/40 text-destructive">
+              <TriangleAlert class="h-4 w-4" />
+            </div>
+            <div class="max-w-md space-y-1">
+              <p class="text-sm font-medium">
+                外部模型目录加载失败
+              </p>
+              <p class="break-words text-xs text-muted-foreground">
+                {{ catalogLoadError }}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              class="h-8 gap-1.5"
+              data-testid="models-catalog-retry"
+              @click="retryModelsCatalog"
+            >
+              <RefreshCw class="h-3.5 w-3.5" />
+              重试
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-8"
+              data-testid="models-catalog-manual-entry"
+              @click="enterManualEntryMode"
+            >
+              直接手动填写
+            </Button>
           </div>
           <template v-else>
             <!-- 提供商 Logo 横向选择 -->
@@ -771,7 +823,7 @@ import { ref, computed, nextTick, watch } from 'vue'
 import {
   Loader2, Layers, SquarePen,
   Search, ChevronLeft, ChevronRight, Plus, Trash2, Check,
-  BrainCircuit, Eye, Wrench, Braces, Database, PackageOpen, RefreshCw
+  BrainCircuit, Eye, Wrench, Braces, Database, PackageOpen, RefreshCw, TriangleAlert
 } from 'lucide-vue-next'
 import {
   Dialog, Button, Input, Label, Checkbox,
@@ -836,6 +888,7 @@ const basicInfoSection = ref<HTMLElement | null>(null)
 
 // 模型列表相关
 const loading = ref(false)
+const catalogLoadError = ref<string | null>(null)
 const searchQuery = ref('')
 const allModelsCache = ref<ModelsDevModelItem[]>([]) // 全部模型（缓存）
 const existingModelsCache = ref<GlobalModelResponse[]>([])
@@ -1300,19 +1353,44 @@ async function loadExistingModels() {
   existingModelsCache.value = models
 }
 
+async function loadModelsCatalog() {
+  catalogLoadError.value = null
+  try {
+    allModelsCache.value = await getModelsDevList(false)
+  } catch (err: unknown) {
+    allModelsCache.value = []
+    catalogLoadError.value = parseApiError(err, '外部模型目录暂时不可用')
+    log.error('Failed to load online models:', err)
+  }
+}
+
+async function retryModelsCatalog() {
+  if (loading.value) return
+  loading.value = true
+  try {
+    await loadModelsCatalog()
+    if (!expandedProvider.value) {
+      expandedProvider.value = getDefaultProviderId(groupedModels.value)
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
 // 加载在线目录和已有模型列表
 async function loadModels() {
   loading.value = true
-  await Promise.all([
-    allModelsCache.value.length > 0
-      ? Promise.resolve()
-      : getModelsDevList(false)
-          .then(models => { allModelsCache.value = models })
-          .catch(err => log.error('Failed to load online models:', err)),
-    loadExistingModels()
-      .catch(err => log.error('Failed to load existing models:', err)),
-  ])
-  loading.value = false
+  const shouldLoadCatalog = allModelsCache.value.length === 0
+  if (!shouldLoadCatalog) catalogLoadError.value = null
+  try {
+    await Promise.all([
+      shouldLoadCatalog ? loadModelsCatalog() : Promise.resolve(),
+      loadExistingModels()
+        .catch(err => log.error('Failed to load existing models:', err)),
+    ])
+  } finally {
+    loading.value = false
+  }
 }
 
 // 打开对话框时加载数据

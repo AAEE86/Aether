@@ -62,9 +62,26 @@ pub fn resolve_local_generic_oauth_transport_authorization(
         .map(|token| format!("Bearer {token}"))
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct GenericOAuthRefreshAdapter {
     token_url_overrides: BTreeMap<String, String>,
+    oauth_credentials_overrides: BTreeMap<String, (String, String)>,
+}
+
+impl std::fmt::Debug for GenericOAuthRefreshAdapter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GenericOAuthRefreshAdapter")
+            .field(
+                "token_url_override_provider_types",
+                &self.token_url_overrides.keys().collect::<Vec<_>>(),
+            )
+            .field(
+                "oauth_credentials_override_provider_types",
+                &self.oauth_credentials_overrides.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl GenericOAuthRefreshAdapter {
@@ -78,11 +95,29 @@ impl GenericOAuthRefreshAdapter {
         self
     }
 
+    pub fn with_oauth_credentials_for_tests(
+        mut self,
+        provider_type: &str,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
+        self.oauth_credentials_overrides.insert(
+            provider_type.trim().to_ascii_lowercase(),
+            (client_id.into(), client_secret.into()),
+        );
+        self
+    }
+
     fn adapter_for_provider_type(
         &self,
         provider_type: &'static str,
     ) -> Option<GenericProviderOAuthAdapter> {
-        let adapter = GenericProviderOAuthAdapter::for_provider_type(provider_type)?;
+        let mut adapter = GenericProviderOAuthAdapter::for_provider_type(provider_type)?;
+        if let Some((client_id, client_secret)) =
+            self.oauth_credentials_overrides.get(provider_type)
+        {
+            adapter = adapter.with_oauth_credentials_for_tests(client_id, client_secret);
+        }
         if let Some(token_url) = self.token_url_overrides.get(provider_type) {
             return Some(adapter.with_token_url_override(token_url.clone()));
         }
@@ -912,7 +947,12 @@ mod tests {
             hits: Arc::clone(&hits),
         };
         let adapter = GenericOAuthRefreshAdapter::default()
-            .with_token_url_for_tests("antigravity", "https://oauth.example/token");
+            .with_token_url_for_tests("antigravity", "https://oauth.example/token")
+            .with_oauth_credentials_for_tests(
+                "antigravity",
+                "test-client-id",
+                "test-client-secret",
+            );
 
         assert!(adapter.supports(&transport));
         assert!(adapter.should_refresh(&transport, None));

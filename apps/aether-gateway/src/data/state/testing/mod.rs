@@ -1791,6 +1791,18 @@ impl GatewayDataState {
     }
 
     #[cfg(test)]
+    pub(crate) fn attach_auth_api_key_repository_for_tests<T>(mut self, repository: Arc<T>) -> Self
+    where
+        T: aether_data::repository::auth::AuthRepository + 'static,
+    {
+        let auth_api_key_reader: Arc<dyn AuthApiKeyReadRepository> = repository.clone();
+        let auth_api_key_writer: Arc<dyn AuthApiKeyWriteRepository> = repository;
+        self.auth_api_key_reader = Some(auth_api_key_reader);
+        self.auth_api_key_writer = Some(auth_api_key_writer);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_decision_trace_readers_for_tests(
         request_candidate_repository: Arc<dyn RequestCandidateReadRepository>,
         provider_catalog_repository: Arc<dyn ProviderCatalogReadRepository>,
@@ -2377,6 +2389,36 @@ impl GatewayDataState {
             system_config_value_cache: Default::default(),
             billing_model_context_cache: Default::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_auth_candidate_selection_provider_catalog_request_candidate_and_gemini_file_mapping_repositories_for_tests<
+        T,
+        U,
+        V,
+    >(
+        auth_api_key_repository: Arc<dyn AuthApiKeyReadRepository>,
+        candidate_selection_repository: Arc<dyn MinimalCandidateSelectionReadRepository>,
+        provider_catalog_repository: Arc<U>,
+        request_candidate_repository: Arc<T>,
+        gemini_file_mapping_repository: Arc<V>,
+        encryption_key: impl Into<String>,
+    ) -> Self
+    where
+        T: RequestCandidateRepository + 'static,
+        U: ProviderCatalogReadRepository + ProviderCatalogWriteRepository + 'static,
+        V: aether_data::repository::gemini_file_mappings::GeminiFileMappingRepository + 'static,
+    {
+        let mut state = Self::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
+            auth_api_key_repository,
+            candidate_selection_repository,
+            provider_catalog_repository,
+            request_candidate_repository,
+            encryption_key,
+        );
+        state.gemini_file_mapping_reader = Some(gemini_file_mapping_repository.clone());
+        state.gemini_file_mapping_writer = Some(gemini_file_mapping_repository);
+        state
     }
 
     #[cfg(test)]

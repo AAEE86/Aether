@@ -14,12 +14,8 @@ use aether_oauth::provider::{
 use axum::{body::Body, http, response::Response};
 use std::sync::Arc;
 
-fn provider_oauth_transport_error_detail(prefix: &str, error: &str) -> String {
-    let error = error.trim();
-    if error.is_empty() {
-        return prefix.to_string();
-    }
-    format!("{prefix}: {error}")
+fn provider_oauth_transport_error_detail(prefix: &str, _error: &str) -> String {
+    prefix.to_string()
 }
 
 fn provider_oauth_exchange_context(
@@ -50,6 +46,11 @@ fn provider_oauth_service_for_template(
         let adapter = AntigravityProviderOAuthAdapter::default()
             .with_token_url_override(token_url)
             .with_user_info_url_override(antigravity_user_info_url);
+        #[cfg(test)]
+        let adapter = adapter.with_oauth_credentials_for_tests(
+            "gateway-test-antigravity-client-id",
+            "gateway-test-antigravity-client-secret",
+        );
         return Ok(ProviderOAuthService::new().with_adapter(Arc::new(adapter)));
     }
     GenericProviderOAuthAdapter::for_provider_type(template.provider_type)
@@ -195,4 +196,21 @@ pub(crate) async fn authorize_admin_provider_oauth_with_cookie(
             "Claude Cookie 授权返回缺少 access_token",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_oauth_transport_error_detail;
+
+    #[test]
+    fn provider_oauth_transport_error_does_not_reflect_network_details() {
+        let detail = provider_oauth_transport_error_detail(
+            "token exchange 失败",
+            "request failed for https://user:pass@example.test/token?secret=value authorization=Bearer upstream-secret",
+        );
+
+        assert_eq!(detail, "token exchange 失败");
+        assert!(!detail.contains("upstream-secret"));
+        assert!(!detail.contains("user:pass"));
+    }
 }

@@ -248,20 +248,20 @@ describe('ModelManagement pricing-source workflow', () => {
     })
   })
 
-  it('renders the new source and selection controls in English', async () => {
+  it('does not render the pricing source in the model list', async () => {
     mountView()
     await settle()
     setI18nLocale('en-US')
     await settle()
 
-    expect(document.body.textContent).toContain('Price source')
+    expect(document.body.textContent).not.toContain('Online pricing source')
     expect(document.body.textContent).toContain('Batch manage')
     expect(document.body.querySelector(
       '[aria-label="Select model Test Model"]',
     )).not.toBeNull()
     expect(document.body.querySelector(
       '[data-testid="model-pricing-source-model-1"]',
-    )?.getAttribute('aria-label')).toContain('Current source: Old OpenAI label')
+    )).toBeNull()
   })
 
   it('migrates a legacy browser-only source into the model database config', async () => {

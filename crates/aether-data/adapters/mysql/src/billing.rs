@@ -4,8 +4,9 @@ use sqlx::{mysql::MySqlRow, Row};
 use aether_data_contracts::repository::billing::{
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
-    BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigRecord,
-    PaymentGatewayConfigWriteInput, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
+    BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository,
+    PaymentGatewayConfigCasWriteInput, PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput,
+    PaymentGatewaySecretCasUpdate, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
     UserPlanEntitlementRecord,
 };
 use aether_data_contracts::DataLayerError;
@@ -635,6 +636,157 @@ LIMIT 1
         row.as_ref()
             .map(map_payment_gateway_config_mysql)
             .transpose()
+    }
+
+    async fn compare_and_swap_payment_gateway_secret(
+        &self,
+        update: &PaymentGatewaySecretCasUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let result = sqlx::query(
+            r#"
+UPDATE payment_gateway_configs
+SET merchant_key_encrypted = ?
+WHERE provider = ?
+  AND BINARY merchant_key_encrypted = BINARY ?
+            "#,
+        )
+        .bind(&update.merchant_key_encrypted)
+        .bind(update.provider.trim().to_ascii_lowercase())
+        .bind(&update.expected_merchant_key_encrypted)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn compare_and_swap_payment_gateway_config(
+        &self,
+        mutation: &PaymentGatewayConfigCasWriteInput,
+    ) -> Result<AdminBillingMutationOutcome<PaymentGatewayConfigRecord>, DataLayerError> {
+        let input = &mutation.input;
+        let provider = input.provider.trim().to_ascii_lowercase();
+        let now = current_unix_secs_i64();
+        let mut tx = self.pool.begin().await.map_sql_err()?;
+
+        if mutation.expected_existing {
+            let current = sqlx::query(
+                r#"
+SELECT merchant_key_encrypted
+FROM payment_gateway_configs
+WHERE provider = ?
+LIMIT 1
+FOR UPDATE
+                "#,
+            )
+            .bind(&provider)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_sql_err()?;
+            let current_secret = match current.as_ref() {
+                Some(row) => row
+                    .try_get::<Option<String>, _>("merchant_key_encrypted")
+                    .map_sql_err()?,
+                None => {
+                    tx.rollback().await.map_sql_err()?;
+                    return Ok(AdminBillingMutationOutcome::NotFound);
+                }
+            };
+            if current_secret != mutation.expected_merchant_key_encrypted {
+                tx.rollback().await.map_sql_err()?;
+                return Ok(AdminBillingMutationOutcome::NotFound);
+            }
+
+            sqlx::query(
+                r#"
+UPDATE payment_gateway_configs
+SET
+  enabled = ?,
+  endpoint_url = ?,
+  callback_base_url = ?,
+  merchant_id = ?,
+  merchant_key_encrypted = CASE
+    WHEN ? THEN merchant_key_encrypted
+    ELSE ?
+  END,
+  pay_currency = ?,
+  usd_exchange_rate = ?,
+  min_recharge_usd = ?,
+  channels_json = ?,
+  updated_at = ?
+WHERE provider = ?
+                "#,
+            )
+            .bind(input.enabled)
+            .bind(&input.endpoint_url)
+            .bind(input.callback_base_url.as_deref())
+            .bind(&input.merchant_id)
+            .bind(input.preserve_existing_secret)
+            .bind(input.merchant_key_encrypted.as_deref())
+            .bind(&input.pay_currency)
+            .bind(input.usd_exchange_rate)
+            .bind(input.min_recharge_usd)
+            .bind(json_to_string(&input.channels_json)?)
+            .bind(now)
+            .bind(&provider)
+            .execute(&mut *tx)
+            .await
+            .map_sql_err()?;
+        } else {
+            let inserted = sqlx::query(
+                r#"
+INSERT INTO payment_gateway_configs (
+  provider, enabled, endpoint_url, callback_base_url, merchant_id,
+  merchant_key_encrypted, pay_currency, usd_exchange_rate, min_recharge_usd,
+  channels_json, created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&provider)
+            .bind(input.enabled)
+            .bind(&input.endpoint_url)
+            .bind(input.callback_base_url.as_deref())
+            .bind(&input.merchant_id)
+            .bind(input.merchant_key_encrypted.as_deref())
+            .bind(&input.pay_currency)
+            .bind(input.usd_exchange_rate)
+            .bind(input.min_recharge_usd)
+            .bind(json_to_string(&input.channels_json)?)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await;
+            if let Err(err) = inserted {
+                let unique = matches!(
+                    &err,
+                    sqlx::Error::Database(database_error) if database_error.is_unique_violation()
+                );
+                tx.rollback().await.map_sql_err()?;
+                if unique {
+                    return Ok(AdminBillingMutationOutcome::NotFound);
+                }
+                return Err(DataLayerError::sql(err));
+            }
+        }
+
+        let row = sqlx::query(
+            r#"
+SELECT
+  provider, enabled, endpoint_url, callback_base_url, merchant_id,
+  merchant_key_encrypted, pay_currency, usd_exchange_rate, min_recharge_usd,
+  channels_json, created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
+FROM payment_gateway_configs
+WHERE provider = ?
+LIMIT 1
+            "#,
+        )
+        .bind(&provider)
+        .fetch_one(&mut *tx)
+        .await
+        .map_sql_err()?;
+        let record = map_payment_gateway_config_mysql(&row)?;
+        tx.commit().await.map_sql_err()?;
+        Ok(AdminBillingMutationOutcome::Applied(record))
     }
 
     async fn upsert_payment_gateway_config(

@@ -193,7 +193,6 @@ fn build_windsurf_connect_rpc_request(
         client_api_format: "openai:chat".to_string(),
         provider_api_format: provider_api_format.to_string(),
         model_name: Some(model_name.to_string()),
-        accept_invalid_certs: false,
     }
 }
 

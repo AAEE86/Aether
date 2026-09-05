@@ -10,6 +10,16 @@ use aether_data_contracts::repository::usage::{
     UsageWriteRepository,
 };
 use chrono::{DateTime, Utc};
+use flate2::{write::GzEncoder, Compression};
+use std::io::Write;
+
+fn gzip_json_for_test(value: &serde_json::Value) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(&serde_json::to_vec(value).expect("test JSON should serialize"))
+        .expect("test JSON should compress");
+    encoder.finish().expect("test gzip should finish")
+}
 
 #[test]
 fn sqlite_usage_upsert_guards_candidate_identity_metadata_and_routing_from_late_lifecycle() {
@@ -52,6 +62,13 @@ fn sqlite_usage_upsert_guards_candidate_identity_metadata_and_routing_from_late_
     }
     assert!(super::UPSERT_USAGE_SQL
         .contains("OR (\"usage\".status = 'streaming' AND excluded.status = 'pending')"));
+}
+
+#[test]
+fn sqlite_first_byte_upsert_rejects_older_revision_in_sql() {
+    assert!(super::UPSERT_FIRST_BYTE_BATCH_UPDATE_SUFFIX_SQL.contains(
+        "excluded.updated_at_unix_secs >= COALESCE(\n    NULLIF(\"usage\".updated_at_unix_secs, 0),"
+    ));
 }
 
 #[tokio::test]
@@ -364,7 +381,7 @@ WHERE request_id = 'rebuild-completed';
 }
 
 #[tokio::test]
-async fn sqlite_usage_http_capture_round_trips_and_preserves_sparse_updates() {
+async fn sqlite_usage_http_capture_is_not_persisted() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -398,31 +415,13 @@ async fn sqlite_usage_http_capture_round_trips_and_preserves_sparse_updates() {
         .upsert(rich)
         .await
         .expect("canonical capture should upsert");
-    assert_eq!(
-        stored.request_headers,
-        Some(serde_json::json!({"x-client": "one"}))
-    );
-    assert_eq!(stored.request_body, Some(serde_json::json!({"request": 1})));
-    assert_eq!(
-        stored.provider_request_body,
-        Some(serde_json::json!({"provider_request": 2}))
-    );
-    assert_eq!(
-        stored.response_body,
-        Some(serde_json::json!({"response": 3}))
-    );
-    assert_eq!(
-        stored.client_response_body,
-        Some(serde_json::json!({"client_response": 4}))
-    );
-    assert_eq!(
-        stored.request_body_state,
-        Some(UsageBodyCaptureState::Reference)
-    );
-    assert_eq!(
-        stored.request_body_ref.as_deref(),
-        Some("usage://request/canonical-capture/request_body")
-    );
+    assert!(stored.request_headers.is_none());
+    assert!(stored.request_body.is_none());
+    assert!(stored.provider_request_body.is_none());
+    assert!(stored.response_body.is_none());
+    assert!(stored.client_response_body.is_none());
+    assert!(stored.request_body_state.is_none());
+    assert!(stored.request_body_ref.is_none());
     assert_eq!(
         stored.request_metadata.as_ref().unwrap()["trace_id"],
         "canonical-trace"
@@ -441,41 +440,36 @@ async fn sqlite_usage_http_capture_round_trips_and_preserves_sparse_updates() {
     .await
     .expect("legacy columns should load");
     assert_eq!(legacy_columns, (None, None, None));
-    let audit: (String, String, String) = sqlx::query_as(
-        "SELECT request_headers, request_body_ref, request_body_state FROM usage_http_audits WHERE request_id = 'canonical-capture'",
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM usage_http_audits WHERE request_id = 'canonical-capture'",
     )
     .fetch_one(&pool)
     .await
-    .expect("canonical audit should load");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&audit.0).expect("header JSON should decode"),
-        serde_json::json!({"x-client": "one"})
-    );
-    assert_eq!(audit.1, "usage://request/canonical-capture/request_body");
-    assert_eq!(audit.2, "reference");
+    .expect("canonical audits should count");
+    assert_eq!(audit_count, 0);
     let blob_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM usage_body_blobs WHERE request_id = 'canonical-capture'",
     )
     .fetch_one(&pool)
     .await
     .expect("canonical blobs should count");
-    assert_eq!(blob_count, 4);
+    assert_eq!(blob_count, 0);
 
     let sparse = sample_usage("canonical-capture", "streaming", "pending", 1_001);
     let sparse_stored = writer
         .upsert(sparse)
         .await
         .expect("sparse lifecycle update should upsert");
-    assert_eq!(sparse_stored.request_headers, stored.request_headers);
-    assert_eq!(sparse_stored.request_body, stored.request_body);
-    assert_eq!(sparse_stored.response_body, stored.response_body);
+    assert!(sparse_stored.request_headers.is_none());
+    assert!(sparse_stored.request_body.is_none());
+    assert!(sparse_stored.response_body.is_none());
     let sparse_blob_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM usage_body_blobs WHERE request_id = 'canonical-capture'",
     )
     .fetch_one(&pool)
     .await
     .expect("preserved blobs should count");
-    assert_eq!(sparse_blob_count, 4);
+    assert_eq!(sparse_blob_count, 0);
 
     let mut clear = sample_usage("canonical-capture", "streaming", "pending", 1_002);
     clear.request_body = Some(serde_json::json!({"residual": true}));
@@ -487,35 +481,29 @@ async fn sqlite_usage_http_capture_round_trips_and_preserves_sparse_updates() {
         .expect("explicit none capture should clear");
     assert!(cleared.request_body.is_none());
     assert!(cleared.request_body_ref.is_none());
-    assert_eq!(
-        cleared.request_body_state,
-        Some(UsageBodyCaptureState::None)
-    );
-    assert_eq!(cleared.provider_request_body, stored.provider_request_body);
+    assert!(cleared.request_body_state.is_none());
+    assert!(cleared.provider_request_body.is_none());
     let cleared_blob_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM usage_body_blobs WHERE request_id = 'canonical-capture'",
     )
     .fetch_one(&pool)
     .await
     .expect("remaining blobs should count");
-    assert_eq!(cleared_blob_count, 3);
+    assert_eq!(cleared_blob_count, 0);
 
     let reader = SqliteUsageReadRepository::new(pool.clone());
     let resolved = reader
         .resolve_body_ref("usage://request/canonical-capture/provider_request_body")
         .await
         .expect("body ref should resolve");
-    assert_eq!(resolved, stored.provider_request_body);
+    assert!(resolved.is_none());
     let loaded = reader
         .find_by_request_id("canonical-capture")
         .await
         .expect("canonical usage should load")
         .expect("canonical usage should exist");
-    assert_eq!(
-        loaded.provider_request_headers,
-        stored.provider_request_headers
-    );
-    assert_eq!(loaded.provider_request_body, stored.provider_request_body);
+    assert!(loaded.provider_request_headers.is_none());
+    assert!(loaded.provider_request_body.is_none());
 }
 
 #[tokio::test]
@@ -536,25 +524,18 @@ async fn sqlite_usage_http_read_falls_back_to_legacy_inline_and_compressed_colum
         .upsert(captured)
         .await
         .expect("temporary canonical body should upsert");
-    let payload: Vec<u8> = sqlx::query_scalar(
-        "SELECT payload_gzip FROM usage_body_blobs WHERE request_id = 'legacy-capture' AND body_field = 'request_body'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("temporary gzip should load");
     sqlx::query(
         r#"
 DELETE FROM usage_http_audits WHERE request_id = 'legacy-capture';
 DELETE FROM usage_body_blobs WHERE request_id = 'legacy-capture';
 UPDATE "usage"
 SET request_headers = '{"legacy":true}',
-    request_body_compressed = ?,
+    request_body = '{"compressed":true}',
     response_body = '{"inline":true}',
     request_metadata = '{"request_body_ref":"usage://request/legacy-capture/request_body"}'
 WHERE request_id = 'legacy-capture';
 "#,
     )
-    .bind(payload)
     .execute(&pool)
     .await
     .expect("legacy capture should seed");
@@ -592,10 +573,7 @@ WHERE request_id = 'legacy-capture';
         .expect("explicit none should clear legacy fallback storage");
     assert!(cleared.request_body.is_none());
     assert!(cleared.request_body_ref.is_none());
-    assert_eq!(
-        cleared.request_body_state,
-        Some(UsageBodyCaptureState::None)
-    );
+    assert!(cleared.request_body_state.is_none());
     assert!(cleared
         .request_metadata
         .as_ref()
@@ -608,6 +586,78 @@ WHERE request_id = 'legacy-capture';
     .await
     .expect("legacy compressed body should load after clear");
     assert!(compressed_after_clear.is_none());
+}
+
+#[tokio::test]
+async fn sqlite_usage_body_refs_enforce_request_and_field_ownership() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    run_migrations(&pool)
+        .await
+        .expect("sqlite migrations should run");
+    seed_stats_targets(&pool).await;
+
+    let writer = SqliteUsageWriteRepository::new(pool.clone());
+    for (request_id, updated_at) in [("ref-target", 3_000), ("ref-owner", 3_001)] {
+        writer
+            .upsert(sample_usage(request_id, "completed", "settled", updated_at))
+            .await
+            .expect("usage should seed");
+    }
+
+    let mismatched_payload = gzip_json_for_test(&serde_json::json!({
+        "secret": "belongs to ref-owner response"
+    }));
+    sqlx::query(
+        "INSERT INTO usage_body_blobs (body_ref, request_id, body_field, payload_gzip) VALUES (?, ?, ?, ?)",
+    )
+    .bind("usage://request/ref-target/request_body")
+    .bind("ref-owner")
+    .bind("response_body")
+    .bind(mismatched_payload)
+    .execute(&pool)
+    .await
+    .expect("mismatched legacy blob should seed");
+
+    let reader = SqliteUsageReadRepository::new(pool.clone());
+    assert_eq!(
+        reader
+            .resolve_body_ref("usage://request/ref-target/request_body")
+            .await
+            .expect("mismatched blob lookup should remain safe"),
+        None
+    );
+
+    sqlx::query("DELETE FROM usage_body_blobs")
+        .execute(&pool)
+        .await
+        .expect("mismatched blob should clear");
+    sqlx::query("UPDATE \"usage\" SET request_body = ? WHERE request_id = ?")
+        .bind(r#"{"secret":"belongs to ref-owner request"}"#)
+        .bind("ref-owner")
+        .execute(&pool)
+        .await
+        .expect("legacy owner body should seed");
+    sqlx::query(
+        "INSERT INTO usage_http_audits (request_id, request_body_ref, body_capture_mode) VALUES (?, ?, ?)",
+    )
+    .bind("ref-target")
+    .bind("usage://request/ref-owner/request_body")
+    .bind("ref_backed")
+    .execute(&pool)
+    .await
+    .expect("cross-request audit ref should seed");
+
+    let target = reader
+        .find_by_request_id("ref-target")
+        .await
+        .expect("target usage should load")
+        .expect("target usage should exist");
+    assert!(target.request_body_ref.is_none());
+    assert!(target.request_body.is_none());
 }
 
 #[tokio::test]
@@ -1022,16 +1072,13 @@ VALUES (
     .expect("stale blobs should count");
     assert_eq!(stale_blobs, 0);
 
-    let detail_blob: Vec<u8> = sqlx::query_scalar(
-        "SELECT payload_gzip FROM usage_body_blobs WHERE request_id = 'cleanup-detail'",
+    let detail_blobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM usage_body_blobs WHERE request_id = 'cleanup-detail'",
     )
     .fetch_one(&pool)
     .await
-    .expect("externalized body should load");
-    assert_eq!(
-        super::inflate_usage_json_value(&detail_blob).expect("body gzip should decode"),
-        serde_json::json!({"detail": true})
-    );
+    .expect("purged body blobs should count");
+    assert_eq!(detail_blobs, 0);
     let detail_inline: Option<String> = sqlx::query_scalar(
         "SELECT request_body FROM \"usage\" WHERE request_id = 'cleanup-detail'",
     )
@@ -1050,16 +1097,13 @@ VALUES (
         serde_json::from_str::<serde_json::Value>(&legacy_metadata).expect("valid metadata"),
         serde_json::json!({"trace": "kept"})
     );
-    let legacy_ref: String = sqlx::query_scalar(
-        "SELECT request_body_ref FROM usage_http_audits WHERE request_id = 'cleanup-legacy'",
+    let legacy_audits: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM usage_http_audits WHERE request_id = 'cleanup-legacy'",
     )
     .fetch_one(&pool)
     .await
-    .expect("legacy ref should migrate");
-    assert_eq!(
-        legacy_ref,
-        "usage://request/cleanup-legacy/request_body".to_string()
-    );
+    .expect("legacy audit refs should count");
+    assert_eq!(legacy_audits, 0);
 
     let disabled_key: i64 =
         sqlx::query_scalar("SELECT is_active FROM api_keys WHERE id = 'cleanup-disable-key'")
@@ -1182,6 +1226,20 @@ VALUES (
     .await
     .expect("audit headers should remain");
     assert!(audit_headers.is_some());
+    let audit_body_ref: Option<String> = sqlx::query_scalar(
+        "SELECT request_body_ref FROM usage_http_audits WHERE request_id = 'cleanup-before-now'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit body ref should load");
+    assert!(audit_body_ref.is_none());
+    let body_blobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM usage_body_blobs WHERE request_id = 'cleanup-before-now'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("body blobs should count");
+    assert_eq!(body_blobs, 0);
 }
 
 #[tokio::test]
@@ -1209,6 +1267,89 @@ async fn sqlite_usage_write_repository_does_not_regress_void_usage() {
     assert_eq!(existing.status, "failed");
     assert_eq!(existing.billing_status, "void");
     assert_eq!(existing.updated_at_unix_secs, 1_000);
+}
+
+#[tokio::test]
+async fn sqlite_stale_terminal_event_is_a_full_transaction_noop() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    run_migrations(&pool)
+        .await
+        .expect("sqlite migrations should run");
+    seed_stats_targets(&pool).await;
+
+    let repository = SqliteUsageWriteRepository::new(pool.clone());
+    let mut newer = sample_usage("request-stale-terminal", "completed", "pending", 2_000);
+    newer.candidate_id = Some("candidate-new".to_string());
+    newer.route_kind = Some("route-new".to_string());
+    repository
+        .upsert(newer)
+        .await
+        .expect("newer terminal usage should upsert");
+
+    let counter_rows_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_counter_deltas")
+        .fetch_one(&pool)
+        .await
+        .expect("counter rows should count");
+    let routing_before: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT candidate_id, route_kind FROM usage_routing_snapshots WHERE request_id = ?",
+    )
+    .bind("request-stale-terminal")
+    .fetch_one(&pool)
+    .await
+    .expect("routing snapshot should load");
+    let settlement_before: (String, Option<f64>) = sqlx::query_as(
+        "SELECT billing_status, billing_total_cost_usd FROM usage_settlement_snapshots WHERE request_id = ?",
+    )
+    .bind("request-stale-terminal")
+    .fetch_one(&pool)
+    .await
+    .expect("settlement snapshot should load");
+
+    let mut stale = sample_usage("request-stale-terminal", "failed", "void", 1_999);
+    stale.status_code = Some(503);
+    stale.total_cost_usd = Some(99.0);
+    stale.actual_total_cost_usd = Some(98.0);
+    stale.candidate_id = Some("candidate-stale".to_string());
+    stale.route_kind = Some("route-stale".to_string());
+    let stored = repository
+        .upsert(stale)
+        .await
+        .expect("stale terminal usage should be ignored");
+
+    assert_eq!(stored.status, "completed");
+    assert_eq!(stored.billing_status, "pending");
+    assert_eq!(stored.status_code, Some(200));
+    assert_eq!(stored.total_cost_usd, 0.5);
+    assert_eq!(stored.routing_candidate_id(), Some("candidate-new"));
+    assert_eq!(stored.routing_route_kind(), Some("route-new"));
+    assert_eq!(stored.updated_at_unix_secs, 2_000);
+
+    let counter_rows_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_counter_deltas")
+        .fetch_one(&pool)
+        .await
+        .expect("counter rows should count");
+    let routing_after: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT candidate_id, route_kind FROM usage_routing_snapshots WHERE request_id = ?",
+    )
+    .bind("request-stale-terminal")
+    .fetch_one(&pool)
+    .await
+    .expect("routing snapshot should load");
+    let settlement_after: (String, Option<f64>) = sqlx::query_as(
+        "SELECT billing_status, billing_total_cost_usd FROM usage_settlement_snapshots WHERE request_id = ?",
+    )
+    .bind("request-stale-terminal")
+    .fetch_one(&pool)
+    .await
+    .expect("settlement snapshot should load");
+
+    assert_eq!(counter_rows_after, counter_rows_before);
+    assert_eq!(routing_after, routing_before);
+    assert_eq!(settlement_after, settlement_before);
 }
 
 #[tokio::test]
@@ -1621,8 +1762,8 @@ async fn sqlite_usage_write_repository_cleanup_uses_failed_candidate_status_when
         .await
         .expect("pending usage should upsert");
 
-    // request-upstream-reset has a failed candidate carrying a concrete 502 status
-    // and a connection-reset message — cleanup should use them instead of 504.
+    // request-upstream-reset has a failed candidate carrying a concrete 502 status.
+    // Cleanup keeps the status but must not copy the candidate's diagnostic text.
     // request-stuck has only a still-pending candidate, so cleanup should fall back to 504.
     sqlx::query(
             r#"
@@ -1654,6 +1795,33 @@ INSERT INTO request_candidates (
     assert_eq!(summary.recovered, 0);
     assert_eq!(summary.failed, 2);
 
+    let raw_messages = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        r#"
+SELECT request_id, error_message, error_category
+FROM "usage"
+WHERE request_id IN ('request-upstream-reset', 'request-stuck')
+ORDER BY request_id
+"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("raw stale usage diagnostics should load");
+    assert_eq!(
+        raw_messages,
+        vec![
+            (
+                "request-stuck".to_string(),
+                None,
+                Some("server_error".to_string())
+            ),
+            (
+                "request-upstream-reset".to_string(),
+                None,
+                Some("server_error".to_string())
+            ),
+        ]
+    );
+
     let reset = repository
         .find_by_request_id("request-upstream-reset")
         .await
@@ -1661,10 +1829,8 @@ INSERT INTO request_candidates (
         .expect("upstream-reset usage should exist");
     assert_eq!(reset.status, "failed");
     assert_eq!(reset.status_code, Some(502));
-    assert_eq!(
-        reset.error_message.as_deref(),
-        Some("upstream connection reset by peer")
-    );
+    assert_eq!(reset.error_message, None);
+    assert_eq!(reset.error_category.as_deref(), Some("server_error"));
 
     let stuck = repository
         .find_by_request_id("request-stuck")
@@ -1673,10 +1839,59 @@ INSERT INTO request_candidates (
         .expect("stuck usage should exist");
     assert_eq!(stuck.status, "failed");
     assert_eq!(stuck.status_code, Some(504));
-    assert!(stuck
-        .error_message
-        .as_deref()
-        .is_some_and(|message| message.contains("超过 5 分钟未完成")));
+    assert_eq!(stuck.error_message, None);
+    assert_eq!(stuck.error_category.as_deref(), Some("server_error"));
+}
+
+#[tokio::test]
+async fn sqlite_stale_cleanup_derives_category_from_candidate_status_code() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    run_migrations(&pool)
+        .await
+        .expect("sqlite migrations should run");
+    seed_stats_targets(&pool).await;
+
+    let repository = SqliteUsageWriteRepository::new(pool.clone());
+    repository
+        .upsert(sample_usage(
+            "request-client-error-cleanup",
+            "pending",
+            "pending",
+            1,
+        ))
+        .await
+        .expect("pending usage should upsert");
+    sqlx::query(
+        r#"
+INSERT INTO request_candidates (
+  id, request_id, candidate_index, retry_index, status, status_code,
+  is_cached, created_at, started_at, finished_at
+) VALUES ('candidate-client-error-cleanup', 'request-client-error-cleanup', 0, 0,
+          'failed', 429, 0, 1, 2, 3)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("failed candidate should seed");
+
+    let summary = repository
+        .cleanup_stale_pending_requests(2, 10, 5, 10)
+        .await
+        .expect("cleanup should run");
+    assert_eq!(summary.failed, 1);
+
+    let stored = repository
+        .find_by_request_id("request-client-error-cleanup")
+        .await
+        .expect("usage should load")
+        .expect("usage should exist");
+    assert_eq!(stored.status_code, Some(429));
+    assert_eq!(stored.error_category.as_deref(), Some("client_error"));
+    assert_eq!(stored.error_message, None);
 }
 
 #[tokio::test]
@@ -2095,10 +2310,8 @@ async fn sqlite_first_byte_fast_path_preserves_lifecycle_state_and_counters() {
         duplicate.request_metadata.as_ref().unwrap()["trace_id"],
         "pending-first-byte-duplicate"
     );
-    assert_eq!(
-        duplicate.request_body,
-        Some(serde_json::json!({"prompt": "first-byte-duplicate"}))
-    );
+    assert!(duplicate.request_body.is_none());
+    assert!(duplicate.request_body_ref.is_none());
 
     let unique = repository
         .find_by_request_id("first-byte-unique")
@@ -2153,6 +2366,52 @@ WHERE request_id = 'first-byte-missing'
 }
 
 #[tokio::test]
+async fn sqlite_first_byte_fast_path_rejects_stale_revision() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("sqlite pool should connect");
+    run_migrations(&pool)
+        .await
+        .expect("sqlite migrations should run");
+    seed_stats_targets(&pool).await;
+    let repository = SqliteUsageWriteRepository::new(pool.clone());
+
+    let mut current = sample_usage("first-byte-stale", "streaming", "pending", 2_000);
+    current.finalized_at_unix_secs = None;
+    current.provider_name = "current-provider".to_string();
+    current.model = "current-model".to_string();
+    current.response_time_ms = Some(50);
+    repository
+        .upsert(current)
+        .await
+        .expect("current streaming usage should seed");
+
+    let mut stale = sample_usage("first-byte-stale", "streaming", "pending", 1_999);
+    stale.finalized_at_unix_secs = None;
+    stale.provider_name = "stale-provider".to_string();
+    stale.model = "stale-model".to_string();
+    stale.status_code = Some(503);
+    stale.response_time_ms = Some(999);
+    repository
+        .upsert_first_byte(stale)
+        .await
+        .expect("stale first-byte usage should be ignored");
+
+    let stored = repository
+        .find_by_request_id("first-byte-stale")
+        .await
+        .expect("streaming usage should load")
+        .expect("streaming usage should exist");
+    assert_eq!(stored.updated_at_unix_secs, 2_000);
+    assert_eq!(stored.provider_name, "current-provider");
+    assert_eq!(stored.model, "current-model");
+    assert_eq!(stored.status_code, Some(200));
+    assert_eq!(stored.response_time_ms, Some(50));
+}
+
+#[tokio::test]
 async fn sqlite_pending_batch_is_atomic_and_persists_auxiliary_state() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -2177,8 +2436,8 @@ async fn sqlite_pending_batch_is_atomic_and_persists_auxiliary_state() {
 
     sqlx::query(
         r#"
-CREATE TRIGGER reject_second_pending_audit
-BEFORE INSERT ON usage_http_audits
+    CREATE TRIGGER reject_second_pending_routing_snapshot
+    BEFORE INSERT ON usage_routing_snapshots
 WHEN NEW.request_id = 'pending-batch-second'
 BEGIN
   SELECT RAISE(ABORT, 'reject pending batch test row');
@@ -2207,7 +2466,7 @@ END
     assert_eq!(rolled_back_usage, 0);
     assert_eq!(rolled_back_deltas, 0);
 
-    sqlx::query("DROP TRIGGER reject_second_pending_audit")
+    sqlx::query("DROP TRIGGER reject_second_pending_routing_snapshot")
         .execute(&pool)
         .await
         .expect("rollback trigger should drop");
@@ -2229,7 +2488,7 @@ SELECT
     .fetch_one(&pool)
     .await
     .expect("pending batch auxiliary rows should count");
-    assert_eq!(committed, (2, 2, 1, 2, 2));
+    assert_eq!(committed, (2, 0, 0, 2, 2));
 
     let provider_deltas: i64 = sqlx::query_scalar(
         r#"

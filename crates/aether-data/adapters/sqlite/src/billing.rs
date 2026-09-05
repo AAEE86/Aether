@@ -4,8 +4,9 @@ use sqlx::{sqlite::SqliteRow, Row};
 use aether_data_contracts::repository::billing::{
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
-    BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigRecord,
-    PaymentGatewayConfigWriteInput, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
+    BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository,
+    PaymentGatewayConfigCasWriteInput, PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput,
+    PaymentGatewaySecretCasUpdate, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
     UserPlanEntitlementRecord,
 };
 use aether_data_contracts::DataLayerError;
@@ -635,6 +636,126 @@ LIMIT 1
         row.as_ref()
             .map(map_payment_gateway_config_sqlite)
             .transpose()
+    }
+
+    async fn compare_and_swap_payment_gateway_secret(
+        &self,
+        update: &PaymentGatewaySecretCasUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let result = sqlx::query(
+            r#"
+UPDATE payment_gateway_configs
+SET merchant_key_encrypted = ?
+WHERE provider = ?
+  AND merchant_key_encrypted IS ?
+            "#,
+        )
+        .bind(&update.merchant_key_encrypted)
+        .bind(update.provider.trim().to_ascii_lowercase())
+        .bind(&update.expected_merchant_key_encrypted)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn compare_and_swap_payment_gateway_config(
+        &self,
+        mutation: &PaymentGatewayConfigCasWriteInput,
+    ) -> Result<AdminBillingMutationOutcome<PaymentGatewayConfigRecord>, DataLayerError> {
+        let input = &mutation.input;
+        let provider = input.provider.trim().to_ascii_lowercase();
+        let now = current_unix_secs_i64();
+        let mut tx = self.pool.begin().await.map_sql_err()?;
+        let result = if mutation.expected_existing {
+            sqlx::query(
+                r#"
+UPDATE payment_gateway_configs
+SET
+  enabled = ?,
+  endpoint_url = ?,
+  callback_base_url = ?,
+  merchant_id = ?,
+  merchant_key_encrypted = CASE
+    WHEN ? THEN merchant_key_encrypted
+    ELSE ?
+  END,
+  pay_currency = ?,
+  usd_exchange_rate = ?,
+  min_recharge_usd = ?,
+  channels_json = ?,
+  updated_at = ?
+WHERE provider = ?
+  AND merchant_key_encrypted IS ?
+                "#,
+            )
+            .bind(input.enabled)
+            .bind(&input.endpoint_url)
+            .bind(input.callback_base_url.as_deref())
+            .bind(&input.merchant_id)
+            .bind(input.preserve_existing_secret)
+            .bind(input.merchant_key_encrypted.as_deref())
+            .bind(&input.pay_currency)
+            .bind(input.usd_exchange_rate)
+            .bind(input.min_recharge_usd)
+            .bind(json_to_string(&input.channels_json)?)
+            .bind(now)
+            .bind(&provider)
+            .bind(mutation.expected_merchant_key_encrypted.as_deref())
+            .execute(&mut *tx)
+            .await
+            .map_sql_err()?
+        } else {
+            sqlx::query(
+                r#"
+INSERT INTO payment_gateway_configs (
+  provider, enabled, endpoint_url, callback_base_url, merchant_id,
+  merchant_key_encrypted, pay_currency, usd_exchange_rate, min_recharge_usd,
+  channels_json, created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(provider) DO NOTHING
+                "#,
+            )
+            .bind(&provider)
+            .bind(input.enabled)
+            .bind(&input.endpoint_url)
+            .bind(input.callback_base_url.as_deref())
+            .bind(&input.merchant_id)
+            .bind(input.merchant_key_encrypted.as_deref())
+            .bind(&input.pay_currency)
+            .bind(input.usd_exchange_rate)
+            .bind(input.min_recharge_usd)
+            .bind(json_to_string(&input.channels_json)?)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_sql_err()?
+        };
+        if result.rows_affected() != 1 {
+            tx.rollback().await.map_sql_err()?;
+            return Ok(AdminBillingMutationOutcome::NotFound);
+        }
+
+        let row = sqlx::query(
+            r#"
+SELECT
+  provider, enabled, endpoint_url, callback_base_url, merchant_id,
+  merchant_key_encrypted, pay_currency, usd_exchange_rate, min_recharge_usd,
+  channels_json, created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
+FROM payment_gateway_configs
+WHERE provider = ?
+LIMIT 1
+            "#,
+        )
+        .bind(&provider)
+        .fetch_one(&mut *tx)
+        .await
+        .map_sql_err()?;
+        let record = map_payment_gateway_config_sqlite(&row)?;
+        tx.commit().await.map_sql_err()?;
+        Ok(AdminBillingMutationOutcome::Applied(record))
     }
 
     async fn upsert_payment_gateway_config(
@@ -1462,7 +1583,8 @@ mod tests {
     use crate::run_migrations;
     use aether_data_contracts::repository::billing::{
         AdminBillingCollectorWriteInput, AdminBillingMutationOutcome, AdminBillingRuleWriteInput,
-        BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigWriteInput,
+        BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigCasWriteInput,
+        PaymentGatewayConfigWriteInput, PaymentGatewaySecretCasUpdate,
     };
 
     #[tokio::test]
@@ -1873,6 +1995,96 @@ VALUES ('order-1', 'order-no-1', 'wallet-1', 0, 'epay', 'plan_purchase',
         assert_eq!(
             replaced.merchant_key_encrypted.as_deref(),
             Some("secret-replaced")
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_gateway_cas_is_create_only_and_secret_exact() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        let repository = SqliteBillingReadRepository::new(pool);
+        let input = PaymentGatewayConfigWriteInput {
+            provider: "stripe".to_string(),
+            enabled: true,
+            endpoint_url: "https://api.stripe.com".to_string(),
+            callback_base_url: None,
+            merchant_id: "merchant".to_string(),
+            merchant_key_encrypted: Some("legacy-ciphertext".to_string()),
+            preserve_existing_secret: false,
+            pay_currency: "USD".to_string(),
+            usd_exchange_rate: 1.0,
+            min_recharge_usd: 1.0,
+            channels_json: json!({"channels": []}),
+        };
+        let create = PaymentGatewayConfigCasWriteInput {
+            input: input.clone(),
+            expected_existing: false,
+            expected_merchant_key_encrypted: None,
+        };
+        assert!(matches!(
+            repository
+                .compare_and_swap_payment_gateway_config(&create)
+                .await
+                .expect("create should run"),
+            AdminBillingMutationOutcome::Applied(_)
+        ));
+        assert_eq!(
+            repository
+                .compare_and_swap_payment_gateway_config(&create)
+                .await
+                .expect("conflicting create should run"),
+            AdminBillingMutationOutcome::NotFound
+        );
+
+        let before = repository
+            .find_payment_gateway_config("stripe")
+            .await
+            .expect("lookup should run")
+            .expect("config should exist");
+        assert!(!repository
+            .compare_and_swap_payment_gateway_secret(&PaymentGatewaySecretCasUpdate {
+                provider: "stripe".to_string(),
+                expected_merchant_key_encrypted: "LEGACY-ciphertext".to_string(),
+                merchant_key_encrypted: "v2-ciphertext".to_string(),
+            })
+            .await
+            .expect("case-mismatched CAS should run"));
+        assert!(repository
+            .compare_and_swap_payment_gateway_secret(&PaymentGatewaySecretCasUpdate {
+                provider: "stripe".to_string(),
+                expected_merchant_key_encrypted: "legacy-ciphertext".to_string(),
+                merchant_key_encrypted: "v2-ciphertext".to_string(),
+            })
+            .await
+            .expect("exact CAS should run"));
+        let after = repository
+            .find_payment_gateway_config("stripe")
+            .await
+            .expect("lookup should run")
+            .expect("config should exist");
+        assert_eq!(after.updated_at_unix_secs, before.updated_at_unix_secs);
+        assert_eq!(
+            after.merchant_key_encrypted.as_deref(),
+            Some("v2-ciphertext")
+        );
+
+        let stale_update = PaymentGatewayConfigCasWriteInput {
+            input,
+            expected_existing: true,
+            expected_merchant_key_encrypted: Some("legacy-ciphertext".to_string()),
+        };
+        assert_eq!(
+            repository
+                .compare_and_swap_payment_gateway_config(&stale_update)
+                .await
+                .expect("stale update should run"),
+            AdminBillingMutationOutcome::NotFound
         );
     }
 

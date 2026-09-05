@@ -88,9 +88,6 @@
               <TableHead class="w-[160px] text-center">
                 价格 ($/M)
               </TableHead>
-              <TableHead class="w-[170px] text-center">
-                {{ t('models.pricingSource.label') }}
-              </TableHead>
               <TableHead class="w-[80px] text-center">
                 提供商
               </TableHead>
@@ -108,7 +105,7 @@
           <TableBody>
             <TableRow v-if="loading">
               <TableCell
-                colspan="7"
+                colspan="6"
                 class="text-center py-8"
               >
                 <Loader2 class="w-6 h-6 animate-spin mx-auto" />
@@ -116,7 +113,7 @@
             </TableRow>
             <TableRow v-else-if="filteredGlobalModels.length === 0">
               <TableCell
-                colspan="7"
+                colspan="6"
                 class="text-center py-8 text-muted-foreground"
               >
                 没有找到匹配的模型
@@ -195,24 +192,6 @@
                       -
                     </div>
                   </div>
-                </TableCell>
-                <TableCell
-                  class="text-center"
-                  @mousedown.stop
-                  @click.stop
-                >
-                  <GlobalModelPricingSourceSelect
-                    class="mx-auto max-w-[165px]"
-                    :model-id="model.id"
-                    :source="getModelPricingSource(model)"
-                    :candidates="getModelPricingCandidates(model)"
-                    :loading="batchManageOnlineLoading"
-                    :syncing="isModelPricingSourceSyncing(model.id)"
-                    :local-only="isModelPricingSourceLocalOnly(model)"
-                    @open="handleModelPricingSourceOpen(model, $event)"
-                    @select="syncModelPricingSource(model, $event)"
-                    @resync="resyncModelPricingSource(model)"
-                  />
                 </TableCell>
                 <TableCell class="text-center">
                   <Badge variant="secondary">
@@ -357,26 +336,6 @@
               >
                 ${{ getFirstTierPrice(model, 'input')?.toFixed(2) || '-' }}/${{ getFirstTierPrice(model, 'output')?.toFixed(2) || '-' }}
               </span>
-            </div>
-
-            <div
-              class="flex items-center gap-2"
-              @mousedown.stop
-              @click.stop
-            >
-              <span class="shrink-0 text-xs text-muted-foreground">{{ t('models.pricingSource.label') }}</span>
-              <GlobalModelPricingSourceSelect
-                class="min-w-0 flex-1"
-                :model-id="model.id"
-                :source="getModelPricingSource(model)"
-                :candidates="getModelPricingCandidates(model)"
-                :loading="batchManageOnlineLoading"
-                :syncing="isModelPricingSourceSyncing(model.id)"
-                :local-only="isModelPricingSourceLocalOnly(model)"
-                @open="handleModelPricingSourceOpen(model, $event)"
-                @select="syncModelPricingSource(model, $event)"
-                @resync="resyncModelPricingSource(model)"
-              />
             </div>
           </div>
         </div>
@@ -782,7 +741,6 @@ import {
 } from 'lucide-vue-next'
 import ModelDetailDrawer from '@/features/models/components/ModelDetailDrawer.vue'
 import GlobalModelFormDialog from '@/features/models/components/GlobalModelFormDialog.vue'
-import GlobalModelPricingSourceSelect from '@/features/models/components/GlobalModelPricingSourceSelect.vue'
 import ExternalModelsAccessControl from '@/features/models/components/ExternalModelsAccessControl.vue'
 import ProviderModelFormDialog from '@/features/providers/components/ProviderModelFormDialog.vue'
 import type { Model } from '@/api/endpoints'
@@ -889,7 +847,6 @@ const batchManageModels = ref<GlobalModelResponse[]>([])
 const batchManageLoading = ref(false)
 const batchManageOnlineModels = ref<ModelsDevModelItem[]>([])
 const batchManageOnlineLoading = ref(false)
-const modelPricingSourceSyncingIds = ref<Set<string>>(new Set())
 const GLOBAL_MODELS_BATCH_FETCH_PAGE_SIZE = 1000
 let globalModelsRequestId = 0
 let modelSelectionRequestId = 0
@@ -1508,53 +1465,6 @@ const filteredBatchManageModels = computed(() => {
   })
 })
 
-const onlinePricingCandidatesByModelName = computed(() => {
-  const candidatesByName = new Map<string, ModelsDevModelItem[]>()
-  for (const onlineModel of batchManageOnlineModels.value) {
-    const normalizedName = onlineModel.modelId.trim().toLowerCase()
-    const existing = candidatesByName.get(normalizedName) ?? []
-    const normalizedProviderId = onlineModel.providerId.trim().toLowerCase()
-    if (!existing.some(candidate => (
-      candidate.providerId.trim().toLowerCase() === normalizedProviderId
-    ))) {
-      existing.push(onlineModel)
-      candidatesByName.set(normalizedName, existing)
-    }
-  }
-  for (const candidates of candidatesByName.values()) {
-    candidates.sort((left, right) => (
-      Number(right.official === true) - Number(left.official === true)
-      || left.providerName.localeCompare(right.providerName)
-      || left.providerId.localeCompare(right.providerId)
-    ))
-  }
-  return candidatesByName
-})
-
-function getModelPricingCandidates(model: GlobalModelResponse): ModelsDevModelItem[] {
-  return onlinePricingCandidatesByModelName.value.get(model.name.trim().toLowerCase()) ?? []
-}
-
-function getModelPricingSource(model: GlobalModelResponse) {
-  return getModelsDevPricingSource(model.id, model.config)
-}
-
-function isModelPricingSourceLocalOnly(model: GlobalModelResponse): boolean {
-  return !getModelsDevPricingSourceFromConfig(model.config)
-    && !!getLocalModelsDevPricingSource(model.id)
-}
-
-function isModelPricingSourceSyncing(modelId: string): boolean {
-  return modelPricingSourceSyncingIds.value.has(modelId)
-}
-
-function setModelPricingSourceSyncing(modelId: string, syncing: boolean) {
-  const nextIds = new Set(modelPricingSourceSyncingIds.value)
-  if (syncing) nextIds.add(modelId)
-  else nextIds.delete(modelId)
-  modelPricingSourceSyncingIds.value = nextIds
-}
-
 function applyGlobalModelUpdate(updatedModel: GlobalModelResponse) {
   for (const models of [globalModels.value, batchManageModels.value]) {
     const current = models.find(model => model.id === updatedModel.id)
@@ -1580,7 +1490,6 @@ function migrateLegacyModelsDevPricingSources(models: GlobalModelResponse[]) {
     }
     pricingSourceMigrationAttemptedIds.add(model.id)
     return [async () => {
-      setModelPricingSourceSyncing(model.id, true)
       const nextConfig = withModelsDevPricingSource(model.config, localSource)
       try {
         const updatedModel = await updateGlobalModel(model.id, { config: nextConfig })
@@ -1588,82 +1497,10 @@ function migrateLegacyModelsDevPricingSources(models: GlobalModelResponse[]) {
       } catch (err: unknown) {
         pricingSourceMigrationAttemptedIds.delete(model.id)
         log.warn('迁移本地模型价格来源失败:', err)
-      } finally {
-        setModelPricingSourceSyncing(model.id, false)
       }
     }]
   })
   if (tasks.length > 0) void runBatchTasksWithConcurrency(tasks, 4)
-}
-
-async function handleModelPricingSourceOpen(_model: GlobalModelResponse, open: boolean) {
-  if (open) await loadBatchManageOnlineModels()
-}
-
-async function syncModelPricingSource(model: GlobalModelResponse, providerId: string) {
-  if (!providerId || providerId.startsWith('__') || isModelPricingSourceSyncing(model.id)) return
-  if (batchManageOnlineModels.value.length === 0) await loadBatchManageOnlineModels()
-  const normalizedProviderId = providerId.trim().toLowerCase()
-  const candidate = getModelPricingCandidates(model).find(item => (
-    item.providerId.trim().toLowerCase() === normalizedProviderId
-  ))
-  if (!candidate) {
-    showError(
-      t('models.pricingSource.sourceGone'),
-      t('models.pricingSource.cannotSync'),
-    )
-    return
-  }
-  if (candidate.pricingUnsupportedFields?.length) {
-    showError(
-      t('models.pricingSource.unsupported', { fields: formatBatchUnsupportedPricingFields(candidate) }),
-      t('models.pricingSource.incompatible'),
-    )
-    return
-  }
-  if (!candidate.tieredPricing?.tiers?.length) {
-    showError(
-      t('models.pricingSource.noUsablePrice'),
-      t('models.pricingSource.cannotSync'),
-    )
-    return
-  }
-
-  const source = {
-    provider_id: candidate.providerId,
-    provider_name: candidate.providerName,
-  }
-  const pricing = cloneTieredPricingConfig(candidate.tieredPricing)
-  const nextConfig = withModelsDevPricingSource(model.config, source)
-  setModelPricingSourceSyncing(model.id, true)
-  try {
-    const updatedModel = await updateGlobalModel(model.id, {
-      default_tiered_pricing: pricing,
-      config: nextConfig,
-    })
-    setModelsDevPricingSource(model.id, source)
-    applyGlobalModelUpdate({
-      ...updatedModel,
-      default_tiered_pricing: pricing,
-      config: nextConfig,
-    })
-    success(t('models.pricingSource.selectedAndSynced', { provider: candidate.providerName }))
-  } catch (err: unknown) {
-    log.error('更新模型价格来源失败:', err)
-    showError(
-      parseApiError(err, t('models.pricingSource.updateFailed')),
-      t('models.pricingSource.syncFailed'),
-    )
-  } finally {
-    setModelPricingSourceSyncing(model.id, false)
-  }
-}
-
-async function resyncModelPricingSource(model: GlobalModelResponse) {
-  const source = getModelPricingSource(model)
-  if (!source) return
-  await loadBatchManageOnlineModels()
-  await syncModelPricingSource(model, source.provider_id)
 }
 
 const batchPricingProviderOptions = computed(() => {

@@ -224,7 +224,7 @@ fn wallet_finite_available_usd(
     Some(wallet.balance.max(0.0) + wallet.gift_balance.max(0.0))
 }
 
-async fn estimate_execution_plan_cost_upper_bound_usd(
+pub(crate) async fn estimate_execution_plan_cost_upper_bound_usd(
     state: &AppState,
     plan: &aether_contracts::ExecutionPlan,
     report_context: Option<&serde_json::Value>,
@@ -925,6 +925,7 @@ mod tests {
             local_rejection: None,
             allowed_models: Some(allowed_models),
             ip_rules: None,
+            verified_api_key_hash: None,
         });
         decision
     }

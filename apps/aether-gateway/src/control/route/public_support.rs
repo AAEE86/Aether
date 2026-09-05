@@ -197,18 +197,22 @@ pub(super) fn classify_public_support_route(
             "public:auth",
             false,
         ))
-    } else if matches!(method, &http::Method::GET | &http::Method::POST)
+    // Authentication state-changing endpoints must never be dispatched for GET.
+    // Besides violating HTTP method semantics, accepting GET here would allow
+    // browser prefetches/cross-site requests to trigger login, refresh, logout,
+    // registration, or verification side effects. `/me` is the sole read route.
+    } else if (method == http::Method::POST
         && matches!(
             normalized_path,
             "/api/auth/login"
                 | "/api/auth/refresh"
                 | "/api/auth/register"
-                | "/api/auth/me"
                 | "/api/auth/logout"
                 | "/api/auth/send-verification-code"
                 | "/api/auth/verify-email"
                 | "/api/auth/verification-status"
-        )
+        ))
+        || (method == http::Method::GET && normalized_path == "/api/auth/me")
     {
         let route_kind = match normalized_path {
             "/api/auth/login" => "login",

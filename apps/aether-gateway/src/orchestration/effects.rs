@@ -2415,14 +2415,27 @@ mod tests {
     }
 
     fn sample_codex_key() -> StoredProviderCatalogKey {
-        let encrypted_auth_config = encrypt_python_fernet_plaintext(
-            DEVELOPMENT_ENCRYPTION_KEY,
-            r#"{"provider_type":"codex","refresh_token":"rt-codex-local-123"}"#,
-        )
-        .expect("auth config should encrypt");
+        let provider_id = "provider-codex-cli-local-1";
+        let key_id = "key-codex-cli-local-1";
+        let credential_state = AppState::new()
+            .expect("credential state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::disabled()
+                    .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            );
+        let encrypted_api_key = credential_state
+            .seal_provider_catalog_key_api_key(provider_id, key_id, "codex-access-token")
+            .expect("access token should encrypt");
+        let encrypted_auth_config = credential_state
+            .seal_provider_catalog_key_auth_config(
+                provider_id,
+                key_id,
+                r#"{"provider_type":"codex","refresh_token":"rt-codex-local-123"}"#,
+            )
+            .expect("auth config should encrypt");
         StoredProviderCatalogKey::new(
-            "key-codex-cli-local-1".to_string(),
-            "provider-codex-cli-local-1".to_string(),
+            key_id.to_string(),
+            provider_id.to_string(),
             "oauth".to_string(),
             "oauth".to_string(),
             None,
@@ -2431,8 +2444,7 @@ mod tests {
         .expect("key should build")
         .with_transport_fields(
             Some(serde_json::json!(["openai:responses"])),
-            encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "codex-access-token")
-                .expect("access token should encrypt"),
+            encrypted_api_key,
             Some(encrypted_auth_config),
             None,
             Some(serde_json::json!({"openai:responses": 1})),
@@ -3908,7 +3920,7 @@ mod tests {
         assert!(stored_key.oauth_invalid_at_unix_secs.is_some());
         assert_eq!(
             stored_key.oauth_invalid_reason.as_deref(),
-            Some("[OAUTH_EXPIRED] session expired")
+            Some("[OAUTH_EXPIRED] Codex Token 已过期")
         );
         assert_eq!(
             stored_key
@@ -4220,7 +4232,7 @@ mod tests {
         assert!(stored_key.oauth_invalid_at_unix_secs.is_some());
         assert_eq!(
             stored_key.oauth_invalid_reason.as_deref(),
-            Some("[OAUTH_EXPIRED] Codex Token 已失效 (403): forbidden")
+            Some("[OAUTH_EXPIRED] Codex Token 已失效 (403)")
         );
         assert_eq!(
             stored_key
@@ -4263,7 +4275,7 @@ mod tests {
         assert!(stored_key.oauth_invalid_at_unix_secs.is_some());
         assert_eq!(
             stored_key.oauth_invalid_reason.as_deref(),
-            Some("[OAUTH_EXPIRED] Personal access token owner is inactive.")
+            Some("[OAUTH_EXPIRED] Codex Token 已失效")
         );
         assert_eq!(
             stored_key
@@ -4305,7 +4317,7 @@ mod tests {
             .expect("recoverable token invalidation should retain the key");
         assert_eq!(
             stored_key.oauth_invalid_reason.as_deref(),
-            Some("[OAUTH_EXPIRED] Personal access token owner is inactive.")
+            Some("[OAUTH_EXPIRED] Codex Token 已失效")
         );
     }
 
@@ -4365,7 +4377,7 @@ mod tests {
             .expect("recoverable expired token should be retained");
         assert_eq!(
             stored_key.oauth_invalid_reason.as_deref(),
-            Some("[OAUTH_EXPIRED] session expired")
+            Some("[OAUTH_EXPIRED] Codex Token 已过期")
         );
     }
 
@@ -4568,7 +4580,7 @@ mod tests {
             .expect("stored key should exist");
         assert_eq!(
             stored_key.oauth_invalid_reason.as_deref(),
-            Some("[OAUTH_EXPIRED] session expired")
+            Some("[OAUTH_EXPIRED] Codex Token 已过期")
         );
         assert!(stored_key.oauth_invalid_at_unix_secs.is_some());
         assert_eq!(
@@ -5032,8 +5044,13 @@ mod tests {
 
     #[tokio::test]
     async fn health_success_projection_is_rate_limited_until_failure_resets_gate() {
-        let state = health_state();
-        let plan = sample_plan();
+        // Keep this test's process-wide persistence gate isolated from the other
+        // effect tests, which intentionally exercise the same health key in parallel.
+        let mut plan = sample_plan();
+        plan.key_id = format!("health-success-rate-limit-{}", uuid::Uuid::new_v4());
+        let mut key = sample_health_key();
+        key.id = plan.key_id.clone();
+        let state = health_state_with_key(key);
 
         apply_local_execution_effect(
             &state,

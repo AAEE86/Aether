@@ -1328,7 +1328,10 @@ mod tests {
         assert_eq!(stored[0].status, RequestCandidateStatus::Success);
         assert_eq!(stored[0].status_code, Some(200));
         assert_eq!(stored[0].latency_ms, Some(25));
-        assert_eq!(stored[0].started_at_unix_ms, Some(101));
+        // Report updates preserve the original attempt start timestamp from
+        // the persisted slot; the update's value is only used when no start
+        // timestamp has been recorded yet.
+        assert_eq!(stored[0].started_at_unix_ms, Some(100_000));
         assert_eq!(stored[0].finished_at_unix_ms, Some(102));
     }
 

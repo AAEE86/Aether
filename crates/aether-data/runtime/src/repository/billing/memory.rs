@@ -5,8 +5,9 @@ use async_trait::async_trait;
 
 use super::{
     AdminBillingMutationOutcome, BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository,
-    PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput, StoredBillingModelContext,
-    UserDailyQuotaAvailabilityRecord, UserPlanEntitlementRecord,
+    PaymentGatewayConfigCasWriteInput, PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput,
+    PaymentGatewaySecretCasUpdate, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
+    UserPlanEntitlementRecord,
 };
 use crate::DataLayerError;
 
@@ -213,6 +214,76 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
             .expect("billing repository lock")
             .get(&provider.trim().to_ascii_lowercase())
             .cloned())
+    }
+
+    async fn compare_and_swap_payment_gateway_secret(
+        &self,
+        update: &PaymentGatewaySecretCasUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let provider = update.provider.trim().to_ascii_lowercase();
+        let mut configs = self
+            .gateway_configs_by_provider
+            .write()
+            .expect("billing repository lock");
+        let Some(record) = configs.get_mut(&provider) else {
+            return Ok(false);
+        };
+        if record.merchant_key_encrypted.as_deref()
+            != Some(update.expected_merchant_key_encrypted.as_str())
+        {
+            return Ok(false);
+        }
+        record.merchant_key_encrypted = Some(update.merchant_key_encrypted.clone());
+        Ok(true)
+    }
+
+    async fn compare_and_swap_payment_gateway_config(
+        &self,
+        mutation: &PaymentGatewayConfigCasWriteInput,
+    ) -> Result<AdminBillingMutationOutcome<PaymentGatewayConfigRecord>, DataLayerError> {
+        let input = &mutation.input;
+        let provider = input.provider.trim().to_ascii_lowercase();
+        let now = current_unix_secs();
+        let mut configs = self
+            .gateway_configs_by_provider
+            .write()
+            .expect("billing repository lock");
+        let existing = configs.get(&provider);
+        if mutation.expected_existing {
+            let Some(existing) = existing else {
+                return Ok(AdminBillingMutationOutcome::NotFound);
+            };
+            if existing.merchant_key_encrypted != mutation.expected_merchant_key_encrypted {
+                return Ok(AdminBillingMutationOutcome::NotFound);
+            }
+        } else if existing.is_some() {
+            return Ok(AdminBillingMutationOutcome::NotFound);
+        }
+
+        let created_at = existing
+            .map(|value| value.created_at_unix_secs)
+            .unwrap_or(now);
+        let merchant_key_encrypted = if input.preserve_existing_secret {
+            existing.and_then(|value| value.merchant_key_encrypted.clone())
+        } else {
+            input.merchant_key_encrypted.clone()
+        };
+        let record = PaymentGatewayConfigRecord {
+            provider: provider.clone(),
+            enabled: input.enabled,
+            endpoint_url: input.endpoint_url.clone(),
+            callback_base_url: input.callback_base_url.clone(),
+            merchant_id: input.merchant_id.clone(),
+            merchant_key_encrypted,
+            pay_currency: input.pay_currency.clone(),
+            usd_exchange_rate: input.usd_exchange_rate,
+            min_recharge_usd: input.min_recharge_usd,
+            channels_json: input.channels_json.clone(),
+            created_at_unix_secs: created_at,
+            updated_at_unix_secs: now,
+        };
+        configs.insert(provider, record.clone());
+        Ok(AdminBillingMutationOutcome::Applied(record))
     }
 
     async fn upsert_payment_gateway_config(
@@ -495,7 +566,10 @@ mod tests {
     use serde_json::json;
 
     use super::InMemoryBillingReadRepository;
-    use crate::repository::billing::{BillingReadRepository, StoredBillingModelContext};
+    use crate::repository::billing::{
+        AdminBillingMutationOutcome, BillingReadRepository, PaymentGatewayConfigCasWriteInput,
+        PaymentGatewayConfigWriteInput, PaymentGatewaySecretCasUpdate, StoredBillingModelContext,
+    };
 
     fn sample_context() -> StoredBillingModelContext {
         StoredBillingModelContext::new(
@@ -602,5 +676,106 @@ mod tests {
             stored.model_provider_model_name.as_deref(),
             Some("gpt-5-upstream")
         );
+    }
+
+    fn gateway_input(secret: Option<&str>) -> PaymentGatewayConfigWriteInput {
+        PaymentGatewayConfigWriteInput {
+            provider: "stripe".to_string(),
+            enabled: true,
+            endpoint_url: "https://api.stripe.com".to_string(),
+            callback_base_url: Some("https://example.com".to_string()),
+            merchant_id: "merchant".to_string(),
+            merchant_key_encrypted: secret.map(ToOwned::to_owned),
+            preserve_existing_secret: false,
+            pay_currency: "USD".to_string(),
+            usd_exchange_rate: 1.0,
+            min_recharge_usd: 1.0,
+            channels_json: json!({"channels": []}),
+        }
+    }
+
+    #[tokio::test]
+    async fn payment_gateway_cas_prevents_create_overwrite_and_uses_exact_secret_fence() {
+        let repository = InMemoryBillingReadRepository::default();
+        let create = PaymentGatewayConfigCasWriteInput {
+            input: gateway_input(Some("ciphertext-a")),
+            expected_existing: false,
+            expected_merchant_key_encrypted: None,
+        };
+        assert!(matches!(
+            repository
+                .compare_and_swap_payment_gateway_config(&create)
+                .await
+                .expect("create should succeed"),
+            AdminBillingMutationOutcome::Applied(_)
+        ));
+
+        let mut competing_create = create.clone();
+        competing_create.input.merchant_id = "overwritten".to_string();
+        assert_eq!(
+            repository
+                .compare_and_swap_payment_gateway_config(&competing_create)
+                .await
+                .expect("conflicting create should be handled"),
+            AdminBillingMutationOutcome::NotFound
+        );
+
+        let mut stale_update = create.clone();
+        stale_update.expected_existing = true;
+        stale_update.expected_merchant_key_encrypted = Some("ciphertext-stale".to_string());
+        stale_update.input.merchant_id = "stale-update".to_string();
+        assert_eq!(
+            repository
+                .compare_and_swap_payment_gateway_config(&stale_update)
+                .await
+                .expect("stale update should be handled"),
+            AdminBillingMutationOutcome::NotFound
+        );
+        let stored = repository
+            .find_payment_gateway_config("stripe")
+            .await
+            .expect("lookup should succeed")
+            .expect("config should exist");
+        assert_eq!(stored.merchant_id, "merchant");
+    }
+
+    #[tokio::test]
+    async fn payment_gateway_secret_cas_changes_no_other_fields() {
+        let repository = InMemoryBillingReadRepository::default();
+        repository
+            .upsert_payment_gateway_config(&gateway_input(Some("legacy-ciphertext")))
+            .await
+            .expect("seed should succeed");
+        let before = repository
+            .find_payment_gateway_config("stripe")
+            .await
+            .expect("lookup should succeed")
+            .expect("config should exist");
+
+        assert!(!repository
+            .compare_and_swap_payment_gateway_secret(&PaymentGatewaySecretCasUpdate {
+                provider: "stripe".to_string(),
+                expected_merchant_key_encrypted: "wrong-ciphertext".to_string(),
+                merchant_key_encrypted: "v2-ciphertext".to_string(),
+            })
+            .await
+            .expect("stale secret CAS should be handled"));
+        assert!(repository
+            .compare_and_swap_payment_gateway_secret(&PaymentGatewaySecretCasUpdate {
+                provider: "stripe".to_string(),
+                expected_merchant_key_encrypted: "legacy-ciphertext".to_string(),
+                merchant_key_encrypted: "v2-ciphertext".to_string(),
+            })
+            .await
+            .expect("secret CAS should succeed"));
+
+        let mut expected = before.clone();
+        expected.merchant_key_encrypted = Some("v2-ciphertext".to_string());
+        let after = repository
+            .find_payment_gateway_config("stripe")
+            .await
+            .expect("lookup should succeed")
+            .expect("config should exist");
+        assert_eq!(after, expected);
     }
 }

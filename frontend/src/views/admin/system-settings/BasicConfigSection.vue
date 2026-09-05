@@ -304,6 +304,7 @@
             :model-value="referralRechargePercent"
             type="number"
             min="0"
+            max="100"
             step="0.01"
             class="mt-1"
             @update:model-value="$emit('update:referralRechargePercent', Number($event))"

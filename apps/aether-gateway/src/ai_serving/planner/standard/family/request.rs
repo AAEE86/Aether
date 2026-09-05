@@ -592,7 +592,7 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         }
     };
     crate::ai_serving::hydrate_openai_response_history(
-        state.runtime_state(),
+        state,
         body_json,
         spec_metadata.api_format,
         provider_api_format,

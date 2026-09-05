@@ -29,7 +29,7 @@ use crate::handlers::shared::{
     parse_catalog_auth_config_json, provider_key_health_summary,
     provider_key_status_snapshot_payload,
 };
-use crate::model_fetch::ModelFetchRuntimeState;
+use crate::model_fetch::{safe_model_fetch_error, ModelFetchRuntimeState};
 use crate::provider_key_auth::{
     provider_key_auth_semantics, provider_key_configured_api_formats,
     provider_key_inherits_provider_api_formats,
@@ -319,6 +319,15 @@ fn provider_query_codex_preset_fallback(
     })
 }
 
+fn provider_query_project_model_fetch_errors(
+    errors: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    errors
+        .into_iter()
+        .map(|error| safe_model_fetch_error(&error))
+        .collect()
+}
+
 async fn provider_query_persist_preset_models(
     state: &AdminAppState<'_>,
     provider: &StoredProviderCatalogProvider,
@@ -597,7 +606,7 @@ async fn provider_query_fetch_models_for_key(
         {
             Ok(outcome) => outcome,
             Err(err) => {
-                all_errors.push(err);
+                all_errors.extend(provider_query_project_model_fetch_errors([err]));
                 if let Some(fallback) =
                     provider_query_codex_preset_fallback(provider, &all_errors.join("; "))
                 {
@@ -615,7 +624,7 @@ async fn provider_query_fetch_models_for_key(
             }
         };
 
-    all_errors.extend(outcome.errors);
+    all_errors.extend(provider_query_project_model_fetch_errors(outcome.errors));
     let unique_models = outcome.legacy_models;
     if outcome.has_success && !unique_models.is_empty() {
         if all_errors.is_empty() && outcome.native_codex_catalog {
@@ -1070,5 +1079,33 @@ mod tests {
             models[2]["model_test_capabilities"]["openai:image"]["supports_edit"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn provider_query_projects_transport_errors_before_exposing_them() {
+        let projected = provider_query_project_model_fetch_errors(vec![
+            "HTTP 401 response body: Authorization: Bearer upstream-secret".to_string(),
+            "connection failed for https://user:password@example.test/v1/models?key=secret"
+                .to_string(),
+        ]);
+
+        assert_eq!(
+            projected,
+            [
+                "Upstream models fetch authentication failed (status 401)",
+                "Upstream models fetch connection failed",
+            ]
+        );
+        let exposed = projected.join("; ");
+        for secret in [
+            "upstream-secret",
+            "Bearer",
+            "user",
+            "password",
+            "example.test",
+            "?key=secret",
+        ] {
+            assert!(!exposed.contains(secret));
+        }
     }
 }

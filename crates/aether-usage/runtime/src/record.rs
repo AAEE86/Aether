@@ -608,7 +608,8 @@ mod tests {
         assert_eq!(
             record.request_metadata,
             Some(serde_json::json!({
-                "billing_snapshot": { "status": "complete" }
+                "billing_snapshot": { "status": "complete" },
+                "billing_snapshot_status": "complete"
             }))
         );
     }

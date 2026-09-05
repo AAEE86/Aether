@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
 use aether_data::repository::global_models::InMemoryGlobalModelReadRepository;
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
@@ -23,9 +22,10 @@ use serde_json::json;
 
 use super::super::{
     build_router_with_state, issue_test_admin_access_token, sample_admin_provider_model,
-    sample_endpoint, sample_key, sample_provider, sample_provider_active_global_model,
-    sample_provider_model_stats, sample_provider_quota, sample_public_global_model_with_mappings,
-    sample_request_candidate, start_server, AppState,
+    sample_bound_key, sample_bound_key as sample_key, sample_bound_provider_proxy, sample_endpoint,
+    sample_provider, sample_provider_active_global_model, sample_provider_model_stats,
+    sample_provider_quota, sample_public_global_model_with_mappings, sample_request_candidate,
+    start_server, AppState,
 };
 use crate::admin_api::{
     maybe_build_local_admin_providers_response, AdminAppState, AdminRequestContext,
@@ -233,7 +233,11 @@ async fn gateway_handles_admin_provider_summary_locally_with_trusted_admin_princ
             true,
             None,
             Some(4),
-            Some(json!({"host": "proxy.example", "password": "secret"})),
+            Some(sample_bound_provider_proxy(
+                "provider-openai",
+                "proxy.example",
+                "secret",
+            )),
             Some(45.0),
             Some(12.0),
             Some(json!({
@@ -269,25 +273,12 @@ async fn gateway_handles_admin_provider_summary_locally_with_trusted_admin_princ
                 "sk-test-chat",
             )
             .with_health_fields(Some(json!({"openai:chat": {"health_score": 0.25}})), None),
-            sample_key(
+            sample_bound_key(
                 "key-openai-cli",
                 "provider-openai",
                 "openai:responses",
-                "sk-test-cli",
+                "sk-test-cli-2",
             )
-            .with_transport_fields(
-                Some(json!(["openai:responses"])),
-                encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "sk-test-cli-2")
-                    .expect("api key ciphertext should build"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .expect("key transport should build")
             .with_health_fields(
                 Some(json!({"openai:responses": {"health_score": 0.75}})),
                 None,
@@ -879,7 +870,7 @@ async fn gateway_updates_admin_provider_locally_with_trusted_admin_principal() {
         Some(aether_contracts::MAX_EXECUTION_REQUEST_TIMEOUT_SECS as f64)
     );
     assert_eq!(payload["stream_first_byte_timeout"], 11.0);
-    assert_eq!(payload["proxy"], json!({"url": "https://proxy.example"}));
+    assert_eq!(payload["proxy"], json!({"url": "https://proxy.example/"}));
     assert_eq!(payload["claude_code_advanced"], json!({"pool_size": 2}));
     assert_eq!(payload["pool_advanced"], json!({}));
     assert_eq!(payload["failover_rules"], json!({"strategy": "ordered"}));
@@ -1751,7 +1742,7 @@ async fn gateway_handles_admin_provider_mapping_preview_locally_with_trusted_adm
     let keys = payload["keys"].as_array().expect("keys should be an array");
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["key_id"], "key-openai-preview");
-    assert_eq!(keys[0]["masked_key"], "sk-p***1234");
+    assert_eq!(keys[0]["masked_key"], "sk-p***234");
     assert_eq!(keys[0]["allowed_models"], json!(["gpt-5", "gpt-4.1-mini"]));
 
     let matches = keys[0]["matching_global_models"]

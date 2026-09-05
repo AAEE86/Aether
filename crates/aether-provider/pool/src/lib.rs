@@ -367,6 +367,34 @@ mod tests {
     }
 
     #[test]
+    fn kiro_quota_request_rejects_region_url_injection() {
+        let spec = build_kiro_pool_quota_request(
+            "key-1",
+            &KiroPoolQuotaAuthInput {
+                authorization_value: "Bearer sensitive-access-token".to_string(),
+                api_region: "attacker.example/evil".to_string(),
+                kiro_version: "0.3.210".to_string(),
+                machine_id: "machine".to_string(),
+                profile_arn: None,
+            },
+        );
+
+        assert_eq!(
+            spec.url,
+            "https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        );
+        assert_eq!(
+            spec.headers.get("host").map(String::as_str),
+            Some("q.us-east-1.amazonaws.com")
+        );
+        assert!(!spec.url.contains("attacker.example"));
+        assert!(!spec
+            .headers
+            .get("host")
+            .is_some_and(|value| value.contains("attacker.example")));
+    }
+
+    #[test]
     fn chatgpt_web_quota_request_uses_default_base_url_when_empty() {
         let spec = build_chatgpt_web_pool_quota_request(
             "key-1",
@@ -382,7 +410,6 @@ mod tests {
             spec.headers.get("origin").map(String::as_str),
             Some("https://chatgpt.com")
         );
-        assert!(spec.accept_invalid_certs);
     }
 
     #[test]

@@ -3341,54 +3341,24 @@ pub fn codex_structured_invalid_reason(status_code: u16, upstream_message: Optio
         return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}工作区已停用 (deactivated_workspace)");
     }
     if codex_looks_like_account_deactivated(Some(message)) {
-        let detail = if message.is_empty() {
-            "OpenAI 账号已停用"
-        } else {
-            message
-        };
-        return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}{detail}");
+        return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}OpenAI 账号已停用");
     }
     if codex_looks_like_token_invalidated(Some(message)) {
-        let detail = if message.is_empty() {
-            "Codex Token 已失效"
-        } else {
-            message
-        };
-        return format!("{OAUTH_EXPIRED_PREFIX}{detail}");
+        return format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已失效");
     }
     if codex_looks_like_token_expired(Some(message)) {
-        let detail = if message.is_empty() {
-            "Codex Token 已过期"
-        } else {
-            message
-        };
-        return format!("{OAUTH_EXPIRED_PREFIX}{detail}");
+        return format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已过期");
     }
     if status_code == 401 {
-        let detail = if message.is_empty() {
-            "Codex Token 已过期 (401)"
-        } else {
-            message
-        };
-        return format!("{OAUTH_EXPIRED_PREFIX}{detail}");
+        return format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已过期 (401)");
     }
     if status_code == 403 {
-        let detail = if message.is_empty() {
-            "Codex 账户访问受限 (403)"
-        } else {
-            message
-        };
-        return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}{detail}");
+        return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}Codex 账户访问受限 (403)");
     }
     if status_code == 402 {
-        let detail = if message.is_empty() {
-            "Codex 账户需要付款 (402)"
-        } else {
-            message
-        };
-        return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}{detail}");
+        return format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}Codex 账户需要付款 (402)");
     }
-    message.to_string()
+    format!("Codex 请求失败 ({status_code})")
 }
 
 pub fn codex_runtime_invalid_reason(
@@ -3412,11 +3382,8 @@ pub fn codex_runtime_invalid_reason(
 }
 
 fn codex_generic_forbidden_runtime_invalid_reason(upstream_message: Option<&str>) -> String {
-    let detail = upstream_message
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|message| format!("Codex Token 已失效 (403): {message}"))
-        .unwrap_or_else(|| "Codex Token 已失效 (403)".to_string());
+    let _ = upstream_message;
+    let detail = "Codex Token 已失效 (403)";
     format!("{OAUTH_EXPIRED_PREFIX}{detail}")
 }
 
@@ -3424,11 +3391,8 @@ pub fn codex_soft_request_failure_reason(
     status_code: u16,
     upstream_message: Option<&str>,
 ) -> String {
-    let detail = upstream_message
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("Codex 请求失败 ({status_code})"));
+    let _ = upstream_message;
+    let detail = format!("Codex 请求失败 ({status_code})");
     format!("{OAUTH_REQUEST_FAILED_PREFIX}{detail}")
 }
 
@@ -3741,33 +3705,21 @@ pub fn parse_windsurf_user_status_response(
             result.insert(target.to_string(), json!(found));
         }
     }
-    for (target, aliases) in [
+    for (status_field, reason_field, fixed_reason) in [
+        ("banned", "ban_reason", "Windsurf account is suspended"),
         (
-            "ban_reason",
-            &[
-                "banReason",
-                "ban_reason",
-                "blockedReason",
-                "blocked_reason",
-                "reason",
-                "message",
-            ][..],
-        ),
-        (
+            "quarantined",
             "quarantine_reason",
-            &["quarantineReason", "quarantine_reason", "reason", "message"][..],
+            "Windsurf account is quarantined",
         ),
         (
+            "is_forbidden",
             "forbidden_reason",
-            &["forbiddenReason", "forbidden_reason", "reason", "message"][..],
+            "Windsurf account access is restricted",
         ),
     ] {
-        if let Some(found) = status_sources.iter().find_map(|source| {
-            aliases
-                .iter()
-                .find_map(|alias| coerce_json_string(source.get(*alias)))
-        }) {
-            result.insert(target.to_string(), json!(found));
+        if result.get(status_field).and_then(coerce_json_bool) == Some(true) {
+            result.insert(reason_field.to_string(), json!(fixed_reason));
         }
     }
 
@@ -3953,20 +3905,19 @@ fn normalize_chatgpt_web_numeric_reset(value: f64, observed_at: u64) -> Option<u
 }
 
 fn chatgpt_web_blocked_features(value: &serde_json::Value) -> Vec<String> {
-    value
+    let image_blocked = value
         .get("blocked_features")
         .or_else(|| value.get("blockedFeatures"))
         .and_then(serde_json::Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .any(chatgpt_web_is_image_quota_feature);
+    if image_blocked {
+        vec!["image_generation".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn parse_chatgpt_web_conversation_init_response(
@@ -4016,11 +3967,9 @@ pub fn parse_chatgpt_web_conversation_init_response(
             json!(plan_type.to_ascii_lowercase()),
         );
     }
-    result.insert("blocked_features".to_string(), json!(blocked_features));
-    result.insert(
-        "limits_progress".to_string(),
-        serde_json::Value::Array(limits_progress),
-    );
+    if !blocked_features.is_empty() {
+        result.insert("blocked_features".to_string(), json!(blocked_features));
+    }
 
     if image_blocked {
         result.insert("image_quota_blocked".to_string(), json!(true));
@@ -4092,13 +4041,6 @@ pub fn parse_chatgpt_web_conversation_init_response(
         }
         if let Some(reset_at) = reset_at {
             result.insert("image_quota_reset_at".to_string(), json!(reset_at));
-        }
-        if let Some(reset_after) = coerce_json_string(
-            image_limit
-                .get("reset_after")
-                .or_else(|| image_limit.get("resetAfter")),
-        ) {
-            result.insert("image_quota_reset_after".to_string(), json!(reset_after));
         }
     } else if image_blocked {
         result.insert("image_quota_remaining".to_string(), json!(0.0));
@@ -5895,7 +5837,7 @@ mod tests {
     fn codex_runtime_invalid_reason_marks_401_as_expired() {
         assert_eq!(
             codex_runtime_invalid_reason(401, Some("session expired")),
-            Some(format!("{OAUTH_EXPIRED_PREFIX}session expired"))
+            Some(format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已过期"))
         );
     }
 
@@ -5903,9 +5845,7 @@ mod tests {
     fn codex_runtime_invalid_reason_marks_account_deactivated_403() {
         assert_eq!(
             codex_runtime_invalid_reason(403, Some("account has been deactivated")),
-            Some(format!(
-                "{OAUTH_ACCOUNT_BLOCK_PREFIX}account has been deactivated"
-            ))
+            Some(format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}OpenAI 账号已停用"))
         );
     }
 
@@ -5913,18 +5853,14 @@ mod tests {
     fn codex_runtime_invalid_reason_marks_inactive_pat_owner_403_as_token_invalid() {
         assert_eq!(
             codex_runtime_invalid_reason(403, Some("Personal access token owner is inactive.")),
-            Some(format!(
-                "{OAUTH_EXPIRED_PREFIX}Personal access token owner is inactive."
-            ))
+            Some(format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已失效"))
         );
         assert_eq!(
             codex_runtime_invalid_reason(
                 403,
                 Some("biscuit_baker_service_auth_credential_error_status")
             ),
-            Some(format!(
-                "{OAUTH_EXPIRED_PREFIX}biscuit_baker_service_auth_credential_error_status"
-            ))
+            Some(format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已失效"))
         );
     }
 
@@ -5932,9 +5868,7 @@ mod tests {
     fn codex_runtime_invalid_reason_marks_deleted_agent_runtime_as_invalid() {
         assert_eq!(
             codex_runtime_invalid_reason(403, Some("Agent runtime has been deleted.")),
-            Some(format!(
-                "{OAUTH_EXPIRED_PREFIX}Agent runtime has been deleted."
-            ))
+            Some(format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已失效"))
         );
     }
 
@@ -5942,7 +5876,9 @@ mod tests {
     fn codex_runtime_invalid_reason_marks_402_as_account_blocked() {
         assert_eq!(
             codex_runtime_invalid_reason(402, Some("payment required")),
-            Some(format!("{OAUTH_ACCOUNT_BLOCK_PREFIX}payment required"))
+            Some(format!(
+                "{OAUTH_ACCOUNT_BLOCK_PREFIX}Codex 账户需要付款 (402)"
+            ))
         );
     }
 
@@ -5950,10 +5886,24 @@ mod tests {
     fn codex_runtime_invalid_reason_marks_generic_403_as_token_invalid() {
         assert_eq!(
             codex_runtime_invalid_reason(403, Some("forbidden")),
-            Some(format!(
-                "{OAUTH_EXPIRED_PREFIX}Codex Token 已失效 (403): forbidden"
-            ))
+            Some(format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已失效 (403)"))
         );
+    }
+
+    #[test]
+    fn codex_invalid_reason_does_not_persist_upstream_credentials() {
+        let reason = codex_runtime_invalid_reason(
+            401,
+            Some("authorization=Bearer upstream-secret https://user:pass@example.test?q=secret"),
+        )
+        .expect("401 should produce a reason");
+
+        assert_eq!(
+            reason,
+            format!("{OAUTH_EXPIRED_PREFIX}Codex Token 已过期 (401)")
+        );
+        assert!(!reason.contains("upstream-secret"));
+        assert!(!reason.contains("user:pass"));
     }
 
     #[test]
@@ -7331,9 +7281,34 @@ mod tests {
         assert_eq!(parsed.get("quarantined"), Some(&json!(true)));
         assert_eq!(
             parsed.get("quarantine_reason"),
-            Some(&json!("quota review"))
+            Some(&json!("Windsurf account is quarantined"))
         );
         assert_eq!(parsed.get("updated_at"), Some(&json!(1_770_000_000u64)));
+    }
+
+    #[test]
+    fn windsurf_status_parser_never_persists_upstream_reason_or_message() {
+        let parsed = parse_windsurf_user_status_response(
+            &json!({
+                "userStatus": {
+                    "isBanned": true,
+                    "reason": "Authorization: Bearer upstream-secret",
+                    "message": "https://user:password@internal.test?q=secret",
+                    "planStatus": {"dailyQuotaRemainingPercent": 10}
+                }
+            }),
+            1_770_000_000,
+        )
+        .expect("windsurf status should parse");
+
+        assert_eq!(
+            parsed.get("ban_reason"),
+            Some(&json!("Windsurf account is suspended"))
+        );
+        let serialized = parsed.to_string();
+        assert!(!serialized.contains("upstream-secret"));
+        assert!(!serialized.contains("user:password"));
+        assert!(!serialized.contains("q=secret"));
     }
 
     #[test]
@@ -7424,7 +7399,11 @@ mod tests {
     fn parses_chatgpt_web_blocked_image_feature_as_zero_remaining() {
         let parsed = parse_chatgpt_web_conversation_init_response(
             &json!({
-                "blocked_features": ["image_generation"],
+                "blocked_features": [
+                    "image_generation",
+                    "Authorization: Bearer upstream-secret",
+                    "https://user:password@internal.test?q=secret"
+                ],
                 "limits_progress": []
             }),
             1_778_067_246,
@@ -7433,5 +7412,43 @@ mod tests {
 
         assert_eq!(parsed.get("image_quota_blocked"), Some(&json!(true)));
         assert_eq!(parsed.get("image_quota_remaining"), Some(&json!(0.0)));
+        assert_eq!(
+            parsed.get("blocked_features"),
+            Some(&json!(["image_generation"]))
+        );
+        assert!(parsed.get("limits_progress").is_none());
+        assert!(!parsed.to_string().contains("upstream-secret"));
+    }
+
+    #[test]
+    fn chatgpt_web_parser_projects_image_limit_scalars_only() {
+        let parsed = parse_chatgpt_web_conversation_init_response(
+            &json!({
+                "limits_progress": [{
+                    "feature_name": "image_gen",
+                    "remaining": 8,
+                    "total": 12,
+                    "reset_after": "60",
+                    "message": "Authorization: Bearer upstream-secret",
+                    "nested": {
+                        "url": "https://user:password@internal.test?q=secret"
+                    }
+                }]
+            }),
+            1_778_067_246,
+        )
+        .expect("image quota should parse");
+
+        assert_eq!(parsed.get("image_quota_remaining"), Some(&json!(8.0)));
+        assert_eq!(parsed.get("image_quota_total"), Some(&json!(12.0)));
+        assert_eq!(
+            parsed.get("image_quota_reset_at"),
+            Some(&json!(1_778_067_306u64))
+        );
+        assert!(parsed.get("limits_progress").is_none());
+        assert!(parsed.get("image_quota_reset_after").is_none());
+        let serialized = parsed.to_string();
+        assert!(!serialized.contains("upstream-secret"));
+        assert!(!serialized.contains("user:password"));
     }
 }

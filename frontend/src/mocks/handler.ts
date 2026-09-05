@@ -5,6 +5,7 @@
 
 import type { AxiosRequestConfig, AxiosResponse } from 'axios'
 import { isDemoMode, DEMO_ACCOUNTS } from '@/config/demo'
+import { log } from '@/utils/logger'
 import {
   MOCK_ADMIN_USER,
   MOCK_NORMAL_USER,
@@ -2322,15 +2323,13 @@ export async function handleMockRequest(config: AxiosRequestConfig): Promise<Axi
       if ((error as Record<string, unknown>)?.response) {
         throw error
       }
-      // eslint-disable-next-line no-console
-      console.error('[Mock] Handler error:', error)
+      log.error('Mock request handler failed', error)
       throw { response: createMockResponse({ detail: '模拟请求处理失败' }, 500) }
     }
   }
 
   // 未匹配的请求返回默认响应
-  // eslint-disable-next-line no-console
-  console.warn(`[Mock] Unhandled request: ${method} ${url}`)
+  log.warn('Mock request was not handled', { method, url })
   return createMockResponse({ message: '演示模式：该接口暂未模拟', demo_mode: true })
 }
 
@@ -4993,7 +4992,7 @@ mockHandlers['GET /api/admin/monitoring/system-status'] = async () => {
       active_streams: 164
     },
     internal_gateway: {
-      status: 'rust_native_control_plane',
+      status: 'disabled',
       path_prefixes: ['/api/', '/v1/', '/v1beta/', '/_gateway/']
     },
     recent_errors: 9

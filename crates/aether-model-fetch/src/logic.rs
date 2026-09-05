@@ -973,7 +973,7 @@ fn build_codex_models_url(base_url: &str, client_version: Option<&str>) -> Optio
                 .trim()
                 .eq_ignore_ascii_case("client_version")
         });
-        query_parts.push(format!("client_version={client_version}"));
+        query_parts.push(encoded_query_pair("client_version", client_version));
     } else if !has_client_version {
         query_parts.push(format!(
             "client_version={}",
@@ -1001,8 +1001,14 @@ fn replace_or_append_query_param(url: &str, name: &str, value: &str) -> String {
             .trim()
             .eq_ignore_ascii_case(name)
     });
-    query_parts.push(format!("{name}={value}"));
+    query_parts.push(encoded_query_pair(name, value));
     format!("{base}?{}", query_parts.join("&"))
+}
+
+fn encoded_query_pair(name: &str, value: &str) -> String {
+    let name = url::form_urlencoded::byte_serialize(name.as_bytes()).collect::<String>();
+    let value = url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>();
+    format!("{name}={value}")
 }
 
 fn build_gemini_models_url(base_url: &str) -> Option<String> {
@@ -1362,6 +1368,22 @@ mod tests {
     }
 
     #[test]
+    fn explicit_codex_client_version_cannot_inject_query_parameters() {
+        let (url, _) = build_models_fetch_url_for_client_version(
+            "codex",
+            "openai:responses",
+            "https://chatgpt.com/backend-api/codex",
+            Some("0.145.2&admin=true#fragment"),
+        )
+        .expect("models URL should build");
+
+        assert_eq!(
+            url,
+            "https://chatgpt.com/backend-api/codex/models?client_version=0.145.2%26admin%3Dtrue%23fragment"
+        );
+    }
+
+    #[test]
     fn explicit_codex_client_version_replaces_stale_base_query_value() {
         assert_eq!(
             build_models_fetch_url_for_client_version(
@@ -1372,6 +1394,23 @@ mod tests {
             ),
             Some((
                 "https://chatgpt.com/backend-api/codex/models?feature=on&client_version=0.145.2"
+                    .to_string(),
+                "openai:responses".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn explicit_codex_client_version_preserves_preencoded_base_query_values() {
+        assert_eq!(
+            build_models_fetch_url_for_client_version(
+                "codex",
+                "openai:responses",
+                "https://chatgpt.com/backend-api/codex?feature=beta%2Bdesktop",
+                Some("0.145.2"),
+            ),
+            Some((
+                "https://chatgpt.com/backend-api/codex/models?feature=beta%2Bdesktop&client_version=0.145.2"
                     .to_string(),
                 "openai:responses".to_string()
             ))

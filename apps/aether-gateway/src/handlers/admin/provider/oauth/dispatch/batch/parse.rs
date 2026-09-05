@@ -16,13 +16,13 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(super) struct AdminProviderOAuthBatchImportRequest {
     pub credentials: String,
     pub proxy_node_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct AdminProviderOAuthBatchImportEntry {
     pub parse_error: Option<String>,
     pub refresh_token: Option<String>,
@@ -52,7 +52,7 @@ pub(super) struct AdminProviderOAuthBatchImportEntry {
     pub rate_limit_tier: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct AdminProviderOAuthBatchImportOutcome {
     pub total: usize,
     pub success: usize,
@@ -663,7 +663,7 @@ pub(super) fn parse_admin_provider_oauth_batch_import_entries(
                     .collect();
             }
             Ok(_) => {}
-            Err(error) => return vec![parse_error_entry(format!("JSON 数组解析失败: {error}"))],
+            Err(_) => return vec![parse_error_entry("JSON 数组解析失败".to_string())],
         }
     }
 
@@ -697,8 +697,8 @@ pub(super) fn parse_admin_provider_oauth_batch_import_entries(
                             "JSON 行必须是账号对象，不能作为 raw token 导入".to_string(),
                         ));
                     }
-                    Err(error) => {
-                        return Some(parse_error_entry(format!("JSON 行解析失败: {error}")));
+                    Err(_) => {
+                        return Some(parse_error_entry("JSON 行解析失败".to_string()));
                     }
                 }
             }
@@ -719,7 +719,7 @@ pub(super) fn parse_admin_provider_oauth_agent_identity_import_entries(
         return Err("Agent Identity 凭据不能为空".to_string());
     }
     let value = serde_json::from_str::<serde_json::Value>(raw)
-        .map_err(|error| format!("Agent Identity JSON 解析失败: {error}"))?;
+        .map_err(|_| "Agent Identity JSON 解析失败".to_string())?;
     let entries = match &value {
         serde_json::Value::Array(items) => items
             .iter()
@@ -940,23 +940,7 @@ pub(super) async fn extract_admin_provider_oauth_batch_error_detail(
     response: Response<Body>,
 ) -> String {
     let status = response.status();
-    let raw_body = to_bytes(response.into_body(), crate::MAX_ERROR_BODY_BYTES)
-        .await
-        .ok();
-    if let Some(raw_body) = raw_body {
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&raw_body) {
-            if let Some(detail) = value.get("detail").and_then(serde_json::Value::as_str) {
-                let normalized = detail.trim();
-                if !normalized.is_empty() {
-                    return normalized.to_string();
-                }
-            }
-        }
-        let normalized = String::from_utf8_lossy(&raw_body).trim().to_string();
-        if !normalized.is_empty() {
-            return normalized;
-        }
-    }
+    let _ = to_bytes(response.into_body(), crate::MAX_ERROR_BODY_BYTES).await;
     format!("HTTP {}", status.as_u16())
 }
 
