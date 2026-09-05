@@ -1345,7 +1345,7 @@ mod tests {
                 "https://chatgpt.com/backend-api/codex"
             ),
             Some((
-                "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1".to_string(),
+                "https://chatgpt.com/backend-api/codex/models?client_version=0.153.3".to_string(),
                 "openai:responses".to_string()
             ))
         );

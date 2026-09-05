@@ -538,14 +538,14 @@ async fn gateway_handles_admin_provider_query_models_with_openai_responses_endpo
 }
 
 #[test]
-fn gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache() {
+fn gateway_recovers_codex_slug_only_models_from_a_stale_legacy_cache() {
     run_provider_query_test(
-        "gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache",
-        gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache_impl,
+        "gateway_recovers_codex_slug_only_models_from_a_stale_legacy_cache",
+        gateway_recovers_codex_slug_only_models_from_a_stale_legacy_cache_impl,
     );
 }
 
-async fn gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache_impl() {
+async fn gateway_recovers_codex_slug_only_models_from_a_stale_legacy_cache_impl() {
     let execution_runtime_hits = Arc::new(Mutex::new(0usize));
     let execution_runtime_hits_clone = Arc::clone(&execution_runtime_hits);
     let execution_runtime = Router::new().route(
@@ -558,7 +558,11 @@ async fn gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache_impl
                     .expect("mutex should lock") += 1;
                 assert_eq!(
                     plan.url,
-                    "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
+                    "https://chatgpt.com/backend-api/codex/models?client_version=0.153.3"
+                );
+                assert_eq!(
+                    plan.headers.get("user-agent").map(String::as_str),
+                    Some(aether_ai_formats::CODEX_CLIENT_USER_AGENT)
                 );
                 assert_eq!(plan.provider_api_format, "openai:responses");
                 Json(json!({
@@ -617,16 +621,21 @@ async fn gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache_impl
         .runtime_state()
         .kv_set(
             "upstream_models:provider-codex-dynamic:key-codex-dynamic",
-            "[]".to_string(),
+            json!([{"id": "gpt-stale-legacy"}]).to_string(),
             None,
         )
         .await
-        .expect("empty legacy cache should seed");
+        .expect("stale legacy cache should seed");
     let cache_state = state.clone();
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
-    for (request_index, expected_from_cache) in [(0usize, false), (1usize, true)] {
+    for (request_index, expected_from_cache) in [
+        (0usize, false),
+        (1usize, true),
+        (2usize, false),
+        (3usize, true),
+    ] {
         let response = reqwest::Client::new()
             .post(format!("{gateway_url}/api/admin/provider-query/models"))
             .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
@@ -635,7 +644,8 @@ async fn gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache_impl
             .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
             .json(&json!({
                 "provider_id": "provider-codex-dynamic",
-                "api_key_id": "key-codex-dynamic"
+                "api_key_id": "key-codex-dynamic",
+                "force_refresh": request_index == 2,
             }))
             .send()
             .await
@@ -672,10 +682,47 @@ async fn gateway_recovers_codex_slug_only_models_from_an_empty_legacy_cache_impl
         );
         assert_eq!(
             *execution_runtime_hits.lock().expect("mutex should lock"),
-            1,
+            if request_index < 2 { 1 } else { 2 },
             "request {request_index} must not cause another upstream fetch"
         );
+        assert_eq!(
+            payload["data"]["models"][0]["display_name"],
+            if request_index == 1 {
+                "Updated shared catalog"
+            } else {
+                "Future Dynamic"
+            }
+        );
         if request_index == 0 {
+            let context = crate::model_fetch::read_codex_management_catalog(
+                &cache_state,
+                "provider-codex-dynamic",
+                "key-codex-dynamic",
+            )
+            .await
+            .unwrap();
+            let mut models = context
+                .models
+                .clone()
+                .expect("admin fetch publishes shared catalog");
+            models[0]["display_name"] = json!("Updated shared catalog");
+            let transport = cache_state
+                .read_provider_transport_snapshot(
+                    "provider-codex-dynamic",
+                    "endpoint-codex-dynamic",
+                    "key-codex-dynamic",
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            crate::model_fetch::store_codex_management_catalog(
+                &cache_state,
+                &context,
+                &[transport],
+                models,
+                None,
+            )
+            .await;
             <AppState as crate::model_fetch::ModelFetchRuntimeState>::write_upstream_models_cache(
                 &cache_state,
                 "provider-codex-dynamic",
@@ -712,7 +759,7 @@ async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_
                     .expect("mutex should lock") += 1;
                 assert_eq!(
                     plan.url,
-                    "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
+                    "https://chatgpt.com/backend-api/codex/models?client_version=0.153.3"
                 );
                 Json(json!({
                     "request_id": "req-provider-query-codex-invalidated",

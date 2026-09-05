@@ -421,7 +421,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
     );
     assert_eq!(
         seen_execution_runtime_request.headers["user-agent"],
-        "codex_cli_rs/0.144.1"
+        "codex_cli_rs/0.153.3"
     );
     assert_eq!(
         seen_execution_runtime_request.headers["originator"],

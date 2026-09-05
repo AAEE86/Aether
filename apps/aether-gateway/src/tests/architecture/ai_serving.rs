@@ -2896,6 +2896,22 @@ fn ai_serving_standard_attempts_consume_eligible_local_candidates_without_transp
         );
     }
 
+    let standard_family_request = read_workspace_file(
+        "apps/aether-gateway/src/ai_serving/planner/standard/family/request.rs",
+    );
+    for pattern in [
+        "is_antigravity_provider_transport(",
+        "build_antigravity_v1internal_provider_request(",
+        "is_gemini_cli_provider_transport(",
+        "build_gemini_cli_v1internal_provider_request(",
+    ] {
+        assert!(
+            standard_family_request.contains(pattern),
+            "standard family request preparation should build v1internal envelopes through {pattern} \
+             so a cross-format client never posts a bare Gemini body to a v1internal URL"
+        );
+    }
+
     let provider_transport_standard =
         read_workspace_file("crates/aether-provider/transport/src/standard/mod.rs");
     for pattern in [

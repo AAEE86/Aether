@@ -52,6 +52,8 @@ pub struct ModelsFetchOutcome {
     pub legacy_models: Vec<Value>,
     pub errors: Vec<String>,
     pub has_success: bool,
+    /// Only native `models` responses may populate the opaque Codex client catalog.
+    pub native_codex_catalog: bool,
     pub upstream_metadata: Option<Value>,
     pub etag: Option<String>,
     pub upstream_status: Option<u16>,
@@ -143,7 +145,27 @@ pub async fn fetch_models_from_transports_for_client_version(
 ) -> Result<ModelsFetchOutcome, String> {
     let strategy = select_model_fetch_strategy(transports)
         .map_err(|error| sanitize_model_fetch_error(&error))?;
-    execute_model_fetch_strategy(runtime, transports, strategy, codex_client_version)
+    execute_model_fetch_strategy(
+        runtime,
+        transports,
+        strategy,
+        codex_client_version,
+        codex_client_version.is_none(),
+    )
+    .await
+    .map_err(|error| sanitize_model_fetch_error(&error))
+}
+
+/// Management also supports Codex-compatible proxies returning OpenAI `data` arrays,
+/// independently of the fingerprint sent upstream. Public client catalogs stay strict.
+pub async fn fetch_models_from_transports_for_management(
+    runtime: &(impl ModelFetchTransportRuntime + ?Sized),
+    transports: &[GatewayProviderTransportSnapshot],
+    codex_client_version: Option<&str>,
+) -> Result<ModelsFetchOutcome, String> {
+    let strategy = select_model_fetch_strategy(transports)
+        .map_err(|error| sanitize_model_fetch_error(&error))?;
+    execute_model_fetch_strategy(runtime, transports, strategy, codex_client_version, true)
         .await
         .map_err(|error| sanitize_model_fetch_error(&error))
 }
@@ -215,6 +237,7 @@ async fn execute_model_fetch_strategy(
     transports: &[GatewayProviderTransportSnapshot],
     strategy: SelectedModelFetchStrategy,
     codex_client_version: Option<&str>,
+    allow_codex_legacy_response: bool,
 ) -> Result<ModelsFetchOutcome, String> {
     let Some(first_transport) = transports.first() else {
         return Err("No transport snapshots available for models fetch".to_string());
@@ -232,6 +255,7 @@ async fn execute_model_fetch_strategy(
                 transports,
                 strategy.provider_id(),
                 codex_client_version,
+                allow_codex_legacy_response,
             )
             .await
         }
@@ -257,6 +281,7 @@ async fn fetch_standard_models(
     transports: &[GatewayProviderTransportSnapshot],
     provider_type: &str,
     codex_client_version: Option<&str>,
+    allow_codex_legacy_response: bool,
 ) -> Result<ModelsFetchOutcome, String> {
     let mut all_models = Vec::new();
     let mut successful_codex_catalogs = Vec::<(String, Vec<Value>)>::new();
@@ -265,10 +290,19 @@ async fn fetch_standard_models(
     let mut etag = ConsistentValue::default();
     let mut upstream_status = ConsistentValue::default();
     let is_codex = provider_type.trim().eq_ignore_ascii_case("codex");
+    let mut native_codex_catalog = is_codex;
 
     for transport in transports {
-        match fetch_standard_models_for_transport(runtime, transport, codex_client_version).await {
+        match fetch_standard_models_for_transport(
+            runtime,
+            transport,
+            codex_client_version,
+            allow_codex_legacy_response,
+        )
+        .await
+        {
             Ok(outcome) => {
+                native_codex_catalog &= outcome.native_codex_catalog;
                 all_models.extend(outcome.cached_models.iter().cloned());
                 if is_codex && outcome.has_success {
                     successful_codex_catalogs
@@ -300,6 +334,7 @@ async fn fetch_standard_models(
     let upstream_metadata =
         crate::logic::model_catalog_upstream_metadata(provider_type, &merged_models);
     let mut outcome = build_success_outcome(merged_models, upstream_metadata, has_success);
+    outcome.native_codex_catalog = native_codex_catalog && has_success;
     if let Some(model_ids) = codex_model_ids {
         outcome.fetched_model_ids = model_ids;
         outcome.legacy_models = project_codex_models_for_legacy_cache(
@@ -318,6 +353,7 @@ async fn fetch_standard_models_for_transport(
     runtime: &(impl ModelFetchTransportRuntime + ?Sized),
     transport: &GatewayProviderTransportSnapshot,
     codex_client_version: Option<&str>,
+    allow_codex_legacy_response: bool,
 ) -> Result<ModelsFetchOutcome, (String, Option<u16>)> {
     let mut all_models = Vec::new();
     let mut seen_ids = BTreeSet::new();
@@ -330,6 +366,7 @@ async fn fetch_standard_models_for_transport(
         .provider_type
         .trim()
         .eq_ignore_ascii_case("codex");
+    let mut native_codex_catalog = is_codex;
 
     for _ in 0..20 {
         let plan = build_standard_models_fetch_execution_plan_for_client_version(
@@ -347,11 +384,16 @@ async fn fetch_standard_models_for_transport(
         upstream_status.observe(Some(result.status_code));
         let body_json =
             execution_result_json_body(&result).map_err(|err| (err, Some(result.status_code)))?;
+        native_codex_catalog &= body_json.get("models").and_then(Value::as_array).is_some();
         let parsed = if is_codex {
             parse_codex_models_response_for_request(
                 &transport.endpoint.api_format,
                 &body_json,
-                codex_client_version,
+                if allow_codex_legacy_response {
+                    None
+                } else {
+                    codex_client_version
+                },
             )
         } else {
             parse_models_response_page(&transport.endpoint.api_format, &body_json)
@@ -391,7 +433,9 @@ async fn fetch_standard_models_for_transport(
         next_after_id = Some(next_cursor);
     }
 
-    Ok(build_success_outcome(all_models, None, has_success)
+    let mut outcome = build_success_outcome(all_models, None, has_success);
+    outcome.native_codex_catalog = native_codex_catalog && has_success;
+    Ok(outcome
         .with_etag(etag.finish())
         .with_upstream_status(upstream_status.finish()))
 }
@@ -468,6 +512,7 @@ async fn fetch_antigravity_models(
         legacy_models: Vec::new(),
         errors,
         has_success: false,
+        native_codex_catalog: false,
         upstream_metadata: None,
         etag: None,
         upstream_status: None,
@@ -666,6 +711,7 @@ async fn fetch_vertex_api_key_models(
             legacy_models: Vec::new(),
             errors: vec!["vertex_ai(api_key): missing api key".to_string()],
             has_success: false,
+            native_codex_catalog: false,
             upstream_metadata: None,
             etag: None,
             upstream_status: None,
@@ -734,6 +780,7 @@ async fn fetch_vertex_api_key_models(
         legacy_models: Vec::new(),
         errors,
         has_success,
+        native_codex_catalog: false,
         upstream_metadata: None,
         etag: None,
         upstream_status: None,
@@ -752,6 +799,7 @@ async fn fetch_vertex_service_account_models(
             legacy_models: Vec::new(),
             errors: vec!["vertex_ai(service_account): missing auth_config".to_string()],
             has_success: false,
+            native_codex_catalog: false,
             upstream_metadata: None,
             etag: None,
             upstream_status: None,
@@ -832,6 +880,7 @@ async fn fetch_vertex_service_account_models(
         legacy_models: Vec::new(),
         errors,
         has_success,
+        native_codex_catalog: false,
         upstream_metadata: None,
         etag: None,
         upstream_status: None,
@@ -1761,6 +1810,7 @@ fn build_success_outcome(
         legacy_models,
         errors: Vec::new(),
         has_success,
+        native_codex_catalog: false,
         upstream_metadata,
         etag: None,
         upstream_status: None,
@@ -2985,6 +3035,20 @@ mod tests {
         assert!(outcome.has_success);
         assert_eq!(outcome.fetched_model_ids, vec!["gpt-legacy-compatible"]);
         assert_eq!(outcome.cached_models[0]["id"], "gpt-legacy-compatible");
+        assert!(!outcome.native_codex_catalog);
+        let versioned = crate::fetch_models_from_transports_for_management(
+            &runtime,
+            &[sample_codex_transport()],
+            Some("0.153.3"),
+        )
+        .await
+        .expect("management retains data-array compatibility with a new fingerprint");
+        assert!(versioned.has_success);
+        assert!(
+            !versioned.native_codex_catalog,
+            "generic responses cannot replace opaque catalogs"
+        );
+        assert_eq!(versioned.fetched_model_ids, outcome.fetched_model_ids);
         assert_eq!(
             outcome.legacy_models[0]["api_formats"],
             json!(["openai:responses"])
