@@ -7,7 +7,7 @@ use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
 use aether_model_fetch::{
-    apply_model_filters, fetch_models_from_transports_for_client_version, json_string_list,
+    apply_model_filters, fetch_models_from_transports_for_management, json_string_list,
     model_catalog_upstream_metadata, model_fetch_interval_minutes,
     model_fetch_startup_delay_seconds, model_fetch_startup_enabled, preset_models_for_provider,
     selected_models_fetch_endpoints, sync_provider_model_whitelist_associations,
@@ -327,7 +327,7 @@ async fn fetch_and_persist_key_models(
     } else {
         None
     };
-    let result = match fetch_models_from_transports_for_client_version(
+    let result = match fetch_models_from_transports_for_management(
         state,
         &transports,
         codex_client_version.as_deref(),

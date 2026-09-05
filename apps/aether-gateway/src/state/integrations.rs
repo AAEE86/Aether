@@ -405,22 +405,9 @@ impl ModelFetchRuntimeState for AppState {
         provider_id: &str,
         key_id: &str,
     ) -> Option<String> {
-        let credential_scope =
-            <AppState as CodexCatalogRuntime>::read_codex_catalog_credential_scope_strong(
-                self,
-                provider_id,
-                key_id,
-            )
+        crate::model_fetch::read_codex_management_catalog(self, provider_id, key_id)
             .await
-            .ok()
-            .flatten()?;
-        crate::model_fetch::read_recent_codex_catalog_client_version(
-            self.runtime_state.as_ref(),
-            provider_id,
-            key_id,
-            &credential_scope,
-        )
-        .await
+            .map(|catalog| catalog.client_version)
     }
 
     async fn update_provider_catalog_key_model_fetch_state(
