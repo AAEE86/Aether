@@ -232,8 +232,8 @@ jobs:
             exit 1
           fi
 
-  test_gateway:
-    name: Test (Gateway)
+  test_gateway_lib:
+    name: Test (Gateway Lib)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -269,6 +269,43 @@ jobs:
           RUST_MIN_STACK: "16777216"
           RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
         run: cargo nextest run -p aether-gateway --lib
+
+      - name: Show sccache stats
+        if: always()
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
+        run: sccache --show-stats
+
+  test_gateway_bins:
+    name: Test (Gateway Bins)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Show Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: rust-ci-${{ runner.os }}
+          workspaces: . -> target
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      - name: Setup mold
+        uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3 # v1
+
+      - name: Install nextest
+        uses: taiki-e/install-action@d5f9268ff7620505a81ada10ddf18cdd72240185 # nextest
+
+      - name: Expose PostgreSQL test binaries
+        run: pg_config --bindir >> "$GITHUB_PATH"
 
       - name: Test bins
         env:
@@ -477,7 +514,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     needs:
-      - test_gateway
+      - test_gateway_lib
+      - test_gateway_bins
       - test_data
       - check_data_features
       - test_rest
@@ -487,7 +525,8 @@ jobs:
     steps:
       - name: Verify test jobs
         run: |
-          if [ "${{ needs.test_gateway.result }}" != "success" ] || \
+          if [ "${{ needs.test_gateway_lib.result }}" != "success" ] || \
+             [ "${{ needs.test_gateway_bins.result }}" != "success" ] || \
              [ "${{ needs.test_data.result }}" != "success" ] || \
              [ "${{ needs.check_data_features.result }}" != "success" ] || \
              [ "${{ needs.test_rest.result }}" != "success" ] || \

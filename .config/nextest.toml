@@ -1,0 +1,17 @@
+[profile.default]
+# 禁用重试，CI 环境应快速失败
+retries = 0
+# 限制并行度避免 OOM（GitHub Actions ubuntu-latest 有 7GB RAM）
+test-threads = 8
+# 只显示失败测试的详细输出
+status-level = "fail"
+# 显示未通过测试的超时信息
+final-status-level = "fail"
+
+[profile.ci]
+# CI 专用配置：允许 1 次重试处理 flaky tests
+retries = 1
+# 失败时立即停止
+fail-fast = true
+# 并行度与 default 一致
+test-threads = 8

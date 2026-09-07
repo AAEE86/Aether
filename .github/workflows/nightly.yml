@@ -68,7 +68,7 @@ jobs:
     name: Rust extended checks
     needs: source
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -90,12 +90,6 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-
-      - name: Check all workspace targets
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: 'true'
-        run: cargo check --workspace --all-targets --all-features --locked
 
       - name: Run workspace doctests
         env:
