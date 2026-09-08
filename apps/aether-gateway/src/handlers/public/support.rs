@@ -30,6 +30,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod support_announcements;
 #[path = "support/auth.rs"]
 mod support_auth;
+#[path = "support/auth_cookie_policy.rs"]
+mod support_auth_cookie_policy;
 #[path = "support/billing.rs"]
 mod support_billing;
 #[path = "support/ccswitch.rs"]
@@ -127,6 +129,31 @@ pub(crate) fn build_unhandled_public_support_response(
 }
 
 pub(crate) async fn maybe_build_local_public_support_response(
+    state: &AppState,
+    request_context: &GatewayPublicRequestContext,
+    headers: &http::HeaderMap,
+    remote_addr: &std::net::SocketAddr,
+    client_ip: std::net::IpAddr,
+    request_body: Option<&Bytes>,
+) -> Option<Response<Body>> {
+    let response = build_local_public_support_response(
+        state,
+        request_context,
+        headers,
+        remote_addr,
+        client_ip,
+        request_body,
+    )
+    .await?;
+    Some(support_auth_cookie_policy::finalize_refresh_cookie(
+        response,
+        headers,
+        request_context.host_header.as_deref(),
+        remote_addr,
+    ))
+}
+
+async fn build_local_public_support_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,

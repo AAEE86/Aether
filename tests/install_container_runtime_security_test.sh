@@ -42,25 +42,23 @@ COMPOSE_FILES=(
     "${REPO_ROOT}/docker-compose.single-node.yml"
 )
 
-assert_line "${APP_DOCKERFILE}" "USER 65532:65532"
+assert_line "${APP_DOCKERFILE}" "USER 0:0"
+assert_line "${REPO_ROOT}/Dockerfile.app.local" "USER 0:0"
+assert_line "${REPO_ROOT}/Dockerfile.app.release-local" "USER 0:0"
 assert_line "${APP_DOCKERFILE}" "    HOME=/tmp/aether-home \\"
-if grep -Eq '^USER[[:space:]]+(root|0)(:0)?[[:space:]]*$' "${APP_DOCKERFILE}"; then
-    fail_test "production image still selects a root runtime identity"
-fi
 
 for compose_file in "${COMPOSE_FILES[@]}"; do
-    assert_line "${compose_file}" \
-        '    user: "${AETHER_CONTAINER_UID:-65532}:${AETHER_CONTAINER_GID:-65532}"'
+    assert_line "${compose_file}" '    user: "0:0"'
     assert_line "${compose_file}" "    read_only: true"
     assert_line "${compose_file}" "    cap_drop:"
     assert_line "${compose_file}" "      - ALL"
+    assert_line "${compose_file}" "    cap_add:"
+    assert_line "${compose_file}" "      - DAC_OVERRIDE"
+    assert_line "${compose_file}" "      - FOWNER"
     assert_line "${compose_file}" "    security_opt:"
     assert_line "${compose_file}" "      - no-new-privileges:true"
     assert_line "${compose_file}" "    tmpfs:"
     assert_line "${compose_file}" "      - /tmp:rw,nosuid,nodev,noexec,mode=1777"
-    if grep -Eq '^[[:space:]]+user:[[:space:]]+"?(root|0)(:0)?"?[[:space:]]*$' "${compose_file}"; then
-        fail_test "production Compose file still selects a root runtime identity: ${compose_file}"
-    fi
 done
 
 assert_line "${REPO_ROOT}/.env.example" "DB_PASSWORD="
@@ -84,19 +82,16 @@ mkdir -p "${fake_bin}"
 printf '#!/usr/bin/env bash\nprintf "false\\n"\n' >"${fake_bin}/docker"
 chmod 0755 "${fake_bin}/docker"
 PATH="${fake_bin}:${PATH}"
-fixture_uid="$(id -u)"
-fixture_gid="$(id -g)"
-[[ "${fixture_uid}" != "0" ]] || fixture_uid="65532"
-[[ "${fixture_gid}" != "0" ]] || fixture_gid="65532"
 cp "${REPO_ROOT}/.env.example" "${COMPOSE_DIR}/.env.example"
 ADMIN_PASSWORD="test-admin-password"
 APP_IMAGE="example.invalid/aether:test"
-AETHER_CONTAINER_UID="${fixture_uid}"
-AETHER_CONTAINER_GID="${fixture_gid}"
 JWT_SECRET_KEY=""
 ENCRYPTION_KEY=""
 generated_env="${TEST_ROOT}/generated.env"
 generate_compose_env "${generated_env}"
+if grep -Eq '^AETHER_CONTAINER_(UID|GID)=' "${generated_env}"; then
+    fail_test "installer still generates obsolete non-root container identity settings"
+fi
 
 generated_secrets=()
 for key in \

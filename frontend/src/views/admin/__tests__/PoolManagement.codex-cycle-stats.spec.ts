@@ -768,6 +768,60 @@ describe('PoolManagement Codex cycle stats mode', () => {
     expect(root.querySelector('[data-testid="pool-stats-cycle-single-marker"]')).toBeNull()
   })
 
+  it('renders separate account and model weekly quotas in desktop and mobile layouts', async () => {
+    const codexKey = createPoolKey('codex', {
+      status_snapshot: {
+        oauth: { code: 'valid' },
+        account: { code: 'ok', blocked: false },
+        quota: {
+          code: 'ok',
+          exhausted: false,
+          provider_type: 'codex',
+          windows: [
+            {
+              code: 'weekly',
+              label: '周',
+              scope: 'account',
+              remaining_ratio: 0.9,
+              window_minutes: 10_080,
+              usage: { request_count: 12 },
+            },
+            {
+              code: 'additional_0_primary',
+              label: 'gpt-reserve',
+              scope: 'model',
+              model: 'gpt-reserve',
+              remaining_ratio: 0.4,
+              window_minutes: 10_080,
+              usage: { request_count: 99 },
+            },
+          ],
+        },
+      },
+    })
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(codexKey))
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+
+    const root = mountPoolManagement()
+    await settle()
+
+    const panels = root.querySelectorAll('[data-testid="pool-quota-rows"]')
+    expect(panels).toHaveLength(2)
+    for (const panel of panels) {
+      const rows = Array.from(panel.children).map(row => ({
+        label: row.querySelector('[data-testid="pool-quota-period-label"]')?.textContent?.trim(),
+        meter: row.querySelector('[data-testid="pool-quota-meter-text"]')?.textContent?.trim(),
+      }))
+      expect(rows).toHaveLength(2)
+      expect(rows).toEqual(expect.arrayContaining([
+        { label: '周', meter: '90.0%' },
+        { label: 'gpt-reserve 周', meter: '40.0%' },
+      ]))
+    }
+    expect(root.querySelector('[data-testid="pool-stats-cycle-request_count"]')?.textContent?.trim()).toBe('-/12')
+  })
+
   it('opens only one score popover across desktop and mobile layouts', async () => {
     const scoredKey = createPoolKey('codex', {
       pool_score: {

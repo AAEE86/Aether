@@ -48,10 +48,6 @@ COMPOSE_LOG_ROTATION_DEFAULT="daily"
 COMPOSE_LOG_RETENTION_DAYS_DEFAULT="7"
 COMPOSE_LOG_MAX_FILES_DEFAULT="30"
 COMPOSE_APP_PORT_DEFAULT="8084"
-COMPOSE_CONTAINER_UID_DEFAULT="65532"
-COMPOSE_CONTAINER_GID_DEFAULT="65532"
-COMPOSE_CONTAINER_UID=""
-COMPOSE_CONTAINER_GID=""
 COMPOSE_CLI=()
 LAUNCHD_LABEL="${AETHER_LAUNCHD_LABEL:-com.aether.gateway}"
 LAUNCHD_LOG_DIR="${AETHER_LAUNCHD_LOG_DIR:-/var/log/aether}"
@@ -1764,41 +1760,6 @@ compose_app_port() {
     printf '%s\n' "${APP_PORT:-${COMPOSE_APP_PORT_DEFAULT}}"
 }
 
-validate_compose_container_id() {
-    local label="$1"
-    local value="$2"
-
-    [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
-        || die "${label} must be a positive numeric id, not root: ${value}"
-    [[ ${#value} -le 10 ]] \
-        || die "${label} is outside the supported numeric id range: ${value}"
-    (( 10#${value} <= 2147483647 )) \
-        || die "${label} is outside the supported numeric id range: ${value}"
-}
-
-resolve_new_compose_container_identity() {
-    local uid="${AETHER_CONTAINER_UID:-}"
-    local gid="${AETHER_CONTAINER_GID:-}"
-
-    if [[ -z "${uid}" || -z "${gid}" ]]; then
-        if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
-            uid="${uid:-${SUDO_UID}}"
-            gid="${gid:-${SUDO_GID}}"
-        elif [[ "${EUID}" -ne 0 ]]; then
-            uid="${uid:-$(id -u)}"
-            gid="${gid:-$(id -g)}"
-        else
-            uid="${uid:-${COMPOSE_CONTAINER_UID_DEFAULT}}"
-            gid="${gid:-${COMPOSE_CONTAINER_GID_DEFAULT}}"
-        fi
-    fi
-
-    validate_compose_container_id "AETHER_CONTAINER_UID" "${uid}"
-    validate_compose_container_id "AETHER_CONTAINER_GID" "${gid}"
-    COMPOSE_CONTAINER_UID="$((10#${uid}))"
-    COMPOSE_CONTAINER_GID="$((10#${gid}))"
-}
-
 append_compose_log_env_defaults() {
     local output="$1"
     replace_or_append_env "${output}" "AETHER_LOG_DESTINATION" "${COMPOSE_LOG_DESTINATION_DEFAULT}"
@@ -1817,13 +1778,10 @@ generate_compose_env() {
     encryption_key="$(urlsafe_rand 32)"
     db_password="$(urlsafe_rand 32)"
     redis_password="$(urlsafe_rand 32)"
-    resolve_new_compose_container_identity
 
     cp "${COMPOSE_DIR}/.env.example" "${output}"
     replace_or_append_env "${output}" "APP_IMAGE" "$(compose_image)"
     replace_or_append_env "${output}" "APP_PORT" "$(compose_app_port)"
-    replace_or_append_env "${output}" "AETHER_CONTAINER_UID" "${COMPOSE_CONTAINER_UID}"
-    replace_or_append_env "${output}" "AETHER_CONTAINER_GID" "${COMPOSE_CONTAINER_GID}"
     replace_or_append_env "${output}" "DB_PASSWORD" "${db_password}"
     replace_or_append_env "${output}" "REDIS_PASSWORD" "${redis_password}"
     replace_or_append_env "${output}" "JWT_SECRET_KEY" "${JWT_SECRET_KEY:-${jwt_key}}"

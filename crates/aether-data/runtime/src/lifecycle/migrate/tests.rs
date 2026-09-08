@@ -27,6 +27,8 @@ use crate::lifecycle::bootstrap::postgres::{
     EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION, EMPTY_DATABASE_SNAPSHOT_SQL,
 };
 
+mod policy_nulls;
+
 /// A clean PostgreSQL database is bootstrapped from the schema snapshot first;
 /// migrations after the privacy/security frontier are intentionally left
 /// pending so their data-preserving changes still execute. Exercise the same
@@ -1572,6 +1574,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260831030000,
             20260901000000,
             20260903000000,
+            20260908000000,
         ]
     );
 }

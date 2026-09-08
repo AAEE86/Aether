@@ -88,6 +88,40 @@ async function expectBody(text: string) {
 function lastSignal() { return mocks.getRequestBody.mock.calls[mocks.getRequestBody.mock.calls.length - 1][2] as AbortSignal }
 
 describe('RequestDetailDrawer body capture', () => {
+  it('displays original values for all four captured header directions and copies the selected headers', async () => {
+    const detail = {
+      ...buildDetail(false),
+      request_headers: {
+        authorization: 'Bearer original-client-token',
+        originator: 'codex-cli',
+        'session-id': 'original-session',
+        'x-codex-turn-metadata': '{"turn_id":"original-turn"}',
+      },
+      provider_request_headers: { authorization: 'Bearer original-provider-token', 'x-api-key': 'original-provider-key' },
+      response_headers: { 'set-cookie': 'session=original-upstream', 'x-upstream-custom': 'original-upstream-value' },
+      client_response_headers: { 'set-cookie': 'session=original-client', 'x-client-custom': 'original-client-value' },
+    }
+    mocks.getRequestDetail.mockResolvedValue(detail)
+    await openDrawer()
+
+    for (const [tab, dataSource, expected] of [
+      ['请求头', '客户端', detail.request_headers],
+      ['请求头', '提供商', detail.provider_request_headers],
+      ['响应头', '提供商', detail.response_headers],
+      ['响应头', '客户端', detail.client_response_headers],
+    ] as const) {
+      findButton(tab)!.click()
+      await source(dataSource)
+      await vi.waitFor(() => {
+        const text = document.body.querySelector('[data-testid="captured-body"]')?.textContent
+        expect(JSON.parse(text ?? 'null')).toEqual(expected)
+      })
+    }
+    document.body.querySelector<HTMLButtonElement>('button[title="复制"]')!.click()
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith(JSON.stringify(detail.client_response_headers, null, 2), false))
+    expect(mocks.getRequestBody).not.toHaveBeenCalled()
+  })
+
   it('uses only shallow details and loads a single binary body on demand', async () => {
     await openDrawer()
     expect(mocks.getRequestBody).not.toHaveBeenCalled()

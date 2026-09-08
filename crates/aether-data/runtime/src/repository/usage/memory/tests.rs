@@ -155,7 +155,7 @@ async fn upsert_preserves_full_http_captures_across_lifecycle_updates() {
     );
     assert_eq!(
         stored_pending.request_headers,
-        Some(json!({"content-type": "application/json", "authorization": "[redacted]"}))
+        Some(json!({"content-type": "application/json", "authorization": "Bearer private"}))
     );
 
     let mut streaming = sample_upsert_usage_record(&pending.request_id);
@@ -190,7 +190,7 @@ async fn upsert_preserves_full_http_captures_across_lifecycle_updates() {
     );
     assert_eq!(
         stored_terminal.response_headers,
-        Some(json!({"content-type": "text/event-stream", "set-cookie": "[redacted]"}))
+        Some(json!({"content-type": "text/event-stream", "set-cookie": "private"}))
     );
 
     let found = repository

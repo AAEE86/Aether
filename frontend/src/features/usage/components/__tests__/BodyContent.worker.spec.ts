@@ -10,23 +10,46 @@ const apps: Array<{ app: App, root: HTMLElement }> = []
 afterEach(() => { for (const { app, root } of apps.splice(0)) { app.unmount(); root.remove() } })
 
 function mountBody(value: unknown) {
-  const engine = new BodyDocumentEngine(value)
+    const engine = new BodyDocumentEngine(value)
   const json = vi.fn(async (options: BodyJsonOptions) => engine.json(options))
   const bodyDocument = shallowRef({ json } as unknown as BodyDocument)
+  const expandDepth = shallowRef(999)
   const errors: unknown[] = []
   const root = document.createElement('div')
   document.body.appendChild(root)
   const app = createApp(defineComponent({ setup: () => () => h(JsonContent, {
-    data: null, bodyDocument: bodyDocument.value, expandDepth: 999, viewMode: 'formatted', isDark: false, emptyMessage: '无数据',
+    data: null, bodyDocument: bodyDocument.value, expandDepth: expandDepth.value, viewMode: 'formatted', isDark: false, emptyMessage: '无数据',
     onLoadError: (error: unknown) => errors.push(error),
   }) }))
   app.mount(root)
   apps.push({ app, root })
-  return { root, json, bodyDocument, engine, errors }
+  return { root, json, bodyDocument, expandDepth, engine, errors }
 }
 function button(root: HTMLElement, label: string) { return [...root.querySelectorAll('button')].find(button => button.textContent?.includes(label))! }
 
 describe('worker-backed body views', () => {
+  it('resets every layer on collapse-all and reopens worker-backed nodes one layer at a time', async () => {
+    const value = { messages: [{ content: { text: 'deep worker content' } }] }
+    const { root, json, expandDepth, engine } = mountBody(value)
+    await vi.waitFor(() => expect(root.textContent).toContain('deep worker content'))
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      expandDepth.value = 0
+      await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(3))
+      expect(json).toHaveBeenLastCalledWith(expect.objectContaining({ expandDepth: 0, foldOverrides: new Map() }))
+      for (const lineCount of [5, 7, 9]) {
+        expect(root.textContent).not.toContain('deep worker content')
+        root.querySelector<HTMLButtonElement>('button[aria-label="展开节点"]')!.click()
+        await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(lineCount))
+      }
+      expect(root.textContent).toContain('deep worker content')
+      expandDepth.value = 999
+      await vi.waitFor(() => expect(json).toHaveBeenLastCalledWith(expect.objectContaining({ expandDepth: 999, foldOverrides: new Map() })))
+      await vi.waitFor(() => expect(root.textContent).toContain('deep worker content'))
+      expect(root.querySelector('button[aria-label="展开节点"]')).toBeNull()
+    }
+    expect(JSON.parse(engine.copy())).toEqual(value)
+  })
+
   it('automatically reads worker chunks while scrolling and preserves the complete copy', async () => {
     const values = Array.from({ length: 1000 }, (_value, index) => `value-${index}`)
     const { root, json, engine } = mountBody(values)

@@ -169,11 +169,6 @@ function getDisplayHtml(line: JsonDisplayLine): string {
 
 function toggleFold(line: JsonDisplayLine, index: number) {
   const overrides = new Map(foldOverrides.value)
-  if (line.collapsed) {
-    for (const path of overrides.keys()) {
-      if (path.startsWith(`${line.id}/`)) overrides.delete(path)
-    }
-  }
   overrides.set(line.id, !line.collapsed)
   foldOverrides.value = overrides
   localReader = undefined

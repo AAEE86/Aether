@@ -65,11 +65,34 @@ describe('lazy JSON pages', () => {
     expect(reader.read(21).lines).toEqual([])
   })
 
-  it('expands all descendants of an opened node while honoring an explicitly closed child', () => {
+  it.each([false, true])('opens collapsed descendants one layer at a time with indexPaths=%s', indexPaths => {
     const data = { messages: [{ content: { text: 'complete content' } }] }
-    const opened = getJsonPage(data, { expandDepth: 1, foldOverrides: new Map([['$/messages', false]]) })
+    const paths = indexPaths ? ['$/0', '$/0/0', '$/0/0/0'] : ['$/messages', '$/messages/0', '$/messages/0/content']
+    const foldOverrides = new Map<string, boolean>()
+    for (const path of paths) {
+      const folded = getJsonPage(data, { expandDepth: 0, foldOverrides, indexPaths })
+      expect(folded.lines.find(line => line.id === path)).toMatchObject({ collapsed: true })
+      expect(folded.lines.some(line => line.value === 'complete content')).toBe(false)
+      foldOverrides.set(path, false)
+    }
+    const opened = getJsonPage(data, { expandDepth: 0, foldOverrides, indexPaths })
     expect(opened.lines.some(line => line.value === 'complete content')).toBe(true)
-    const folded = getJsonPage(data, { expandDepth: 1, foldOverrides: new Map([['$/messages', false], ['$/messages/0/content', true]]) })
+  })
+
+  it('does not read unopened descendants after opening their parent', () => {
+    const readContent = vi.fn(() => { throw new Error('unopened content must not be read') })
+    const message = Object.defineProperty({}, 'content', { enumerable: true, get: readContent })
+    const opened = getJsonPage({ messages: [message] }, { expandDepth: 0, foldOverrides: new Map([['$/messages', false]]) })
+    expect(opened.lines.find(line => line.id === '$/messages/0')).toMatchObject({ collapsed: true })
+    expect(readContent).not.toHaveBeenCalled()
+  })
+
+  it('still expands every layer in expand-all mode while honoring explicitly closed children', () => {
+    const data = { messages: [{ content: { text: 'complete content' } }] }
+    const expanded = getJsonPage(data, { expandDepth: 999 })
+    expect(expanded.lines.some(line => line.value === 'complete content')).toBe(true)
+    expect(expanded.lines.filter(line => line.canFold).every(line => !line.collapsed)).toBe(true)
+    const folded = getJsonPage(data, { expandDepth: 999, foldOverrides: new Map([['$/messages', false], ['$/messages/0/content', true]]) })
     expect(folded.lines.some(line => line.value === 'complete content')).toBe(false)
   })
 

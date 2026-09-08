@@ -50,6 +50,8 @@ use chrono::{TimeZone, Utc};
 const TEST_EMAIL_VERIFICATION_TOKEN: &str =
     "test-email-verification-token-00000000000000000000000000000000";
 
+#[path = "public_support/auth_cookie.rs"]
+mod auth_cookie;
 #[path = "public_support/dashboard.rs"]
 mod dashboard;
 #[path = "public_support/vscodex.rs"]

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, shallowRef, type App } from 'vue'
 import JsonContent from '../RequestDetailDrawer/JsonContent.vue'
+import JsonContentPanel from '../JsonContentPanel.vue'
 import { JSON_PAGE_SIZE, JSON_SCROLL_CHUNK_SIZE, JSON_TEXT_CHUNK_SIZE } from '../../utils/json-viewer'
 
 const mountedApps: Array<{ app: App, root: HTMLElement }> = []
@@ -48,13 +49,55 @@ describe('JsonContent lazy rendering', () => {
     expect(root.querySelector<HTMLElement>('.virtual-body-scroll')?.scrollTop).toBe(0)
   })
 
-  it('opens the complete subtree with one bracket click', async () => {
-    const { root } = mountJson({ messages: [{ content: 'hidden content' }] }, 0)
+  it('opens one layer per bracket click after collapsing all descendants', async () => {
+    const { root } = mountJson({ messages: [{ content: { text: 'hidden content' } }] }, 0)
     await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(3))
-    expect(root.textContent).not.toContain('hidden content')
-    root.querySelector<HTMLButtonElement>('button[aria-label="展开节点"]')!.click()
+    for (const lineCount of [5, 7, 9]) {
+      expect(root.textContent).not.toContain('hidden content')
+      root.querySelector<HTMLElement>('.line-content.clickable-collapsed')!.click()
+      await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(lineCount))
+    }
     await vi.waitFor(() => expect(root.textContent).toContain('hidden content'))
     expect(root.querySelector('button[aria-label="展开节点"]')).toBeNull()
+  })
+
+  it('collapses every layer through the toolbar and keeps expand-all working', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({ setup: () => () => h(JsonContentPanel, {
+      data: { messages: [{ content: { text: 'deep content' } }] }, isDark: false,
+    }) }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(3))
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      root.querySelector<HTMLButtonElement>('button[title="展开全部"]')!.click()
+      await vi.waitFor(() => expect(root.textContent).toContain('deep content'))
+      expect(root.querySelector('button[aria-label="展开节点"]')).toBeNull()
+      root.querySelector<HTMLButtonElement>('button[title="收缩全部"]')!.click()
+      await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(3))
+      for (const lineCount of [5, 7]) {
+        root.querySelector<HTMLButtonElement>('button[aria-label="展开节点"]')!.click()
+        await vi.waitFor(() => expect(root.querySelectorAll('.json-line')).toHaveLength(lineCount))
+        expect(root.textContent).not.toContain('deep content')
+      }
+    }
+  })
+
+  it('preserves an explicitly folded child when its parent is reopened', async () => {
+    const { root } = mountJson({ messages: [{ content: { text: 'hidden content' } }] })
+    const nodeButton = (key: string) => [...root.querySelectorAll('.json-line')]
+      .find(line => line.querySelector('.token-key')?.textContent === JSON.stringify(key))!
+      .querySelector<HTMLButtonElement>('button')!
+    await vi.waitFor(() => expect(root.textContent).toContain('hidden content'))
+    nodeButton('content').click()
+    await vi.waitFor(() => expect(nodeButton('content').getAttribute('aria-expanded')).toBe('false'))
+    nodeButton('messages').click()
+    await vi.waitFor(() => expect(nodeButton('messages').getAttribute('aria-expanded')).toBe('false'))
+    nodeButton('messages').click()
+    await vi.waitFor(() => expect(nodeButton('messages').getAttribute('aria-expanded')).toBe('true'))
+    expect(nodeButton('content').getAttribute('aria-expanded')).toBe('false')
+    expect(root.textContent).not.toContain('hidden content')
   })
 
   it('shows complete long strings without an extra expansion button', async () => {

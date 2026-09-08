@@ -438,7 +438,7 @@ static DIRECT_H2C_SENDER_CACHE_METRICS: LazyLock<DirectHyperH2cSenderCacheMetric
     LazyLock::new(DirectHyperH2cSenderCacheMetrics::default);
 
 #[derive(Debug, Clone, Copy, Default)]
-struct ExecutionSafeDnsResolver;
+pub(crate) struct ExecutionSafeDnsResolver;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ExecutionSafeHyperDnsResolver;
@@ -446,10 +446,7 @@ struct ExecutionSafeHyperDnsResolver;
 fn dns_host_explicitly_allows_loopback(host: &str) -> bool {
     let host = host.trim_end_matches('.');
     host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
+        || aether_http::parse_ip_literal_host(host).is_some_and(|ip| ip.is_loopback())
 }
 
 fn validate_resolved_execution_addresses(
@@ -491,12 +488,9 @@ async fn resolve_execution_target_addresses_with_policy(
     port: u16,
     provider_execution: bool,
 ) -> Result<Vec<SocketAddr>, std::io::Error> {
-    let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
-        vec![SocketAddr::new(ip, port)]
-    } else {
+    let addresses =
         aether_http::lookup_host_with_limits(host, port, aether_http::DEFAULT_DNS_LOOKUP_TIMEOUT)
-            .await?
-    };
+            .await?;
     validate_resolved_execution_addresses(host, addresses, provider_execution)
 }
 
@@ -5149,7 +5143,7 @@ fn execution_log_url_host(url: &str) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn validate_execution_upstream_url(
+pub(crate) fn validate_execution_upstream_url(
     raw_url: &str,
 ) -> Result<url::Url, ExecutionRuntimeTransportError> {
     let url = url::Url::parse(raw_url).map_err(|_| {
@@ -5440,6 +5434,8 @@ mod tests {
             "93.184.216.34:443".parse().unwrap(),
         ];
         for host in [
+            "chatgpt.com",
+            "api.openai.com",
             "oauth2.googleapis.com",
             "www.googleapis.com",
             "custom.example.test",
@@ -5449,6 +5445,46 @@ mod tests {
                     .expect("provider DNS answers should pass through"),
                 addresses
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn execution_dns_handles_url_ipv6_without_weakening_relay_filtering() {
+        for provider_execution in [false, true] {
+            let addresses = super::resolve_execution_target_addresses_with_policy(
+                "[::1]",
+                8443,
+                provider_execution,
+            )
+            .await
+            .expect("literal IPv6 loopback should resolve without DNS");
+            assert_eq!(addresses, vec!["[::1]:8443".parse().unwrap()]);
+        }
+        let error = super::resolve_execution_target_addresses_with_policy("[fd00::1]", 443, false)
+            .await
+            .expect_err("private IPv6 must remain blocked for relay traffic");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn execution_dns_resolvers_preserve_provider_fake_ip_answers() {
+        for host in ["198.18.78.41", "198.19.1.2"] {
+            let expected = vec![format!("{host}:0").parse::<std::net::SocketAddr>().unwrap()];
+            let reqwest_addresses = reqwest::dns::Resolve::resolve(
+                &super::ExecutionSafeDnsResolver,
+                host.parse().unwrap(),
+            )
+            .await
+            .expect("HTTP provider DNS must accept Fake-IP answers")
+            .collect::<Vec<_>>();
+            let wreq_addresses =
+                wreq::dns::Resolve::resolve(&super::ExecutionSafeDnsResolver, host.into())
+                    .await
+                    .expect("WebSocket provider DNS must accept Fake-IP answers")
+                    .collect::<Vec<_>>();
+
+            assert_eq!(reqwest_addresses, expected);
+            assert_eq!(wreq_addresses, expected);
         }
     }
 

@@ -33,21 +33,31 @@ with tempfile.TemporaryDirectory(prefix="aether-compose-databases-") as director
             capture_output=True, text=True, check=False,
         )
 
-    env_file.write_text("DB_PASSWORD=fixture-postgres\nREDIS_PASSWORD=fixture-redis\n")
-    for files in (
+    database_environment = "DB_PASSWORD=fixture-postgres\nREDIS_PASSWORD=fixture-redis\n"
+    standard_compose_files = (
         ["docker-compose.yml"],
         ["docker-compose.yml", "docker-compose.local.yml"],
         ["docker-compose.single-node.yml"],
-    ):
+    )
+    env_file.write_text(database_environment)
+    for files in standard_compose_files:
         result = compose_config(files)
         assert result.returncode == 0, result.stderr
         config = json.loads(result.stdout)
         assert set(config["services"]) == {"app", "postgres", "redis"}
         assert set(config["volumes"]) == {"postgres_data"}
-        app_env = config["services"]["app"]["environment"]
+        app = config["services"]["app"]
+        assert app["user"] == "0:0"
+        assert app["read_only"] is True
+        assert app["cap_drop"] == ["ALL"]
+        assert set(app["cap_add"]) == {"DAC_OVERRIDE", "FOWNER"}
+        assert app["security_opt"] == ["no-new-privileges:true"]
+        assert not app.get("privileged", False)
+        app_env = app["environment"]
         assert app_env["AETHER_DATABASE_DRIVER"] == "postgres"
         assert app_env["DATABASE_URL"] == "postgresql://postgres:fixture-postgres@postgres:5432/aether"
         assert app_env["REDIS_URL"] == "redis://:fixture-redis@redis:6379/0"
+        assert app_env["AETHER_LOG_DESTINATION"] == "stdout"
         for key in ("DB_PASSWORD", "REDIS_PASSWORD"):
             result = compose_config(files, overrides={key: ""})
             assert result.returncode != 0, f"empty {key} was accepted"
@@ -65,4 +75,23 @@ with tempfile.TemporaryDirectory(prefix="aether-compose-databases-") as director
     assert result.returncode != 0, "empty DB_PASSWORD was accepted"
     assert "set DB_PASSWORD in .env" in result.stderr, result.stderr
 
-print("PASS: PostgreSQL/Redis Compose configurations")
+    for log_destination in ("file", "both"):
+        env_file.write_text(
+            database_environment
+            + f"AETHER_LOG_DESTINATION={log_destination}\nAETHER_LOG_DIR=/app/logs\n"
+            + "AETHER_CONTAINER_UID=65532\nAETHER_CONTAINER_GID=65532\n"
+        )
+        for files in standard_compose_files:
+            result = compose_config(files)
+            assert result.returncode == 0, result.stderr
+            app = json.loads(result.stdout)["services"]["app"]
+            assert app["user"] == "0:0", files
+            assert app["environment"]["AETHER_LOG_DESTINATION"] == "stdout", files
+            assert all(
+                volume["target"] not in ("/app/logs", "/opt/aether/logs")
+                for volume in app.get("volumes", [])
+            ), files
+            assert app["logging"]["driver"] == "json-file"
+            assert app["logging"]["options"] == {"max-size": "100m", "max-file": "10"}
+
+print("PASS: PostgreSQL/Redis Compose configurations and legacy file logging overrides")

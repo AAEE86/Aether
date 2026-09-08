@@ -130,7 +130,7 @@ function* splitJsonLine(line: JsonTreeLine, chunkSize: number): Generator<JsonTr
 function* walkJsonLines(data: unknown, options: JsonPageOptions): Generator<JsonDisplayLine> {
   const depth = options.expandDepth === 0 || options.expandDepth == null ? 1 : options.expandDepth
 
-  function* walk(value: unknown, path: string, indent: number, comma: string, key?: string, expandedParent = false): Generator<JsonTreeLine> {
+  function* walk(value: unknown, path: string, indent: number, comma: string, key?: string): Generator<JsonTreeLine> {
     if (value == null || typeof value !== 'object') {
       yield { id: path, indent, key, value, comma, canFold: false, collapsed: false }
       return
@@ -140,8 +140,7 @@ function* walkJsonLines(data: unknown, options: JsonPageOptions): Generator<Json
     const keys = isArray ? [] : Object.keys(value)
     const childCount = isArray ? value.length : keys.length
     const override = options.foldOverrides?.get(path)
-    const expandedSubtree = expandedParent || override === false
-    const collapsed = childCount === 0 || (override ?? (!expandedSubtree && indent >= depth))
+    const collapsed = childCount === 0 || (override ?? (indent >= depth))
     const bracket = isArray ? '[' : '{'
     const closingBracket = isArray ? ']' : '}'
     yield { id: path, indent, key, comma, bracket, closingBracket, childCount, isArray, collapsed, canFold: childCount > 0 }
@@ -151,7 +150,7 @@ function* walkJsonLines(data: unknown, options: JsonPageOptions): Generator<Json
       const childKey = isArray ? String(index) : keys[index]
       const childPath = `${path}/${options.indexPaths ? index : childKey.replace(/~/g, '~0').replace(/\//g, '~1')}`
       const childValue = isArray ? value[index] : (value as Record<string, unknown>)[childKey]
-      yield* walk(childValue, childPath, indent + 1, index === childCount - 1 ? '' : ',', isArray ? undefined : childKey, expandedSubtree)
+      yield* walk(childValue, childPath, indent + 1, index === childCount - 1 ? '' : ',', isArray ? undefined : childKey)
     }
     yield { id: `close:${path}`, indent, bracket: closingBracket, comma, canFold: false, collapsed: false }
   }

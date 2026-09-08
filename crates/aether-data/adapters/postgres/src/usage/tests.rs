@@ -283,11 +283,11 @@ async fn live_full_http_capture_round_trips_for_direct_and_batch_writes() {
             .unwrap();
         assert_eq!(
             stored.request_headers,
-            Some(json!({"content-type": "application/json", "authorization": "[redacted]"}))
+            Some(json!({"content-type": "application/json", "authorization": "Bearer private"}))
         );
         assert_eq!(
             stored.response_headers,
-            Some(json!({"content-type": "text/event-stream", "set-cookie": "[redacted]"}))
+            Some(json!({"content-type": "text/event-stream", "set-cookie": "private"}))
         );
         for (field, expected) in [
             (UsageBodyField::RequestBody, pending.request_body.as_ref()),
@@ -704,7 +704,7 @@ async fn live_pending_batch_persists_auxiliary_state_and_preserves_terminal_conf
         .unwrap();
     assert_eq!(
         captured.request_headers,
-        Some(json!({"x-request": "[redacted]"}))
+        Some(json!({"x-request": "request-value"}))
     );
     assert_eq!(
         repository

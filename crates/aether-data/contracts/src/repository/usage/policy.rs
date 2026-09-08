@@ -367,31 +367,8 @@ pub fn sanitize_usage_capture_controls_for_persistence(
     usage
 }
 
-pub fn usage_header_value_is_sensitive(name: &str) -> bool {
-    ![
-        "accept",
-        "accept-encoding",
-        "content-encoding",
-        "content-length",
-        "content-type",
-        "transfer-encoding",
-        "x-request-id",
-        "x-trace-id",
-    ]
-    .iter()
-    .any(|candidate| name.trim().eq_ignore_ascii_case(candidate))
-}
-
 pub fn sanitize_usage_headers_for_persistence(value: Option<Value>) -> Option<Value> {
-    let Value::Object(mut headers) = value? else {
-        return None;
-    };
-    for (name, value) in &mut headers {
-        if usage_header_value_is_sensitive(name) && !value.is_null() {
-            *value = Value::String("[redacted]".to_string());
-        }
-    }
-    Some(Value::Object(headers))
+    value.filter(Value::is_object)
 }
 
 fn sanitize_usage_routing_fields(
@@ -834,6 +811,35 @@ mod tests {
     }
 
     #[test]
+    fn header_capture_preserves_original_values() {
+        let headers = json!({
+            "Authorization": "Bearer original-token",
+            "originator": "codex-cli",
+            "user-agent": "codex-tui/test",
+            "session-id": "session-original",
+            "thread-id": "thread-original",
+            "x-client-request-id": "client-request-original",
+            "x-codex-beta-features": "feature-original",
+            "x-codex-parent-thread-id": "parent-thread-original",
+            "x-codex-turn-metadata": "{\"turn_id\":\"turn-original\"}",
+            "x-codex-turn-state": "turn-state-original",
+            "x-codex-window-id": "window-original",
+            "x-openai-internal-codex-responses-lite": "true",
+            "x-openai-subagent": "reviewer",
+            "set-cookie": ["session=original", "preference=original"],
+            "x-custom-header": "original-value",
+            "x-null": null
+        });
+        assert_eq!(
+            super::sanitize_usage_headers_for_persistence(Some(headers.clone())),
+            Some(headers)
+        );
+        for invalid in [json!(null), json!("headers"), json!(["headers"])] {
+            assert!(super::sanitize_usage_headers_for_persistence(Some(invalid)).is_none());
+        }
+    }
+
+    #[test]
     fn auxiliary_capture_projection_preserves_captures_and_honors_disabled_states() {
         let mut input = usage_with_http_capture();
         input.request_body_state = Some(UsageBodyCaptureState::None);
@@ -843,7 +849,7 @@ mod tests {
 
         assert_eq!(
             usage.request_headers,
-            Some(json!({"authorization": "[redacted]"}))
+            Some(json!({"authorization": "Bearer secret"}))
         );
         assert!(usage.request_body.is_none());
         assert!(usage.request_body_ref.is_none());
@@ -896,15 +902,19 @@ mod tests {
         assert!(captured.client_response_body_ref.is_none());
         assert_eq!(
             captured.request_headers,
-            Some(json!({"Content-Type": "application/json", "Authorization": "[redacted]"}))
+            Some(json!({"Content-Type": "application/json", "Authorization": "Bearer secret"}))
         );
         assert_eq!(
             captured.provider_request_headers,
-            Some(json!({"x-api-key": "[redacted]"}))
+            Some(json!({"x-api-key": "secret"}))
         );
         assert_eq!(
             captured.response_headers,
-            Some(json!({"set-cookie": "[redacted]"}))
+            Some(json!({"set-cookie": "secret"}))
+        );
+        assert_eq!(
+            captured.client_response_headers,
+            input.client_response_headers
         );
         assert!(captured.error_message.is_none());
     }
