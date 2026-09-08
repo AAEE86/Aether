@@ -564,7 +564,7 @@ import Badge from '@/components/ui/badge.vue'
 import Skeleton from '@/components/ui/skeleton.vue'
 import JsonContentPanel from './JsonContentPanel.vue'
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-vue-next'
-import { requestTraceApi, type RequestTrace, type CandidateRecord, type ImageProgress } from '@/api/requestTrace'
+import { requestTraceApi, type RequestTrace, type CandidateProxy, type CandidateRecord, type ImageProgress } from '@/api/requestTrace'
 import { log } from '@/utils/logger'
 import { safeExternalWebUrl } from '@/utils/navigationSecurity'
 import { parseApiError } from '@/utils/errorParser'
@@ -722,8 +722,8 @@ const formatSize = (bytes: number): string => {
 }
 
 // 代理 timing 分阶段展示
-const proxyTimingBreakdown = (proxy: Record<string, unknown>): string => {
-  const t = proxy.timing as Record<string, number | null | undefined> | undefined
+const proxyTimingBreakdown = (proxy: CandidateProxy): string => {
+  const t = proxy.timing
   if (!t) return ''
 
   const parts: string[] = []
@@ -2112,7 +2112,8 @@ const navigateAttempt = (direction: number) => {
 // 加载请求追踪数据
 const isSilentRefresh = ref(false)
 const loadTrace = async (silent = false) => {
-  if (!props.requestId || props.traceData) return
+  const requestId = props.requestId
+  if (!requestId || props.traceData) return
   if (traceLoadInFlight) return traceLoadInFlight
 
   traceLoadInFlight = (async () => {
@@ -2125,7 +2126,7 @@ const loadTrace = async (silent = false) => {
     error.value = null
 
     try {
-      internalTrace.value = await requestTraceApi.getRequestTrace(props.requestId, { attemptedOnly: true })
+      internalTrace.value = await requestTraceApi.getRequestTrace(requestId, { attemptedOnly: true })
     } catch (err: unknown) {
       if (isAxiosError(err) && err.response?.status === 404) {
         internalTrace.value = null

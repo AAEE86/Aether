@@ -117,8 +117,8 @@ where
 
 use aether_crypto::warm_python_fernet_secret;
 use aether_data::lifecycle::export::{
-    copy_database_records, export_database_jsonl, import_database_jsonl, DataCopyOptions,
-    ExportDomain, MAX_JSONL_INPUT_BYTES,
+    copy_database_records, export_database_jsonl, import_database_jsonl_with_options,
+    DataCopyOptions, DataImportOptions, ExportDomain, MAX_JSONL_INPUT_BYTES,
 };
 use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
 use aether_gateway::{
@@ -1351,6 +1351,11 @@ struct DataExportArgs {
 struct DataImportArgs {
     #[arg(long)]
     input: PathBuf,
+    #[arg(
+        long,
+        help = "Preserve passwords and API/management credentials from a trusted import; imported sessions remain revoked. Without this flag identity credentials are revoked."
+    )]
+    preserve_credentials: bool,
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -1382,6 +1387,11 @@ struct DataCopyArgs {
 
     #[arg(long)]
     omit_request_body_details: bool,
+    #[arg(
+        long,
+        help = "Preserve passwords and API/management credentials from the trusted source; imported sessions remain revoked. The target must use the source encryption key."
+    )]
+    preserve_credentials: bool,
 }
 
 impl GatewayLoggingArgs {
@@ -2905,12 +2915,23 @@ async fn run_data_import(
     let driver = database.driver;
     let input_path = args.input.clone();
     let input = tokio::task::spawn_blocking(move || read_data_import_input(&input_path)).await??;
-    let imported = import_database_jsonl(database, &input).await?;
+    if !args.preserve_credentials {
+        warn!("identity credentials will be revoked; use --preserve-credentials only for trusted recovery or migration");
+    }
+    let imported = import_database_jsonl_with_options(
+        database,
+        &input,
+        DataImportOptions {
+            preserve_credentials: args.preserve_credentials,
+        },
+    )
+    .await?;
 
     info!(
         driver = %driver,
         input = %args.input.display(),
         imported,
+        preserve_credentials = args.preserve_credentials,
         "database import complete"
     );
     println!(
@@ -3171,6 +3192,9 @@ async fn run_data_copy(args: &DataCopyArgs) -> Result<(), Box<dyn std::error::Er
     let target_driver = target.driver;
     let domains = requested_domains(&args.domains);
     let created_at_unix_secs = current_unix_secs()?;
+    if !args.preserve_credentials {
+        warn!("identity credentials will be revoked; use --preserve-credentials only for trusted recovery or migration");
+    }
     let imported = copy_database_records(
         source,
         target,
@@ -3178,6 +3202,7 @@ async fn run_data_copy(args: &DataCopyArgs) -> Result<(), Box<dyn std::error::Er
         created_at_unix_secs,
         DataCopyOptions {
             omit_request_body_details: args.omit_request_body_details,
+            preserve_credentials: args.preserve_credentials,
         },
     )
     .await?;
@@ -3186,6 +3211,7 @@ async fn run_data_copy(args: &DataCopyArgs) -> Result<(), Box<dyn std::error::Er
         source_driver = %source_driver,
         target_driver = %target_driver,
         imported,
+        preserve_credentials = args.preserve_credentials,
         "database copy complete"
     );
     println!(
@@ -4357,6 +4383,41 @@ mod tests {
         };
         assert!(copy.source_allow_insecure);
         assert!(!copy.target_allow_insecure);
+        assert!(!copy.preserve_credentials);
+    }
+
+    #[test]
+    fn data_import_and_copy_require_explicit_credential_preservation() {
+        for preserve in [false, true] {
+            let mut import_args = vec!["aether-gateway", "import", "--input", "trusted.jsonl"];
+            let mut copy_args = vec![
+                "aether-gateway",
+                "copy",
+                "--source-driver",
+                "postgres",
+                "--source-url",
+                "postgres://localhost/source",
+                "--target-driver",
+                "postgres",
+                "--target-url",
+                "postgres://localhost/target",
+            ];
+            if preserve {
+                import_args.push("--preserve-credentials");
+                copy_args.push("--preserve-credentials");
+            }
+            let Some(DataCommand::Import(import)) =
+                Args::try_parse_from(import_args).unwrap().command
+            else {
+                panic!("expected import command");
+            };
+            let Some(DataCommand::Copy(copy)) = Args::try_parse_from(copy_args).unwrap().command
+            else {
+                panic!("expected copy command");
+            };
+            assert_eq!(import.preserve_credentials, preserve);
+            assert_eq!(copy.preserve_credentials, preserve);
+        }
     }
 
     #[cfg(unix)]

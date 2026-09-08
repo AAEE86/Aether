@@ -10,6 +10,7 @@
 </template>
 
 <script setup lang="ts">
+import type { ClassValue } from 'clsx'
 import { computed } from 'vue'
 import { cn } from '@/lib/utils'
 
@@ -17,7 +18,7 @@ interface Props {
   variant?: 'default' | 'destructive' | 'outline' | 'secondary' | 'ghost' | 'link'
   size?: 'default' | 'sm' | 'lg' | 'icon'
   disabled?: boolean
-  class?: string
+  class?: ClassValue
   type?: 'button' | 'submit' | 'reset'
 }
 

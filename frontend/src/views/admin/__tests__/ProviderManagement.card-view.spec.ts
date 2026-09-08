@@ -190,6 +190,32 @@ describe('ProviderManagement card view', () => {
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(requests)
   })
 
+  it('fills available width with shared grid columns and keeps bounded card content scrollable', async () => {
+    apiMocks.getProvidersSummary.mockResolvedValue({
+      items: Array.from({ length: 5 }, (_, index) => createProvider({ id: `provider-${index + 1}` })),
+      total: 5,
+    })
+    localStorage.setItem('aether-provider-card-view', 'true')
+    const root = await mountView()
+    const card = root.querySelector<HTMLElement>('[data-provider-sort-id="provider-1"]')!
+    const lastCard = root.querySelector<HTMLElement>('[data-provider-sort-id="provider-5"]')!
+    const [header, content, actions] = Array.from(card.children)
+
+    expect(Array.from(card.classList)).toEqual(expect.arrayContaining(['max-h-96', 'w-full']))
+    expect(card.classList.contains('max-w-sm')).toBe(false)
+    expect(card.classList.contains('flex-1')).toBe(false)
+    expect(lastCard.className).toBe(card.className)
+    expect(lastCard.parentElement).toBe(card.parentElement)
+    expect(card.parentElement?.classList.contains('grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))]')).toBe(true)
+    expect(card.parentElement?.classList.contains('grid')).toBe(true)
+    expect(card.parentElement?.classList.contains('box-content')).toBe(false)
+    expect(card.parentElement?.classList.contains('items-start')).toBe(false)
+    expect(header.classList.contains('shrink-0')).toBe(true)
+    expect(Array.from(content.classList)).toEqual(expect.arrayContaining(['min-h-0', 'overflow-y-auto']))
+    expect(actions.classList.contains('shrink-0')).toBe(true)
+    expect(actions.contains(findButton(root, '查看详情'))).toBe(true)
+  })
+
   it('remembers the chosen layout across remounts', async () => {
     let root = await mountView()
     findButton(root, '切换到卡片视图').click()

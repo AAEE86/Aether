@@ -46,6 +46,7 @@
 </template>
 
 <script setup lang="ts">
+import type { TimeScatterChartData, TimeScatterPoint } from './types'
 import { getI18nLocale, useI18n } from '@/i18n'
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import {
@@ -57,7 +58,6 @@ import {
   Title,
   Tooltip,
   Legend,
-  type ChartData,
   type ChartOptions,
   type Plugin,
   type Scale
@@ -84,7 +84,7 @@ ChartJS.register(
 )
 
 interface Props {
-  data: ChartData<'scatter'>
+  data: TimeScatterChartData
   options?: ChartOptions<'scatter'>
   height?: number
   compressGaps?: boolean
@@ -117,13 +117,13 @@ interface GapInfo {
 
 const chartRef = ref<HTMLCanvasElement>()
 const { locale, t } = useI18n()
-let chart: ChartJS<'scatter'> | null = null
+let chart: ChartJS<'scatter', TimeScatterPoint[]> | null = null
 
 const crosshairY = ref<number | null>(null)
 const gapInfoList = ref<GapInfo[]>([])
 
 interface PreparedRenderData {
-  chartData: ChartData<'scatter'>
+  chartData: TimeScatterChartData
   gaps: GapInfo[]
 }
 
@@ -141,7 +141,7 @@ const crosshairStats = computed<CrosshairStats | null>(() => {
     let dsTotal = 0
 
     for (const point of dataset.data) {
-      const p = point as { x: string; y: number }
+      const p = point
       if (typeof p.y === 'number') {
         dsTotal++
         totalCount++
@@ -205,8 +205,8 @@ function toRealValue(displayValue: number): number {
 }
 
 // 压缩时间间隙的数据转换
-function compressTimeGaps(data: ChartData<'scatter'>): {
-  data: ChartData<'scatter'>
+function compressTimeGaps(data: TimeScatterChartData): {
+  data: TimeScatterChartData
   gaps: GapInfo[]
   timeMapping: Map<number, number> // 原始时间 -> 压缩后时间
 } {
@@ -216,7 +216,7 @@ function compressTimeGaps(data: ChartData<'scatter'>): {
   // 收集所有数据点的时间戳并排序
   const allTimestamps: number[] = []
   for (const dataset of data.datasets) {
-    for (const point of dataset.data as Array<{ x: string; y: number }>) {
+    for (const point of dataset.data) {
       allTimestamps.push(new Date(point.x).getTime())
     }
   }
@@ -268,11 +268,11 @@ function compressTimeGaps(data: ChartData<'scatter'>): {
   }
 
   // 转换数据
-  const compressedData: ChartData<'scatter'> = {
+  const compressedData: TimeScatterChartData = {
     ...data,
     datasets: data.datasets.map(dataset => ({
       ...dataset,
-      data: (dataset.data as Array<{ x: string; y: number }>).map(point => {
+      data: (dataset.data).map(point => {
         const originalTs = new Date(point.x).getTime()
         const compressedTs = timeMapping.get(originalTs) ?? originalTs
         return {
@@ -288,12 +288,12 @@ function compressTimeGaps(data: ChartData<'scatter'>): {
 }
 
 // 转换数据点的 Y 值
-function transformData(data: ChartData<'scatter'>): ChartData<'scatter'> {
+function transformData(data: TimeScatterChartData): TimeScatterChartData {
   return {
     ...data,
     datasets: data.datasets.map(dataset => ({
       ...dataset,
-      data: (dataset.data as Array<{ x: string; y: number; _originalX?: string; _originalY?: number }>).map(point => ({
+      data: (dataset.data).map(point => ({
         ...point,
         y: toDisplayValue(Math.min(point.y, 120)),
         _originalY: point._originalY ?? point.y  // 保存原始值用于 tooltip
@@ -547,7 +547,7 @@ function createChart() {
   const { chartData, gaps } = prepareRenderData()
   gapInfoList.value = gaps
 
-  chart = new ChartJS(chartRef.value, {
+  chart = new ChartJS<'scatter', TimeScatterPoint[]>(chartRef.value, {
     type: 'scatter',
     data: chartData,
     options: {

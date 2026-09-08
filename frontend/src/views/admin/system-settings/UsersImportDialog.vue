@@ -33,7 +33,7 @@
         <Select
           :model-value="usersMergeMode"
           :open="usersMergeModeSelectOpen"
-          @update:model-value="$emit('update:usersMergeMode', $event)"
+          @update:model-value="($event === 'skip' || $event === 'overwrite' || $event === 'error') && $emit('update:usersMergeMode', $event)"
           @update:open="$emit('update:usersMergeModeSelectOpen', $event)"
         >
           <SelectTrigger>

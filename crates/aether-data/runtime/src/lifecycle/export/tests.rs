@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{json, Value};
 
 use super::{
-    build_import_plan, deactivate_imported_credentials, decode_jsonl, decode_jsonl_with_limits,
-    encode_jsonl, export_postgres_core_jsonl, normalize_imported_binary,
-    normalize_imported_integer_timestamp, normalize_postgres_import_payload,
-    postgres_bytea_json_value, postgres_core_export_domains, DataExportManifest, DataExportRecord,
-    ExportDomain, ExportRow, PostgresImportColumn,
+    apply_import_credential_policy, build_import_plan, deactivate_imported_credentials,
+    decode_jsonl, decode_jsonl_with_limits, encode_jsonl, export_postgres_core_jsonl,
+    normalize_imported_binary, normalize_imported_integer_timestamp,
+    normalize_postgres_import_payload, postgres_bytea_json_value, postgres_core_export_domains,
+    DataExportManifest, DataExportRecord, DataImportOptions, ExportDomain, ExportRow,
+    PostgresImportColumn,
 };
 use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
 use crate::lifecycle::migrate::run_migrations as run_postgres_migrations;
@@ -414,6 +415,159 @@ fn imported_proxy_nodes_receive_a_new_offline_tunnel_generation() {
         node["proxy_metadata"]["tunnel_security"]["encryption_key"],
         json!("preserved-psk")
     );
+}
+
+#[test]
+fn trusted_import_preserves_stable_credentials_only_when_explicitly_requested() {
+    assert!(!DataImportOptions::default().preserve_credentials);
+    for (table, payload) in [
+        ("users", json!({"password_hash": "$2b$12$trusted-hash"})),
+        (
+            "public.\"api_keys\"",
+            json!({
+                "key_hash": "trusted-key-hash", "key_encrypted": "trusted-ciphertext",
+                "status": "active", "is_active": true, "is_locked": false,
+            }),
+        ),
+        (
+            "management_tokens",
+            json!({"token_hash": "trusted-token-hash", "is_active": true}),
+        ),
+    ] {
+        for preserve_credentials in [false, true] {
+            let mut object = payload.as_object().unwrap().clone();
+            apply_import_credential_policy(
+                table,
+                &mut object,
+                |_| true,
+                DataImportOptions {
+                    preserve_credentials,
+                },
+            );
+            if preserve_credentials {
+                assert_eq!(&object, payload.as_object().unwrap());
+            } else {
+                assert_ne!(&object, payload.as_object().unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+fn trusted_import_still_revokes_imported_sessions_and_live_tunnels() {
+    let options = DataImportOptions {
+        preserve_credentials: true,
+    };
+    let mut session = json!({
+        "refresh_token_hash": "old-session", "prev_refresh_token_hash": "older-session",
+        "revoked_at": null, "revoke_reason": null,
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    apply_import_credential_policy("public.user_sessions", &mut session, |_| true, options);
+    assert_ne!(session["refresh_token_hash"], json!("old-session"));
+    assert_eq!(session["prev_refresh_token_hash"], Value::Null);
+    assert_eq!(
+        session["revoke_reason"],
+        json!("imported_credentials_revoked")
+    );
+
+    let mut node = json!({
+        "tunnel_generation": "old-generation", "tunnel_connected": true,
+        "status": "online", "active_connections": 10,
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    apply_import_credential_policy("proxy_nodes", &mut node, |_| true, options);
+    assert_ne!(node["tunnel_generation"], json!("old-generation"));
+    assert_eq!(node["tunnel_connected"], json!(false));
+    assert_eq!(node["status"], json!("offline"));
+    assert_eq!(node["active_connections"], json!(0));
+}
+
+#[tokio::test]
+#[ignore = "requires AETHER_TEST_POSTGRES_URL and PostgreSQL migrations"]
+async fn live_import_credential_policy_round_trips_through_postgres() {
+    let pool = PostgresPoolFactory::new(PostgresPoolConfig {
+        database_url: std::env::var("AETHER_TEST_POSTGRES_URL").unwrap(),
+        ..Default::default()
+    })
+    .unwrap()
+    .connect_lazy()
+    .unwrap();
+    run_postgres_migrations(&pool).await.unwrap();
+    for preserve_credentials in [false, true] {
+        let user_id = uuid::Uuid::new_v4().to_string();
+        let key_id = uuid::Uuid::new_v4().to_string();
+        let password_hash = "$2b$12$trusted-import-hash";
+        let key_hash = format!("trusted-{key_id}");
+        sqlx::query("INSERT INTO users (id, username, password_hash, auth_source, email_verified) VALUES ($1, $2, $3, 'local', FALSE)")
+            .bind(&user_id).bind(format!("import-{}", &user_id[..8])).bind(password_hash)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO api_keys (id, user_id, key_hash, key_encrypted, name) VALUES ($1, $2, $3, 'trusted-ciphertext', 'Import probe')")
+            .bind(&key_id).bind(&user_id).bind(&key_hash).execute(&pool).await.unwrap();
+        let user: Value = sqlx::query_scalar("SELECT to_jsonb(users) FROM users WHERE id = $1")
+            .bind(&user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let key: Value =
+            sqlx::query_scalar("SELECT to_jsonb(api_keys) FROM api_keys WHERE id = $1")
+                .bind(&key_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let input = encode_jsonl(&[
+            DataExportRecord::manifest(DataExportManifest::new(
+                1_788_739_200,
+                Some(DatabaseDriver::Postgres),
+                vec![ExportDomain::Users, ExportDomain::ApiKeys],
+            )),
+            DataExportRecord::row(ExportDomain::Users, &user_id, user),
+            DataExportRecord::row(ExportDomain::ApiKeys, &key_id, key),
+        ])
+        .unwrap();
+        super::postgres::import_postgres_jsonl_with_options(
+            &pool,
+            &input,
+            DataImportOptions {
+                preserve_credentials,
+            },
+        )
+        .await
+        .unwrap();
+        let imported_password: String =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+                .bind(&user_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let imported_key: (String, Option<String>, bool) =
+            sqlx::query_as("SELECT key_hash, key_encrypted, is_active FROM api_keys WHERE id = $1")
+                .bind(&key_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(imported_password == password_hash, preserve_credentials);
+        assert_eq!(imported_key.0 == key_hash, preserve_credentials);
+        assert_eq!(
+            imported_key.1.as_deref(),
+            preserve_credentials.then_some("trusted-ciphertext")
+        );
+        assert_eq!(imported_key.2, preserve_credentials);
+        sqlx::query("DELETE FROM api_keys WHERE id = $1")
+            .bind(&key_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }
 
 fn postgres_column(data_type: &str, udt_name: &str) -> PostgresImportColumn {

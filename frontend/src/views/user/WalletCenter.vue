@@ -112,7 +112,7 @@
           </div>
           <RefreshButton
             :loading="loadingOrders || loadingTransactions"
-            @click="() => Promise.all([loadBalance(), loadOrders(), loadTransactions()])"
+            @click="refreshWallet"
           />
         </div>
 
@@ -941,6 +941,10 @@ watch(activeTab, (tab) => {
 watch(refundableOrders, () => {
   syncRefundOrderSelection()
 })
+
+async function refreshWallet() {
+  await Promise.all([loadBalance(), loadOrders(), loadTransactions()])
+}
 
 async function loadBalance() {
   walletBalance.value = await walletApi.getBalance()

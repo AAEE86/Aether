@@ -87,6 +87,7 @@ describe('providerKeyQuota', () => {
           exhausted: false,
           windows: [
             {
+              code: 'account',
               scope: 'account',
               used_value: 2,
               limit_value: 10,
@@ -139,6 +140,8 @@ describe('providerKeyQuota', () => {
   it('formats Gemini CLI AI credits from status snapshot and upstream metadata', () => {
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'gemini_cli',
           code: 'ok',
@@ -153,6 +156,8 @@ describe('providerKeyQuota', () => {
 
     expect(getGeminiCliAccountCreditsText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'gemini_cli',
           code: 'ok',
@@ -173,6 +178,8 @@ describe('providerKeyQuota', () => {
   it('formats ChatGPT Web image quota as remaining count', () => {
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'chatgpt_web',
           code: 'ok',
@@ -195,6 +202,8 @@ describe('providerKeyQuota', () => {
   it('surfaces Windsurf hard account states', () => {
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'windsurf',
           code: 'quarantined',
@@ -206,6 +215,8 @@ describe('providerKeyQuota', () => {
 
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'windsurf',
           code: 'cooldown',
@@ -217,6 +228,8 @@ describe('providerKeyQuota', () => {
 
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'windsurf',
           code: 'cooldown',
@@ -229,6 +242,8 @@ describe('providerKeyQuota', () => {
   it('includes Windsurf quota windows and model availability in display text', () => {
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'windsurf',
           code: 'ok',
@@ -260,6 +275,8 @@ describe('providerKeyQuota', () => {
 
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'windsurf',
           code: 'cooldown',
@@ -300,6 +317,8 @@ describe('providerKeyQuota', () => {
   it('uses Windsurf model availability when no quota window is present', () => {
     expect(getQuotaDisplayText({
       status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
         quota: {
           provider_type: 'windsurf',
           code: 'ok',

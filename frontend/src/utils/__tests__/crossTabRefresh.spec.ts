@@ -103,7 +103,7 @@ describe('CrossTabRefreshCoordinator', () => {
   })
 
   it('serializes refresh requests without transferring access tokens between tabs', async () => {
-    let resolveRefresh: ((token: string) => void) | null = null
+    let resolveRefresh!: (token: string) => void
     const firstExecutor = vi.fn(
       () =>
         new Promise<string>((resolve) => {
@@ -128,7 +128,7 @@ describe('CrossTabRefreshCoordinator', () => {
     expect(firstExecutor).toHaveBeenCalledTimes(1)
     expect(secondExecutor).not.toHaveBeenCalled()
 
-    resolveRefresh?.('access-from-first-tab')
+    resolveRefresh('access-from-first-tab')
 
     await expect(firstRun).resolves.toBe('access-from-first-tab')
     await expect(secondRun).resolves.toBe('access-from-second-tab')

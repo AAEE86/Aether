@@ -567,7 +567,7 @@ import { getGlobalModelRoutingPreview } from '@/api/global-models'
 
 // 使用外部类型定义
 import type { GlobalModelResponse } from '@/api/global-models'
-import type { TieredPricingConfig, PricingTier, ModelRoutingPreviewResponse } from '@/api/endpoints/types'
+import type { ModelProviderReference, TieredPricingConfig, PricingTier, ModelRoutingPreviewResponse } from '@/api/endpoints/types'
 import type { RoutingProviderInfo } from '@/api/global-models'
 
 const props = withDefaults(defineProps<Props>(), {
@@ -578,9 +578,9 @@ const emit = defineEmits<{
   'editModel': [model: GlobalModelResponse]
   'toggleModelStatus': [model: GlobalModelResponse]
   'addProvider': []
-  'editProvider': [provider: Record<string, unknown>]
-  'deleteProvider': [provider: Record<string, unknown>]
-  'toggleProviderStatus': [provider: Record<string, unknown>]
+  'editProvider': [provider: ModelProviderReference]
+  'deleteProvider': [provider: ModelProviderReference]
+  'toggleProviderStatus': [provider: ModelProviderReference]
   'refreshModel': []
   'linkProvider': [providerId: string]
   'linkProviders': [providerIds: string[]]

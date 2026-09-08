@@ -268,7 +268,7 @@ pub fn strip_deprecated_usage_display_fields(mut usage: UpsertUsageRecord) -> Up
     usage
 }
 
-pub fn sanitize_usage_for_persistence(mut usage: UpsertUsageRecord) -> UpsertUsageRecord {
+fn sanitize_usage_record_metadata(mut usage: UpsertUsageRecord) -> UpsertUsageRecord {
     usage = strip_deprecated_usage_display_fields(usage);
     sanitize_usage_routing_fields(&mut usage, None);
     usage.error_message = None;
@@ -280,6 +280,11 @@ pub fn sanitize_usage_for_persistence(mut usage: UpsertUsageRecord) -> UpsertUsa
             .map(str::to_string);
     }
     usage.request_metadata = super::sanitize_usage_request_metadata(usage.request_metadata);
+    usage
+}
+
+pub fn sanitize_usage_for_persistence(usage: UpsertUsageRecord) -> UpsertUsageRecord {
+    let mut usage = sanitize_usage_record_metadata(usage);
     usage.request_headers = None;
     usage.request_body = None;
     usage.request_body_ref = None;
@@ -299,38 +304,94 @@ pub fn sanitize_usage_for_persistence(mut usage: UpsertUsageRecord) -> UpsertUsa
     usage
 }
 
-/// Project an event onto the non-content controls accepted by auxiliary usage storage.
-///
-/// Explicit `none` states are retained only as tombstones for removing historical captures.
-/// Every header, body, reference, and non-clear capture state is discarded.
 pub fn sanitize_usage_capture_controls_for_persistence(
     mut usage: UpsertUsageRecord,
 ) -> UpsertUsageRecord {
-    // Routing facts are allowed in the transient event metadata for compatibility with older
-    // writers. Project only the known scalar fields into typed slots before the general metadata
-    // sanitizer drops unknown keys. This keeps snapshots useful without re-persisting arbitrary
-    // metadata (or any body/header material).
     let metadata = usage
         .request_metadata
         .as_ref()
         .and_then(Value::as_object)
         .cloned();
     sanitize_usage_routing_fields(&mut usage, metadata.as_ref());
-    let clear_request_body = usage.request_body_state == Some(super::UsageBodyCaptureState::None);
-    let clear_provider_request_body =
-        usage.provider_request_body_state == Some(super::UsageBodyCaptureState::None);
-    let clear_response_body = usage.response_body_state == Some(super::UsageBodyCaptureState::None);
-    let clear_client_response_body =
-        usage.client_response_body_state == Some(super::UsageBodyCaptureState::None);
-
-    let mut usage = sanitize_usage_for_persistence(usage);
-    usage.request_body_state = clear_request_body.then_some(super::UsageBodyCaptureState::None);
-    usage.provider_request_body_state =
-        clear_provider_request_body.then_some(super::UsageBodyCaptureState::None);
-    usage.response_body_state = clear_response_body.then_some(super::UsageBodyCaptureState::None);
-    usage.client_response_body_state =
-        clear_client_response_body.then_some(super::UsageBodyCaptureState::None);
+    let mut usage = sanitize_usage_record_metadata(usage);
+    for headers in [
+        &mut usage.request_headers,
+        &mut usage.provider_request_headers,
+        &mut usage.response_headers,
+        &mut usage.client_response_headers,
+    ] {
+        *headers = sanitize_usage_headers_for_persistence(headers.take());
+    }
+    for (field, body, body_ref, state) in [
+        (
+            super::UsageBodyField::RequestBody,
+            &mut usage.request_body,
+            &mut usage.request_body_ref,
+            usage.request_body_state,
+        ),
+        (
+            super::UsageBodyField::ProviderRequestBody,
+            &mut usage.provider_request_body,
+            &mut usage.provider_request_body_ref,
+            usage.provider_request_body_state,
+        ),
+        (
+            super::UsageBodyField::ResponseBody,
+            &mut usage.response_body,
+            &mut usage.response_body_ref,
+            usage.response_body_state,
+        ),
+        (
+            super::UsageBodyField::ClientResponseBody,
+            &mut usage.client_response_body,
+            &mut usage.client_response_body_ref,
+            usage.client_response_body_state,
+        ),
+    ] {
+        if matches!(
+            state,
+            Some(
+                super::UsageBodyCaptureState::None
+                    | super::UsageBodyCaptureState::Disabled
+                    | super::UsageBodyCaptureState::Unavailable
+            )
+        ) {
+            *body = None;
+            *body_ref = None;
+        } else {
+            *body_ref = body_ref.as_deref().and_then(|value| {
+                super::canonical_usage_body_ref_for(value, &usage.request_id, field)
+            });
+        }
+    }
     usage
+}
+
+pub fn usage_header_value_is_sensitive(name: &str) -> bool {
+    ![
+        "accept",
+        "accept-encoding",
+        "content-encoding",
+        "content-length",
+        "content-type",
+        "transfer-encoding",
+        "x-request-id",
+        "x-trace-id",
+    ]
+    .iter()
+    .any(|candidate| name.trim().eq_ignore_ascii_case(candidate))
+}
+
+pub fn sanitize_usage_headers_for_persistence(value: Option<Value>) -> Option<Value> {
+    let Value::Object(mut headers) = value? else {
+        return None;
+    };
+    for (name, value) in &mut headers {
+        if usage_header_value_is_sensitive(name) && !value.is_null() {
+            *value = Value::String("[redacted]".to_string());
+        }
+    }
+    Some(Value::Object(headers))
 }
 
 fn sanitize_usage_routing_fields(
@@ -773,20 +834,79 @@ mod tests {
     }
 
     #[test]
-    fn auxiliary_capture_projection_keeps_only_explicit_clear_tombstones() {
+    fn auxiliary_capture_projection_preserves_captures_and_honors_disabled_states() {
         let mut input = usage_with_http_capture();
         input.request_body_state = Some(UsageBodyCaptureState::None);
         input.response_body_state = Some(UsageBodyCaptureState::Disabled);
 
         let usage = sanitize_usage_capture_controls_for_persistence(input);
 
-        assert!(usage.request_headers.is_none());
+        assert_eq!(
+            usage.request_headers,
+            Some(json!({"authorization": "[redacted]"}))
+        );
         assert!(usage.request_body.is_none());
         assert!(usage.request_body_ref.is_none());
         assert_eq!(usage.request_body_state, Some(UsageBodyCaptureState::None));
-        assert!(usage.provider_request_body_state.is_none());
-        assert!(usage.response_body_state.is_none());
-        assert!(usage.client_response_body_state.is_none());
+        assert_eq!(
+            usage.provider_request_body,
+            Some(json!({"prompt": "private"}))
+        );
+        assert_eq!(
+            usage.provider_request_body_state,
+            Some(UsageBodyCaptureState::Inline)
+        );
+        assert!(usage.response_body.is_none());
+        assert!(usage.response_body_ref.is_none());
+        assert_eq!(
+            usage.response_body_state,
+            Some(UsageBodyCaptureState::Disabled)
+        );
+        assert!(usage.client_response_body.is_none());
+        assert_eq!(
+            usage.client_response_body_state,
+            Some(UsageBodyCaptureState::Disabled)
+        );
+    }
+
+    #[test]
+    fn auxiliary_capture_projection_preserves_all_body_directions_and_scopes_references() {
+        let mut input = usage_with_http_capture();
+        input.request_headers =
+            Some(json!({"Content-Type": "application/json", "Authorization": "Bearer secret"}));
+        input.request_body_state = Some(UsageBodyCaptureState::Inline);
+        input.client_response_body_state = Some(UsageBodyCaptureState::Inline);
+        input.request_body_ref = Some(super::super::usage_body_ref(
+            &input.request_id,
+            super::super::UsageBodyField::RequestBody,
+        ));
+        input.provider_request_body_ref = input.request_body_ref.clone();
+        input.response_body_ref = Some(super::super::usage_body_ref(
+            "another-request",
+            super::super::UsageBodyField::ResponseBody,
+        ));
+        let captured = sanitize_usage_capture_controls_for_persistence(input.clone());
+        assert_eq!(captured.request_body, input.request_body);
+        assert_eq!(captured.provider_request_body, input.provider_request_body);
+        assert_eq!(captured.response_body, input.response_body);
+        assert_eq!(captured.client_response_body, input.client_response_body);
+        assert_eq!(captured.request_body_ref, input.request_body_ref);
+        assert!(captured.provider_request_body_ref.is_none());
+        assert!(captured.response_body_ref.is_none());
+        assert!(captured.client_response_body_ref.is_none());
+        assert_eq!(
+            captured.request_headers,
+            Some(json!({"Content-Type": "application/json", "Authorization": "[redacted]"}))
+        );
+        assert_eq!(
+            captured.provider_request_headers,
+            Some(json!({"x-api-key": "[redacted]"}))
+        );
+        assert_eq!(
+            captured.response_headers,
+            Some(json!({"set-cookie": "[redacted]"}))
+        );
+        assert!(captured.error_message.is_none());
     }
 
     #[test]

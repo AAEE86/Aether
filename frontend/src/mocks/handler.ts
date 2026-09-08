@@ -3,7 +3,7 @@
  * 演示模式的 API 请求拦截和模拟响应
  */
 
-import type { AxiosRequestConfig, AxiosResponse } from 'axios'
+import { AxiosHeaders, type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { isDemoMode, DEMO_ACCOUNTS } from '@/config/demo'
 import { log } from '@/utils/logger'
 import {
@@ -42,7 +42,7 @@ function createMockResponse<T>(data: T, status: number = 200): AxiosResponse<T> 
     status,
     statusText: status === 200 ? 'OK' : 'Error',
     headers: {},
-    config: {} as AxiosRequestConfig
+    config: { headers: new AxiosHeaders() }
   }
 }
 
@@ -1541,7 +1541,7 @@ const mockHandlers: Record<string, (config: AxiosRequestConfig) => Promise<Axios
     await delay()
     return createMockResponse(MOCK_ENDPOINTS.map(e => ({
       api_format: e.api_format,
-      health_score: e.health_score,
+      health_score: 1,
       is_active: e.is_active
     })))
   },
@@ -2142,7 +2142,7 @@ const mockHandlers: Record<string, (config: AxiosRequestConfig) => Promise<Axios
       models: MOCK_GLOBAL_MODELS.map(m => ({
         name: m.name,
         display_name: m.display_name,
-        description: m.description
+        description: m.config?.description
       }))
     })
   },
@@ -3054,7 +3054,7 @@ registerDynamicRoute('POST', '/api/admin/endpoints/providers/:providerId/refresh
     .filter(key => !requestedKeyIds || requestedKeyIds.has(key.id))
   const results = keys.map(key => ({
     key_id: key.id,
-    key_name: key.name || key.id.slice(0, 8),
+    key_name: key.name || String(key.id).slice(0, 8),
     status: 'success',
     metadata: { updated_at: new Date().toISOString() }
   }))
@@ -3198,7 +3198,7 @@ registerDynamicRoute('POST', '/api/admin/provider-oauth/providers/:providerId/ba
   await delay()
   requireAdmin()
   const body = JSON.parse(config.data || '{}')
-  const raw = typeof body.credentials === 'string' ? body.credentials.trim() : ''
+  const raw: string = typeof body.credentials === 'string' ? body.credentials.trim() : ''
   const lines = raw ? raw.split('\n').filter(line => line.trim() && !line.trim().startsWith('#')) : []
   const total = Math.max(Math.min(lines.length, 5), 2)
   const results = []
@@ -3294,7 +3294,7 @@ mockHandlers['GET /api/admin/endpoints/keys/grouped-by-format'] = async () => {
     const baseUrlByFormat = Object.fromEntries(endpoints.map(e => [e.api_format, e.base_url]))
     const keys = PROVIDER_KEYS_CACHE[provider.id] || []
     for (const key of keys) {
-      const formats: string[] = key.api_formats || []
+      const formats = Array.isArray(key.api_formats) ? key.api_formats.filter((format): format is string => typeof format === 'string') : []
       for (const fmt of formats) {
         if (!grouped[fmt]) grouped[fmt] = []
         grouped[fmt].push({

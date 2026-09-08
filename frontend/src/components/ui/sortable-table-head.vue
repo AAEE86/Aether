@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ClassValue } from 'clsx'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useAttrs, useSlots } from 'vue'
 import { ArrowDown, ArrowUp, ArrowUpDown, ListFilter } from 'lucide-vue-next'
 
@@ -9,7 +10,7 @@ import TableHead from './table-head.vue'
 type SortDirection = 'asc' | 'desc'
 
 const props = withDefaults(defineProps<{
-  class?: string
+  class?: ClassValue
   columnKey?: string
   sortable?: boolean
   activeKey?: string | null

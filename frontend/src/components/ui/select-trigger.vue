@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import type { ClassValue } from 'clsx'
 import { SelectTrigger as SelectTriggerPrimitive } from 'radix-vue'
 import { ChevronDown } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 import { computed } from 'vue'
 
 interface Props {
-  class?: string
+  class?: ClassValue
   disabled?: boolean
 }
 

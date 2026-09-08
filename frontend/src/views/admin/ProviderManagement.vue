@@ -63,7 +63,7 @@
 
       <div
         v-else-if="cardView"
-        class="grid grid-cols-1 gap-4 p-4 sm:p-6 md:grid-cols-2 2xl:grid-cols-3"
+        class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-4 p-4 sm:p-6"
       >
         <ProviderCard
           v-for="provider in displayedProviders"

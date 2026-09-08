@@ -2726,25 +2726,8 @@ fn headers_to_json(headers: &BTreeMap<String, String>) -> Option<Value> {
 
 const REDACTED_USAGE_VALUE: &str = "[redacted]";
 
-/// Only headers whose values are protocol metadata are persisted verbatim.
-/// Unknown headers are treated as credentials because providers commonly use
-/// custom `X-*` names for authentication.
-const SAFE_USAGE_HEADER_VALUE_NAMES: &[&str] = &[
-    "accept",
-    "accept-encoding",
-    "content-encoding",
-    "content-length",
-    "content-type",
-    "transfer-encoding",
-    "x-request-id",
-    "x-trace-id",
-];
-
 fn is_sensitive_header(name: &str) -> bool {
-    let trimmed = name.trim();
-    !SAFE_USAGE_HEADER_VALUE_NAMES
-        .iter()
-        .any(|candidate| trimmed.eq_ignore_ascii_case(candidate))
+    aether_data_contracts::repository::usage::usage_header_value_is_sensitive(name)
 }
 
 fn mask_header_value(name: &str, value: &str) -> String {
@@ -2761,25 +2744,7 @@ fn mask_sensitive_header_value(_value: &str) -> String {
 /// Non-object values cannot be established as a valid header map and are
 /// discarded instead of being persisted verbatim.
 fn mask_sensitive_headers_in_json_value(value: Option<Value>) -> Option<Value> {
-    let mut value = value?;
-    let Value::Object(map) = &mut value else {
-        return None;
-    };
-    for (key, val) in map.iter_mut() {
-        if !is_sensitive_header(key) {
-            continue;
-        }
-        match val {
-            Value::String(text) => {
-                *text = mask_sensitive_header_value(text);
-            }
-            Value::Null => {}
-            other => {
-                *other = Value::String(mask_sensitive_header_value(&other.to_string()));
-            }
-        }
-    }
-    Some(value)
+    aether_data_contracts::repository::usage::sanitize_usage_headers_for_persistence(value)
 }
 
 fn mask_sensitive_body_fields(mut value: Value) -> Value {

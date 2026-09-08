@@ -539,8 +539,14 @@ fn imported_payload_ids(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DataImportOptions {
+    pub preserve_credentials: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DataCopyOptions {
     pub omit_request_body_details: bool,
+    pub preserve_credentials: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -570,6 +576,25 @@ fn set_supported_import_value(
     if target_has_column(column) {
         object.insert(column.to_string(), value);
     }
+}
+
+fn apply_import_credential_policy(
+    table_name: &str,
+    object: &mut serde_json::Map<String, Value>,
+    target_has_column: impl Fn(&str) -> bool,
+    options: DataImportOptions,
+) {
+    let normalized_table = table_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(table_name)
+        .trim_matches(|character| matches!(character, '"' | '`'));
+    if options.preserve_credentials
+        && matches!(normalized_table, "users" | "api_keys" | "management_tokens")
+    {
+        return;
+    }
+    deactivate_imported_credentials(table_name, object, target_has_column);
 }
 
 fn deactivate_imported_credentials(
@@ -1086,13 +1111,21 @@ pub async fn import_database_jsonl(
     database: SqlDatabaseConfig,
     input: &str,
 ) -> Result<usize, DataLayerError> {
+    import_database_jsonl_with_options(database, input, DataImportOptions::default()).await
+}
+
+pub async fn import_database_jsonl_with_options(
+    database: SqlDatabaseConfig,
+    input: &str,
+    options: DataImportOptions,
+) -> Result<usize, DataLayerError> {
     match database.driver {
         #[cfg(feature = "postgres")]
         DatabaseDriver::Postgres => {
             let pool =
                 crate::driver::postgres::PostgresPoolFactory::new(database.to_postgres_config()?)?
                     .connect_lazy()?;
-            import_postgres_jsonl(&pool, input).await
+            postgres::import_postgres_jsonl_with_options(&pool, input, options).await
         }
         #[cfg(not(feature = "postgres"))]
         DatabaseDriver::Postgres => Err(DataLayerError::InvalidInput(
@@ -1113,7 +1146,14 @@ pub async fn copy_database_records(
     if options.omit_request_body_details {
         omit_request_body_details_from_records(&mut records);
     }
-    import_database_jsonl(target, &encode_jsonl(&records)?).await
+    import_database_jsonl_with_options(
+        target,
+        &encode_jsonl(&records)?,
+        DataImportOptions {
+            preserve_credentials: options.preserve_credentials,
+        },
+    )
+    .await
 }
 
 fn omit_request_body_details_from_records(records: &mut Vec<DataExportRecord>) {

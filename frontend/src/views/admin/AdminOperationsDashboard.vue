@@ -1976,7 +1976,7 @@ const usageRuntimeWorkerFaults = computed(() => {
     usage.workerReclaimFailuresTotal,
   ]
   if (!values.some(value => value != null)) return null
-  return values.reduce((total, value) => total + (value ?? 0), 0)
+  return values.reduce<number>((total, value) => total + (value ?? 0), 0)
 })
 const usageQueueOldestPendingIdleText = computed(() => (
   formatDurationSeconds((gatewayMetrics.value?.usageQueue.oldestPendingIdleMs ?? null) == null
@@ -2009,7 +2009,7 @@ const usageCounterOutboxFailures = computed(() => {
     counter.cleanupFailedBatchesTotal,
   ]
   if (!values.some(value => value != null)) return null
-  return values.reduce((total, value) => total + (value ?? 0), 0)
+  return values.reduce<number>((total, value) => total + (value ?? 0), 0)
 })
 const candidateQueueUtilization = computed(() => {
   const depth = gatewayMetrics.value?.requestCandidateQueue.depth

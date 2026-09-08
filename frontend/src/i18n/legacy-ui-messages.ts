@@ -1,5 +1,12 @@
 // Complete UI messages only. Runtime names and user content must remain unchanged.
 export const legacyUiEnglishMessages: Record<string, string> = {
+  '查看规则原值': 'View original rules',
+  '查看已保存规则的原值': 'View the original values of saved rules',
+  '查看原值': 'Reveal values',
+  '原始规则 JSON': 'Original rules JSON',
+  '无法匹配脱敏规则的原值，请查看原值后重新填写，避免将占位符保存为实际配置': 'The original masked rule cannot be identified. Reveal its values and enter them again to avoid saving placeholders as configuration.',
+  '加载规则失败，请关闭后重试': 'Unable to load rules. Close this dialog and try again.',
+  '仅展示已保存的规则，可能包含密钥；不会覆盖未保存的编辑。关闭后清除明文。': 'Shows saved rules only, which may contain secrets. Unsaved edits are not changed. Plaintext is cleared when this dialog closes.',
   '模式': 'Mode',
   '刚刚': 'Just now',
   '确认删除': 'Confirm deletion',

@@ -21,10 +21,7 @@ use aether_contracts::{
     TRANSPORT_HTTP_MODE_H2C_PRIOR_KNOWLEDGE, TRANSPORT_HTTP_MODE_HTTP1_ONLY,
 };
 use aether_data::repository::proxy_nodes::ProxyNodeTrafficMutation;
-use aether_http::{
-    apply_http_client_config, is_https_or_loopback_http_url, is_private_or_reserved_ip,
-    HttpClientConfig,
-};
+use aether_http::{apply_http_client_config, is_private_or_reserved_ip, HttpClientConfig};
 use aether_runtime::{MetricKind, MetricSample};
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -5173,11 +5170,6 @@ fn validate_execution_upstream_url(
             "upstream URL must not include a fragment".to_string(),
         ));
     }
-    if !is_https_or_loopback_http_url(&url) {
-        return Err(ExecutionRuntimeTransportError::UpstreamRequest(
-            "remote upstream URL must use HTTPS".to_string(),
-        ));
-    }
     let literal_ip = match url.host() {
         Some(url::Host::Ipv4(address)) => Some(IpAddr::V4(address)),
         Some(url::Host::Ipv6(address)) => Some(IpAddr::V6(address)),
@@ -5389,9 +5381,13 @@ mod tests {
     const RELAY_TEST_SECRET: &str = "relay-test-secret-at-least-32-bytes";
 
     #[test]
-    fn execution_upstream_url_requires_https_or_literal_loopback_http() {
+    fn execution_upstream_url_accepts_http_and_https_with_safe_targets() {
         for allowed in [
             "https://api.example.test/v1/responses?api-version=1",
+            "http://api.example.test:8080/v1/responses?api-version=1",
+            "http://8.8.8.8:8080/v1/responses",
+            "https://8.8.8.8/v1/responses",
+            "http://[2606:4700:4700::1111]:8080/v1/responses",
             "http://localhost:8080/v1/responses",
             "http://127.42.0.1:8080/v1/responses",
             "http://[::1]:8080/v1/responses",
@@ -5403,7 +5399,6 @@ mod tests {
         }
 
         for rejected in [
-            "http://api.example.test/v1/responses",
             "http://10.0.0.1/v1/responses",
             "http://0.0.0.0:8080/v1/responses",
             "http://[::ffff:127.0.0.1]:8080/v1/responses",
@@ -5411,6 +5406,8 @@ mod tests {
             "https://10.0.0.1:8443/v1/responses",
             "https://token@example.test/v1/responses",
             "https://example.test/v1/responses#secret",
+            "http://token@example.test/v1/responses",
+            "http://example.test/v1/responses#secret",
             "ftp://localhost/resource",
         ] {
             assert!(

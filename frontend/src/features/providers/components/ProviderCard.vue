@@ -1,11 +1,11 @@
 <template>
   <Card
     variant="interactive"
-    class="flex min-w-0 flex-col cursor-pointer overflow-hidden"
+    class="flex max-h-96 w-full min-w-0 flex-col cursor-pointer overflow-hidden"
     @mousedown="$emit('mousedown', $event)"
     @click="$emit('rowClick', $event, provider.id)"
   >
-    <div class="flex items-start gap-2 p-4 pb-3">
+    <div class="flex shrink-0 items-start gap-2 p-4 pb-3">
       <slot name="drag-handle" />
       <div
         class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-semibold"
@@ -88,7 +88,7 @@
       </Badge>
     </div>
 
-    <div class="flex flex-1 flex-col gap-4 px-4 pb-4">
+    <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain break-words px-4 pb-4">
       <div class="space-y-2 rounded-xl border border-border/40 bg-muted/20 p-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="text-xs text-muted-foreground">{{ legacyT('余额监控') }}</span>
@@ -176,7 +176,7 @@
     </div>
 
     <div
-      class="flex items-center justify-between gap-2 border-t border-border/40 bg-muted/10 px-3 py-2"
+      class="flex shrink-0 items-center justify-between gap-2 border-t border-border/40 bg-muted/10 px-3 py-2"
       @click.stop
     >
       <Button

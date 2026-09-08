@@ -93,7 +93,7 @@ function isDefinitiveRefreshRejection(error: unknown): boolean {
   // Refresh uses 409 exclusively for a previous-token rotation race. Every
   // other client-side rejection is deterministic and cannot be repaired by
   // waiting for another tab.
-  return status >= 400 && status < 500 && status !== 409
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 409
 }
 
 export class CrossTabRefreshCoordinator {

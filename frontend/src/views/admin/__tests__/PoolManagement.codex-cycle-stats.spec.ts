@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 
+import type { ProviderType } from '@/api/endpoints/types'
 import PoolManagement from '@/views/admin/PoolManagement.vue'
 import type { PoolKeyDetail, PoolOverviewItem, PoolKeysPageResponse } from '@/api/endpoints/pool'
 import { POOL_MANAGEMENT_VIEW_STORAGE_KEY } from '@/features/pool/utils/poolManagementState'
@@ -481,7 +482,7 @@ vi.mock('@/features/providers/components/ProxyNodeSelect.vue', async () => {
 
 const mountedApps: Array<{ app: App, root: HTMLElement }> = []
 
-function createOverview(providerType: string): PoolOverviewItem {
+function createOverview(providerType: ProviderType): PoolOverviewItem {
   return {
     provider_id: `${providerType}-provider`,
     provider_name: `${providerType} Provider`,
@@ -875,8 +876,11 @@ describe('PoolManagement Codex cycle stats mode', () => {
     const codexKey = createPoolKey('codex')
     const resetKey = createPoolKey('codex', {
       status_snapshot: {
-        ...codexKey.status_snapshot,
+        oauth: codexKey.status_snapshot?.oauth ?? { code: 'none' },
+        account: codexKey.status_snapshot?.account ?? { code: 'ok', blocked: false },
         quota: {
+          code: 'ok',
+          exhausted: false,
           ...codexKey.status_snapshot?.quota,
           windows: [
             {
@@ -996,7 +1000,8 @@ describe('PoolManagement Codex cycle stats mode', () => {
       oauth_managed: true,
       can_refresh_oauth: true,
       status_snapshot: {
-        ...createPoolKey('codex').status_snapshot,
+        account: { code: 'ok', blocked: false },
+        quota: { code: 'ok', exhausted: false },
         oauth: { code: 'expired', expires_at: 1 },
       },
     })
@@ -1022,14 +1027,14 @@ describe('PoolManagement Codex cycle stats mode', () => {
   })
 
   it('hides the stats mode switch for non-Codex providers and keeps account totals', async () => {
-    const openaiKey = createPoolKey('openai', {
+    const customKey = createPoolKey('custom', {
       request_count: 12,
       total_tokens: 3456,
       total_cost_usd: '1.25',
     })
-    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('openai')] })
-    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(openaiKey))
-    endpointMocks.getProvider.mockResolvedValue(createProvider('openai'))
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('custom')] })
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(customKey))
+    endpointMocks.getProvider.mockResolvedValue(createProvider('custom'))
 
     const root = mountPoolManagement()
     await settle()

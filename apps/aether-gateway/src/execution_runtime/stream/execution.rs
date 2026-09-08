@@ -14661,15 +14661,19 @@ mod tests {
         assert_eq!(usage.status_code, Some(302));
         assert_eq!(usage.error_category.as_deref(), Some("redirect"));
         assert!(usage.error_message.is_none());
-        // HTTP capture is intentionally disabled at the persistence boundary. Keep the
-        // protocol facts above, but do not turn provider/client headers into an audit store.
-        assert!(usage.client_response_headers.is_none());
-        assert!(usage.response_headers.is_none());
+        assert_eq!(
+            usage.client_response_headers.as_ref().unwrap()["content-type"],
+            json!("application/json")
+        );
+        assert_eq!(
+            usage.response_headers.as_ref().unwrap()["content-type"],
+            json!("text/html")
+        );
         assert!(
             usage.response_body.is_none(),
             "upstream redirect did not include a body"
         );
-        assert!(usage.client_response_body.is_none());
+        assert_eq!(usage.client_response_body.as_ref(), Some(&body_json));
         let candidates = request_candidate_repository
             .list_by_request_id("req-remote-runtime-stream-redirect")
             .await

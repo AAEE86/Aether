@@ -1189,7 +1189,7 @@ function setEmbeddingEnabled(enabled: boolean) {
     setConfigField('embedding', undefined)
     if (form.value.config?.model_type === 'embedding') setConfigField('model_type', undefined)
     if (Array.isArray(form.value.config?.api_formats)
-      && form.value.config.api_formats.every((format) => embeddingApiFormats.includes(String(format)))) {
+      && form.value.config.api_formats.every((format) => embeddingApiFormats.some((supportedFormat) => supportedFormat === String(format)))) {
       setConfigField('api_formats', undefined)
     }
   }

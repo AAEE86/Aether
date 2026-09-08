@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const { logoutMock, getTokenMock, getCurrentUserMock, restoreSessionMock, clearAuthMock } = vi.hoisted(() => ({
   logoutMock: vi.fn(),
-  getTokenMock: vi.fn(() => null),
+  getTokenMock: vi.fn((): string | null => null),
   getCurrentUserMock: vi.fn(),
   restoreSessionMock: vi.fn(),
   clearAuthMock: vi.fn(),
@@ -39,7 +39,7 @@ describe('auth store logout', () => {
   })
 
   it('waits for backend logout before resolving', async () => {
-    let resolveLogout: (() => void) | null = null
+    let resolveLogout!: () => void
     logoutMock.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
@@ -69,7 +69,7 @@ describe('auth store logout', () => {
     expect(store.token).toBeNull()
     expect(settled).toBe(false)
 
-    resolveLogout?.()
+    resolveLogout()
     await logoutPromise
 
     expect(settled).toBe(true)
@@ -195,13 +195,13 @@ describe('auth store logout', () => {
   })
 
   it('deduplicates concurrent current-user requests', async () => {
-    let resolveCurrentUser: ((user: {
+    let resolveCurrentUser!: (user: {
       id: string
       username: string
       role: string
       is_active: boolean
       created_at: string
-    }) => void) | null = null
+    }) => void
     getTokenMock.mockReturnValue('access-token')
     getCurrentUserMock.mockImplementation(
       () => new Promise((resolve) => {
@@ -222,7 +222,7 @@ describe('auth store logout', () => {
       is_active: true,
       created_at: '2026-03-16T00:00:00Z',
     }
-    resolveCurrentUser?.(currentUser)
+    resolveCurrentUser(currentUser)
 
     await expect(firstRequest).resolves.toEqual(currentUser)
     await expect(secondRequest).resolves.toEqual(currentUser)
@@ -241,14 +241,41 @@ describe('auth store logout', () => {
     expect(getCurrentUserMock).toHaveBeenCalledTimes(1)
   })
 
+  it('retries a synchronous current-user failure after the backoff expires', async () => {
+    let now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      getTokenMock.mockReturnValue('access-token')
+      const user = {
+        id: 'user-1',
+        username: 'tester',
+        role: 'user',
+        is_active: true,
+        created_at: '2026-03-16T00:00:00Z',
+      }
+      getCurrentUserMock
+        .mockImplementationOnce(() => { throw new Error('synchronous transport failure') })
+        .mockResolvedValueOnce(user)
+      const store = useAuthStore()
+
+      await expect(store.fetchCurrentUser()).resolves.toBeNull()
+      now += 16_000
+      await expect(store.fetchCurrentUser()).resolves.toEqual(user)
+      expect(getCurrentUserMock).toHaveBeenCalledTimes(2)
+      expect(store.user).toEqual(user)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it('does not restore a stale user after logout while the request is in flight', async () => {
-    let resolveCurrentUser: ((user: {
+    let resolveCurrentUser!: (user: {
       id: string
       username: string
       role: string
       is_active: boolean
       created_at: string
-    }) => void) | null = null
+    }) => void
     getTokenMock.mockReturnValue('access-token')
     getCurrentUserMock.mockImplementation(
       () => new Promise((resolve) => {
@@ -259,7 +286,7 @@ describe('auth store logout', () => {
     const store = useAuthStore()
     const currentUserRequest = store.fetchCurrentUser()
     await store.logout()
-    resolveCurrentUser?.({
+    resolveCurrentUser({
       id: 'stale-user',
       username: 'stale',
       role: 'user',
@@ -273,7 +300,7 @@ describe('auth store logout', () => {
   })
 
   it('does not restore a stale token when an in-flight request fails after logout', async () => {
-    let rejectCurrentUser: ((error: Error) => void) | null = null
+    let rejectCurrentUser!: (error: Error) => void
     getTokenMock.mockReturnValue('access-token')
     getCurrentUserMock.mockImplementation(
       () => new Promise((_resolve, reject) => {
@@ -284,7 +311,7 @@ describe('auth store logout', () => {
     const store = useAuthStore()
     const currentUserRequest = store.fetchCurrentUser()
     await store.logout()
-    rejectCurrentUser?.(new Error('stale request failed'))
+    rejectCurrentUser(new Error('stale request failed'))
 
     await expect(currentUserRequest).resolves.toBeNull()
     expect(store.user).toBeNull()

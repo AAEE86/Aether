@@ -803,8 +803,8 @@ interface ModelProviderDisplay {
   id: string
   model_id?: string | null
   name: string
-  provider_type: string
-  target_model: string
+  provider_type?: string
+  target_model?: string
   is_active: boolean
   input_price_per_1m?: number | null
   output_price_per_1m?: number | null
@@ -935,7 +935,7 @@ function hasTieredPricing(model: GlobalModelResponse): boolean {
 // 检测是否有视频分辨率计费配置
 function hasVideoPricing(model: GlobalModelResponse): boolean {
   const priceByResolution = model.config?.billing?.video?.price_per_second_by_resolution
-  return priceByResolution && typeof priceByResolution === 'object' && Object.keys(priceByResolution).length > 0
+  return !!priceByResolution && typeof priceByResolution === 'object' && Object.keys(priceByResolution).length > 0
 }
 
 // 获取视频分辨率计费的数量
@@ -1934,7 +1934,7 @@ function handleDrawerOpenChange(value: boolean) {
 
 // 编辑提供商模型
 function openEditProviderImplementation(provider: ModelProviderDisplay) {
-  editingProvider.value = provider
+  editingProvider.value = selectedModelProviders.value.find((item) => item.id === provider.id && item.model_id === provider.model_id) ?? provider
   editProviderDialogOpen.value = true
 }
 

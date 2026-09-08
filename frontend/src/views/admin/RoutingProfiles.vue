@@ -752,8 +752,8 @@
                         :show-scheduling-mode="false"
                         :subtitle="`仅作用于 ${activePerModelPolicy.model}`"
                         @update:config="updateEditingConfig"
-                        @update:priority-mode="mode => updateModelPriorityMode(activePerModelPolicy.model, mode)"
-                        @update:scheduling-mode="mode => updateModelSchedulingMode(activePerModelPolicy.model, mode)"
+                        @update:priority-mode="mode => activePerModelPolicy && updateModelPriorityMode(activePerModelPolicy.model, mode)"
+                        @update:scheduling-mode="mode => activePerModelPolicy && updateModelSchedulingMode(activePerModelPolicy.model, mode)"
                       />
                     </div>
                   </div>
@@ -1649,9 +1649,9 @@ async function saveDraft(): Promise<void> {
         : undefined,
       config_json: config,
     }
-    const saved = wasCreating
+    const saved = wasCreating || !targetGroupId
       ? await createRoutingGroup(payload)
-      : await updateRoutingGroup(draft.value.id, payload)
+      : await updateRoutingGroup(targetGroupId, payload)
 
     const sameDraftGeneration = draftGeneration === submittedGeneration
     const stillEditingSubmittedDraft = wasCreating

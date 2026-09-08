@@ -215,13 +215,13 @@ export const useAuthStore = defineStore('auth', () => {
         // 保留登录状态；短暂退避后允许再次校验。
         log.info('Keeping session despite error, as per user requirement')
         return null
-      } finally {
-        if (fetchCurrentUserPromise === request) {
-          fetchCurrentUserPromise = null
-          fetchCurrentUserToken = null
-        }
       }
-    })()
+    })().finally(() => {
+      if (fetchCurrentUserPromise === request) {
+        fetchCurrentUserPromise = null
+        fetchCurrentUserToken = null
+      }
+    })
 
     fetchCurrentUserPromise = request
     return request

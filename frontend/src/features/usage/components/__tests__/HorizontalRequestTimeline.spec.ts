@@ -521,7 +521,7 @@ describe('HorizontalRequestTimeline', () => {
     })
     await nextTick()
 
-    const lastCall = onTraceState.mock.calls.at(-1)?.[0]
+    const lastCall = onTraceState.mock.calls[onTraceState.mock.calls.length - 1]?.[0]
     expect(lastCall).toMatchObject({
       finalStatus: 'streaming',
     })
