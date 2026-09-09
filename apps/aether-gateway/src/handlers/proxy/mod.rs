@@ -1035,7 +1035,7 @@ pub(crate) async fn proxy_request(
     ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
     request: Request,
 ) -> Result<Response<Body>, GatewayError> {
-    crate::request_diagnostics::scope_request_diagnostics(Box::pin(proxy_request_inner(
+    crate::request_lifecycle::run_request(Box::pin(proxy_request_inner(
         state,
         remote_addr,
         request,

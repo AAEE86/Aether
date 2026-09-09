@@ -55,6 +55,24 @@ fn hash_api_key(value: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+async fn build_cancelling_gateway(state: crate::AppState) -> Router {
+    state
+        .data
+        .update_routing_group(
+            "system-default",
+            aether_data_contracts::repository::routing_profiles::UpdateRoutingGroupRecord {
+                config_json: Some(json!({"default_policy": {"cancel_on_client_disconnect": true}})),
+                version: Some(2),
+                updated_at: 2,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("routing policy should update")
+        .expect("default strategy should exist");
+    build_router_with_state(state)
+}
+
 fn sample_local_openai_auth_snapshot(api_key_id: &str, user_id: &str) -> StoredAuthApiKeySnapshot {
     StoredAuthApiKeySnapshot::new(
         user_id.to_string(),
@@ -384,7 +402,7 @@ async fn gateway_stops_execution_runtime_stream_when_client_disconnects_impl() {
         vec![sample_local_openai_key()],
     ));
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
-    let gateway = build_router_with_state(
+    let gateway = build_cancelling_gateway(
         build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(
                 GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -395,7 +413,7 @@ async fn gateway_stops_execution_runtime_stream_when_client_disconnects_impl() {
                     DEVELOPMENT_ENCRYPTION_KEY,
                 ),
             ),
-    );
+    ).await;
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -467,7 +485,7 @@ async fn gateway_settles_stream_attempt_when_client_disconnects_before_first_byt
         vec![sample_local_openai_key()],
     ));
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
-    let gateway = build_router_with_state(
+    let gateway = build_cancelling_gateway(
         build_state_with_execution_runtime_override(execution_runtime_url)
             .with_data_state_for_tests(
                 GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
@@ -478,7 +496,7 @@ async fn gateway_settles_stream_attempt_when_client_disconnects_before_first_byt
                     DEVELOPMENT_ENCRYPTION_KEY,
                 ),
             ),
-    );
+    ).await;
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let request = reqwest::Client::new()
