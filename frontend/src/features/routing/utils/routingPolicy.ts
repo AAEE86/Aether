@@ -1,3 +1,5 @@
+import { normalizeRoutingFailoverPolicy, type RoutingFailoverPolicy } from './routingFailover'
+
 export type RoutingPriorityMode = 'provider' | 'global_key'
 export type RoutingSchedulingMode = 'fixed_order' | 'cache_affinity' | 'load_balance'
 export type RoutingRulePhase = 'client_request' | 'provider_request'
@@ -6,7 +8,7 @@ export type RoutingSortingScope = 'unified' | 'per_model'
 /** 首个候选（粘性 Key）的总尝试次数默认值：失败后同 Key 重试 1 次 */
 export const DEFAULT_STICKY_KEY_ATTEMPTS = 2
 
-export interface RoutingDefaultPolicy {
+export interface RoutingDefaultPolicy extends RoutingFailoverPolicy {
   priority_mode: RoutingPriorityMode
   scheduling_mode: RoutingSchedulingMode
   keep_priority_on_conversion: boolean
@@ -74,6 +76,7 @@ export const MODEL_SCHEDULING_RULE_PREFIX = 'ui_model_scheduling:'
 export function createEmptyRoutingGroupConfig(): RoutingGroupConfig {
   return {
     default_policy: {
+      ...normalizeRoutingFailoverPolicy(),
       priority_mode: 'provider',
       scheduling_mode: 'cache_affinity',
       keep_priority_on_conversion: false,
@@ -122,6 +125,7 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
     default_policy: {
       ...base.default_policy,
       ...defaultPolicyWithoutLegacyHeartbeat,
+      ...normalizeRoutingFailoverPolicy(rawDefaultPolicy),
       enable_cf_heartbeat: Boolean(
         rawDefaultPolicy.enable_cf_heartbeat || legacyImageHeartbeat || legacyTextHeartbeat,
       ),
@@ -371,6 +375,7 @@ export function getModelScheduling(
   const rule = normalized.rules.find(rule => rule.id === modelSchedulingRuleId(model))
   const action = rule?.actions.find(isSetSchedulingAction)
   return {
+    ...normalized.default_policy,
     priority_mode: action?.priority_mode ?? normalized.default_policy.priority_mode,
     scheduling_mode: action?.scheduling_mode ?? normalized.default_policy.scheduling_mode,
     keep_priority_on_conversion: normalized.default_policy.keep_priority_on_conversion,

@@ -500,6 +500,13 @@
             </div>
           </section>
 
+          <RoutingFailoverPolicyEditor
+            ref="routingFailoverPolicyEditor"
+            :model-value="draft.config_json.default_policy"
+            :disabled="saving"
+            @update:model-value="draft.config_json.default_policy = { ...draft.config_json.default_policy, ...$event }"
+          />
+
           <section class="space-y-4 rounded-lg border border-border/60 p-4">
             <div>
               <h3 class="text-sm font-medium">
@@ -882,7 +889,8 @@ import {
   type RoutingSchedulingMode,
   type RoutingSortingScope,
 } from '@/features/routing/utils/routingPolicy'
-import { RoutingPriorityPolicyEditor } from '@/features/routing/components'
+import { RoutingFailoverPolicyEditor, RoutingPriorityPolicyEditor } from '@/features/routing/components'
+import { validateRoutingFailoverPolicy } from '@/features/routing/utils/routingFailover'
 import {
   createRoutingGroup,
   deleteRoutingGroup,
@@ -926,6 +934,7 @@ const schedulingModes: Array<{ value: RoutingSchedulingMode; label: string }> = 
 const groups = ref<RoutingGroupRecord[]>([])
 const selectedGroupId = ref<string | null>(null)
 const draft = ref<RoutingGroupDraft | null>(null)
+const routingFailoverPolicyEditor = ref<{ commitJsonDrafts: () => boolean } | null>(null)
 const savedDraftSnapshot = ref<string | null>(null)
 const sortingScope = ref<RoutingSortingScope>('unified')
 const selectedPerModelName = ref<string | null>(null)
@@ -1648,7 +1657,13 @@ async function saveDraft(): Promise<void> {
     showError('策略名称不能为空')
     return
   }
+  if (routingFailoverPolicyEditor.value && !routingFailoverPolicyEditor.value.commitJsonDrafts()) return
   const config = cloneConfig(draft.value.config_json)
+  const failoverError = validateRoutingFailoverPolicy(config.default_policy)
+  if (failoverError) {
+    showError(failoverError)
+    return
+  }
   if (sortingScope.value === 'per_model' && perModelPolicies.value.length === 0) {
     showError('按模型排序时至少选择一个模型')
     return
