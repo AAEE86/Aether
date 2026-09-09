@@ -4677,36 +4677,11 @@ VALUES (
                     .await
                     .map_postgres_err()?;
 
-                    let order_row = sqlx::query(
-                        r#"
-SELECT
-  id,
-  order_no,
-  wallet_id,
-  user_id,
-  CAST(amount_usd AS DOUBLE PRECISION) AS amount_usd,
-  CAST(pay_amount AS DOUBLE PRECISION) AS pay_amount,
-  pay_currency,
-  CAST(exchange_rate AS DOUBLE PRECISION) AS exchange_rate,
-  CAST(refunded_amount_usd AS DOUBLE PRECISION) AS refunded_amount_usd,
-  CAST(refundable_amount_usd AS DOUBLE PRECISION) AS refundable_amount_usd,
-  payment_method,
-  gateway_order_id,
-  gateway_response,
-  status,
-  CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT) AS created_at_unix_ms,
-  CAST(EXTRACT(EPOCH FROM paid_at) AS BIGINT) AS paid_at_unix_secs,
-  CAST(EXTRACT(EPOCH FROM credited_at) AS BIGINT) AS credited_at_unix_secs,
-  CAST(EXTRACT(EPOCH FROM expires_at) AS BIGINT) AS expires_at_unix_secs
-FROM payment_orders
-WHERE id = $1
-LIMIT 1
-                        "#,
-                    )
-                    .bind(&order_id)
-                    .fetch_one(&mut **tx)
-                    .await
-                    .map_postgres_err()?;
+                    let order_row = sqlx::query(FIND_ADMIN_PAYMENT_ORDER_SQL)
+                        .bind(&order_id)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .map_postgres_err()?;
                     Ok(Some((wallet, map_admin_payment_order_row(&order_row)?)))
                 })
             })
