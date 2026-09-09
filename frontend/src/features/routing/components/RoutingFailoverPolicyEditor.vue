@@ -44,7 +44,7 @@
       :key="section.key"
       class="space-y-3"
     >
-      <div class="flex items-start justify-between gap-3">
+      <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <h4 class="text-sm font-medium">
             {{ section.title }}
@@ -59,6 +59,7 @@
             variant="ghost"
             size="sm"
             class="h-7 px-2 text-xs"
+            :disabled="disabled"
             :title="jsonMode[section.key] ? `切回${section.title}表单` : `切到${section.title} JSON`"
             :aria-label="jsonMode[section.key] ? `切回${section.title}表单` : `切到${section.title} JSON`"
             @click="toggleJsonMode(section.key)"
@@ -72,6 +73,7 @@
             variant="ghost"
             size="sm"
             class="h-7 px-2 text-xs"
+            :disabled="disabled"
             :title="`格式化${section.title} JSON`"
             :aria-label="`格式化${section.title} JSON`"
             @click="formatJsonDraft(section.key)"
@@ -100,6 +102,7 @@
           :model-value="jsonDraft[section.key]"
           class="min-h-[160px] font-mono text-xs leading-relaxed"
           :disabled="disabled"
+          :aria-label="`${section.title} JSON`"
           spellcheck="false"
           :placeholder="jsonPlaceholder(section.key)"
           @update:model-value="updateJsonDraft(section.key, $event)"
@@ -125,16 +128,18 @@
         <div
           v-for="(rule, index) in modelValue.failover_rules[section.key]"
           :key="index"
-          class="flex min-w-0 items-center gap-1"
+          class="grid min-w-0 grid-cols-[minmax(0,1fr)_2rem] items-start gap-2"
+          :class="section.key === 'error_stop_patterns' ? 'sm:grid-cols-[10rem_minmax(0,1fr)_2rem]' : ''"
         >
           <Input
             v-if="section.key === 'error_stop_patterns'"
-            :model-value="rule.status_codes.join(',')"
+            :model-value="statusDrafts[index] ?? rule.status_codes.join(', ')"
             :disabled="disabled"
             size="sm"
-            class="w-full shrink-0 font-mono text-xs sm:w-40"
+            class="col-span-2 min-w-0 w-full font-mono text-xs sm:col-span-1"
             :aria-label="`终止规则 ${index + 1} 状态码`"
-            placeholder="状态码（选填，可多个）"
+            placeholder="400, 413（选填）"
+            title="状态码用逗号或空格分隔；留空则匹配全部错误状态"
             @update:model-value="updateStatuses(index, String($event))"
           />
           <Input
@@ -174,7 +179,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { AlignLeft, Code2, Plus, Trash2 } from 'lucide-vue-next'
 import { Button, Input, Textarea } from '@/components/ui'
 import {
@@ -187,7 +192,10 @@ import {
 } from '../utils/routingFailover'
 
 const props = defineProps<{ modelValue: RoutingFailoverPolicy, disabled?: boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [value: RoutingFailoverPolicy] }>()
+const emit = defineEmits<{
+  'update:modelValue': [value: RoutingFailoverPolicy]
+  'pending-change': [value: boolean]
+}>()
 type RuleSection = 'success_failover_patterns' | 'error_stop_patterns'
 const jsonMode = reactive<Record<RuleSection, boolean>>({
   success_failover_patterns: false,
@@ -205,17 +213,28 @@ const jsonDirty = reactive<Record<RuleSection, boolean>>({
   success_failover_patterns: false,
   error_stop_patterns: false,
 })
+const statusDrafts = ref<Record<number, string>>({})
 const ruleSections: Array<{ key: RuleSection, title: string, description: string }> = [
   { key: 'success_failover_patterns', title: '成功转移规则', description: 'HTTP 200 的响应体或流式输出前的缓冲内容命中正则时，放弃当前候选并继续转移；不是对所有 200 都重试。' },
-  { key: 'error_stop_patterns', title: '错误提前终止规则', description: '状态码与正则同时满足时立即终止。可只填状态码，或只填正则匹配全部 400–599 错误；对流内错误使用解析后的错误状态。' },
+  { key: 'error_stop_patterns', title: '错误终止规则', description: '状态码与正则同时满足时立即终止。可只填状态码，或只填正则匹配全部 400–599 错误；对流内错误使用解析后的错误状态。' },
 ]
-const validationError = computed(() => validateRoutingFailoverPolicy(props.modelValue))
+const validationError = computed(() => {
+  const rules = errorRulesFromForm()
+  return typeof rules === 'string' ? rules : validateRoutingFailoverPolicy(props.modelValue)
+})
+watch(
+  () => jsonDirty.success_failover_patterns || jsonDirty.error_stop_patterns || Object.keys(statusDrafts.value).length > 0,
+  value => emit('pending-change', value),
+  { immediate: true },
+)
 
 function updateLimit(field: 'max_transfer_count' | 'max_transfer_timeout_seconds', value: string | number) {
+  if (props.disabled) return
   emit('update:modelValue', { ...props.modelValue, [field]: Number(value) })
 }
 
 function updateRules(patch: Partial<RoutingFailoverRules>) {
+  if (props.disabled) return
   emit('update:modelValue', { ...props.modelValue, failover_rules: { ...props.modelValue.failover_rules, ...patch } })
 }
 
@@ -229,13 +248,14 @@ function stringifyRules(rules: RoutingFailoverRule[]): string {
   return JSON.stringify(rules, null, 2)
 }
 
-function refreshJsonDraft(section: RuleSection) {
-  jsonDraft[section] = stringifyRules(props.modelValue.failover_rules[section])
+function refreshJsonDraft(section: RuleSection, rules = props.modelValue.failover_rules[section]) {
+  jsonDraft[section] = stringifyRules(rules)
   jsonError[section] = null
   jsonDirty[section] = false
 }
 
 function updateJsonDraft(section: RuleSection, value: string) {
+  if (props.disabled) return
   jsonDraft[section] = value
   jsonDirty[section] = true
   jsonError[section] = null
@@ -270,7 +290,7 @@ function parseJsonRules(section: RuleSection, draft: string): RoutingFailoverRul
     const source = nested !== null && typeof nested === 'object' && !Array.isArray(nested)
       ? nested as Record<string, unknown>
       : root
-    entries = source[section] ?? []
+    entries = source[section]
   }
   if (!Array.isArray(entries)) return `${section} JSON 必须是数组`
   if (entries.length > MAX_ROUTING_FAILOVER_RULES) return `${section} 最多 ${MAX_ROUTING_FAILOVER_RULES} 条`
@@ -312,16 +332,21 @@ function applyJsonDraft(section: RuleSection): boolean {
 }
 
 function toggleJsonMode(section: RuleSection) {
+  if (props.disabled) return
   if (jsonMode[section]) {
     if (jsonDirty[section] && !applyJsonDraft(section)) return
     jsonMode[section] = false
     return
   }
-  refreshJsonDraft(section)
+  const rules = section === 'error_stop_patterns' ? errorRulesFromForm() : props.modelValue.failover_rules[section]
+  if (typeof rules === 'string') return
+  refreshJsonDraft(section, rules)
+  if (section === 'error_stop_patterns') statusDrafts.value = {}
   jsonMode[section] = true
 }
 
 function formatJsonDraft(section: RuleSection) {
+  if (props.disabled) return
   const parsed = parseJsonRules(section, jsonDraft[section])
   if (typeof parsed === 'string') {
     jsonError[section] = parsed
@@ -342,16 +367,50 @@ function updateRule(section: RuleSection, index: number, patch: Partial<RoutingF
 }
 
 function updateStatuses(index: number, value: string | number) {
-  const input = String(value).trim()
-  updateRule('error_stop_patterns', index, { status_codes: input ? input.split(/[,，\s]+/).map(Number) : [] })
+  if (props.disabled) return
+  statusDrafts.value[index] = String(value)
+  const codes = parseStatusInput(String(value), index)
+  if (typeof codes !== 'string') updateRule('error_stop_patterns', index, { status_codes: codes })
+}
+
+function parseStatusInput(value: string, index: number): number[] | string {
+  const parts = value.trim().split(/[,，\s]+/).filter(Boolean)
+  if (parts.some(part => !/^\d{3}$/.test(part) || Number(part) < 400 || Number(part) > 599)) {
+    return `错误终止规则第 ${index + 1} 条状态码必须为 400–599，多个状态码用逗号或空格分隔`
+  }
+  return [...new Set(parts.map(Number))]
+}
+
+function errorRulesFromForm(): RoutingFailoverRule[] | string {
+  const rules = props.modelValue.failover_rules.error_stop_patterns.map(rule => ({ ...rule, status_codes: [...rule.status_codes] }))
+  for (const [rawIndex, value] of Object.entries(statusDrafts.value)) {
+    const index = Number(rawIndex)
+    if (!rules[index]) continue
+    const codes = parseStatusInput(value, index)
+    if (typeof codes === 'string') return codes
+    rules[index].status_codes = codes
+  }
+  return rules
 }
 
 function removeRule(section: RuleSection, index: number) {
+  if (props.disabled) return
+  if (section === 'error_stop_patterns') {
+    const nextDrafts: Record<number, string> = {}
+    for (const [rawIndex, value] of Object.entries(statusDrafts.value)) {
+      const position = Number(rawIndex)
+      if (position !== index) nextDrafts[position > index ? position - 1 : position] = value
+    }
+    statusDrafts.value = nextDrafts
+  }
   updateRules({ [section]: props.modelValue.failover_rules[section].filter((_, position) => position !== index) })
 }
 
 function commitJsonDrafts(): boolean {
-  const parsedRules = new Map<RuleSection, RoutingFailoverRule[]>()
+  if (props.disabled) return false
+  const formErrors = errorRulesFromForm()
+  if (typeof formErrors === 'string') return false
+  const nextRules = { ...props.modelValue.failover_rules, error_stop_patterns: formErrors }
   for (const section of ruleSections.map(item => item.key)) {
     if (!jsonMode[section] || !jsonDirty[section]) continue
     const parsed = parseJsonRules(section, jsonDraft[section])
@@ -359,13 +418,16 @@ function commitJsonDrafts(): boolean {
       jsonError[section] = parsed
       return false
     }
-    parsedRules.set(section, parsed)
+    nextRules[section] = parsed
   }
-  for (const [section, rules] of parsedRules) {
-    updateRules({ [section]: rules })
-    jsonDraft[section] = stringifyRules(rules)
+  if (validateRoutingFailoverPolicy({ ...props.modelValue, failover_rules: nextRules })) return false
+  updateRules(nextRules)
+  for (const { key: section } of ruleSections) {
+    jsonDraft[section] = stringifyRules(nextRules[section])
+    jsonError[section] = null
     jsonDirty[section] = false
   }
+  statusDrafts.value = {}
   return true
 }
 

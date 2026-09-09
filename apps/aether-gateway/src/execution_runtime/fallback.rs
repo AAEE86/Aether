@@ -14,7 +14,7 @@ fn sync_plan_kind_disables_local_candidate_failover(plan_kind: &str) -> bool {
     )
 }
 
-fn openai_image_success_disables_local_success_failover(
+pub(super) fn openai_image_success_disables_local_success_failover(
     plan: &ExecutionPlan,
     status_code: u16,
 ) -> bool {

@@ -44,7 +44,7 @@ export function validateRoutingFailoverPolicy(policy: RoutingFailoverPolicy): st
   }
   for (const [name, entries, success] of [
     ['成功转移规则', policy.failover_rules.success_failover_patterns, true],
-    ['错误提前终止规则', policy.failover_rules.error_stop_patterns, false],
+    ['错误终止规则', policy.failover_rules.error_stop_patterns, false],
   ] as const) {
     if (entries.length > MAX_ROUTING_FAILOVER_RULES) return `${name}最多 ${MAX_ROUTING_FAILOVER_RULES} 条`
     for (const [index, rule] of entries.entries()) {

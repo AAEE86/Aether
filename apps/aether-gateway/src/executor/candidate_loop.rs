@@ -2652,6 +2652,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cloned_tracker_preserves_global_budget_across_candidate_loops() {
+        let state = AppState::new().unwrap();
+        let tracker = ProviderTransferTracker::default();
+        let mut attempts = transfer_test_attempts();
+        for attempt in &mut attempts {
+            attempt.report_context["routing_execution_policy"] = json!({ "max_transfer_count": 1 });
+        }
+        let remaining = attempts.split_off(3);
+        let first_port = TransferTestPort::with_tracker(&state, tracker.clone());
+        let first_outcome = run_ai_attempt_loop(&first_port, attempts).await.unwrap();
+        assert!(matches!(first_outcome, AiAttemptLoopOutcome::Exhausted(_)));
+        assert_eq!(tracker.state.lock().await.global.transfer_count, 1);
+
+        let second_port = TransferTestPort::with_tracker(&state, tracker.clone());
+        let mut source = TransferTestAttemptSource {
+            attempts: remaining.into(),
+            skipped_providers: Vec::new(),
+        };
+        let second_outcome = run_dynamic_attempt_loop(
+            &second_port,
+            &mut source,
+            "global-budget-across-loops",
+            "test",
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            second_outcome,
+            LocalExecutionRequestOutcome::NoPath
+        ));
+        assert!(second_port.executed.lock().unwrap().is_empty());
+        assert_eq!(source.skipped_providers, ["provider-a", "provider-b"]);
+        assert!(tracker.state.lock().await.global.exhausted);
+    }
+
+    #[tokio::test]
     async fn cloned_tracker_preserves_transfer_budget_across_candidate_loops() {
         let state = AppState::new().expect("state should build");
         let tracker = ProviderTransferTracker::default();

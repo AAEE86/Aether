@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_transport_stop_cannot_be_overridden_by_provider() {
+    fn provider_transport_stop_rule_is_respected() {
         let policy = super::LocalFailoverPolicy {
             stop_on_transport_errors: true,
             ..Default::default()
