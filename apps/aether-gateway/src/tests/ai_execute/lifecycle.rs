@@ -1,7 +1,7 @@
 use super::{
     any, build_router_with_state, build_state_with_execution_runtime_override, json, start_server,
     Arc, Body, Bytes, HeaderValue, Infallible, Json, Mutex, Request, Response, Router, StatusCode,
-    TRACE_ID_HEADER,
+    LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER, TRACE_ID_HEADER,
 };
 
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
@@ -626,7 +626,7 @@ async fn gateway_returns_error_body_when_prefetch_detects_embedded_stream_error_
                     auth_repository,
                     candidate_selection_repository,
                     provider_catalog_repository,
-                    request_candidate_repository,
+                    Arc::clone(&request_candidate_repository),
                     DEVELOPMENT_ENCRYPTION_KEY,
                 ),
             ),
@@ -649,17 +649,41 @@ async fn gateway_returns_error_body_when_prefetch_detects_embedded_stream_error_
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         response
             .headers()
             .get(http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
-        Some("text/event-stream")
+        Some("application/json")
     );
-    let body_text = response.text().await.expect("response body should read");
-    assert!(body_text.contains("\"rate_limit_error\""));
-    assert!(body_text.contains("\"slow down\""));
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("execution_runtime_candidates_exhausted")
+    );
+    let body_json: serde_json::Value = response.json().await.expect("response body should parse");
+    assert_eq!(body_json["error"]["type"], "http_error");
+    let stored_candidates = request_candidate_repository
+        .list_by_request_id("trace-openai-chat-stream-prefetch-error-123")
+        .await
+        .expect("request candidate trace should read");
+    let failed_candidate = stored_candidates
+        .iter()
+        .find(|candidate| candidate.status == RequestCandidateStatus::Failed)
+        .expect("prefetched error should mark the attempted candidate as failed");
+    assert!(stored_candidates
+        .iter()
+        .all(|candidate| candidate.status != RequestCandidateStatus::Success));
+    assert_eq!(failed_candidate.status_code, Some(429));
+    assert_eq!(
+        failed_candidate.error_type.as_deref(),
+        Some("rate_limit_error")
+    );
+    assert_eq!(failed_candidate.error_message.as_deref(), Some("slow down"));
+    assert!(failed_candidate.finished_at_unix_ms.is_some());
     assert_eq!(*public_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

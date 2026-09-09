@@ -561,7 +561,6 @@ mod tests {
                     pattern: "invalid.*parameter".to_string(),
                     status_codes: [400].into_iter().collect(),
                 }],
-                ..Default::default()
             },
             stop_status_codes: [200, 403].into_iter().collect(),
             continue_status_codes: [400].into_iter().collect(),

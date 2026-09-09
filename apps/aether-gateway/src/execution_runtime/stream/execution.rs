@@ -4639,8 +4639,8 @@ async fn execute_execution_runtime_stream_inner(
             frame_stream,
             false,
             provider_pool_in_flight_guard.take(),
-            retry_scope_out.as_deref_mut(),
-            retry_fallback_out.as_deref_mut(),
+            retry_scope_out,
+            retry_fallback_out,
             Some(remote_fallback_observation),
         )
         .await;
@@ -9942,14 +9942,15 @@ mod tests {
         assert!(execution.prefetched_body.is_empty());
         assert_eq!(upstream_hits.load(Ordering::SeqCst), 2);
         assert_eq!(task_registration_hits.load(Ordering::SeqCst), 1);
-        let authorizations = observed_authorization
-            .lock()
-            .expect("authorization mutex should lock");
-        assert_eq!(authorizations.len(), 2);
-        assert_eq!(authorizations[0], initial_authorization);
-        assert!(authorizations[1].starts_with("AgentAssertion "));
-        assert_ne!(authorizations[1], authorizations[0]);
-        drop(authorizations);
+        {
+            let authorizations = observed_authorization
+                .lock()
+                .expect("authorization mutex should lock");
+            assert_eq!(authorizations.len(), 2);
+            assert_eq!(authorizations[0], initial_authorization);
+            assert!(authorizations[1].starts_with("AgentAssertion "));
+            assert_ne!(authorizations[1], authorizations[0]);
+        }
         let replayed = collect_direct_execution_body(execution)
             .await
             .expect("retried response body should read");

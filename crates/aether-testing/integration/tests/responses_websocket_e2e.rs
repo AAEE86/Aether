@@ -1399,10 +1399,13 @@ async fn run_mock_upstream(
                     }
                 }
             }
-            AxumWsMessage::Ping(payload) => {
-                if socket.send(AxumWsMessage::Pong(payload)).await.is_err() {
-                    break;
-                }
+            AxumWsMessage::Ping(payload)
+                if socket
+                    .send(AxumWsMessage::Pong(payload.clone()))
+                    .await
+                    .is_err() =>
+            {
+                break;
             }
             AxumWsMessage::Close(_) => break,
             _ => {}

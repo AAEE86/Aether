@@ -3228,7 +3228,7 @@ mod tests {
     async fn request_body_buffer_caps_decompressed_body_at_shared_budget() {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder
-            .write_all(&vec![b'a'; 128])
+            .write_all(&[b'a'; 128])
             .expect("test gzip body should encode");
         let encoded = encoder.finish().expect("test gzip body should finish");
         assert!(

@@ -77,7 +77,6 @@ mod tests {
                 status_codes: [400, 413].into_iter().collect(),
                 ..Default::default()
             }],
-            ..Default::default()
         };
         assert!(validate_routing_failover_rules(&rules).is_ok());
     }

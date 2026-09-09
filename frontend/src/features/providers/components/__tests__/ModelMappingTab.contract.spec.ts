@@ -64,7 +64,7 @@ type MappingTestState = {
 
 const endpoints = [
   { id: 'chat', api_format: 'openai:chat', base_url: 'https://example.com', is_active: true, active_keys: 1 },
-  { id: 'claude', api_format: 'claude:chat', base_url: 'https://example.com', is_active: true, active_keys: 1 },
+  { id: 'claude', api_format: 'claude:messages', base_url: 'https://example.com', is_active: true, active_keys: 1 },
 ] as MappingTabProps['endpoints']
 
 function createTestKey(overrides: Partial<EndpointAPIKey>): EndpointAPIKey {
@@ -94,7 +94,7 @@ function createTestKey(overrides: Partial<EndpointAPIKey>): EndpointAPIKey {
 
 const testKeys = [
   createTestKey({ id: 'chat-key', name: 'Chat Key', api_key_masked: 'sk-****chat', api_formats: ['openai:chat'], internal_priority: 0 }),
-  createTestKey({ id: 'claude-key', name: 'Claude Key', api_formats: ['claude:chat'], internal_priority: 1 }),
+  createTestKey({ id: 'claude-key', name: 'Claude Key', api_formats: ['claude:messages'], internal_priority: 1 }),
   createTestKey({ id: 'disabled-key', is_active: false, internal_priority: 2 }),
 ]
 const mounted: Array<{ app: App; root: HTMLElement }> = []
