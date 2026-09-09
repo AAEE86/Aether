@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
 use axum::response::IntoResponse;
@@ -9,6 +11,14 @@ use tracing::warn;
 use crate::ai_serving::AiSurfaceFinalizeError;
 use crate::constants::*;
 use crate::insert_header_if_missing;
+
+/// 设为 `true` 时，内部错误的完整消息会写入 ERROR 日志（生产环境默认关闭）。
+static GATEWAY_ERROR_DETAIL_LOGGING: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("AETHER_GATEWAY_ERROR_DETAIL_LOGGING")
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+});
 
 #[derive(Debug, Clone)]
 pub(crate) enum GatewayError {
@@ -212,12 +222,22 @@ impl IntoResponse for GatewayError {
                 .into_response(),
             Self::Internal(message) => {
                 let error_fingerprint = gateway_error_fingerprint(&message);
-                tracing::error!(
-                    event_name = "gateway_internal_error",
-                    error_fingerprint,
-                    error_length = message.len(),
-                    "internal gateway error hidden from client"
-                );
+                if *GATEWAY_ERROR_DETAIL_LOGGING {
+                    tracing::error!(
+                        event_name = "gateway_internal_error",
+                        error_fingerprint,
+                        error_length = message.len(),
+                        error_detail = %message,
+                        "internal gateway error hidden from client"
+                    );
+                } else {
+                    tracing::error!(
+                        event_name = "gateway_internal_error",
+                        error_fingerprint,
+                        error_length = message.len(),
+                        "internal gateway error hidden from client"
+                    );
+                }
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({
