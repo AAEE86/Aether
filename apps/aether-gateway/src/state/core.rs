@@ -884,7 +884,7 @@ impl AppState {
                 }
                 Err(error) => {
                     guard.fail(GatewayError::Internal(error.to_string()));
-                    warn!(error = %error, "background system config refresh failed");
+                    warn!(error = %crate::error::redact_error_detail(&error), "background system config refresh failed");
                 }
             }
             drop(guard);
