@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 const MAX_HTTP_CONNECTIONS: usize = 65_536;
@@ -71,10 +71,12 @@ impl HttpConnectionBudget {
 
     /// Admit after accepting. Waiting for a permit before accept can let idle
     /// reuseport listeners monopolize permits needed by a busy listener.
-    pub fn try_admit<T>(self: &Arc<Self>, io: T) -> Result<AdmittedConnection<T>, ()> {
-        let permit = Arc::clone(&self.permits).try_acquire_owned().map_err(|_| {
-            self.rejected_total.fetch_add(1, Ordering::Relaxed);
-        })?;
+    pub fn try_admit<T>(self: &Arc<Self>, io: T) -> Result<AdmittedConnection<T>, TryAcquireError> {
+        let permit = Arc::clone(&self.permits)
+            .try_acquire_owned()
+            .inspect_err(|_| {
+                self.rejected_total.fetch_add(1, Ordering::Relaxed);
+            })?;
         let in_flight = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
         self.high_watermark.fetch_max(in_flight, Ordering::Relaxed);
         Ok(AdmittedConnection {

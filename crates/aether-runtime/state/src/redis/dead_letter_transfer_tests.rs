@@ -173,7 +173,10 @@ async fn assert_transfer_source_unchanged(
     source: &str,
     entry: &RuntimeQueueEntry,
 ) {
-    assert_eq!(transfer_entries(admin, source).await, [entry.clone()]);
+    assert_eq!(
+        transfer_entries(admin, source).await.as_slice(),
+        std::slice::from_ref(&entry)
+    );
     let pending = transfer_pending(admin, source).await;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].0, entry.id);

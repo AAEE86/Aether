@@ -1879,39 +1879,38 @@ fn gateway_listeners(
     Ok(listeners)
 }
 
-async fn serve_gateway_router(
-    listeners: Vec<tokio::net::TcpListener>,
-    router: axum::Router,
-    connection_budget: Arc<HttpConnectionBudget>,
+#[derive(Clone, Copy)]
+struct GatewayHttpLimits {
     http2_max_concurrent_streams: u32,
     http_header_read_timeout_ms: u64,
     http_header_max_bytes: usize,
     http_max_headers: usize,
+}
+
+async fn serve_gateway_router(
+    listeners: Vec<tokio::net::TcpListener>,
+    router: axum::Router,
+    connection_budget: Arc<HttpConnectionBudget>,
+    limits: GatewayHttpLimits,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let http2_max_concurrent_streams =
-        gateway_http2_max_concurrent_streams(http2_max_concurrent_streams);
-    let http_header_read_timeout_ms =
-        gateway_http_header_read_timeout_ms(http_header_read_timeout_ms);
-    let http_header_max_bytes = gateway_http_header_max_bytes(http_header_max_bytes);
-    let http_max_headers = gateway_http_max_headers(http_max_headers);
+    let limits = GatewayHttpLimits {
+        http2_max_concurrent_streams: gateway_http2_max_concurrent_streams(
+            limits.http2_max_concurrent_streams,
+        ),
+        http_header_read_timeout_ms: gateway_http_header_read_timeout_ms(
+            limits.http_header_read_timeout_ms,
+        ),
+        http_header_max_bytes: gateway_http_header_max_bytes(limits.http_header_max_bytes),
+        http_max_headers: gateway_http_max_headers(limits.http_max_headers),
+    };
     let mut servers = tokio::task::JoinSet::new();
     for listener in listeners {
         let router = router.clone();
         let connection_budget = Arc::clone(&connection_budget);
         let shutdown = shutdown.clone();
         servers.spawn(async move {
-            serve_gateway_listener(
-                listener,
-                router,
-                connection_budget,
-                http2_max_concurrent_streams,
-                http_header_read_timeout_ms,
-                http_header_max_bytes,
-                http_max_headers,
-                shutdown,
-            )
-            .await
+            serve_gateway_listener(listener, router, connection_budget, limits, shutdown).await
         });
     }
     let mut failure = None;
@@ -1941,12 +1940,15 @@ async fn serve_gateway_listener(
     listener: tokio::net::TcpListener,
     router: axum::Router,
     connection_budget: Arc<HttpConnectionBudget>,
-    http2_max_concurrent_streams: u32,
-    http_header_read_timeout_ms: u64,
-    http_header_max_bytes: usize,
-    http_max_headers: usize,
+    limits: GatewayHttpLimits,
     shutdown: CancellationToken,
 ) -> Result<(), std::io::Error> {
+    let GatewayHttpLimits {
+        http2_max_concurrent_streams,
+        http_header_read_timeout_ms,
+        http_header_max_bytes,
+        http_max_headers,
+    } = limits;
     let mut make_service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -2594,10 +2596,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             listeners,
             router,
             Arc::clone(&http_connection_budget),
-            args.http2_max_concurrent_streams,
-            args.http_header_read_timeout_ms,
-            args.http_header_max_bytes,
-            args.http_max_headers,
+            GatewayHttpLimits {
+                http2_max_concurrent_streams: args.http2_max_concurrent_streams,
+                http_header_read_timeout_ms: args.http_header_read_timeout_ms,
+                http_header_max_bytes: args.http_header_max_bytes,
+                http_max_headers: args.http_max_headers,
+            },
             shutdown.clone(),
         );
         tokio::pin!(server);

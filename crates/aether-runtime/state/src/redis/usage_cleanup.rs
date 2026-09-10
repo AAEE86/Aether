@@ -100,7 +100,7 @@ async fn copy_and_commit(
     if plan.first() != Some(&2) {
         return Ok(Some((plan, false)));
     }
-    if plan.len() < 4 || (plan.len() - 1) % 3 != 0 {
+    if plan.len() < 4 || !(plan.len() - 1).is_multiple_of(3) {
         return Err(DataLayerError::UnexpectedValue(
             "invalid usage window copy plan".to_string(),
         ));

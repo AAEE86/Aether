@@ -8681,12 +8681,13 @@ mod tests {
             );
         }
         assert_eq!(store.enrichment_calls.load(Ordering::Acquire), 2);
-        let records = store.records.lock().expect("records lock");
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].total_cost_usd, Some(0.456));
-        assert_eq!(records[0].actual_total_cost_usd, Some(0.123));
-        assert_eq!(records[0].total_tokens, Some(12));
-        drop(records);
+        {
+            let records = store.records.lock().expect("records lock");
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].total_cost_usd, Some(0.456));
+            assert_eq!(records[0].actual_total_cost_usd, Some(0.123));
+            assert_eq!(records[0].total_tokens, Some(12));
+        }
         {
             let coalescer = &runtime.lifecycle_coalescer;
             let entries = coalescer.shards[coalescer.shard_index(request_id)]

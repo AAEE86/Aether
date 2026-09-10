@@ -7,7 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use super::super::{serve_gateway_router, HttpConnectionBudget};
+use super::super::{serve_gateway_router, GatewayHttpLimits, HttpConnectionBudget};
 
 async fn start(
     router: Router,
@@ -28,10 +28,12 @@ async fn start(
             vec![listener],
             router,
             shared,
-            16,
-            10_000,
-            32_768,
-            100,
+            GatewayHttpLimits {
+                http2_max_concurrent_streams: 16,
+                http_header_read_timeout_ms: 10_000,
+                http_header_max_bytes: 32_768,
+                http_max_headers: 100,
+            },
             stop,
         )
         .await

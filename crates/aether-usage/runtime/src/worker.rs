@@ -1670,20 +1670,22 @@ mod tests {
         .await
         .expect("pending entry should become reclaimable");
 
-        let records = store.records.lock().expect("records lock");
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].total_cost_usd, Some(0.456));
-        assert_eq!(records[0].actual_total_cost_usd, Some(0.123));
-        assert_eq!(records[0].total_tokens, Some(10));
-        drop(records);
-        let reconciliations = store.reconciliations.lock().expect("reconciliations lock");
-        assert_eq!(reconciliations.len(), 1);
-        assert_eq!(reconciliations[0].actual_cost_units, 12_300_000);
-        assert_eq!(
-            reconciliations[0].reservation_token,
-            "pricing-retry-reservation"
-        );
-        drop(reconciliations);
+        {
+            let records = store.records.lock().expect("records lock");
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].total_cost_usd, Some(0.456));
+            assert_eq!(records[0].actual_total_cost_usd, Some(0.123));
+            assert_eq!(records[0].total_tokens, Some(10));
+        }
+        {
+            let reconciliations = store.reconciliations.lock().expect("reconciliations lock");
+            assert_eq!(reconciliations.len(), 1);
+            assert_eq!(reconciliations[0].actual_cost_units, 12_300_000);
+            assert_eq!(
+                reconciliations[0].reservation_token,
+                "pricing-retry-reservation"
+            );
+        }
         assert_eq!(store.settlements.lock().expect("settlements lock").len(), 1);
         assert_eq!(
             store.enrich_calls.lock().expect("enrich calls lock").len(),
@@ -2400,11 +2402,12 @@ mod tests {
             .await
             .expect("worker should stop")
             .expect("worker task");
-        let records = store.records.lock().expect("records lock");
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].response_body, event.data.response_body);
-        assert_eq!(records[0].total_tokens, Some(10));
-        drop(records);
+        {
+            let records = store.records.lock().expect("records lock");
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].response_body, event.data.response_body);
+            assert_eq!(records[0].total_tokens, Some(10));
+        }
         let snapshot = budget.snapshot();
         assert_eq!(snapshot.reserved_bytes, 0);
         assert_eq!(snapshot.oversized_entries_total, 1);
