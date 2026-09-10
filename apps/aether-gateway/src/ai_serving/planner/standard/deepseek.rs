@@ -155,6 +155,9 @@ fn apply_deepseek_openai_chat_thinking_compat(
     provider_request_body: &mut Value,
     original_request_body: Option<&Value>,
 ) {
+    // 携带 tools 时，所有历史 reasoning_content 都须完整回传，包括未调用工具的轮次。
+    // 无 tools 时允许回传，且 prefix 续写需要保留输入；因此原样保留 messages，
+    // 不删除思考内容，也不以空字符串冒充缺失内容，由上游校验请求是否完整。
     let disabled = source_disables_thinking(original_request_body, provider_request_body);
     set_deepseek_thinking_type(
         provider_request_body,
@@ -170,33 +173,6 @@ fn apply_deepseek_openai_chat_thinking_compat(
         {
             object.remove("reasoning_effort");
         }
-        return;
-    }
-
-    let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for message in messages {
-        let Some(message_object) = message.as_object_mut() else {
-            continue;
-        };
-        let is_assistant = message_object
-            .get("role")
-            .and_then(Value::as_str)
-            .is_some_and(|role| role.trim().eq_ignore_ascii_case("assistant"));
-        if !is_assistant {
-            continue;
-        }
-        if message_object
-            .get("reasoning_content")
-            .is_some_and(|value| !value.is_null())
-        {
-            continue;
-        }
-        message_object.insert(
-            "reasoning_content".to_string(),
-            Value::String(String::new()),
-        );
     }
 }
 
@@ -444,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_chat_deepseek_adds_thinking_and_empty_reasoning_content() {
+    fn openai_chat_deepseek_enables_thinking_without_fabricating_reasoning() {
         let mut body = json!({
             "model": "deepseek-chat",
             "messages": [
@@ -467,7 +443,7 @@ mod tests {
         );
 
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["messages"][1]["reasoning_content"], "");
+        assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 
     #[test]
@@ -494,7 +470,154 @@ mod tests {
         );
 
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["messages"][1]["reasoning_content"], "");
+        assert!(body["messages"][1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn openai_chat_deepseek_preserves_history_without_tools() {
+        let mut body = json!({
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "user", "content": "Compare 9.11 and 9.8"},
+                {
+                    "role": "assistant",
+                    "content": "9.8 is greater",
+                    "reasoning_content": "Compare the decimal places.\n9.80 > 9.11."
+                },
+                {"role": "user", "content": "Explain again"},
+                {"role": "assistant", "content": "Compare 9.80 with 9.11"}
+            ]
+        });
+        let messages = body["messages"].clone();
+
+        apply_deepseek_tool_call_thinking_compat(
+            &mut body,
+            "deepseek",
+            "https://api.deepseek.com/v1",
+            "openai:chat",
+            None,
+        );
+
+        assert_eq!(body["messages"], messages);
+    }
+
+    #[test]
+    fn openai_chat_deepseek_preserves_reasoning_across_all_tool_turns() {
+        let mut body = json!({
+            "model": "deepseek-chat",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }],
+            "messages": [
+                {"role": "user", "content": "What is the weather?"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "Check the weather before answering.\nKeep this full plan.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"}
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "Cloudy"},
+                {
+                    "role": "assistant",
+                    "content": "It is cloudy",
+                    "reasoning_content": "The weather result is available; summarize it."
+                },
+                {"role": "user", "content": "Should I take an umbrella?"},
+                {
+                    "role": "assistant",
+                    "content": "An umbrella may be useful",
+                    "reasoning_content": "Use the previous weather result without another tool call."
+                },
+                {"role": "user", "content": "Why?"}
+            ]
+        });
+        let messages = body["messages"].clone();
+        let tools = body["tools"].clone();
+
+        apply_deepseek_tool_call_thinking_compat(
+            &mut body,
+            "deepseek",
+            "https://api.deepseek.com/v1",
+            "openai:chat",
+            None,
+        );
+
+        assert_eq!(body["messages"], messages);
+        assert_eq!(body["tools"], tools);
+        assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn openai_chat_deepseek_does_not_fabricate_missing_tool_reasoning() {
+        for tools in [
+            json!([]),
+            json!([{
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }]),
+        ] {
+            let mut body = json!({
+                "model": "deepseek-chat",
+                "tools": tools,
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "missing"},
+                    {"role": "assistant", "content": "null", "reasoning_content": null},
+                    {"role": "assistant", "content": "empty", "reasoning_content": ""},
+                    {"role": "assistant", "content": "answer", "reasoning_content": "original plan"}
+                ]
+            });
+            let messages = body["messages"].clone();
+
+            apply_deepseek_tool_call_thinking_compat(
+                &mut body,
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "openai:chat",
+                None,
+            );
+
+            assert_eq!(body["messages"], messages);
+        }
+    }
+
+    #[test]
+    fn openai_chat_deepseek_preserves_reasoning_prefix_without_tools() {
+        let mut body = json!({
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "user", "content": "What is 1 + 1?"},
+                {
+                    "role": "assistant",
+                    "prefix": true,
+                    "content": "",
+                    "reasoning_content": "Start by adding one to one."
+                }
+            ]
+        });
+        let messages = body["messages"].clone();
+
+        apply_deepseek_tool_call_thinking_compat(
+            &mut body,
+            "deepseek",
+            "https://api.deepseek.com/beta",
+            "openai:chat",
+            None,
+        );
+
+        assert_eq!(body["messages"], messages);
+        assert_eq!(body["thinking"]["type"], "enabled");
     }
 
     #[test]
