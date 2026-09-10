@@ -14,11 +14,7 @@ async fn transfer_runtime(
         );
         return None;
     };
-    let mut admin = ::redis::Client::open(server.redis_url.clone())
-        .expect("transfer admin client")
-        .get_multiplexed_async_connection()
-        .await
-        .expect("transfer admin connection");
+    let mut admin = redis_test_connection(&server.redis_url).await;
     ::redis::cmd("ACL")
         .arg("SETUSER")
         .arg(TRANSFER_USER)
@@ -175,7 +171,7 @@ async fn assert_transfer_source_unchanged(
 ) {
     assert_eq!(
         transfer_entries(admin, source).await.as_slice(),
-        std::slice::from_ref(&entry)
+        std::slice::from_ref(entry)
     );
     let pending = transfer_pending(admin, source).await;
     assert_eq!(pending.len(), 1);

@@ -28,11 +28,7 @@ async fn receive_runtime(
         );
         return None;
     };
-    let mut admin = ::redis::Client::open(server.redis_url.clone())
-        .expect("test admin client")
-        .get_multiplexed_async_connection()
-        .await
-        .expect("test admin connection");
+    let mut admin = redis_test_connection(&server.redis_url).await;
     ::redis::cmd("ACL")
         .arg("SETUSER")
         .arg("stream-reader")

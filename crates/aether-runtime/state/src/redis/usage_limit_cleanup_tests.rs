@@ -46,11 +46,7 @@ impl Fixture {
             eprintln!("usage cleanup {protocol} skipped: isolated Redis unavailable");
             return None;
         };
-        let mut admin = ::redis::Client::open(server.redis_url.clone())
-            .unwrap()
-            .get_multiplexed_async_connection()
-            .await
-            .unwrap();
+        let mut admin = redis_test_connection(&server.redis_url).await;
         ::redis::cmd("ACL")
             .arg("SETUSER")
             .arg("usage-cleanup")
@@ -1072,14 +1068,11 @@ async fn redis_usage_cleanup_copy_refuses_existing_temporary_and_denied_expirati
         .query_async::<()>(&mut fixture.admin)
         .await
         .unwrap();
-    let mut connection = ::redis::Client::open(format!(
+    let mut connection = redis_test_connection(&format!(
         "redis://usage-cleanup:usage-cleanup-test-password@127.0.0.1:{}/6",
         fixture._server.port,
     ))
-    .unwrap()
-    .get_multiplexed_async_connection()
-    .await
-    .unwrap();
+    .await;
     let script = ::redis::Script::new(include_str!("usage_copy.lua"));
     let result = script
         .key(source)

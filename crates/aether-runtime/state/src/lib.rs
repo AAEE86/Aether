@@ -1995,6 +1995,14 @@ mod tests {
     use std::process::{Child, Command, Stdio};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    async fn redis_test_connection(url: &str) -> ::redis::aio::MultiplexedConnection {
+        ::redis::Client::open(url)
+            .expect("test Redis client")
+            .get_multiplexed_async_connection()
+            .await
+            .expect("test Redis connection")
+    }
+
     mod stream_receive {
         include!("redis/stream_receive_tests.rs");
     }

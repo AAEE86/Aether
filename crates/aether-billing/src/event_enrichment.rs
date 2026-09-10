@@ -973,8 +973,8 @@ mod tests {
         let mut event = wire_billing_event("wire-claude-cache");
         event.data.model = "claude-sonnet-4-6".to_string();
         event.data.target_model = Some("claude-sonnet-4-6".to_string());
-        event.data.api_format = Some("claude:chat".to_string());
-        event.data.endpoint_api_format = Some("claude:chat".to_string());
+        event.data.api_format = Some("claude:messages".to_string());
+        event.data.endpoint_api_format = Some("claude:messages".to_string());
         event.data.provider_request_body = None;
         event.data.provider_request_body_state = Some(UsageBodyCaptureState::Disabled);
         event.data.cache_creation_input_tokens = Some(200);
