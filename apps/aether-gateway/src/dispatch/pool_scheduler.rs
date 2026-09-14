@@ -4241,7 +4241,11 @@ mod tests {
             large_pool_fixture(2, provider_config.clone());
         keys[1].is_active = false;
         rows.retain(|row| row.key_id != "key-00001");
-        let scores = vec![sample_provider_key_pool_score("provider-pool", "key-00001", 20.0)];
+        let scores = vec![sample_provider_key_pool_score(
+            "provider-pool",
+            "key-00001",
+            20.0,
+        )];
         let data_state =
             GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
                 Arc::new(InMemoryProviderCatalogReadRepository::seed(
