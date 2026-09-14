@@ -346,6 +346,13 @@ fn key_auth_channel_matches(row: &StoredMinimalCandidateSelectionRow, api_format
                     "openai:chat" | "openai:responses" | "claude:messages" | "openai:image"
                 )
         }
+        "xai" => {
+            matches!(auth_type.as_str(), "oauth" | "bearer" | "api_key")
+                && matches!(
+                    api_format.as_str(),
+                    "openai:responses" | "openai:responses:compact"
+                )
+        }
         "windsurf" => {
             matches!(auth_type.as_str(), "oauth" | "api_key" | "bearer")
                 && api_format == "openai:chat"
@@ -589,6 +596,28 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].provider_type, "grok");
         assert_eq!(rows[0].global_model_name, "grok-4.20-0309-non-reasoning");
+    }
+
+    #[tokio::test]
+    async fn includes_xai_oauth_rows_for_responses_models() {
+        let mut row = sample_row("provider-xai", "openai:responses", "grok-4", 10);
+        row.provider_type = "xai".to_string();
+        row.provider_name = "xai".to_string();
+        row.key_auth_type = "oauth".to_string();
+        row.key_api_formats = Some(vec![
+            "openai:responses".to_string(),
+            "openai:responses:compact".to_string(),
+        ]);
+        let repository = InMemoryMinimalCandidateSelectionReadRepository::seed(vec![row]);
+
+        let rows = repository
+            .list_for_exact_api_format("openai:responses")
+            .await
+            .expect("list should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider_type, "xai");
+        assert_eq!(rows[0].global_model_name, "grok-4");
     }
 
     #[tokio::test]

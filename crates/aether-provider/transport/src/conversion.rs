@@ -755,6 +755,63 @@ mod tests {
     }
 
     #[test]
+    fn xai_responses_transport_converts_standard_client_protocols() {
+        let transport = transport_snapshot("xai", "openai:responses", "oauth", true, None);
+
+        for client_api_format in ["openai:chat", "claude:messages", "gemini:generate_content"] {
+            assert!(
+                request_pair_allowed_for_transport(
+                    &transport,
+                    client_api_format,
+                    "openai:responses"
+                ),
+                "{client_api_format} should convert onto xAI Responses"
+            );
+            assert_eq!(
+                candidate_transport_pair_skip_reason(&transport, client_api_format),
+                None
+            );
+        }
+        assert!(request_conversion_transport_supported(
+            &transport,
+            RequestConversionKind::ToOpenAiResponses
+        ));
+        assert!(
+            !request_pair_allowed_for_transport(
+                &transport,
+                "openai:responses:compact",
+                "openai:responses"
+            ),
+            "compact must not convert onto xAI Responses"
+        );
+    }
+
+    #[test]
+    fn xai_compact_endpoint_is_same_format_only() {
+        let compact = transport_snapshot("xai", "openai:responses:compact", "oauth", true, None);
+        assert!(request_pair_allowed_for_transport(
+            &compact,
+            "openai:responses:compact",
+            "openai:responses:compact"
+        ));
+        for client_api_format in [
+            "openai:chat",
+            "openai:responses",
+            "claude:messages",
+            "gemini:generate_content",
+        ] {
+            assert!(
+                !request_pair_allowed_for_transport(
+                    &compact,
+                    client_api_format,
+                    "openai:responses:compact"
+                ),
+                "{client_api_format} must not convert onto xAI compact"
+            );
+        }
+    }
+
+    #[test]
     fn windsurf_openai_chat_anchor_supports_cross_format_conversion_via_cascade() {
         let mut transport = transport_snapshot("windsurf", "openai:chat", "oauth", true, None);
         transport.key.decrypted_api_key = "devin-session-token$abc".to_string();
