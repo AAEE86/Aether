@@ -872,7 +872,7 @@ mod tests {
     #[test]
     fn xai_image_refs_rewrite_openai_aliases_without_touching_chat_parts() {
         let mut body = json!({
-            "model": "grok-4.6",
+            "model": "grok-imagine-image",
             "prompt": "edit this",
             "image": {"image_url": "https://cdn.example/a.png"},
             "reference_images": [
@@ -887,7 +887,7 @@ mod tests {
             }]
         });
 
-        apply_xai_upstream_payload_edits(&mut body, "xai", "openai:responses");
+        apply_xai_upstream_payload_edits(&mut body, "xai", "openai:image");
 
         assert_eq!(body["image"]["url"], "https://cdn.example/a.png");
         assert!(body["image"].get("image_url").is_none());

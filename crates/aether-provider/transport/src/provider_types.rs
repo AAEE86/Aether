@@ -474,6 +474,18 @@ const XAI_FIXED_PROVIDER_TEMPLATE: FixedProviderTemplate = FixedProviderTemplate
             custom_path: None,
             config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
         },
+        FixedProviderEndpointTemplate {
+            item_key: "openai:image",
+            api_format: "openai:image",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
+        FixedProviderEndpointTemplate {
+            item_key: "openai:video",
+            api_format: "openai:video",
+            custom_path: None,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
+        },
     ],
     runtime_policy: XAI_RUNTIME_POLICY,
 };
@@ -869,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_fixed_provider_template_exposes_responses_endpoints() {
+    fn xai_fixed_provider_template_exposes_responses_media_endpoints() {
         let template = fixed_provider_template("xai").expect("xai template should exist");
         assert_eq!(template.provider_type, "xai");
         assert_eq!(template.base_url, crate::xai::XAI_CHAT_PROXY_BASE_URL);
@@ -880,7 +892,12 @@ mod tests {
                 .iter()
                 .map(|item| item.api_format)
                 .collect::<Vec<_>>(),
-            vec!["openai:responses", "openai:responses:compact"]
+            vec![
+                "openai:responses",
+                "openai:responses:compact",
+                "openai:image",
+                "openai:video"
+            ]
         );
 
         let policy = provider_runtime_policy("xai");

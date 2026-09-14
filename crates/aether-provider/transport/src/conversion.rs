@@ -776,18 +776,26 @@ mod tests {
             &transport,
             RequestConversionKind::ToOpenAiResponses
         ));
-        assert!(
-            !request_pair_allowed_for_transport(
-                &transport,
-                "openai:responses:compact",
-                "openai:responses"
-            ),
-            "compact must not convert onto xAI Responses"
-        );
+        assert!(!request_pair_allowed_for_transport(
+            &transport,
+            "openai:image",
+            "openai:responses"
+        ));
+        assert!(!request_pair_allowed_for_transport(
+            &transport,
+            "openai:video",
+            "openai:responses"
+        ));
+        for isolated in ["openai:responses:compact", "openai:image", "openai:video"] {
+            assert!(
+                !request_pair_allowed_for_transport(&transport, isolated, "openai:responses"),
+                "{isolated} must not convert onto xAI Responses"
+            );
+        }
     }
 
     #[test]
-    fn xai_compact_endpoint_is_same_format_only() {
+    fn xai_compact_and_media_endpoints_are_same_format_only() {
         let compact = transport_snapshot("xai", "openai:responses:compact", "oauth", true, None);
         assert!(request_pair_allowed_for_transport(
             &compact,
@@ -808,6 +816,25 @@ mod tests {
                 ),
                 "{client_api_format} must not convert onto xAI compact"
             );
+        }
+
+        for api_format in ["openai:image", "openai:video"] {
+            let transport = transport_snapshot("xai", api_format, "oauth", true, None);
+            assert!(
+                request_pair_allowed_for_transport(&transport, api_format, api_format),
+                "{api_format} same-format transport should be allowed"
+            );
+            for client_api_format in [
+                "openai:chat",
+                "openai:responses",
+                "claude:messages",
+                "gemini:generate_content",
+            ] {
+                assert!(
+                    !request_pair_allowed_for_transport(&transport, client_api_format, api_format),
+                    "{client_api_format} must not convert onto {api_format}"
+                );
+            }
         }
     }
 

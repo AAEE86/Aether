@@ -1,3 +1,5 @@
+pub mod video;
+
 use std::collections::BTreeMap;
 
 use aether_ai_formats::normalize_api_format_alias;
@@ -341,6 +343,39 @@ mod tests {
             &api_key,
             "openai:responses"
         ));
+    }
+
+    #[test]
+    fn media_routing_and_cli_headers_follow_auth_and_base_url() {
+        for api_format in ["openai:image", "openai:video"] {
+            for stored in ["", XAI_API_BASE_URL, XAI_CHAT_PROXY_BASE_URL] {
+                for (auth_type, config, expected) in [
+                    (
+                        "oauth",
+                        Some(r#"{"refresh_token":"rt","using_api":false}"#),
+                        XAI_CHAT_PROXY_BASE_URL,
+                    ),
+                    ("oauth", Some(r#"{"using_api":true}"#), XAI_API_BASE_URL),
+                    ("bearer", None, XAI_API_BASE_URL),
+                ] {
+                    let transport = sample_transport(auth_type, config, stored);
+                    assert_eq!(
+                        resolved_xai_upstream_base_url(&transport, api_format).as_deref(),
+                        Some(expected)
+                    );
+                    assert_eq!(
+                        should_attach_cli_identity_headers(&transport, api_format),
+                        expected == XAI_CHAT_PROXY_BASE_URL
+                    );
+                }
+            }
+            let custom = sample_transport("oauth", None, "https://custom.example/v1");
+            assert_eq!(
+                resolved_xai_upstream_base_url(&custom, api_format).as_deref(),
+                Some("https://custom.example/v1")
+            );
+            assert!(!should_attach_cli_identity_headers(&custom, api_format));
+        }
     }
 
     #[test]

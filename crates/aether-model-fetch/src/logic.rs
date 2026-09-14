@@ -615,6 +615,10 @@ pub fn preset_models_for_provider(provider_type: &str) -> Option<Vec<Value>> {
             preset_model("grok-3-mini", "xai", "Grok 3 Mini", "openai:responses"),
             preset_model("grok-3-mini-fast", "xai", "Grok 3 Mini Fast", "openai:responses"),
             preset_model("grok-composer-2.5-fast", "xai", "Grok Composer 2.5 Fast", "openai:responses"),
+            preset_model("grok-imagine-image", "xai", "Grok Imagine Image", "openai:image"),
+            preset_model("grok-imagine-image-quality", "xai", "Grok Imagine Image Quality", "openai:image"),
+            preset_model("grok-imagine-video", "xai", "Grok Imagine Video", "openai:video"),
+            preset_model("grok-imagine-video-1.5", "xai", "Grok Imagine Video 1.5", "openai:video"),
         ],
         _ => return None,
     };
@@ -2010,11 +2014,18 @@ mod tests {
                 "grok-3-mini",
                 "grok-3-mini-fast",
                 "grok-composer-2.5-fast",
+                "grok-imagine-image",
+                "grok-imagine-image-quality",
+                "grok-imagine-video",
+                "grok-imagine-video-1.5",
             ]
         );
         assert!(models.iter().all(|model| model["owned_by"] == json!("xai")));
+        assert_eq!(models[0]["api_formats"], json!(["openai:responses"]));
+        assert_eq!(models[10]["api_formats"], json!(["openai:image"]));
+        assert_eq!(models[12]["api_formats"], json!(["openai:video"]));
         assert!(models
             .iter()
-            .all(|model| model["api_formats"] == json!(["openai:responses"])));
+            .any(|model| model["id"] == "grok-imagine-image"));
     }
 }
