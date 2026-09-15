@@ -7,6 +7,7 @@ pub mod request;
 pub mod response;
 pub mod spec;
 pub mod stream;
+pub mod xai;
 
 const TOOL_ERROR_PREFIX: &str = "[tool error]";
 const AETHER_REASONING_ITEM_ID_PREFIX: &str = "rs_aether_";
@@ -85,6 +86,8 @@ pub enum OpenAiResponsesReasoningReplayPolicy {
     #[default]
     OpenAiItemIds,
     DeepSeekOpaque,
+    /// xAI replays encrypted state without requiring OpenAI's item-ID prefix.
+    XaiEncrypted,
 }
 
 /// Builds a stable, wire-compatible ID for a reasoning item synthesized by Aether.
@@ -234,6 +237,14 @@ fn openai_responses_reasoning_item_is_replayable(
     {
         return true;
     }
+    if policy == OpenAiResponsesReasoningReplayPolicy::XaiEncrypted
+        && object
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return true;
+    }
     let Some(id) = object
         .get("id")
         .and_then(Value::as_str)
@@ -333,6 +344,36 @@ mod tests {
         MAX_GEMINI_THOUGHT_SIGNATURE_ENCODED_LEN, MAX_GEMINI_THOUGHT_SIGNATURE_LEN,
         OPENAI_RESPONSES_OPERATION_COMPACT,
     };
+
+    #[test]
+    fn xai_encrypted_replay_accepts_native_ids_but_excludes_foreign_carriers() {
+        let body = serde_json::json!({"input": [
+            {"type": "reasoning", "id": "native-xai-id", "encrypted_content": "opaque-xai-state"},
+            {"type": "reasoning", "encrypted_content": "opaque-idless-state"},
+            {"type": "reasoning", "id": "rs_foreign", "encrypted_content": "cpa-gemini-responses-carrier-v1:foreign"},
+            {"type": "reasoning", "id": "foreign-id", "summary": []}
+        ]});
+        let mut xai = body.clone();
+        assert_eq!(
+            super::strip_incompatible_openai_responses_reasoning_items_with_policy(
+                &mut xai,
+                "openai:responses",
+                super::OpenAiResponsesReasoningReplayPolicy::XaiEncrypted,
+            ),
+            2
+        );
+        assert_eq!(xai["input"].as_array().unwrap().len(), 2);
+        assert_eq!(xai["input"][0], body["input"][0]);
+        assert_eq!(xai["input"][1], body["input"][1]);
+        let mut openai = body;
+        assert_eq!(
+            super::strip_incompatible_openai_responses_reasoning_items(
+                &mut openai,
+                "openai:responses"
+            ),
+            4
+        );
+    }
 
     #[test]
     fn gemini_tool_signature_carrier_roundtrips_direction_and_exact_value() {
