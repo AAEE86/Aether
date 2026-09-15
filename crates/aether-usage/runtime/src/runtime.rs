@@ -13743,7 +13743,7 @@ mod tests {
             .iter()
             .any(|record| record.request_id == blocked_request_id));
 
-        release_build.notify_waiters();
+        release_build.notify_one();
         timeout(Duration::from_secs(2), async {
             loop {
                 let snapshot = runtime.metrics_snapshot();
