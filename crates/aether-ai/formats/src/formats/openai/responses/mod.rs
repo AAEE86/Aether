@@ -1,5 +1,9 @@
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 pub mod codex;
 pub(crate) mod history;
@@ -219,6 +223,28 @@ pub fn normalize_openai_responses_message_item_ids(body: &mut Value) -> usize {
     repaired
 }
 
+pub(crate) fn normalize_openai_responses_call_ids(body: &mut Value) {
+    let Some(input) = body.get_mut("input") else {
+        return;
+    };
+    let items = match input {
+        Value::Array(items) => items.as_mut_slice(),
+        Value::Object(_) => std::slice::from_mut(input),
+        _ => return,
+    };
+    for item in items {
+        let Some(Value::String(call_id)) = item.get_mut("call_id") else {
+            continue;
+        };
+        if call_id.chars().take(65).count() > 64 {
+            *call_id = format!(
+                "call_{}",
+                URL_SAFE_NO_PAD.encode(Sha256::digest(call_id.as_bytes()))
+            );
+        }
+    }
+}
+
 /// Removes reasoning history items that cannot be replayed against an OpenAI Responses backend.
 ///
 /// Reasoning IDs are opaque provider references and must never be repaired by changing their
@@ -388,8 +414,9 @@ mod tests {
 
     use super::{
         decode_gemini_tool_signature_carrier, encode_gemini_tool_signature_carrier_with_direction,
-        normalize_openai_responses_message_item_ids, openai_responses_message_item_id,
-        openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,
+        normalize_openai_responses_call_ids, normalize_openai_responses_message_item_ids,
+        openai_responses_message_item_id, openai_responses_request_operation,
+        openai_responses_synthetic_reasoning_item_id,
         strip_incompatible_openai_responses_reasoning_items,
         strip_incompatible_openai_responses_reasoning_items_with_policy,
         GeminiToolSignatureCarrierDirection, OpenAiResponsesReasoningReplayPolicy,
@@ -551,6 +578,77 @@ mod tests {
         assert!(first.starts_with("msg_"));
         assert_eq!(first, second);
         assert_ne!(first, other);
+    }
+
+    #[test]
+    fn normalizes_long_call_ids_stably_without_changing_item_ids_or_payloads() {
+        let long_id = format!("call_{}", "a".repeat(78));
+        let other_id = format!("{long_id}b");
+        let arguments = json!({"call_id": long_id}).to_string();
+        let mut body = json!({"input": [
+            {"type": "function_call", "id": "fc_provider", "call_id": long_id, "name": "lookup", "arguments": arguments},
+            {"type": "function_call_output", "call_id": long_id, "output": {"call_id": long_id}},
+            {"type": "custom_tool_call", "call_id": other_id, "name": "patch", "input": long_id},
+            {"type": "custom_tool_call_output", "call_id": other_id, "output": "done"}
+        ]});
+
+        normalize_openai_responses_call_ids(&mut body);
+
+        let first_id = body["input"][0]["call_id"].as_str().expect("first call ID");
+        let second_id = body["input"][2]["call_id"]
+            .as_str()
+            .expect("second call ID");
+        for call_id in [first_id, second_id] {
+            assert!(call_id.len() <= 64);
+            assert!(call_id.chars().all(
+                |character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+            ));
+        }
+        assert_ne!(first_id, second_id);
+        assert_eq!(body["input"][1]["call_id"], first_id);
+        assert_eq!(body["input"][3]["call_id"], second_id);
+        assert_eq!(body["input"][0]["id"], "fc_provider");
+        assert_eq!(body["input"][0]["arguments"], arguments);
+        assert_eq!(body["input"][1]["output"]["call_id"], long_id);
+        assert_eq!(body["input"][2]["input"], long_id);
+
+        let mut continuation = json!({"input": {
+            "type": "function_call_output", "call_id": long_id, "output": "later"
+        }});
+        normalize_openai_responses_call_ids(&mut continuation);
+        assert_eq!(continuation["input"]["call_id"], first_id);
+
+        let once = body.clone();
+        normalize_openai_responses_call_ids(&mut body);
+        assert_eq!(body, once);
+    }
+
+    #[test]
+    fn call_id_normalization_preserves_valid_boundaries_and_non_item_data() {
+        let mut body = json!({"input": [
+            {"type": "function_call", "call_id": "call_short"},
+            {"type": "function_call", "call_id": "a".repeat(64)},
+            {"type": "function_call", "call_id": "\u{00e9}".repeat(64)},
+            {"type": "message", "content": [{"call_id": "a".repeat(83)}]},
+            {"type": "function_call_output", "call_id": null},
+            {"type": "function_call_output", "call_id": 42},
+            null
+        ]});
+        let unchanged = body.clone();
+        normalize_openai_responses_call_ids(&mut body);
+        assert_eq!(body, unchanged);
+
+        for input in [json!("text"), json!(null)] {
+            let mut body = json!({"input": input});
+            let unchanged = body.clone();
+            normalize_openai_responses_call_ids(&mut body);
+            assert_eq!(body, unchanged);
+        }
+        for call_id in ["a".repeat(65), "\u{00e9}".repeat(65)] {
+            let mut body = json!({"input": [{"type": "function_call", "call_id": call_id}]});
+            normalize_openai_responses_call_ids(&mut body);
+            assert!(body["input"][0]["call_id"].as_str().expect("call ID").len() <= 64);
+        }
     }
 
     #[test]
