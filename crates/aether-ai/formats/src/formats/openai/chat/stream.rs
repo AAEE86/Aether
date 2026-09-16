@@ -13,6 +13,7 @@ use crate::formats::openai::responses::{
     },
     GeminiToolSignatureCarrierDirection,
 };
+use crate::formats::shared::citations::canonical_citations_to_openai_annotations;
 use crate::formats::shared::response::build_generated_tool_call_id;
 use crate::formats::shared::sse::{encode_done_sse, encode_json_sse};
 use crate::formats::shared::stream_core::common::*;
@@ -2161,6 +2162,9 @@ pub struct OpenAIResponsesClientEmitter {
     text_item_started: bool,
     text_part_started: bool,
     message_output_index: Option<usize>,
+    /// Citations projected onto the answer text, kept on the finished message
+    /// item so non-incremental clients see them too.
+    annotations: Vec<Value>,
     text: String,
     reasoning: String,
     reasoning_part: String,
@@ -2280,6 +2284,28 @@ impl OpenAIChatClientEmitter {
                         "index": 0,
                         "delta": {
                             "reasoning_content": "\n\n",
+                        },
+                        "finish_reason": Value::Null
+                    }]
+                }))?);
+                Ok(out)
+            }
+            CanonicalStreamEvent::Citations(citations) => {
+                let annotations = canonical_citations_to_openai_annotations(&citations);
+                if annotations.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let mut out = self.ensure_started()?;
+                out.extend(self.encode_chunk(json!({
+                    "id": self.response_id
+                        .as_deref()
+                        .unwrap_or("chatcmpl-local-stream"),
+                    "object": "chat.completion.chunk",
+                    "model": self.model.as_deref().unwrap_or("unknown"),
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "annotations": annotations,
                         },
                         "finish_reason": Value::Null
                     }]
@@ -2894,7 +2920,7 @@ impl OpenAIResponsesClientEmitter {
                     "part": {
                         "type": "output_text",
                         "text": self.text.as_str(),
-                        "annotations": [],
+                        "annotations": self.annotations.as_slice(),
                     }
                 }),
             )?);
@@ -2913,7 +2939,7 @@ impl OpenAIResponsesClientEmitter {
                     "content": [{
                         "type": "output_text",
                         "text": self.text.as_str(),
-                        "annotations": [],
+                        "annotations": self.annotations.as_slice(),
                     }],
                 }
             }),
@@ -3128,7 +3154,7 @@ impl OpenAIResponsesClientEmitter {
                     "content": [{
                         "type": "output_text",
                         "text": self.text.as_str(),
-                        "annotations": [],
+                        "annotations": self.annotations.as_slice(),
                     }],
                 }),
             ));
@@ -3349,6 +3375,35 @@ impl OpenAIResponsesClientEmitter {
                 self.reasoning.push_str(&text);
                 self.reasoning_part.push_str(&text);
                 out.extend(self.encode_reasoning_text_delta(&text)?);
+                Ok(out)
+            }
+            CanonicalStreamEvent::Citations(citations) => {
+                let annotations = canonical_citations_to_openai_annotations(&citations);
+                if annotations.is_empty() {
+                    return Ok(Vec::new());
+                }
+                // The text item has to exist before an annotation can point at
+                // it, and the annotations are also kept on the item itself so
+                // clients that only read `response.completed` still see them.
+                let mut out = self.ensure_text_item_started()?;
+                let item_id = self.message_item_id();
+                let output_index = self.message_output_index.unwrap_or(0);
+                for annotation in annotations {
+                    let annotation_index = self.annotations.len();
+                    self.annotations.push(annotation.clone());
+                    out.extend(self.encode_response_event(
+                        "response.output_text.annotation.added",
+                        json!({
+                            "type": "response.output_text.annotation.added",
+                            "response_id": self.response_id(),
+                            "output_index": output_index,
+                            "item_id": item_id,
+                            "content_index": 0,
+                            "annotation_index": annotation_index,
+                            "annotation": annotation,
+                        }),
+                    )?);
+                }
                 Ok(out)
             }
             CanonicalStreamEvent::ReasoningSummaryDone => {
