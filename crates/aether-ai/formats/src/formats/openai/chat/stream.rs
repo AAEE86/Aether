@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::formats::openai::chat::response::openai_chat_reasoning_texts;
 use crate::formats::openai::namespace::NamespaceToolAliases;
 use crate::formats::openai::responses::{
     encode_gemini_tool_signature_carrier_with_direction, openai_responses_message_item_id,
@@ -41,6 +42,7 @@ pub struct OpenAIChatProviderState {
     started: bool,
     finished: bool,
     pending_finish_reason: Option<String>,
+    last_reasoning_index: Option<usize>,
     tool_calls: BTreeMap<usize, OpenAIChatProviderToolState>,
 }
 
@@ -271,24 +273,39 @@ impl OpenAIChatProviderState {
             } else if delta.contains_key("content") {
                 recognized_delta = true;
             }
-            if let Some(reasoning_content) = delta.get("reasoning_content").and_then(Value::as_str)
+            if delta.contains_key("reasoning_content")
+                || delta.contains_key("reasoning_details")
+                || delta.contains_key("reasoning")
             {
                 recognized_delta = true;
-                if !reasoning_content.is_empty() {
+                for (reasoning_index, text) in openai_chat_reasoning_texts(delta) {
                     self.ensure_started(report_context, &mut out);
                     if !self.terminal_only {
                         let (id, model) = self.identity(report_context);
+                        // A change of reasoning block index closes the part that
+                        // is open, so downstream summaries keep the provider's
+                        // own segmentation instead of collapsing into one
+                        // paragraph.
+                        if let Some(reasoning_index) = reasoning_index {
+                            if self
+                                .last_reasoning_index
+                                .is_some_and(|last| last != reasoning_index)
+                            {
+                                out.push(CanonicalStreamFrame {
+                                    id: id.clone(),
+                                    model: model.clone(),
+                                    event: CanonicalStreamEvent::ReasoningSummaryDone,
+                                });
+                            }
+                            self.last_reasoning_index = Some(reasoning_index);
+                        }
                         out.push(CanonicalStreamFrame {
                             id,
                             model,
-                            event: CanonicalStreamEvent::ReasoningDelta(
-                                reasoning_content.to_string(),
-                            ),
+                            event: CanonicalStreamEvent::ReasoningDelta(text),
                         });
                     }
                 }
-            } else if delta.contains_key("reasoning_content") {
-                recognized_delta = true;
             }
 
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -4289,6 +4306,175 @@ mod tests {
                     .and_then(|delta| delta.get("future_delta_type"))
                     .is_some()
         )));
+    }
+
+    #[test]
+    fn openai_chat_provider_state_reads_openrouter_reasoning_once() {
+        let mut state = OpenAIChatProviderState::default();
+        let report_context = json!({});
+        let frames = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "id": "gen-openrouter-123",
+                    "model": "stealth/ox-alpha",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "content": "",
+                            "role": "assistant",
+                            "reasoning": " me translate the",
+                            "reasoning_details": [{
+                                "type": "reasoning.text",
+                                "text": " me translate the",
+                                "format": "unknown",
+                                "index": 0
+                            }]
+                        },
+                        "finish_reason": Value::Null
+                    }]
+                })),
+            )
+            .expect("openrouter reasoning delta should parse");
+
+        let reasoning = frames
+            .iter()
+            .filter_map(|frame| match frame.event {
+                CanonicalStreamEvent::ReasoningDelta(ref text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        // `reasoning` and `reasoning_details` repeat the same text, so only one
+        // of the two may reach the client.
+        assert_eq!(reasoning, vec![" me translate the"]);
+        assert!(!frames
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::UnknownEvent(_))));
+    }
+
+    #[test]
+    fn openai_chat_provider_state_still_reads_deepseek_reasoning_content() {
+        let mut state = OpenAIChatProviderState::default();
+        let report_context = json!({});
+        let frames = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "id": "chatcmpl-deepseek",
+                    "model": "deepseek-reasoner",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "reasoning_content": "let me work it out"},
+                        "finish_reason": Value::Null
+                    }]
+                })),
+            )
+            .expect("deepseek reasoning delta should parse");
+
+        let reasoning = frames
+            .iter()
+            .filter_map(|frame| match frame.event {
+                CanonicalStreamEvent::ReasoningDelta(ref text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reasoning, vec!["let me work it out"]);
+        // A single reasoning block carries no index, so nothing may close a part.
+        assert!(!frames
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::ReasoningSummaryDone)));
+        assert!(!frames
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::UnknownEvent(_))));
+    }
+
+    #[test]
+    fn openai_chat_provider_state_splits_reasoning_details_on_block_index() {
+        let mut state = OpenAIChatProviderState::default();
+        let report_context = json!({});
+        let reasoning_chunk = |index: u64, text: &str| {
+            data_line(json!({
+                "id": "gen-openrouter-123",
+                "model": "stealth/ox-alpha",
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "content": "",
+                        "role": "assistant",
+                        "reasoning_details": [{
+                            "type": "reasoning.text",
+                            "text": text,
+                            "index": index
+                        }]
+                    },
+                    "finish_reason": Value::Null
+                }]
+            }))
+        };
+        let mut frames = state
+            .push_line(&report_context, reasoning_chunk(0, "first"))
+            .expect("first reasoning block should parse");
+        frames.extend(
+            state
+                .push_line(&report_context, reasoning_chunk(1, "second"))
+                .expect("second reasoning block should parse"),
+        );
+
+        let reasoning = frames
+            .iter()
+            .filter_map(|frame| match frame.event {
+                CanonicalStreamEvent::ReasoningDelta(ref text) => Some(text.as_str()),
+                CanonicalStreamEvent::ReasoningSummaryDone => Some("<part-done>"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reasoning, vec!["first", "<part-done>", "second"]);
+    }
+
+    #[test]
+    fn openai_chat_reasoning_only_stream_reaches_responses_clients() {
+        // Regression: OpenRouter streams a long reasoning phase as chunks whose
+        // `delta.content` is an empty string and whose text sits under
+        // `reasoning`.  Dropping those chunks left Responses clients with
+        // nothing after `response.in_progress` until they timed the stream out.
+        let mut state = OpenAIChatProviderState::default();
+        let mut emitter = OpenAIResponsesClientEmitter::default();
+        let report_context = json!({});
+        let mut bytes = Vec::new();
+        for piece in ["Let", " me think."] {
+            let frames = state
+                .push_line(
+                    &report_context,
+                    data_line(json!({
+                        "id": "gen-openrouter-123",
+                        "model": "stealth/ox-alpha",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "content": "",
+                                "role": "assistant",
+                                "reasoning": piece,
+                                "reasoning_details": [{
+                                    "type": "reasoning.text",
+                                    "text": piece,
+                                    "format": "unknown",
+                                    "index": 0
+                                }]
+                            },
+                            "finish_reason": Value::Null
+                        }]
+                    })),
+                )
+                .expect("reasoning chunk should parse");
+            for frame in frames {
+                bytes.extend(emitter.emit(frame).expect("frame should encode"));
+            }
+        }
+
+        let sse = String::from_utf8(bytes).expect("sse should be utf8");
+        assert!(sse.contains("event: response.reasoning_summary_text.delta\n"));
+        assert!(sse.contains("\"delta\":\"Let\""));
+        assert!(sse.contains("\"delta\":\" me think.\""));
     }
 
     #[test]
