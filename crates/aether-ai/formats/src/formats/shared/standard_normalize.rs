@@ -65,7 +65,7 @@ fn chat_compatible_body_for_openai_chat_endpoint(body_json: &Value) -> Option<Co
     Some(Cow::Borrowed(body_json))
 }
 
-fn chat_compatible_body_for_standard_source<'a>(
+pub(crate) fn chat_compatible_body_for_standard_source<'a>(
     body_json: &'a Value,
     client_api_format: &str,
     history_scope: Option<&str>,
