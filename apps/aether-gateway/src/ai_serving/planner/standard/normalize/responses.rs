@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::ai_serving::transport::apply_standard_provider_request_body_rules_with_request_headers;
 use crate::ai_serving::{
     apply_openai_responses_compact_special_body_edits,
-    build_cross_format_openai_responses_request_body_with_model_directives_and_history_scope as surface_build_cross_format_openai_responses_request_body,
+    build_cross_format_openai_responses_request_body_with_provider_context as surface_build_cross_format_openai_responses_request_body,
     build_local_openai_responses_request_body_with_model_directives as surface_build_local_openai_responses_request_body,
     GatewayProviderTransportSnapshot,
 };
@@ -214,25 +214,16 @@ pub(crate) fn build_cross_format_openai_responses_request_body_with_codex_model_
     model_capabilities: Option<&crate::ai_serving::CodexResponsesModelCapabilities>,
     enable_model_directives: bool,
 ) -> Option<Value> {
-    let provider_request_body = if provider_type.trim().eq_ignore_ascii_case("antigravity")
-        && aether_ai_formats::normalize_api_format_alias(provider_api_format)
-            == "gemini:generate_content"
-    {
-        aether_ai_formats::formats::shared::standard_matrix::build_standard_request_body_with_model_directives(
-            body_json, client_api_format, mapped_model, provider_type, provider_api_format,
-            "", upstream_is_stream, None, history_scope, enable_model_directives,
-        )?
-    } else {
-        surface_build_cross_format_openai_responses_request_body(
-            body_json,
-            mapped_model,
-            client_api_format,
-            provider_api_format,
-            upstream_is_stream,
-            enable_model_directives,
-            history_scope,
-        )?
-    };
+    let provider_request_body = surface_build_cross_format_openai_responses_request_body(
+        body_json,
+        mapped_model,
+        client_api_format,
+        provider_type,
+        provider_api_format,
+        upstream_is_stream,
+        enable_model_directives,
+        history_scope,
+    )?;
     let mut provider_request_body =
         apply_standard_provider_request_body_rules_with_request_headers(
             provider_request_body,

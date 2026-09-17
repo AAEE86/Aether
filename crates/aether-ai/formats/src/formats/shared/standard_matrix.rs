@@ -23,6 +23,17 @@ use crate::formats::shared::standard_normalize::{
     is_claude_messages_shaped_body_on_openai_chat_endpoint,
 };
 
+/// Tool schema preservation is a format-conversion policy, shared by the
+/// standard matrix and provider-aware Chat/Responses entry points.
+pub(super) fn preserves_gemini_tool_schemas(
+    provider_type: &str,
+    provider_api_format: &str,
+) -> bool {
+    provider_type.trim().eq_ignore_ascii_case("antigravity")
+        && aether_ai_formats::normalize_api_format_alias(provider_api_format)
+            == "gemini:generate_content"
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_standard_request_body(
     body_json: &Value,
@@ -132,9 +143,7 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers_and
         .with_request_path(request_path)
         .with_upstream_stream(upstream_is_stream);
     format_context.preserve_gemini_tool_schemas =
-        provider_type.trim().eq_ignore_ascii_case("antigravity")
-            && aether_ai_formats::normalize_api_format_alias(provider_api_format)
-                == "gemini:generate_content";
+        preserves_gemini_tool_schemas(provider_type, provider_api_format);
     if let Some(history_scope) = user_api_key_id {
         format_context = format_context.with_history_scope(history_scope);
     }
