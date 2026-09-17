@@ -3662,6 +3662,11 @@ fn try_aggregate_gemini_stream_sync_response(
                 CanonicalStreamEvent::TextDelta(text) => {
                     append_gemini_text_part(&mut parts, text, false);
                 }
+                // This rebuilds a raw Gemini body, and every non-`content`
+                // candidate key — `groundingMetadata` included — is already
+                // copied across above. Projecting it into citations is the
+                // job of whoever converts that body onward.
+                CanonicalStreamEvent::Citations(_) => {}
                 CanonicalStreamEvent::ReasoningDelta(text) => {
                     append_gemini_text_part(&mut parts, text, true);
                 }
