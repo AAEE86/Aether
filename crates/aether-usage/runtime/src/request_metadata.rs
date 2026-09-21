@@ -383,6 +383,7 @@ pub(crate) fn attach_provider_actual_service_tier_metadata(
 #[cfg(test)]
 mod tests {
     use aether_contracts::{ExecutionPlan, RequestBody};
+    use aether_data_contracts::repository::usage::UsageBodyCaptureState;
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
 
