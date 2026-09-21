@@ -1409,7 +1409,6 @@ pub fn admin_usage_record_json(
         "provider": item.provider_name,
         "model": item.model,
         "target_model": item.target_model,
-        "response_model": item.provider_response_model(),
         "input_tokens": item.input_tokens,
         "effective_input_tokens": admin_usage_effective_input_tokens(item),
         "output_tokens": item.output_tokens,
@@ -1447,6 +1446,11 @@ pub fn admin_usage_record_json(
     let object = payload
         .as_object_mut()
         .expect("admin usage record payload should be an object");
+    // 大型 json! 宏接近 Rust 的递归展开上限，响应模型在宏展开后补入即可避免编译失败。
+    object.insert(
+        "response_model".to_string(),
+        json!(item.provider_response_model()),
+    );
     object.insert(
         "end_to_end_time_ms".to_string(),
         json!(admin_usage_metadata_u64(item, "end_to_end_time_ms")),
