@@ -382,8 +382,7 @@ describe('RequestDetailDrawer settlement pricing', () => {
       expect(modelRow?.textContent).toContain('gpt-5')
       expect(modelRow?.textContent).toContain('->')
       expect(modelRow?.textContent).toContain('gpt-5.1')
-      expect(modelRow?.querySelector('[data-usage-model-target]')?.classList.contains('basis-full'))
-        .toBe(true)
+      expect(modelRow?.querySelector('[data-usage-model-mapping]')).not.toBeNull()
       expect(modelRow?.querySelector('[data-request-detail-model-badge="reasoning"]')?.textContent)
         .toContain('xhigh -> max')
       expect(modelRow?.querySelector('[data-request-detail-model-badge="fast"]')?.textContent)
@@ -460,7 +459,7 @@ describe('RequestDetailDrawer settlement pricing', () => {
     await vi.waitFor(() => {
       expect(document.body.querySelector('[data-request-detail-model-badge="cyber"]')?.textContent)
         .toContain('Cyber')
-      expect(document.body.querySelector('[data-usage-model-target]')?.textContent)
+      expect(document.body.querySelector('[data-usage-model-mapping]')?.textContent)
         .toContain('gpt-5.1')
       expect(document.body.querySelector('[data-request-detail-model-badge="reasoning"]')?.textContent)
         .toContain('xhigh -> max')
@@ -571,8 +570,8 @@ describe('RequestDetailDrawer settlement pricing', () => {
 
     await vi.waitFor(() => {
       expect(apiMocks.getRequestDetail).toHaveBeenCalledTimes(1)
-      expect(document.body.querySelector('[data-usage-model-target]')?.textContent?.trim())
-        .toBe('->gpt-5.1')
+      expect(document.body.querySelector('[data-usage-model-mapping]')?.textContent?.trim())
+        .toBe('映射模型gpt-5.1')
       expect(document.body.querySelector('[data-request-detail-model-badge="reasoning"]')?.textContent?.trim())
         .toBe('xhigh -> max')
       expect(document.body.querySelector('[data-request-detail-model-badge="fast"]')).toBeNull()
@@ -583,7 +582,7 @@ describe('RequestDetailDrawer settlement pricing', () => {
     })
   })
 
-  it('uses detail model_version when the lightweight summary has null model facts', async () => {
+  it('does not use legacy model_version as a response-model fallback', async () => {
     apiMocks.getRequestDetail.mockResolvedValue({
       ...buildEmbeddingDetail(),
       id: 'usage-version-summary',
@@ -626,8 +625,8 @@ describe('RequestDetailDrawer settlement pricing', () => {
     await nextTick()
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-usage-model-target]')?.textContent?.trim())
-        .toBe('->gpt-5.1-2026-07-17')
+      expect(document.body.querySelector('[data-usage-model-response]')).toBeNull()
+      expect(document.body.querySelector('[data-usage-model-mapping]')).toBeNull()
     })
   })
 
@@ -687,7 +686,7 @@ describe('RequestDetailDrawer settlement pricing', () => {
     }
     await nextTick()
 
-    expect(document.body.querySelector('[data-usage-model-target]')).toBeNull()
+    expect(document.body.querySelector('[data-usage-model-mapping]')).toBeNull()
     expect(document.body.querySelector('[data-request-detail-model-badge="reasoning"]')?.textContent?.trim())
       .toBe('xhigh')
     expect(document.body.querySelector('[data-request-detail-model-badge="fast"]')).toBeNull()

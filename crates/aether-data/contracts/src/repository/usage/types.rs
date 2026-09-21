@@ -6,6 +6,7 @@ pub const PROVIDER_REASONING_EFFORT_METADATA_KEY: &str = "provider_reasoning_eff
 pub const REQUESTED_REASONING_EFFORT_METADATA_KEY: &str = "requested_reasoning_effort";
 pub const PROVIDER_SERVICE_TIER_METADATA_KEY: &str = "provider_service_tier";
 pub const PROVIDER_ACTUAL_SERVICE_TIER_METADATA_KEY: &str = "provider_actual_service_tier";
+pub const PROVIDER_RESPONSE_MODEL_METADATA_KEY: &str = "provider_response_model";
 pub const PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY: &str = "provider_cache_ttl_minutes";
 pub const ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY: &str = "routing_candidate_skip_reason";
 pub const ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY: &str = "routing_failure_diagnostic";
@@ -119,6 +120,42 @@ pub fn normalize_provider_service_tier(value: &str) -> Option<String> {
     Some(value.to_ascii_lowercase())
 }
 
+/// 清洗响应体顶层 `model`，保留大小写，只去除首尾空白。
+pub fn normalize_provider_response_model(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 256 {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+/// 只有请求体和响应体都可作为完整事实时，才计算响应模型，避免用截断内容猜测。
+pub fn extract_provider_response_model_from_bodies(
+    request_body: Option<&Value>,
+    request_body_state: Option<UsageBodyCaptureState>,
+    response_body: Option<&Value>,
+    response_body_state: Option<UsageBodyCaptureState>,
+) -> Option<String> {
+    if !usage_body_capture_is_authoritative(request_body, request_body_state)
+        || !usage_body_capture_is_authoritative(response_body, response_body_state)
+    {
+        return None;
+    }
+
+    let request_model = request_body
+        .and_then(Value::as_object)
+        .and_then(|body| body.get("model"))
+        .and_then(Value::as_str)
+        .and_then(normalize_provider_response_model)?;
+    let response_model = response_body
+        .and_then(Value::as_object)
+        .and_then(|body| body.get("model"))
+        .and_then(Value::as_str)
+        .and_then(normalize_provider_response_model)?;
+
+    (request_model != response_model).then_some(response_model)
+}
+
 /// Resolves a provider processing tier exclusively from the final upstream request.
 ///
 /// A complete captured body is authoritative, including when it contains no tier. The metadata
@@ -129,7 +166,7 @@ pub fn resolve_provider_service_tier_from_request_capture(
     provider_request_body_state: Option<UsageBodyCaptureState>,
     request_metadata: Option<&Value>,
 ) -> Option<String> {
-    if request_body_capture_is_authoritative(provider_request_body, provider_request_body_state) {
+    if usage_body_capture_is_authoritative(provider_request_body, provider_request_body_state) {
         return extract_provider_service_tier_from_body(provider_request_body);
     }
 
@@ -153,7 +190,7 @@ pub fn resolve_provider_service_tier_from_request_capture(
         .and_then(normalize_provider_service_tier)
 }
 
-fn request_body_capture_is_authoritative(
+pub fn usage_body_capture_is_authoritative(
     request_body: Option<&Value>,
     request_body_state: Option<UsageBodyCaptureState>,
 ) -> bool {
@@ -184,7 +221,7 @@ fn resolve_reasoning_effort_from_request_capture(
     request_metadata: Option<&Value>,
     metadata_key: &str,
 ) -> Option<String> {
-    if request_body_capture_is_authoritative(request_body, request_body_state) {
+    if usage_body_capture_is_authoritative(request_body, request_body_state) {
         return extract_provider_reasoning_effort_from_body(request_body);
     }
 
@@ -699,6 +736,11 @@ impl StoredRequestUsageAudit {
             .or_else(|| {
                 extract_provider_actual_service_tier_from_response(self.response_body.as_ref())
             })
+    }
+
+    pub fn provider_response_model(&self) -> Option<String> {
+        self.request_metadata_string(PROVIDER_RESPONSE_MODEL_METADATA_KEY)
+            .and_then(normalize_provider_response_model)
     }
 
     pub fn provider_cache_ttl_minutes(&self) -> Option<i64> {
@@ -2646,7 +2688,8 @@ fn parse_timestamp(value: i64, field_name: &str) -> Result<u64, crate::DataLayer
 mod tests {
     use super::{
         canonical_usage_body_ref_for, extract_provider_actual_service_tier_from_response,
-        extract_provider_service_tier_from_body, normalize_provider_reasoning_effort,
+        extract_provider_response_model_from_bodies, extract_provider_service_tier_from_body,
+        normalize_provider_reasoning_effort, normalize_provider_response_model,
         normalize_provider_service_tier, resolve_provider_cache_ttl_minutes, usage_body_ref,
         StoredRequestUsageAudit, UpsertUsageRecord, UsageBodyCaptureState, UsageBodyCaptureStorage,
         UsageBodyField, UsageProviderPerformanceQuery, REALTIME_SESSION_METADATA_KEY,
@@ -2670,6 +2713,58 @@ mod tests {
             );
             assert_eq!(normalize(&"A".repeat(65)), None);
         }
+    }
+
+    #[test]
+    fn response_model_requires_authoritative_different_top_level_models() {
+        let request = json!({"model": " gpt-5 "});
+        let response = json!({"model": " gpt-5.1 "});
+        assert_eq!(
+            extract_provider_response_model_from_bodies(
+                Some(&request),
+                Some(UsageBodyCaptureState::Inline),
+                Some(&response),
+                Some(UsageBodyCaptureState::Inline),
+            ),
+            Some("gpt-5.1".to_string())
+        );
+        assert_eq!(
+            extract_provider_response_model_from_bodies(
+                Some(&request),
+                Some(UsageBodyCaptureState::Inline),
+                Some(&json!({"model": "gpt-5"})),
+                Some(UsageBodyCaptureState::Inline),
+            ),
+            None
+        );
+        assert_eq!(
+            extract_provider_response_model_from_bodies(
+                Some(&request),
+                Some(UsageBodyCaptureState::Truncated),
+                Some(&response),
+                Some(UsageBodyCaptureState::Inline),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn response_model_keeps_case_and_rejects_invalid_values() {
+        assert_eq!(
+            normalize_provider_response_model("  GPT-5.1  "),
+            Some("GPT-5.1".to_string())
+        );
+        assert_eq!(normalize_provider_response_model("  "), None);
+        assert_eq!(normalize_provider_response_model(&"x".repeat(257)), None);
+        assert_eq!(
+            extract_provider_response_model_from_bodies(
+                Some(&json!({"model": "gpt-5"})),
+                None,
+                Some(&json!({"model": 42})),
+                None,
+            ),
+            None
+        );
     }
 
     #[test]

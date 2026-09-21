@@ -1349,6 +1349,7 @@ fn admin_usage_active_request_json(
     if let Some(target_model) = item.target_model.as_ref() {
         value["target_model"] = json!(target_model);
     }
+    value["response_model"] = json!(item.provider_response_model());
     if let Some(reasoning_effort) = item.provider_reasoning_effort() {
         value["reasoning_effort"] = json!(reasoning_effort);
     }
@@ -1408,6 +1409,7 @@ pub fn admin_usage_record_json(
         "provider": item.provider_name,
         "model": item.model,
         "target_model": item.target_model,
+        "response_model": item.provider_response_model(),
         "input_tokens": item.input_tokens,
         "effective_input_tokens": admin_usage_effective_input_tokens(item),
         "output_tokens": item.output_tokens,
@@ -2840,6 +2842,32 @@ mod tests {
         assert_eq!(record["upstream_is_stream"], true);
         assert_eq!(record["client_requested_stream"], false);
         assert_eq!(record["client_is_stream"], false);
+    }
+
+    #[test]
+    fn admin_usage_payloads_expose_response_model_separately_from_mapping() {
+        let item = StoredRequestUsageAudit {
+            target_model: Some("provider-mapped-model".to_string()),
+            request_metadata: Some(json!({
+                "provider_response_model": "gpt-5.1"
+            })),
+            ..sample_usage("completed", Some(200), None)
+        };
+
+        let record = admin_usage_record_json(
+            &item,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+        );
+        let active = admin_usage_active_request_json(&item, None, None, None);
+
+        for payload in [&record, &active] {
+            assert_eq!(payload["target_model"], "provider-mapped-model");
+            assert_eq!(payload["response_model"], "gpt-5.1");
+        }
     }
 
     #[test]
