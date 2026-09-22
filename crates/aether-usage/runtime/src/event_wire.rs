@@ -242,8 +242,10 @@ impl WireOverrides {
             metadata,
             request_body,
             data.request_body_state,
+            data.api_format.as_deref(),
             data.response_body.as_ref(),
             data.response_body_state,
+            data.endpoint_api_format.as_deref(),
         );
         // Billing reads raw-body TTL before metadata regardless of capture state.
         // Preserve that precedence independently of reasoning and tier authority.

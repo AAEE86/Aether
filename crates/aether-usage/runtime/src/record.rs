@@ -90,8 +90,10 @@ pub fn build_upsert_usage_record_from_event(
         data.request_metadata,
         data.request_body.as_ref(),
         data.request_body_state,
+        data.api_format.as_deref(),
         data.response_body.as_ref(),
         data.response_body_state,
+        data.endpoint_api_format.as_deref(),
     );
     let now_unix_secs = event.timestamp_ms / 1_000;
 

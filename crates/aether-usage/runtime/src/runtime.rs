@@ -5304,8 +5304,10 @@ fn preserve_provider_response_facts(event: &mut UsageEvent) {
         metadata,
         event.data.request_body.as_ref(),
         event.data.request_body_state,
+        event.data.api_format.as_deref(),
         event.data.response_body.as_ref(),
         event.data.response_body_state,
+        event.data.endpoint_api_format.as_deref(),
     );
 }
 

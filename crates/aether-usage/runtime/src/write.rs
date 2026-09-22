@@ -729,8 +729,10 @@ fn build_terminal_usage_event_from_seed_impl(
         request_metadata,
         request_body.as_ref(),
         body_states.request_body_state,
+        Some(client_contract.as_str()),
         provider_response.as_ref(),
         body_states.response_body_state,
+        Some(provider_contract.as_str()),
     );
 
     let mut data = UsageEventData {
@@ -1059,8 +1061,10 @@ pub fn build_sync_terminal_usage_seed(
         request_metadata,
         context_seed.request_body.as_ref(),
         context_seed.body_states.request_body_state,
+        Some(context_seed.client_contract.as_str()),
         provider_response_full.as_ref(),
         provider_response_body_state,
+        Some(context_seed.provider_contract.as_str()),
     );
 
     TerminalUsageSeed {
@@ -1244,8 +1248,10 @@ pub fn build_stream_terminal_usage_seed(
         request_metadata,
         context_seed.request_body.as_ref(),
         context_seed.body_states.request_body_state,
+        Some(context_seed.client_contract.as_str()),
         provider_response_full.as_ref(),
         provider_response_body_state,
+        Some(context_seed.provider_contract.as_str()),
     );
     // The parser's terminal summary is authoritative when a response body is truncated or the
     // body and summary disagree; attach it after the body refresh so it wins.

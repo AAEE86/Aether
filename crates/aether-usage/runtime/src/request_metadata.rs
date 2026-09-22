@@ -255,8 +255,10 @@ pub(crate) fn attach_provider_response_model_metadata(
     metadata: Option<Value>,
     request_body: Option<&Value>,
     request_body_state: Option<UsageBodyCaptureState>,
+    request_api_format: Option<&str>,
     response_body: Option<&Value>,
     response_body_state: Option<UsageBodyCaptureState>,
+    provider_api_format: Option<&str>,
 ) -> Option<Value> {
     let both_bodies_are_authoritative =
         usage_body_capture_is_authoritative(request_body, request_body_state)
@@ -264,8 +266,10 @@ pub(crate) fn attach_provider_response_model_metadata(
     let response_model = extract_provider_response_model_from_bodies(
         request_body,
         request_body_state,
+        request_api_format,
         response_body,
         response_body_state,
+        provider_api_format,
     );
     if !both_bodies_are_authoritative && response_model.is_none() {
         return metadata;
@@ -293,8 +297,10 @@ pub(crate) fn refresh_provider_response_model_metadata(
     metadata: Option<Value>,
     request_body: Option<&Value>,
     request_body_state: Option<UsageBodyCaptureState>,
+    request_api_format: Option<&str>,
     response_body: Option<&Value>,
     response_body_state: Option<UsageBodyCaptureState>,
+    provider_api_format: Option<&str>,
 ) -> Option<Value> {
     let mut object = match metadata {
         Some(Value::Object(object)) => object,
@@ -308,8 +314,10 @@ pub(crate) fn refresh_provider_response_model_metadata(
         if let Some(response_model) = extract_provider_response_model_from_bodies(
             request_body,
             request_body_state,
+            request_api_format,
             response_body,
             response_body_state,
+            provider_api_format,
         ) {
             object.insert(
                 PROVIDER_RESPONSE_MODEL_METADATA_KEY.to_string(),
@@ -881,8 +889,10 @@ mod tests {
             Some(json!({"provider_response_model": "old-model", "trace_id": "trace-1"})),
             Some(&json!({"model": "gpt-5"})),
             Some(UsageBodyCaptureState::Inline),
+            Some("openai:chat"),
             Some(&json!({"model": "gpt-5.1"})),
             Some(UsageBodyCaptureState::Inline),
+            Some("openai:chat"),
         )
         .expect("response model should be attached");
         assert_eq!(metadata["provider_response_model"], "gpt-5.1");
@@ -892,8 +902,10 @@ mod tests {
             Some(json!({"provider_response_model": "gpt-5.1"})),
             Some(&json!({"model": "gpt-5"})),
             Some(UsageBodyCaptureState::Inline),
+            Some("openai:chat"),
             Some(&json!({"model": "gpt-5"})),
             Some(UsageBodyCaptureState::Inline),
+            Some("openai:chat"),
         );
         assert!(metadata.is_none());
 
@@ -901,8 +913,10 @@ mod tests {
             Some(json!({"provider_response_model": "gpt-5.1"})),
             None,
             Some(UsageBodyCaptureState::Disabled),
+            Some("openai:chat"),
             Some(&json!({"model": "gpt-5.2"})),
             Some(UsageBodyCaptureState::Inline),
+            Some("openai:chat"),
         );
         assert!(metadata.is_none());
     }
