@@ -11,6 +11,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::ai_serving::api::{codex_client_version, set_codex_cli_version};
 use crate::AppState;
 
 const CLI_RELEASE_ENDPOINT: &str = "https://registry.npmjs.org/@openai%2Fcodex/latest";
@@ -181,11 +182,8 @@ async fn restore_cached_profile(runtime: &RuntimeState) -> Result<(), ProfileRef
     };
     let cached = serde_json::from_str::<CachedProfile>(&raw)
         .map_err(|_| ProfileRefreshError::InvalidMetadata)?;
-    if let Some(version) =
-        cached_version_to_restore(&cached, &aether_ai_formats::codex_client_version())?
-    {
-        aether_ai_formats::set_codex_cli_version(&version)
-            .map_err(|_| ProfileRefreshError::InvalidMetadata)?;
+    if let Some(version) = cached_version_to_restore(&cached, &codex_client_version())? {
+        set_codex_cli_version(&version).map_err(|_| ProfileRefreshError::InvalidMetadata)?;
         info!(
             event_name = "codex_client_profile_restored",
             version = %version,
@@ -216,8 +214,7 @@ where
     Fut: Future<Output = Result<String, ProfileRefreshError>>,
 {
     if let Some(version) = fixed_version {
-        aether_ai_formats::set_codex_cli_version(version)
-            .map_err(|_| ProfileRefreshError::InvalidMetadata)?;
+        set_codex_cli_version(version).map_err(|_| ProfileRefreshError::InvalidMetadata)?;
         return Ok(version.to_owned());
     }
 
@@ -230,11 +227,11 @@ where
         );
     }
     if !refresh_is_enabled {
-        return Ok(aether_ai_formats::codex_client_version());
+        return Ok(codex_client_version());
     }
 
     let version = fetch_latest().await?;
-    let current = aether_ai_formats::codex_client_version();
+    let current = codex_client_version();
     if version_sequence(&version)? < version_sequence(&current)? {
         return Err(ProfileRefreshError::Rollback);
     }
@@ -245,8 +242,7 @@ where
     };
     let serialized =
         serde_json::to_string(&cached).map_err(|_| ProfileRefreshError::InvalidMetadata)?;
-    aether_ai_formats::set_codex_cli_version(&version)
-        .map_err(|_| ProfileRefreshError::InvalidMetadata)?;
+    set_codex_cli_version(&version).map_err(|_| ProfileRefreshError::InvalidMetadata)?;
     if let Err(error) = runtime
         .kv_set(PROFILE_CACHE_KEY, serialized, Some(PROFILE_CACHE_TTL))
         .await
@@ -321,21 +317,25 @@ mod tests {
         cached_version_to_restore, fixed_version_from, parse_cli_release, refresh_enabled_from,
         refresh_once_with_fetch, CachedProfile, ProfileRefreshError, PROFILE_CACHE_KEY,
     };
+    use crate::ai_serving::api::{
+        codex_client_profile, codex_client_version, set_codex_cli_version,
+        set_codex_client_profile, CodexClientProfile,
+    };
 
     static PROFILE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-    struct ProfileRestore(aether_ai_formats::CodexClientProfile);
+    struct ProfileRestore(CodexClientProfile);
 
     impl Drop for ProfileRestore {
         fn drop(&mut self) {
-            aether_ai_formats::set_codex_client_profile(self.0.clone());
+            set_codex_client_profile(self.0.clone());
         }
     }
 
     fn profile_restore_guard() -> (std::sync::MutexGuard<'static, ()>, ProfileRestore) {
         let lock = PROFILE_TEST_LOCK.get_or_init(|| Mutex::new(()));
         let guard = lock.lock().expect("profile test lock");
-        let restore = ProfileRestore(aether_ai_formats::codex_client_profile());
+        let restore = ProfileRestore(codex_client_profile());
         (guard, restore)
     }
 
@@ -419,21 +419,21 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, "0.200.1");
-        assert_eq!(aether_ai_formats::codex_client_version(), "0.200.1");
+        assert_eq!(codex_client_version(), "0.200.1");
     }
 
     #[tokio::test]
     async fn refresh_failure_keeps_previous_profile() {
         let (_lock, _restore) = profile_restore_guard();
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
-        let before = aether_ai_formats::codex_client_profile();
+        let before = codex_client_profile();
         let result = refresh_once_with_fetch(&runtime, None, true, || async {
             Err(ProfileRefreshError::HttpStatus(503))
         })
         .await;
 
         assert!(matches!(result, Err(ProfileRefreshError::HttpStatus(503))));
-        assert_eq!(aether_ai_formats::codex_client_profile(), before);
+        assert_eq!(codex_client_profile(), before);
     }
 
     #[tokio::test]
@@ -450,19 +450,19 @@ mod tests {
 
         assert_eq!(result, "0.220.0");
         assert!(!fetch_called.load(Ordering::SeqCst));
-        assert_eq!(aether_ai_formats::codex_client_version(), "0.220.0");
+        assert_eq!(codex_client_version(), "0.220.0");
     }
 
     #[tokio::test]
     async fn rollback_is_rejected_without_replacing_profile() {
         let (_lock, _restore) = profile_restore_guard();
-        aether_ai_formats::set_codex_cli_version("0.220.0").unwrap();
+        set_codex_cli_version("0.220.0").unwrap();
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
         let result =
             refresh_once_with_fetch(&runtime, None, true, || async { Ok("0.219.9".to_string()) })
                 .await;
 
         assert!(matches!(result, Err(ProfileRefreshError::Rollback)));
-        assert_eq!(aether_ai_formats::codex_client_version(), "0.220.0");
+        assert_eq!(codex_client_version(), "0.220.0");
     }
 }

@@ -594,7 +594,7 @@ async fn provider_query_fetch_models_for_key(
         });
     }
 
-    let dynamic_client_version = aether_ai_formats::codex_client_version();
+    let dynamic_client_version = crate::ai_serving::api::codex_client_version();
     let client_version = is_codex.then(|| {
         codex_catalog
             .as_ref()
