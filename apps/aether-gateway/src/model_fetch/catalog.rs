@@ -99,7 +99,7 @@ pub(crate) fn normalize_codex_client_version(raw: Option<&str>) -> NormalizedCod
             used_fallback: false,
         },
         None => NormalizedCodexClientVersion {
-            value: crate::ai_serving::CODEX_CLIENT_VERSION.to_string(),
+            value: aether_ai_formats::codex_client_version(),
             used_fallback: true,
         },
     }
@@ -1521,7 +1521,7 @@ where
     .await?;
     let scope = target.credential_scope()?;
     let state = runtime.codex_catalog_runtime_state();
-    let mut version = Version::parse(crate::ai_serving::CODEX_CLIENT_VERSION).ok()?;
+    let mut version = Version::parse(&aether_ai_formats::codex_client_version()).ok()?;
     if let Some(recent) =
         read_recent_codex_catalog_client_version(state, provider_id, key_id, scope).await
     {
@@ -2463,7 +2463,7 @@ mod tests {
             .expect("management context");
         assert_eq!(
             initial.client_version,
-            crate::ai_serving::CODEX_CLIENT_VERSION
+            aether_ai_formats::codex_client_version()
         );
         assert!(initial.models.is_none());
 
@@ -2500,7 +2500,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rebound.client_version,
-            crate::ai_serving::CODEX_CLIENT_VERSION
+            aether_ai_formats::codex_client_version()
         );
         assert!(rebound.models.is_none());
     }
@@ -2557,7 +2557,10 @@ mod tests {
             format!("1.2.3-{}", "x".repeat(CODEX_CLIENT_VERSION_MAX_LEN)),
         ] {
             let normalized = normalize_codex_client_version(Some(&raw));
-            assert_eq!(normalized.as_str(), crate::ai_serving::CODEX_CLIENT_VERSION);
+            assert_eq!(
+                normalized.as_str(),
+                aether_ai_formats::codex_client_version()
+            );
             assert!(normalized.used_fallback());
             assert!(!catalog_lkg_key(&target(), normalized.as_str()).contains(&raw));
         }
@@ -3753,7 +3756,11 @@ mod tests {
             .await
             .expect("seed legacy cache");
 
-        let load = load_one(&runtime, &version(crate::ai_serving::CODEX_CLIENT_VERSION)).await;
+        let load = load_one(
+            &runtime,
+            &version(&aether_ai_formats::codex_client_version()),
+        )
+        .await;
         assert!(load.snapshot(TEST_PROVIDER_ID, TEST_KEY_ID).is_none());
         assert_eq!(runtime.execution_count(), 1);
     }
