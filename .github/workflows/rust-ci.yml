@@ -2,6 +2,12 @@ name: Rust CI
 
 on:
   workflow_call:
+    inputs:
+      full_scope:
+        description: "Run all Rust and shell scopes, used by Nightly"
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - master
@@ -36,19 +42,26 @@ jobs:
       - name: Classify changed paths
         id: scope
         shell: bash
+        env:
+          RUST_CI_FULL_SCOPE: ${{ inputs.full_scope || false }}
         run: |
-          # workflow_call（Nightly）仍须完整执行；普通 push/PR 只按源码和构建
+          # Nightly 通过 workflow_call 显式传入 full_scope；普通 push/PR 只按源码和构建
           # 指纹触发 Rust jobs，安装脚本、Compose、README 等由 shell scope 覆盖。
-          if [ "$GITHUB_EVENT_NAME" = "workflow_call" ]; then
+          if [ "$RUST_CI_FULL_SCOPE" = "true" ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "shell=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] \
+            && [ -n "${GITHUB_BASE_REF:-}" ] \
+            && [ -n "${GITHUB_SHA:-}" ]; then
             git fetch --no-tags origin "$GITHUB_BASE_REF" --depth=1
             changed_paths=$(git diff --name-only "origin/$GITHUB_BASE_REF...$GITHUB_SHA")
-          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] \
+            && [ -n "${GITHUB_EVENT_BEFORE:-}" ] \
+            && [ "$GITHUB_EVENT_BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && [ -n "${GITHUB_SHA:-}" ]; then
             changed_paths=$(git diff --name-only "$GITHUB_EVENT_BEFORE" "$GITHUB_SHA")
           else
             changed_paths=$(git ls-files)
