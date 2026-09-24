@@ -12,7 +12,61 @@ on:
     branches:
       - master
       - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "crates/**"
+      - "apps/**"
+      - "*.sql"
+      - "install.sh"
+      - "deploy.sh"
+      - "update.sh"
+      - "generate_keys.sh"
+      - ".env.example"
+      - "README.md"
+      - "Dockerfile.app"
+      - "docker-compose.yml"
+      - "docker-compose.single-node.yml"
+      - "docker-compose.local.yml"
+      - "docker-compose.release-local.yml"
+      - "tests/compose_database_config_test.py"
+      - "tests/install_*_test.sh"
+      - "tests/deploy_*_test.sh"
+      - "tests/update_*_test.sh"
+      - "tests/release_supply_chain_test.sh"
+      - "tests/tunnel_installer_config_security_test.sh"
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
   pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "crates/**"
+      - "apps/**"
+      - "*.sql"
+      - "install.sh"
+      - "deploy.sh"
+      - "update.sh"
+      - "generate_keys.sh"
+      - ".env.example"
+      - "README.md"
+      - "Dockerfile.app"
+      - "docker-compose.yml"
+      - "docker-compose.single-node.yml"
+      - "docker-compose.local.yml"
+      - "docker-compose.release-local.yml"
+      - "tests/compose_database_config_test.py"
+      - "tests/install_*_test.sh"
+      - "tests/deploy_*_test.sh"
+      - "tests/update_*_test.sh"
+      - "tests/release_supply_chain_test.sh"
+      - "tests/tunnel_installer_config_security_test.sh"
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
 
 concurrency:
   group: rust-ci-${{ github.event_name }}-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -45,6 +99,10 @@ jobs:
         env:
           RUST_CI_FULL_SCOPE: ${{ inputs.full_scope || false }}
         run: |
+          # 任何命令失败都必须让本 job 失败，否则 git fetch/diff 出错后仍会写出
+          # rust=false/shell=false，下游会误判为“无需测试”而假绿放行。
+          set -euo pipefail
+
           # Nightly 通过 workflow_call 显式传入 full_scope；普通 push/PR 只按源码和构建
           # 指纹触发 Rust jobs，安装脚本、Compose、README 等由 shell scope 覆盖。
           if [ "$RUST_CI_FULL_SCOPE" = "true" ]; then
@@ -65,6 +123,14 @@ jobs:
             changed_paths=$(git diff --name-only "$GITHUB_EVENT_BEFORE" "$GITHUB_SHA")
           else
             changed_paths=$(git ls-files)
+          fi
+
+          # 防御性兜底：diff 结果为空（异常事件或比较失败）时按全量运行，
+          # 宁可多跑也不能漏测。
+          if [ -z "$changed_paths" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "shell=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           rust=false
@@ -652,6 +718,10 @@ jobs:
     steps:
       - name: Verify database smoke jobs
         run: |
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Scope detection failed"
+            exit 1
+          fi
           if [ "${{ needs.changes.outputs.rust }}" != "true" ]; then
             echo "Rust scope unchanged; database smoke jobs skipped"
             exit 0
@@ -675,6 +745,11 @@ jobs:
     steps:
       - name: Verify required jobs
         run: |
+          # changes 失败或未产出 scope 时不允许直接放行，避免假绿。
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Scope detection failed"
+            exit 1
+          fi
           rust="${{ needs.changes.outputs.rust }}"
           shell="${{ needs.changes.outputs.shell }}"
 
