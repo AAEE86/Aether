@@ -5146,15 +5146,6 @@ mod tests {
             ))
     }
 
-    fn provider_catalog_credential_state() -> AppState {
-        AppState::new()
-            .expect("credential state should build")
-            .with_data_state_for_tests(
-                GatewayDataState::disabled()
-                    .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY),
-            )
-    }
-
     fn large_pool_fixture(
         key_count: usize,
         provider_config: Option<serde_json::Value>,
@@ -5205,18 +5196,12 @@ mod tests {
         )
         .expect("endpoint transport should build");
 
-        let credential_state = provider_catalog_credential_state();
+        // 这些用例只验证池扫描、跳过计数和游标预算，不会发起请求或读取凭据。
+        // 留空凭据可跳过无关的 Fernet 加解密，同时避免复用绑定密文破坏 key_id AAD。
         let mut keys = Vec::with_capacity(key_count);
         let mut rows = Vec::with_capacity(key_count);
         for index in 0..key_count {
             let key_id = format!("key-{index:05}");
-            let encrypted_api_key = credential_state
-                .seal_provider_catalog_key_api_key(
-                    "provider-pool",
-                    &key_id,
-                    &format!("secret-{index}"),
-                )
-                .expect("api key should encrypt");
             let mut key = StoredProviderCatalogKey::new(
                 key_id.clone(),
                 "provider-pool".to_string(),
@@ -5228,7 +5213,7 @@ mod tests {
             .expect("key should build")
             .with_transport_fields(
                 Some(json!(["openai:chat"])),
-                encrypted_api_key,
+                None,
                 None,
                 None,
                 None,
@@ -5363,10 +5348,8 @@ mod tests {
         .expect("endpoint transport should build")
     }
 
+    /// 这些测试只检查池调度状态，不涉及凭据解密，因此不构造无关的密文。
     fn sample_codex_pool_key(provider_id: &str, key_id: &str) -> StoredProviderCatalogKey {
-        let encrypted_api_key = provider_catalog_credential_state()
-            .seal_provider_catalog_key_api_key(provider_id, key_id, &format!("secret-{key_id}"))
-            .expect("api key should encrypt");
         let mut key = StoredProviderCatalogKey::new(
             key_id.to_string(),
             provider_id.to_string(),
@@ -5378,7 +5361,7 @@ mod tests {
         .expect("key should build")
         .with_transport_fields(
             Some(json!(["openai:responses"])),
-            encrypted_api_key,
+            None,
             None,
             None,
             Some(json!({"openai:responses": 1})),
