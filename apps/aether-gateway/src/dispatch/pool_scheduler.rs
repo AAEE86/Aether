@@ -4005,7 +4005,7 @@ mod tests {
     async fn pool_key_cursor_reserve_minimum_quota_filters_pages_and_sticky_hits() {
         for reserve_enabled in [false, true] {
             for sticky in [false, true] {
-                for used_percent in [99.0, 98.0] {
+                for used_percent in [99.0, 98.0, 83.0] {
                     let provider_config = Some(json!({
                         "pool_advanced": {
                             "reserve_minimum_quota": reserve_enabled,
@@ -4016,8 +4016,27 @@ mod tests {
                         sample_codex_pool_provider("provider-pool", 0, provider_config.clone());
                     let endpoint = sample_codex_pool_endpoint("provider-pool", "endpoint-1");
                     let mut reserved = sample_codex_pool_key("provider-pool", "key-low");
+                    reserved.status_snapshot = Some(json!({
+                        "quota": {
+                            "provider_type": "codex",
+                            "updated_at": 100,
+                            "allowed": false,
+                            "exhausted": true,
+                            "code": "exhausted",
+                            "windows": [{
+                                "code": "weekly",
+                                "scope": "account",
+                                "used_ratio": 1.0,
+                                "reset_at": 4_102_444_800u64
+                            }]
+                        }
+                    }));
                     reserved.upstream_metadata = Some(json!({
-                        "codex": {"primary_used_percent": used_percent}
+                        "codex": {
+                            "updated_at": 200,
+                            "primary_used_percent": used_percent,
+                            "primary_reset_at": 4_102_444_800u64
+                        }
                     }));
                     let ready = sample_codex_pool_key("provider-pool", "key-ready");
                     let rows = vec![
