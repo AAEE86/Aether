@@ -2575,6 +2575,63 @@ fn windsurf_quota_snapshot_has_stale_cooldown(quota_snapshot: &Map<String, Value
     has_capacity || !exhausted
 }
 
+/// 读取状态快照时，把已越过重置时间点的 Codex 配额窗口按“已重置”口径归一化。
+///
+/// 背景：调度侧早已把到期窗口视为未耗尽（`provider_pool_reset_deadline_elapsed`），
+/// 账号额度文本也会按到期强制显示 100%，但列表读取此前直接返回存量快照，
+/// 导致管理端倒计时归零后进度条仍停留在旧的剩余百分比。这里让读取层与
+/// 调度侧、文本侧使用同一口径，避免三处状态互相矛盾。
+fn normalize_expired_codex_quota_windows(
+    snapshot: &mut serde_json::Map<String, Value>,
+    provider_type: &str,
+) {
+    if !provider_type.trim().eq_ignore_ascii_case("codex") {
+        return;
+    }
+    let Some(quota) = snapshot.get_mut("quota").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let now_unix_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let fallback_observed_at = provider_quota_timestamp_unix_secs(quota.get("observed_at"))
+        .or_else(|| provider_quota_timestamp_unix_secs(quota.get("updated_at")));
+    let Some(windows) = quota.get_mut("windows").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for window in windows.iter_mut().filter_map(Value::as_object_mut) {
+        // 与同类 Codex 窗口处理保持一致：window_minutes=0 不是真实配额窗口。
+        if window.get("window_minutes").and_then(Value::as_u64) == Some(0) {
+            continue;
+        }
+        if !aether_provider_pool::provider_pool_reset_deadline_elapsed(
+            window,
+            fallback_observed_at,
+            now_unix_secs,
+        ) {
+            continue;
+        }
+        // 只归一化带用量观测的窗口，避免把没有观测数据的窗口凭空显示成 100%。
+        let has_usage_observation = ["used_ratio", "remaining_ratio"]
+            .into_iter()
+            .any(|field| window.get(field).is_some_and(Value::is_number));
+        if !has_usage_observation {
+            continue;
+        }
+        window.insert("used_ratio".to_string(), json!(0.0));
+        window.insert("remaining_ratio".to_string(), json!(1.0));
+        // 同步清掉窗口级耗尽标记，避免展示与调度口径互相矛盾。
+        for field in ["is_exhausted", "exhausted"] {
+            if let Some(slot) = window.get_mut(field) {
+                *slot = json!(false);
+            }
+        }
+    }
+}
+
 pub(crate) fn provider_key_status_snapshot_payload(
     key: &StoredProviderCatalogKey,
     provider_type: &str,
@@ -2626,6 +2683,9 @@ pub(crate) fn provider_key_status_snapshot_payload(
             }
         }
     }
+    // 读取时归一化已到期的 Codex 配额窗口，保证列表进度条与调度侧、
+    // 账号额度文本使用同一“已重置”口径。
+    normalize_expired_codex_quota_windows(&mut snapshot, provider_type);
     snapshot.insert(
         "oauth".to_string(),
         build_provider_key_oauth_status_snapshot(key),
@@ -3672,6 +3732,153 @@ mod tests {
         assert_eq!(quota.get("reset_seconds"), Some(&json!(3_600u64)));
         assert_eq!(window.get("reset_at"), Some(&json!(1_775_556_885u64)));
         assert_eq!(window.get("reset_seconds"), Some(&json!(3_600u64)));
+    }
+
+    #[test]
+    fn provider_key_status_snapshot_payload_normalizes_expired_codex_quota_windows() {
+        let mut key = sample_catalog_key();
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "code": "ok",
+                "exhausted": false,
+                "updated_at": 1_700_000_000u64,
+                "windows": [
+                    {
+                        "code": "5h",
+                        "label": "5H",
+                        "scope": "account",
+                        "unit": "percent",
+                        "used_ratio": 0.88,
+                        "remaining_ratio": 0.12,
+                        "reset_at": 1_700_003_600u64,
+                        "window_minutes": 300
+                    },
+                    {
+                        "code": "weekly",
+                        "label": "周",
+                        "scope": "account",
+                        "unit": "percent",
+                        "used_ratio": 0.5,
+                        "remaining_ratio": 0.5,
+                        "reset_at": 2_000_000_000u64,
+                        "window_minutes": 10_080
+                    },
+                    {
+                        "code": "spark_5h",
+                        "label": "Spark 5H",
+                        "scope": "account",
+                        "unit": "percent",
+                        "reset_at": 1_700_003_600u64,
+                        "window_minutes": 300
+                    },
+                    {
+                        "code": "unlimited",
+                        "label": "无限",
+                        "scope": "account",
+                        "unit": "percent",
+                        "used_ratio": 0.3,
+                        "remaining_ratio": 0.7,
+                        "reset_at": 1_700_003_600u64,
+                        "window_minutes": 0
+                    }
+                ]
+            }
+        }));
+
+        let payload = provider_key_status_snapshot_payload(&key, "codex");
+
+        // 已到期的窗口按“已重置”口径归一化：用量清零、剩余 100%。
+        assert_eq!(payload.pointer("/quota/windows/0/code"), Some(&json!("5h")));
+        assert_eq!(
+            payload.pointer("/quota/windows/0/used_ratio"),
+            Some(&json!(0.0))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/0/remaining_ratio"),
+            Some(&json!(1.0))
+        );
+        // 未到期的窗口保留原始观测值。
+        assert_eq!(
+            payload.pointer("/quota/windows/1/code"),
+            Some(&json!("weekly"))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/1/used_ratio"),
+            Some(&json!(0.5))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/1/remaining_ratio"),
+            Some(&json!(0.5))
+        );
+        // 没有用量观测的窗口不会被凭空补成 100%。
+        assert_eq!(
+            payload.pointer("/quota/windows/2/code"),
+            Some(&json!("spark_5h"))
+        );
+        assert_eq!(payload.pointer("/quota/windows/2/used_ratio"), None);
+        assert_eq!(payload.pointer("/quota/windows/2/remaining_ratio"), None);
+        // window_minutes=0 不是真实配额窗口，与同类 Codex 窗口处理保持一致，不归一化。
+        assert_eq!(
+            payload.pointer("/quota/windows/3/code"),
+            Some(&json!("unlimited"))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/3/used_ratio"),
+            Some(&json!(0.3))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/3/remaining_ratio"),
+            Some(&json!(0.7))
+        );
+    }
+
+    #[test]
+    fn provider_key_status_snapshot_payload_clears_expired_codex_window_exhausted_state() {
+        let mut key = sample_catalog_key();
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "code": "exhausted",
+                "exhausted": true,
+                "usage_ratio": 1.0,
+                "updated_at": 1_700_000_000u64,
+                "windows": [
+                    {
+                        "code": "weekly",
+                        "label": "周",
+                        "scope": "account",
+                        "unit": "percent",
+                        "used_ratio": 1.0,
+                        "remaining_ratio": 0.0,
+                        "reset_at": 1_700_003_600u64,
+                        "window_minutes": 10_080,
+                        "is_exhausted": true
+                    }
+                ]
+            }
+        }));
+
+        let payload = provider_key_status_snapshot_payload(&key, "codex");
+
+        // 汇总标志沿用既有调度口径（窗口已到期 → 不再视为耗尽）。
+        assert_eq!(payload.pointer("/quota/exhausted"), Some(&json!(false)));
+        assert_eq!(payload.pointer("/quota/code"), Some(&json!("ok")));
+        // 窗口级耗尽标记与剩余比例同步归一化。
+        assert_eq!(
+            payload.pointer("/quota/windows/0/is_exhausted"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/0/used_ratio"),
+            Some(&json!(0.0))
+        );
+        assert_eq!(
+            payload.pointer("/quota/windows/0/remaining_ratio"),
+            Some(&json!(1.0))
+        );
     }
 
     #[test]
