@@ -34,6 +34,8 @@ Apps 文件上传属于 CLI 的 ChatGPT Apps 专用路径，普通自定义 API 
 cargo fmt --all -- --check
 RUST_MIN_STACK=16777216 cargo test --locked -p aether-ai-formats -p aether-oauth -p aether-model-fetch -p aether-provider-transport -p aether-usage-runtime --lib -- --test-threads=1
 RUST_MIN_STACK=16777216 cargo test --locked -p aether-gateway --lib -- --test-threads=1
+RUST_MIN_STACK=16777216 cargo test --locked -p aether-gateway --bins
+RUST_MIN_STACK=16777216 cargo test --locked -p aether-gateway --test admin_unsigned_identity_headers --test architecture_guard
 ```
 
 完整网关测试需要可执行的临时 PostgreSQL 工具（`AETHER_INITDB_BIN`、`AETHER_POSTGRES_BIN`、`AETHER_PG_CTL_BIN`）、权限受控的临时目录，以及不允许组写入的测试运行目录。Unix socket、更新元数据与私有运行文件测试会主动拒绝不安全的路径；测试目录应以 `umask 022` 或更严格的权限创建。

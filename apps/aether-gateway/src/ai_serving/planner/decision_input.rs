@@ -17,7 +17,7 @@ use crate::ai_serving::transport::ProviderOutboundRequestContext;
 use crate::ai_serving::{
     ClientSurface, ExecutionRuntimeAuthContext, GatewayAuthApiKeySnapshot,
     GatewayCredentialCarrier, GatewayProviderTransportSnapshot, PlannerAppState,
-    CODEX_RESPONSES_LITE_HEADER,
+    CODEX_RESPONSES_LITE_HEADER, OPENAI_MEMORIES_SYNC_PLAN_KIND,
 };
 use crate::cache::CacheLoadObserver;
 use crate::client_session_affinity::client_session_affinity_from_api_request;
@@ -123,8 +123,7 @@ pub(crate) fn apply_provider_request_routing_policy_to_decision_with_websocket_m
     transport: Option<&GatewayProviderTransportSnapshot>,
     websocket_continuation: bool,
 ) -> Result<(), GatewayError> {
-    let native_memories = decision.decision_kind.as_deref()
-        == Some(aether_ai_formats::contracts::OPENAI_MEMORIES_SYNC_PLAN_KIND);
+    let native_memories = decision.decision_kind.as_deref() == Some(OPENAI_MEMORIES_SYNC_PLAN_KIND);
     let provider_api_format = decision
         .provider_api_format
         .clone()
@@ -402,9 +401,7 @@ fn apply_provider_outbound_request_policies_to_decision(
         return;
     };
     let native_context;
-    let context = if decision.decision_kind.as_deref()
-        == Some(aether_ai_formats::contracts::OPENAI_MEMORIES_SYNC_PLAN_KIND)
-    {
+    let context = if decision.decision_kind.as_deref() == Some(OPENAI_MEMORIES_SYNC_PLAN_KIND) {
         native_context = context
             .clone()
             .with_api_operation(crate::ai_serving::ApiOperation::OpenAiMemoriesSummarize);

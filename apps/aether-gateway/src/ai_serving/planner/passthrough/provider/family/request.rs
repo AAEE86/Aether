@@ -24,7 +24,9 @@ use crate::ai_serving::transport::{
     SameFormatProviderCompatibilityEditAction, SameFormatProviderHeadersInput,
     GEMINI_CLI_USER_AGENT, GROK_CHAT_PATH,
 };
-use crate::ai_serving::{CandidateFailureDiagnostic, GatewayProviderTransportSnapshot};
+use crate::ai_serving::{
+    CandidateFailureDiagnostic, GatewayProviderTransportSnapshot, CODEX_RESPONSES_LITE_HEADER,
+};
 use crate::{AppState, GatewayError};
 
 mod policy;
@@ -602,11 +604,8 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
         codex_model_capabilities.as_ref(),
     );
     if spec.operation == Some(crate::ai_serving::ApiOperation::OpenAiMemoriesSummarize) {
-        provider_request_headers.retain(|name, _| {
-            !name.eq_ignore_ascii_case(
-                aether_ai_formats::formats::openai::responses::codex::CODEX_RESPONSES_LITE_HEADER,
-            )
-        });
+        provider_request_headers
+            .retain(|name, _| !name.eq_ignore_ascii_case(CODEX_RESPONSES_LITE_HEADER));
         provider_request_headers.insert("accept".to_string(), "application/json".to_string());
     }
     crate::ai_serving::transport::xai::insert_cli_identity_headers_if_needed(
