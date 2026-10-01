@@ -18,6 +18,12 @@
 
 新增模型能力快照不等于授权访问该模型。可用模型应通过正式管理界面的上游模型查询、全局模型和提供商模型配置，以及密钥模型限制来设置。远端目录及实际账户权限决定上游是否支持模型，不能通过修改 `/models` 列表绕过。
 
+六档推理强度描述 CLI 的选择项。`ultra` 是 CLI 的本地多代理模式：官方 `ModelInfo::resolve_reasoning_effort` 会把普通推理请求转换为有效的 `multi_agent_reasoning_effort`，否则依次采用 `max`、最高非 `ultra` 档位或 `medium`；本地模式仍保持 `ultra`。网关保留模型卡片的相关公开能力，由 CLI 完成该转换，不在原始 Responses 请求中擅自把 `ultra` 等同于 `max`，也不实现客户端的多代理编排。直接发送 `reasoning.effort=ultra` 与 CLI 选择 `ultra` 的请求不同，上游可能拒绝前者。
+
+现场使用校验过发行资产摘要的官方 `0.159.3` CLI，分别对 `gpt-6-astra` 和 `gpt-6.1-sol` 选择 `ultra`，均成功完成；网关使用记录确认请求档位为模型指定的 `xhigh`。两模型的原始 Responses `low`、`medium`、`high`、`xhigh`、`max` 调用也均完成。直接发送原始 `ultra` 时，现场上游候选返回 HTTP 400，按现有重试策略最终返回 503；该结果不作为 CLI 的 `ultra` 模式验收失败。
+
+同一现场的 WebSocket 验收对两模型分别完成两轮 `generate=false` 预热和 `previous_response_id` 续接，接收到了公开完成事件与 Codex metadata；这项检查覆盖连接、元数据和续接，不等同于完整生成、工具调用或所有重连场景。验证使用正式提供商开关，完成后恢复原配置。
+
 记忆接口是 CLI 可选功能对应的协议。是否启动记忆任务仍由 CLI 自己的 feature/config 决定。它要求提供商支持该原生端点；Kiro、Grok、Antigravity 和 Gemini CLI 等私有适配器不能通过格式标签冒充支持。配置自定义路径时须使用 `/memories/{operation}` 等模板；仅描述 Responses 的固定路径会被拒绝。
 
 Apps 文件上传属于 CLI 的 ChatGPT Apps 专用路径，普通自定义 API 提供商不会启动该流程；本次不将其伪装成通用 Responses 路由。`aether-vscodex` 的 app-server UI 协议版本属于独立客户端，不覆盖成 CLI 版本。
