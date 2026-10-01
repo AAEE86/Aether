@@ -1900,7 +1900,7 @@ mod tests {
                 .find(|model| model["id"] == model_id)
                 .expect("GPT-5.6 Codex preset");
             assert_eq!(model["shell_type"], "shell_command");
-            assert!(model.get("comp_hash").is_none());
+            assert_eq!(model["comp_hash"], "3000");
             assert_eq!(model["experimental_supported_tools"], json!([]));
             assert_eq!(model["tool_mode"], "code_mode_only");
             assert_eq!(model["prefer_websockets"], true);

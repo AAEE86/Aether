@@ -2072,6 +2072,7 @@ mod tests {
                 .unwrap();
             assert_eq!(card["context_window"], 272_000);
             assert_eq!(card["max_context_window"], 872_000);
+            assert_eq!(card["comp_hash"], "3000");
             assert_eq!(card["minimal_client_version"], "0.153.0");
             assert_eq!(
                 card["supported_reasoning_levels"]
@@ -2088,7 +2089,6 @@ mod tests {
                 "installation_id",
                 "cookie",
                 "authorization",
-                "comp_hash",
             ] {
                 assert!(
                     card.get(private).is_none(),

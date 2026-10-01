@@ -14,7 +14,7 @@
 | 上游账户配额 | `codex.rate_limits` 继续进入账户级熔断与持久化路径，不当作网关用户自己的配额公开 |
 | 原生记忆接口 | `POST /v1/memories/trace_summarize` 复用 Responses 权限及调度，执行原生同步操作，保留 traces、output 数组和未来字段，不注入 Responses 的 input/store/include 或流式默认值 |
 
-公开快照来源为 `codex-rs/models-manager/models.json`。未复制提示词、账户套餐可见性或编译哈希；没有引入个人用户标识、已有会话 UUID、Cookie、访问令牌或账户凭据。运行时鉴权和账户字段仍由提供商密钥配置产生。
+公开快照来源为 `codex-rs/models-manager/models.json`。未复制提示词或账户套餐可见性；保留官方公开的 `comp_hash` 压缩兼容性标记，以支持 CLI Guardian 的压缩上下文复用；没有引入个人用户标识、已有会话 UUID、Cookie、访问令牌或账户凭据。运行时鉴权和账户字段仍由提供商密钥配置产生。
 
 新增模型能力快照不等于授权访问该模型。可用模型应通过正式管理界面的上游模型查询、全局模型和提供商模型配置，以及密钥模型限制来设置。远端目录及实际账户权限决定上游是否支持模型，不能通过修改 `/models` 列表绕过。
 
@@ -30,4 +30,4 @@ cargo test --locked -p aether-ai-formats -p aether-oauth -p aether-model-fetch -
 cargo test --locked -p aether-gateway --lib
 ```
 
-原生记忆端到端测试覆盖真实网关的权限、候选调度、执行计划、模型指令、原生 JSON、成功候选状态与上游错误响应；执行端使用本地测试服务器，实际账户网络可用性须在部署现场单独验证。
+原生记忆端到端测试覆盖真实网关的权限、候选调度、执行计划、模型指令、原生 JSON、成功候选状态与明确停止重试策略下的上游错误响应；执行端使用本地测试服务器，实际账户网络可用性须在部署现场单独验证。

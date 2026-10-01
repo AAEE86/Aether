@@ -628,8 +628,9 @@ fn gateway_executes_codex_memories_with_responses_permission_and_native_json() {
                 candidate_row("openai:responses"),
             ]));
             let mut memory_provider = provider();
-            memory_provider.config =
-                Some(json!({"codex":{"fingerprint_convergence_enabled":true}}));
+            memory_provider.config = Some(
+                json!({"codex":{"fingerprint_convergence_enabled":true},"failover_rules":{"stop_status_codes":[400]}}),
+            );
             let catalog = Arc::new(InMemoryProviderCatalogReadRepository::seed(
                 vec![memory_provider],
                 vec![endpoint("openai:responses")],
@@ -694,7 +695,8 @@ fn gateway_executes_codex_memories_with_responses_permission_and_native_json() {
                 .send()
                 .await
                 .expect("error response");
-            assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+            let error_status = error.status();
+            assert_eq!(error_status, StatusCode::BAD_REQUEST);
             assert_eq!(
                 error.json::<serde_json::Value>().await.expect("error JSON"),
                 json!({"error":{"type":"invalid_request_error","message":"synthetic invalid trace","code":"invalid_trace"},"future_error_field":{"enabled":true}})
