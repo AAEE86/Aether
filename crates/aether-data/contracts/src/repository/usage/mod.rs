@@ -1,15 +1,25 @@
+mod analytics;
+#[cfg(test)]
+mod analytics_tests;
+mod attribution;
 mod capture_memory;
 mod compression;
+mod dashboard_summary;
+mod health;
 mod metadata_policy;
 mod policy;
 mod types;
 
+pub use analytics::*;
+pub use attribution::*;
 #[doc(hidden)]
 pub use capture_memory::{
     mark_usage_capture_memory_omitted, usage_json_heap_estimate, UsageCaptureMemoryBudget,
     UsageCaptureRetention,
 };
 pub use compression::{read_decompressed_usage_json, MAX_DECOMPRESSED_USAGE_JSON_BYTES};
+pub use dashboard_summary::*;
+pub use health::*;
 pub use metadata_policy::*;
 pub use policy::*;
 pub use types::{

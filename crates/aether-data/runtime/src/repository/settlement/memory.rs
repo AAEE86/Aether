@@ -10,7 +10,7 @@ use super::{
     ReserveUsagePolicyCostInput, ReserveUsagePolicyCostOutcome, ReserveUsagePolicyRequestInput,
     ReserveUsagePolicyRequestOutcome, SettlementWriteRepository, StoredUsagePolicyCostReservation,
     StoredUsagePolicyRequestAdmission, StoredUsageSettlement, UsagePolicyCostReservationState,
-    UsagePolicyRequestAdmissionState, UsageSettlementInput, SETTLEMENT_EPSILON_USD,
+    UsagePolicyRequestAdmissionState, UsageSettlementInput,
 };
 use crate::repository::wallet::{InMemoryWalletRepository, StoredWalletSnapshot};
 use crate::DataLayerError;
@@ -511,9 +511,7 @@ impl SettlementWriteRepository for InMemorySettlementRepository {
                 settlement.wallet_recharge_balance_after = Some(wallet.balance);
                 settlement.wallet_gift_balance_after = Some(wallet.gift_balance);
                 settlement.wallet_balance_after = Some(wallet.balance + wallet.gift_balance);
-            } else if final_billing_status == "settled"
-                && billable_cost_usd > SETTLEMENT_EPSILON_USD
-            {
+            } else if final_billing_status == "settled" && billable_cost_usd > 0.0 {
                 final_billing_status = "insufficient_quota".to_string();
                 settlement.billing_status = final_billing_status.clone();
             }

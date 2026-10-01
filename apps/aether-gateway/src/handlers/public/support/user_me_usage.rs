@@ -1209,6 +1209,7 @@ pub(super) async fn handle_users_me_usage_get(
                 limit: None,
                 offset: None,
                 newest_first: true,
+                ..Default::default()
             };
             total_record_count = match state
                 .count_usage_audits_by_keyword_search(&keyword_query)
@@ -1259,6 +1260,7 @@ pub(super) async fn handle_users_me_usage_get(
                     limit: None,
                     offset: None,
                     newest_first: true,
+                    ..Default::default()
                 })
                 .await
             {
@@ -1289,6 +1291,7 @@ pub(super) async fn handle_users_me_usage_get(
                     limit: Some(limit),
                     offset: Some(offset),
                     newest_first: true,
+                    ..Default::default()
                 })
                 .await
             {
@@ -1434,6 +1437,7 @@ pub(super) async fn handle_users_me_usage_active_get(
                 limit: Some(50),
                 offset: None,
                 newest_first: true,
+                ..Default::default()
             })
             .await
         {

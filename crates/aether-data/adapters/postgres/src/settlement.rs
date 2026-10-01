@@ -635,7 +635,7 @@ WHERE user_entitlement_id = $1
     let mut remaining_cost = total_cost_usd;
     let mut debited = 0.0;
     for (grant, balance_before) in grants_with_remaining {
-        if remaining_cost <= 0.000_000_01 || balance_before <= 0.0 {
+        if remaining_cost <= 0.0 || balance_before <= 0.0 {
             continue;
         }
         let amount = remaining_cost.min(balance_before);
@@ -1163,6 +1163,12 @@ WHERE retain_until <= TO_TIMESTAMP($1::double precision)
                         provider_monthly_used_usd: None,
                         finalized_at_unix_secs: Some(finalized_at as u64),
                     };
+                    let mut quota_covered = 0.0_f64;
+                    let mut wallet_consumed = 0.0_f64;
+                    let mut wallet_debit = 0.0_f64;
+                    let mut recharge_debit = 0.0_f64;
+                    let mut gift_debit = 0.0_f64;
+                    let mut overdraft = 0.0_f64;
 
                     if final_billing_status == "settled" {
                         let api_key_id = input
@@ -1305,6 +1311,7 @@ LIMIT 1
                                     settlement.billing_status = final_billing_status.clone();
                                     0.0
                                 } else {
+                                    quota_covered = quota.debited_usd;
                                     (billable_cost_usd - quota.debited_usd).max(0.0)
                                 }
                             } else {
@@ -1325,7 +1332,7 @@ LIMIT 1
                             return Ok(Some(settlement));
                         }
 
-                        if wallet_debit_cost_usd > SETTLEMENT_EPSILON_USD {
+                        if wallet_debit_cost_usd > 0.0 {
                             if let Some(wallet_row) = wallet_row {
                                 let wallet_id: String =
                                     wallet_row.try_get("id").map_postgres_err()?;
@@ -1346,10 +1353,15 @@ LIMIT 1
                                         before_gift,
                                         wallet_debit_cost_usd,
                                     );
+                                    recharge_debit = debit_plan.recharge_deduction;
+                                    gift_debit = debit_plan.gift_deduction;
+                                    overdraft = debit_plan.recharge_overdraft;
+                                    wallet_debit = recharge_debit + gift_debit + overdraft;
                                     (after_recharge, after_gift) =
                                         debit_plan.after_balances(before_recharge, before_gift);
                                 }
                                 let total_consumed_after = total_consumed + wallet_debit_cost_usd;
+                                wallet_consumed = wallet_debit_cost_usd;
                                 validate_wallet_settlement_values(
                                     after_recharge,
                                     after_gift,
@@ -1418,6 +1430,29 @@ WHERE id = $1
                     }
 
                     sync_usage_settlement_snapshot(&mut **tx, &settlement).await?;
+                    if final_billing_status == "settled" {
+                        sqlx::query(
+                            r#"UPDATE usage_settlement_snapshots SET
+                          quota_covered_amount_usd = $2::text::numeric(20,8),
+                          wallet_consumed_amount_usd = $3::text::numeric(20,8),
+                          wallet_debit_amount_usd = $4::text::numeric(20,8),
+                          wallet_recharge_debit_usd = $5::text::numeric(20,8),
+                          wallet_gift_debit_usd = $6::text::numeric(20,8),
+                          wallet_overdraft_usd = $7::text::numeric(20,8),
+                          allocation_schema_version = 1, allocation_status = 'complete'
+                          WHERE request_id = $1"#,
+                        )
+                        .bind(&input.request_id)
+                        .bind(format!("{quota_covered:.8}"))
+                        .bind(format!("{wallet_consumed:.8}"))
+                        .bind(format!("{wallet_debit:.8}"))
+                        .bind(format!("{recharge_debit:.8}"))
+                        .bind(format!("{gift_debit:.8}"))
+                        .bind(format!("{overdraft:.8}"))
+                        .execute(&mut **tx)
+                        .await
+                        .map_postgres_err()?;
+                    }
                     sqlx::query(FINALIZE_USAGE_BILLING_SQL)
                         .bind(&input.request_id)
                         .bind(&final_billing_status)

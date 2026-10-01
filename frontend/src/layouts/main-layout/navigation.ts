@@ -119,10 +119,9 @@ export function buildNavigation(options: {
       items: [
         { name: t('nav.dashboard'), href: '/admin/dashboard', icon: Home },
         { name: t('nav.operations'), href: '/admin/operations', icon: Activity },
-        { name: t('nav.healthMonitor'), href: '/admin/health-monitor', icon: Activity },
-        { name: t('nav.userStats'), href: '/admin/user-stats', icon: BarChart3 },
+        { name: t('nav.userStats'), href: '/admin/user-stats', icon: Users },
         { name: t('nav.costAnalysis'), href: '/admin/cost-analysis', icon: Gauge },
-        { name: t('nav.performanceAnalysis'), href: '/admin/performance-analysis', icon: Activity },
+        { name: t('nav.healthMonitor'), href: '/admin/health-monitor', icon: Activity },
         ...activeModuleItems(modules, 'overview'),
       ]
     },

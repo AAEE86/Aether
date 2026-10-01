@@ -12,9 +12,15 @@
           {{ formatDay(tooltip.day.date) }}
         </p>
         <p class="mt-0.5">
-          {{ t('heatmap.requests', { count: tooltip.day.requests }) }} · {{ formatTokens(tooltip.day.total_tokens) }}
+          {{ t('heatmap.requests', { count: tooltip.day.requests }) }}
+          <template v-if="tooltip.day.total_tokens != null">
+            · {{ formatTokens(tooltip.day.total_tokens) }}
+          </template>
         </p>
-        <p class="text-[11px] text-muted-foreground">
+        <p
+          v-if="tooltip.day.total_cost != null"
+          class="text-[11px] text-muted-foreground"
+        >
           {{ t('heatmap.cost', { value: formatCurrency(tooltip.day.total_cost) }) }}
         </p>
       </div>
@@ -52,14 +58,20 @@
 
     <div
       v-if="weekColumns.length > 0"
+      ref="heatmapScroller"
       class="flex w-full gap-3 overflow-x-auto"
+      :class="compact ? 'overflow-y-hidden pb-1' : ''"
     >
       <div
         class="flex flex-col text-[10px] text-muted-foreground flex-shrink-0"
-        :style="verticalGapStyle"
+        :class="compact ? 'sticky left-0 z-10 bg-card pr-2' : ''"
+        :style="[verticalGapStyle, compact ? { paddingTop: '24px' } : undefined]"
       >
         <!-- Placeholder to align with month markers -->
-        <div class="text-[10px] mb-3 invisible">
+        <div
+          v-if="!compact"
+          class="text-[10px] mb-3 invisible"
+        >
           M
         </div>
         <span
@@ -76,6 +88,19 @@
           class="relative block w-full"
         >
           <div
+            v-if="compact"
+            class="relative mb-2 h-4 text-[10px] leading-4 text-muted-foreground/80"
+            :style="{ width: `${gridWidth}px` }"
+          >
+            <span
+              v-for="marker in compactMonthMarkers"
+              :key="marker.weekIndex"
+              class="absolute top-0 whitespace-nowrap"
+              :style="{ left: `${marker.left}px` }"
+            >{{ marker.label }}</span>
+          </div>
+          <div
+            v-else
             class="flex text-[10px] text-muted-foreground/80 mb-3"
             :style="horizontalGapStyle"
           >
@@ -84,6 +109,7 @@
               :key="`month-${weekIndex}`"
               :style="monthCellStyle"
               class="whitespace-nowrap text-left"
+              :class="compact ? 'shrink-0' : ''"
             >
               <span v-if="monthMarkers[weekIndex]">{{ monthMarkers[weekIndex] }}</span>
             </div>
@@ -96,6 +122,7 @@
               v-for="(week, weekIndex) in weekColumns"
               :key="weekIndex"
               class="flex flex-col"
+              :class="compact ? 'shrink-0' : ''"
               :style="verticalGapStyle"
             >
               <div
@@ -105,16 +132,19 @@
               >
                 <div
                   v-if="day"
-                  class="rounded-[4px] transition-all duration-200 hover:shadow-lg cursor-pointer cell-emerge"
-                  :style="[cellSquareStyle, getCellStyle(day.requests), getCellAnimationDelay(weekIndex, dayIndex)]"
+                  class="cursor-pointer cell-emerge rounded-[4px]"
+                  :class="compact
+                    ? 'transition-[filter] duration-150 hover:brightness-90'
+                    : 'transition-all duration-200 hover:shadow-lg'"
+                  :style="[cellStyle, getCellStyle(day.requests), getCellAnimationDelay(weekIndex, dayIndex)]"
                   :title="buildTooltip(day)"
                   @mouseenter="handleHover(day, $event)"
                   @mouseleave="clearHover"
                 />
                 <div
                   v-else
-                  :style="cellSquareStyle"
-                  class="rounded-[4px] bg-transparent"
+                  :style="cellStyle"
+                  class="bg-transparent rounded-[4px]"
                 />
               </div>
             </div>
@@ -142,11 +172,13 @@ const props = withDefaults(defineProps<{
   title?: string
   subtitle?: string
   showHeader?: boolean
+  compact?: boolean
 }>(), {
   data: undefined,
   title: undefined,
   subtitle: undefined,
-  showHeader: true
+  showHeader: true,
+  compact: false
 })
 
 const legendLevels = [0.08, 0.25, 0.45, 0.65, 0.85]
@@ -162,10 +194,11 @@ function formatDay(value: string): string {
 }
 
 type DayWithMeta = ActivityHeatmapDay & { dateObj: Date }
+const heatmapScroller = ref<HTMLElement | null>(null)
 const heatmapWrapper = ref<HTMLElement | null>(null)
 const heatmapWidth = ref(0)
 const cellSize = ref(10)
-const cellGap = ref(4)
+const cellGap = ref(props.compact ? 2 : 4)
 const tooltipRef = ref<HTMLElement | null>(null)
 const tooltip = ref<{ day: ActivityHeatmapDay | null; x: number; y: number; visible: boolean; below: boolean }>({
   day: null,
@@ -180,7 +213,7 @@ const tooltipStyle = computed(() => ({
   transform: tooltip.value.below ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
 }))
 
-const cellSquareStyle = computed(() => ({
+const cellStyle = computed(() => ({
   width: `${cellSize.value}px`,
   height: `${cellSize.value}px`,
 }))
@@ -270,6 +303,46 @@ const monthMarkers = computed(() => {
   return markers
 })
 
+const gridWidth = computed(() => {
+  const columns = weekColumns.value.length
+  return columns * cellSize.value + Math.max(0, columns - 1) * cellGap.value
+})
+
+const compactMonthMarkers = computed(() => {
+  const markers = Object.entries(monthMarkers.value).map(([index, label]) => {
+    const weekIndex = Number(index)
+    // At 10px, digits and Latin letters need less room than full-width month labels.
+    const width = Array.from(label).reduce((total, character) => {
+      return total + (character.charCodeAt(0) <= 0xff ? 6 : 10)
+    }, 0)
+    return {
+      weekIndex,
+      label,
+      width,
+      left: Math.max(0, Math.min(weekIndex * (cellSize.value + cellGap.value), gridWidth.value - width)),
+    }
+  })
+
+  // Keep the most recent month visible when neighboring labels would overlap.
+  let nextLeft = Infinity
+  return markers.reverse().filter(marker => {
+    if (marker.left + marker.width + 8 > nextLeft) return false
+    nextLeft = marker.left
+    return true
+  }).reverse()
+})
+
+watch(
+  [() => props.compact, heatmapScroller, heatmapWidth, gridWidth],
+  async () => {
+    if (!props.compact) return
+    await nextTick()
+    const scroller = heatmapScroller.value
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth
+  },
+  { flush: 'post' }
+)
+
 let resizeObserver: ResizeObserver | null = null
 let mediaQuery: MediaQueryList | null = null
 let mediaQueryHandler: ((event?: MediaQueryListEvent) => void) | null = null
@@ -321,7 +394,7 @@ onMounted(() => {
   }
   mediaQuery = window.matchMedia('(min-width: 640px)')
   const updateGap = () => {
-    cellGap.value = mediaQuery && mediaQuery.matches ? 4 : 2
+    cellGap.value = !props.compact && mediaQuery && mediaQuery.matches ? 4 : 2
     recalcCellSize()
   }
   mediaQueryHandler = () => updateGap()
@@ -399,8 +472,9 @@ function getCellStyle(requests: number) {
 
 function buildTooltip(day: ActivityHeatmapDay): string {
   const dateLabel = formatDay(day.date)
-  const costLabel = formatCurrency(day.total_cost || 0)
-  const parts = [dateLabel, t('heatmap.requests', { count: day.requests }), `${formatTokens(day.total_tokens)} tokens`, costLabel]
+  const parts = [dateLabel, t('heatmap.requests', { count: day.requests })]
+  if (day.total_tokens != null) parts.push(`${formatTokens(day.total_tokens)} tokens`)
+  if (day.total_cost != null) parts.push(formatCurrency(day.total_cost))
   if (day.actual_total_cost !== undefined) {
     parts.push(t('heatmap.actualCost', { value: formatCurrency(day.actual_total_cost) }))
   }

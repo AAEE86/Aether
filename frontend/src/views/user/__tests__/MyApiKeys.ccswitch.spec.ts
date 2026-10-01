@@ -218,6 +218,9 @@ describe('MyApiKeys CC Switch import', () => {
       ?.click()
     await flushPromises()
 
+    expect(meApiMock.createApiKey).toHaveBeenCalledOnce()
+    expect(meApiMock.createApiKey.mock.calls[0]?.[0]).toMatchObject({ name: 'new key' })
+    expect(meApiMock.createApiKey.mock.calls[0]?.[0]).not.toHaveProperty('credential_kind')
     document.querySelector<HTMLButtonElement>('[data-testid="ccswitch-open-created-key"]')?.click()
     await flushPromises()
 

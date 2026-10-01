@@ -85,8 +85,15 @@ describe('main layout navigation builder', () => {
 
     const overviewItems = adminNavigation.find(group => group.title === 'tx:nav.group.overview')?.items ?? []
     expect(overviewItems.findIndex(item => item.name === '远程控制')).toBe(
-      overviewItems.findIndex(item => item.name === 'tx:nav.performanceAnalysis') + 1,
+      overviewItems.findIndex(item => item.name === 'tx:nav.healthMonitor') + 1,
     )
+  })
+
+  it('keeps the five fixed overview destinations in product order', () => {
+    const navigation = buildNavigation({ canAccessAdmin: true, modules: {}, isModuleActive: () => false })
+    expect(navigation[0]?.items.map(item => item.href)).toEqual([
+      '/admin/dashboard', '/admin/operations', '/admin/user-stats', '/admin/cost-analysis', '/admin/health-monitor',
+    ])
   })
 
   it('builds admin navigation with dynamic module menu items sorted by menu order', () => {

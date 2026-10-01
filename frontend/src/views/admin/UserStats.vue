@@ -1,393 +1,245 @@
 <template>
-  <div class="space-y-6 px-4 sm:px-6 lg:px-0">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-      <div>
-        <h1 class="text-lg font-semibold">
-          用户统计
-        </h1>
-        <p class="text-xs text-muted-foreground">
-          查看用户排行榜与使用趋势
-        </p>
-      </div>
-      <div class="flex flex-wrap items-center gap-3">
-        <TimeRangePicker
-          v-model="timeRange"
-          :allow-hourly="true"
-        />
-        <Select
-          v-model="selectedUserId"
-        >
-          <SelectTrigger class="h-8 text-xs w-52">
-            <SelectValue placeholder="选择用户" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem
-              v-for="user in users"
-              :key="user.id"
-              :value="user.id"
-            >
-              {{ user.username || user.email }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-        <Select
-          v-model="compareUserId"
-        >
-          <SelectTrigger class="h-8 text-xs w-52">
-            <SelectValue placeholder="对比用户（可选）" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">
-              不对比
-            </SelectItem>
-            <SelectItem
-              v-for="user in users"
-              :key="`compare-${user.id}`"
-              :value="user.id"
-            >
-              {{ user.username || user.email }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <LeaderboardTable
-        title="用户排行榜"
-        :items="leaderboard"
-        :metric="metric"
-        :loading="leaderboardLoading"
-        @update:metric="metric = $event"
-      />
-
-      <Card class="p-4 space-y-3">
-        <h3 class="text-sm font-semibold">
-          用户摘要
-        </h3>
-        <div
-          v-if="summaryLoading"
-          class="p-6"
-        >
-          <LoadingState />
-        </div>
-        <div
-          v-else
-          class="grid grid-cols-2 gap-3 text-sm"
-        >
-          <div>
-            <div class="text-xs text-muted-foreground">
-              请求数
-            </div>
-            <div class="font-semibold">
-              {{ userSummary?.total_requests ?? 0 }}
-            </div>
-          </div>
-          <div>
-            <div class="text-xs text-muted-foreground">
-              Tokens
-            </div>
-            <div class="font-semibold">
-              {{ formatTokens(userSummary?.total_tokens ?? 0) }}
-            </div>
-          </div>
-          <div>
-            <div class="text-xs text-muted-foreground">
-              成本
-            </div>
-            <div class="font-semibold">
-              {{ formatCurrency(userSummary?.total_cost ?? 0) }}
-            </div>
-          </div>
-          <div>
-            <div class="text-xs text-muted-foreground">
-              错误率
-            </div>
-            <div class="font-semibold">
-              {{ userSummary?.error_rate ?? 0 }}%
-            </div>
-          </div>
-        </div>
-      </Card>
-    </div>
-
-    <Card class="p-4 space-y-4">
-      <h3 class="text-sm font-semibold">
-        用户使用趋势
-      </h3>
-      <div
-        v-if="seriesLoading"
-        class="p-6"
-      >
-        <LoadingState />
-      </div>
-      <div
-        v-else
-        class="h-[280px]"
-      >
-        <LineChart :data="seriesChartData" />
-      </div>
-    </Card>
-
-    <Card
-      v-if="comparisonSeries.length > 0"
-      class="p-4 space-y-4"
+  <main class="space-y-5 px-4 pb-8 sm:px-6 lg:px-0">
+    <OverviewToolbar
+      :title="t('用户分析', 'User analysis')"
+      :range="range"
+      :preset="relativePreset"
+      :show-range="false"
+      :refresh-active="autoRefresh"
+      :refresh-title="refreshTitle"
+      presets-only
+      @update:range="setRange"
+      @refresh="toggleAutoRefresh"
     >
-      <h3 class="text-sm font-semibold">
-        用户对比趋势
-      </h3>
-      <div class="h-[280px]">
-        <LineChart :data="comparisonChartData" />
+      <Button
+        variant="outline"
+        size="sm"
+        :disabled="exporting"
+        @click="exportCsv('users', requestQuery)"
+      >
+        <Download class="mr-2 h-4 w-4" />{{ t('导出用户报表', 'Export user report') }}
+      </Button>
+    </OverviewToolbar>
+    <OverviewStatus
+      :error="error || exportError"
+      @retry="refreshAll"
+    />
+    <UserFinanceSummary
+      :summary="data?.data.summary"
+      :finance="data?.data.finance_summary"
+      :user-count="data?.data.summary?.user_count"
+      :active-user-count="data?.data.summary?.active_user_count"
+    />
+    <UserReports :revision="revision" />
+    <TableCard
+      :title="t('用户账目', 'User accounts')"
+      :description="t('消费与到账按所选时间统计，余额为当前值', 'Consumption and credits follow the selected period; balances are current')"
+      class="relative min-w-0"
+      data-user-accounts
+    >
+      <template #actions>
+        <form
+          class="flex w-full items-center gap-2 md:w-auto"
+          @submit.prevent="patch({ search: search.trim() || undefined, offset: undefined })"
+        >
+          <div class="relative min-w-0 flex-1 md:w-48 md:flex-none">
+            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
+            <Input
+              v-model="search"
+              type="search"
+              :placeholder="t('搜索用户', 'Search users')"
+              :aria-label="t('搜索用户', 'Search users')"
+              class="h-8 w-full text-xs border-border/60 pl-8"
+            />
+          </div>
+          <Button
+            type="submit"
+            size="sm"
+            variant="outline"
+            class="h-8 text-xs"
+          >
+            {{ t('查询', 'Search') }}
+          </Button>
+        </form>
+      </template>
+      <p
+        v-if="query.search"
+        class="border-b border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-6"
+      >
+        {{ t('上方汇总与账目仅包含匹配的用户', 'The summary and accounts include matching users only') }}
+      </p>
+      <div
+        class="min-w-0"
+        :aria-busy="loading"
+      >
+        <Table class="min-w-[1040px]">
+          <TableHeader>
+            <TableRow class="border-b border-border/60 hover:bg-transparent">
+              <TableHead class="h-12 font-semibold">
+                {{ t('用户', 'User') }}
+              </TableHead>
+              <SortableTableHead
+                v-for="column in columns"
+                :key="column.key"
+                class="h-12 font-semibold text-right"
+                :column-key="column.key"
+                :active-key="requestQuery.sort"
+                :direction="requestQuery.order"
+                default-direction="desc"
+                align="right"
+                @sort="sort"
+              >
+                {{ column.label }}
+              </SortableTableHead>
+              <TableHead class="h-12 font-semibold text-right">
+                {{ t('充值', 'Recharges') }}
+              </TableHead>
+              <TableHead class="h-12 font-semibold text-right">
+                {{ t('余额', 'Balance') }}
+              </TableHead>
+              <TableHead class="h-12 font-semibold text-right">
+                {{ t('最近使用', 'Last used') }}
+              </TableHead>
+              <TableHead class="h-12 font-semibold text-right">
+                {{ t('记录', 'Records') }}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <TableRow
+              v-for="user in data?.data.items || []"
+              :key="user.user_id"
+              class="border-b border-border/40 hover:bg-muted/30 transition-colors h-[72px]"
+            >
+              <TableCell class="max-w-64 py-4 text-xs">
+                <button
+                  type="button"
+                  class="break-words hover:text-primary hover:underline"
+                  @click="accountUser = user"
+                >
+                  {{ user.username }}
+                </button>
+                <span
+                  v-if="!user.is_active"
+                  class="ml-2 text-xs text-muted-foreground"
+                >{{ t('停用', 'Disabled') }}</span>
+                <p class="mt-0.5 break-words text-xs text-muted-foreground">
+                  {{ user.email }}
+                </p>
+              </TableCell>
+              <TableCell
+                class="whitespace-nowrap py-4 text-right text-xs font-medium tabular-nums"
+                :title="user.billable_amount?.value ?? ''"
+              >
+                {{ money(user.billable_amount) }}
+              </TableCell>
+              <TableCell class="py-4 text-right text-xs tabular-nums">
+                {{ count(user.request_count) }}
+              </TableCell>
+              <TableCell class="py-4 text-right text-xs tabular-nums">
+                {{ count(user.total_tokens) }}
+              </TableCell>
+              <TableCell class="whitespace-nowrap py-4 text-right text-xs tabular-nums">
+                {{ money(user.finance?.recharge_amount) }}
+              </TableCell>
+              <TableCell class="whitespace-nowrap py-4 text-right text-xs tabular-nums">
+                {{ money(user.finance?.wallet_balance) }}
+              </TableCell>
+              <TableCell class="whitespace-nowrap py-4 text-right text-xs text-muted-foreground">
+                {{ timestamp(user.last_used_at, range.timezone) }}
+              </TableCell>
+              <TableCell class="whitespace-nowrap py-4 text-right text-xs">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  :title="t('查看', 'View') + ' ' + user.username + ' ' + t('账目', 'account')"
+                  :aria-label="t('查看', 'View') + ' ' + user.username + ' ' + t('账目', 'account')"
+                  @click="accountUser = user"
+                >
+                  <ReceiptText class="h-4 w-4" />
+                </Button>
+              </TableCell>
+            </TableRow>
+            <TableRow v-if="!data?.data.items.length">
+              <TableCell
+                colspan="8"
+                class="py-12 text-center text-muted-foreground"
+              >
+                {{ loading ? t('加载中', 'Loading') : error ? t('用户账目暂不可用', 'User accounts unavailable') : t('没有符合条件的用户', 'No matching users') }}
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
       </div>
-    </Card>
-  </div>
+      <template #pagination>
+        <Pagination
+          v-if="data"
+          :total="data.data.total"
+          :current="Math.floor(requestQuery.offset / requestQuery.limit) + 1"
+          :page-size="requestQuery.limit"
+          :page-size-options="[25, 50, 100]"
+          @update:current="changePage"
+          @update:page-size="changePageSize"
+        />
+      </template>
+    </TableCard>
+    <UserAccountDrawer
+      v-if="accountUser"
+      :key="accountUser.user_id"
+      :user="accountUser"
+      :timezone="range.timezone"
+      @close="accountUser = null"
+    />
+  </main>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { Card, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui'
-import LineChart from '@/components/charts/LineChart.vue'
-import { LoadingState, TimeRangePicker } from '@/components/common'
-import { LeaderboardTable } from '@/components/stats'
-import { adminApi, type LeaderboardItem } from '@/api/admin'
-import { usersApi, type User } from '@/api/users'
-import { usageApi } from '@/api/usage'
-import { formatCurrency, formatTokens } from '@/utils/format'
-import { getDateRangeFromPeriod } from '@/features/usage/composables'
-import type { DateRangeParams } from '@/features/usage/types'
-
-const timeRange = ref<DateRangeParams>(getDateRangeFromPeriod('last7days'))
-const metric = ref<'requests' | 'tokens' | 'cost'>('requests')
-
-const users = ref<User[]>([])
-const selectedUserId = ref<string | null>(null)
-const compareUserId = ref<string>('__none__')
-
-const leaderboard = ref<LeaderboardItem[]>([])
-const leaderboardLoading = ref(false)
-
-interface UsageSummary {
-  total_requests: number
-  total_tokens: number
-  total_cost: number
-  error_rate: number
-}
-
-interface TimeSeriesItem {
-  date: string
-  total_cost: number
-}
-
-const userSummary = ref<UsageSummary | null>(null)
-const summaryLoading = ref(false)
-
-const series = ref<TimeSeriesItem[]>([])
-const comparisonSeries = ref<TimeSeriesItem[]>([])
-const seriesLoading = ref(false)
-let leaderboardRequestId = 0
-let summaryRequestId = 0
-let seriesRequestId = 0
-let leaderboardLoadPromise: Promise<void> | null = null
-let hasPendingLeaderboardLoad = false
-let leaderboardDebounceTimer: ReturnType<typeof setTimeout> | null = null
-let userPanelsLoadPromise: Promise<void> | null = null
-let hasPendingUserPanelsLoad = false
-let userPanelsDebounceTimer: ReturnType<typeof setTimeout> | null = null
-
-function buildTimeRangeParams() {
-  return {
-    start_date: timeRange.value.start_date,
-    end_date: timeRange.value.end_date,
-    preset: timeRange.value.preset,
-    timezone: timeRange.value.timezone,
-    tz_offset_minutes: timeRange.value.tz_offset_minutes,
-    granularity: timeRange.value.granularity || 'day'
-  }
-}
-
-async function loadUsers() {
-  users.value = await usersApi.getAllUsers()
-  if (!selectedUserId.value && users.value.length > 0) {
-    selectedUserId.value = users.value[0].id
-  }
-}
-
-async function loadLeaderboard() {
-  if (leaderboardLoadPromise) {
-    hasPendingLeaderboardLoad = true
-    return leaderboardLoadPromise
-  }
-  leaderboardLoadPromise = (async () => {
-  const requestId = ++leaderboardRequestId
-  leaderboardLoading.value = true
-  try {
-    const response = await adminApi.getLeaderboardUsers({
-      ...buildTimeRangeParams(),
-      metric: metric.value,
-      limit: 10
-    })
-    if (requestId !== leaderboardRequestId) return
-    leaderboard.value = response.items
-  } finally {
-    if (requestId === leaderboardRequestId) {
-      leaderboardLoading.value = false
-    }
-  }
-  })().finally(() => {
-    leaderboardLoadPromise = null
-    if (hasPendingLeaderboardLoad) {
-      hasPendingLeaderboardLoad = false
-      void loadLeaderboard()
-    }
-  })
-  return leaderboardLoadPromise
-}
-
-async function loadSummary() {
-  if (!selectedUserId.value) return
-  const requestId = ++summaryRequestId
-  summaryLoading.value = true
-  try {
-    const summary = await usageApi.getUsageStats({
-      ...buildTimeRangeParams(),
-      user_id: selectedUserId.value
-    })
-    if (requestId !== summaryRequestId) return
-    userSummary.value = { ...summary, error_rate: summary.error_rate ?? 0 }
-  } finally {
-    if (requestId === summaryRequestId) {
-      summaryLoading.value = false
-    }
-  }
-}
-
-async function loadSeries() {
-  if (!selectedUserId.value) return
-  const requestId = ++seriesRequestId
-  seriesLoading.value = true
-  try {
-    const baseParams = {
-      ...buildTimeRangeParams(),
-      user_id: selectedUserId.value
-    }
-    const shouldCompare = Boolean(compareUserId.value && compareUserId.value !== '__none__')
-    const comparePromise: Promise<TimeSeriesItem[]> = shouldCompare
-      ? adminApi.getTimeSeries({
-        ...buildTimeRangeParams(),
-        user_id: compareUserId.value
-      })
-      : Promise.resolve([])
-
-    const [primarySeries, compareSeries] = await Promise.all([
-      adminApi.getTimeSeries(baseParams),
-      comparePromise
-    ])
-
-    if (requestId !== seriesRequestId) return
-    series.value = primarySeries
-    comparisonSeries.value = compareSeries
-  } finally {
-    if (requestId === seriesRequestId) {
-      seriesLoading.value = false
-    }
-  }
-}
-
-async function loadUserPanels() {
-  if (userPanelsLoadPromise) {
-    hasPendingUserPanelsLoad = true
-    return userPanelsLoadPromise
-  }
-  userPanelsLoadPromise = Promise.all([loadSummary(), loadSeries()])
-    .then(() => undefined)
-    .finally(() => {
-      userPanelsLoadPromise = null
-      if (hasPendingUserPanelsLoad) {
-        hasPendingUserPanelsLoad = false
-        void loadUserPanels()
-      }
-    })
-  return userPanelsLoadPromise
-}
-
-const seriesChartData = computed(() => ({
-  labels: series.value.map(item => item.date),
-  datasets: [
-    {
-      label: '成本',
-      data: series.value.map(item => item.total_cost),
-      borderColor: 'rgb(59, 130, 246)',
-      tension: 0.25,
-      pointRadius: 2
-    }
-  ]
+import { computed, ref, watch } from 'vue'
+import { Download, Search, ReceiptText } from 'lucide-vue-next'
+import { Button, Input, Pagination, SortableTableHead, Table, TableBody, TableCard, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui'
+import { overviewApi } from '@/api/overview'
+import OverviewToolbar from '@/features/overview/components/OverviewToolbar.vue'
+import OverviewStatus from '@/features/overview/components/OverviewStatus.vue'
+import UserFinanceSummary from '@/features/overview/users/UserFinanceSummary.vue'
+import UserReports from '@/features/overview/users/UserReports.vue'
+import UserAccountDrawer from '@/features/overview/users/UserAccountDrawer.vue'
+import { useUserAnalysisRefresh } from '@/features/overview/users/useUserAnalysisRefresh'
+import { useOverviewQuery } from '@/features/overview/query'
+import { useOverviewRequest } from '@/features/overview/useOverviewRequest'
+import { useOverviewExport } from '@/features/overview/useOverviewExport'
+import { useOverviewI18n } from '@/features/overview/i18n'
+import { count, money, timestamp } from '@/features/overview/format'
+const { t } = useOverviewI18n()
+const { query, range, relativePreset, refreshRange, setRange, patch } = useOverviewQuery('today', { rolling: true })
+const { revision, autoRefresh, refreshTitle, refreshAll, toggleAutoRefresh } = useUserAnalysisRefresh(refreshRange)
+const search = ref(query.value.search || '')
+const accountUser = ref<{ user_id: string; username: string } | null>(null)
+const paginationUpdating = ref(false)
+watch(() => query.value.search, value => { search.value = value || '' })
+const requestQuery = computed(() => ({
+  ...range.value,
+  search: query.value.search,
+  limit: Math.max(1, Math.min(100, query.value.limit || 25)),
+  offset: query.value.offset || 0,
+  sort: ['billable_amount', 'request_count', 'total_tokens'].includes(query.value.sort || '') ? query.value.sort : 'billable_amount',
+  order: query.value.order || 'desc',
 }))
-
-const comparisonChartData = computed(() => ({
-  labels: series.value.map(item => item.date),
-  datasets: [
-    {
-      label: '当前用户',
-      data: series.value.map(item => item.total_cost),
-      borderColor: 'rgb(59, 130, 246)',
-      tension: 0.25,
-      pointRadius: 2
-    },
-    {
-      label: '对比用户',
-      data: comparisonSeries.value.map(item => item.total_cost),
-      borderColor: 'rgb(234, 179, 8)',
-      tension: 0.25,
-      pointRadius: 2
-    }
-  ]
-}))
-
-function scheduleLeaderboardLoad() {
-  if (leaderboardDebounceTimer) {
-    clearTimeout(leaderboardDebounceTimer)
-  }
-  leaderboardDebounceTimer = setTimeout(() => {
-    leaderboardDebounceTimer = null
-    void loadLeaderboard()
-  }, 120)
+const scope = computed(() => JSON.stringify({ ...requestQuery.value, ...(relativePreset.value ? { from: undefined, to: undefined, preset: relativePreset.value } : {}) }))
+const { data, loading, error } = useOverviewRequest(() => JSON.stringify([requestQuery.value, revision.value]), signal => overviewApi.users(requestQuery.value, signal), { scopeKey: scope })
+const { exporting, exportError, exportCsv } = useOverviewExport()
+const columns = computed(() => [{ key: 'billable_amount', label: t('消费', 'Consumption') }, { key: 'request_count', label: t('请求数', 'Requests') }, { key: 'total_tokens', label: 'Tokens' }])
+function sort({ key, direction }: { key: string; direction: 'asc' | 'desc' }) {
+  void patch({ sort: key, order: direction, offset: undefined })
 }
-
-function scheduleUserPanelsLoad() {
-  if (userPanelsDebounceTimer) {
-    clearTimeout(userPanelsDebounceTimer)
-  }
-  userPanelsDebounceTimer = setTimeout(() => {
-    userPanelsDebounceTimer = null
-    void loadUserPanels()
-  }, 120)
+async function changePage(page: number) {
+  if (loading.value || paginationUpdating.value) return
+  paginationUpdating.value = true
+  try { await patch({ offset: (page - 1) * requestQuery.value.limit }) } finally { paginationUpdating.value = false }
 }
-
-watch([timeRange, metric], scheduleLeaderboardLoad, { deep: true })
-watch([timeRange, selectedUserId, compareUserId], scheduleUserPanelsLoad, { deep: true })
-
-onMounted(async () => {
-  await Promise.all([
-    loadLeaderboard(),
-    loadUsers()
-  ])
-})
-
-onUnmounted(() => {
-  if (leaderboardDebounceTimer) {
-    clearTimeout(leaderboardDebounceTimer)
-    leaderboardDebounceTimer = null
-  }
-  if (userPanelsDebounceTimer) {
-    clearTimeout(userPanelsDebounceTimer)
-    userPanelsDebounceTimer = null
-  }
-  hasPendingLeaderboardLoad = false
-  hasPendingUserPanelsLoad = false
-  leaderboardLoadPromise = null
-  userPanelsLoadPromise = null
-  leaderboardRequestId += 1
-  summaryRequestId += 1
-  seriesRequestId += 1
-})
+async function changePageSize(limit: number) {
+  if (loading.value || paginationUpdating.value) return
+  paginationUpdating.value = true
+  try { await patch({ limit, offset: undefined }) } finally { paginationUpdating.value = false }
+}
 </script>

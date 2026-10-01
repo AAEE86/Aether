@@ -114,6 +114,7 @@ impl StoredWalletSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AdminWalletListQuery {
+    pub user_id: Option<String>,
     pub status: Option<String>,
     pub owner_type: Option<String>,
     pub limit: usize,

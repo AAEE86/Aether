@@ -33,6 +33,50 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const ADMIN_USAGE_ACTIVE_LIMIT: usize = 50;
 
+pub(super) fn resolve_record_time_bounds(
+    query: Option<&str>,
+) -> Result<Option<(u64, u64)>, String> {
+    let entries =
+        url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()).collect::<Vec<_>>();
+    let from = entries
+        .iter()
+        .filter(|(key, _)| key == "from")
+        .collect::<Vec<_>>();
+    let to = entries
+        .iter()
+        .filter(|(key, _)| key == "to")
+        .collect::<Vec<_>>();
+    if from.is_empty() && to.is_empty() {
+        return resolve_admin_usage_time_range(query).map(|range| range.to_unix_bounds());
+    }
+    if from.len() != 1 || to.len() != 1 {
+        return Err("from and to must each be provided once".into());
+    }
+    if entries
+        .iter()
+        .any(|(key, _)| matches!(key.as_ref(), "start_date" | "end_date" | "preset" | "days"))
+    {
+        return Err("precise from/to cannot be combined with date presets".into());
+    }
+    if let Some(zone) = query_param_value(query, "timezone") {
+        zone.parse::<chrono_tz::Tz>()
+            .map_err(|_| "invalid timezone".to_string())?;
+    }
+    let parse = |value: &str| -> Result<u64, String> {
+        let value = chrono::DateTime::parse_from_rfc3339(value)
+            .map_err(|_| "from/to must be RFC 3339 timestamps".to_string())?;
+        if value.timestamp_subsec_nanos() != 0 {
+            return Err("request records support second-aligned ranges".into());
+        }
+        u64::try_from(value.timestamp()).map_err(|_| "from/to must not precede Unix epoch".into())
+    };
+    let bounds = (parse(&from[0].1)?, parse(&to[0].1)?);
+    if bounds.0 >= bounds.1 || bounds.1 - bounds.0 > 366 * 86_400 {
+        return Err("from/to must define a nonempty range of at most 366 days".into());
+    }
+    Ok(Some(bounds))
+}
+
 async fn load_admin_usage_by_ids(
     state: &AdminAppState<'_>,
     requested_ids: &BTreeSet<String>,
@@ -70,6 +114,7 @@ fn apply_admin_usage_status_filter(query: &mut UsageAuditListQuery, status: Opti
         }
         "websocket" | "ws" => query.is_websocket = Some(true),
         "error" | "failed" => query.error_only = true,
+        "success" => query.statuses = Some(vec!["completed".to_string()]),
         "active" => {
             query.statuses = Some(vec!["pending".to_string(), "streaming".to_string()]);
         }
@@ -523,12 +568,37 @@ fn build_admin_usage_records_query(
     query: Option<&str>,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> UsageAuditListQuery {
+) -> Result<UsageAuditListQuery, String> {
+    let boolean = |key| match query_param_value(query, key).as_deref() {
+        None => Ok(None),
+        Some("true" | "1") => Ok(Some(true)),
+        Some("false" | "0") => Ok(Some(false)),
+        Some(_) => Err(format!("invalid {key}: expected true or false")),
+    };
+    let slow_threshold_ms = query_param_value(query, "slow_threshold_ms")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| (1..=86_400_000).contains(value))
+                .ok_or_else(|| "slow_threshold_ms must be between 1 and 86400000".to_string())
+        })
+        .transpose()?;
     let mut list_query = UsageAuditListQuery {
         created_from_unix_secs: Some(created_from_unix_secs),
         created_until_unix_secs: Some(created_until_unix_secs),
         user_id: query_param_value(query, "user_id"),
         provider_name: query_param_value(query, "provider"),
+        provider_id: query_param_value(query, "provider_id"),
+        api_key_id: query_param_value(query, "api_key_id"),
+        request_id: query_param_value(query, "request_id"),
+        attribution_kind: query_param_value(query, "attribution_kind"),
+        actor_user_id: query_param_value(query, "actor_user_id"),
+        slow_threshold_ms,
+        endpoint_kind: query_param_value(query, "endpoint_kind"),
+        request_type: query_param_value(query, "request_type"),
+        has_format_conversion: boolean("has_format_conversion")?,
+        is_stream: boolean("is_stream")?,
         model: query_param_value(query, "model"),
         api_format: query_param_value(query, "api_format"),
         limit,
@@ -536,11 +606,23 @@ fn build_admin_usage_records_query(
         newest_first: true,
         ..Default::default()
     };
+    if list_query
+        .attribution_kind
+        .as_deref()
+        .is_some_and(|kind| !matches!(kind, "employee" | "standalone" | "unknown"))
+    {
+        return Err("invalid attribution_kind".into());
+    }
+    if list_query.attribution_kind.as_deref() == Some("employee")
+        && list_query.actor_user_id.is_none()
+    {
+        list_query.actor_user_id = list_query.user_id.take();
+    }
     apply_admin_usage_status_filter(
         &mut list_query,
         query_param_value(query, "status").as_deref(),
     );
-    list_query
+    Ok(list_query)
 }
 
 fn parse_admin_usage_search_keywords(search: &str) -> Vec<String> {
@@ -653,6 +735,15 @@ fn build_admin_usage_keyword_search_query(
         created_until_unix_secs: base_query.created_until_unix_secs,
         user_id: base_query.user_id.clone(),
         provider_name: base_query.provider_name.clone(),
+        provider_id: base_query.provider_id.clone(),
+        api_key_id: base_query.api_key_id.clone(),
+        request_id: base_query.request_id.clone(),
+        attribution_kind: base_query.attribution_kind.clone(),
+        actor_user_id: base_query.actor_user_id.clone(),
+        slow_threshold_ms: base_query.slow_threshold_ms,
+        endpoint_kind: base_query.endpoint_kind.clone(),
+        request_type: base_query.request_type.clone(),
+        has_format_conversion: base_query.has_format_conversion,
         model: base_query.model.clone(),
         api_format: base_query.api_format.clone(),
         client_family: base_query.client_family.clone(),
@@ -699,13 +790,11 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
             }
 
             let query = request_context.request_query_string.as_deref();
-            let time_range = match resolve_admin_usage_time_range(query) {
+            let time_bounds = match resolve_record_time_bounds(query) {
                 Ok(value) => value,
                 Err(detail) => return Ok(Some(admin_usage_bad_request_response(detail))),
             };
-            let Some((created_from_unix_secs, created_until_unix_secs)) =
-                time_range.to_unix_bounds()
-            else {
+            let Some((created_from_unix_secs, created_until_unix_secs)) = time_bounds else {
                 return Ok(Some(build_admin_usage_summary_stats_response_from_summary(
                     &Default::default(),
                 )));
@@ -743,13 +832,11 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
                 sort_usage_newest_first(&mut items);
                 items
             } else {
-                let time_range = match resolve_admin_usage_time_range(query) {
+                let time_bounds = match resolve_record_time_bounds(query) {
                     Ok(value) => value,
                     Err(detail) => return Ok(Some(admin_usage_bad_request_response(detail))),
                 };
-                let Some((created_from_unix_secs, created_until_unix_secs)) =
-                    time_range.to_unix_bounds()
-                else {
+                let Some((created_from_unix_secs, created_until_unix_secs)) = time_bounds else {
                     return Ok(Some(build_admin_usage_active_requests_response(
                         &[],
                         &BTreeMap::new(),
@@ -806,7 +893,7 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
             }
 
             let query = request_context.request_query_string.as_deref();
-            let time_range = match resolve_admin_usage_time_range(query) {
+            let time_bounds = match resolve_record_time_bounds(query) {
                 Ok(value) => value,
                 Err(detail) => return Ok(Some(admin_usage_bad_request_response(detail))),
             };
@@ -827,9 +914,7 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
                 Ok(value) => value,
                 Err(detail) => return Ok(Some(admin_usage_bad_request_response(detail))),
             };
-            let Some((created_from_unix_secs, created_until_unix_secs)) =
-                time_range.to_unix_bounds()
-            else {
+            let Some((created_from_unix_secs, created_until_unix_secs)) = time_bounds else {
                 return Ok(Some(build_admin_usage_records_response(
                     &[],
                     &BTreeMap::new(),
@@ -849,13 +934,16 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
             let active_client_family_filter = client_family_filter
                 .as_deref()
                 .filter(|value| !value.trim().is_empty());
-            let mut base_query = build_admin_usage_records_query(
+            let mut base_query = match build_admin_usage_records_query(
                 created_from_unix_secs,
                 created_until_unix_secs,
                 query,
                 None,
                 None,
-            );
+            ) {
+                Ok(value) => value,
+                Err(detail) => return Ok(Some(admin_usage_bad_request_response(detail))),
+            };
             base_query.client_family = active_client_family_filter.map(str::to_owned);
             base_query.exclude_unknown_model_or_provider = hide_unknown_records;
             let (usage, total, total_is_estimated) = if attempt_status_filter.is_some() {
@@ -1028,6 +1116,89 @@ pub(super) async fn maybe_build_local_admin_usage_summary_response(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn precise_record_ranges_preserve_minutes_and_reject_mixed_presets() {
+        let range = "from=2026-09-01T23:45:00Z&to=2026-09-02T00:15:00Z&timezone=Asia%2FShanghai";
+        let (from, to) = super::resolve_record_time_bounds(Some(range))
+            .unwrap()
+            .unwrap();
+        assert_eq!(to - from, 30 * 60);
+        assert!(super::resolve_record_time_bounds(Some(&format!("{range}&preset=today"))).is_err());
+        assert!(super::resolve_record_time_bounds(Some("from=2026-09-01T00:00:00Z")).is_err());
+    }
+
+    #[test]
+    fn overview_record_drilldown_preserves_actor_and_performance_filters() {
+        let raw = "user_id=employee-1&attribution_kind=employee&provider_id=provider-1&api_key_id=key-1&request_id=request-1&endpoint_kind=chat&request_type=chat&is_stream=true&has_format_conversion=false&slow_threshold_ms=12000&status=success";
+        let query =
+            super::build_admin_usage_records_query(100, 200, Some(raw), None, None).unwrap();
+        assert_eq!(query.user_id, None);
+        assert_eq!(query.actor_user_id.as_deref(), Some("employee-1"));
+        assert_eq!(query.provider_id.as_deref(), Some("provider-1"));
+        assert_eq!(query.api_key_id.as_deref(), Some("key-1"));
+        assert_eq!(query.request_id.as_deref(), Some("request-1"));
+        assert_eq!(query.slow_threshold_ms, Some(12_000));
+        assert_eq!(query.is_stream, Some(true));
+        assert_eq!(query.has_format_conversion, Some(false));
+        assert_eq!(query.statuses, Some(vec!["completed".into()]));
+        let keyword = super::build_admin_usage_keyword_search_query(
+            &query,
+            vec!["example".into()],
+            None,
+            Default::default(),
+            false,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(keyword.actor_user_id, query.actor_user_id);
+        assert_eq!(keyword.slow_threshold_ms, query.slow_threshold_ms);
+        assert_eq!(keyword.has_format_conversion, query.has_format_conversion);
+        for invalid in [
+            "is_stream=maybe",
+            "slow_threshold_ms=0",
+            "attribution_kind=owner",
+        ] {
+            assert!(
+                super::build_admin_usage_records_query(100, 200, Some(invalid), None, None)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn overview_record_drilldown_preserves_standalone_key_ownership() {
+        let raw = "user_id=owner-1&attribution_kind=standalone&api_key_id=standalone-key";
+        let query =
+            super::build_admin_usage_records_query(100, 200, Some(raw), None, None).unwrap();
+        assert_eq!(query.attribution_kind.as_deref(), Some("standalone"));
+        assert_eq!(query.user_id.as_deref(), Some("owner-1"));
+        assert_eq!(query.actor_user_id, None);
+        assert_eq!(query.api_key_id.as_deref(), Some("standalone-key"));
+        let keyword = super::build_admin_usage_keyword_search_query(
+            &query,
+            vec!["example".into()],
+            None,
+            Default::default(),
+            false,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(keyword.attribution_kind, query.attribution_kind);
+        assert_eq!(keyword.user_id, query.user_id);
+        assert_eq!(keyword.actor_user_id, query.actor_user_id);
+        assert_eq!(keyword.api_key_id, query.api_key_id);
+
+        for retired_kind in ["service", "shared"] {
+            let raw = format!("attribution_kind={retired_kind}");
+            assert!(
+                super::build_admin_usage_records_query(100, 200, Some(&raw), None, None).is_err(),
+                "{retired_kind}"
+            );
+        }
+    }
+
     use aether_data_contracts::repository::candidates::{
         RequestCandidateStatus, StoredRequestCandidate,
     };
@@ -1169,7 +1340,7 @@ mod tests {
         for status in ["websocket", "ws", "WS"] {
             let raw_query = format!("status={status}");
             let list_query =
-                build_admin_usage_records_query(100, 200, Some(&raw_query), None, None);
+                build_admin_usage_records_query(100, 200, Some(&raw_query), None, None).unwrap();
 
             assert_eq!(list_query.is_websocket, Some(true));
             assert_eq!(list_query.is_stream, None);
@@ -1190,7 +1361,7 @@ mod tests {
         for (status, expected_stream) in [("stream", true), ("standard", false)] {
             let raw_query = format!("status={status}");
             let list_query =
-                build_admin_usage_records_query(100, 200, Some(&raw_query), None, None);
+                build_admin_usage_records_query(100, 200, Some(&raw_query), None, None).unwrap();
             assert_eq!(list_query.is_stream, Some(expected_stream));
             assert_eq!(list_query.is_websocket, Some(false));
 

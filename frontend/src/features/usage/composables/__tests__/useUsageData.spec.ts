@@ -137,6 +137,18 @@ describe('useUsageData', () => {
     }))
   })
 
+  it('preserves precise overview scope and false performance filters in records and total requests', async () => {
+    const { loadRecords } = useUsageData({ isAdminPage: ref(true) })
+    getAllUsageRecordsMock.mockResolvedValueOnce({ records: [], total: 100, total_is_estimated: true })
+    const range = { from: '2026-09-10T16:20:42.000Z', to: '2026-09-10T17:20:42.000Z', timezone: 'Asia/Shanghai' }
+    const filters = { provider_id: 'provider-1', api_key_id: 'key-1', endpoint_kind: 'chat', request_type: 'standard', is_stream: false, has_format_conversion: false, slow_threshold_ms: 8000 }
+    await loadRecords({ page: 2, pageSize: 20 }, filters, range)
+    await flushMicrotasks()
+    expect(getAllUsageRecordsMock).toHaveBeenCalledWith(expect.objectContaining({ ...range, ...filters, offset: 20 }))
+    expect(getAllUsageRecordTotalMock).toHaveBeenCalledWith(expect.objectContaining({ ...range, ...filters }))
+    expect(getAllUsageRecordsMock.mock.calls[0][0].preset).toBeUndefined()
+  })
+
   it('sends the WebSocket type filter to the user records endpoint before pagination', async () => {
     const isAdminPage = ref(false)
     const { loadRecords } = useUsageData({ isAdminPage })

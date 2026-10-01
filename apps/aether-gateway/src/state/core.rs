@@ -38,8 +38,9 @@ use super::super::async_task::{
 };
 use super::super::cache::{
     AuthApiKeyLastUsedCache, AuthContextCache, AuthSnapshotCache, DashboardResponseCache,
-    DirectPlanBypassCache, JsonValueCache, SchedulerAffinityCache, SchedulerAffinitySnapshotEntry,
-    SchedulerAffinityTarget, SystemConfigCache, SystemConfigInflightRegistration, ValueCache,
+    DirectPlanBypassCache, JsonValueCache, OverviewTotalCache, SchedulerAffinityCache,
+    SchedulerAffinitySnapshotEntry, SchedulerAffinityTarget, SystemConfigCache,
+    SystemConfigInflightRegistration, ValueCache,
 };
 use super::super::data::{GatewayDataConfig, GatewayDataState};
 use super::super::fallback_metrics;
@@ -254,6 +255,7 @@ impl AppState {
     }
 
     fn replace_foreground_data_state(&mut self, data: Arc<GatewayDataState>) {
+        self.overview_total_cache = Arc::new(OverviewTotalCache::default());
         self.clear_provider_transport_snapshot_cache();
         self.invalidate_scheduler_affinity_cache();
         self.invalidate_auth_context_cache();
@@ -351,6 +353,8 @@ impl AppState {
             runtime_state: runtime_state.clone(),
             internal_gateway_auth,
             usage_runtime: Arc::new(usage::UsageRuntime::disabled()),
+            request_activity: Arc::new(crate::request_activity::RequestActivity::default()),
+            execution_activity: Arc::new(crate::execution_activity::ExecutionActivity::default()),
             video_tasks: Arc::new(VideoTaskService::new(
                 VideoTaskTruthSourceMode::PythonSyncReport,
             )),
@@ -402,6 +406,7 @@ impl AppState {
             scheduler_affinity_cache: Arc::new(SchedulerAffinityCache::default()),
             scheduler_affinity_epoch: Arc::new(AtomicU64::new(0)),
             dashboard_response_cache: Arc::new(DashboardResponseCache::default()),
+            overview_total_cache: Arc::new(OverviewTotalCache::default()),
             system_config_cache: Arc::new(SystemConfigCache::default()),
             endpoint_response_header_rules_cache: Arc::new(JsonValueCache::default()),
             candidate_row_page_cache: Arc::new(crate::cache::CandidateRowPageCache::default()),

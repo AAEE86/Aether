@@ -995,6 +995,24 @@ pub struct StoredProviderApiKeyWindowUsageSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct UsageAuditListQuery {
+    #[serde(default)]
+    pub slow_threshold_ms: Option<u64>,
+    #[serde(default)]
+    pub endpoint_kind: Option<String>,
+    #[serde(default)]
+    pub request_type: Option<String>,
+    #[serde(default)]
+    pub has_format_conversion: Option<bool>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub api_key_id: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub attribution_kind: Option<String>,
+    #[serde(default)]
+    pub actor_user_id: Option<String>,
     pub created_from_unix_secs: Option<u64>,
     pub created_until_unix_secs: Option<u64>,
     pub user_id: Option<String>,
@@ -1015,6 +1033,24 @@ pub struct UsageAuditListQuery {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct UsageAuditKeywordSearchQuery {
+    #[serde(default)]
+    pub slow_threshold_ms: Option<u64>,
+    #[serde(default)]
+    pub endpoint_kind: Option<String>,
+    #[serde(default)]
+    pub request_type: Option<String>,
+    #[serde(default)]
+    pub has_format_conversion: Option<bool>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub api_key_id: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub attribution_kind: Option<String>,
+    #[serde(default)]
+    pub actor_user_id: Option<String>,
     pub created_from_unix_secs: Option<u64>,
     pub created_until_unix_secs: Option<u64>,
     pub user_id: Option<String>,
@@ -1740,6 +1776,42 @@ pub enum StoredUsageBodyPayload {
 
 #[async_trait]
 pub trait UsageReadRepository: Send + Sync {
+    async fn query_dashboard_summary(
+        &self,
+        _query: &super::UsageDashboardAnalyticsQuery,
+    ) -> Result<super::StoredDashboardSummary, crate::DataLayerError> {
+        Err(crate::DataLayerError::UnexpectedValue(
+            "dashboard summary repository unavailable".into(),
+        ))
+    }
+
+    async fn query_dashboard_analytics(
+        &self,
+        _query: &super::UsageDashboardAnalyticsQuery,
+    ) -> Result<super::StoredUsageDashboardAnalytics, crate::DataLayerError> {
+        Err(crate::DataLayerError::UnexpectedValue(
+            "dashboard analytics repository unavailable".into(),
+        ))
+    }
+
+    async fn summarize_health_observations(
+        &self,
+        _query: &super::HealthObservationQuery,
+    ) -> Result<super::HealthObservationSummary, crate::DataLayerError> {
+        Err(crate::DataLayerError::UnexpectedValue(
+            "health observations repository unavailable".into(),
+        ))
+    }
+
+    async fn query_usage_analytics(
+        &self,
+        _query: &super::UsageAnalyticsQuery,
+    ) -> Result<super::StoredUsageAnalytics, crate::DataLayerError> {
+        Err(crate::DataLayerError::UnexpectedValue(
+            "usage analytics repository unavailable".into(),
+        ))
+    }
+
     async fn find_by_id(
         &self,
         id: &str,
