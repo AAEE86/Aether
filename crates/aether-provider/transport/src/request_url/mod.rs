@@ -1313,7 +1313,7 @@ mod tests {
             ),
             (
                 "custom",
-                "https://example.com/v1/responses",
+                "https://example.com/v1",
                 "https://example.com/v1/memories/trace_summarize?tenant=demo",
             ),
         ] {
