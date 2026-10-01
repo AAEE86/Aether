@@ -101,7 +101,9 @@ fn build_sync_plan_payload_from_decision(
         OPENAI_RESPONSES_SYNC_PLAN_KIND => {
             build_openai_responses_sync_plan_from_decision(parts, body_json, payload, false)?
         }
-        OPENAI_IMAGE_SYNC_PLAN_KIND | OPENAI_SEARCH_SYNC_PLAN_KIND => {
+        OPENAI_IMAGE_SYNC_PLAN_KIND
+        | OPENAI_SEARCH_SYNC_PLAN_KIND
+        | aether_ai_formats::contracts::OPENAI_MEMORIES_SYNC_PLAN_KIND => {
             build_passthrough_sync_plan_from_decision(parts, payload)?
         }
         OPENAI_RESPONSES_COMPACT_SYNC_PLAN_KIND => {

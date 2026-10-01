@@ -1,0 +1,33 @@
+# Codex CLI 通用协议对齐
+
+本次对齐以官方 `openai/codex` 稳定标签 `rust-v0.159.3` 为可发布版本依据，同时核查最新 `main` 的协议实现。稳定标签提交为 `01fc69f4026735edfdf6789820549727a4867b11`，核查的 main 提交为 `444da310e108da16aaeb18fd790b0ac464f08aca`。
+
+网关承接的是客户端与上游之间的协议，不复制 CLI 的本地工具执行、终端界面或个人账户状态。
+
+| 对象 | 当前行为 |
+| --- | --- |
+| 客户端画像 | 默认版本更新为 0.159.3，现有后台 npm 稳定版本刷新继续生效；UA 按官方格式使用网关公开 OS、版本和架构，无终端时采用官方 `unknown` 标识 |
+| OAuth | Codex 模板共享六项官方 scope，包含连接器读取及调用权限，并携带 `originator=codex_cli_rs`；其他 OAuth 类型保持独立模板 |
+| 模型目录发现 | UA 与查询参数 `client_version` 使用同一版本；拒绝非法版本，保留现有保护头和运行时账户鉴权 |
+| 模型能力 | 从官方公开模型目录提取能力快照，涵盖 `gpt-6-astra`、`gpt-6.1-sol`、六档推理强度及其他模型；账户返回的模型目录继续优先 |
+| WebSocket 元数据 | 仅公开模型目录 ETag、轮次状态、实际模型与安全缓冲头；保留公开事件及未知公开字段、事件顺序 |
+| 上游账户配额 | `codex.rate_limits` 继续进入账户级熔断与持久化路径，不当作网关用户自己的配额公开 |
+| 原生记忆接口 | `POST /v1/memories/trace_summarize` 复用 Responses 权限及调度，执行原生同步操作，保留 traces、output 数组和未来字段，不注入 Responses 的 input/store/include 或流式默认值 |
+
+公开快照来源为 `codex-rs/models-manager/models.json`。未复制提示词、账户套餐可见性或编译哈希；没有引入个人用户标识、已有会话 UUID、Cookie、访问令牌或账户凭据。运行时鉴权和账户字段仍由提供商密钥配置产生。
+
+新增模型能力快照不等于授权访问该模型。可用模型应通过正式管理界面的上游模型查询、全局模型和提供商模型配置，以及密钥模型限制来设置。远端目录及实际账户权限决定上游是否支持模型，不能通过修改 `/models` 列表绕过。
+
+记忆接口是 CLI 可选功能对应的协议。是否启动记忆任务仍由 CLI 自己的 feature/config 决定。它要求提供商支持该原生端点；Kiro、Grok、Antigravity 和 Gemini CLI 等私有适配器不能通过格式标签冒充支持。配置自定义路径时须使用 `/memories/{operation}` 等模板；仅描述 Responses 的固定路径会被拒绝。
+
+Apps 文件上传属于 CLI 的 ChatGPT Apps 专用路径，普通自定义 API 提供商不会启动该流程；本次不将其伪装成通用 Responses 路由。`aether-vscodex` 的 app-server UI 协议版本属于独立客户端，不覆盖成 CLI 版本。
+
+验证命令：
+
+```bash
+cargo fmt --all -- --check
+cargo test --locked -p aether-ai-formats -p aether-oauth -p aether-model-fetch -p aether-provider-transport -p aether-usage-runtime --lib
+cargo test --locked -p aether-gateway --lib
+```
+
+原生记忆端到端测试覆盖真实网关的权限、候选调度、执行计划、模型指令、原生 JSON、成功候选状态与上游错误响应；执行端使用本地测试服务器，实际账户网络可用性须在部署现场单独验证。
