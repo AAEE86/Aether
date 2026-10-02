@@ -72,6 +72,33 @@
         </div>
       </div>
 
+      <div
+        v-if="isCodex"
+        class="flex items-start justify-between gap-4 rounded-2xl border border-border/60 bg-card/70 p-4"
+      >
+        <div class="space-y-1">
+          <label
+            for="pool-reserve-minimum-quota"
+            class="text-sm font-medium"
+          >
+            保留最低额度
+          </label>
+          <p
+            id="pool-reserve-minimum-quota-description"
+            class="text-xs leading-5 text-muted-foreground"
+          >
+            账号剩余额度不高于 1% 时提前标记为额度耗尽并停止调度，待额度恢复后再使用。
+          </p>
+        </div>
+        <Switch
+          id="pool-reserve-minimum-quota"
+          v-model="reserveMinimumQuota"
+          aria-describedby="pool-reserve-minimum-quota-description"
+          :disabled="loading"
+          class="mt-0.5 shrink-0"
+        />
+      </div>
+
       <!-- Section 2: 策略调度 (非互斥, 可叠加组合 + 拖拽排序) -->
       <div class="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-4">
         <div class="space-y-1">
@@ -334,7 +361,7 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
     label: 'Free/Team 优先',
     description: '兼容旧配置：优先消耗 Free、Team 或两者',
     evidence_hint: '依据 plan_type，保留旧 free_only/team_only/both 语义',
-    providers: ['codex', 'grok', 'kiro', 'windsurf'],
+    providers: ['codex', 'grok', 'kiro', 'windsurf', 'xai'],
     modes: [
       { value: 'free_only', label: 'Free' },
       { value: 'team_only', label: 'Team' },
@@ -347,7 +374,7 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
     label: 'Free 优先',
     description: '优先消耗 Free 账号（依赖 plan_type）',
     evidence_hint: '依据 plan_type（Free 账号优先调度）',
-    providers: ['codex', 'grok', 'kiro', 'windsurf'],
+    providers: ['codex', 'grok', 'kiro', 'windsurf', 'xai'],
     modes: null,
     default_mode: null,
   },
@@ -356,7 +383,7 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
     label: 'Team 优先',
     description: '优先消耗 Team 账号（依赖 plan_type）',
     evidence_hint: '依据 plan_type（Team 账号优先调度）',
-    providers: ['codex', 'grok', 'kiro', 'windsurf'],
+    providers: ['codex', 'grok', 'kiro', 'windsurf', 'xai'],
     modes: null,
     default_mode: null,
   },
@@ -365,7 +392,7 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
     label: 'Plus 优先',
     description: '优先消耗 Plus 账号（依赖 plan_type）',
     evidence_hint: '依据 plan_type（Plus 账号优先调度）',
-    providers: ['codex', 'grok', 'kiro', 'windsurf'],
+    providers: ['codex', 'grok', 'kiro', 'windsurf', 'xai'],
     modes: null,
     default_mode: null,
   },
@@ -374,7 +401,7 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
     label: 'Pro 优先',
     description: '优先消耗 Pro 账号（依赖 plan_type）',
     evidence_hint: '依据 plan_type（Pro 账号优先调度）',
-    providers: ['codex', 'grok', 'kiro', 'windsurf'],
+    providers: ['codex', 'grok', 'kiro', 'windsurf', 'xai'],
     modes: null,
     default_mode: null,
   },
@@ -392,7 +419,7 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
     label: '额度刷新优先',
     description: '优先选即将刷新额度的账号',
     evidence_hint: '依据账号额度重置倒计时（next_reset / reset_seconds）',
-    providers: ['codex', 'grok', 'kiro', 'windsurf'],
+    providers: ['codex', 'grok', 'kiro', 'windsurf', 'xai'],
     default_enabled_providers: ['codex', 'windsurf'],
     modes: null,
     default_mode: null,
@@ -437,6 +464,8 @@ const FALLBACK_PRESET_DEFS: PoolPresetMeta[] = [
 
 const { success, error: showError } = useToast()
 const loading = ref(false)
+const reserveMinimumQuota = ref(false)
+const isCodex = computed(() => normalizeProviderType(props.providerType) === 'codex')
 let dialogRevision = 0
 const presetDefs = ref<PoolPresetMeta[]>([])
 const presetDefsLoaded = ref(false)
@@ -850,6 +879,7 @@ watch([() => props.modelValue, () => props.providerId], async ([open]) => {
   const revision = ++dialogRevision
   loading.value = false
   if (!open) return
+  reserveMinimumQuota.value = props.currentConfig?.reserve_minimum_quota === true
   await ensurePresetDefsLoaded()
   if (!props.modelValue || dialogRevision !== revision) return
   presetList.value = normalizeMutexSelection(loadFromConfig(props.currentConfig))
@@ -883,6 +913,7 @@ async function handleSave() {
     const latestAdvanced = latestProvider.pool_advanced
     const mergedAdvanced = mergePoolAdvancedPatch(latestAdvanced, {
       scheduling_presets: schedulingPresets,
+      ...(isCodex.value ? { reserve_minimum_quota: reserveMinimumQuota.value } : {}),
     })
     const payload: Parameters<typeof updateProvider>[1] = {
       pool_advanced: mergedAdvanced as PoolAdvancedConfig,

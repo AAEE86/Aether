@@ -1,4 +1,4 @@
-import { createApp, nextTick, type Component } from 'vue'
+import { createApp, h, nextTick, type Component } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import UserStats from '@/views/admin/UserStats.vue'
@@ -12,6 +12,7 @@ vi.mock('@/api/admin-wallets', () => ({ adminWalletApi: { listWallets: accountAp
 vi.mock('@/api/users', () => ({ usersApi: { listUserPlanEntitlements: accountApi.plans } }))
 vi.mock('@/components/charts/BarChart.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/components/charts/LineChart.vue', () => ({ default: { render: () => null } }))
+vi.mock('@/features/overview/users/UserUsageStats.vue', () => ({ __esModule: true, default: { render: () => h('div', { 'data-user-usage-stats': '' }, 'Usage statistics') } }))
 const range = 'from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z&timezone=UTC'
 const meta = {
   schema_version: 1, metric_version: 'overview-v2', scope: { kind: 'installation' },
@@ -63,13 +64,27 @@ beforeEach(() => {
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); vi.useRealTimers(); setI18nLocale('zh-CN') })
 
 describe('enterprise user accounts', () => {
+  it('loads usage and group statistics only when selected, preserving the account view', async () => {
+    const { root } = await mount(UserStats, `/admin/user-stats?${range}`)
+    expect(root.querySelector('[data-user-usage-stats]')).toBeNull()
+    button(root, '使用统计').click()
+    await settle()
+    await settle()
+    expect(root.querySelector('[data-user-usage-stats]')).not.toBeNull()
+    root.querySelector<HTMLButtonElement>('button[data-value="accounts"]')?.click()
+    await settle()
+    expect(root.querySelector('[data-user-usage-stats]')).toBeNull()
+    expect(section(root, '[data-user-accounts]').textContent).toContain(employee.username)
+    expect(api.users).toHaveBeenCalledTimes(1)
+  })
+
   it('shows full-roster financial totals, keeps zero-use users and delegates sorting/pagination', async () => {
     const { root } = await mount(UserStats, `/admin/user-stats?${range}&attribution_kind=standalone&model=legacy`)
     expect(root.textContent).toContain('Zero Usage Employee')
     expect(section(root, '[data-user-summary="consumption"]').textContent).toContain('432.25')
     expect(section(root, '[data-user-summary="activity"]').textContent).toMatch(/7\s*\/ 62/)
     expect(root.querySelector('select[aria-label="归属"]')).toBeNull()
-    expect(root.querySelector('[role="tablist"]')).toBeNull()
+    expect(root.querySelector('button[data-value="accounts"][data-state="active"]')).not.toBeNull()
     expect(api.users.mock.lastCall?.[0]).toMatchObject({ sort: 'billable_amount', order: 'desc', limit: 25, offset: 0 })
     expect(api.users.mock.lastCall?.[0]).not.toHaveProperty('attribution_kind')
     expect(api.users.mock.lastCall?.[0]).not.toHaveProperty('model')

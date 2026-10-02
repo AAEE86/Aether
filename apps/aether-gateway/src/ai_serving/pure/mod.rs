@@ -12,13 +12,16 @@ pub(crate) use aether_ai_formats::api::{
     apply_codex_openai_responses_websocket_continuation_body_edits_with_source_model_and_capabilities,
     apply_codex_openai_special_headers, apply_model_directive_mapping_patch,
     apply_model_directive_overrides_from_model, apply_model_directive_overrides_from_request,
-    apply_openai_responses_compact_special_body_edits, build_chatgpt_web_image_request_body,
+    apply_openai_responses_compact_special_body_edits, apply_xai_upstream_payload_edits,
+    apply_xai_upstream_payload_edits_with_client, build_chatgpt_web_image_request_body,
     build_codex_model_catalog_metadata, build_codex_openai_image_api_provider_request_body,
     build_core_error_body_for_client_format, build_cross_format_openai_chat_request_body,
     build_cross_format_openai_chat_request_body_with_model_directives,
+    build_cross_format_openai_chat_request_body_with_provider_context,
     build_cross_format_openai_responses_request_body,
     build_cross_format_openai_responses_request_body_with_model_directives,
     build_cross_format_openai_responses_request_body_with_model_directives_and_history_scope,
+    build_cross_format_openai_responses_request_body_with_provider_context,
     build_gemini_image_request_body_from_openai_image_request,
     build_gemini_image_response_from_openai_image_response,
     build_gemini_image_response_from_openai_responses_image_response, build_generated_tool_call_id,
@@ -181,7 +184,7 @@ pub(crate) use aether_ai_formats::{
     openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,
     strip_incompatible_openai_responses_reasoning_items,
     strip_incompatible_openai_responses_reasoning_items_with_policy, ApiOperation, ClientSurface,
-    CODEX_CLIENT_VERSION, OPENAI_RESPONSES_OPERATION_COMPACT,
+    OPENAI_RESPONSES_OPERATION_COMPACT,
 };
 
 pub(crate) fn plan_kind_matches_api_operation(

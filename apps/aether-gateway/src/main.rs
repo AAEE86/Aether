@@ -2513,6 +2513,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    match state.prewarm_codex_client_profile().await {
+        Ok(version) => {
+            info!(
+                codex_client_version = %version,
+                "prewarmed Codex client profile"
+            );
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to refresh Codex client profile; built-in or cached profile remains active"
+            );
+        }
+    }
     match prewarm_direct_h2c_sender_cache_from_env_for_startup().await {
         Ok(Some(report)) => {
             if report.failed_targets > 0 {
@@ -4963,7 +4977,11 @@ mod tests {
             builder
                 .http1()
                 .timer(TokioTimer::new())
-                .header_read_timeout(std::time::Duration::from_millis(10))
+                // Keep hyper's own header timeout far from the 5ms first-request
+                // deadline: when a slow runner lets both expire before the next
+                // poll, `select!` may pick the connection branch and surface
+                // hyper's header-timeout error instead of the clean deadline close.
+                .header_read_timeout(std::time::Duration::from_secs(30))
                 .max_buf_size(super::MIN_GATEWAY_HTTP_HEADER_MAX_BYTES)
                 .max_headers(super::MIN_GATEWAY_HTTP_MAX_HEADERS);
             builder

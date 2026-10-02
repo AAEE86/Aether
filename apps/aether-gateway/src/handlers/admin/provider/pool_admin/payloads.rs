@@ -932,6 +932,13 @@ fn admin_pool_build_account_quota(
                 return Some(account_quota);
             }
         }
+        "xai" => {
+            if let Some(account_quota) =
+                admin_pool_build_kiro_account_quota_from_snapshot(quota_snapshot)
+            {
+                return Some(account_quota);
+            }
+        }
         "chatgpt_web" => {
             if let Some(account_quota) =
                 admin_pool_build_chatgpt_web_account_quota_from_snapshot(quota_snapshot)
@@ -1110,10 +1117,16 @@ pub(super) fn build_admin_pool_key_payload(
     let health_score = admin_pool_health_score(key);
     let circuit_breaker_open = false;
     let auth_semantics = provider_key_auth_semantics(key, provider_type);
-    let account_quota_exhausted = pool_config
-        .as_ref()
-        .is_some_and(|config| config.skip_exhausted_accounts)
-        && admin_provider_pool_pure::admin_pool_key_account_quota_exhausted(key, provider_type);
+    let account_quota_exhausted = pool_config.as_ref().is_some_and(|config| {
+        (config.skip_exhausted_accounts
+            && admin_provider_pool_pure::admin_pool_key_account_quota_exhausted(key, provider_type))
+            || (config.reserve_minimum_quota
+                && admin_provider_pool_pure::admin_pool_key_minimum_quota_reached(
+                    key,
+                    provider_type,
+                    None,
+                ))
+    });
     let auth_config = state.parse_catalog_auth_config_json(key);
     let oauth_expires_at =
         admin_pool_derive_oauth_expires_at(provider_type, key, auth_config.as_ref());
@@ -1589,6 +1602,31 @@ mod tests {
         assert_eq!(
             admin_pool_build_account_quota("grok", Some(quota_snapshot)),
             Some("Auto剩余 40.0% (60/150) | Heavy剩余 0.0% (0/20)".to_string())
+        );
+    }
+
+    #[test]
+    fn xai_account_quota_is_rendered_as_remaining_percent() {
+        let quota_snapshot = json!({
+            "provider_type": "xai",
+            "code": "ok",
+            "exhausted": false,
+            "plan_type": "SuperGrok",
+            "windows": [
+                {
+                    "code": "usage",
+                    "label": "周额度",
+                    "scope": "account",
+                    "used_ratio": 0.46,
+                    "remaining_ratio": 0.54
+                }
+            ]
+        });
+        let quota_snapshot = quota_snapshot.as_object().unwrap();
+
+        assert_eq!(
+            admin_pool_build_account_quota("xai", Some(quota_snapshot)),
+            Some("剩余 54.0%".to_string())
         );
     }
 }

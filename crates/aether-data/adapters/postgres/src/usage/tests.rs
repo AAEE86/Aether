@@ -3251,13 +3251,15 @@ fn usage_sql_canonical_openai_cache_case_preserves_effective_and_total_tokens() 
         aggregate_audit_summary
             .matches("WHEN effective_input_tokens = 0 AND total_input_context = 0")
             .count(),
-        2
+        1,
+        "the shared daily aggregate query should define the legacy token fallback once"
     );
     assert_eq!(
         aggregate_audit_summary
             .matches("+ output_tokens + cache_creation_tokens + cache_read_tokens")
             .count(),
-        2
+        1,
+        "the shared daily aggregate query should define canonical total tokens once"
     );
     assert!(!aggregate_audit_summary.contains("SUM(input_tokens + output_tokens)"));
 
@@ -3467,6 +3469,18 @@ fn usage_sql_reads_http_audits_for_single_record_fetches() {
     assert!(super::FIND_BY_ID_SQL.contains("LEFT JOIN usage_http_audits"));
     assert!(super::FIND_BY_REQUEST_ID_SQL.contains("http_request_body_ref"));
     assert!(super::FIND_BY_ID_SQL.contains("http_client_response_body_ref"));
+    for sql in [super::FIND_BY_REQUEST_ID_SQL, super::FIND_BY_ID_SQL] {
+        for field in [
+            "request_body",
+            "provider_request_body",
+            "response_body",
+            "client_response_body",
+        ] {
+            assert!(sql.contains(&format!(
+                "usage_http_audits.{field}_state AS http_{field}_state"
+            )));
+        }
+    }
 }
 
 #[test]
@@ -3597,6 +3611,8 @@ fn usage_sql_uses_json_null_placeholders_for_usage_payload_columns() {
         assert!(sql.contains("request_metadata->>'provider_reasoning_effort'"));
         assert!(sql.contains("request_metadata->>'provider_service_tier'"));
         assert!(sql.contains("request_metadata->>'provider_actual_service_tier'"));
+        assert!(sql.contains("request_metadata->>'provider_response_model'"));
+        assert!(sql.contains("'provider_response_model'"));
         assert!(sql.contains("request_metadata->>'websocket_mode'"));
         assert!(sql.contains("'websocket_mode'"));
         assert!(sql.contains("AS client_family"));

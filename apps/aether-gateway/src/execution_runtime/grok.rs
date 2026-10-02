@@ -3199,13 +3199,15 @@ fn openai_responses_body(
     let response_id = format!("resp_{}", Uuid::new_v4());
     let mut output = Vec::new();
     if !collected.thinking.trim().is_empty() {
+        let thinking = collected.thinking.trim();
         output.push(json!({
             "id": openai_responses_synthetic_reasoning_item_id(&response_id, 0),
             "type": "reasoning",
             "status": "completed",
-            "summary": [{
-                "type": "summary_text",
-                "text": collected.thinking.trim(),
+            "summary": [],
+            "content": [{
+                "type": "reasoning_text",
+                "text": thinking,
             }],
         }));
     }
@@ -4723,6 +4725,15 @@ mod tests {
             serde_json::json!(usage.reasoning_tokens)
         );
         assert_eq!(body["output"][0]["type"], serde_json::json!("reasoning"));
+        assert_eq!(
+            body["output"][0]["content"][0]["type"],
+            serde_json::json!("reasoning_text")
+        );
+        assert_eq!(
+            body["output"][0]["content"][0]["text"],
+            serde_json::json!("short reasoning")
+        );
+        assert_eq!(body["output"][0]["summary"], serde_json::json!([]));
         assert_eq!(body["output"][1]["type"], serde_json::json!("message"));
         assert!(body["output"][1]["id"]
             .as_str()
@@ -4906,7 +4917,12 @@ mod tests {
 
         assert!(body.contains("event: response.created"));
         assert!(body.contains("event: response.in_progress"));
-        assert!(body.contains("event: response.reasoning_summary_part.added"));
+        // Thinking must stay off the summary channel or clients that render
+        // both (Codex) print the raw chain-of-thought twice.
+        assert!(!body.contains("event: response.reasoning_summary_part.added"));
+        assert!(!body.contains("event: response.reasoning_summary_text.delta"));
+        assert!(!body.contains("event: response.reasoning_summary_text.done"));
+        assert!(body.contains("\"type\":\"reasoning_text\""));
         assert!(body.contains("event: response.content_part.added"));
         assert!(body.contains("event: response.output_text.done"));
         assert!(body.contains("event: response.completed"));

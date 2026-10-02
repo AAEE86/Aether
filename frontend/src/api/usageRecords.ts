@@ -19,6 +19,7 @@ export interface UsageRecord {
   model: string
   target_model?: string | null  // 映射后的目标模型名（若无映射则为空）
   model_version?: string | null  // Provider 返回的实际模型版本（列表轻量字段）
+  response_model?: string | null  // 上游响应体实际返回的模型名
   request_type?: string | null  // 由请求语义识别出的操作类型
   requested_reasoning_effort?: string | null  // 用户请求侧 reasoning 级别，用于展示转换关系
   reasoning_effort?: string | null  // 从发送给 Provider 的请求体提取的 reasoning 级别
@@ -65,5 +66,13 @@ export interface UsageRecord {
   response_time_updated_at?: string | null
   has_fallback?: boolean
   has_retry?: boolean
+  /**
+   * 是否存在被调度跳过的候选（候选在调度阶段即被判定不可用，从未向上游发起请求）。
+   * 与 has_fallback 的区别：has_fallback 代表"更靠前的候选真的失败了"，
+   * 本字段代表"更靠前的候选压根没被发出去"，用于解释"无报错却换了提供商"。
+   */
+  has_skipped_candidate?: boolean
+  /** 被跳过候选的原因列表（后端已按候选顺序去重） */
+  skipped_candidate_reasons?: string[]
   image_progress?: ImageProgress | null
 }

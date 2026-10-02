@@ -16,6 +16,7 @@ pub use crate::protocol::stream::{CanonicalStreamEvent, CanonicalStreamFrame};
 
 pub(crate) const OPENAI_RESPONSES_EXTENSION_NAMESPACE: &str = "openai_responses";
 pub(crate) const OPENAI_RESPONSES_LEGACY_EXTENSION_NAMESPACE: &str = "openai_cli";
+pub(crate) const CLAUDE_EXTENSION_NAMESPACE: &str = "claude";
 const AETHER_EXTENSION_NAMESPACE: &str = "aether";
 const CLAUDE_MESSAGES_REQUEST_SOURCE_MARKER: &str = "claude_messages_request";
 const CLAUDE_SYSTEM_SOURCE_MARKER: &str = "claude_system";
@@ -2860,9 +2861,9 @@ fn openai_responses_reasoning_block_from_item(
 }
 
 fn openai_responses_reasoning_text(item_object: &Map<String, Value>) -> String {
-    let mut parts = openai_responses_reasoning_text_parts(item_object.get("summary"));
+    let mut parts = openai_responses_reasoning_text_parts(item_object.get("content"));
     if parts.is_empty() {
-        parts = openai_responses_reasoning_text_parts(item_object.get("content"));
+        parts = openai_responses_reasoning_text_parts(item_object.get("summary"));
     }
     parts.join("\n")
 }
@@ -2961,38 +2962,47 @@ pub(crate) fn openai_responses_output_to_canonical(
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned);
-                if let Some(summary_items) = item_object.get("summary").and_then(Value::as_array) {
-                    for summary in summary_items {
-                        let Some(summary_object) = summary.as_object() else {
-                            continue;
-                        };
-                        let text = summary_object
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        if text.trim().is_empty() {
-                            continue;
-                        }
-                        let mut extensions = openai_responses_extensions(
-                            item_object,
-                            &["type", "id", "status", "summary", "encrypted_content"],
-                        );
-                        canonical_extension_object_mut(&mut extensions, "openai")
-                            .insert("omit_reasoning_parts".to_string(), Value::Bool(true));
-                        let extensions = openai_thinking_extensions(extensions);
-                        blocks.push(CanonicalContentBlock::Thinking {
-                            text: text.to_string(),
-                            signature: None,
-                            encrypted_content: encrypted_content.clone(),
-                            extensions,
-                        });
-                        emitted = true;
+                let mut texts = openai_responses_reasoning_text_parts(item_object.get("content"));
+                if texts.is_empty() {
+                    texts = openai_responses_reasoning_text_parts(item_object.get("summary"));
+                }
+                for text in texts {
+                    if text.trim().is_empty() {
+                        continue;
                     }
+                    let mut extensions = openai_responses_extensions(
+                        item_object,
+                        &[
+                            "type",
+                            "id",
+                            "status",
+                            "summary",
+                            "content",
+                            "encrypted_content",
+                        ],
+                    );
+                    canonical_extension_object_mut(&mut extensions, "openai")
+                        .insert("omit_reasoning_parts".to_string(), Value::Bool(true));
+                    let extensions = openai_thinking_extensions(extensions);
+                    blocks.push(CanonicalContentBlock::Thinking {
+                        text,
+                        signature: None,
+                        encrypted_content: encrypted_content.clone(),
+                        extensions,
+                    });
+                    emitted = true;
                 }
                 if !emitted && encrypted_content.is_some() {
                     let mut extensions = openai_responses_extensions(
                         item_object,
-                        &["type", "id", "status", "summary", "encrypted_content"],
+                        &[
+                            "type",
+                            "id",
+                            "status",
+                            "summary",
+                            "content",
+                            "encrypted_content",
+                        ],
                     );
                     canonical_extension_object_mut(&mut extensions, "openai")
                         .insert("omit_reasoning_parts".to_string(), Value::Bool(true));
@@ -4925,13 +4935,22 @@ pub(crate) fn gemini_response_format_to_canonical(
     if response_mime_type != "application/json" {
         return None;
     }
-    let json_schema = gemini_value_by_case(generation_config, "responseSchema", "response_schema")
-        .map(|schema| {
-            json!({
-                "name": "response_schema",
-                "schema": schema,
-            })
-        });
+    let json_schema = gemini_value_by_case(
+        generation_config,
+        "responseJsonSchema",
+        "response_json_schema",
+    )
+    .cloned()
+    .or_else(|| {
+        gemini_value_by_case(generation_config, "responseSchema", "response_schema")
+            .map(gemini_openapi_schema_to_json_schema)
+    })
+    .map(|schema| {
+        json!({
+            "name": "response_schema",
+            "schema": schema,
+        })
+    });
     Some(CanonicalResponseFormat {
         format_type: if json_schema.is_some() {
             "json_schema".to_string()
@@ -4941,6 +4960,68 @@ pub(crate) fn gemini_response_format_to_canonical(
         json_schema,
         extensions: BTreeMap::new(),
     })
+}
+
+/// `parametersJsonSchema` is already standard JSON Schema; the legacy
+/// `parameters` field is Gemini's OpenAPI subset with upper-case type names.
+fn gemini_declaration_parameters_to_json_schema(declaration: &Map<String, Value>) -> Option<Value> {
+    gemini_value_by_case(
+        declaration,
+        "parametersJsonSchema",
+        "parameters_json_schema",
+    )
+    .cloned()
+    .or_else(|| {
+        declaration
+            .get("parameters")
+            .map(gemini_openapi_schema_to_json_schema)
+    })
+}
+
+/// Gemini's OpenAPI-style `Schema` spells types in upper case (`OBJECT`,
+/// `STRING`, ...); other protocols expect JSON Schema's lower-case names.
+pub(crate) fn gemini_openapi_schema_to_json_schema(schema: &Value) -> Value {
+    fn normalize(value: &mut Value) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object.iter_mut() {
+                    if key == "type" {
+                        match child {
+                            Value::String(type_name) => lowercase_schema_type(type_name),
+                            Value::Array(type_names) => {
+                                for type_name in type_names.iter_mut() {
+                                    if let Value::String(type_name) = type_name {
+                                        lowercase_schema_type(type_name);
+                                    }
+                                }
+                            }
+                            other => normalize(other),
+                        }
+                    } else if key != "enum"
+                        && key != "const"
+                        && key != "default"
+                        && key != "example"
+                    {
+                        normalize(child);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(normalize),
+            _ => {}
+        }
+    }
+    fn lowercase_schema_type(type_name: &mut String) {
+        if matches!(
+            type_name.as_str(),
+            "OBJECT" | "STRING" | "INTEGER" | "NUMBER" | "BOOLEAN" | "ARRAY" | "NULL"
+        ) {
+            *type_name = type_name.to_ascii_lowercase();
+        }
+    }
+
+    let mut schema = schema.clone();
+    normalize(&mut schema);
+    schema
 }
 
 pub(crate) type GeminiCanonicalTools = (
@@ -5116,12 +5197,18 @@ pub(crate) fn gemini_tools_to_canonical(value: Option<&Value>) -> Option<GeminiC
                     .get("description")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
-                parameters: declaration_object.get("parameters").cloned(),
+                parameters: gemini_declaration_parameters_to_json_schema(declaration_object),
                 strict: None,
                 extensions: {
                     let mut extensions = gemini_extensions(
                         declaration_object,
-                        &["name", "description", "parameters"],
+                        &[
+                            "name",
+                            "description",
+                            "parameters",
+                            "parametersJsonSchema",
+                            "parameters_json_schema",
+                        ],
                     );
                     if let Some(parameters) = declaration_object.get("parameters").cloned() {
                         canonical_extension_object_mut(&mut extensions, "gemini")
@@ -5870,7 +5957,11 @@ pub(crate) fn canonical_block_to_claude(
             let mut out = Map::new();
             out.insert("type".to_string(), Value::String("text".to_string()));
             out.insert("text".to_string(), Value::String(text.clone()));
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::Thinking {
@@ -5890,7 +5981,11 @@ pub(crate) fn canonical_block_to_claude(
                     Value::String("redacted_thinking".to_string()),
                 );
                 out.insert("data".to_string(), Value::String(data.clone()));
-                out.extend(namespace_extension_object(extensions, "claude", &out));
+                out.extend(namespace_extension_object(
+                    extensions,
+                    CLAUDE_EXTENSION_NAMESPACE,
+                    &out,
+                ));
                 return Some(Some(Value::Object(out)));
             }
             if !matches!(role, CanonicalRole::Assistant) {
@@ -5911,7 +6006,11 @@ pub(crate) fn canonical_block_to_claude(
             if let Some(signature) = signature.as_ref().filter(|value| !value.is_empty()) {
                 out.insert("signature".to_string(), Value::String(signature.clone()));
             }
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::Image {
@@ -5936,7 +6035,11 @@ pub(crate) fn canonical_block_to_claude(
                 "source".to_string(),
                 claude_source_value(media_type.as_deref(), data.as_deref(), url.as_deref())?,
             );
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::File {
@@ -5959,7 +6062,11 @@ pub(crate) fn canonical_block_to_claude(
                 "source".to_string(),
                 claude_source_value(media_type.as_deref(), data.as_deref(), file_url.as_deref())?,
             );
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::Audio {
@@ -5979,7 +6086,11 @@ pub(crate) fn canonical_block_to_claude(
                     None,
                 )?,
             );
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::ToolUse {
@@ -5997,7 +6108,11 @@ pub(crate) fn canonical_block_to_claude(
             );
             out.insert("name".to_string(), Value::String(name.clone()));
             out.insert("input".to_string(), input);
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::ToolResult {
@@ -6026,7 +6141,11 @@ pub(crate) fn canonical_block_to_claude(
             if *is_error {
                 out.insert("is_error".to_string(), Value::Bool(true));
             }
-            out.extend(namespace_extension_object(extensions, "claude", &out));
+            out.extend(namespace_extension_object(
+                extensions,
+                CLAUDE_EXTENSION_NAMESPACE,
+                &out,
+            ));
             Some(Some(Value::Object(out)))
         }
         CanonicalContentBlock::Unknown {
@@ -7091,6 +7210,8 @@ const GEMINI_MAPPED_GENERATION_CONFIG_KEYS: &[&str] = &[
     "response_mime_type",
     "responseSchema",
     "response_schema",
+    "responseJsonSchema",
+    "response_json_schema",
     "responseModalities",
     "response_modalities",
 ];
@@ -8370,7 +8491,8 @@ mod tests {
         let rebuilt = canonical_to_openai_responses_request(&canonical, "gpt-5-upstream", false)
             .expect("openai responses request");
         assert_eq!(rebuilt["input"][0]["type"], "reasoning");
-        assert_eq!(rebuilt["input"][0]["summary"][0]["text"], "think");
+        assert_eq!(rebuilt["input"][0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(rebuilt["input"][0]["content"][0]["text"], "think");
         assert_eq!(rebuilt["input"][0]["encrypted_content"], "enc_reasoning");
         assert_eq!(rebuilt["input"][1]["type"], "message");
         assert_eq!(rebuilt["input"][1]["content"][0]["text"], "done");
@@ -9315,6 +9437,80 @@ mod tests {
         assert_eq!(rebuilt["cachedContent"], "cached/abc");
         assert_eq!(rebuilt["tools"], request["tools"]);
         assert_eq!(rebuilt["toolConfig"], request["toolConfig"]);
+    }
+
+    #[test]
+    fn gemini_request_adapter_reads_json_schema_fields_and_lowercases_openapi_types() {
+        let request = json!({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "tools": [{"functionDeclarations": [
+                {
+                    "name": "search",
+                    "parametersJsonSchema": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                        "required": ["q"]
+                    }
+                },
+                {
+                    "name": "legacy",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "type": {"type": "STRING", "enum": ["OBJECT", "STRING"]},
+                            "tags": {"type": "ARRAY", "items": {"type": "STRING"}}
+                        }
+                    }
+                }
+            ]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]
+                }
+            }
+        });
+
+        let canonical =
+            from_gemini_to_canonical_request(&request, "/v1beta/models/grok-4.7:generateContent")
+                .expect("canonical request");
+
+        assert_eq!(
+            canonical.tools[0].parameters,
+            Some(json!({
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"]
+            }))
+        );
+        assert_eq!(
+            canonical.tools[1].parameters,
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["OBJECT", "STRING"]},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                }
+            }))
+        );
+        let response_format = canonical.response_format.as_ref().expect("response format");
+        assert_eq!(response_format.format_type, "json_schema");
+        assert_eq!(
+            response_format.json_schema.as_ref().expect("schema")["schema"]["required"],
+            json!(["name"])
+        );
+
+        let legacy_schema = super::gemini_response_format_to_canonical(Some(&json!({
+            "responseMimeType": "application/json",
+            "responseSchema": {"type": "OBJECT", "properties": {"n": {"type": "INTEGER"}}}
+        })))
+        .expect("legacy response format");
+        assert_eq!(
+            legacy_schema.json_schema.expect("legacy schema")["schema"],
+            json!({"type": "object", "properties": {"n": {"type": "integer"}}})
+        );
     }
 
     #[test]

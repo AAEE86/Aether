@@ -9,7 +9,8 @@ use aether_ai_formats::formats::conversion::response::{
 };
 use aether_ai_formats::formats::openai::responses::response::ensure_modern_openai_responses_response_fields;
 use aether_ai_formats::formats::openai::responses::{
-    openai_responses_message_item_id, openai_responses_synthetic_reasoning_item_id,
+    openai_responses_message_item_id, openai_responses_reasoning_text_parts,
+    openai_responses_synthetic_reasoning_item_id,
 };
 use aether_ai_formats::formats::registry::{convert_response, FormatContext, FormatError};
 use aether_ai_formats::{
@@ -26,6 +27,7 @@ use serde_json::{json, Map, Value};
 use super::{decode_sync_report_body_base64, AiSurfaceFinalizeError};
 use crate::formats::claude::messages::stream::ClaudeProviderState;
 use crate::formats::gemini::generate_content::stream::GeminiProviderState;
+use crate::formats::openai::chat::response::openai_chat_reasoning_texts;
 use crate::formats::openai::chat::stream::{OpenAIChatProviderState, OpenAIResponsesProviderState};
 use crate::formats::shared::model_directives::model_directive_display_model_from_report_context;
 use crate::formats::shared::response::sanitize_claude_read_tool_inputs;
@@ -113,17 +115,72 @@ pub fn maybe_build_standard_cross_format_sync_product_from_normalized_payload(
         .as_deref()
         .unwrap_or(provider_api_format);
 
+    let aggregated_from_stream = aggregated_stream_body.is_some();
     let Some(provider_body_json) = aggregated_stream_body.or_else(|| body_json.cloned()) else {
         return Ok(None);
     };
+    let projection_fallback_body = aggregated_from_stream.then(|| provider_body_json.clone());
 
-    Ok(maybe_build_standard_cross_format_sync_product(
+    let product = maybe_build_standard_cross_format_sync_product(
+        report_kind,
+        provider_body_api_format,
+        client_api_format,
+        report_context,
+        provider_body_json,
+    );
+    if product.is_some() {
+        return Ok(product);
+    }
+    let Some(provider_body_json) = projection_fallback_body else {
+        return Ok(None);
+    };
+    Ok(project_validated_openai_responses_stream_sync_product(
         report_kind,
         provider_body_api_format,
         client_api_format,
         report_context,
         provider_body_json,
     ))
+}
+
+/// Forced-stream Responses upstreams (Codex, xAI) echo request metadata such as
+/// `parallel_tool_calls`, `tools` and encrypted reasoning back in the aggregated
+/// body, which the strict cross-format response check refuses. The aggregated
+/// body stays the provider body, so the client projection may drop those
+/// provider-only fields — mirroring the OpenAI Chat client path.
+fn project_validated_openai_responses_stream_sync_product(
+    report_kind: &str,
+    provider_api_format: &str,
+    client_api_format: &str,
+    report_context: &Value,
+    provider_body_json: Value,
+) -> Option<StandardCrossFormatSyncProduct> {
+    let provider_api_format = normalize_openai_responses_family_api_format(provider_api_format);
+    if !matches!(
+        provider_api_format.as_str(),
+        "openai:responses" | "openai:responses:compact"
+    ) {
+        return None;
+    }
+    let client_api_format = client_api_format.trim().to_ascii_lowercase();
+    if is_standard_chat_finalize_kind(report_kind) {
+        sync_chat_response_conversion_kind(&provider_api_format, &client_api_format)?;
+    } else if is_standard_cli_finalize_kind(report_kind) {
+        sync_cli_response_conversion_kind(&provider_api_format, &client_api_format)?;
+    } else {
+        return None;
+    }
+    let client_body_json = project_validated_openai_responses_stream_to_client(
+        &provider_body_json,
+        &client_api_format,
+        report_context,
+    )?;
+    let client_body_json =
+        client_body_with_report_context_model(client_body_json, report_context, &client_api_format);
+    Some(StandardCrossFormatSyncProduct {
+        client_body_json,
+        provider_body_json,
+    })
 }
 
 pub fn maybe_build_standard_same_format_sync_body_from_normalized_payload(
@@ -1473,6 +1530,14 @@ fn project_validated_openai_responses_stream_to_openai_chat(
     body_json: &Value,
     report_context: &Value,
 ) -> Option<Value> {
+    project_validated_openai_responses_stream_to_client(body_json, "openai:chat", report_context)
+}
+
+fn project_validated_openai_responses_stream_to_client(
+    body_json: &Value,
+    client_api_format: &str,
+    report_context: &Value,
+) -> Option<Value> {
     // The caller retains body_json as provider_body_json. This projection is therefore allowed
     // to omit provider-only response metadata, but never unknown canonical output blocks.
     if !matches!(
@@ -1488,7 +1553,12 @@ fn project_validated_openai_responses_stream_to_openai_chat(
     }
 
     apply_report_context_model_fallback(&mut canonical.model, report_context);
-    Some(canonical_to_openai_chat_response(&canonical))
+    match client_api_format {
+        "openai:chat" => Some(canonical_to_openai_chat_response(&canonical)),
+        "claude:messages" => Some(canonical_to_claude_response(&canonical)),
+        "gemini:generate_content" => canonical_to_gemini_response(&canonical, report_context),
+        _ => None,
+    }
 }
 
 fn openai_chat_response_can_use_single_response_canonical(body_json: &Value) -> bool {
@@ -1827,6 +1897,7 @@ fn apply_report_context_model_fallback(model: &mut String, report_context: &Valu
 struct OpenAIChatChoiceState {
     role: Option<String>,
     content: String,
+    reasoning: String,
     finish_reason: Option<String>,
     tool_calls: BTreeMap<usize, OpenAIChatToolCallState>,
 }
@@ -2195,6 +2266,9 @@ pub fn aggregate_openai_chat_stream_sync_response(body: &[u8]) -> Option<Value> 
             if let Some(content) = delta.get("content").and_then(Value::as_str) {
                 state.content.push_str(content);
             }
+            for (_, piece) in openai_chat_reasoning_texts(delta) {
+                state.reasoning.push_str(&piece);
+            }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {
                     let Some(tool_call_object) = tool_call.as_object() else {
@@ -2254,6 +2328,14 @@ pub fn aggregate_openai_chat_stream_sync_response(body: &[u8]) -> Option<Value> 
             "role".to_string(),
             Value::String(state.role.unwrap_or_else(|| "assistant".to_string())),
         );
+        // Reassemble under the spelling this crate emits for Chat clients; the
+        // provider's own spelling was already normalized away by the parser.
+        if !state.reasoning.is_empty() {
+            message.insert(
+                "reasoning_content".to_string(),
+                Value::String(state.reasoning),
+            );
+        }
         if state.tool_calls.is_empty() {
             message.insert("content".to_string(), Value::String(state.content));
         } else {
@@ -2457,7 +2539,7 @@ fn aggregate_openai_responses_stream_sync_response_from_validated_terminal(
                 reasoning_states
                     .entry(output_index)
                     .or_default()
-                    .summary_text
+                    .reasoning_text
                     .push_str(delta);
             }
             "response.reasoning_text.done" | "response.reasoning_summary_text.done" => {
@@ -2785,7 +2867,7 @@ struct OpenAIResponsesSyncMessageState {
 #[derive(Default)]
 struct OpenAIResponsesSyncReasoningState {
     item: Map<String, Value>,
-    summary_text: String,
+    reasoning_text: String,
 }
 
 #[derive(Default)]
@@ -3099,8 +3181,8 @@ fn merge_openai_responses_reasoning_text(
     if text.is_empty() {
         return;
     }
-    if state.summary_text.is_empty() || text.len() >= state.summary_text.len() {
-        state.summary_text = text.to_string();
+    if state.reasoning_text.is_empty() || text.len() >= state.reasoning_text.len() {
+        state.reasoning_text = text.to_string();
     }
 }
 
@@ -3117,19 +3199,27 @@ fn merge_openai_responses_tool_arguments(
 }
 
 fn extract_openai_responses_reasoning_text(item: &Map<String, Value>) -> Option<String> {
-    item.get("summary")
-        .and_then(Value::as_array)
+    extract_openai_responses_reasoning_parts(item.get("content"), "reasoning_text")
+        .or_else(|| extract_openai_responses_reasoning_parts(item.get("summary"), "summary_text"))
+}
+
+fn extract_openai_responses_reasoning_parts(
+    raw: Option<&Value>,
+    expected_type: &str,
+) -> Option<String> {
+    raw.and_then(Value::as_array)
         .into_iter()
         .flatten()
         .find_map(|part| {
             let part = part.as_object()?;
-            (part.get("type").and_then(Value::as_str) == Some("summary_text")).then(|| {
+            (part.get("type").and_then(Value::as_str) == Some(expected_type)).then(|| {
                 part.get("text")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string()
             })
         })
+        .filter(|text| !text.is_empty())
 }
 
 fn merge_openai_responses_message_item(
@@ -3275,16 +3365,26 @@ fn materialize_openai_responses_reasoning_item(
     });
     item.entry("status".to_string())
         .or_insert_with(|| Value::String("completed".to_string()));
-    if !state.summary_text.is_empty() {
-        item.insert(
-            "summary".to_string(),
-            Value::Array(vec![json!({
-                "type": "summary_text",
-                "text": state.summary_text,
-            })]),
-        );
+    if !state.reasoning_text.is_empty()
+        && reasoning_item_field_missing_or_empty(item.get("content"))
+    {
+        let content = openai_responses_reasoning_text_parts([&state.reasoning_text]);
+        item.insert("content".to_string(), content);
     }
+    // Raw chain-of-thought lives on `content` only; never mirror it onto
+    // `summary`, or clients that render both channels show it twice.
+    item.entry("summary".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
     Value::Object(item)
+}
+
+fn reasoning_item_field_missing_or_empty(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(parts)) => parts.is_empty(),
+        Some(Value::String(text)) => text.trim().is_empty(),
+        _ => false,
+    }
 }
 
 fn materialize_openai_responses_tool_item(
@@ -3631,6 +3731,11 @@ fn try_aggregate_gemini_stream_sync_response(
                 CanonicalStreamEvent::TextDelta(text) => {
                     append_gemini_text_part(&mut parts, text, false);
                 }
+                // This rebuilds a raw Gemini body, and every non-`content`
+                // candidate key — `groundingMetadata` included — is already
+                // copied across above. Projecting it into citations is the
+                // job of whoever converts that body onward.
+                CanonicalStreamEvent::Citations(_) => {}
                 CanonicalStreamEvent::ReasoningDelta(text) => {
                     append_gemini_text_part(&mut parts, text, true);
                 }
@@ -4137,6 +4242,92 @@ mod tests {
             product.client_body_json["candidates"][0]["content"]["parts"][0]["inlineData"]["data"],
             "aGVsbG8="
         );
+    }
+
+    #[test]
+    fn aggregates_openai_chat_stream_reasoning_into_sync_body() {
+        // The aggregator used to keep only `content` and `tool_calls`, so a
+        // stream downgraded to a sync response lost the reasoning entirely —
+        // for OpenRouter's `reasoning`/`reasoning_details` and for the
+        // DeepSeek-style `reasoning_content` alike.
+        let body = concat!(
+            "data: {\"id\":\"gen-openrouter-123\",\"object\":\"chat.completion.chunk\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"Let me\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"Let me\",\"index\":0}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"gen-openrouter-123\",\"object\":\"chat.completion.chunk\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" think.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" think.\",\"index\":0}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"gen-openrouter-123\",\"object\":\"chat.completion.chunk\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Done.\",\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"gen-openrouter-123\",\"object\":\"chat.completion.chunk\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n",
+        );
+
+        let result = aggregate_openai_chat_stream_sync_response(body.as_bytes())
+            .expect("openrouter chat stream should aggregate into a sync body");
+
+        let message = &result["choices"][0]["message"];
+        assert_eq!(message["content"], "Done.");
+        // `reasoning` and `reasoning_details` repeat one another, so the
+        // reassembled text must not double up.
+        assert_eq!(message["reasoning_content"], "Let me think.");
+        assert_eq!(result["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn aggregates_deepseek_reasoning_content_into_sync_body() {
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-deepseek\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Let me\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-deepseek\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\" think.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-deepseek\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"42\"},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+
+        let result = aggregate_openai_chat_stream_sync_response(body.as_bytes())
+            .expect("deepseek chat stream should aggregate into a sync body");
+
+        let message = &result["choices"][0]["message"];
+        assert_eq!(message["content"], "42");
+        assert_eq!(message["reasoning_content"], "Let me think.");
+        assert_eq!(result["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn aggregated_chat_stream_without_reasoning_adds_no_reasoning_key() {
+        let body = "data: {\"id\":\"chatcmpl-openai\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n";
+
+        let result = aggregate_openai_chat_stream_sync_response(body.as_bytes())
+            .expect("plain chat stream should aggregate into a sync body");
+
+        let message = &result["choices"][0]["message"];
+        assert_eq!(message["content"], "hi");
+        assert!(
+            message.get("reasoning_content").is_none(),
+            "a stream with no reasoning must not gain a reasoning key: {message}"
+        );
+    }
+
+    #[test]
+    fn aggregated_openai_chat_reasoning_reaches_every_client_format() {
+        let body = concat!(
+            "data: {\"id\":\"gen-openrouter-123\",\"object\":\"chat.completion.chunk\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"Thinking.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"gen-openrouter-123\",\"object\":\"chat.completion.chunk\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Done.\",\"role\":\"assistant\"},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        let aggregated = aggregate_openai_chat_stream_sync_response(body.as_bytes())
+            .expect("openrouter chat stream should aggregate into a sync body");
+        let report_context = json!({});
+
+        for (client_api_format, marker) in [
+            ("openai:responses", "\"type\":\"reasoning\""),
+            ("claude:messages", "\"type\":\"thinking\""),
+            ("gemini:generate_content", "\"thought\":true"),
+        ] {
+            let converted = convert_standard_chat_response(
+                &aggregated,
+                "openai:chat",
+                client_api_format,
+                &report_context,
+            )
+            .unwrap_or_else(|| panic!("{client_api_format} should convert"));
+            let encoded = serde_json::to_string(&converted).expect("converted body should encode");
+            assert!(
+                encoded.contains(marker),
+                "{client_api_format} dropped the reasoning block: {encoded}"
+            );
+        }
     }
 
     #[test]
@@ -5606,7 +5797,9 @@ mod tests {
             .expect("modern response.done stream should aggregate");
 
         assert_eq!(result["output"][0]["type"], "reasoning");
-        assert_eq!(result["output"][0]["summary"][0]["text"], "Need care");
+        assert_eq!(result["output"][0]["summary"], json!([]));
+        assert_eq!(result["output"][0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(result["output"][0]["content"][0]["text"], "Need care");
         assert!(result["output"].as_array().is_some());
         assert_eq!(result["output_text"], "");
         assert!(result["completed_at"].as_i64().is_some());
@@ -5632,7 +5825,7 @@ mod tests {
                 .as_object()
                 .expect("reasoning item should be an object")
                 .clone(),
-            summary_text: "must not replace provider-owned state".to_string(),
+            reasoning_text: "must not replace provider-owned state".to_string(),
         };
 
         let materialized = materialize_openai_responses_reasoning_item("resp_opaque_123", state);
@@ -5673,13 +5866,13 @@ mod tests {
     }
 
     #[test]
-    fn synthesizes_wire_compatible_id_for_local_reasoning_summary() {
+    fn synthesizes_wire_compatible_id_for_local_reasoning_text() {
         let state = OpenAIResponsesSyncReasoningState {
             item: json!({"type": "reasoning"})
                 .as_object()
                 .expect("reasoning item should be an object")
                 .clone(),
-            summary_text: "Need care".to_string(),
+            reasoning_text: "Need care".to_string(),
         };
 
         let materialized = materialize_openai_responses_reasoning_item("resp_summary_123", state);
@@ -5688,7 +5881,9 @@ mod tests {
             materialized["id"],
             openai_responses_synthetic_reasoning_item_id("resp_summary_123", 0)
         );
-        assert_eq!(materialized["summary"][0]["text"], "Need care");
+        assert_eq!(materialized["summary"], json!([]));
+        assert_eq!(materialized["content"][0]["type"], "reasoning_text");
+        assert_eq!(materialized["content"][0]["text"], "Need care");
     }
 
     #[test]
@@ -7014,6 +7209,84 @@ mod tests {
             product.client_body_json["choices"][0]["message"]["content"],
             "stream projection"
         );
+    }
+
+    #[test]
+    fn standard_sync_finalize_projects_forced_responses_stream_to_gemini_and_claude_clients() {
+        // Shape of a forced-stream xAI / Codex upstream: the terminal response
+        // echoes request metadata and carries encrypted reasoning, which the
+        // strict cross-format check refuses.
+        let stream_body = concat!(
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_forced_123\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"grok-4.7-build\",\"output\":[],\"parallel_tool_calls\":true,\"tool_choice\":\"auto\",\"tools\":[],\"temperature\":0.7}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"rs_forced_123\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"greet briefly\"}],\"encrypted_content\":\"opaque-xai-reasoning\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_forced_123\",\"output_index\":1,\"content_index\":0,\"delta\":\"Hello there friend\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"sequence_number\":3,\"output_index\":1,\"item\":{\"id\":\"msg_forced_123\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello there friend\",\"annotations\":[]}]}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":2,\"item\":{\"id\":\"fc_forced_123\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call_forced_123\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"aether\\\"}\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"sequence_number\":5,\"response\":{\"id\":\"resp_forced_123\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"grok-4.7-build\",\"output\":[],\"parallel_tool_calls\":true,\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"search\",\"parameters\":{\"type\":\"object\"}}],\"text\":{\"format\":{\"type\":\"text\"}},\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":0.7,\"top_p\":0.95,\"store\":false,\"usage\":{\"input_tokens\":1249,\"input_tokens_details\":{\"cached_tokens\":1152},\"output_tokens\":40,\"output_tokens_details\":{\"reasoning_tokens\":31},\"total_tokens\":1289}}}\n\n",
+        );
+        let encoded = base64::engine::general_purpose::STANDARD.encode(stream_body);
+
+        for (report_kind, client_api_format) in [
+            ("gemini_chat_sync_finalize", "gemini:generate_content"),
+            ("gemini_cli_sync_finalize", "gemini:generate_content"),
+            ("claude_chat_sync_finalize", "claude:messages"),
+            ("claude_cli_sync_finalize", "claude:messages"),
+        ] {
+            let report_context = json!({
+                "provider_api_format": "openai:responses",
+                "provider_stream_event_api_format": "openai:responses",
+                "client_api_format": client_api_format,
+                "model": "grok-4.7",
+                "mapped_model": "grok-4.7",
+                "needs_conversion": true,
+            });
+            let product = maybe_build_standard_sync_finalize_product_from_normalized_payload(
+                report_kind,
+                200,
+                Some(&report_context),
+                None,
+                Some(&encoded),
+            )
+            .expect("forced Responses stream should aggregate")
+            .unwrap_or_else(|| panic!("{report_kind} should receive a projection"));
+            let StandardSyncFinalizeNormalizedProduct::CrossFormat(product) = product else {
+                panic!("{report_kind}: Responses stream should stay a cross-format product")
+            };
+            assert_eq!(product.provider_body_json["parallel_tool_calls"], true);
+            let client = product.client_body_json.to_string();
+            assert!(
+                !client.contains("opaque-xai-reasoning") && !client.contains("response.created"),
+                "{report_kind}: provider-only data leaked into the client body: {client}"
+            );
+            if client_api_format == "gemini:generate_content" {
+                let parts = product.client_body_json["candidates"][0]["content"]["parts"]
+                    .as_array()
+                    .expect("gemini parts");
+                assert!(parts
+                    .iter()
+                    .any(|part| part["text"] == "Hello there friend"
+                        && part.get("thought").is_none()));
+                assert!(parts
+                    .iter()
+                    .any(|part| part["functionCall"]["name"] == "search"
+                        && part["functionCall"]["args"]["q"] == "aether"));
+                assert_eq!(
+                    product.client_body_json["usageMetadata"]["promptTokenCount"],
+                    1249
+                );
+            } else {
+                let content = product.client_body_json["content"]
+                    .as_array()
+                    .expect("claude content");
+                assert!(content
+                    .iter()
+                    .any(|block| block["type"] == "text" && block["text"] == "Hello there friend"));
+                assert!(content.iter().any(|block| block["type"] == "tool_use"
+                    && block["name"] == "search"
+                    && block["input"]["q"] == "aether"));
+                assert_eq!(product.client_body_json["stop_reason"], "tool_use");
+            }
+        }
     }
 
     #[test]

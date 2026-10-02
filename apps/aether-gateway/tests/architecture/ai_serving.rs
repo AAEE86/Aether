@@ -1194,7 +1194,7 @@ fn ai_serving_planner_separates_local_candidate_resolution_from_ranking() {
 
     let candidate_resolution =
         read_workspace_file("apps/aether-gateway/src/ai_serving/planner/candidate_resolution.rs");
-    let ranking_call = candidate_resolution
+    candidate_resolution
         .find("rank_eligible_local_execution_candidates(")
         .expect("candidate_resolution.rs should call core-backed local candidate ranking");
     assert!(
@@ -1452,7 +1452,8 @@ fn ai_serving_planner_separates_local_candidate_resolution_from_ranking() {
         "GeminiCliProviderPoolAdapter",
         "KiroProviderPoolAdapter",
         "ChatGptWebProviderPoolAdapter",
-        "CLAUDE_CODE_PROVIDER_POOL_ADAPTER",
+        "XaiProviderPoolAdapter",
+        "ClaudeCodeProviderPoolAdapter",
         "VERTEX_AI_PROVIDER_POOL_ADAPTER",
         "provider_types_for_capability",
         "supports_quota_refresh",
@@ -1478,6 +1479,7 @@ fn ai_serving_planner_separates_local_candidate_resolution_from_ranking() {
         "pub mod gemini_cli;",
         "pub mod kiro;",
         "pub mod chatgpt_web;",
+        "pub mod xai;",
     ] {
         assert!(
             provider_pool_providers.contains(pattern),
@@ -1514,6 +1516,14 @@ fn ai_serving_planner_separates_local_candidate_resolution_from_ranking() {
             vec!["KiroProviderPoolAdapter", "quota_exhausted_from_bucket"],
         ),
         (
+            "crates/aether-provider/pool/src/providers/xai.rs",
+            vec![
+                "XaiProviderPoolAdapter",
+                "build_xai_pool_billing_request",
+                "quota_exhausted_from_bucket",
+            ],
+        ),
+        (
             "crates/aether-provider/pool/src/providers/chatgpt_web.rs",
             vec![
                 "ChatGptWebProviderPoolAdapter",
@@ -1527,8 +1537,14 @@ fn ai_serving_planner_separates_local_candidate_resolution_from_ranking() {
             "crates/aether-provider/pool/src/providers/unsupported.rs",
             vec![
                 "UnsupportedQuotaProviderPoolAdapter",
-                "CLAUDE_CODE_PROVIDER_POOL_ADAPTER",
                 "VERTEX_AI_PROVIDER_POOL_ADAPTER",
+            ],
+        ),
+        (
+            "crates/aether-provider/pool/src/providers/claude_code.rs",
+            vec![
+                "ClaudeCodeProviderPoolAdapter",
+                "build_claude_code_pool_quota_request",
             ],
         ),
     ] {
@@ -5035,7 +5051,9 @@ fn retired_api_format_occurrences_are_whitelisted() {
             .expect("file should be under workspace root")
             .to_string_lossy()
             .replace('\\', "/");
-        if relative == "apps/aether-gateway/src/tests/architecture/ai_serving.rs" {
+        if relative == "apps/aether-gateway/tests/architecture/ai_serving.rs"
+            || relative == "apps/aether-gateway/src/tests/architecture/ai_serving.rs"
+        {
             continue;
         }
 

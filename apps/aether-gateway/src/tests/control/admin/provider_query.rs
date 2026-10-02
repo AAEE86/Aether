@@ -36,21 +36,11 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + 'static,
 {
-    let handle = std::thread::Builder::new()
-        .name(test_name.to_string())
-        .stack_size(PROVIDER_QUERY_TEST_STACK_BYTES)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime should build");
-            runtime.block_on(make_future());
-        })
-        .expect("provider query test thread should spawn");
-
-    if let Err(payload) = handle.join() {
-        std::panic::resume_unwind(payload);
-    }
+    crate::tests::run_async_test_on_large_stack(
+        test_name,
+        PROVIDER_QUERY_TEST_STACK_BYTES,
+        make_future,
+    );
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -560,12 +550,12 @@ async fn gateway_recovers_codex_slug_only_models_from_a_stale_legacy_cache_impl(
                     plan.url,
                     format!(
                         "https://chatgpt.com/backend-api/codex/models?client_version={}",
-                        aether_ai_formats::CODEX_CLIENT_VERSION
+                        aether_ai_formats::codex_client_version()
                     )
                 );
                 assert_eq!(
                     plan.headers.get("user-agent").map(String::as_str),
-                    Some(aether_ai_formats::CODEX_CLIENT_USER_AGENT)
+                    Some(aether_ai_formats::codex_client_user_agent().as_str())
                 );
                 assert_eq!(plan.provider_api_format, "openai:responses");
                 Json(json!({
@@ -764,7 +754,7 @@ async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_
                     plan.url,
                     format!(
                         "https://chatgpt.com/backend-api/codex/models?client_version={}",
-                        aether_ai_formats::CODEX_CLIENT_VERSION
+                        aether_ai_formats::codex_client_version()
                     )
                 );
                 Json(json!({

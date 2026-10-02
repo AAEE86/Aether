@@ -78,8 +78,18 @@ pub(crate) fn provider_pool_model_quota_exhausted(
     provider_type: &str,
     provider_model_name: &str,
 ) -> Option<bool> {
-    let requested = provider_pool_identifier_tokens(provider_model_name);
-    if requested.is_empty() {
+    provider_pool_quota_reaches_reserve(key, provider_type, Some(provider_model_name), 0.0)
+}
+
+fn provider_pool_quota_reaches_reserve(
+    key: &StoredProviderCatalogKey,
+    provider_type: &str,
+    provider_model_name: Option<&str>,
+    reserve_ratio: f64,
+) -> Option<bool> {
+    let is_codex = provider_type.trim().eq_ignore_ascii_case("codex");
+    let requested = provider_model_name.map(provider_pool_identifier_tokens);
+    if reserve_ratio <= 0.0 && requested.as_ref().is_some_and(|tokens| tokens.is_empty()) {
         return None;
     }
 
@@ -92,29 +102,84 @@ pub(crate) fn provider_pool_model_quota_exhausted(
         provider_pool_metadata_bucket(key.upstream_metadata.as_ref(), provider_type),
     ];
     let mut resolved = None::<(Option<u64>, bool)>;
+    let mut resolved_specific_bucket = false;
     for source in sources.into_iter().flatten() {
-        let windows = provider_pool_collect_quota_windows(source);
+        let observed_at = provider_pool_timestamp_unix_secs(source.get("observed_at"))
+            .or_else(|| provider_pool_timestamp_unix_secs(source.get("updated_at")));
+        let account_signal = (is_codex && reserve_ratio <= 0.0)
+            .then(|| provider_pool_codex_account_quota_signal(source, observed_at))
+            .flatten();
+        let mut windows = provider_pool_collect_quota_windows(source);
+        if is_codex {
+            // Raw refresh metadata can be newer than the materialized windows.
+            // Include all four legacy slots before selecting the model bucket.
+            for prefix in ["primary", "secondary", "spark_primary", "spark_secondary"] {
+                let Some(used_percent) =
+                    provider_pool_json_f64(source.get(&format!("{prefix}_used_percent")))
+                else {
+                    continue;
+                };
+                if provider_pool_json_f64(source.get(&format!("{prefix}_window_minutes")))
+                    == Some(0.0)
+                {
+                    continue;
+                }
+                let mut window = Map::from_iter([
+                    ("code".to_string(), json!(prefix)),
+                    ("used_percent".to_string(), json!(used_percent)),
+                ]);
+                for field in [
+                    "reset_at",
+                    "next_reset_at",
+                    "reset_seconds",
+                    "reset_after_seconds",
+                ] {
+                    if let Some(value) = source.get(&format!("{prefix}_{field}")) {
+                        window.insert(field.to_string(), value.clone());
+                    }
+                }
+                windows.push(window);
+            }
+            windows.retain(provider_pool_quota_window_has_observation);
+            if let Some(exhausted) = account_signal {
+                if !windows.iter().any(provider_pool_window_is_generic) {
+                    // A flags-only quota refresh is still a newer account
+                    // observation, but must not override a model-specific bucket.
+                    windows.push(Map::from_iter([
+                        ("code".to_string(), json!("account")),
+                        ("is_exhausted".to_string(), json!(exhausted)),
+                    ]));
+                }
+            }
+        }
         if windows.is_empty() {
             continue;
         }
-        let observed_at = provider_pool_timestamp_unix_secs(source.get("observed_at"))
-            .or_else(|| provider_pool_timestamp_unix_secs(source.get("updated_at")));
         let model_matches = windows
             .iter()
             .filter(|window| {
-                provider_pool_window_explicitly_matches_model(window, provider_model_name)
+                provider_model_name.is_some_and(|model| {
+                    provider_pool_window_explicitly_matches_model(window, model)
+                })
             })
             .collect::<Vec<_>>();
         if !model_matches.is_empty() {
-            let exhausted =
-                provider_pool_explicit_model_windows_exhausted(model_matches, observed_at);
+            let exhausted = if reserve_ratio > 0.0 {
+                // Reserving quota protects every applicable rate-limit window,
+                // including short and weekly limits for an explicit model.
+                provider_pool_any_window_exhausted(model_matches, observed_at, reserve_ratio)
+            } else {
+                provider_pool_explicit_model_windows_exhausted(model_matches, observed_at)
+            };
             if resolved.is_none()
+                || (is_codex && !resolved_specific_bucket)
                 || provider_pool_should_replace_model_quota_resolution(
                     resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
                     observed_at,
                 )
             {
                 resolved = Some((observed_at, exhausted));
+                resolved_specific_bucket = true;
             }
             continue;
         }
@@ -125,18 +190,31 @@ pub(crate) fn provider_pool_model_quota_exhausted(
         // windows isolated without baking in names such as "spark".
         let family_matches = windows
             .iter()
-            .filter(|window| provider_pool_window_family_matches_model(window, &requested))
+            .filter(|window| {
+                requested
+                    .as_ref()
+                    .is_some_and(|tokens| provider_pool_window_family_matches_model(window, tokens))
+            })
             .collect::<Vec<_>>();
         if !family_matches.is_empty() {
-            let exhausted = provider_pool_any_window_exhausted(family_matches, observed_at);
+            let exhausted =
+                provider_pool_any_window_exhausted(family_matches, observed_at, reserve_ratio);
             if resolved.is_none()
+                || (is_codex && !resolved_specific_bucket)
                 || provider_pool_should_replace_model_quota_resolution(
                     resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
                     observed_at,
                 )
             {
                 resolved = Some((observed_at, exhausted));
+                resolved_specific_bucket = true;
             }
+            continue;
+        }
+
+        // A newer account observation does not update an independent model
+        // bucket. Only compare freshness between applicable model sources.
+        if is_codex && resolved_specific_bucket {
             continue;
         }
 
@@ -150,7 +228,9 @@ pub(crate) fn provider_pool_model_quota_exhausted(
             .filter(|window| provider_pool_window_is_generic(window))
             .collect::<Vec<_>>();
         if !generic_matches.is_empty() {
-            let exhausted = provider_pool_any_window_exhausted(generic_matches, observed_at);
+            let exhausted = account_signal.unwrap_or_else(|| {
+                provider_pool_any_window_exhausted(generic_matches, observed_at, reserve_ratio)
+            });
             if resolved.is_none()
                 || provider_pool_should_replace_model_quota_resolution(
                     resolved.as_ref().and_then(|(observed_at, _)| *observed_at),
@@ -163,6 +243,37 @@ pub(crate) fn provider_pool_model_quota_exhausted(
     }
 
     resolved.map(|(_, exhausted)| exhausted)
+}
+
+fn provider_pool_codex_account_quota_signal(
+    source: &Map<String, Value>,
+    observed_at: Option<u64>,
+) -> Option<bool> {
+    let allowed = provider_pool_json_bool(source.get("allowed"));
+    let limit_reached = provider_pool_json_bool(source.get("limit_reached"));
+    if allowed == Some(false) || limit_reached == Some(true) {
+        let reset_elapsed = provider_pool_current_unix_secs().is_some_and(|now| {
+            provider_pool_reset_deadline_elapsed(source, observed_at, now)
+                || ["primary", "secondary"].into_iter().any(|prefix| {
+                    let window = [
+                        "reset_at",
+                        "next_reset_at",
+                        "reset_seconds",
+                        "reset_after_seconds",
+                    ]
+                    .into_iter()
+                    .filter_map(|field| {
+                        source
+                            .get(&format!("{prefix}_{field}"))
+                            .map(|value| (field.to_string(), value.clone()))
+                    })
+                    .collect::<Map<_, _>>();
+                    provider_pool_reset_deadline_elapsed(&window, observed_at, now)
+                })
+        });
+        return (!reset_elapsed).then_some(true);
+    }
+    (allowed == Some(true) || limit_reached == Some(false)).then_some(false)
 }
 
 fn provider_pool_should_replace_model_quota_resolution(
@@ -209,14 +320,130 @@ fn provider_pool_explicit_model_windows_exhausted(
 fn provider_pool_any_window_exhausted(
     windows: Vec<&Map<String, Value>>,
     snapshot_observed_at: Option<u64>,
+    reserve_ratio: f64,
 ) -> bool {
     let now_unix_secs = provider_pool_current_unix_secs();
     windows.iter().any(|window| {
-        provider_pool_quota_window_is_exhausted(window)
+        provider_pool_quota_window_reaches_reserve(window, reserve_ratio)
             && !now_unix_secs.is_some_and(|now| {
                 provider_pool_reset_deadline_elapsed(window, snapshot_observed_at, now)
             })
     })
+}
+
+fn provider_pool_quota_window_has_observation(window: &Map<String, Value>) -> bool {
+    ["is_exhausted", "exhausted"]
+        .into_iter()
+        .any(|field| provider_pool_json_bool(window.get(field)).is_some())
+        || [
+            "used_ratio",
+            "usage_ratio",
+            "used_percent",
+            "remaining_ratio",
+            "remaining_fraction",
+            "remaining_percent",
+        ]
+        .into_iter()
+        .any(|field| provider_pool_json_f64(window.get(field)).is_some())
+        || (provider_pool_json_f64(
+            window
+                .get("remaining")
+                .or_else(|| window.get("remaining_value")),
+        )
+        .is_some()
+            && provider_pool_json_f64(
+                window
+                    .get("limit")
+                    .or_else(|| window.get("limit_value"))
+                    .or_else(|| window.get("total")),
+            )
+            .is_some_and(|limit| limit > 0.0))
+}
+
+pub(crate) fn provider_pool_source_account_quota_exhausted(
+    source: &Map<String, Value>,
+) -> Option<bool> {
+    let windows = provider_pool_collect_quota_windows(source);
+    let account_windows = windows
+        .iter()
+        .filter(|window| provider_pool_window_is_generic(window))
+        .filter(|window| provider_pool_quota_window_has_observation(window))
+        .collect::<Vec<_>>();
+    if account_windows.is_empty() {
+        return None;
+    }
+    let observed_at = provider_pool_timestamp_unix_secs(source.get("observed_at"))
+        .or_else(|| provider_pool_timestamp_unix_secs(source.get("updated_at")));
+    Some(provider_pool_any_window_exhausted(
+        account_windows,
+        observed_at,
+        0.0,
+    ))
+}
+
+/// Whether Codex metadata contains an account quota observation rather than an
+/// identity-only update or an independent model quota bucket.
+pub fn provider_pool_codex_metadata_has_account_quota(source: &Map<String, Value>) -> bool {
+    ["primary_used_percent", "secondary_used_percent"]
+        .into_iter()
+        .any(|field| provider_pool_json_f64(source.get(field)).is_some())
+        || provider_pool_source_account_quota_exhausted(source).is_some()
+        || ["allowed", "limit_reached", "has_credits"]
+            .into_iter()
+            .any(|field| provider_pool_json_bool(source.get(field)).is_some())
+        || provider_pool_json_bool(source.get("credits_unlimited")) == Some(true)
+}
+
+/// Whether an applicable Codex window has at most 1% remaining. Missing quota
+/// data and windows whose reset has elapsed do not trigger this opt-in guard.
+pub fn provider_pool_key_minimum_quota_reached(
+    key: &StoredProviderCatalogKey,
+    provider_type: &str,
+    provider_model_name: Option<&str>,
+) -> bool {
+    if !provider_type.trim().eq_ignore_ascii_case("codex") {
+        return false;
+    }
+    provider_pool_quota_reaches_reserve(key, provider_type, provider_model_name, 0.01)
+        .unwrap_or(false)
+}
+
+fn provider_pool_quota_window_reaches_reserve(
+    window: &Map<String, Value>,
+    reserve_ratio: f64,
+) -> bool {
+    if provider_pool_quota_window_is_exhausted(window) {
+        return true;
+    }
+    if reserve_ratio <= 0.0 {
+        return false;
+    }
+    let used_ratio = provider_pool_json_f64(window.get("used_ratio"))
+        .or_else(|| provider_pool_json_f64(window.get("usage_ratio")))
+        .or_else(|| provider_pool_json_f64(window.get("used_percent")).map(|value| value / 100.0))
+        .or_else(|| {
+            provider_pool_json_f64(window.get("remaining_ratio"))
+                .or_else(|| provider_pool_json_f64(window.get("remaining_fraction")))
+                .map(|value| 1.0 - value)
+        })
+        .or_else(|| {
+            provider_pool_json_f64(window.get("remaining_percent")).map(|value| 1.0 - value / 100.0)
+        })
+        .or_else(|| {
+            let remaining = provider_pool_json_f64(
+                window
+                    .get("remaining")
+                    .or_else(|| window.get("remaining_value")),
+            )?;
+            let limit = provider_pool_json_f64(
+                window
+                    .get("limit")
+                    .or_else(|| window.get("limit_value"))
+                    .or_else(|| window.get("total")),
+            )?;
+            (limit > 0.0).then_some(1.0 - remaining / limit)
+        });
+    used_ratio.is_some_and(|used_ratio| used_ratio >= 1.0 - reserve_ratio)
 }
 
 fn provider_pool_window_is_generic(window: &Map<String, Value>) -> bool {
@@ -585,7 +812,16 @@ pub(crate) fn provider_pool_json_f64(value: Option<&Value>) -> Option<f64> {
 }
 
 pub(crate) fn provider_pool_timestamp_unix_secs(value: Option<&Value>) -> Option<u64> {
-    let mut timestamp = provider_pool_json_f64(value)?;
+    let mut timestamp = match provider_pool_json_f64(value) {
+        Some(timestamp) => timestamp,
+        None => {
+            return chrono::DateTime::parse_from_rfc3339(value?.as_str()?.trim())
+                .ok()?
+                .timestamp()
+                .try_into()
+                .ok();
+        }
+    };
     if timestamp <= 0.0 {
         return None;
     }

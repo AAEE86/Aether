@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use crate::codex_profile::codex_client_profile;
 use aether_ai_formats::provider_compat::proxy::rules::body_rules_handle_path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -36,9 +37,6 @@ const CODEX_OPENAI_RESPONSES_COMPACT_BODY_FIELDS: &[&str] = &[
     "prompt_cache_key",
     "text",
 ];
-pub const CODEX_CLIENT_VERSION: &str = "0.153.4";
-pub const CODEX_CLIENT_USER_AGENT: &str = "codex_cli_rs/0.153.4";
-pub const CODEX_CLIENT_ORIGINATOR: &str = "codex_cli_rs";
 pub const CODEX_OPENAI_IMAGE_INTERNAL_MODEL: &str = "gpt-5.4-mini";
 pub const CODEX_OPENAI_IMAGE_DEFAULT_MODEL: &str = "gpt-image-2";
 pub const CODEX_OPENAI_IMAGE_DEFAULT_VARIATION_MODEL: &str = "dall-e-2";
@@ -90,12 +88,6 @@ impl CodexResponsesModelCapabilities {
         self.supported_reasoning_efforts
             .iter()
             .any(|candidate| candidate == effort.trim())
-    }
-
-    fn supports_service_tier(&self, service_tier: &str) -> bool {
-        self.supported_service_tiers
-            .iter()
-            .any(|candidate| candidate == service_tier)
     }
 }
 
@@ -1214,18 +1206,6 @@ fn apply_codex_model_request_capabilities(
             }
         }
     }
-
-    if !body_rules_handle_path(body_rules, "service_tier") {
-        let service_tier = body_object
-            .get("service_tier")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        if !service_tier.as_deref().is_some_and(|service_tier| {
-            service_tier != "default" && capabilities.supports_service_tier(service_tier)
-        }) {
-            body_object.remove("service_tier");
-        }
-    }
 }
 
 fn ensure_codex_reasoning_defaults(
@@ -2116,6 +2096,7 @@ pub fn apply_codex_openai_special_headers(
     };
 
     let auth_identity = parse_codex_auth_identity(decrypted_auth_config_raw);
+    let client_profile = codex_client_profile();
 
     remove_btree_header(provider_request_headers, "chatgpt-account-id");
     remove_btree_header(provider_request_headers, "x-openai-fedramp");
@@ -2130,12 +2111,12 @@ pub fn apply_codex_openai_special_headers(
     set_codex_client_header(
         provider_request_headers,
         "user-agent",
-        CODEX_CLIENT_USER_AGENT,
+        &client_profile.user_agent,
     );
     set_codex_client_header(
         provider_request_headers,
         "originator",
-        CODEX_CLIENT_ORIGINATOR,
+        &client_profile.originator,
     );
     if endpoint_kind == CodexOpenAiEndpointKind::Search {
         remove_btree_header(provider_request_headers, CODEX_RESPONSES_LITE_HEADER);
@@ -2193,17 +2174,18 @@ mod tests {
         build_codex_model_catalog_metadata, bundled_codex_model_cards, effective_codex_model_cards,
         parse_codex_auth_identity, project_codex_catalog_model_card,
         resolve_codex_responses_model_capabilities,
-        validate_codex_openai_responses_compact_request_contract, CODEX_CLIENT_ORIGINATOR,
-        CODEX_CLIENT_USER_AGENT, CODEX_CLIENT_VERSION, CODEX_OPENAI_IMAGE_INTERNAL_MODEL,
-        CODEX_OPENAI_RESPONSES_UNSUPPORTED_BODY_FIELDS, CODEX_RESPONSES_LITE_HEADER,
+        validate_codex_openai_responses_compact_request_contract,
+        CODEX_OPENAI_IMAGE_INTERNAL_MODEL, CODEX_OPENAI_RESPONSES_UNSUPPORTED_BODY_FIELDS,
+        CODEX_RESPONSES_LITE_HEADER,
     };
     use serde_json::{json, Value};
 
     #[test]
     fn codex_client_user_agent_matches_originator_and_version() {
+        let profile = crate::codex_client_profile();
         assert_eq!(
-            CODEX_CLIENT_USER_AGENT,
-            format!("{CODEX_CLIENT_ORIGINATOR}/{CODEX_CLIENT_VERSION}")
+            profile.user_agent,
+            format!("{}/{}", profile.originator, profile.codex_version)
         );
     }
 
@@ -2654,7 +2636,7 @@ mod tests {
         assert_eq!(body["reasoning"]["effort"], "high");
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
         assert_eq!(body["parallel_tool_calls"], false);
-        assert!(body.get("service_tier").is_none());
+        assert_eq!(body["service_tier"], "priority");
         assert!(body["text"].get("verbosity").is_none());
         assert_eq!(body["text"]["format"]["type"], "json_schema");
 
@@ -2981,11 +2963,11 @@ mod tests {
         );
         assert_eq!(
             headers.get("user-agent").map(String::as_str),
-            Some(CODEX_CLIENT_USER_AGENT)
+            Some(crate::codex_client_user_agent().as_str())
         );
         assert_eq!(
             headers.get("originator").map(String::as_str),
-            Some(CODEX_CLIENT_ORIGINATOR)
+            Some(crate::codex_client_originator().as_str())
         );
         assert!(!headers.contains_key(CODEX_RESPONSES_LITE_HEADER));
         assert!(!headers.contains_key("openai-beta"));
@@ -3019,11 +3001,11 @@ mod tests {
         );
         assert_eq!(
             headers.get("user-agent").map(String::as_str),
-            Some(CODEX_CLIENT_USER_AGENT)
+            Some(crate::codex_client_user_agent().as_str())
         );
         assert_eq!(
             headers.get("originator").map(String::as_str),
-            Some(CODEX_CLIENT_ORIGINATOR)
+            Some(crate::codex_client_originator().as_str())
         );
         assert!(!headers.contains_key(CODEX_RESPONSES_LITE_HEADER));
     }

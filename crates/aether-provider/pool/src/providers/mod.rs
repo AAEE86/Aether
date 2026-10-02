@@ -1,5 +1,6 @@
 pub mod antigravity;
 pub mod chatgpt_web;
+pub mod claude_code;
 pub mod codex;
 pub mod default;
 pub mod gemini_cli;
@@ -7,6 +8,7 @@ pub mod grok;
 pub mod kiro;
 pub mod unsupported;
 pub mod windsurf;
+pub mod xai;
 
 pub use antigravity::AntigravityProviderPoolAdapter;
 pub use antigravity::{
@@ -18,6 +20,11 @@ pub use chatgpt_web::{
     build_chatgpt_web_pool_quota_request, enrich_chatgpt_web_quota_metadata,
     normalize_chatgpt_web_image_quota_limit, CHATGPT_WEB_CONVERSATION_INIT_PATH,
     CHATGPT_WEB_DEFAULT_BASE_URL,
+};
+pub use claude_code::ClaudeCodeProviderPoolAdapter;
+pub use claude_code::{
+    build_claude_code_pool_quota_request, CLAUDE_CODE_OAUTH_BETA, CLAUDE_CODE_OAUTH_USAGE_URL,
+    CLAUDE_CODE_USAGE_USER_AGENT,
 };
 pub use codex::CodexProviderPoolAdapter;
 pub use codex::{
@@ -39,10 +46,7 @@ pub use kiro::{
     build_kiro_pool_quota_request, KiroPoolQuotaAuthInput, KIRO_USAGE_LIMITS_PATH,
     KIRO_USAGE_SDK_VERSION,
 };
-pub use unsupported::{
-    UnsupportedQuotaProviderPoolAdapter, CLAUDE_CODE_PROVIDER_POOL_ADAPTER,
-    VERTEX_AI_PROVIDER_POOL_ADAPTER,
-};
+pub use unsupported::{UnsupportedQuotaProviderPoolAdapter, VERTEX_AI_PROVIDER_POOL_ADAPTER};
 pub use windsurf::{
     build_windsurf_pool_model_configs_request,
     build_windsurf_pool_model_configs_request_with_base_url, build_windsurf_pool_quota_request,
@@ -50,4 +54,8 @@ pub use windsurf::{
     build_windsurf_pool_rate_limit_request_with_base_url, WindsurfProviderPoolAdapter,
     WINDSURF_DEFAULT_BASE_URL, WINDSURF_MODEL_CONFIGS_PATH, WINDSURF_RATE_LIMIT_PATH,
     WINDSURF_USER_STATUS_PATH,
+};
+pub use xai::{
+    build_xai_pool_billing_request, build_xai_pool_user_request, XaiProviderPoolAdapter,
+    XAI_BILLING_PATH, XAI_USER_PATH,
 };

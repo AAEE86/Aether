@@ -62,6 +62,16 @@
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <Button
+            variant="outline"
+            size="sm"
+            class="shrink-0 gap-1.5"
+            data-testid="batch-assign-create-model"
+            @click="openCreateModelDialog"
+          >
+            <Plus class="w-4 h-4" />
+            创建模型
+          </Button>
         </div>
 
         <!-- 模型列表 -->
@@ -98,6 +108,7 @@
                     v-for="model in filteredGlobalModels"
                     :key="model.id"
                     class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                    :data-testid="`batch-assign-model-${model.id}`"
                     @click="toggleGlobalModelSelection(model.id)"
                   >
                     <div
@@ -138,6 +149,15 @@
           </div>
         </div>
       </div>
+
+      <!-- 创建统一模型对话框（嵌套，创建成功后刷新下方模型列表）
+           注意：不使用 v-if 挂载，GlobalModelFormDialog 依赖 open 变化来加载模型目录 -->
+      <GlobalModelFormDialog
+        :open="createModelDialogOpen"
+        :z-index="70"
+        @update:open="createModelDialogOpen = $event"
+        @success="handleGlobalModelCreated"
+      />
     </template>
     <template #footer>
       <div class="flex items-center justify-between w-full">
@@ -169,10 +189,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Layers, Loader2, Search, Check, ListChecks } from 'lucide-vue-next'
+import { Layers, Loader2, Search, Check, ListChecks, Plus } from 'lucide-vue-next'
 import Dialog from '@/components/ui/dialog/Dialog.vue'
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
+import GlobalModelFormDialog from '@/features/models/components/GlobalModelFormDialog.vue'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -226,6 +247,8 @@ const loadingGlobalModels = ref(false)
 const loadingProviderKeys = ref(false)
 const saving = ref(false)
 const fetchingAutoMatchedModels = ref(false)
+// 创建统一模型对话框是否打开（嵌套在本弹窗内）
+const createModelDialogOpen = ref(false)
 
 // 数据
 const allGlobalModels = ref<GlobalModelResponse[]>([])
@@ -255,15 +278,29 @@ const existingGlobalModelIds = computed(() => {
   )
 })
 
-// 过滤后的全局模型
+function globalModelMatchesQuery(model: GlobalModelResponse, query: string): boolean {
+  if (!query) return true
+  return model.name.toLowerCase().includes(query) || model.display_name.toLowerCase().includes(query)
+}
+
+function compareGlobalModelsByName(left: GlobalModelResponse, right: GlobalModelResponse): number {
+  const nameA = (left.display_name || left.name || '').toLowerCase()
+  const nameB = (right.display_name || right.name || '').toLowerCase()
+  return nameA.localeCompare(nameB)
+}
+
+// 过滤后的全局模型：当前已勾选/已关联的排在可见结果顶部，便于取消关联
 const filteredGlobalModels = computed(() => {
   const query = searchQuery.value.toLowerCase().trim()
-  return allGlobalModels.value.filter(m => {
-    if (query && !m.name.toLowerCase().includes(query) && !m.display_name.toLowerCase().includes(query)) {
-      return false
-    }
-    return true
-  })
+  const selectedIds = selectedGlobalModelIds.value
+  const matched = allGlobalModels.value.filter(model => globalModelMatchesQuery(model, query))
+  const pinned = matched
+    .filter(model => selectedIds.has(model.id))
+    .sort(compareGlobalModelsByName)
+  const rest = matched
+    .filter(model => !selectedIds.has(model.id))
+    .sort(compareGlobalModelsByName)
+  return [...pinned, ...rest]
 })
 
 // 全局模型是否全选
@@ -407,6 +444,16 @@ async function applyAutoMatchFromKey(key: AutoMatchKey) {
   }
 }
 
+// 打开"创建统一模型"对话框
+function openCreateModelDialog() {
+  createModelDialogOpen.value = true
+}
+
+// 统一模型创建成功：刷新下方全局模型列表，便于直接勾选新模型
+async function handleGlobalModelCreated() {
+  await loadGlobalModels()
+}
+
 // 处理关闭
 async function handleClose() {
   if (hasChanges.value) {
@@ -502,6 +549,7 @@ watch(
       initialGlobalModelIds.value = new Set()
       providerKeys.value = []
       fetchingAutoMatchedModels.value = false
+      createModelDialogOpen.value = false
     }
   },
   { immediate: true },

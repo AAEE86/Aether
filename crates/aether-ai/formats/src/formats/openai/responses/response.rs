@@ -6,8 +6,9 @@ use std::{
 use serde_json::{json, Map, Value};
 
 use super::{
-    encode_gemini_tool_signature_carrier, encode_tool_result_error,
-    history::record_converted_response_history, openai_responses_synthetic_reasoning_item_id,
+    apply_openai_responses_reasoning_text, encode_gemini_tool_signature_carrier,
+    encode_tool_result_error, history::record_converted_response_history,
+    openai_responses_synthetic_reasoning_item_id,
 };
 
 use crate::{
@@ -113,6 +114,14 @@ fn openai_responses_incomplete_stop_reason(body: &Map<String, Value>) -> Canonic
     }
 }
 
+fn canonical_incomplete_reason(canonical: &CanonicalResponse) -> Option<&'static str> {
+    match canonical.stop_reason.as_ref()? {
+        CanonicalStopReason::MaxTokens => Some("max_output_tokens"),
+        CanonicalStopReason::ContentFiltered => Some("content_filter"),
+        _ => None,
+    }
+}
+
 pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, compact: bool) -> Value {
     let namespace_tool_aliases = NamespaceToolAliases::from_report_context(report_context);
     let mut response = Map::new();
@@ -142,6 +151,17 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, compact: bo
             .cloned()
         {
             response.insert("status".to_string(), raw_status);
+        } else if let Some(reason) = canonical_incomplete_reason(canonical) {
+            // Cross-format sources carry no Responses status of their own; a
+            // truncated or filtered answer must not be reported as completed.
+            response.insert(
+                "status".to_string(),
+                Value::String("incomplete".to_string()),
+            );
+            response.insert(
+                "incomplete_details".to_string(),
+                json!({ "reason": reason }),
+            );
         }
     }
 
@@ -217,15 +237,7 @@ pub fn to_raw(canonical: &CanonicalResponse, report_context: &Value, compact: bo
                         Value::String(encrypted_content.clone()),
                     );
                 }
-                if !text.trim().is_empty() {
-                    item.insert(
-                        "summary".to_string(),
-                        Value::Array(vec![json!({
-                            "type": "summary_text",
-                            "text": text,
-                        })]),
-                    );
-                }
+                apply_openai_responses_reasoning_text(&mut item, text);
                 output.push(Value::Object(item));
             }
             CanonicalContentBlock::ToolUse {
@@ -793,6 +805,65 @@ mod tests {
     }
 
     #[test]
+    fn responses_response_builder_puts_raw_thinking_in_content_only() {
+        let response = CanonicalResponse {
+            id: "resp_think".to_string(),
+            model: "deepseek-reasoner".to_string(),
+            content: vec![
+                CanonicalContentBlock::Thinking {
+                    text: "first add one to one".to_string(),
+                    signature: None,
+                    encrypted_content: None,
+                    extensions: BTreeMap::new(),
+                },
+                CanonicalContentBlock::Text {
+                    text: "2".to_string(),
+                    extensions: BTreeMap::new(),
+                },
+            ],
+            outputs: Vec::new(),
+            stop_reason: Some(CanonicalStopReason::EndTurn),
+            usage: None,
+            extensions: BTreeMap::new(),
+        };
+
+        let body = to_raw(&response, &json!({}), false);
+        let item = &body["output"][0];
+
+        assert_eq!(item["type"], "reasoning");
+        assert_eq!(item["content"][0]["type"], "reasoning_text");
+        assert_eq!(item["content"][0]["text"], "first add one to one");
+        assert_eq!(item["summary"], json!([]));
+        assert!(!item["content"].is_null());
+        assert_eq!(body["output"][1]["type"], "message");
+        assert_eq!(body["output"][1]["content"][0]["text"], "2");
+    }
+
+    #[test]
+    fn responses_response_parser_prefers_content_over_summary_for_raw_reasoning() {
+        let body = json!({
+            "id": "resp_test",
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [{
+                "type": "reasoning",
+                "id": "rs_1",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": "short summary"}],
+                "content": [{"type": "reasoning_text", "text": "full chain of thought"}]
+            }]
+        });
+
+        let canonical = from_raw(&body).expect("response should parse");
+
+        assert!(matches!(
+            canonical.content.first(),
+            Some(CanonicalContentBlock::Thinking { text, .. })
+                if text == "full chain of thought"
+        ));
+    }
+
+    #[test]
     fn responses_response_parser_preserves_encrypted_reasoning_without_summary() {
         let body = json!({
             "id": "resp_test",
@@ -877,6 +948,75 @@ mod tests {
             input,
             ..
         }) if id == "call_ws_1" && name == "web_search" && input["query"] == "today tech")
+        );
+    }
+
+    #[test]
+    fn responses_response_builder_reports_cross_format_truncation_as_incomplete() {
+        let response = |stop_reason| CanonicalResponse {
+            id: "gemini-resp".to_string(),
+            model: "gemini-3.8-flash".to_string(),
+            content: vec![CanonicalContentBlock::Text {
+                text: "partial".to_string(),
+                extensions: BTreeMap::new(),
+            }],
+            outputs: Vec::new(),
+            stop_reason: Some(stop_reason),
+            usage: None,
+            extensions: BTreeMap::new(),
+        };
+
+        let truncated = to_raw(&response(CanonicalStopReason::MaxTokens), &json!({}), false);
+        assert_eq!(truncated["status"], "incomplete");
+        assert_eq!(
+            truncated["incomplete_details"],
+            json!({"reason": "max_output_tokens"})
+        );
+
+        let filtered = to_raw(
+            &response(CanonicalStopReason::ContentFiltered),
+            &json!({}),
+            false,
+        );
+        assert_eq!(filtered["status"], "incomplete");
+        assert_eq!(
+            filtered["incomplete_details"],
+            json!({"reason": "content_filter"})
+        );
+
+        let finished = to_raw(&response(CanonicalStopReason::EndTurn), &json!({}), false);
+        assert_eq!(finished["status"], "completed");
+        assert!(finished.get("incomplete_details").is_none());
+    }
+
+    #[test]
+    fn gemini_max_tokens_response_converts_to_incomplete_responses_body() {
+        let gemini = json!({
+            "responseId": "gemini-trunc-123",
+            "modelVersion": "gemini-3.8-flash",
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "The printing press"}]},
+                "finishReason": "MAX_TOKENS"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 19,
+                "candidatesTokenCount": 256,
+                "totalTokenCount": 275
+            }
+        });
+
+        let body = crate::formats::registry::convert_response(
+            "gemini:generate_content",
+            "openai:responses",
+            &gemini,
+            &FormatContext::default(),
+        )
+        .expect("gemini response should convert");
+
+        assert_eq!(body["status"], "incomplete");
+        assert_eq!(
+            body["incomplete_details"],
+            json!({"reason": "max_output_tokens"})
         );
     }
 }

@@ -1592,6 +1592,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260921010000,
             20260921020000,
             20260921020100,
+            20260923000000,
             20261001000000,
         ]
     );
@@ -2563,12 +2564,14 @@ INSERT INTO public.stats_daily_api_key (
     .expect("API key daily aggregate fixtures should be inserted");
 
     let leaderboard_query = UsageLeaderboardQuery {
+        provider_names: None,
         created_from_unix_secs: u64::try_from(stats_day.timestamp())
             .expect("historical stats day should be nonnegative"),
         created_until_unix_secs: u64::try_from((stats_day + chrono::Duration::days(1)).timestamp())
             .expect("historical stats end should be nonnegative"),
         group_by: UsageLeaderboardGroupBy::ApiKey,
         user_id: Some("leaderboard-owner".to_string()),
+        user_ids: None,
         provider_name: None,
         model: None,
     };

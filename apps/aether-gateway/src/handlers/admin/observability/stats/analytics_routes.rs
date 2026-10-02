@@ -1,3 +1,4 @@
+use super::super::resolve_usage_user_group_scope;
 use super::range::{build_comparison_range, parse_bounded_u32};
 use super::resolve_admin_usage_time_range;
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
@@ -109,6 +110,7 @@ pub(super) async fn maybe_build_local_admin_stats_analytics_response(
         };
         let current_summary = state
             .summarize_usage_audits(&UsageAuditSummaryQuery {
+                provider_names: None,
                 created_from_unix_secs: current_from_unix_secs,
                 created_until_unix_secs: current_until_unix_secs,
                 ..Default::default()
@@ -116,6 +118,7 @@ pub(super) async fn maybe_build_local_admin_stats_analytics_response(
             .await?;
         let comparison_summary = state
             .summarize_usage_audits(&UsageAuditSummaryQuery {
+                provider_names: None,
                 created_from_unix_secs: comparison_from_unix_secs,
                 created_until_unix_secs: comparison_until_unix_secs,
                 ..Default::default()
@@ -294,6 +297,17 @@ pub(super) async fn maybe_build_local_admin_stats_analytics_response(
         }
 
         let filters = AdminStatsUsageFilter::from_query(request_context.query_string());
+        let user_ids = match resolve_usage_user_group_scope(
+            state,
+            request_context.query_string(),
+            false,
+            false,
+        )
+        .await?
+        {
+            Ok(value) => value,
+            Err(detail) => return Ok(Some(admin_stats_bad_request_response(detail))),
+        };
         let query_granularity = match granularity {
             AdminStatsGranularity::Hour => UsageTimeSeriesGranularity::Hour,
             AdminStatsGranularity::Day
@@ -306,11 +320,17 @@ pub(super) async fn maybe_build_local_admin_stats_analytics_response(
         };
         let buckets = state
             .summarize_usage_time_series(&UsageTimeSeriesQuery {
+                provider_names: super::super::resolve_usage_group_provider_names(
+                    state,
+                    request_context.query_string(),
+                )
+                .await?,
                 created_from_unix_secs,
                 created_until_unix_secs,
                 granularity: query_granularity,
                 tz_offset_minutes: time_range.tz_offset_minutes,
                 user_id: filters.user_id,
+                user_ids,
                 provider_name: filters.provider_name,
                 model: filters.model,
             })

@@ -388,10 +388,11 @@ impl<'a> AdminAppState<'a> {
         balance_type: &str,
         operator_id: Option<&str>,
         description: Option<&str>,
+        clamp_deduction_to_available_balance: bool,
     ) -> Result<
         Option<(
             aether_data::repository::wallet::StoredWalletSnapshot,
-            crate::AdminWalletTransactionRecord,
+            Option<crate::AdminWalletTransactionRecord>,
         )>,
         GatewayError,
     > {
@@ -402,6 +403,7 @@ impl<'a> AdminAppState<'a> {
                 balance_type,
                 operator_id,
                 description,
+                clamp_deduction_to_available_balance,
             )
             .await
     }

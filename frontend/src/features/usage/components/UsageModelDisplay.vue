@@ -8,19 +8,30 @@
       : undefined"
   >
     <div
-      class="flex min-w-0 max-w-full items-center gap-1"
-      :class="[modelRowClass, actualModel ? 'flex-wrap' : '']"
+      class="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+      :class="modelRowClass"
     >
       <span
         class="min-w-0 truncate"
         :class="modelClass"
         data-usage-model-source
       >{{ record.model }}</span>
-      <template v-if="actualModel">
-        <span
-          class="order-last basis-full min-w-0 break-all whitespace-normal text-muted-foreground"
-          data-usage-model-target
-        ><span class="mr-1">-&gt;</span>{{ actualModel }}</span>
+      <template v-if="hasModelFacts">
+        <div
+          class="order-last basis-full flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground"
+          data-usage-model-facts
+        >
+          <span
+            v-if="mappingModel"
+            class="min-w-0 break-all whitespace-normal"
+            data-usage-model-mapping
+          ><span class="mr-1 text-[10px] text-muted-foreground/70">映射模型</span>{{ mappingModel }}</span>
+          <span
+            v-if="responseModel"
+            class="min-w-0 break-all whitespace-normal"
+            data-usage-model-response
+          ><span class="mr-1 text-[10px] text-muted-foreground/70">响应模型</span>{{ responseModel }}</span>
+        </div>
       </template>
       <template v-if="!shouldStackBadges">
         <Badge
@@ -29,7 +40,7 @@
           :data-usage-model-badge="badge.key"
           :data-request-detail-model-badge="context === 'detail' ? badge.key : undefined"
           :variant="badge.variant"
-          class="h-4 shrink-0 whitespace-nowrap rounded-full px-1.5 text-[10px] leading-4"
+          class="h-4 max-w-full shrink-0 truncate rounded-full px-1.5 text-[10px] leading-4"
           :class="badge.className"
           :title="badge.title"
           :aria-label="badge.ariaLabel"
@@ -51,7 +62,7 @@
         :data-usage-model-badge="badge.key"
         :data-request-detail-model-badge="context === 'detail' ? badge.key : undefined"
         :variant="badge.variant"
-        class="h-4 shrink-0 whitespace-nowrap rounded-full px-1.5 text-[10px] leading-4"
+        class="h-4 max-w-full shrink-0 truncate rounded-full px-1.5 text-[10px] leading-4"
         :class="badge.className"
         :title="badge.title"
         :aria-label="badge.ariaLabel"
@@ -69,7 +80,7 @@ import { Badge } from '@/components/ui'
 import { isCyberPolicyError } from '../utils/cyberError'
 import { formatServiceTierFact } from '../utils/service-tier'
 
-type ModelBadgeKey = 'compact' | 'reasoning' | 'fast' | 'cyber' | 'reasoning_tokens'
+type ModelBadgeKey = 'compact' | 'reasoning' | 'fast' | 'service-tier' | 'cyber' | 'reasoning_tokens'
 
 interface ModelBadgePresentation {
   key: ModelBadgeKey
@@ -83,7 +94,7 @@ interface ModelBadgePresentation {
 interface UsageModelDisplayRecord {
   model: string
   target_model?: string | null
-  model_version?: string | null
+  response_model?: string | null
   request_type?: string | null
   requested_reasoning_effort?: string | null
   reasoning_effort?: string | null
@@ -113,14 +124,19 @@ const props = withDefaults(defineProps<{
   showReasoningBadge: true,
 })
 
-const actualModel = computed(() => {
+const mappingModel = computed(() => {
   const targetModel = normalizeText(props.record.target_model)
-  if (targetModel && targetModel !== props.record.model) return targetModel
-
-  const modelVersion = normalizeText(props.record.model_version)
-  if (modelVersion && modelVersion !== props.record.model) return modelVersion
+  if (targetModel && targetModel !== normalizeText(props.record.model)) return targetModel
   return null
 })
+
+const responseModel = computed(() => {
+  const response = normalizeText(props.record.response_model)
+  if (response && response !== normalizeText(props.record.model)) return response
+  return null
+})
+
+const hasModelFacts = computed(() => mappingModel.value !== null || responseModel.value !== null)
 
 const reasoningLabel = computed(() => {
   const requested = normalizeText(props.record.requested_reasoning_effort)
@@ -154,14 +170,16 @@ const modelBadges = computed<ModelBadgePresentation[]>(() => {
     })
   }
 
-  if (props.showServiceTierBadge && formatServiceTierFact(props.record.service_tier) === 'Fast') {
+  const serviceTier = formatServiceTierFact(props.record.service_tier)
+  if (props.showServiceTierBadge && serviceTier
+    && !['auto', 'default', 'standard'].includes(serviceTier.toLowerCase())) {
     badges.push({
-      key: 'fast',
-      label: 'Fast',
+      key: serviceTier === 'Fast' ? 'fast' : 'service-tier',
+      label: serviceTier,
       variant: 'outline-transparent',
       className: 'text-blue-500 dark:text-blue-300',
-      title: '上游请求档位：Fast\n计费档位：Fast',
-      ariaLabel: '上游请求档位：Fast，计费档位：Fast',
+      title: `上游请求档位：${serviceTier}\n计费档位：${serviceTier}`,
+      ariaLabel: `上游请求档位：${serviceTier}，计费档位：${serviceTier}`,
     })
   }
 
@@ -189,7 +207,7 @@ const modelBadges = computed<ModelBadgePresentation[]>(() => {
 })
 
 const shouldStackBadges = computed(() => (
-  actualModel.value === null && modelBadges.value.length >= 3
+  !hasModelFacts.value && modelBadges.value.length >= 3
 ))
 
 function normalizeText(value: string | null | undefined): string | null {

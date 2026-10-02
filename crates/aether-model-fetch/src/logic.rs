@@ -546,7 +546,7 @@ pub fn endpoint_supports_rust_models_fetch(api_format: &str) -> bool {
 pub fn provider_type_uses_preset_models(provider_type: &str) -> bool {
     matches!(
         provider_type.trim().to_ascii_lowercase().as_str(),
-        "claude_code" | "gemini_cli" | "grok"
+        "claude_code" | "gemini_cli" | "grok" | "xai"
     )
 }
 
@@ -603,6 +603,22 @@ pub fn preset_models_for_provider(provider_type: &str) -> Option<Vec<Value>> {
             preset_model("grok-imagine-image", "xai", "Grok Imagine Image", "openai:image"),
             preset_model("grok-imagine-image-pro", "xai", "Grok Imagine Image Pro", "openai:image"),
             preset_model("grok-imagine-image-edit", "xai", "Grok Imagine Image Edit", "openai:image"),
+        ],
+        "xai" => vec![
+            preset_model("grok-4.6", "xai", "Grok 4.6", "openai:responses"),
+            preset_model("grok-build-0.1", "xai", "Grok Build 0.1", "openai:responses"),
+            preset_model("grok-4.5", "xai", "Grok 4.5", "openai:responses"),
+            preset_model("grok-4.3", "xai", "Grok 4.3", "openai:responses"),
+            preset_model("grok-4.20-0309-reasoning", "xai", "Grok 4.20 0309 Reasoning", "openai:responses"),
+            preset_model("grok-4.20-0309-non-reasoning", "xai", "Grok 4.20 0309 Non-Reasoning", "openai:responses"),
+            preset_model("grok-4.20-multi-agent-0309", "xai", "Grok 4.20 Multi-Agent 0309", "openai:responses"),
+            preset_model("grok-3-mini", "xai", "Grok 3 Mini", "openai:responses"),
+            preset_model("grok-3-mini-fast", "xai", "Grok 3 Mini Fast", "openai:responses"),
+            preset_model("grok-composer-2.5-fast", "xai", "Grok Composer 2.5 Fast", "openai:responses"),
+            preset_model("grok-imagine-image", "xai", "Grok Imagine Image", "openai:image"),
+            preset_model("grok-imagine-image-quality", "xai", "Grok Imagine Image Quality", "openai:image"),
+            preset_model("grok-imagine-video", "xai", "Grok Imagine Video", "openai:video"),
+            preset_model("grok-imagine-video-1.5", "xai", "Grok Imagine Video 1.5", "openai:video"),
         ],
         _ => return None,
     };
@@ -977,7 +993,7 @@ fn build_codex_models_url(base_url: &str, client_version: Option<&str>) -> Optio
     } else if !has_client_version {
         query_parts.push(format!(
             "client_version={}",
-            aether_ai_formats::CODEX_CLIENT_VERSION
+            aether_ai_formats::codex_client_version()
         ));
     }
     if !query_parts.is_empty() {
@@ -1338,6 +1354,7 @@ mod tests {
 
     #[test]
     fn build_models_fetch_url_uses_codex_backend_models_endpoint() {
+        let client_version = aether_ai_formats::codex_client_version();
         assert_eq!(
             build_models_fetch_url(
                 "codex",
@@ -1347,7 +1364,7 @@ mod tests {
             Some((
                 format!(
                     "https://chatgpt.com/backend-api/codex/models?client_version={}",
-                    aether_ai_formats::CODEX_CLIENT_VERSION
+                    client_version
                 ),
                 "openai:responses".to_string()
             ))
@@ -1976,5 +1993,40 @@ mod tests {
         assert_eq!(models[10]["api_formats"], json!(["openai:chat"]));
         assert_eq!(models[15]["api_formats"], json!(["openai:image"]));
         assert_eq!(models[18]["api_formats"], json!(["openai:image"]));
+    }
+
+    #[test]
+    fn preset_models_cover_xai_cli_catalog() {
+        let models = preset_models_for_provider("xai").expect("preset models should exist");
+        let model_ids = models
+            .iter()
+            .map(|model| model["id"].as_str().expect("model id"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            model_ids,
+            vec![
+                "grok-4.6",
+                "grok-build-0.1",
+                "grok-4.5",
+                "grok-4.3",
+                "grok-4.20-0309-reasoning",
+                "grok-4.20-0309-non-reasoning",
+                "grok-4.20-multi-agent-0309",
+                "grok-3-mini",
+                "grok-3-mini-fast",
+                "grok-composer-2.5-fast",
+                "grok-imagine-image",
+                "grok-imagine-image-quality",
+                "grok-imagine-video",
+                "grok-imagine-video-1.5",
+            ]
+        );
+        assert!(models.iter().all(|model| model["owned_by"] == json!("xai")));
+        assert_eq!(models[0]["api_formats"], json!(["openai:responses"]));
+        assert_eq!(models[10]["api_formats"], json!(["openai:image"]));
+        assert_eq!(models[12]["api_formats"], json!(["openai:video"]));
+        assert!(models
+            .iter()
+            .any(|model| model["id"] == "grok-imagine-image"));
     }
 }

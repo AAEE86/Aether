@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
+use crate::formats::gemini::generate_content::response::{
+    gemini_candidate_grounding, gemini_grounding_citations,
+};
 use crate::formats::shared::response::{build_generated_tool_call_id, canonicalize_tool_arguments};
 use crate::formats::shared::sse::encode_json_sse;
 use crate::formats::shared::stream_core::common::*;
@@ -36,6 +39,10 @@ pub struct GeminiProviderState {
     content_parts: BTreeMap<usize, CanonicalContentPart>,
     tool_calls: BTreeMap<usize, GeminiProviderToolState>,
     tool_results: BTreeMap<usize, GeminiProviderToolResultState>,
+    /// Last `groundingMetadata` seen. Gemini resends it cumulatively, so the
+    /// newest copy is the complete one; citations are emitted once at finish,
+    /// when the answer text they index into is whole.
+    grounding: Option<Value>,
 }
 
 impl GeminiProviderState {
@@ -66,6 +73,31 @@ impl GeminiProviderState {
             event: CanonicalStreamEvent::Start,
         });
         self.started = true;
+    }
+
+    /// Turn the grounding metadata collected over the stream into citations.
+    ///
+    /// The offsets Gemini reports index into the finished answer, so this can
+    /// only run once the text is complete — hence a single frame just ahead of
+    /// `Finish` rather than a delta per chunk.
+    fn push_citations_frame(&mut self, id: &str, model: &str, out: &mut Vec<CanonicalStreamFrame>) {
+        let Some(grounding) = self.grounding.take() else {
+            return;
+        };
+        let text = self
+            .text_parts
+            .values()
+            .map(String::as_str)
+            .collect::<String>();
+        let citations = gemini_grounding_citations(&grounding, &text);
+        if citations.is_empty() {
+            return;
+        }
+        out.push(CanonicalStreamFrame {
+            id: id.to_string(),
+            model: model.to_string(),
+            event: CanonicalStreamEvent::Citations(citations),
+        });
     }
 
     fn unknown_frame(&self, report_context: &Value, payload: Value) -> CanonicalStreamFrame {
@@ -120,6 +152,11 @@ impl GeminiProviderState {
                 response_model.as_str(),
                 event_object.get("usageMetadata"),
             );
+            if !self.terminal_observation_only {
+                if let Some(grounding) = gemini_candidate_grounding(candidate_object) {
+                    self.grounding = Some(grounding.clone());
+                }
+            }
             let Some(content) = candidate_object.get("content").and_then(Value::as_object) else {
                 if let Some(payload) = terminal_error {
                     out.push(self.unknown_frame(report_context, payload));
@@ -286,6 +323,12 @@ impl GeminiProviderState {
                     self.observed_tool_calls = true;
                     continue;
                 }
+                // Gemini streams are incremental and every functionCall part is a
+                // complete call, so parallel calls arriving in separate chunks all
+                // sit at parts[0]. Key calls by arrival order, not part position.
+                // Ids cannot disambiguate: they are optional, and the Antigravity
+                // envelope synthesizes per-chunk ids that repeat across chunks.
+                let index = self.tool_calls.len();
                 let tool_state = self.tool_calls.entry(index).or_default();
                 tool_state.call_id = function_call
                     .get("id")
@@ -361,6 +404,7 @@ impl GeminiProviderState {
                 if has_tool_calls && finish_reason.as_deref().is_none_or(|value| value == "stop") {
                     finish_reason = Some("tool_calls".to_string());
                 }
+                self.push_citations_frame(&id, &model, &mut out);
                 out.push(CanonicalStreamFrame {
                     id,
                     model,
@@ -385,14 +429,17 @@ impl GeminiProviderState {
         }
         self.finished = true;
         let (id, model) = self.identity(report_context);
-        Ok(vec![CanonicalStreamFrame {
+        let mut out = Vec::new();
+        self.push_citations_frame(&id, &model, &mut out);
+        out.push(CanonicalStreamFrame {
             id,
             model,
             event: CanonicalStreamEvent::Finish {
                 finish_reason: None,
                 usage: None,
             },
-        }])
+        });
+        Ok(out)
     }
 }
 
@@ -674,6 +721,9 @@ impl GeminiClientEmitter {
                 None,
                 None,
             ),
+            // Only Gemini produces citations today, and a Gemini-to-Gemini
+            // stream keeps its own `groundingMetadata` on the passthrough path.
+            CanonicalStreamEvent::Citations(_) => Ok(Vec::new()),
             CanonicalStreamEvent::UnknownEvent(_) => Ok(Vec::new()),
             CanonicalStreamEvent::Finish {
                 finish_reason,
@@ -1480,6 +1530,80 @@ mod tests {
             })
             .expect("tool call start event");
         assert!(signature_index < call_index);
+    }
+
+    #[test]
+    fn gemini_provider_state_keeps_parallel_function_calls_from_separate_chunks() {
+        let mut state = GeminiProviderState::default();
+        let report_context = json!({});
+        let chunk = |call: Value| {
+            data_line(json!({
+                "responseId": "resp_parallel_123",
+                "modelVersion": "gemini-3.8-flash",
+                "candidates": [{
+                    "index": 0,
+                    "content": {"role": "model", "parts": [{"functionCall": call}]}
+                }]
+            }))
+        };
+        let mut frames = Vec::new();
+        for call in [
+            json!({"id": "call_a", "name": "get_weather", "args": {"city": "Paris"}}),
+            json!({"id": "call_b", "name": "get_weather", "args": {"city": "Tokyo"}}),
+            json!({"name": "get_time", "args": {"city": "Paris"}}),
+            json!({"name": "get_time", "args": {"city": "Tokyo"}}),
+        ] {
+            frames.extend(
+                state
+                    .push_line(&report_context, chunk(call))
+                    .expect("function call chunk should parse"),
+            );
+        }
+
+        let starts = frames
+            .iter()
+            .filter_map(|frame| match &frame.event {
+                CanonicalStreamEvent::ToolCallStart {
+                    index,
+                    call_id,
+                    name,
+                } => Some((*index, call_id.clone(), name.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(starts.len(), 4);
+        assert_eq!(
+            starts
+                .iter()
+                .map(|(index, _, _)| *index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(starts[0].1, "call_a");
+        assert_eq!(starts[1].1, "call_b");
+        assert_eq!(
+            starts
+                .iter()
+                .map(|(_, _, name)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["get_weather", "get_weather", "get_time", "get_time"]
+        );
+        assert_ne!(starts[2].1, starts[3].1);
+
+        let mut arguments = BTreeMap::<usize, String>::new();
+        for frame in &frames {
+            if let CanonicalStreamEvent::ToolCallArgumentsDelta {
+                index,
+                arguments: delta,
+            } = &frame.event
+            {
+                arguments.entry(*index).or_default().push_str(delta);
+            }
+        }
+        assert_eq!(arguments[&0], "{\"city\":\"Paris\"}");
+        assert_eq!(arguments[&1], "{\"city\":\"Tokyo\"}");
+        assert_eq!(arguments[&2], "{\"city\":\"Paris\"}");
+        assert_eq!(arguments[&3], "{\"city\":\"Tokyo\"}");
     }
 
     #[test]

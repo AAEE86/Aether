@@ -2328,8 +2328,13 @@ impl WalletWriteRepository for InMemoryWalletRepository {
     async fn adjust_wallet_balance(
         &self,
         _input: AdjustWalletBalanceInput,
-    ) -> Result<Option<(StoredWalletSnapshot, super::StoredAdminWalletTransaction)>, DataLayerError>
-    {
+    ) -> Result<
+        Option<(
+            StoredWalletSnapshot,
+            Option<super::StoredAdminWalletTransaction>,
+        )>,
+        DataLayerError,
+    > {
         Ok(None)
     }
 

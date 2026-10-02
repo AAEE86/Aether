@@ -107,7 +107,14 @@ WHERE version=20260919000000;
             .iter()
             .map(|migration| migration.version)
             .collect::<Vec<_>>(),
-        vec![DIRTY_EVENTS, 20260921010000, 20260921020000, 20260921020100, 20261001000000]
+        vec![
+            DIRTY_EVENTS,
+            20260921010000,
+            20260921020000,
+            20260921020100,
+            20260923000000,
+            20261001000000,
+        ]
     );
     assert_eq!(
         rows_snapshot(&pool, "_sqlx_migrations").await,

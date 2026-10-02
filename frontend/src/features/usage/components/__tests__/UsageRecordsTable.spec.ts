@@ -92,6 +92,7 @@ vi.mock('lucide-vue-next', async () => {
     EyeOff: Icon,
     Search: Icon,
     Shuffle: Icon,
+    Ban: Icon,
     ChevronDown: Icon,
     Check: Icon,
   }
@@ -460,10 +461,11 @@ describe('UsageRecordsTable', () => {
       .toBe('会话压缩')
   })
 
-  it('shows mapping, reasoning, Fast, and Cyber in the model area', () => {
+  it('shows mapping and response models as separately labelled facts', () => {
     const root = mountUsageRecordsTable([buildRecord({
       model: 'gpt-5',
       target_model: 'gpt-5.1',
+      response_model: 'gpt-5.2',
       requested_reasoning_effort: 'xhigh',
       reasoning_effort: 'max',
       service_tier: 'priority',
@@ -476,6 +478,8 @@ describe('UsageRecordsTable', () => {
 
     expect(root.textContent).toContain('gpt-5')
     expect(root.textContent).toContain('gpt-5.1')
+    expect(root.textContent).toContain('映射模型')
+    expect(root.textContent).toContain('响应模型')
     expect(root.textContent).toContain('xhigh -> max')
     expect(root.textContent).toContain('Fast')
     const reasoningBadge = root.querySelector<HTMLElement>('[data-usage-model-badge="reasoning"]')
@@ -509,13 +513,33 @@ describe('UsageRecordsTable', () => {
     expect(inlineLayout).not.toBeNull()
     const modelRow = inlineLayout?.firstElementChild
     expect(modelRow?.textContent).toContain('gpt-5')
-    expect(modelRow?.textContent).toContain('->')
-    expect(modelRow?.textContent).toContain('gpt-5.1')
-    expect(modelRow?.querySelector('[data-usage-model-target]')?.classList.contains('basis-full')).toBe(true)
-    expect(modelRow?.querySelector('[data-usage-model-target]')?.classList.contains('order-last')).toBe(true)
+    expect(modelRow?.querySelector('[data-usage-model-mapping]')?.textContent).toContain('映射模型')
+    expect(modelRow?.querySelector('[data-usage-model-response]')?.textContent).toContain('响应模型')
     expect(modelRow?.querySelector('[data-usage-model-badge="reasoning"]')?.textContent).toContain('xhigh -> max')
     expect(modelRow?.querySelector('[data-usage-model-badge="fast"]')?.textContent).toContain('Fast')
     expect(modelRow?.querySelector('[data-usage-model-badge="cyber"]')?.textContent).toContain('Cyber')
+  })
+
+  it('shows a response model without inventing a mapping arrow or using model_version', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      response_model: 'gpt-5.1',
+      model_version: 'legacy-version',
+      target_model: null,
+    })])
+
+    expect(root.querySelector('[data-usage-model-mapping]')).toBeNull()
+    expect(root.querySelector('[data-usage-model-response]')?.textContent).toContain('响应模型')
+    expect(root.textContent).not.toContain('legacy-version')
+    expect(root.textContent).not.toContain('->')
+  })
+
+  it('hides a response model when it matches the request model', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      response_model: 'gpt-5',
+      target_model: null,
+    })])
+
+    expect(root.querySelector('[data-usage-model-response]')).toBeNull()
   })
 
   it('stacks three model badges even without a model mapping', () => {
@@ -556,6 +580,37 @@ describe('UsageRecordsTable', () => {
       expect(badge.textContent).not.toContain('→')
       expect(badge.textContent).not.toContain('待确认')
       expect(badge.textContent).not.toContain('未确认')
+    },
+  )
+
+  it.each(['ultrafast', 'flex', 'future-tier', ' UltraFast '])(
+    'shows the final provider request tier %s without a fixed badge allowlist',
+    (requested) => {
+      const root = mountUsageRecordsTable([buildRecord({
+        service_tier: requested,
+        actual_service_tier: 'default',
+      })])
+      const badges = [...root.querySelectorAll<HTMLElement>('[data-usage-model-badge="service-tier"]')]
+      expect(badges.length).toBeGreaterThan(0)
+      for (const badge of badges) {
+        expect(badge.textContent?.trim()).toBe(requested.trim())
+        expect(badge.title).toBe(`上游请求档位：${requested.trim()}\n计费档位：${requested.trim()}`)
+        expect(badge.getAttribute('aria-label')).toBe(
+          `上游请求档位：${requested.trim()}，计费档位：${requested.trim()}`,
+        )
+      }
+    },
+  )
+
+  it.each(['auto', 'default', 'standard', ' DEFAULT ', '', ' ', null])(
+    'does not show a badge for the default or absent request tier %s',
+    (requested) => {
+      const root = mountUsageRecordsTable([buildRecord({
+        service_tier: requested,
+        actual_service_tier: 'ultrafast',
+      })])
+      expect(root.querySelector('[data-usage-model-badge="service-tier"]')).toBeNull()
+      expect(root.querySelector('[data-usage-model-badge="fast"]')).toBeNull()
     },
   )
 
@@ -678,5 +733,38 @@ describe('UsageRecordsTable', () => {
 
     expect(root.querySelector('[data-usage-attempt-marker="fallback"]')).not.toBeNull()
     expect(root.querySelector('[data-usage-attempt-marker="retry"]')).not.toBeNull()
+  })
+
+  it('shows the skipped-candidate marker when a candidate was skipped by scheduling', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      has_skipped_candidate: true,
+      skipped_candidate_reasons: ['key_rpm_exhausted'],
+    })])
+
+    const marker = root.querySelector('[data-usage-attempt-marker="skipped-candidate"]')
+    expect(marker).not.toBeNull()
+    // tooltip 必须说明"请求未发往该候选"，否则用户会以为上游报了错
+    const title = marker?.getAttribute('title') ?? ''
+    expect(title).toContain('调度阶段被跳过')
+    expect(title).toContain('不会有上游报错')
+    expect(title).toContain('密钥本分钟请求数已达上限')
+  })
+
+  it('prefers the fallback marker over the skipped-candidate marker', () => {
+    // 真正发生过故障转移时，琥珀色转移图标信息量更大，不再叠加灰色角标
+    const root = mountUsageRecordsTable([buildRecord({
+      has_fallback: true,
+      has_skipped_candidate: true,
+      skipped_candidate_reasons: ['key_rpm_exhausted'],
+    })])
+
+    expect(root.querySelector('[data-usage-attempt-marker="fallback"]')).not.toBeNull()
+    expect(root.querySelector('[data-usage-attempt-marker="skipped-candidate"]')).toBeNull()
+  })
+
+  it('hides the skipped-candidate marker when no candidate was skipped', () => {
+    const root = mountUsageRecordsTable([buildRecord({ has_skipped_candidate: false })])
+
+    expect(root.querySelector('[data-usage-attempt-marker="skipped-candidate"]')).toBeNull()
   })
 })

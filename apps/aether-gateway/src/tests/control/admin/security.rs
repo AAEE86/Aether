@@ -240,10 +240,24 @@ async fn send_admin_security_request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> (StatusCode, serde_json::Value, usize) {
+    let path = path.to_string();
+    crate::tests::run_async_test_on_large_stack_with_result(
+        "admin-security-router-request",
+        16 * 1024 * 1024,
+        move || send_admin_security_request_on_large_stack(gateway, method, path, body),
+    )
+}
+
+async fn send_admin_security_request_on_large_stack(
+    gateway: Router,
+    method: reqwest::Method,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value, usize) {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(
-        path,
+        &path,
         any(move |_request: Request| {
             let upstream_hits_inner = Arc::clone(&upstream_hits_clone);
             async move {
@@ -253,26 +267,52 @@ async fn send_admin_security_request(
         }),
     );
 
-    let (upstream_url, upstream_handle) = start_server(upstream).await;
-    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let (_upstream_url, upstream_handle) = start_server(upstream).await;
 
-    let client = reqwest::Client::new();
-    let mut request = client
-        .request(method, format!("{gateway_url}{path}"))
+    // 这些用例只验证本地安全路由和“不得转发”断言，不需要为 Gateway
+    // 再启动一个 TCP listener；send_request 会补齐 ConnectInfo，仍经过完整 Router。
+    let mut request_builder = Request::builder()
+        .method(method.as_str())
+        .uri(&path)
         .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
         .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
         .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
         .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123");
     if let Some(body) = body {
-        request = request.json(&body);
+        request_builder = request_builder.header(http::header::CONTENT_TYPE, "application/json");
+        let request = request_builder
+            .body(Body::from(body.to_string()))
+            .expect("request should build");
+        let response = send_request(gateway, request).await;
+        let status = response.status();
+        let payload = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body should collect")
+            .to_bytes();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&payload).expect("json body should parse");
+        let upstream_count = *upstream_hits.lock().expect("mutex should lock");
+        upstream_handle.abort();
+        return (status, payload, upstream_count);
     }
 
-    let response = request.send().await.expect("request should succeed");
+    let request = request_builder
+        .body(Body::empty())
+        .expect("request should build");
+    let response = send_request(gateway, request).await;
     let status = response.status();
-    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    let payload = response
+        .into_body()
+        .collect()
+        .await
+        .expect("response body should collect")
+        .to_bytes();
+    let payload: serde_json::Value =
+        serde_json::from_slice(&payload).expect("json body should parse");
     let upstream_count = *upstream_hits.lock().expect("mutex should lock");
 
-    gateway_handle.abort();
     upstream_handle.abort();
 
     (status, payload, upstream_count)
@@ -345,6 +385,42 @@ async fn gateway_handles_admin_security_blacklist_add_locally_with_trusted_admin
     assert_eq!(payload["reason"], "manual");
     assert_eq!(payload["ttl"], 60);
     assert_eq!(upstream_count, 0);
+}
+
+/// 真实 TCP 冒烟测试：其余安全用例已改为进程内 Router 调用以提速，这里保留一条
+/// 覆盖网络层装配（真实监听端口、HTTP 请求头传递、JSON 收发）的端到端路径。
+///
+/// `/api/admin/security/*` 在路由分类中是本地管理端点
+/// （`execution_runtime_candidate: false`），架构上不经过任何可注入 base_url 的上游，
+/// 因此这里不构造无意义的“上游计数器”，只验证真实链路下本地处理结果正确。
+#[tokio::test]
+async fn gateway_serves_admin_security_blacklist_over_real_tcp() {
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/admin/security/ip/blacklist"))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({ "ip_address": "1.2.3.4", "reason": "manual", "ttl": 60 }))
+        .send()
+        .await
+        .expect("request should reach the gateway over TCP");
+
+    let status = response.status();
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .expect("gateway response should be json");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["success"], true);
+    assert_eq!(payload["message"], "IP 1.2.3.4 已加入黑名单");
+    assert_eq!(payload["reason"], "manual");
+    assert_eq!(payload["ttl"], 60);
+
+    gateway_handle.abort();
 }
 
 #[tokio::test]

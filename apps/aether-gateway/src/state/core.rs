@@ -54,6 +54,7 @@ use super::super::router::RequestAdmissionError;
 use super::super::{control::GatewayControlDecision, error::GatewayError};
 use super::super::{provider_transport, usage};
 
+use crate::codex_profile::spawn_worker as spawn_codex_client_profile_worker;
 use crate::maintenance::spawn_account_self_check_worker;
 use crate::maintenance::spawn_audit_cleanup_worker;
 use crate::maintenance::spawn_db_maintenance_worker;
@@ -149,6 +150,10 @@ fn system_config_key_affects_provider_transport_snapshot(key: &str) -> bool {
 }
 
 impl AppState {
+    pub async fn prewarm_codex_client_profile(&self) -> Result<String, String> {
+        crate::codex_profile::prewarm(self.runtime_state()).await
+    }
+
     pub async fn prewarm_chat_pii_redaction_runtime_config(&self) -> Result<bool, String> {
         crate::privacy::read_chat_pii_redaction_runtime_config(self)
             .await
@@ -470,6 +475,16 @@ impl AppState {
             auth_user_model_capability_store: Some(Arc::new(StdMutex::new(HashMap::new()))),
             #[cfg(test)]
             auth_wallet_store: Some(Arc::new(StdMutex::new(HashMap::new()))),
+            #[cfg(test)]
+            auth_wallet_adjustment_error_for_tests: None,
+            #[cfg(test)]
+            auth_wallet_lookup_error_for_tests: None,
+            #[cfg(test)]
+            auth_wallet_batch_store_for_tests: Some(Arc::new(StdMutex::new(HashMap::new()))),
+            #[cfg(test)]
+            auth_wallet_batch_operation_lock_for_tests: Arc::new(TokioMutex::new(())),
+            #[cfg(test)]
+            auth_wallet_batch_failure_record_error_for_tests: None,
             #[cfg(test)]
             admin_wallet_payment_order_store: Some(Arc::new(StdMutex::new(HashMap::new()))),
             #[cfg(test)]
@@ -2336,6 +2351,10 @@ impl AppState {
         supervise_worker(
             crate::task_runtime::TASK_KEY_MODEL_FETCH_WORKER,
             spawn_model_fetch_worker(background_state.clone()),
+        );
+        supervise_worker(
+            crate::task_runtime::TASK_KEY_CODEX_CLIENT_PROFILE,
+            Some(spawn_codex_client_profile_worker(background_state.clone())),
         );
         supervise_worker(
             crate::task_runtime::TASK_KEY_VIDEO_TASK_POLLER,

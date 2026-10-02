@@ -1,0 +1,6 @@
+# 不固定 test-threads：nextest 默认按 num-cpus 并发，固定值会在更大规格的
+# runner 或本地开发机上主动压低并发、反而变慢，且无法表达 min(4, num-cpus)。
+# 这里只保留卡死保护，避免单个挂起用例拖满整个 job。
+[profile.default]
+# 60 秒后标记慢测试，连续两轮仍未结束则终止；超时结果保持失败，不隐藏回归。
+slow-timeout = { period = "60s", terminate-after = 2, grace-period = "10s" }

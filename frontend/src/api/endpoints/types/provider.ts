@@ -462,6 +462,23 @@ export interface GrokUpstreamMetadata {
   account_user_id?: string | null
 }
 
+export interface XaiUpstreamMetadata {
+  updated_at?: number
+  subscription_title?: string
+  usage_percentage?: number
+  remaining_percentage?: number
+  usage_label?: string
+  usage_limit?: number
+  current_usage?: number
+  remaining?: number
+  next_reset_at?: number
+  prepaid_balance?: number
+  on_demand_cap?: number
+  on_demand_used?: number
+  on_demand_remaining?: number
+  period_type?: string
+}
+
 export interface GeminiCliTierMetadata {
   id?: string | null
   tierType?: string | null
@@ -512,14 +529,29 @@ export interface GeminiCliUpstreamMetadata {
   quota_by_model?: Record<string, GeminiCliModelQuota> | null
 }
 
+export interface ClaudeCodeUpstreamMetadata {
+  updated_at?: number
+  five_hour_used_percent?: number
+  five_hour_reset_at?: number
+  seven_day_used_percent?: number
+  seven_day_reset_at?: number
+  seven_day_sonnet_used_percent?: number
+  seven_day_sonnet_reset_at?: number
+  seven_day_fable_used_percent?: number
+  seven_day_fable_reset_at?: number
+  reset_credits?: QuotaResetCreditsSnapshot
+}
+
 export interface UpstreamMetadata {
   codex?: CodexUpstreamMetadata
+  claude_code?: ClaudeCodeUpstreamMetadata
   antigravity?: AntigravityUpstreamMetadata
   kiro?: KiroUpstreamMetadata
   windsurf?: WindsurfUpstreamMetadata
   chatgpt_web?: ChatGPTWebUpstreamMetadata
   grok?: GrokUpstreamMetadata
   gemini_cli?: GeminiCliUpstreamMetadata
+  xai?: XaiUpstreamMetadata
 }
 
 // 按格式的健康度数据
@@ -758,7 +790,7 @@ export interface HealthRelatedMonitorResponse {
   related_providers: HealthRelatedMonitor[]
 }
 
-export type ProviderType = 'custom' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro' | 'grok' | 'windsurf' | 'vertex_ai'
+export type ProviderType = 'custom' | 'claude_code' | 'codex' | 'chatgpt_web' | 'gemini_cli' | 'antigravity' | 'kiro' | 'grok' | 'xai' | 'windsurf' | 'vertex_ai'
 
 export interface ClaudeCodeAdvancedConfig {
   // 会话数量控制：null/undefined 表示不限制
@@ -804,6 +836,8 @@ export interface PoolAdvancedConfig {
   sticky_session_ttl_seconds?: number | null
   load_threshold_percent?: number | null
   skip_exhausted_accounts?: boolean | null
+  // Codex only: treat remaining quota <= 1% as exhausted (default false).
+  reserve_minimum_quota?: boolean
   // 旧字段（兼容读取）
   lru_enabled?: boolean
   scheduling_mode?: 'lru' | 'multi_score' | null
