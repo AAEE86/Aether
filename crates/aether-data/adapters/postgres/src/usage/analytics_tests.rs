@@ -486,7 +486,10 @@ async fn live_overview_canonical_queries_and_dirty_rebuild() {
     let state = sqlx::query("SELECT source_revision,built_revision FROM stats_bucket_state WHERE projection_version='overview-v2' AND granularity='hour' AND bucket_start=$1").bind(start).fetch_one(&pool).await.unwrap();
     // Bucket state stays unchanged on the foreground write; pending events
     // invalidate the projection before the background merger consumes them.
-    assert_eq!(state.get::<i64, _>("source_revision"), state.get::<i64, _>("built_revision"));
+    assert_eq!(
+        state.get::<i64, _>("source_revision"),
+        state.get::<i64, _>("built_revision")
+    );
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM stats_overview_dirty_events WHERE projection_version='overview-v2' AND granularity='hour' AND bucket_start=$1)")
         .bind(start).fetch_one(&pool).await.unwrap();
     assert!(pending);
@@ -607,12 +610,21 @@ async fn live_overview_dirty_events_merge_without_shared_writer_bucket_lock() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(row, (2, "unrecoverable".into(), Some("retained usage facts were deleted".into())));
-    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM stats_overview_dirty_events WHERE bucket_start=$1")
-        .bind(bucket)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    assert_eq!(
+        row,
+        (
+            2,
+            "unrecoverable".into(),
+            Some("retained usage facts were deleted".into())
+        )
+    );
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM stats_overview_dirty_events WHERE bucket_start=$1",
+    )
+    .bind(bucket)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(remaining, 0);
     sqlx::query("DELETE FROM stats_bucket_state WHERE projection_version='overview-v2' AND granularity='hour' AND bucket_start=$1")
         .bind(bucket)

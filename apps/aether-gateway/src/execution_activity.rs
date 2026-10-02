@@ -267,9 +267,9 @@ impl History {
     fn snapshot(&mut self, now_us: u64, started_at_us: i64) -> Value {
         self.advance(now_us);
         let mut providers: Vec<_> = self.providers.iter().collect();
-        providers.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        providers.sort_unstable_by_key(|(provider, _)| *provider);
         let mut models: Vec<_> = self.models.iter().collect();
-        models.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        models.sort_unstable_by_key(|(model, _)| *model);
         json!({
             "observed_at": DateTime::from_timestamp_micros(started_at_us.saturating_add(self.through_us.min(i64::MAX as u64) as i64)),
             "observed_from": DateTime::from_timestamp_micros(started_at_us),

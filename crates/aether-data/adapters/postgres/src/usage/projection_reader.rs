@@ -2,7 +2,7 @@ use super::analytics::{
     analytics_additive_metrics_sql, dashboard_total_metrics_sql, push_analytics_filter,
 };
 use crate::error::SqlxResultExt;
-use aether_data_contracts::{DataLayerError, repository::usage::*};
+use aether_data_contracts::{repository::usage::*, DataLayerError};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, QueryBuilder, Row};
 

@@ -1285,7 +1285,8 @@ impl UsageReadRepository for InMemoryUsageReadRepository {
     async fn query_dashboard_summary(
         &self,
         query: &aether_data_contracts::repository::usage::UsageDashboardAnalyticsQuery,
-    ) -> Result<aether_data_contracts::repository::usage::StoredDashboardSummary, DataLayerError> {
+    ) -> Result<aether_data_contracts::repository::usage::StoredDashboardSummary, DataLayerError>
+    {
         self.dashboard_summary_query(query)
     }
 
@@ -3472,7 +3473,9 @@ impl UsageWriteRepository for InMemoryUsageReadRepository {
             finalized_at_unix_secs: usage.finalized_at_unix_secs,
         };
 
-        self.dashboard_projection.write().expect("dashboard projection lock")
+        self.dashboard_projection
+            .write()
+            .expect("dashboard projection lock")
             .record(&stored, &self.analytics_key_flags());
         by_request_id.insert(stored.request_id.clone(), stored.clone());
         if let Some(auth_api_keys) = self.auth_api_keys.as_ref() {

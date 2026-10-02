@@ -1237,7 +1237,9 @@ async fn gateway_handles_admin_system_users_export_locally_with_trusted_admin_pr
     assert!(payload["users"][0]["api_keys"][0]
         .get("credential_kind")
         .is_none());
-    assert!(payload["standalone_keys"][0].get("credential_kind").is_none());
+    assert!(payload["standalone_keys"][0]
+        .get("credential_kind")
+        .is_none());
     assert!(payload["exported_at"].as_str().is_some());
     assert_eq!(payload["user_groups"][0]["name"], "Restricted GPT");
     assert!(payload["user_groups"][0].get("priority").is_none());

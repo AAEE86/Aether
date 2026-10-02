@@ -27,13 +27,13 @@ use crate::lifecycle::bootstrap::postgres::{
     EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION, EMPTY_DATABASE_SNAPSHOT_SQL,
 };
 
-mod policy_nulls;
-mod overview_dirty_events;
-mod provider_expenses;
-mod migration_deadlines;
-mod overview_migration_safety;
-mod legacy_overview_upgrade;
 mod dashboard_user_anonymization;
+mod legacy_overview_upgrade;
+mod migration_deadlines;
+mod overview_dirty_events;
+mod overview_migration_safety;
+mod policy_nulls;
+mod provider_expenses;
 
 /// A clean PostgreSQL database is bootstrapped from the schema snapshot first;
 /// migrations after the privacy/security frontier are intentionally left

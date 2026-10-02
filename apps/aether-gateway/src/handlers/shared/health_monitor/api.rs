@@ -180,7 +180,7 @@ pub(super) fn public_projection(
             exclusion_policy: "client_cancelled_invalid_input_identity_or_quota_policy",
         },
         average_latency_ms: (metrics.latency_sample_count > 0)
-            .then(|| metrics.latency_sum_ms as f64 / metrics.latency_sample_count as f64),
+            .then(|| metrics.latency_sum_ms / metrics.latency_sample_count as f64),
         latency_sample_count: metrics.latency_sample_count,
         last_request_at: metrics.last_request_at_unix_ms.and_then(unix_ms_to_rfc3339),
         timeline: Vec::new(),
