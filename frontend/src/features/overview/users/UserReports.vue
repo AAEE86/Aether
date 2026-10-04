@@ -12,7 +12,7 @@
           v-if="!userId"
           class="mt-1 text-xs text-muted-foreground"
         >
-          {{ t('全站用量 · 包含独立余额 Key · 不受用户搜索影响', 'Installation usage · Includes standalone balance keys · Independent of user search') }}
+          {{ t('模型用量与消费趋势为全站用量 · 包含独立余额 Key · 不受用户搜索影响', 'Model usage and consumption trends cover installation usage · Includes standalone balance keys · Independent of user search') }}
         </p>
       </div>
       <Button
@@ -122,6 +122,7 @@
         </div>
       </section>
     </div>
+    <slot name="additional" />
   </section>
 </template>
 

@@ -305,13 +305,11 @@ pub(crate) fn spawn_worker(app: AppState) -> tokio::task::JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock,
-    };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use aether_runtime_state::{MemoryRuntimeStateConfig, RuntimeState};
+    use tokio::sync::{Mutex, MutexGuard};
 
     use super::{
         cached_version_to_restore, fixed_version_from, parse_cli_release, refresh_enabled_from,
@@ -322,7 +320,7 @@ mod tests {
         set_codex_client_profile, CodexClientProfile,
     };
 
-    static PROFILE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static PROFILE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     struct ProfileRestore(CodexClientProfile);
 
@@ -332,9 +330,8 @@ mod tests {
         }
     }
 
-    fn profile_restore_guard() -> (std::sync::MutexGuard<'static, ()>, ProfileRestore) {
-        let lock = PROFILE_TEST_LOCK.get_or_init(|| Mutex::new(()));
-        let guard = lock.lock().expect("profile test lock");
+    async fn profile_restore_guard() -> (MutexGuard<'static, ()>, ProfileRestore) {
+        let guard = PROFILE_TEST_LOCK.lock().await;
         let restore = ProfileRestore(codex_client_profile());
         (guard, restore)
     }
@@ -397,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn cache_hit_is_restored_without_network_when_refresh_is_disabled() {
-        let (_lock, _restore) = profile_restore_guard();
+        let (_lock, _restore) = profile_restore_guard().await;
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
         runtime
             .kv_set(
@@ -424,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_failure_keeps_previous_profile() {
-        let (_lock, _restore) = profile_restore_guard();
+        let (_lock, _restore) = profile_restore_guard().await;
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
         let before = codex_client_profile();
         let result = refresh_once_with_fetch(&runtime, None, true, || async {
@@ -438,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn fixed_version_override_skips_network_and_publishes_profile() {
-        let (_lock, _restore) = profile_restore_guard();
+        let (_lock, _restore) = profile_restore_guard().await;
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
         let fetch_called = AtomicBool::new(false);
         let result = refresh_once_with_fetch(&runtime, Some("0.220.0"), true, || async {
@@ -455,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn rollback_is_rejected_without_replacing_profile() {
-        let (_lock, _restore) = profile_restore_guard();
+        let (_lock, _restore) = profile_restore_guard().await;
         set_codex_cli_version("0.220.0").unwrap();
         let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
         let result =

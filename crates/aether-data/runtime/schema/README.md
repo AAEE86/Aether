@@ -33,12 +33,17 @@ The schema workspace has three normal source areas:
 | `drivers/postgres/` | Current maintenance fragments for executable SQL. | Edit only for deployment compatibility, ordering, or generator gaps. |
 | `bootstrap/postgres/` | Source fragments for the Postgres empty-database bootstrap snapshot. | Edit here when the bootstrap snapshot changes, then rebuild `aether-data` so `build.rs` regenerates the embedded snapshot. |
 
-Everything else is output:
+Generated schema and the composed baseline are outputs:
 
 | Path | Role | Edit policy |
 |---|---|---|
 | `generated/postgres/` | Machine-written SQL emitted from `logical/*.toml` for audit and drift detection. | Do not edit; regenerate with `compose_schema.sh generate`. |
-| `../../adapters/postgres/migrations/` | Runtime SQL artifacts embedded by each database adapter. | Regenerate through `compose_schema.sh compose`; do not edit independently. |
+| `../../adapters/postgres/migrations/20260403000000_baseline.sql` | Composed PostgreSQL baseline embedded by the adapter. | Regenerate through `compose_schema.sh compose`; do not edit independently. |
+
+Later incremental migrations are maintained directly under
+`../../adapters/postgres/migrations/`; they have no compose target. Add a new
+version for an upgrade and preserve the checksums of already-applied scripts.
+Keep any corresponding maintained bootstrap definitions in sync.
 
 `generated/**` is deliberately checked in so reviews and CI can see exactly
 what the logical schema compiler emits for each driver. It is not a fourth SQL
@@ -131,6 +136,7 @@ cannot run them inside a transaction.
 | `20260921020000` | Add the attribution-owner lookup index concurrently on existing databases. |
 | `20260921020100` | Create the usage metadata actor index concurrently. |
 | `20261001000000` | Remove deleted-user attribution from dashboard activity on future user deletion; schema-only upgrade without rewriting historical rows. |
+| `20261004000000` | Parse request metadata once per overview fact; replace only the view definition without rewriting facts or statistics. |
 
 Do not remove an applied migration after folding its changes into an earlier
 schema definition. Existing databases retain its version in `_sqlx_migrations`

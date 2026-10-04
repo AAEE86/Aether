@@ -46,15 +46,6 @@
         />
       </div>
 
-      <!-- 分析统计 -->
-      <div
-        v-if="isAdminPage"
-        class="flex flex-wrap items-baseline gap-2 text-xs text-muted-foreground"
-      >
-        <h2 class="text-sm font-medium text-foreground">
-          {{ overviewT('全站时段统计', 'Site-wide period statistics') }}
-        </h2><span>{{ analyticsRangeLabel }}</span>
-      </div>
       <!-- 管理员：模型 + 提供商 + API格式（3列） -->
       <div
         v-if="isAdminPage"
@@ -229,7 +220,7 @@ import type { ActivityHeatmap } from '@/types/activity'
 import { useToast } from '@/composables/useToast'
 import { queryString, rangeFromQuery, presetRange } from '@/features/overview/query'
 import { useOverviewI18n } from '@/features/overview/i18n'
-import { attributionLabel, timestamp } from '@/features/overview/format'
+import { attributionLabel } from '@/features/overview/format'
 import { Button } from '@/components/ui'
 
 const route = useRoute()
@@ -314,13 +305,6 @@ const hasScopedRecordFilters = computed(() => isAdminPage.value && (
   filterSearch.value.trim() !== '' || [filterUser.value, filterModel.value, filterProvider.value, filterApiFormat.value, filterStatus.value, filterClientFamily.value].some(value => value !== '__all__') ||
   !!filterProviderId.value || !!filterApiKeyId.value || !!filterRequestId.value || !!filterAttribution.value || !!filterEndpointKind.value || !!filterRequestType.value || filterIsStream.value !== undefined || filterFormatConversion.value !== undefined || filterSlowThreshold.value !== undefined || hideUnknownRecords.value
 ))
-const analyticsRangeLabel = computed(() => {
-  const range = timeRange.value
-  if (range.from && range.to) return `${timestamp(range.from, range.timezone)} - ${timestamp(range.to, range.timezone)} · ${range.timezone || 'UTC'}`
-  if (range.start_date && range.end_date) return `${range.start_date} - ${range.end_date} · ${range.timezone || 'UTC'}`
-  const presets: Record<string, string> = { today: overviewT('今天', 'Today'), yesterday: overviewT('昨天', 'Yesterday'), last7days: overviewT('最近 7 天', 'Last 7 days'), last30days: overviewT('最近 30 天', 'Last 30 days'), last90days: overviewT('最近 90 天', 'Last 90 days') }
-  return `${presets[range.preset || ''] || overviewT('全部时间', 'All time')} · ${range.timezone || 'UTC'}`
-})
 function clearRecordFilters() {
   const fields = ['search', 'user_id', 'model', 'provider', 'api_format', 'status', 'client_family', 'provider_id', 'api_key_id', 'request_id', 'attribution_kind', 'endpoint_kind', 'request_type', 'is_stream', 'has_format_conversion', 'slow_threshold_ms', 'detail_id', 'page']
   hideUnknownRecords.value = false

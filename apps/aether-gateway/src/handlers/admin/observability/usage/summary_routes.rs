@@ -1,5 +1,5 @@
 use super::super::resolve_usage_user_group_scope;
-use super::super::stats::resolve_admin_usage_time_range;
+use super::super::stats::resolve_usage_time_bounds;
 use super::analytics::admin_usage_api_key_names;
 use super::analytics::admin_usage_provider_key_names;
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
@@ -37,45 +37,7 @@ const ADMIN_USAGE_ACTIVE_LIMIT: usize = 50;
 pub(super) fn resolve_record_time_bounds(
     query: Option<&str>,
 ) -> Result<Option<(u64, u64)>, String> {
-    let entries =
-        url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()).collect::<Vec<_>>();
-    let from = entries
-        .iter()
-        .filter(|(key, _)| key == "from")
-        .collect::<Vec<_>>();
-    let to = entries
-        .iter()
-        .filter(|(key, _)| key == "to")
-        .collect::<Vec<_>>();
-    if from.is_empty() && to.is_empty() {
-        return resolve_admin_usage_time_range(query).map(|range| range.to_unix_bounds());
-    }
-    if from.len() != 1 || to.len() != 1 {
-        return Err("from and to must each be provided once".into());
-    }
-    if entries
-        .iter()
-        .any(|(key, _)| matches!(key.as_ref(), "start_date" | "end_date" | "preset" | "days"))
-    {
-        return Err("precise from/to cannot be combined with date presets".into());
-    }
-    if let Some(zone) = query_param_value(query, "timezone") {
-        zone.parse::<chrono_tz::Tz>()
-            .map_err(|_| "invalid timezone".to_string())?;
-    }
-    let parse = |value: &str| -> Result<u64, String> {
-        let value = chrono::DateTime::parse_from_rfc3339(value)
-            .map_err(|_| "from/to must be RFC 3339 timestamps".to_string())?;
-        if value.timestamp_subsec_nanos() != 0 {
-            return Err("request records support second-aligned ranges".into());
-        }
-        u64::try_from(value.timestamp()).map_err(|_| "from/to must not precede Unix epoch".into())
-    };
-    let bounds = (parse(&from[0].1)?, parse(&to[0].1)?);
-    if bounds.0 >= bounds.1 || bounds.1 - bounds.0 > 366 * 86_400 {
-        return Err("from/to must define a nonempty range of at most 366 days".into());
-    }
-    Ok(Some(bounds))
+    resolve_usage_time_bounds(query)
 }
 
 async fn load_admin_usage_by_ids(

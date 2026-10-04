@@ -6,6 +6,7 @@
       :preset="relativePreset"
       :refresh-active="autoRefresh"
       :refresh-title="refreshTitle"
+      :show-range="false"
       presets-only
       :loading="loading"
       @update:range="setRange"

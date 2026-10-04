@@ -88,6 +88,7 @@ impl SqlxUsageReadRepository {
         for row in rows {
             let granularity: String = row.try_get("granularity").map_postgres_err()?;
             let bucket: DateTime<Utc> = row.try_get("bucket_start").map_postgres_err()?;
+            let started = std::time::Instant::now();
             match self
                 .rebuild_merged_overview_bucket(&granularity, bucket)
                 .await
@@ -95,8 +96,20 @@ impl SqlxUsageReadRepository {
                 Ok(true) => published += 1,
                 Ok(false) => {}
                 Err(error) => {
+                    let error_detail = error.to_string().chars().take(500).collect::<String>();
+                    tracing::warn!(
+                        event_name = "overview_bucket_rebuild_failed",
+                        log_type = "ops",
+                        projection_version = "overview-v2",
+                        granularity = %granularity,
+                        bucket_start = %bucket,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        retry_after_secs = 600,
+                        error = %error_detail,
+                        "overview bucket rebuild failed; retry deferred"
+                    );
                     sqlx::query("UPDATE stats_bucket_state SET last_error=$3,last_failed_at=NOW() WHERE projection_version='overview-v2' AND granularity=$1 AND bucket_start=$2")
-                        .bind(&granularity).bind(bucket).bind(error.to_string().chars().take(500).collect::<String>())
+                        .bind(&granularity).bind(bucket).bind(error_detail)
                         .execute(&self.pool).await.map_postgres_err()?;
                 }
             }
@@ -141,6 +154,13 @@ impl SqlxUsageReadRepository {
             .await
             .map_postgres_err()?;
         sqlx::query("SET LOCAL lock_timeout = '1s'")
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
+        // These bounded aggregates have many expressions but run only once per
+        // bucket. JIT compilation consumes a significant part of their timeout.
+        // Keep the setting transaction-local so other pool users retain theirs.
+        sqlx::query("SET LOCAL jit = off")
             .execute(&mut *tx)
             .await
             .map_postgres_err()?;

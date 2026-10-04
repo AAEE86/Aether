@@ -31,6 +31,7 @@ mod dashboard_user_anonymization;
 mod legacy_overview_upgrade;
 mod migration_deadlines;
 mod overview_dirty_events;
+mod overview_fact_metadata;
 mod overview_migration_safety;
 mod policy_nulls;
 mod provider_expenses;
@@ -1594,6 +1595,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260921020100,
             20260923000000,
             20261001000000,
+            20261004000000,
         ]
     );
 }

@@ -1,4 +1,4 @@
-import { createApp, h, nextTick, type Component } from 'vue'
+import { createApp, nextTick, type Component } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import UserStats from '@/views/admin/UserStats.vue'
@@ -7,12 +7,18 @@ import { setI18nLocale } from '@/i18n'
 
 const api = vi.hoisted(() => ({ users: vi.fn(), user: vi.fn(), timeseries: vi.fn(), breakdown: vi.fn(), consumption: vi.fn(), exportCsv: vi.fn() }))
 const accountApi = vi.hoisted(() => ({ wallets: vi.fn(), transactions: vi.fn(), plans: vi.fn() }))
+const usageStats = vi.hoisted(() => ({ selectUser: vi.fn() }))
 vi.mock('@/api/overview', () => ({ overviewApi: api }))
 vi.mock('@/api/admin-wallets', () => ({ adminWalletApi: { listWallets: accountApi.wallets, getWalletTransactions: accountApi.transactions } }))
 vi.mock('@/api/users', () => ({ usersApi: { listUserPlanEntitlements: accountApi.plans } }))
 vi.mock('@/components/charts/BarChart.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/components/charts/LineChart.vue', () => ({ default: { render: () => null } }))
-vi.mock('@/features/overview/users/UserUsageStats.vue', () => ({ __esModule: true, default: { render: () => h('div', { 'data-user-usage-stats': '' }, 'Usage statistics') } }))
+vi.mock('@/features/overview/users/UserUsageStats.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return { default: defineComponent({
+    setup: (_, { slots }) => () => h('div', { 'data-user-usage-stats': '' }, slots['user-leaderboard']?.({ selectUser: usageStats.selectUser })),
+  }) }
+})
 const range = 'from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z&timezone=UTC'
 const meta = {
   schema_version: 1, metric_version: 'overview-v2', scope: { kind: 'installation' },
@@ -64,17 +70,15 @@ beforeEach(() => {
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); vi.useRealTimers(); setI18nLocale('zh-CN') })
 
 describe('enterprise user accounts', () => {
-  it('loads usage and group statistics only when selected, preserving the account view', async () => {
+  it('shows account and usage statistics together on one page', async () => {
     const { root } = await mount(UserStats, `/admin/user-stats?${range}`)
-    expect(root.querySelector('[data-user-usage-stats]')).toBeNull()
-    button(root, '使用统计').click()
-    await settle()
-    await settle()
     expect(root.querySelector('[data-user-usage-stats]')).not.toBeNull()
-    root.querySelector<HTMLButtonElement>('button[data-value="accounts"]')?.click()
-    await settle()
-    expect(root.querySelector('[data-user-usage-stats]')).toBeNull()
     expect(section(root, '[data-user-accounts]').textContent).toContain(employee.username)
+    expect(section(root, '[data-user-reports]').querySelector('[data-user-accounts]')).not.toBeNull()
+    expect(root.querySelectorAll('[data-user-accounts]')).toHaveLength(1)
+    expect(section(root, '[data-user-accounts]').textContent).toContain('用户排行与账目')
+    expect(root.querySelector('[role="tablist"]')).toBeNull()
+    expect(root.querySelector('button[data-value="accounts"]')).toBeNull()
     expect(api.users).toHaveBeenCalledTimes(1)
   })
 
@@ -84,25 +88,39 @@ describe('enterprise user accounts', () => {
     expect(section(root, '[data-user-summary="consumption"]').textContent).toContain('432.25')
     expect(section(root, '[data-user-summary="activity"]').textContent).toMatch(/7\s*\/ 62/)
     expect(root.querySelector('select[aria-label="归属"]')).toBeNull()
-    expect(root.querySelector('button[data-value="accounts"][data-state="active"]')).not.toBeNull()
     expect(api.users.mock.lastCall?.[0]).toMatchObject({ sort: 'billable_amount', order: 'desc', limit: 25, offset: 0 })
     expect(api.users.mock.lastCall?.[0]).not.toHaveProperty('attribution_kind')
     expect(api.users.mock.lastCall?.[0]).not.toHaveProperty('model')
+    expect(section(root, '[data-user-rank]').textContent?.trim()).toBe('1')
     button(root, '第 2 页').click()
     await settle()
     expect(api.users.mock.lastCall?.[0]).toMatchObject({ offset: 25 })
+    expect(section(root, '[data-user-rank]').textContent?.trim()).toBe('26')
     button(root, 'Tokens').click()
     await settle()
     expect(api.users.mock.lastCall?.[0]).toMatchObject({ offset: 0, sort: 'total_tokens', order: 'desc' })
+    expect(section(root, '[data-user-rank]').textContent?.trim()).toBe('1')
     expect(root.querySelector('a[href*="employee-0"]')).toBeNull()
     expect(root.querySelector('a[href*="/admin/usage"]')).toBeNull()
     expect([...section(root, '[data-user-accounts]').querySelectorAll('a, button')].some(item => item.textContent?.trim() === '使用记录')).toBe(false)
   })
-  it('places reports first and opens reusable account history without leaving the page', async () => {
+  it('opens trends from the merged table and labels ascending rows as positions', async () => {
+    const { root } = await mount(UserStats, `/admin/user-stats?${range}`)
+    const accounts = section(root, '[data-user-accounts]')
+    button(accounts, '使用趋势').click()
+    expect(usageStats.selectUser).toHaveBeenCalledWith(expect.objectContaining({ user_id: employee.user_id, username: employee.username }))
+    expect(accountApi.wallets).not.toHaveBeenCalled()
+    button(accounts, '消费').click()
+    await settle()
+    expect(api.users.mock.lastCall?.[0]).toMatchObject({ sort: 'billable_amount', order: 'asc', offset: 0 })
+    expect(accounts.querySelector('thead')?.textContent).toContain('序号')
+    expect(accounts.querySelector('thead')?.textContent).not.toContain('排名')
+  })
+  it('includes accounts in reports and opens reusable account history without leaving the page', async () => {
     const { root, router } = await mount(UserStats, `/admin/user-stats?${range}`)
     const reports = section(root, '[data-user-reports]')
     const accounts = section(root, '[data-user-accounts]')
-    expect(reports.compareDocumentPosition(accounts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(reports.contains(accounts)).toBe(true)
     expect(accountApi.wallets).not.toHaveBeenCalled()
     expect(accountApi.plans).not.toHaveBeenCalled()
     const before = router.currentRoute.value.fullPath

@@ -8,52 +8,54 @@
     </div>
     <div class="flex max-w-full flex-wrap items-center gap-2">
       <slot />
-      <TimeRangePicker
-        v-if="presetsOnly"
-        :model-value="pickerRange"
-        :preset-options="['last1hour', 'today', 'last24hours', 'last7days', 'last30days']"
-        :show-granularity="false"
-        preset-only
-        @update:model-value="selectSharedPreset"
-      />
-      <select
-        v-else
-        class="h-9 rounded-md border bg-background px-2 text-sm"
-        :aria-label="t('时间范围', 'Time range')"
-        :value="selectedPreset"
-        @change="selectPreset"
-      >
-        <option value="custom">
-          {{ t('自定义', 'Custom') }}
-        </option>
-        <option value="last1hour">
-          {{ t('最近 1 小时', 'Last hour') }}
-        </option>
-        <option value="today">
-          {{ t('今天', 'Today') }}
-        </option>
-        <option value="last24hours">
-          {{ t('最近 24 小时', 'Last 24 hours') }}
-        </option>
-        <option value="last7days">
-          {{ t('最近 7 天', 'Last 7 days') }}
-        </option>
-        <option value="last30days">
-          {{ t('最近 30 天', 'Last 30 days') }}
-        </option>
-      </select>
-      <Button
-        v-if="!presetsOnly"
-        variant="outline"
-        size="icon"
-        class="h-9 w-9"
-        :title="t('精确时间', 'Exact time')"
-        :aria-label="t('精确时间', 'Exact time')"
-        :aria-expanded="editing"
-        @click="editing = !editing"
-      >
-        <CalendarRange class="h-4 w-4" />
-      </Button>
+      <slot name="range-picker">
+        <TimeRangePicker
+          v-if="presetsOnly"
+          :model-value="pickerRange"
+          :preset-options="['last1hour', 'today', 'last24hours', 'last7days', 'last30days']"
+          :show-granularity="false"
+          preset-only
+          @update:model-value="selectSharedPreset"
+        />
+        <select
+          v-else
+          class="h-9 rounded-md border bg-background px-2 text-sm"
+          :aria-label="t('时间范围', 'Time range')"
+          :value="selectedPreset"
+          @change="selectPreset"
+        >
+          <option value="custom">
+            {{ t('自定义', 'Custom') }}
+          </option>
+          <option value="last1hour">
+            {{ t('最近 1 小时', 'Last hour') }}
+          </option>
+          <option value="today">
+            {{ t('今天', 'Today') }}
+          </option>
+          <option value="last24hours">
+            {{ t('最近 24 小时', 'Last 24 hours') }}
+          </option>
+          <option value="last7days">
+            {{ t('最近 7 天', 'Last 7 days') }}
+          </option>
+          <option value="last30days">
+            {{ t('最近 30 天', 'Last 30 days') }}
+          </option>
+        </select>
+        <Button
+          v-if="!presetsOnly"
+          variant="outline"
+          size="icon"
+          class="h-9 w-9"
+          :title="t('精确时间', 'Exact time')"
+          :aria-label="t('精确时间', 'Exact time')"
+          :aria-expanded="editing"
+          @click="editing = !editing"
+        >
+          <CalendarRange class="h-4 w-4" />
+        </Button>
+      </slot>
       <RefreshButton
         :loading="loading"
         :active="refreshActive"
