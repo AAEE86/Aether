@@ -745,6 +745,39 @@ mod tests {
     }
 
     #[test]
+    fn gemini_thinking_config_is_derived_into_client_and_provider_reasoning_metadata() {
+        let client_body = json!({
+            "generationConfig": {
+                "thinkingConfig": { "includeThoughts": true, "thinkingLevel": "HIGH" }
+            }
+        });
+        let provider_body = json!({
+            "generation_config": {
+                "thinking_config": { "thinking_budget": 8192 }
+            }
+        });
+
+        let metadata = attach_client_request_body_metadata(
+            Some(json!({ "trace_id": "trace-1" })),
+            Some(&client_body),
+        )
+        .expect("metadata should remain");
+        assert_eq!(metadata["requested_reasoning_effort"], "high");
+
+        let metadata = attach_provider_request_body_metadata(
+            Some(metadata),
+            Some("gemini:generate_content"),
+            Some("gemini-3.8-flash"),
+            Some("gemini-3.8-flash"),
+            Some(&provider_body),
+        )
+        .expect("metadata should remain");
+
+        assert_eq!(metadata["requested_reasoning_effort"], "high");
+        assert_eq!(metadata["provider_reasoning_effort"], "xhigh");
+    }
+
+    #[test]
     fn provider_request_body_metadata_uses_final_provider_body_as_source_of_truth() {
         let metadata = Some(json!({
             "trace_id": "trace-1",
