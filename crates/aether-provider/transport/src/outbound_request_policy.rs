@@ -199,6 +199,23 @@ pub fn apply_provider_outbound_request_policies(
     provider_request_headers: &mut BTreeMap<String, String>,
     provider_request_body: &mut Value,
 ) -> Vec<ProviderOutboundRequestPolicyResult> {
+    // This is the common boundary after planner rules and before transport.
+    provider_request_headers.retain(|name, _| !name.eq_ignore_ascii_case("x-envoy-internal"));
+    if transport
+        .provider
+        .provider_type
+        .trim()
+        .eq_ignore_ascii_case("claude_code")
+        && aether_ai_formats::normalize_api_format_alias(provider_api_format) == "claude:messages"
+    {
+        let profile = crate::claude_code::current_claude_code_transport_identity_profile();
+        crate::claude_code::finalize_claude_code_request_identity(
+            provider_request_headers,
+            provider_request_body,
+            &profile,
+            context.api_operation(),
+        );
+    }
     if !transport
         .provider
         .provider_type

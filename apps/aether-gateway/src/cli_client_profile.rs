@@ -1,4 +1,4 @@
-//! CLI 客户端画像（Codex / Claude Code）的运行时发布与官方版本刷新。
+//! CLI 客户端画像的统一发布、官方版本刷新与每节点缓存同步。
 //!
 //! 每个客户端由一份 [`CliClientProfileSpec`] 描述：官方 npm 发布源、平台包校验规则、
 //! 运行时缓存键、环境变量开关与画像发布函数。刷新逻辑本身与客户端无关。
@@ -23,16 +23,20 @@ use crate::AppState;
 
 const PROFILE_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const PROFILE_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const PROFILE_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 const RELEASE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RELEASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RELEASE_BYTES: usize = 256 * 1024;
 
 /// 单个 CLI 客户端的发布源、校验规则、缓存与运行时画像发布方式。
+#[derive(Clone, Copy)]
 pub(crate) struct CliClientProfileSpec {
     /// 日志中的客户端标识。
     client: &'static str,
     /// 官方 npm stable 标签的发布元数据地址。
     release_endpoint: &'static str,
+    stable_channel: Option<&'static str>,
+    refresh_interval: Duration,
     package_name: &'static str,
     /// 同一发布必须同时携带的平台二进制包。
     platform_targets: &'static [&'static str],
@@ -67,6 +71,8 @@ fn publish_claude_code_version(version: &str) -> Result<(), &'static str> {
 
 pub(crate) static CODEX_CLI_PROFILE: CliClientProfileSpec = CliClientProfileSpec {
     client: "codex",
+    stable_channel: None,
+    refresh_interval: PROFILE_REFRESH_INTERVAL,
     release_endpoint: "https://registry.npmjs.org/@openai%2Fcodex/latest",
     package_name: "@openai/codex",
     platform_targets: &[
@@ -91,6 +97,8 @@ pub(crate) static CODEX_CLI_PROFILE: CliClientProfileSpec = CliClientProfileSpec
 /// 指纹仍由 transport crate 中带版本号的身份模板统一维护。
 pub(crate) static CLAUDE_CODE_CLI_PROFILE: CliClientProfileSpec = CliClientProfileSpec {
     client: "claude_code",
+    stable_channel: None,
+    refresh_interval: PROFILE_REFRESH_INTERVAL,
     release_endpoint: "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest",
     package_name: "@anthropic-ai/claude-code",
     platform_targets: &[
@@ -112,11 +120,72 @@ pub(crate) static CLAUDE_CODE_CLI_PROFILE: CliClientProfileSpec = CliClientProfi
     publish_version: publish_claude_code_version,
 };
 
+fn publish_xai_version(version: &str) -> Result<(), &'static str> {
+    aether_provider_transport::xai::set_xai_client_version(version).map(|_| ())
+}
+fn publish_gemini_version(version: &str) -> Result<(), &'static str> {
+    aether_provider_transport::gemini_cli::set_gemini_cli_client_version(version).map(|_| ())
+}
+
+pub(crate) static XAI_CLI_PROFILE: CliClientProfileSpec = CliClientProfileSpec {
+    client: "xai",
+    release_endpoint: "https://registry.npmjs.org/@xai-official%2Fgrok/latest",
+    stable_channel: Some("https://x.ai/cli/stable"),
+    refresh_interval: Duration::from_secs(3 * 60 * 60),
+    package_name: "@xai-official/grok",
+    platform_targets: &[
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-arm64",
+        "linux-x64",
+        "win32-arm64",
+        "win32-x64",
+    ],
+    platform_dependency: claude_code_platform_dependency,
+    cache_key: "aether:xai:client-profile:v1",
+    refresh_env: "AETHER_XAI_CLIENT_PROFILE_REFRESH",
+    fixed_version_env: "AETHER_XAI_CLIENT_VERSION",
+    task_key: crate::task_runtime::TASK_KEY_XAI_CLIENT_PROFILE,
+    active_version: aether_provider_transport::xai::xai_client_version,
+    publish_version: publish_xai_version,
+};
+pub(crate) static GEMINI_CLI_PROFILE: CliClientProfileSpec = CliClientProfileSpec {
+    client: "gemini_cli",
+    release_endpoint: "https://registry.npmjs.org/@google%2Fgemini-cli/latest",
+    stable_channel: None,
+    refresh_interval: PROFILE_REFRESH_INTERVAL,
+    package_name: "@google/gemini-cli",
+    // Official JS bundle has no same-version platform packages.
+    platform_targets: &[],
+    platform_dependency: claude_code_platform_dependency,
+    cache_key: "aether:gemini_cli:client-profile:v1",
+    refresh_env: "AETHER_GEMINI_CLI_CLIENT_PROFILE_REFRESH",
+    fixed_version_env: "AETHER_GEMINI_CLI_CLIENT_VERSION",
+    task_key: crate::task_runtime::TASK_KEY_GEMINI_CLI_CLIENT_PROFILE,
+    active_version: aether_provider_transport::gemini_cli::gemini_cli_client_version,
+    publish_version: publish_gemini_version,
+};
+pub(crate) static CLI_PROFILES: &[&CliClientProfileSpec] = &[
+    &CODEX_CLI_PROFILE,
+    &CLAUDE_CODE_CLI_PROFILE,
+    &XAI_CLI_PROFILE,
+    &GEMINI_CLI_PROFILE,
+];
+impl CliClientProfileSpec {
+    pub(crate) fn task_key(&self) -> &'static str {
+        self.task_key
+    }
+    pub(crate) fn client_name(&self) -> &'static str {
+        self.client
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NpmRelease {
     name: String,
     version: String,
+    #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
 }
 
@@ -140,6 +209,8 @@ enum ProfileRefreshError {
     Rollback,
     #[error("CLI profile cache operation failed: {0}")]
     Cache(String),
+    #[error("stable channel failed ({stable}); npm fallback failed ({npm})")]
+    AllSourcesFailed { stable: String, npm: String },
 }
 
 fn version_sequence(version: &str) -> Result<u64, ProfileRefreshError> {
@@ -226,12 +297,9 @@ fn build_release_client() -> Result<Client, ProfileRefreshError> {
         .map_err(ProfileRefreshError::Client)
 }
 
-async fn fetch_latest_cli_version(
-    spec: &CliClientProfileSpec,
-    client: &Client,
-) -> Result<String, ProfileRefreshError> {
+async fn fetch_bounded(client: &Client, url: &str) -> Result<Vec<u8>, ProfileRefreshError> {
     let response = client
-        .get(spec.release_endpoint)
+        .get(url)
         .send()
         .await
         .map_err(ProfileRefreshError::Client)?;
@@ -254,7 +322,56 @@ async fn fetch_latest_cli_version(
         }
         bytes.extend_from_slice(&chunk);
     }
-    parse_cli_release(spec, &bytes)
+    Ok(bytes)
+}
+
+fn parse_stable_channel(bytes: &[u8]) -> Result<String, ProfileRefreshError> {
+    if bytes.len() > MAX_RELEASE_BYTES {
+        return Err(ProfileRefreshError::ResponseTooLarge);
+    }
+    let version = std::str::from_utf8(bytes)
+        .map_err(|_| ProfileRefreshError::InvalidMetadata)?
+        .trim();
+    version_sequence(version)?;
+    Ok(version.to_owned())
+}
+
+async fn fetch_latest_with_fallback<S, SF, N, NF>(
+    stable: S,
+    npm: N,
+) -> Result<String, ProfileRefreshError>
+where
+    S: FnOnce() -> SF,
+    SF: Future<Output = Result<String, ProfileRefreshError>>,
+    N: FnOnce() -> NF,
+    NF: Future<Output = Result<String, ProfileRefreshError>>,
+{
+    match stable().await {
+        Ok(version) => Ok(version),
+        Err(stable) => npm()
+            .await
+            .map_err(|npm| ProfileRefreshError::AllSourcesFailed {
+                stable: stable.to_string(),
+                npm: npm.to_string(),
+            }),
+    }
+}
+
+async fn fetch_latest_cli_version(
+    spec: &CliClientProfileSpec,
+    client: &Client,
+) -> Result<String, ProfileRefreshError> {
+    let npm =
+        || async { parse_cli_release(spec, &fetch_bounded(client, spec.release_endpoint).await?) };
+    if let Some(url) = spec.stable_channel {
+        fetch_latest_with_fallback(
+            || async { parse_stable_channel(&fetch_bounded(client, url).await?) },
+            npm,
+        )
+        .await
+    } else {
+        npm().await
+    }
 }
 
 fn publish(spec: &CliClientProfileSpec, version: &str) -> Result<(), ProfileRefreshError> {
@@ -293,7 +410,7 @@ fn cached_version_to_restore(
 ) -> Result<Option<String>, ProfileRefreshError> {
     let cached_sequence = version_sequence(&cached.version)?;
     let active_sequence = version_sequence(active_version)?;
-    Ok((cached_sequence >= active_sequence).then(|| cached.version.clone()))
+    Ok((cached_sequence > active_sequence).then(|| cached.version.clone()))
 }
 
 async fn refresh_once_with_fetch<F, Fut>(
@@ -326,6 +443,8 @@ where
     }
 
     let version = fetch_latest().await?;
+    // Another publisher may have advanced shared state while the fetch awaited.
+    let _ = restore_cached_profile(spec, runtime).await;
     let current = (spec.active_version)();
     if version_sequence(&version)? < version_sequence(&current)? {
         return Err(ProfileRefreshError::Rollback);
@@ -342,7 +461,7 @@ where
         .kv_set(spec.cache_key, serialized, Some(PROFILE_CACHE_TTL))
         .await
     {
-        // 本地画像已经完成原子替换；缓存写失败只影响下次进程启动的恢复。
+        // 本地画像已经完成原子替换；缓存写失败会延迟其他节点同步及下次启动的恢复。
         warn!(
             event_name = "cli_client_profile_cache_write_failed",
             client = spec.client,
@@ -358,17 +477,49 @@ async fn refresh_once(
     runtime: &RuntimeState,
 ) -> Result<String, ProfileRefreshError> {
     let fixed_version = fixed_version_override(spec);
-    refresh_once_with_fetch(
-        spec,
-        runtime,
-        fixed_version.as_deref(),
-        refresh_enabled(spec),
-        || async {
+    if fixed_version.is_some() || !refresh_enabled(spec) {
+        return refresh_once_with_fetch(spec, runtime, fixed_version.as_deref(), false, || async {
+            Err(ProfileRefreshError::InvalidMetadata)
+        })
+        .await;
+    }
+    let _ = restore_cached_profile(spec, runtime).await;
+    let lock_key = format!("aether:client-profile:refresh:{}", spec.client);
+    let owner = uuid::Uuid::now_v7().to_string();
+    let Some(lease) = runtime
+        .lock_try_acquire(&lock_key, &owner, Duration::from_secs(120))
+        .await
+        .map_err(|e| ProfileRefreshError::Cache(e.to_string()))?
+    else {
+        return Ok((spec.active_version)());
+    };
+    let result = async {
+        // Concurrent startups must not all query the release source. A fresh,
+        // verified cache is sufficient; per-node sync never accesses the network.
+        if let Ok(Some(raw)) = runtime.kv_get(spec.cache_key).await {
+            if let Ok(cached) = serde_json::from_str::<CachedProfile>(&raw) {
+                let now = chrono::Utc::now().timestamp().max(0) as u64;
+                if now >= cached.verified_at_unix_secs
+                    && now - cached.verified_at_unix_secs < spec.refresh_interval.as_secs()
+                    && version_sequence(&cached.version).is_ok_and(|cached_seq| {
+                        version_sequence(&(spec.active_version)())
+                            .is_ok_and(|active_seq| cached_seq >= active_seq)
+                    })
+                {
+                    restore_cached_profile(spec, runtime).await?;
+                    return Ok((spec.active_version)());
+                }
+            }
+        }
+        refresh_once_with_fetch(spec, runtime, None, true, || async {
             let client = build_release_client()?;
             fetch_latest_cli_version(spec, &client).await
-        },
-    )
-    .await
+        })
+        .await
+    }
+    .await;
+    let _ = runtime.lock_release(&lease).await;
+    result
 }
 
 pub(crate) async fn prewarm(
@@ -385,7 +536,7 @@ pub(crate) fn spawn_worker(
     app: AppState,
 ) -> tokio::task::JoinHandle<()> {
     crate::task_runtime::spawn_singleton_worker(app, spec.task_key, move |app| async move {
-        let mut interval = tokio::time::interval(PROFILE_REFRESH_INTERVAL);
+        let mut interval = tokio::time::interval(spec.refresh_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // 启动阶段由 prewarm 完成一次检查；后台任务只负责后续每日刷新，避免重复建连。
         interval.tick().await;
@@ -407,6 +558,49 @@ pub(crate) fn spawn_worker(
             }
         }
     })
+}
+
+/// One task per process (including frontdoor-only nodes), independent of the
+/// cluster singleton release checkers. Dropping the guard aborts the task.
+pub struct ClientProfileSyncGuard(tokio::task::JoinHandle<()>);
+impl Drop for ClientProfileSyncGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn sync_cached_profile(
+    spec: &CliClientProfileSpec,
+    runtime: &RuntimeState,
+    fixed: Option<&str>,
+) -> Result<(), ProfileRefreshError> {
+    if let Some(version) = fixed {
+        publish(spec, version)
+    } else {
+        restore_cached_profile(spec, runtime).await
+    }
+}
+
+pub(crate) fn spawn_cache_sync(app: AppState) -> ClientProfileSyncGuard {
+    ClientProfileSyncGuard(aether_runtime::task::spawn_named(
+        "client-profile-cache-sync",
+        async move {
+            let mut interval = tokio::time::interval(PROFILE_SYNC_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                for spec in CLI_PROFILES {
+                    let fixed = fixed_version_override(spec);
+                    if let Err(error) =
+                        sync_cached_profile(spec, app.runtime_state(), fixed.as_deref()).await
+                    {
+                        warn!(event_name = "cli_client_profile_cache_sync_failed", client = spec.client, error = %error,
+                        "keeping the previous local client profile");
+                    }
+                }
+            }
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -448,6 +642,8 @@ mod tests {
 
     static TEST_PROFILE: CliClientProfileSpec = CliClientProfileSpec {
         client: "test",
+        stable_channel: None,
+        refresh_interval: super::PROFILE_REFRESH_INTERVAL,
         release_endpoint: "https://registry.invalid/test/latest",
         package_name: "@test/cli",
         platform_targets: &["linux-x64"],
@@ -464,6 +660,252 @@ mod tests {
         let guard = TEST_LOCK.lock().await;
         test_publish_version(TEST_BUILTIN_VERSION).unwrap();
         guard
+    }
+
+    #[test]
+    fn all_release_adapters_keep_distinct_cache_keys_and_registered_tasks() {
+        let mut keys = std::collections::HashSet::new();
+        let mut tasks = std::collections::HashSet::new();
+        for spec in super::CLI_PROFILES {
+            assert!(keys.insert(spec.cache_key));
+            assert!(tasks.insert(spec.task_key()));
+            assert!(spec
+                .release_endpoint
+                .starts_with("https://registry.npmjs.org/"));
+        }
+        assert_eq!(keys.len(), 4);
+        assert_eq!(
+            super::XAI_CLI_PROFILE.refresh_interval,
+            Duration::from_secs(3 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn gemini_bundle_accepts_only_the_official_stable_package() {
+        let mut body = serde_json::json!({"name":"@google/gemini-cli", "version":"0.62.0"});
+        assert_eq!(
+            parse_cli_release(
+                &super::GEMINI_CLI_PROFILE,
+                &serde_json::to_vec(&body).unwrap()
+            )
+            .unwrap(),
+            "0.62.0"
+        );
+        body["name"] = serde_json::json!("gemini-cli");
+        assert!(parse_cli_release(
+            &super::GEMINI_CLI_PROFILE,
+            &serde_json::to_vec(&body).unwrap()
+        )
+        .is_err());
+        body["name"] = serde_json::json!("@google/gemini-cli");
+        body["version"] = serde_json::json!("0.63.0-preview.1");
+        assert!(parse_cli_release(
+            &super::GEMINI_CLI_PROFILE,
+            &serde_json::to_vec(&body).unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn grok_preserves_stable_channel_and_all_platform_release_checks() {
+        assert_eq!(super::parse_stable_channel(b"1.0.46\n").unwrap(), "1.0.46");
+        for bytes in [
+            b"<html>1.0.46</html>".as_slice(),
+            b"1.0.47-alpha.1",
+            b"",
+            b"1.0.46+build",
+        ] {
+            assert!(super::parse_stable_channel(bytes).is_err());
+        }
+        let spec = &super::XAI_CLI_PROFILE;
+        let dependencies = spec
+            .platform_targets
+            .iter()
+            .map(|target| {
+                (
+                    format!("@xai-official/grok-{target}"),
+                    serde_json::json!("1.0.46"),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let mut body = serde_json::json!({"name":"@xai-official/grok", "version":"1.0.46", "optionalDependencies":dependencies});
+        assert_eq!(
+            parse_cli_release(spec, &serde_json::to_vec(&body).unwrap()).unwrap(),
+            "1.0.46"
+        );
+        body["optionalDependencies"]["@xai-official/grok-linux-x64"] = serde_json::json!("1.0.45");
+        assert!(parse_cli_release(spec, &serde_json::to_vec(&body).unwrap()).is_err());
+    }
+
+    #[tokio::test]
+    async fn grok_uses_npm_only_after_stable_fails() {
+        let called = AtomicBool::new(false);
+        assert_eq!(
+            super::fetch_latest_with_fallback(
+                || async { Ok("1.0.46".into()) },
+                || async {
+                    called.store(true, Ordering::SeqCst);
+                    Ok("1.0.47".into())
+                }
+            )
+            .await
+            .unwrap(),
+            "1.0.46"
+        );
+        assert!(!called.load(Ordering::SeqCst));
+        assert_eq!(
+            super::fetch_latest_with_fallback(
+                || async { Err(ProfileRefreshError::HttpStatus(503)) },
+                || async { Ok("1.0.47".into()) }
+            )
+            .await
+            .unwrap(),
+            "1.0.47"
+        );
+        assert!(matches!(
+            super::fetch_latest_with_fallback(
+                || async { Err(ProfileRefreshError::HttpStatus(503)) },
+                || async { Err(ProfileRefreshError::HttpStatus(502)) }
+            )
+            .await,
+            Err(ProfileRefreshError::AllSourcesFailed { .. })
+        ));
+    }
+
+    static REPLICA_VERSION: Mutex<String> = Mutex::new(String::new());
+    fn replica_version() -> String {
+        REPLICA_VERSION.lock().unwrap().clone()
+    }
+    fn publish_replica(version: &str) -> Result<(), &'static str> {
+        *REPLICA_VERSION.lock().unwrap() = version.into();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_non_owner_replica_syncs_without_fetching_and_fixed_override_wins() {
+        let _guard = test_profile_guard().await;
+        publish_replica(TEST_BUILTIN_VERSION).unwrap();
+        let replica = CliClientProfileSpec {
+            active_version: replica_version,
+            publish_version: publish_replica,
+            ..TEST_PROFILE
+        };
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        refresh_once_with_fetch(&TEST_PROFILE, &runtime, None, true, || async {
+            Ok("1.2.0".into())
+        })
+        .await
+        .unwrap();
+        assert_eq!(replica_version(), TEST_BUILTIN_VERSION);
+        super::sync_cached_profile(&replica, &runtime, None)
+            .await
+            .unwrap();
+        assert_eq!(replica_version(), "1.2.0");
+        super::sync_cached_profile(&replica, &runtime, Some("1.0.0"))
+            .await
+            .unwrap();
+        assert_eq!(replica_version(), "1.0.0");
+        assert!(runtime
+            .kv_get(TEST_PROFILE.cache_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("1.2.0"));
+    }
+
+    #[tokio::test]
+    async fn newer_shared_version_arriving_during_fetch_rejects_stale_publish() {
+        let _guard = test_profile_guard().await;
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let result = refresh_once_with_fetch(&TEST_PROFILE, &runtime, None, true, || async {
+            runtime
+                .kv_set(
+                    TEST_PROFILE.cache_key,
+                    serde_json::to_string(&CachedProfile {
+                        version: "1.6.0".into(),
+                        verified_at_unix_secs: 1,
+                    })
+                    .unwrap(),
+                    None,
+                )
+                .await
+                .unwrap();
+            Ok("1.5.0".into())
+        })
+        .await;
+        assert!(matches!(result, Err(ProfileRefreshError::Rollback)));
+        assert_eq!(test_active_version(), "1.6.0");
+        assert!(runtime
+            .kv_get(TEST_PROFILE.cache_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("1.6.0"));
+    }
+
+    #[tokio::test]
+    async fn corrupt_cache_does_not_block_a_verified_refresh_or_erase_local_state() {
+        let _guard = test_profile_guard().await;
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        runtime
+            .kv_set(TEST_PROFILE.cache_key, "invalid-json", None)
+            .await
+            .unwrap();
+        assert!(super::sync_cached_profile(&TEST_PROFILE, &runtime, None)
+            .await
+            .is_err());
+        assert_eq!(test_active_version(), TEST_BUILTIN_VERSION);
+        assert_eq!(
+            refresh_once_with_fetch(&TEST_PROFILE, &runtime, None, true, || async {
+                Ok("1.2.0".into())
+            })
+            .await
+            .unwrap(),
+            "1.2.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_verified_cache_avoids_a_startup_network_check() {
+        let _guard = test_profile_guard().await;
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        runtime
+            .kv_set(
+                TEST_PROFILE.cache_key,
+                serde_json::to_string(&CachedProfile {
+                    version: "1.2.0".into(),
+                    verified_at_unix_secs: chrono::Utc::now().timestamp().max(0) as u64,
+                })
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        // TEST_PROFILE's URL cannot return metadata; success demonstrates no HTTP fetch.
+        assert_eq!(
+            super::refresh_once(&TEST_PROFILE, &runtime).await.unwrap(),
+            "1.2.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_startup_holding_the_release_lock_skips_the_network() {
+        let _guard = test_profile_guard().await;
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let lease = runtime
+            .lock_try_acquire(
+                "aether:client-profile:refresh:test",
+                "other-node",
+                Duration::from_secs(120),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            super::refresh_once(&TEST_PROFILE, &runtime).await.unwrap(),
+            TEST_BUILTIN_VERSION
+        );
+        runtime.lock_release(&lease).await.unwrap();
     }
 
     #[test]

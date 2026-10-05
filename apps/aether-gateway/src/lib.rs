@@ -92,7 +92,7 @@ mod upstream_admission;
 mod usage;
 mod video_tasks;
 mod wallet_runtime;
-mod xai_profile;
+pub use cli_client_profile::ClientProfileSyncGuard;
 
 pub use self::ai_serving::api::{codex_client_originator, codex_client_user_agent};
 pub(crate) use self::ai_serving::api::{

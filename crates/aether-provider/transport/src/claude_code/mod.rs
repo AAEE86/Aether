@@ -28,7 +28,7 @@ pub use profile::{
     CLAUDE_CODE_CONTEXT_MANAGEMENT_BETA, CLAUDE_CODE_TRANSPORT_IDENTITY_2026_04,
 };
 pub use request::{
-    build_claude_code_passthrough_headers, sanitize_claude_code_request_body,
-    sanitize_claude_code_request_body_for_beta_header,
+    build_claude_code_passthrough_headers, finalize_claude_code_request_identity,
+    sanitize_claude_code_request_body, sanitize_claude_code_request_body_for_beta_header,
 };
 pub use url::build_claude_code_messages_url;

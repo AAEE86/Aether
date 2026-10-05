@@ -2513,53 +2513,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    // 两个 CLI 画像的发布检查互不依赖，并发执行以免叠加启动阶段的网络超时。
-    let (codex_profile, claude_code_profile) = tokio::join!(
-        state.prewarm_codex_client_profile(),
-        state.prewarm_claude_code_client_profile(),
-    );
-    match codex_profile {
-        Ok(version) => {
-            info!(
-                codex_client_version = %version,
-                "prewarmed Codex client profile"
-            );
-        }
-        Err(err) => {
-            warn!(
-                error = %err,
-                "failed to refresh Codex client profile; built-in or cached profile remains active"
-            );
+    for (client, result) in state.prewarm_client_profiles().await {
+        match result {
+            Ok(version) => info!(client, version = %version, "prewarmed client profile"),
+            Err(error) => warn!(client, error = %error,
+                "client profile refresh failed; built-in or cached profile remains active"),
         }
     }
-    match claude_code_profile {
-        Ok(version) => {
-            info!(
-                claude_code_client_version = %version,
-                "prewarmed Claude Code client profile"
-            );
-        }
-        Err(err) => {
-            warn!(
-                error = %err,
-                "failed to refresh Claude Code client profile; built-in or cached profile remains active"
-            );
-        }
-    }
-    match state.prewarm_xai_client_profile().await {
-        Ok(version) => {
-            info!(
-                xai_client_version = %version,
-                "prewarmed Grok CLI client profile"
-            );
-        }
-        Err(err) => {
-            warn!(
-                error = %err,
-                "failed to refresh Grok CLI client profile; built-in or cached profile remains active"
-            );
-        }
-    }
+    // All roles synchronize local snapshots, not just the singleton owner.
+    // Keep the guard alive until main exits so shutdown cancels the task.
+    let _client_profile_cache_sync = state.spawn_client_profile_cache_sync();
     match prewarm_direct_h2c_sender_cache_from_env_for_startup().await {
         Ok(Some(report)) => {
             if report.failed_targets > 0 {

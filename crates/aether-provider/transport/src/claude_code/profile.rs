@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
+
+use aether_ai_formats::client_profile::ClientProfileStore;
 
 use aether_ai_formats::ApiOperation;
 
@@ -94,28 +96,24 @@ impl Default for ClaudeCodeClientProfile {
     }
 }
 
-static ACTIVE_CLIENT_PROFILE: OnceLock<RwLock<Arc<ClaudeCodeClientProfile>>> = OnceLock::new();
+static ACTIVE_CLIENT_PROFILE: OnceLock<ClientProfileStore<ClaudeCodeClientProfile>> =
+    OnceLock::new();
 
-fn active_client_profile() -> &'static RwLock<Arc<ClaudeCodeClientProfile>> {
-    ACTIVE_CLIENT_PROFILE.get_or_init(|| RwLock::new(Arc::new(ClaudeCodeClientProfile::default())))
+fn active_client_profile() -> &'static ClientProfileStore<ClaudeCodeClientProfile> {
+    ACTIVE_CLIENT_PROFILE
+        .get_or_init(|| ClientProfileStore::new(ClaudeCodeClientProfile::default()))
 }
 
 /// Returns a snapshot of the active CLI profile without holding the global lock.
 pub fn claude_code_client_profile() -> Arc<ClaudeCodeClientProfile> {
-    active_client_profile()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    active_client_profile().snapshot()
 }
 
 /// Atomically replaces the active CLI profile and returns the previous one.
 pub fn set_claude_code_client_profile(
     profile: ClaudeCodeClientProfile,
 ) -> Arc<ClaudeCodeClientProfile> {
-    let mut current = active_client_profile()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    std::mem::replace(&mut *current, Arc::new(profile))
+    active_client_profile().publish(profile)
 }
 
 /// Publishes a CLI profile for the given release version.
@@ -310,8 +308,13 @@ impl ClaudeCodeTransportIdentityProfile {
             ("x-stainless-retry-count", template.stainless_retry_count),
             ("x-stainless-timeout", template.stainless_timeout),
         ] {
+            headers.retain(|existing, _| !existing.eq_ignore_ascii_case(name));
             headers.insert(name.to_string(), value.to_string());
         }
+        headers.retain(|name, _| {
+            !name.eq_ignore_ascii_case("user-agent")
+                && !name.eq_ignore_ascii_case("x-stainless-helper-method")
+        });
         headers.insert("user-agent".to_string(), self.user_agent().to_string());
         if stream {
             headers.insert(
@@ -328,8 +331,14 @@ impl ClaudeCodeTransportIdentityProfile {
         headers: &mut BTreeMap<String, String>,
         operation: Option<ApiOperation>,
     ) {
-        let incoming = headers.get("anthropic-beta").map(String::as_str);
-        let merged = self.merge_beta_tokens(incoming, operation);
+        let incoming = headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let merged = self.merge_beta_tokens(Some(&incoming), operation);
+        headers.retain(|name, _| !name.eq_ignore_ascii_case("anthropic-beta"));
         if merged.is_empty() {
             headers.remove("anthropic-beta");
         } else {

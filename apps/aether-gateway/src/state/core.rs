@@ -55,7 +55,8 @@ use super::super::{control::GatewayControlDecision, error::GatewayError};
 use super::super::{provider_transport, usage};
 
 use crate::cli_client_profile::{
-    spawn_worker as spawn_cli_client_profile_worker, CLAUDE_CODE_CLI_PROFILE, CODEX_CLI_PROFILE,
+    spawn_worker as spawn_cli_client_profile_worker, CLAUDE_CODE_CLI_PROFILE, CLI_PROFILES,
+    CODEX_CLI_PROFILE, XAI_CLI_PROFILE,
 };
 use crate::maintenance::spawn_account_self_check_worker;
 use crate::maintenance::spawn_audit_cleanup_worker;
@@ -78,7 +79,6 @@ use crate::maintenance::spawn_stats_hourly_aggregation_worker;
 use crate::maintenance::spawn_usage_cleanup_worker;
 use crate::maintenance::spawn_usage_counter_flush_worker;
 use crate::maintenance::spawn_wallet_daily_usage_aggregation_worker;
-use crate::xai_profile::spawn_worker as spawn_xai_client_profile_worker;
 
 const SYSTEM_CONFIG_CACHE_TTL: Duration = Duration::from_secs(30);
 // Requests may use a stale value after the fresh window until the entry reaches
@@ -162,7 +162,21 @@ impl AppState {
     }
 
     pub async fn prewarm_xai_client_profile(&self) -> Result<String, String> {
-        crate::xai_profile::prewarm(self.runtime_state()).await
+        crate::cli_client_profile::prewarm(&XAI_CLI_PROFILE, self.runtime_state()).await
+    }
+
+    pub async fn prewarm_client_profiles(&self) -> Vec<(&'static str, Result<String, String>)> {
+        futures_util::future::join_all(CLI_PROFILES.iter().map(|spec| async move {
+            (
+                spec.client_name(),
+                crate::cli_client_profile::prewarm(spec, self.runtime_state()).await,
+            )
+        }))
+        .await
+    }
+
+    pub fn spawn_client_profile_cache_sync(&self) -> crate::ClientProfileSyncGuard {
+        crate::cli_client_profile::spawn_cache_sync(self.clone())
     }
 
     pub async fn prewarm_chat_pii_redaction_runtime_config(&self) -> Result<bool, String> {
@@ -2363,24 +2377,15 @@ impl AppState {
             crate::task_runtime::TASK_KEY_MODEL_FETCH_WORKER,
             spawn_model_fetch_worker(background_state.clone()),
         );
-        supervise_worker(
-            crate::task_runtime::TASK_KEY_CODEX_CLIENT_PROFILE,
-            Some(spawn_cli_client_profile_worker(
-                &CODEX_CLI_PROFILE,
-                background_state.clone(),
-            )),
-        );
-        supervise_worker(
-            crate::task_runtime::TASK_KEY_CLAUDE_CODE_CLIENT_PROFILE,
-            Some(spawn_cli_client_profile_worker(
-                &CLAUDE_CODE_CLI_PROFILE,
-                background_state.clone(),
-            )),
-        );
-        supervise_worker(
-            crate::task_runtime::TASK_KEY_XAI_CLIENT_PROFILE,
-            Some(spawn_xai_client_profile_worker(background_state.clone())),
-        );
+        for spec in CLI_PROFILES {
+            supervise_worker(
+                spec.task_key(),
+                Some(spawn_cli_client_profile_worker(
+                    spec,
+                    background_state.clone(),
+                )),
+            );
+        }
         supervise_worker(
             crate::task_runtime::TASK_KEY_VIDEO_TASK_POLLER,
             spawn_video_task_poller(background_state.clone()),
