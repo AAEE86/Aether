@@ -2801,7 +2801,11 @@ pub(crate) fn provider_key_status_snapshot_payload(
     // newer quota observation. Use the same decision as scheduling so the
     // account list and its status filter do not keep displaying that stale block.
     // 对所有提供商生效：适配器判定已是“重置感知”的，与调度口径保持一致。
-    if !aether_provider_pool::provider_pool_key_account_quota_exhausted(key, provider_type) {
+    // Evaluate the resolved payload, since the stored key may lack the quota
+    // snapshot that was just backfilled from upstream metadata.
+    let mut quota_key = key.clone();
+    quota_key.status_snapshot = Some(payload);
+    if !aether_provider_pool::provider_pool_key_account_quota_exhausted(&quota_key, provider_type) {
         if let Some(quota) = snapshot.get_mut("quota").and_then(Value::as_object_mut) {
             quota.insert("exhausted".to_string(), json!(false));
             if quota.get("code").and_then(Value::as_str) == Some("exhausted") {
@@ -4340,24 +4344,28 @@ mod tests {
 
     #[test]
     fn provider_key_status_snapshot_payload_backfills_claude_code_usage_windows() {
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time should be after epoch")
+            .as_secs();
         let mut key = sample_catalog_key();
         key.upstream_metadata = Some(json!({
             "claude_code": {
-                "updated_at": 1_800_000_000u64,
+                "updated_at": observed_at,
                 "five_hour_used_percent": 100.0,
-                "five_hour_reset_at": 1_800_003_600u64,
+                "five_hour_reset_at": observed_at + 3_600,
                 "seven_day_used_percent": 40.0,
-                "seven_day_reset_at": 1_800_400_000u64,
+                "seven_day_reset_at": observed_at + 400_000,
                 "seven_day_sonnet_used_percent": 10.0,
-                "seven_day_sonnet_reset_at": 1_800_400_000u64,
+                "seven_day_sonnet_reset_at": observed_at + 400_000,
                 "reset_credits": {
                     "available_count": 2,
-                    "updated_at": 1_800_000_000u64,
+                    "updated_at": observed_at,
                     "detail_source": "claude_oauth_usage",
                     "credits": [{
                         "display_key": "Key-1",
                         "status": "available",
-                        "expires_at": 1_800_144_000u64
+                        "expires_at": observed_at + 144_000
                     }]
                 }
             }
@@ -4371,7 +4379,8 @@ mod tests {
         assert_eq!(quota.get("provider_type"), Some(&json!("claude_code")));
         // An exhausted 5h window blocks the whole account until it resets.
         assert_eq!(quota.get("exhausted"), Some(&json!(true)));
-        assert_eq!(quota.get("reset_at"), Some(&json!(1_800_003_600u64)));
+        assert_eq!(quota.get("code"), Some(&json!("exhausted")));
+        assert_eq!(quota.get("reset_at"), Some(&json!(observed_at + 3_600)));
         let windows = quota
             .get("windows")
             .and_then(Value::as_array)
@@ -4380,6 +4389,7 @@ mod tests {
         assert_eq!(windows[0]["code"], json!("5h"));
         assert_eq!(windows[0]["scope"], json!("account"));
         assert_eq!(windows[0]["window_minutes"], json!(300));
+        assert_eq!(windows[0]["is_exhausted"], json!(true));
         assert_eq!(windows[1]["code"], json!("weekly"));
         assert_eq!(windows[1]["used_ratio"], json!(0.4));
         assert_eq!(windows[2]["code"], json!("weekly_sonnet"));
@@ -4389,6 +4399,49 @@ mod tests {
             quota["reset_credits"]["credits"][0]["remaining_seconds"],
             json!(144_000u64)
         );
+
+        // An incomplete stored summary must not override the backfilled usage.
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "provider_type": "claude_code",
+                "code": "ok",
+                "exhausted": false,
+                "updated_at": observed_at - 3_600,
+                "windows": []
+            }
+        }));
+        let payload = provider_key_status_snapshot_payload(&key, "claude_code");
+        assert_eq!(payload["quota"]["exhausted"], json!(true));
+        assert_eq!(payload["quota"]["code"], json!("exhausted"));
+        assert_eq!(payload["quota"]["windows"][0]["is_exhausted"], json!(true));
+    }
+
+    #[test]
+    fn provider_key_status_snapshot_payload_clears_expired_backfilled_claude_code_usage() {
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time should be after epoch")
+            .as_secs()
+            - 7_200;
+        let mut key = sample_catalog_key();
+        key.upstream_metadata = Some(json!({
+            "claude_code": {
+                "updated_at": observed_at,
+                "five_hour_used_percent": 100.0,
+                "five_hour_reset_at": observed_at + 3_600,
+                "seven_day_used_percent": 40.0,
+                "seven_day_reset_at": observed_at + 400_000
+            }
+        }));
+
+        let payload = provider_key_status_snapshot_payload(&key, "claude_code");
+        let quota = &payload["quota"];
+        assert_eq!(quota["exhausted"], json!(false));
+        assert_eq!(quota["code"], json!("ok"));
+        assert_eq!(quota["windows"][0]["is_exhausted"], json!(false));
+        assert_eq!(quota["windows"][0]["used_ratio"], json!(0.0));
+        assert_eq!(quota["windows"][0]["remaining_ratio"], json!(1.0));
+        assert_eq!(quota["windows"][1]["used_ratio"], json!(0.4));
     }
 
     #[test]
