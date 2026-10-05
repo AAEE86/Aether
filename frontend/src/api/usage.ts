@@ -134,6 +134,8 @@ export interface UsageByApiFormat {
 }
 
 export interface UsageFilters {
+  from?: string
+  to?: string
   user_id?: string // UUID
   user_group_id?: string // UUID
   provider_id?: string // UUID
@@ -501,6 +503,17 @@ export const usageApi = {
   },
 
   async getAllUsageRecords(params?: {
+    from?: string
+    to?: string
+    provider_id?: string
+    api_key_id?: string
+    request_id?: string
+    attribution_kind?: string
+    endpoint_kind?: string
+    request_type?: string
+    is_stream?: boolean
+    has_format_conversion?: boolean
+    slow_threshold_ms?: number
     start_date?: string
     end_date?: string
     preset?: string
@@ -541,6 +554,17 @@ export const usageApi = {
   },
 
   async getAllUsageRecordTotal(params?: {
+    from?: string
+    to?: string
+    provider_id?: string
+    api_key_id?: string
+    request_id?: string
+    attribution_kind?: string
+    endpoint_kind?: string
+    request_type?: string
+    is_stream?: boolean
+    has_format_conversion?: boolean
+    slow_threshold_ms?: number
     start_date?: string
     end_date?: string
     preset?: string
@@ -578,7 +602,7 @@ export const usageApi = {
    */
   async getActiveRequests(
     ids?: string[],
-    timeRange?: Pick<UsageFilters, 'start_date' | 'end_date' | 'preset' | 'timezone' | 'tz_offset_minutes'>
+    timeRange?: Pick<UsageFilters, 'from' | 'to' | 'start_date' | 'end_date' | 'preset' | 'timezone' | 'tz_offset_minutes'>
   ): Promise<{
     requests: Array<{
       id: string
@@ -631,6 +655,10 @@ export const usageApi = {
     const params: Record<string, string | number> = {}
     if (ids?.length) {
       params.ids = ids.join(',')
+    }
+    if (timeRange?.from && timeRange.to) {
+      params.from = timeRange.from
+      params.to = timeRange.to
     }
     if (timeRange?.start_date) {
       params.start_date = timeRange.start_date

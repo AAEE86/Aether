@@ -57,8 +57,20 @@ use aether_data_contracts::repository::usage::{
 };
 use aether_data_contracts::DataLayerError;
 
+mod analytics;
+#[cfg(test)]
+mod analytics_tests;
+mod attribution;
 pub mod cleanup;
+mod dashboard;
+mod dashboard_retention;
+mod dashboard_summary;
+#[cfg(test)]
+mod dashboard_summary_tests;
+mod health;
+mod overview_buckets;
 mod preparation;
+mod projection_reader;
 
 use preparation::prepare_usage_in_background;
 
@@ -69,6 +81,66 @@ const MAX_SUPPORTED_UNIX_SECS: u64 = 253_402_300_799;
 const FIND_USAGE_BODY_BLOB_BY_REF_SQL: &str = r#"SELECT CASE WHEN octet_length(payload_gzip) <= $4 THEN payload_gzip END AS payload_gzip FROM usage_body_blobs WHERE body_ref = $1 AND request_id = $2 AND body_field = $3 LIMIT 1"#;
 const DELETE_USAGE_BODY_BLOB_SQL: &str = include_str!("queries/delete_usage_body_blob_sql.sql");
 static USAGE_BODY_DECODE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+struct UsageAnalyticsDrilldown<'a> {
+    provider_id: Option<&'a str>,
+    api_key_id: Option<&'a str>,
+    request_id: Option<&'a str>,
+    attribution_kind: Option<&'a str>,
+    actor_user_id: Option<&'a str>,
+    endpoint_kind: Option<&'a str>,
+    request_type: Option<&'a str>,
+    slow_threshold_ms: Option<u64>,
+    has_format_conversion: Option<bool>,
+}
+
+fn push_usage_analytics_drilldown(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    has_where: &mut bool,
+    filters: UsageAnalyticsDrilldown<'_>,
+) {
+    for (column, value) in [
+        ("provider_id", filters.provider_id),
+        ("api_key_id", filters.api_key_id),
+        ("request_id", filters.request_id),
+        ("endpoint_kind", filters.endpoint_kind),
+        ("request_type", filters.request_type),
+    ] {
+        if let Some(value) = value {
+            builder.push(if *has_where { " AND " } else { " WHERE " });
+            *has_where = true;
+            builder
+                .push("\"usage\".")
+                .push(column)
+                .push(" = ")
+                .push_bind(value.to_string());
+        }
+    }
+    for (column, value) in [
+        ("attribution_kind", filters.attribution_kind),
+        ("actor_user_id", filters.actor_user_id),
+    ] {
+        if let Some(value) = value {
+            builder.push(if *has_where { " AND " } else { " WHERE " });
+            *has_where = true;
+            builder.push("EXISTS(SELECT 1 FROM usage_analytics_facts_v1 f WHERE f.request_id=\"usage\".request_id AND f.").push(column).push(" = ").push_bind(value.to_string()).push(")");
+        }
+    }
+    if let Some(value) = filters.slow_threshold_ms {
+        builder.push(if *has_where { " AND " } else { " WHERE " });
+        *has_where = true;
+        builder
+            .push("\"usage\".response_time_ms >= ")
+            .push_bind(i64::try_from(value).unwrap_or(i64::MAX));
+    }
+    if let Some(value) = filters.has_format_conversion {
+        builder.push(if *has_where { " AND " } else { " WHERE " });
+        *has_where = true;
+        builder
+            .push("\"usage\".has_format_conversion = ")
+            .push_bind(value);
+    }
+}
 
 async fn decode_usage_body_in_background(
     decode: impl FnOnce() -> Result<Option<Value>, DataLayerError> + Send + 'static,
@@ -2100,6 +2172,7 @@ WHERE request_id = $1
 pub struct SqlxUsageReadRepository {
     pool: PgPool,
     tx_runner: PostgresTransactionRunner,
+    overview_projection_reads: bool,
 }
 
 #[derive(Debug)]
@@ -2328,7 +2401,23 @@ fn partition_first_byte_usages(
 impl SqlxUsageReadRepository {
     pub fn new(pool: PgPool) -> Self {
         let tx_runner = PostgresTransactionRunner::new(pool.clone());
-        Self { pool, tx_runner }
+        let overview_projection_reads = !std::env::var("AETHER_OVERVIEW_PROJECTION_READS")
+            .is_ok_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "false" | "0" | "off"
+                )
+            });
+        Self {
+            pool,
+            tx_runner,
+            overview_projection_reads,
+        }
+    }
+
+    pub fn with_overview_projection_reads(mut self, enabled: bool) -> Self {
+        self.overview_projection_reads = enabled;
+        self
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -3080,6 +3169,21 @@ ORDER BY request_count DESC, "usage".provider_name ASC
                 .push_bind(created_until_unix_secs as f64)
                 .push("::double precision)");
         }
+        push_usage_analytics_drilldown(
+            &mut builder,
+            &mut has_where,
+            UsageAnalyticsDrilldown {
+                provider_id: query.provider_id.as_deref(),
+                api_key_id: query.api_key_id.as_deref(),
+                request_id: query.request_id.as_deref(),
+                attribution_kind: query.attribution_kind.as_deref(),
+                actor_user_id: query.actor_user_id.as_deref(),
+                endpoint_kind: query.endpoint_kind.as_deref(),
+                request_type: query.request_type.as_deref(),
+                slow_threshold_ms: query.slow_threshold_ms,
+                has_format_conversion: query.has_format_conversion,
+            },
+        );
         if let Some(user_id) = query.user_id.as_deref() {
             builder.push(if has_where { " AND " } else { " WHERE " });
             has_where = true;
@@ -3193,6 +3297,21 @@ OR (\"usage\".error_message IS NOT NULL AND BTRIM(\"usage\".error_message) <> ''
                 .push_bind(created_until_unix_secs as f64)
                 .push("::double precision)");
         }
+        push_usage_analytics_drilldown(
+            &mut builder,
+            &mut has_where,
+            UsageAnalyticsDrilldown {
+                provider_id: query.provider_id.as_deref(),
+                api_key_id: query.api_key_id.as_deref(),
+                request_id: query.request_id.as_deref(),
+                attribution_kind: query.attribution_kind.as_deref(),
+                actor_user_id: query.actor_user_id.as_deref(),
+                endpoint_kind: query.endpoint_kind.as_deref(),
+                request_type: query.request_type.as_deref(),
+                slow_threshold_ms: query.slow_threshold_ms,
+                has_format_conversion: query.has_format_conversion,
+            },
+        );
         if let Some(user_id) = query.user_id.as_deref() {
             builder.push(if has_where { " AND " } else { " WHERE " });
             has_where = true;
@@ -3387,6 +3506,21 @@ OR (\"usage\".error_message IS NOT NULL AND BTRIM(\"usage\".error_message) <> ''
                 .push_bind(created_until_unix_secs as f64)
                 .push("::double precision)");
         }
+        push_usage_analytics_drilldown(
+            &mut builder,
+            &mut has_where,
+            UsageAnalyticsDrilldown {
+                provider_id: query.provider_id.as_deref(),
+                api_key_id: query.api_key_id.as_deref(),
+                request_id: query.request_id.as_deref(),
+                attribution_kind: query.attribution_kind.as_deref(),
+                actor_user_id: query.actor_user_id.as_deref(),
+                endpoint_kind: query.endpoint_kind.as_deref(),
+                request_type: query.request_type.as_deref(),
+                slow_threshold_ms: query.slow_threshold_ms,
+                has_format_conversion: query.has_format_conversion,
+            },
+        );
         if let Some(user_id) = query.user_id.as_deref() {
             builder.push(if has_where { " AND " } else { " WHERE " });
             has_where = true;
@@ -3489,6 +3623,21 @@ OR (\"usage\".error_message IS NOT NULL AND BTRIM(\"usage\".error_message) <> ''
                 .push_bind(created_until_unix_secs as f64)
                 .push("::double precision)");
         }
+        push_usage_analytics_drilldown(
+            &mut builder,
+            &mut has_where,
+            UsageAnalyticsDrilldown {
+                provider_id: query.provider_id.as_deref(),
+                api_key_id: query.api_key_id.as_deref(),
+                request_id: query.request_id.as_deref(),
+                attribution_kind: query.attribution_kind.as_deref(),
+                actor_user_id: query.actor_user_id.as_deref(),
+                endpoint_kind: query.endpoint_kind.as_deref(),
+                request_type: query.request_type.as_deref(),
+                slow_threshold_ms: query.slow_threshold_ms,
+                has_format_conversion: query.has_format_conversion,
+            },
+        );
         if let Some(user_id) = query.user_id.as_deref() {
             builder.push(if has_where { " AND " } else { " WHERE " });
             has_where = true;
@@ -10388,6 +10537,40 @@ RETURNING
 
 #[async_trait]
 impl UsageReadRepository for SqlxUsageReadRepository {
+    async fn query_dashboard_summary(
+        &self,
+        query: &aether_data_contracts::repository::usage::UsageDashboardAnalyticsQuery,
+    ) -> Result<aether_data_contracts::repository::usage::StoredDashboardSummary, DataLayerError>
+    {
+        Self::query_dashboard_summary(self, query).await
+    }
+
+    async fn query_dashboard_analytics(
+        &self,
+        query: &aether_data_contracts::repository::usage::UsageDashboardAnalyticsQuery,
+    ) -> Result<
+        aether_data_contracts::repository::usage::StoredUsageDashboardAnalytics,
+        DataLayerError,
+    > {
+        Self::query_dashboard_analytics(self, query).await
+    }
+
+    async fn summarize_health_observations(
+        &self,
+        query: &aether_data_contracts::repository::usage::HealthObservationQuery,
+    ) -> Result<aether_data_contracts::repository::usage::HealthObservationSummary, DataLayerError>
+    {
+        SqlxUsageReadRepository::summarize_health_observations(self, query).await
+    }
+
+    async fn query_usage_analytics(
+        &self,
+        query: &aether_data_contracts::repository::usage::UsageAnalyticsQuery,
+    ) -> Result<aether_data_contracts::repository::usage::StoredUsageAnalytics, DataLayerError>
+    {
+        SqlxUsageReadRepository::query_usage_analytics(self, query).await
+    }
+
     async fn find_by_id(
         &self,
         id: &str,

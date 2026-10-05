@@ -229,6 +229,24 @@ impl InMemoryAuthApiKeySnapshotRepository {
             .unwrap_or(0)
     }
 
+    pub fn standalone_flags(&self) -> BTreeMap<String, bool> {
+        let index = self
+            .index
+            .read()
+            .expect("auth api key snapshot repository lock");
+        index
+            .export_by_api_key_id
+            .iter()
+            .map(|(id, record)| (id.clone(), record.is_standalone))
+            .chain(
+                index
+                    .by_api_key_id
+                    .iter()
+                    .map(|(id, snapshot)| (id.clone(), snapshot.api_key_is_standalone)),
+            )
+            .collect()
+    }
+
     pub fn snapshot_lookup_count(&self, api_key_id: &str) -> usize {
         self.index
             .read()
@@ -2099,6 +2117,43 @@ mod tests {
             .await
             .expect("admin status update should resolve")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn standalone_flags_cover_export_only_keys_and_remove_deleted_keys() {
+        let mut standalone = sample_snapshot("standalone-key", "user-1");
+        standalone.api_key_is_standalone = true;
+        let repository = InMemoryAuthApiKeySnapshotRepository::seed([
+            (None, sample_snapshot("member-key", "user-1")),
+            (None, standalone),
+        ]);
+        let mut export = repository
+            .list_export_api_keys_by_ids(&["standalone-key".into()])
+            .await
+            .unwrap()
+            .remove(0);
+        export.api_key_id = "export-only-key".into();
+        let repository = repository.with_export_records([export]);
+
+        assert_eq!(
+            repository.standalone_flags(),
+            std::collections::BTreeMap::from([
+                ("member-key".into(), false),
+                ("standalone-key".into(), true),
+                ("export-only-key".into(), true),
+            ])
+        );
+        assert!(repository
+            .delete_standalone_api_key("standalone-key")
+            .await
+            .unwrap());
+        assert_eq!(
+            repository.standalone_flags(),
+            std::collections::BTreeMap::from([
+                ("member-key".into(), false),
+                ("export-only-key".into(), true),
+            ])
+        );
     }
 
     #[tokio::test]

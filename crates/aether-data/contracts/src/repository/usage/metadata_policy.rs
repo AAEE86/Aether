@@ -45,6 +45,40 @@ pub fn sanitize_usage_request_metadata_ref(value: Option<&Value>) -> Option<Valu
 
 pub fn sanitize_usage_request_metadata_object(source: &Map<String, Value>) -> Option<Value> {
     let mut target = Map::new();
+    if let Some(source) = source
+        .get("analytics_measurement")
+        .and_then(|value| value.get("source"))
+        .and_then(Value::as_str)
+        .filter(|source| matches!(*source, "reported" | "estimated" | "mixed" | "unknown"))
+    {
+        target.insert(
+            "analytics_measurement".into(),
+            serde_json::json!({"source":source}),
+        );
+    }
+    for (key, fields) in [
+        (
+            "analytics_attribution",
+            &["record_kind", "parent_request_id"][..],
+        ),
+        ("analytics_failure", &["origin", "stage", "reason"][..]),
+    ] {
+        if let Some(object) = source.get(key).and_then(Value::as_object) {
+            let mut projected = Map::new();
+            for field in fields {
+                insert_token(object, &mut projected, field, 128);
+            }
+            if key == "analytics_attribution" {
+                if let Some(value) = object.get("is_standalone").and_then(Value::as_bool) {
+                    projected.insert("is_standalone".into(), Value::Bool(value));
+                }
+            }
+            insert_bounded_u64(object, &mut projected, "schema_version", 1);
+            if !projected.is_empty() {
+                target.insert(key.into(), Value::Object(projected));
+            }
+        }
+    }
 
     insert_token(source, &mut target, "trace_id", 128);
     insert_ip_address(source, &mut target, "client_ip");
@@ -1230,6 +1264,27 @@ mod tests {
     use serde_json::json;
 
     use super::{sanitize_usage_request_metadata, sanitize_usage_request_metadata_ref};
+
+    #[test]
+    fn account_attribution_preserves_key_flag_without_custom_identity_or_purpose() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "analytics_attribution": {
+                "is_standalone": false,
+                "record_kind": "request",
+                "actor_user_id": "another-member",
+                "credential_kind": "personal",
+                "source": "trusted_identity"
+            }
+        })))
+        .unwrap();
+        assert_eq!(
+            metadata["analytics_attribution"],
+            json!({
+                "is_standalone": false,
+                "record_kind": "request"
+            })
+        );
+    }
 
     #[test]
     fn persistence_projection_drops_credentials_and_free_diagnostics() {

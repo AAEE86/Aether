@@ -635,6 +635,53 @@ describe('RequestDetailDrawer settlement pricing', () => {
     })
   })
 
+  it('shows the Gemini thinkingConfig reasoning effort in the model header', async () => {
+    apiMocks.getRequestDetail.mockResolvedValue({
+      ...buildEmbeddingDetail(),
+      id: 'usage-gemini-thinking',
+      request_id: 'usage-gemini-thinking',
+      model: 'gemini-3.8-flash',
+      request_type: 'chat',
+      requested_reasoning_effort: 'xhigh',
+      reasoning_effort: 'high',
+      request_body: {
+        generationConfig: {
+          thinkingConfig: { includeThoughts: true, thinkingLevel: 'HIGH' },
+        },
+      },
+      provider_request_body: {
+        generationConfig: { thinkingConfig: { thinkingBudget: 8192 } },
+      },
+    })
+
+    let isOpen!: Ref<boolean>
+    const Host = defineComponent({
+      setup() {
+        isOpen = ref(false)
+        return () => h(RequestDetailDrawer, {
+          isOpen: isOpen.value,
+          requestId: 'usage-gemini-thinking',
+        })
+      },
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(Host)
+    app.mount(root)
+    mountedApps.push({ app, root })
+
+    isOpen.value = true
+    await nextTick()
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-request-detail-model-display]')?.textContent)
+        .toContain('gemini-3.8-flash')
+      expect(document.body.querySelector('[data-request-detail-model-badge="reasoning"]')?.textContent?.trim())
+        .toBe('xhigh -> high')
+    })
+  })
+
   it('lets a newer final-provider summary clear facts cached from an earlier candidate', async () => {
     apiMocks.getRequestDetail.mockResolvedValue({
       ...buildEmbeddingDetail(),
