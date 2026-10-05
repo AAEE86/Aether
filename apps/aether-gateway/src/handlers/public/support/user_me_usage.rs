@@ -1931,6 +1931,29 @@ mod tests {
     }
 
     #[test]
+    fn user_usage_payloads_expose_gemini_thinking_config_reasoning_mapping() {
+        let item = StoredRequestUsageAudit {
+            request_body: Some(json!({
+                "generationConfig": {
+                    "thinkingConfig": { "includeThoughts": true, "thinkingLevel": "HIGH" }
+                }
+            })),
+            provider_request_body: Some(json!({
+                "generationConfig": { "thinkingConfig": { "thinkingBudget": 8192 } }
+            })),
+            ..sample_usage("completed")
+        };
+
+        let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let active = build_users_me_usage_active_payload(&item);
+
+        assert_eq!(record["requested_reasoning_effort"], "high");
+        assert_eq!(active["requested_reasoning_effort"], "high");
+        assert_eq!(record["reasoning_effort"], "xhigh");
+        assert_eq!(active["reasoning_effort"], "xhigh");
+    }
+
+    #[test]
     fn user_usage_payloads_expose_websocket_transport() {
         let item = StoredRequestUsageAudit {
             request_metadata: Some(json!({

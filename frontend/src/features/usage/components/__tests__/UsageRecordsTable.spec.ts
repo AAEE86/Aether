@@ -440,6 +440,42 @@ describe('UsageRecordsTable', () => {
       .toBe('Fast')
   })
 
+  it('shows the Gemini thinkingLevel reasoning effort next to the model name', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      model: 'gemini-3.8-flash',
+      requested_reasoning_effort: 'high',
+      reasoning_effort: 'high',
+    })])
+
+    expect(root.textContent).toContain('gemini-3.8-flash')
+    const badge = root.querySelector('[data-usage-model-badge="reasoning"]')
+    expect(badge?.textContent?.trim()).toBe('high')
+    expect(badge?.getAttribute('title')).toBe('Reasoning: high')
+  })
+
+  it('shows the Gemini thinkingLevel mapping when request and provider disagree', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      model: 'gemini-3.8-flash',
+      requested_reasoning_effort: 'xhigh',
+      reasoning_effort: 'high',
+    })])
+
+    expect(root.textContent).toContain('xhigh -> high')
+    expect(root.querySelector('[data-usage-model-badge="reasoning"]')?.textContent?.trim())
+      .toBe('xhigh -> high')
+  })
+
+  it('shows a disabled Gemini thinkingBudget as none', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      model: 'gemini-3.8-flash',
+      requested_reasoning_effort: null,
+      reasoning_effort: 'none',
+    })])
+
+    expect(root.querySelector('[data-usage-model-badge="reasoning"]')?.textContent?.trim())
+      .toBe('none')
+  })
+
   it('shows request reasoning effort while the record is pending', () => {
     const root = mountUsageRecordsTable([buildRecord({
       status: 'pending',
