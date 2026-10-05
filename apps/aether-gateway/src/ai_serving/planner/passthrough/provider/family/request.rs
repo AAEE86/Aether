@@ -534,7 +534,7 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
     if prepared.behavior.is_gemini_cli {
         extra_headers.insert(
             "user-agent".to_string(),
-            aether_provider_transport::gemini_cli::gemini_cli_client_user_agent(),
+            crate::ai_serving::transport::gemini_cli::gemini_cli_client_user_agent(),
         );
     }
     let Some(mut provider_request_headers) = (if is_grok {

@@ -66,7 +66,7 @@ pub(crate) async fn build_gemini_cli_v1internal_provider_request(
 
     let extra_headers = BTreeMap::from([(
         "user-agent".to_string(),
-        aether_provider_transport::gemini_cli::gemini_cli_client_user_agent(),
+        crate::ai_serving::transport::gemini_cli::gemini_cli_client_user_agent(),
     )]);
     let headers = build_standard_provider_request_headers(StandardProviderRequestHeadersInput {
         transport: &payload.transport,
