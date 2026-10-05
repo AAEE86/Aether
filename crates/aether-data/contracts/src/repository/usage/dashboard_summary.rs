@@ -42,6 +42,9 @@ pub struct StoredDashboardSummary {
     pub stats_since: String,
     pub generated_at: String,
     pub timezone: String,
+    /// Historical daily imports retain their original UTC calendar boundaries.
+    #[serde(default)]
+    pub activity_timezone: String,
     pub today_from: String,
     pub window_seconds: f64,
     pub today: DashboardSummaryMetrics,

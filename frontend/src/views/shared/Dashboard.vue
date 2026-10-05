@@ -341,7 +341,7 @@
       :data="activityHeatmap"
       :consecutive-active-days="dashboardSnapshot?.consecutive_active_days ?? null"
       :active-days="dashboardSnapshot?.active_days ?? null"
-      :scope-hint="statisticsScope + ' · ' + t('展示近365天', 'Last 365 days shown')"
+      :scope-hint="activityScope"
       :loading="loading"
       :error="false"
       :timeline-data="isDemo ? demoTimeline : undefined"
@@ -843,14 +843,29 @@ const todayStats = ref<{
 const dashboardSnapshot = ref<OverviewDashboardSummary | null>(null);
 const statsSince = computed(() => timestamp(dashboardSnapshot.value?.stats_since, dashboardSnapshot.value?.timezone));
 const statisticsScope = computed(() => `${t('统计自', 'Statistics since')} ${statsSince.value} · ${t('更新于', 'Updated at')} ${timestamp(dashboardSnapshot.value?.generated_at, dashboardSnapshot.value?.timezone)}`);
+const activityScope = computed(() => [
+  statisticsScope.value,
+  t('展示近365天', 'Last 365 days shown'),
+  dashboardSnapshot.value?.activity_timezone ?? dashboardSnapshot.value?.timezone,
+].filter(Boolean).join(' · '));
 const activityHeatmap = computed<ActivityHeatmap | null>(() => {
   const snapshot = dashboardSnapshot.value;
   if (!snapshot) return null;
-  const days = snapshot.activity_days;
+  const dateParts = new Intl.DateTimeFormat('en', {
+    timeZone: snapshot.activity_timezone ?? snapshot.timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(snapshot.generated_at));
+  const datePart = (type: Intl.DateTimeFormatPartTypes) => Number(dateParts.find(part => part.type === type)?.value);
+  const today = Date.UTC(datePart('year'), datePart('month') - 1, datePart('day'));
+  const requestsByDate = new Map(snapshot.activity_days.map(day => [day.date, day.requests]));
+  const days = Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(today - (364 - index) * 86_400_000).toISOString().slice(0, 10);
+    return { date, requests: requestsByDate.get(date) ?? 0 };
+  });
   return {
-    start_date: days[0]?.date ?? snapshot.stats_since.slice(0, 10),
-    end_date: days[days.length - 1]?.date ?? snapshot.generated_at.slice(0, 10),
-    total_days: days.length,
+    start_date: new Date(today - 364 * 86_400_000).toISOString().slice(0, 10),
+    end_date: new Date(today).toISOString().slice(0, 10),
+    total_days: 365,
     max_requests: days.reduce((max, day) => Math.max(max, day.requests), 0),
     days,
   };

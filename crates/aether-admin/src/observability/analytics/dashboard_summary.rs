@@ -9,6 +9,7 @@ pub fn dashboard_summary_value(snapshot: &StoredDashboardSummary) -> Value {
         "stats_since": snapshot.stats_since,
         "generated_at": snapshot.generated_at,
         "timezone": snapshot.timezone,
+        "activity_timezone": snapshot.activity_timezone,
         "today_from": snapshot.today_from,
         "window_seconds": snapshot.window_seconds,
         "today": metrics_value(&snapshot.today),
@@ -46,7 +47,8 @@ fn metrics_value(metrics: &DashboardSummaryMetrics) -> Value {
         "active_users": metrics.active_users,
         "cache_read_tokens": tokens_available.then_some(metrics.cache_read_tokens),
         "cache_creation_tokens": tokens_available.then_some(metrics.cache_creation_tokens),
-        "cache_input_tokens": tokens_available.then_some(metrics.cache_input_tokens),
+        "cache_input_tokens": (tokens_available && metrics.cache_input_tokens >= metrics.cache_read_tokens)
+            .then_some(metrics.cache_input_tokens),
         "avg_first_byte_ms": average(metrics.first_byte_sum_ms, metrics.first_byte_sample_count),
         "avg_response_ms": average(metrics.response_sum_ms, metrics.response_sample_count),
         "stream_requests": metrics.stream_requests,
@@ -98,6 +100,9 @@ mod tests {
         assert_eq!(value["total"]["cache_read_tokens"], 120);
         assert_eq!(value["total"]["cache_input_tokens"], 400);
         assert!(value["today"].get("latency_p95_ms").is_none());
+
+        snapshot.total.cache_input_tokens = 100;
+        assert!(dashboard_summary_value(&snapshot)["total"]["cache_input_tokens"].is_null());
 
         snapshot.total.usage_available_count = 0;
         let unknown = dashboard_summary_value(&snapshot);

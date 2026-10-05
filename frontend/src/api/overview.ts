@@ -114,6 +114,7 @@ export interface OverviewDashboardSummary {
   stats_since: string
   generated_at: string
   timezone: string
+  activity_timezone?: string
   today_from: string
   window_seconds: number
   today: {

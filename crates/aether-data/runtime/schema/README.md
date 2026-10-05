@@ -157,6 +157,22 @@ The statistics schema migrations above do not embed a historical data rebuild.
 The new dashboard's activation boundary is not moved by legacy backfills, so
 they do not restore pre-activation dashboard totals.
 
+For upgraded installations that retain historical `stats_daily` rows and a
+`stats_summary` cutoff, the homepage has a read-only compatibility path. Lifetime
+totals and activity combine daily aggregates strictly before that cutoff with
+recent usage at or after it, in one database snapshot. This preserves history
+whose individual requests have already expired and avoids double counting when
+daily aggregation advances the cutoff. These activity dates use UTC, matching
+the historical aggregates; the API reports `activity_timezone` separately from
+the timezone used for today's metrics. On the activation day, today's metrics
+also include requests before activation, with active users deduplicated across
+the boundary. The stored activation timestamp and source records are unchanged.
+
+This compatibility path retains the legacy daily-aggregation retention contract:
+unaggregated recent usage must remain available until the daily cutoff advances.
+Installations without historical daily aggregates continue to read the durable
+incremental dashboard projection.
+
 Deleted users are excluded from dashboard active-user reads even when an older
 version left orphan activity rows. The anonymization upgrade installs rules for
 future deletions without cleaning old rows during migration; those old activity

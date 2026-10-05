@@ -132,7 +132,7 @@
               >
                 <div
                   v-if="day"
-                  class="cursor-pointer cell-emerge rounded-[4px]"
+                  class="cursor-pointer cell-emerge rounded-[6px]"
                   :class="compact
                     ? 'transition-[filter] duration-150 hover:brightness-90'
                     : 'transition-all duration-200 hover:shadow-lg'"
@@ -144,7 +144,7 @@
                 <div
                   v-else
                   :style="cellStyle"
-                  class="bg-transparent rounded-[4px]"
+                  class="bg-transparent rounded-[6px]"
                 />
               </div>
             </div>
@@ -198,7 +198,8 @@ const heatmapScroller = ref<HTMLElement | null>(null)
 const heatmapWrapper = ref<HTMLElement | null>(null)
 const heatmapWidth = ref(0)
 const cellSize = ref(10)
-const cellGap = ref(props.compact ? 2 : 4)
+const wideScreen = ref(true)
+const cellGap = computed(() => !props.compact && wideScreen.value ? 4 : 2)
 const tooltipRef = ref<HTMLElement | null>(null)
 const tooltip = ref<{ day: ActivityHeatmapDay | null; x: number; y: number; visible: boolean; below: boolean }>({
   day: null,
@@ -236,16 +237,20 @@ const verticalGapStyle = computed(() => ({
 }))
 
 const weekColumns = computed(() => {
-  if (!props.data || !props.data.days || props.data.days.length === 0) {
+  if (!props.data) {
     return []
   }
 
-  const dayEntries: DayWithMeta[] = props.data.days.map(day => ({
+  const dayEntries: DayWithMeta[] = [...props.data.days].sort((a, b) => a.date.localeCompare(b.date)).map(day => ({
     ...day,
     dateObj: new Date(`${day.date}T00:00:00Z`)
   }))
 
-  const firstDay = dayEntries[0]?.dateObj
+  const firstDay = new Date(`${props.data.start_date}T00:00:00Z`)
+  const lastDay = new Date(`${props.data.end_date}T00:00:00Z`)
+  if (!Number.isFinite(firstDay.getTime()) || !Number.isFinite(lastDay.getTime()) || firstDay > lastDay) {
+    return []
+  }
   const padding: (DayWithMeta | null)[] = []
   if (firstDay) {
     const weekday = firstDay.getUTCDay() // 周日=0, 周一=1, ..., 周六=6
@@ -254,7 +259,18 @@ const weekColumns = computed(() => {
     }
   }
 
-  const paddedDays: (DayWithMeta | null)[] = [...padding, ...dayEntries]
+  // Keep every date in the declared range, including inactive dates before the
+  // first request and after the latest one.
+  const daysByDate = new Map(dayEntries.map(day => [day.date, day]))
+  const paddedDays: (DayWithMeta | null)[] = [...padding]
+  if (firstDay && lastDay) {
+    const cursor = new Date(firstDay)
+    while (cursor <= lastDay) {
+      const date = cursor.toISOString().slice(0, 10)
+      paddedDays.push(daysByDate.get(date) ?? { date, requests: 0, dateObj: new Date(cursor) })
+      cursor.setUTCDate(cursor.getUTCDate() + 1)
+    }
+  }
   const remainder = paddedDays.length % 7
   if (remainder !== 0) {
     for (let i = remainder; i < 7; i++) {
@@ -356,12 +372,15 @@ const recalcCellSize = () => {
   const totalGap = Math.max(columnCount - 1, 0) * cellGap.value
   const availableSpace = Math.max(heatmapWidth.value - totalGap, 0)
   const rawSize = availableSpace / columnCount
-  // 自适应尺寸，最小 6px
-  cellSize.value = Math.max(6, rawSize)
+  // Let a complete year fill the card, while short histories never grow cells
+  // beyond the size they would have in a full calendar.
+  const yearCellSize = (heatmapWidth.value - 52 * cellGap.value) / 53
+  const maxSize = Math.max(props.compact ? 12 : 16, yearCellSize)
+  cellSize.value = Math.min(maxSize, Math.max(6, rawSize))
 }
 
 watch(
-  [() => heatmapWidth.value, () => weekColumns.value.length, () => cellGap.value],
+  [heatmapWidth, () => weekColumns.value.length, cellGap, () => props.compact],
   () => {
     recalcCellSize()
   },
@@ -394,8 +413,7 @@ onMounted(() => {
   }
   mediaQuery = window.matchMedia('(min-width: 640px)')
   const updateGap = () => {
-    cellGap.value = !props.compact && mediaQuery && mediaQuery.matches ? 4 : 2
-    recalcCellSize()
+    wideScreen.value = mediaQuery?.matches ?? false
   }
   mediaQueryHandler = () => updateGap()
   updateGap()

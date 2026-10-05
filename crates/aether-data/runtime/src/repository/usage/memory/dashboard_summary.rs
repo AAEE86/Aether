@@ -212,6 +212,7 @@ impl InMemoryUsageReadRepository {
             stats_since: projection.since.to_rfc3339(),
             generated_at: now.to_rfc3339(),
             timezone: query.timezone.clone(),
+            activity_timezone: query.timezone.clone(),
             today_from: today_from.to_rfc3339(),
             window_seconds: (now - today_from).num_milliseconds().max(0) as f64 / 1000.0,
             today,
