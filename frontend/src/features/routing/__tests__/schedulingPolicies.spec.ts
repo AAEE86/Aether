@@ -14,6 +14,7 @@ import {
 } from '../utils/routingPolicy'
 import {
   createSchedulingPolicy,
+  normalizeProviderSchedulingConfig,
   readSchedulingPolicies,
   schedulingPolicyEditorConfig,
   validateSchedulingPolicies,
@@ -21,6 +22,34 @@ import {
 } from '../utils/schedulingPolicies'
 
 describe('strategy-scoped scheduling policies', () => {
+  it('normalizes legacy Key scheduling without mutating unrelated rules, scopes, or historical priorities', () => {
+    const config = createEmptyRoutingGroupConfig()
+    config.default_policy.priority_mode = 'global_key'
+    config.disabled_providers = ['disabled']
+    config.model_policies = [{ ...createEmptyModelPolicy('*'), key_priority_overrides: { key: 5 }, provider_priority_overrides: { provider: 3 } }]
+    config.rules = [{
+      id: 'custom-rule', priority: 1, enabled: true, phase: 'client_request', stop_processing: true,
+      conditions: { field: 'model', op: 'prefix', value: 'example' },
+      actions: [
+        { type: 'set_scheduling', priority_mode: 'global_key', scheduling_mode: 'load_balance', sticky_key_attempts: 4 },
+        { type: 'set_scheduling', scheduling_mode: 'fixed_order' },
+        { type: 'set_header', name: 'x-test', value: 'kept' },
+      ],
+    }]
+    const before = JSON.stringify(config)
+    const normalized = normalizeProviderSchedulingConfig(config)
+    expect(normalized.default_policy.priority_mode).toBe('provider')
+    expect(normalized.disabled_providers).toEqual(config.disabled_providers)
+    expect(normalized.model_policies).toEqual(config.model_policies)
+    expect(normalized.rules[0]).toEqual({ ...config.rules[0], actions: [
+      { type: 'set_scheduling', priority_mode: 'provider', scheduling_mode: 'load_balance', sticky_key_attempts: 4 },
+      ...config.rules[0].actions.slice(1),
+    ] })
+    expect(readSchedulingPolicies(config).every(entry => entry.priorityMode === 'provider')).toBe(true)
+    expect(createSchedulingPolicy(config).priorityMode).toBe('provider')
+    expect(JSON.stringify(config)).toBe(before)
+  })
+
   it('starts with one all-model strategy', () => {
     const entries = readSchedulingPolicies(createEmptyRoutingGroupConfig())
     expect(entries).toHaveLength(1)
@@ -52,7 +81,7 @@ describe('strategy-scoped scheduling policies', () => {
     expect(readSchedulingPolicies(saved)[0]).toMatchObject({ scope: 'all', models: [] })
     expect(getDefaultModelPolicy(saved).provider_priority_overrides).toEqual({ provider: 2 })
     for (const model of ['model-a', 'model-b', 'future-model']) {
-      expect(getModelScheduling(saved, model)).toMatchObject({ priority_mode: 'global_key', scheduling_mode: 'load_balance' })
+      expect(getModelScheduling(saved, model)).toMatchObject({ priority_mode: 'provider', scheduling_mode: 'load_balance' })
     }
   })
 
@@ -77,7 +106,7 @@ describe('strategy-scoped scheduling policies', () => {
       { field: 'model', op: 'eq', value: 'model-b' },
     ] })
     for (const model of entry.models) {
-      expect(getModelScheduling(saved, model)).toMatchObject({ priority_mode: 'global_key', scheduling_mode: 'fixed_order' })
+      expect(getModelScheduling(saved, model)).toMatchObject({ priority_mode: 'provider', scheduling_mode: 'fixed_order' })
       expect(getModelPolicy(saved, model)).toEqual({ ...entry.policy, model })
     }
     expect(getModelScheduling(saved, 'other-model').scheduling_mode).toBe('cache_affinity')
@@ -85,6 +114,16 @@ describe('strategy-scoped scheduling policies', () => {
     expect(reloaded).toHaveLength(1)
     expect(reloaded[0]).toMatchObject({ id: entry.id, models: ['model-a', 'model-b'], policy: entry.policy })
     expect(schedulingPolicyEditorConfig(saved, reloaded[0]).model_policies).toEqual([entry.policy])
+  })
+
+  it('retains group exclusions in the isolated ranking editor config', () => {
+    const config = createEmptyRoutingGroupConfig()
+    config.disabled_providers = ['disabled-provider']
+    const entry = createSchedulingPolicy(config)
+    const editorConfig = schedulingPolicyEditorConfig(config, entry)
+    expect(editorConfig.disabled_providers).toEqual(['disabled-provider'])
+    editorConfig.disabled_providers.push('local-only')
+    expect(config.disabled_providers).toEqual(['disabled-provider'])
   })
 
   it('retains separate strategies even when their settings are identical', () => {
@@ -108,7 +147,7 @@ describe('strategy-scoped scheduling policies', () => {
     expect(entries[1].models).toEqual(['model-c'])
     const saved = writeSchedulingPolicies(config, entries)
     for (const model of ['model-a', 'model-b', 'model-c', 'other']) {
-      expect(getModelScheduling(saved, model)).toEqual(getModelScheduling(config, model))
+      expect(getModelScheduling(saved, model)).toEqual({ ...getModelScheduling(config, model), priority_mode: 'provider' })
       expect(getModelPolicy(saved, model)).toEqual(getModelPolicy(config, model))
     }
     expect(saved.rules.every(rule => !rule.id.startsWith('ui_model_scheduling:'))).toBe(true)

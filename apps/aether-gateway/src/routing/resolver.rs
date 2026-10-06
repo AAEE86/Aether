@@ -92,7 +92,8 @@ pub(crate) fn resolve_gateway_static_default_routing_policy(
         selection_source: input.selection_source.to_string(),
         requested_model: input.requested_model.to_string(),
         resolved_model: input.resolved_model.to_string(),
-        priority_mode: default_policy.priority_mode,
+        // Match the full resolver even when a stored default still says global_key.
+        priority_mode: RoutingSetPriorityMode::Provider,
         scheduling_mode: default_policy.scheduling_mode,
         keep_priority_on_conversion: default_policy.keep_priority_on_conversion,
         sticky_key_attempts: default_policy.sticky_key_attempts,
@@ -110,10 +111,11 @@ fn static_default_policy_fields(
     let Some(object) = config_json.as_object() else {
         return Ok(None);
     };
-    // A strategy's default policy applies to every model. Only model policies
-    // and rules require the request-context-aware resolver; unknown legacy
-    // fields (including the removed group allowlist) are intentionally ignored.
-    if !routing_array_field_is_missing_or_empty(object, "model_policies")
+    // A strategy's default policy applies to every model. Provider exclusions,
+    // model policies and rules require the full resolver to build the overlay;
+    // unknown legacy fields (including the removed group allowlist) are ignored.
+    if !routing_array_field_is_missing_or_empty(object, "disabled_providers")
+        || !routing_array_field_is_missing_or_empty(object, "model_policies")
         || !routing_array_field_is_missing_or_empty(object, "rules")
     {
         return Ok(None);
@@ -275,7 +277,7 @@ mod tests {
         );
         assert_eq!(
             static_policy.priority_mode,
-            RoutingSetPriorityMode::GlobalKey
+            RoutingSetPriorityMode::Provider
         );
         assert_eq!(
             static_policy.scheduling_mode,
@@ -311,6 +313,85 @@ mod tests {
             .expect("dynamic config should not fail static detection");
 
         assert!(policy.is_none());
+    }
+
+    #[test]
+    fn provider_exclusions_without_model_policies_or_rules_use_full_resolver() {
+        for model in ["model-a", "future-model"] {
+            let config = json!({
+                "disabled_providers": ["provider-disabled"],
+                "model_policies": [],
+                "rules": []
+            });
+            let static_policy = resolve_gateway_static_default_routing_policy(
+                GatewayStaticRoutingPolicyInput {
+                    group_id: Some("group-1"),
+                    group_version: Some(1),
+                    group_config_json: &config,
+                    selection_source: "system_default",
+                    requested_model: model,
+                    resolved_model: model,
+                },
+            )
+            .expect("provider exclusions should defer to the full resolver");
+            assert!(static_policy.is_none());
+
+            let policy = resolve_gateway_routing_policy(GatewayRoutingPolicyInput {
+                group_id: Some("group-1"),
+                group_version: Some(1),
+                group_config_json: &config,
+                selection_source: "system_default",
+                requested_model: model,
+                resolved_model: model,
+                api_format: "openai:chat",
+                user_id: None,
+                api_key_id: None,
+                headers: &json!({}),
+                body: &json!({}),
+                phase: RoutingRulePhase::ClientRequest,
+            })
+            .expect("group exclusions should resolve");
+            assert!(!policy.ranking_overlay.provider_allowed("provider-disabled"));
+            assert!(policy.ranking_overlay.provider_allowed("provider-enabled"));
+        }
+    }
+
+    #[test]
+    fn empty_provider_exclusions_preserve_static_default_fast_path() {
+        for config in [json!({}), json!({"disabled_providers": []})] {
+            assert!(static_default_policy_fields(&config)
+                .expect("empty provider exclusions should be valid")
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn malformed_provider_exclusions_cannot_bypass_full_config_validation() {
+        for disabled in [json!("provider-disabled"), json!([42]), Value::Null] {
+            let config = json!({"disabled_providers": disabled});
+            let error = resolve_gateway_routing_policy(GatewayRoutingPolicyInput {
+                group_id: Some("group-1"),
+                group_version: Some(1),
+                group_config_json: &config,
+                selection_source: "system_default",
+                requested_model: "model-a",
+                resolved_model: "model-a",
+                api_format: "openai:chat",
+                user_id: None,
+                api_key_id: None,
+                headers: &json!({}),
+                body: &json!({}),
+                phase: RoutingRulePhase::ClientRequest,
+            })
+            .expect_err("malformed provider exclusions must not be silently ignored");
+            assert!(matches!(
+                error,
+                GatewayError::Client {
+                    status: StatusCode::BAD_REQUEST,
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

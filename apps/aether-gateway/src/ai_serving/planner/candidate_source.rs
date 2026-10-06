@@ -1893,6 +1893,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routing_policy_excludes_group_disabled_providers_from_candidate_pages() {
+        let repository: Arc<dyn MinimalCandidateSelectionReadRepository> =
+            Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed([
+                standard_candidate_row("provider-disabled", "openai:chat", 0),
+                standard_candidate_row("provider-enabled", "openai:chat", 1),
+            ]));
+        let app = AppState::new()
+            .expect("gateway state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_minimal_candidate_selection_reader_for_tests(repository),
+            );
+        let auth_snapshot = unrestricted_auth_snapshot();
+        let model_directive_policy =
+            crate::system_features::ModelDirectivePolicySnapshot::load(&app).await;
+        let config = serde_json::from_value(serde_json::json!({
+            "disabled_providers": ["provider-disabled"],
+            "model_policies": [{
+                "model": "*",
+                "allowed_providers": ["provider-disabled", "provider-enabled"]
+            }]
+        }))
+        .expect("routing config should parse");
+        let routing_policy = aether_routing_core::resolve_routing_policy(
+            &config,
+            aether_routing_core::RoutingPolicyInput {
+                group_id: Some("routing-group-1"),
+                group_version: Some(1),
+                selection_source: "test",
+                requested_model: "gpt-5",
+                resolved_model: "gpt-5",
+                api_format: "openai:chat",
+                user_id: None,
+                api_key_id: None,
+                headers: &serde_json::json!({}),
+                body: &serde_json::json!({}),
+                phase: aether_routing_core::RoutingRulePhase::ClientRequest,
+            },
+        )
+        .expect("routing policy should resolve");
+        let mut cursor = LocalCandidatePreselectionPageCursor::new(
+            PlannerAppState::new(&app),
+            &model_directive_policy,
+            "openai:chat",
+            "gpt-5",
+            None,
+            false,
+            None,
+            &auth_snapshot,
+            Some(&routing_policy),
+            None,
+            None,
+            true,
+            LocalCandidatePreselectionKeyMode::ProviderEndpointKeyModelAndApiFormat,
+            false,
+            None,
+        )
+        .await;
+
+        let page = cursor
+            .next_page()
+            .await
+            .expect("routing candidate scan should succeed")
+            .expect("the enabled provider should remain");
+        assert_eq!(
+            page.candidates
+                .iter()
+                .map(|candidate| candidate.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["provider-enabled"]
+        );
+        assert!(cursor
+            .next_page()
+            .await
+            .expect("routing scan should finish")
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn routing_policy_collects_candidate_pages_before_final_ranking() {
         let rows = (0..300)
             .map(|index| {

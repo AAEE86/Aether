@@ -65,6 +65,7 @@ export interface RoutingSetSchedulingAction {
 }
 
 export interface RoutingGroupConfig {
+  disabled_providers: string[]
   default_policy: RoutingDefaultPolicy
   model_policies: RoutingModelPolicy[]
   rules: RoutingRule[]
@@ -86,6 +87,7 @@ export function createEmptyRoutingGroupConfig(): RoutingGroupConfig {
       cancel_on_client_disconnect: false,
       sticky_key_attempts: DEFAULT_STICKY_KEY_ATTEMPTS,
     },
+    disabled_providers: [],
     model_policies: [],
     rules: [],
   }
@@ -134,6 +136,9 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
         rawDefaultPolicy.sticky_key_attempts ?? DEFAULT_STICKY_KEY_ATTEMPTS,
       ),
     },
+    disabled_providers: Array.isArray(value?.disabled_providers)
+      ? [...new Set(value.disabled_providers.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+      : [],
     model_policies: Array.isArray(value?.model_policies)
       ? value.model_policies.map(policy => ({
           ...createEmptyModelPolicy(policy.model),

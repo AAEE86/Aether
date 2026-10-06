@@ -35,6 +35,7 @@ mod overview_fact_metadata;
 mod overview_migration_safety;
 mod policy_nulls;
 mod provider_expenses;
+mod scoped_provider_creation;
 
 /// A clean PostgreSQL database is bootstrapped from the schema snapshot first;
 /// migrations after the privacy/security frontier are intentionally left

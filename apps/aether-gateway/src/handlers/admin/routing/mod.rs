@@ -350,6 +350,7 @@ async fn publish_routing_group(
         .update_routing_group(
             group_id,
             UpdateRoutingGroupRecord {
+                expected_version: Some(group.version),
                 version: Some(next_version),
                 updated_at: now,
                 published_at: Some(Some(now)),
@@ -455,6 +456,9 @@ fn build_routing_group_update_patch(
         updated_at: current_unix_secs() as i64,
         ..UpdateRoutingGroupRecord::default()
     };
+    if let Some(value) = object.get("expected_version") {
+        patch.expected_version = Some(required_i64(value, "expected_version")?);
+    }
     if let Some(value) = object.get("name") {
         patch.name = Some(required_string(value, "name")?);
     }

@@ -84,8 +84,15 @@
         :variant="provider.is_active ? 'success' : 'secondary'"
         class="shrink-0 text-xs"
       >
-        {{ legacyT(provider.is_active ? '活跃' : '停用') }}
+        {{ legacyT(provider.is_active ? '全局启用' : '全局停用') }}
       </Badge>
+    </div>
+
+    <div
+      v-if="$slots.scheduling"
+      class="shrink-0 px-4 pb-3"
+    >
+      <slot name="scheduling" />
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain break-words px-4 pb-4">
@@ -179,16 +186,19 @@
       class="flex shrink-0 items-center justify-between gap-2 border-t border-border/40 bg-muted/10 px-3 py-2"
       @click.stop
     >
-      <Button
-        variant="ghost"
-        size="icon"
-        class="h-8 w-8 text-muted-foreground hover:text-primary"
-        :title="legacyT('查看详情')"
-        :aria-label="legacyT('查看详情')"
-        @click="$emit('viewDetail', provider.id)"
-      >
-        <Eye class="h-3.5 w-3.5" />
-      </Button>
+      <div class="flex shrink-0 items-center gap-0.5">
+        <slot name="group-action" />
+        <Button
+          variant="ghost"
+          size="icon"
+          class="h-8 w-8 text-muted-foreground hover:text-primary"
+          :title="legacyT('查看详情')"
+          :aria-label="legacyT('查看详情')"
+          @click="$emit('viewDetail', provider.id)"
+        >
+          <Eye class="h-3.5 w-3.5" />
+        </Button>
+      </div>
       <div class="flex shrink-0 items-center gap-0.5">
         <Button
           variant="ghost"
@@ -214,8 +224,8 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8 text-muted-foreground hover:text-foreground"
-          :title="legacyT(provider.is_active ? '停用提供商' : '启用提供商')"
-          :aria-label="legacyT(provider.is_active ? '停用提供商' : '启用提供商')"
+          :title="legacyT(provider.is_active ? '全局停用提供商' : '全局启用提供商')"
+          :aria-label="legacyT(provider.is_active ? '全局停用提供商' : '全局启用提供商')"
           @click="$emit('toggleStatus', provider)"
         >
           <Power class="h-3.5 w-3.5" />

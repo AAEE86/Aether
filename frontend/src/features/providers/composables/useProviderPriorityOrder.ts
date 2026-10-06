@@ -1,5 +1,5 @@
 import { computed, nextTick, onScopeDispose, ref, watch, type Ref } from 'vue'
-import { useEventListener, useLocalStorage, useRafFn } from '@vueuse/core'
+import { useEventListener, useRafFn } from '@vueuse/core'
 import { useI18n } from '@/i18n'
 
 interface SortableProvider {
@@ -16,13 +16,15 @@ interface ProviderPointerDrag {
   scrollContainer: HTMLElement | null
 }
 
-export function useProviderDisplayOrder<Provider extends SortableProvider>(
+export function useProviderPriorityOrder<Provider extends SortableProvider>(
   providers: () => Provider[],
   container: Ref<HTMLElement | null>,
+  scheduling: {
+    disabled: () => boolean
+    move: (providerId: string, targetId: string) => void
+  },
 ) {
   const { legacyT } = useI18n()
-  const savedOrder = useLocalStorage<string[]>('aether-provider-display-order', [])
-  const knownOrder = ref<string[]>([])
   const draggingProviderId = ref<string | null>(null)
   const dropTargetId = ref<string | null>(null)
   const pointerPosition = ref({ clientX: 0, clientY: 0 })
@@ -30,18 +32,7 @@ export function useProviderDisplayOrder<Provider extends SortableProvider>(
   let pointerDrag: ProviderPointerDrag | null = null
   let suppressClickUntil = 0
 
-  const normalizedOrder = computed(() => Array.isArray(savedOrder.value)
-    ? [...new Set(savedOrder.value.filter((providerId): providerId is string => typeof providerId === 'string'))]
-    : [])
-
-  const hasCustomOrder = computed(() => normalizedOrder.value.length > 0)
-
-  const orderedProviders = computed(() => {
-    const ranks = new Map(normalizedOrder.value.map((providerId, index) => [providerId, index]))
-    return [...providers()].sort((first, second) => (
-      (ranks.get(first.id) ?? ranks.size) - (ranks.get(second.id) ?? ranks.size)
-    ))
-  })
+  const orderedProviders = computed(providers)
 
   const draggingProvider = computed(() => orderedProviders.value.find(provider => provider.id === draggingProviderId.value))
   const dragPreviewStyle = computed(() => ({
@@ -50,18 +41,9 @@ export function useProviderDisplayOrder<Provider extends SortableProvider>(
   }))
 
   function moveProvider(providerId: string, targetId: string) {
-    const visibleIds = orderedProviders.value.map(provider => provider.id)
-    const sourceIndex = visibleIds.indexOf(providerId)
-    const targetIndex = visibleIds.indexOf(targetId)
-    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
-
-    visibleIds.splice(sourceIndex, 1)
-    visibleIds.splice(targetIndex, 0, providerId)
-    const visibleSet = new Set(visibleIds)
-    const allIds = [...new Set([...normalizedOrder.value, ...knownOrder.value, ...visibleIds])]
-    let visibleIndex = 0
-    savedOrder.value = allIds.map(currentId => visibleSet.has(currentId) ? visibleIds[visibleIndex++] ?? currentId : currentId)
-    announcement.value = `${legacyT('展示顺序已更新')}: ${orderedProviders.value[targetIndex]?.name} (${targetIndex + 1}/${visibleIds.length})`
+    if (scheduling.disabled()) return
+    scheduling.move(providerId, targetId)
+    announcement.value = legacyT('调度顺序已调整，保存后生效')
   }
 
   function updateDropTarget() {
@@ -119,6 +101,7 @@ export function useProviderDisplayOrder<Provider extends SortableProvider>(
   }
 
   function startDrag(providerId: string, event: PointerEvent) {
+    if (scheduling.disabled()) return
     if (event.button !== 0 || event.isPrimary === false || orderedProviders.value.length < 2) return
     if (!orderedProviders.value.some(provider => provider.id === providerId)) return
     const handle = event.currentTarget
@@ -194,10 +177,7 @@ export function useProviderDisplayOrder<Provider extends SortableProvider>(
     }
   }
 
-  watch(() => providers().map(provider => provider.id), (providerIds) => {
-    knownOrder.value = [...new Set([...knownOrder.value, ...providerIds])]
-    cancelDrag()
-  }, { immediate: true })
+  watch(() => providers().map(provider => provider.id), cancelDrag, { immediate: true })
   useEventListener(window, 'pointermove', handlePointerMove, { passive: false })
   useEventListener(window, 'pointerup', handlePointerUp)
   useEventListener(window, 'pointercancel', (event) => {
@@ -214,7 +194,6 @@ export function useProviderDisplayOrder<Provider extends SortableProvider>(
 
   return {
     orderedProviders,
-    hasCustomOrder,
     draggingProvider,
     dragPreviewStyle,
     announcement,

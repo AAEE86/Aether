@@ -224,6 +224,10 @@ pub struct RoutingRule {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RoutingGroupConfig {
+    /// Providers excluded from every model in this group, including providers
+    /// otherwise selected by model policies or routing rules.
+    #[serde(default)]
+    pub disabled_providers: Vec<String>,
     /// The default policy is global for the selected strategy group. Model
     /// differences are expressed through `model_policies` and `rules`.
     #[serde(default)]

@@ -1,8 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, nextTick, type App } from 'vue'
+import { createApp, h, nextTick, type App, type PropType } from 'vue'
+import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router'
 import type { ProviderWithEndpointsSummary } from '@/api/endpoints'
 import { createI18n, setI18nLocale } from '@/i18n'
 import ProviderManagement from '../ProviderManagement.vue'
+import { createSchedulingPolicy, writeSchedulingPolicies } from '@/features/routing/utils/schedulingPolicies'
+import { createEmptyRoutingGroupConfig, getDefaultModelPolicy, getModelPolicy, setModelProviderPriorityOverrides, type RoutingGroupConfig, type RoutingModelPolicy } from '@/features/routing/utils/routingPolicy'
+
+const workspace = vi.hoisted(() => ({
+  groups: {} as Record<string, RoutingGroupConfig>,
+  busy: false,
+  selectionReady: true,
+  updatePriorityPolicy: vi.fn(),
+  updateDraftConfig: vi.fn(),
+  refreshGroups: vi.fn().mockResolvedValue(undefined),
+  ensureSaved: vi.fn().mockResolvedValue(true),
+}))
 
 const apiMocks = vi.hoisted(() => ({
   getProvidersSummary: vi.fn(),
@@ -43,25 +56,129 @@ vi.mock('@/features/providers/composables/useProviderBalance', () => ({
   }),
 }))
 
-vi.mock('@/features/providers/components', () => ({
-  ProviderFormDialog: { render: () => null },
-  ProviderAuthDialog: { render: () => null },
-}))
+vi.mock('@/features/providers/components', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    ProviderFormDialog: defineComponent({
+      props: {
+        modelValue: Boolean,
+        provider: { type: Object as PropType<ProviderWithEndpointsSummary | null>, default: null },
+        routingGroupId: { type: String, default: '' },
+        routingGroupName: { type: String, default: '' },
+      },
+      emits: ['provider-updated', 'update:modelValue'],
+      setup: (props, { emit }) => () => props.modelValue
+        ? h('button', {
+            'data-save-edited-provider': '',
+            'data-routing-group-id': props.routingGroupId,
+            'data-routing-group-name': props.routingGroupName,
+            onClick: () => {
+              emit('provider-updated', { ...props.provider, name: 'Edited provider name' })
+              emit('update:modelValue', false)
+            },
+          }, '保存提供商编辑')
+        : null,
+    }),
+    ProviderAuthDialog: { render: () => null },
+  }
+})
 
 vi.mock('@/features/providers/components/ProviderBatchActionDialog.vue', () => ({
   default: { render: () => null },
 }))
 
 vi.mock('@/features/providers/components/ProviderDetailDrawer.vue', async () => {
-  const { h } = await import('vue')
+  const { defineComponent, h } = await import('vue')
   return {
     __esModule: true,
-    default: {
-      props: ['open', 'providerId'],
-      setup: (props: { open: boolean; providerId: string }) => () => props.open
-        ? h('div', { 'data-provider-detail': props.providerId })
+    default: defineComponent({
+      props: {
+        open: Boolean,
+        providerId: { type: String, default: '' },
+        initialProvider: { type: Object as PropType<ProviderWithEndpointsSummary | null>, default: null },
+      },
+      emits: ['edit'],
+      setup: (props, { emit }) => () => props.open
+        ? h('div', {
+            'data-provider-detail': props.providerId,
+            'data-initial-provider-name': props.initialProvider?.name,
+          }, [
+            h('button', {
+              'data-edit-provider': '',
+              onClick: () => emit('edit', props.initialProvider ?? createProvider({ id: props.providerId })),
+            }, '编辑提供商'),
+          ])
         : null,
-    },
+    }),
+  }
+})
+
+vi.mock('@/features/providers/components/ProviderSchedulingView.vue', async () => {
+  const { computed, defineComponent, h, ref, shallowRef, watch } = await import('vue')
+  const { useRoute } = await import('vue-router')
+  const { createEmptyRoutingGroupConfig } = await import('@/features/routing/utils/routingPolicy')
+  const { readSchedulingPolicies, writeSchedulingPolicies } = await import('@/features/routing/utils/schedulingPolicies')
+  return {
+    __esModule: true,
+    default: defineComponent({
+      props: { providerRevision: { type: Number, default: 0 } },
+      emits: ['inspect-provider', 'context-change'],
+      setup: (_props, { emit, expose, slots }) => {
+        const route = useRoute()
+        const groupId = computed(() => typeof route.query.group === 'string' ? route.query.group : 'group-a')
+        const config = shallowRef<RoutingGroupConfig>(createEmptyRoutingGroupConfig())
+        const selectedPolicyIndex = ref(0)
+        watch(groupId, id => { config.value = workspace.groups[id] ?? createEmptyRoutingGroupConfig(); selectedPolicyIndex.value = 0 }, { immediate: true })
+        const policies = computed(() => readSchedulingPolicies(config.value))
+        const activePolicy = computed(() => {
+          const entry = policies.value[selectedPolicyIndex.value]!
+          return {
+            policy: workspace.selectionReady ? entry.policy : null,
+            priorityMode: entry.priorityMode,
+            schedulingMode: entry.schedulingMode,
+            scope: workspace.selectionReady ? entry.scope : null,
+            modelNames: entry.models,
+          }
+        })
+        const providerModelIds = computed(() => activePolicy.value.scope === 'selected'
+          ? activePolicy.value.modelNames.map(name => ({ 'Model One': 'model-1', 'Model Two': 'model-2', 'Model Three': 'model-3' })[name]).filter((id): id is string => Boolean(id))
+          : undefined)
+        watch([groupId, config, activePolicy, providerModelIds], () => emit('context-change', {
+          groupId: groupId.value === 'new' ? null : groupId.value,
+          groupName: `Group ${groupId.value}`,
+          config: config.value,
+          busy: workspace.busy,
+          activePolicy: activePolicy.value,
+          providerModelIds: providerModelIds.value,
+          priorityMode: activePolicy.value.priorityMode,
+          schedulingMode: activePolicy.value.schedulingMode,
+        }), { immediate: true })
+        expose({
+          updateDraftConfig(value: RoutingGroupConfig) {
+            workspace.updateDraftConfig(value)
+            workspace.groups[groupId.value] = value
+            config.value = value
+          },
+          updatePriorityPolicy(value: RoutingModelPolicy) {
+            workspace.updatePriorityPolicy(value)
+            const updated = policies.value.map((entry, index) => index === selectedPolicyIndex.value ? { ...entry, policy: value } : entry)
+            const nextConfig = writeSchedulingPolicies(config.value, updated)
+            workspace.groups[groupId.value] = nextConfig
+            config.value = nextConfig
+          },
+          refreshGroups: workspace.refreshGroups,
+          ensureSaved: workspace.ensureSaved,
+        })
+        return () => h('section', { 'data-scheduling-group': groupId.value }, [
+          h('button', {
+            'data-inspect-scheduled-provider': '',
+            onClick: () => emit('inspect-provider', 'provider-1'),
+          }, '查看调度提供商'),
+          ...policies.value.map((_entry, index) => h('button', { 'data-select-policy': index, onClick: () => { selectedPolicyIndex.value = index } }, `配置 ${index + 1}`)),
+          slots.default?.(),
+        ])
+      },
+    }),
   }
 })
 
@@ -101,6 +218,7 @@ function createProvider(overrides: Partial<ProviderWithEndpointsSummary> = {}): 
 
 let mountedApp: App | null = null
 let mountedRoot: HTMLElement | null = null
+let mountedRouter: Router | null = null
 
 async function settle() {
   for (let index = 0; index < 8; index += 1) {
@@ -109,13 +227,22 @@ async function settle() {
   }
 }
 
-async function mountView() {
+async function mountView(path = '/admin/providers') {
   const root = document.createElement('div')
   document.body.appendChild(root)
   mountedRoot = root
-  mountedApp = createApp(ProviderManagement)
+  mountedRouter = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/admin/providers', name: 'ProviderManagement', component: ProviderManagement }],
+  })
+  await mountedRouter.push(path)
+  await mountedRouter.isReady()
+  mountedApp = createApp({ render: () => h(RouterView) })
+  mountedApp.use(mountedRouter)
   mountedApp.use(createI18n())
   mountedApp.mount(root)
+  await settle()
+  await vi.waitFor(() => expect(root.querySelector('[data-scheduling-group]')).not.toBeNull())
   await settle()
   return root
 }
@@ -125,6 +252,7 @@ function unmountView() {
   mountedRoot?.remove()
   mountedApp = null
   mountedRoot = null
+  mountedRouter = null
 }
 
 function findButton(root: HTMLElement, title: string): HTMLButtonElement {
@@ -133,11 +261,26 @@ function findButton(root: HTMLElement, title: string): HTMLButtonElement {
   return button!
 }
 
+async function openPriorityInput(root: HTMLElement, providerName: string): Promise<HTMLInputElement> {
+  const label = `${providerName} 的组内优先级`
+  const button = root.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+  expect(button, `Missing priority button: ${providerName}`).not.toBeNull()
+  button!.click()
+  await nextTick()
+  const input = root.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
+  expect(input, `Missing priority input: ${providerName}`).not.toBeNull()
+  return input!
+}
+
+
 beforeEach(() => {
   vi.clearAllMocks()
+  workspace.groups = { 'group-a': createEmptyRoutingGroupConfig(), 'group-b': createEmptyRoutingGroupConfig() }
+  workspace.busy = false
+  workspace.selectionReady = true
   apiMocks.getProvidersSummary.mockResolvedValue({
     items: [createProvider()],
-    total: 40,
+    total: 1,
   })
   apiMocks.getGlobalModels.mockResolvedValue({ models: [{ id: 'model-1', name: 'Model One' }] })
   apiMocks.getProvider.mockResolvedValue(createProvider())
@@ -159,7 +302,9 @@ describe('ProviderManagement card view', () => {
   it('places the view toggle immediately after refresh and switches layouts without reloading data', async () => {
     const root = await mountView()
     const toggle = findButton(root, '切换到卡片视图')
-    const filters = [...root.querySelectorAll('[role="combobox"]')].slice(0, 3)
+    const filters = [...root.querySelectorAll('[role="combobox"]')]
+      .filter(filter => filter.closest('.xl\\:hidden'))
+    expect(filters).toHaveLength(1)
 
     expect(toggle.previousElementSibling).toBe(findButton(root, '刷新'))
     expect(toggle.getAttribute('aria-pressed')).toBe('false')
@@ -199,7 +344,9 @@ describe('ProviderManagement card view', () => {
     const root = await mountView()
     const card = root.querySelector<HTMLElement>('[data-provider-sort-id="provider-1"]')!
     const lastCard = root.querySelector<HTMLElement>('[data-provider-sort-id="provider-5"]')!
-    const [header, content, actions] = Array.from(card.children)
+    const header = card.firstElementChild!
+    const content = card.querySelector('.overflow-y-auto')!
+    const actions = card.lastElementChild!
 
     expect(Array.from(card.classList)).toEqual(expect.arrayContaining(['max-h-96', 'w-full']))
     expect(card.classList.contains('max-w-sm')).toBe(false)
@@ -258,33 +405,23 @@ describe('ProviderManagement card view', () => {
     expect(localStorage.getItem('aether-provider-card-view')).toBe(String(selected))
   })
 
-  it('keeps the current search and page when switching views', async () => {
+  it('keeps the current search and page when switching layouts and filters locally', async () => {
+    apiMocks.getProvidersSummary.mockResolvedValue({ items: Array.from({ length: 30 }, (_, index) => createProvider({ id: `provider-${index + 1}` })), total: 30 })
     const root = await mountView()
     const search = root.querySelector<HTMLInputElement>('#provider-search')!
     search.value = 'Provider'
     search.dispatchEvent(new Event('input', { bubbles: true }))
-    await vi.waitFor(() => {
-      expect(apiMocks.getProvidersSummary).toHaveBeenLastCalledWith(
-        expect.objectContaining({ search: 'Provider' }),
-        expect.any(Object),
-      )
-    })
-
-    const secondPage = [...root.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.trim() === '2')!
+    await settle()
+    const secondPage = root.querySelector<HTMLButtonElement>('button[aria-label="第 2 页"]')!
     secondPage.click()
     await settle()
-    const requests = apiMocks.getProvidersSummary.mock.calls.length
 
     findButton(root, '切换到卡片视图').click()
     await settle()
     expect(search.value).toBe('Provider')
     expect(root.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe('2')
-    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(requests)
-    expect(apiMocks.getProvidersSummary).toHaveBeenLastCalledWith(
-      expect.objectContaining({ search: 'Provider', page: 2 }),
-      expect.any(Object),
-    )
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledWith({ page: 1, page_size: 10000 }, expect.any(Object))
   })
 
   it('supports note editing, status actions, and details from cards', async () => {
@@ -304,7 +441,7 @@ describe('ProviderManagement card view', () => {
     expect(root.textContent).toContain('Updated note')
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
 
-    findButton(root, '停用提供商').click()
+    findButton(root, '全局停用提供商').click()
     await settle()
     expect(apiMocks.updateProvider).toHaveBeenCalledWith('provider-1', { is_active: false })
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
@@ -325,7 +462,7 @@ describe('ProviderManagement card view', () => {
 
     expect(root.querySelector('dl')?.textContent).toContain('账号')
     expect(root.textContent).toContain('暂无端点')
-    expect(findButton(root, '启用提供商')).not.toBeNull()
+    expect(findButton(root, '全局启用提供商')).not.toBeNull()
   })
 
   it('does not display cards during loading or with an empty result', async () => {
@@ -354,6 +491,313 @@ describe('ProviderManagement card view', () => {
     findButton(root, 'Switch to card view').click()
     await settle()
     expect(findButton(root, 'Switch to list view').getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+describe('ProviderManagement group directory', () => {
+  it('opens the unified provider directory directly for a group', async () => {
+    const root = await mountView('/admin/providers?group=group-b')
+    expect(root.querySelector('[data-scheduling-group="group-b"]')).not.toBeNull()
+    expect(root.querySelector('table')).not.toBeNull()
+    expect(root.querySelector('[aria-label="提供商视图"]')).toBeNull()
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledWith({ page: 1, page_size: 10000 }, expect.any(Object))
+    expect(root.textContent).toContain('$125.00')
+  })
+
+  it.each(['table', 'mobile card', 'grid card'] as const)('keeps the %s group action before details and isolated from global provider state', async layout => {
+    const providers = mockSortableProviders()
+    providers[3]!.is_active = false
+    localStorage.setItem('aether-provider-card-view', String(layout === 'grid card'))
+    workspace.groups['group-b'] = {
+      ...setModelProviderPriorityOverrides(createEmptyRoutingGroupConfig(), '*', { 'provider-4': 0, 'provider-2': 1, 'provider-3': 2, 'provider-1': 3 }),
+      disabled_providers: ['provider-4'],
+    }
+    const root = await mountView('/admin/providers?group=group-a')
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    await mountedRouter!.push('/admin/providers?group=group-b')
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-4', 'provider-2', 'provider-3', 'provider-1'])
+    const row = [...root.querySelectorAll<HTMLElement>('[data-provider-sort-id="provider-4"]')]
+      .find(element => layout === 'table' ? element.closest('table') : !element.closest('table'))!
+    const toggle = row.querySelector<HTMLButtonElement>('[aria-label="Provider 4 本组启用"]')!
+    expect(toggle).not.toBeNull()
+    expect(toggle.nextElementSibling).toBe(findButton(row, '查看详情'))
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(toggle.title).toBe('本组启用提供商')
+    expect(toggle.textContent?.trim()).toBe('')
+    expect(row.querySelector('[role="switch"]')).toBeNull()
+    expect(row.textContent).toContain('本组禁用')
+    expect(row.textContent).toContain('全局停用')
+    toggle.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    toggle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    toggle.click()
+    await settle()
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.title).toBe('本组禁用提供商')
+    expect(row.textContent).toContain('本组启用')
+    expect(row.textContent).not.toContain('本组禁用')
+    expect(row.textContent).toContain('全局停用')
+    expect(workspace.groups['group-b']!.disabled_providers).toEqual([])
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
+    expect(workspace.updateDraftConfig).toHaveBeenCalledExactlyOnceWith(workspace.groups['group-b'])
+    expect(workspace.updatePriorityPolicy).not.toHaveBeenCalled()
+    expect(providers[3]!.is_active).toBe(false)
+    expect(apiMocks.updateProvider).not.toHaveBeenCalled()
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
+    expect(root.querySelector('[data-provider-detail]')).toBeNull()
+  })
+
+  it('disables group actions while the selected group is busy', async () => {
+    workspace.busy = true
+    const root = await mountView()
+    const toggles = root.querySelectorAll<HTMLButtonElement>('[aria-label="Provider One 本组启用"]')
+    expect(toggles.length).toBeGreaterThan(0)
+    for (const toggle of toggles) {
+      expect(toggle.disabled).toBe(true)
+      toggle.click()
+    }
+    await settle()
+    expect(workspace.updateDraftConfig).not.toHaveBeenCalled()
+    expect(apiMocks.updateProvider).not.toHaveBeenCalled()
+    expect(root.querySelector('[data-provider-detail]')).toBeNull()
+  })
+
+  it('edits the selected group priority from a row without opening details', async () => {
+    mockSortableProviders()
+    const root = await mountView()
+    expect(root.querySelector('input[aria-label$="的组内优先级"]')).toBeNull()
+    const input = await openPriorityInput(root, 'Provider 4')
+    expect(root.querySelector('[data-provider-detail]')).toBeNull()
+    input.value = '0'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(workspace.updatePriorityPolicy).not.toHaveBeenCalled()
+    input.blur()
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-4', 'provider-1', 'provider-2', 'provider-3'])
+    expect(getModelPolicy(workspace.groups['group-a']!, '*').provider_priority_overrides['provider-4']).toBe(0)
+    expect(apiMocks.updateProvider).not.toHaveBeenCalled()
+    expect(root.querySelector('[data-provider-detail]')).toBeNull()
+  })
+
+  it('keeps globally or group-disabled providers visible and toggles only group state', async () => {
+    const providers = mockSortableProviders()
+    providers[0]!.is_active = false
+    workspace.groups['group-a']!.disabled_providers = ['provider-2']
+    const root = await mountView()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    const globallyDisabled = providerElements(root).find(row => row.dataset.providerSortId === 'provider-1')!
+    const groupDisabled = providerElements(root).find(row => row.dataset.providerSortId === 'provider-2')!
+    expect(globallyDisabled.textContent).toContain('全局停用')
+    expect(globallyDisabled.textContent).toContain('本组启用')
+    expect(groupDisabled.textContent).toContain('全局启用')
+    expect(groupDisabled.textContent).toContain('本组禁用')
+
+    groupDisabled.querySelector<HTMLButtonElement>('[aria-label="Provider 2 本组启用"]')!.click()
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    expect(groupDisabled.textContent).toContain('本组启用')
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
+
+    globallyDisabled.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!.click()
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    expect(globallyDisabled.textContent).toContain('本组禁用')
+    expect(globallyDisabled.textContent).toContain('全局停用')
+    expect(providers[0]!.is_active).toBe(false)
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
+  })
+
+  it('changes priority for every model in the top selected configuration while preserving other configurations', async () => {
+    const providers = mockSortableProviders()
+    providers[1]!.global_model_ids = ['model-2']
+    providers[3]!.global_model_ids = ['model-3']
+    const config = createEmptyRoutingGroupConfig()
+    workspace.groups['group-a'] = writeSchedulingPolicies(config, [
+      { ...createSchedulingPolicy(config), models: ['Model One', 'Model Two'] },
+      { ...createSchedulingPolicy(config), models: ['Model Three'] },
+    ])
+    const root = await mountView()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    expect(root.querySelector('[title="筛选模型"]')).toBeNull()
+    const input = await openPriorityInput(root, 'Provider 3')
+    input.value = '0'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-3', 'provider-1', 'provider-2', 'provider-4'])
+    for (const model of ['Model One', 'Model Two']) {
+      expect(getModelPolicy(workspace.groups['group-a']!, model).provider_priority_overrides['provider-3']).toBe(0)
+    }
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model Three').provider_priority_overrides).toEqual({})
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
+    expect(workspace.updateDraftConfig).not.toHaveBeenCalled()
+
+    root.querySelector<HTMLButtonElement>('[data-select-policy="1"]')!.click()
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    const otherInput = await openPriorityInput(root, 'Provider 4')
+    otherInput.value = '2'
+    otherInput.dispatchEvent(new Event('input', { bubbles: true }))
+    otherInput.blur()
+    await settle()
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model Three').provider_priority_overrides).toEqual({ 'provider-4': 2 })
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model One').provider_priority_overrides).toEqual({ 'provider-3': 0 })
+    root.querySelector<HTMLButtonElement>('[data-select-policy="0"]')!.click()
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-3', 'provider-1', 'provider-2', 'provider-4'])
+  })
+
+  it('drags the shared model configuration without splitting its models', async () => {
+    mockSortableProviders()
+    const config = createEmptyRoutingGroupConfig()
+    workspace.groups['group-a'] = writeSchedulingPolicies(config, [
+      { ...createSchedulingPolicy(config), models: ['Model One', 'Model Two'] },
+    ])
+    const root = await mountView()
+    const { handle } = startProviderDrag(root, 'provider-4', 'provider-1')
+    await dropProvider(handle)
+    expect(providerOrder(root)).toEqual(['provider-4', 'provider-1', 'provider-2', 'provider-3'])
+    const first = getModelPolicy(workspace.groups['group-a']!, 'Model One').provider_priority_overrides
+    expect(first['provider-4']).toBe(0)
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model Two').provider_priority_overrides).toEqual(first)
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
+  })
+
+  it('keeps full-directory pagination when the selected configuration changes', async () => {
+    const providers = Array.from({ length: 22 }, (_, index) => createProvider({
+      id: `provider-${index + 1}`, name: `Provider ${index + 1}`, provider_priority: index,
+      global_model_ids: [index < 11 ? 'model-1' : 'model-2'],
+    }))
+    apiMocks.getProvidersSummary.mockResolvedValue({ items: providers, total: providers.length })
+    const config = createEmptyRoutingGroupConfig()
+    workspace.groups['group-a'] = writeSchedulingPolicies(config, [
+      { ...createSchedulingPolicy(config), models: ['Model One'] },
+      { ...createSchedulingPolicy(config), models: ['Model Two'] },
+    ])
+    localStorage.setItem('provider-management-page-size', '10')
+    const root = await mountView()
+    const secondPage = root.querySelector<HTMLButtonElement>('button[aria-label="第 2 页"]')!
+    secondPage.click()
+    await settle()
+    expect(providerOrder(root)).toEqual(providers.slice(10, 20).map(provider => provider.id))
+    root.querySelector<HTMLButtonElement>('[data-select-policy="1"]')!.click()
+    await settle()
+    expect(root.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe('1')
+    expect(providerOrder(root)).toEqual(providers.slice(0, 10).map(provider => provider.id))
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses provider ranking for legacy Key groups while retaining group enablement', async () => {
+    mockSortableProviders()
+    workspace.groups['group-a']!.default_policy.priority_mode = 'global_key'
+    const root = await mountView()
+    const priorityButton = root.querySelector<HTMLButtonElement>('button[aria-label="Provider 1 的组内优先级"]')!
+    expect(priorityButton.disabled).toBe(false)
+    expect(root.querySelector('[data-provider-drag-handle]')).not.toBeNull()
+    const input = await openPriorityInput(root, 'Provider 1')
+    input.value = '7'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    expect(workspace.groups['group-a']!.default_policy.priority_mode).toBe('provider')
+    expect(getDefaultModelPolicy(workspace.groups['group-a']!).provider_priority_overrides['provider-1']).toBe(7)
+    const toggle = providerElements(root)[0]!.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!
+    expect(toggle.disabled).toBe(false)
+    toggle.click()
+    await settle()
+    expect(workspace.groups['group-a']!.disabled_providers).toContain('provider-1')
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalled()
+  })
+
+  it('disables ranking before a configuration is selected without blocking provider creation', async () => {
+    mockSortableProviders()
+    workspace.selectionReady = false
+    const root = await mountView()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    const priorityButton = providerElements(root)[0]!.querySelector<HTMLButtonElement>('button[aria-label$="的组内优先级"]')!
+    expect(priorityButton.disabled).toBe(true)
+    const handle = root.querySelector<HTMLButtonElement>('[data-provider-drag-handle]')
+    expect(handle == null || handle.disabled).toBe(true)
+    const toggle = providerElements(root)[0]!.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!
+    expect(toggle.disabled).toBe(false)
+    toggle.click()
+    await settle()
+    expect(workspace.groups['group-a']!.disabled_providers).toContain('provider-1')
+    findButton(root, '新增提供商').click()
+    await settle()
+    expect(root.querySelector('[data-routing-group-id="group-a"]')).not.toBeNull()
+    expect(workspace.updatePriorityPolicy).not.toHaveBeenCalled()
+  })
+
+  it('keeps all providers manageable and sortable when the selected model has no matches', async () => {
+    mockSortableProviders()
+    const config = createEmptyRoutingGroupConfig()
+    workspace.groups['group-a'] = writeSchedulingPolicies(config, [
+      { ...createSchedulingPolicy(config), models: ['Missing Model'] },
+    ])
+    const root = await mountView()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    const priorityButton = providerElements(root)[0]!.querySelector<HTMLButtonElement>('button[aria-label$="的组内优先级"]')!
+    expect(priorityButton.disabled).toBe(false)
+    expect(providerElements(root)[0]!.querySelector<HTMLButtonElement>('[data-provider-drag-handle]')?.disabled).toBe(false)
+    const input = await openPriorityInput(root, 'Provider 1')
+    input.value = '0'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Missing Model').provider_priority_overrides['provider-1']).toBe(0)
+    const toggle = providerElements(root)[0]!.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!
+    expect(toggle.disabled).toBe(false)
+    toggle.click()
+    await settle()
+    expect(workspace.groups['group-a']!.disabled_providers).toContain('provider-1')
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
+  })
+
+  it('collects every API page before applying group priority', async () => {
+    apiMocks.getProvidersSummary
+      .mockResolvedValueOnce({ items: [createProvider({ id: 'provider-1' })], total: 2 })
+      .mockResolvedValueOnce({ items: [createProvider({ id: 'provider-2', name: 'Second Provider' })], total: 2 })
+    workspace.groups['group-a'] = setModelProviderPriorityOverrides(createEmptyRoutingGroupConfig(), '*', { 'provider-2': 0 })
+    const root = await mountView()
+    expect(apiMocks.getProvidersSummary).toHaveBeenNthCalledWith(2, { page: 2, page_size: 10000 }, expect.any(Object))
+    expect(providerOrder(root)).toEqual(['provider-2', 'provider-1'])
+  })
+
+  it('passes the current group to creation and captures it until the dialog closes', async () => {
+    const root = await mountView('/admin/providers?group=group-b')
+    findButton(root, '新增提供商').click()
+    await settle()
+    const form = root.querySelector<HTMLElement>('[data-save-edited-provider]')!
+    expect(form.dataset.routingGroupId).toBe('group-b')
+    expect(form.dataset.routingGroupName).toBe('Group group-b')
+    await mountedRouter!.push('/admin/providers?group=group-a')
+    await settle()
+    expect(form.dataset.routingGroupId).toBe('group-b')
+  })
+
+  it('does not create a provider before the new group has been saved', async () => {
+    const root = await mountView('/admin/providers?group=new')
+    findButton(root, '新增提供商').click()
+    await settle()
+    expect(root.querySelector('[data-save-edited-provider]')).toBeNull()
+  })
+
+  it('opens details and applies edited snapshots for providers outside the loaded directory', async () => {
+    apiMocks.getProvidersSummary.mockResolvedValue({ items: [], total: 0 })
+    const root = await mountView('/admin/providers?group=group-b')
+    root.querySelector<HTMLButtonElement>('[data-inspect-scheduled-provider]')!.click()
+    await vi.waitFor(() => expect(root.querySelector('[data-provider-detail="provider-1"]')).not.toBeNull())
+    const drawer = root.querySelector<HTMLElement>('[data-provider-detail="provider-1"]')!
+    expect(drawer.hasAttribute('data-initial-provider-name')).toBe(false)
+    root.querySelector<HTMLButtonElement>('[data-edit-provider]')!.click()
+    await vi.waitFor(() => expect(root.querySelector('[data-save-edited-provider]')).not.toBeNull())
+    root.querySelector<HTMLButtonElement>('[data-save-edited-provider]')!.click()
+    await settle()
+    expect(drawer.dataset.initialProviderName).toBe('Edited provider name')
+    expect(mountedRouter!.currentRoute.value.query).toEqual({ group: 'group-b' })
   })
 })
 
@@ -404,8 +848,8 @@ async function dropProvider(handle: HTMLButtonElement) {
   await settle()
 }
 
-describe('ProviderManagement shared display order', () => {
-  it('drags table rows, synchronizes both card layouts, and leaves scheduling priorities unchanged', async () => {
+describe('ProviderManagement group priority ordering', () => {
+  it('drags table rows, synchronizes both card layouts, and updates only the current group draft', async () => {
     const providers = mockSortableProviders()
     const root = await mountView()
     const { handle, target } = startProviderDrag(root, 'provider-1', 'provider-3')
@@ -423,6 +867,8 @@ describe('ProviderManagement shared display order', () => {
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
     expect(apiMocks.updateProvider).not.toHaveBeenCalled()
     expect(providers.map(provider => provider.provider_priority)).toEqual([10, 20, 30, 40])
+    expect(getModelPolicy(workspace.groups['group-a']!, '*').provider_priority_overrides).toEqual({ 'provider-2': 0, 'provider-3': 1, 'provider-1': 2, 'provider-4': 3 })
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
 
     findButton(root, '切换到卡片视图').click()
     await settle()
@@ -430,7 +876,7 @@ describe('ProviderManagement shared display order', () => {
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
   })
 
-  it('supports touch dragging on card headers and restores the order after refresh and remount', async () => {
+  it('supports touch dragging and retains the group draft across resource refresh and layout changes', async () => {
     mockSortableProviders()
     localStorage.setItem('aether-provider-card-view', 'true')
     let root = await mountView()
@@ -438,7 +884,7 @@ describe('ProviderManagement shared display order', () => {
     await dropProvider(handle)
     const expected = ['provider-4', 'provider-1', 'provider-2', 'provider-3']
     expect(providerOrder(root)).toEqual(expected)
-    expect(JSON.parse(localStorage.getItem('aether-provider-display-order')!)).toEqual(expected)
+    expect(JSON.parse(localStorage.getItem('aether-provider-display-order') ?? '[]')).toEqual([])
 
     findButton(root, '刷新').click()
     await settle()
@@ -467,7 +913,9 @@ describe('ProviderManagement shared display order', () => {
     await dropProvider(handle)
 
     expect(providerOrder(root)).toEqual(original)
-    expect(JSON.parse(localStorage.getItem('aether-provider-display-order')!)).toEqual([])
+    expect(localStorage.getItem('aether-provider-display-order')).toBeNull()
+    expect(workspace.updateDraftConfig).not.toHaveBeenCalled()
+    expect(workspace.updatePriorityPolicy).not.toHaveBeenCalled()
     expect(root.querySelector('.opacity-40')).toBeNull()
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
   })
@@ -490,24 +938,23 @@ describe('ProviderManagement shared display order', () => {
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
   })
 
-  it('moves only visible providers while preserving filtered-out positions', async () => {
+  it('keeps hidden providers in the complete group order while dragging a filtered result', async () => {
     const providers = mockSortableProviders()
+    providers[0]!.description = 'filtered'
+    providers[2]!.description = 'filtered'
     const root = await mountView()
-    apiMocks.getProvidersSummary.mockResolvedValue({ items: [providers[0], providers[2]], total: 2 })
     const search = root.querySelector<HTMLInputElement>('#provider-search')!
     search.value = 'filtered'
     search.dispatchEvent(new Event('input', { bubbles: true }))
-    await vi.waitFor(() => expect(providerOrder(root)).toEqual(['provider-1', 'provider-3']))
-
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-3'])
     const { handle } = startProviderDrag(root, 'provider-1', 'provider-3')
     await dropProvider(handle)
     expect(providerOrder(root)).toEqual(['provider-3', 'provider-1'])
-
-    apiMocks.getProvidersSummary.mockResolvedValue({ items: providers, total: 4 })
     findButton(root, '重置筛选').click()
-    await vi.waitFor(() => {
-      expect(providerOrder(root)).toEqual(['provider-3', 'provider-2', 'provider-1', 'provider-4'])
-    })
+    await settle()
+    expect(providerOrder(root)).toEqual(['provider-2', 'provider-3', 'provider-1', 'provider-4'])
+    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
   })
 
   it('supports keyboard ordering and keeps focus on the moved handle', async () => {
@@ -520,7 +967,7 @@ describe('ProviderManagement shared display order', () => {
 
     expect(providerOrder(root)).toEqual(['provider-2', 'provider-1', 'provider-3', 'provider-4'])
     expect(document.activeElement).toBe(handle)
-    expect(root.querySelector('[role="status"]')?.textContent).toContain('展示顺序已更新')
+    expect(root.querySelector('[role="status"]')?.textContent).toContain('调度顺序已调整')
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
 
     handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))
@@ -550,30 +997,24 @@ describe('ProviderManagement shared display order', () => {
     expect(providerOrder(root).slice(0, 2)).toEqual(['provider-2', 'provider-1'])
 
     const requestsBeforePaging = apiMocks.getProvidersSummary.mock.calls.length
-    const secondPage = [...root.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.trim() === '2')!
+    const secondPage = root.querySelector<HTMLButtonElement>('button[aria-label="第 2 页"]')!
     secondPage.click()
     await settle()
     expect(providerOrder(root)).toEqual(['provider-11', 'provider-12'])
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(requestsBeforePaging)
 
-    const firstPage = [...root.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.trim() === '1')!
+    const firstPage = root.querySelector<HTMLButtonElement>('button[aria-label="第 1 页"]')!
     firstPage.click()
     await settle()
     expect(providerOrder(root).slice(0, 2)).toEqual(['provider-2', 'provider-1'])
-    expect(JSON.parse(localStorage.getItem('aether-provider-display-order')!))
-      .toEqual([
-        'provider-2', 'provider-1', 'provider-3', 'provider-4', 'provider-5', 'provider-6',
-        'provider-7', 'provider-8', 'provider-9', 'provider-10', 'provider-11', 'provider-12',
-      ])
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
   })
 
-  it('ignores stale IDs and appends providers that are not in the saved order', async () => {
+  it('ignores a legacy local display order in favor of the selected group priorities', async () => {
     mockSortableProviders()
     localStorage.setItem('aether-provider-display-order', JSON.stringify(['deleted-provider', 'provider-3', 'provider-1']))
     const root = await mountView()
-    expect(providerOrder(root)).toEqual(['provider-3', 'provider-1', 'provider-2', 'provider-4'])
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
   })
 
   it('keeps the dragged provider first after switching to a smaller page size', async () => {

@@ -21,27 +21,6 @@
           />
         </div>
 
-        <!-- 状态筛选 -->
-        <div :class="{ 'xl:hidden': !cardView }">
-          <Select
-            :model-value="filterStatus"
-            @update:model-value="$emit('update:filterStatus', $event)"
-          >
-            <SelectTrigger class="w-20 sm:w-28 h-8 text-xs border-border/60">
-              <SelectValue :placeholder="legacyT('全部状态')" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="status in statusFilters"
-                :key="status.value"
-                :value="status.value"
-              >
-                {{ legacyT(status.label) }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
         <!-- API 格式筛选 -->
         <div :class="{ 'xl:hidden': !cardView }">
           <Select
@@ -64,7 +43,10 @@
         </div>
 
         <!-- 模型筛选 -->
-        <div :class="{ 'xl:hidden': !cardView }">
+        <div
+          v-if="showModelFilter !== false"
+          :class="{ 'xl:hidden': !cardView }"
+        >
           <Select
             :model-value="filterModel"
             @update:model-value="$emit('update:filterModel', $event)"
@@ -159,22 +141,20 @@ import RefreshButton from '@/components/ui/refresh-button.vue'
 import type { FilterOption } from '@/features/providers/composables/useProviderFilters'
 import { useI18n } from '@/i18n'
 
-defineProps<{
+withDefaults(defineProps<{
   searchQuery: string
-  filterStatus: string
   filterApiFormat: string
+  showModelFilter?: boolean
   filterModel: string
-  statusFilters: FilterOption[]
   apiFormatFilters: FilterOption[]
   modelFilters: FilterOption[]
   hasActiveFilters: boolean
   loading: boolean
   cardView: boolean
-}>()
+}>(), { showModelFilter: true })
 
 defineEmits<{
   'update:searchQuery': [value: string]
-  'update:filterStatus': [value: string]
   'update:filterApiFormat': [value: string]
   'update:filterModel': [value: string]
   'resetFilters': []

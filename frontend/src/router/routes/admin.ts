@@ -71,17 +71,29 @@ export const adminRoutes: RouteRecordRaw[] = [
       {
         path: 'routing',
         name: 'RoutingProfiles',
-        component: view(() => import('@/views/admin/RoutingProfiles.vue'))
+        redirect: to => ({
+          name: 'ProviderManagement',
+          query: { ...to.query, view: undefined, group: undefined },
+          hash: to.hash,
+        })
       },
       {
         path: 'routing/new',
         name: 'RoutingProfileCreate',
-        component: view(() => import('@/views/admin/RoutingProfiles.vue'))
+        redirect: to => ({
+          name: 'ProviderManagement',
+          query: { ...to.query, view: undefined, group: 'new' },
+          hash: to.hash,
+        })
       },
       {
         path: 'routing/:groupId',
         name: 'RoutingProfileDetail',
-        component: view(() => import('@/views/admin/RoutingProfiles.vue'))
+        redirect: to => ({
+          name: 'ProviderManagement',
+          query: { ...to.query, view: undefined, group: String(to.params.groupId) },
+          hash: to.hash,
+        })
       },
       {
         path: 'health-monitor',

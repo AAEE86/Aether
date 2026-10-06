@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(policy.group_version, Some(4));
         assert_eq!(
             policy.priority_mode,
-            aether_routing_core::RoutingSetPriorityMode::GlobalKey
+            aether_routing_core::RoutingSetPriorityMode::Provider
         );
         assert_eq!(
             policy.scheduling_mode,

@@ -2909,6 +2909,10 @@ mod tests {
             allowed_keys: vec!["key-other".to_string()],
             ..matching.clone()
         };
+        let disabled_provider = aether_routing_core::RankingOverlay {
+            disabled_providers: vec!["provider-allowed".to_string()],
+            ..matching.clone()
+        };
 
         assert!(routing_overlay_allows_affinity_target(None, &target));
         assert!(routing_overlay_allows_affinity_target(
@@ -2921,6 +2925,10 @@ mod tests {
         ));
         assert!(!routing_overlay_allows_affinity_target(
             Some(&wrong_key),
+            &target
+        ));
+        assert!(!routing_overlay_allows_affinity_target(
+            Some(&disabled_provider),
             &target
         ));
     }
