@@ -36,14 +36,12 @@
           :model-filters="[]"
           :has-active-filters="hasActiveFilters"
           :loading="loading"
-          :card-view="cardView"
           @update:search-query="searchQuery = $event"
           @update:filter-api-format="filterApiFormat = $event"
           @reset-filters="resetFilters"
           @batch-process="openProviderBatchDialog"
           @add-provider="openAddProviderDialog"
           @refresh="loadProviders"
-          @toggle-view="cardView = !cardView"
         />
 
         <!-- 加载状态 -->
@@ -63,70 +61,6 @@
             :has-active-filters="hasActiveFilters"
             @reset-filters="resetFilters"
           />
-        </div>
-
-        <div
-          v-else-if="cardView"
-          class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-4 p-4 sm:p-6"
-        >
-          <ProviderCard
-            v-for="provider in displayedProviders"
-            :key="provider.id"
-            :provider="provider"
-            :data-provider-sort-id="provider.id"
-            :class="sortItemClass(provider.id)"
-            :editing-description-id="editingDescriptionId"
-            :is-balance-loading="isBalanceLoading"
-            :get-provider-balance="getProviderBalance"
-            :get-provider-balance-breakdown="getProviderBalanceBreakdown"
-            :get-provider-balance-error="getProviderBalanceError"
-            :get-provider-checkin="getProviderCheckin"
-            :get-provider-cookie-expired="getProviderCookieExpired"
-            :get-provider-balance-extra="getProviderBalanceExtra"
-            :format-balance-display="formatBalanceDisplay"
-            :format-reset-countdown="formatResetCountdown"
-            :get-quota-used-color-class="getQuotaUsedColorClass"
-            @mousedown="handleMouseDown"
-            @row-click="handleRowClick"
-            @view-detail="openProviderDrawer"
-            @edit-provider="openEditProviderDialog"
-            @open-ops-config="openOpsConfigDialog"
-            @toggle-status="toggleProviderStatus"
-            @delete-provider="handleDeleteProvider"
-            @start-edit-description="startEditDescription"
-            @save-description="saveDescription"
-            @cancel-edit-description="cancelEditDescription"
-          >
-            <template #scheduling>
-              <ProviderGroupControls
-                :provider-name="provider.name"
-                :priority="getGroupPriority(provider)"
-                :edit-context="priorityEditContext"
-                :enabled="isGroupEnabled(provider.id)"
-                :disabled="schedulingBusy"
-                :priority-disabled="priorityEditingDisabled"
-                @update:priority="setGroupPriority(provider.id, $event)"
-              />
-            </template>
-            <template #group-action>
-              <ProviderGroupToggleButton
-                class="h-8 w-8"
-                :provider-name="provider.name"
-                :enabled="isGroupEnabled(provider.id)"
-                :disabled="schedulingBusy"
-                @update:enabled="setGroupEnabled(provider.id, $event)"
-              />
-            </template>
-            <template #drag-handle>
-              <ProviderDragHandle
-                class="-ml-2 h-10 w-4"
-                :provider-name="provider.name"
-                :disabled="loading || priorityEditingDisabled || displayedProviders.length < 2"
-                @pointerdown="startDrag(provider.id, $event)"
-                @keydown="handleSortKeydown(provider.id, $event)"
-              />
-            </template>
-          </ProviderCard>
         </div>
 
         <!-- 桌面端表格 -->
@@ -247,7 +181,7 @@
 
         <!-- 移动端卡片列表 -->
         <div
-          v-if="!cardView && !loading && providers.length > 0"
+          v-if="!loading && displayedProviders.length > 0"
           class="xl:hidden divide-y divide-border/40"
         >
           <ProviderMobileCard
@@ -373,7 +307,6 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
-import { useLocalStorage } from '@vueuse/core'
 import Card from '@/components/ui/card.vue'
 import Table from '@/components/ui/table.vue'
 import TableHeader from '@/components/ui/table-header.vue'
@@ -388,7 +321,6 @@ import ProviderBatchActionDialog from '@/features/providers/components/ProviderB
 import ProviderTableHeader from '@/features/providers/components/ProviderTableHeader.vue'
 import ProviderTableRow from '@/features/providers/components/ProviderTableRow.vue'
 import ProviderMobileCard from '@/features/providers/components/ProviderMobileCard.vue'
-import ProviderCard from '@/features/providers/components/ProviderCard.vue'
 import ProviderGroupControls from '@/features/providers/components/ProviderGroupControls.vue'
 import ProviderGroupToggleButton from '@/features/providers/components/ProviderGroupToggleButton.vue'
 import ProviderPriorityInput from '@/features/providers/components/ProviderPriorityInput.vue'
@@ -477,7 +409,6 @@ function showLegacyError(err: unknown, fallback: string, title = '错误') {
 
 // 状态
 const loading = ref(false)
-const cardView = useLocalStorage('aether-provider-card-view', false, { flush: 'sync' })
 const providers = ref<ProviderWithEndpointsSummary[]>([])
 let providersRequestId = 0
 const providerDialogOpen = ref(false)
@@ -727,7 +658,7 @@ watch(() => [schedulingContext.value.busy, selectedPolicy.value?.scope, selected
   currentPage.value = 1
 })
 
-watch([loading, cardView, queryParams], cancelDrag)
+watch([loading, queryParams], cancelDrag)
 
 function startEditDescription(_event: Event, provider: ProviderWithEndpointsSummary) {
   editingDescriptionId.value = provider.id

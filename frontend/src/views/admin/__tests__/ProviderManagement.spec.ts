@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, type App, type PropType } from 'vue'
 import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router'
 import type { ProviderWithEndpointsSummary } from '@/api/endpoints'
-import { createI18n, setI18nLocale } from '@/i18n'
+import { createI18n } from '@/i18n'
 import ProviderManagement from '../ProviderManagement.vue'
 import { createSchedulingPolicy, writeSchedulingPolicies } from '@/features/routing/utils/schedulingPolicies'
 import { createEmptyRoutingGroupConfig, getDefaultModelPolicy, getModelPolicy, setModelProviderPriorityOverrides, type RoutingGroupConfig, type RoutingModelPolicy } from '@/features/routing/utils/routingPolicy'
@@ -298,114 +298,8 @@ afterEach(() => {
   }
 })
 
-describe('ProviderManagement card view', () => {
-  it('places the view toggle immediately after refresh and switches layouts without reloading data', async () => {
-    const root = await mountView()
-    const toggle = findButton(root, '切换到卡片视图')
-    const filters = [...root.querySelectorAll('[role="combobox"]')]
-      .filter(filter => filter.closest('.xl\\:hidden'))
-    expect(filters).toHaveLength(1)
-
-    expect(toggle.previousElementSibling).toBe(findButton(root, '刷新'))
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    expect(root.querySelector('table')).not.toBeNull()
-    expect(root.querySelector('dl')).toBeNull()
-    for (const filter of filters) {
-      expect(filter.closest('.xl\\:hidden')).not.toBeNull()
-    }
-
-    const requests = apiMocks.getProvidersSummary.mock.calls.length
-    toggle.click()
-    await settle()
-
-    expect(root.querySelector('table')).toBeNull()
-    expect(root.querySelectorAll('dl')).toHaveLength(1)
-    expect(root.textContent).toContain('$125.00')
-    expect(root.textContent).toContain('Primary provider')
-    expect(root.textContent).toContain('80%')
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    for (const filter of filters) {
-      expect(filter.closest('.xl\\:hidden')).toBeNull()
-    }
-
-    findButton(root, '切换到列表视图').click()
-    await settle()
-    expect(root.querySelector('table')).not.toBeNull()
-    expect(root.querySelector('dl')).toBeNull()
-    expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(requests)
-  })
-
-  it('fills available width with shared grid columns and keeps bounded card content scrollable', async () => {
-    apiMocks.getProvidersSummary.mockResolvedValue({
-      items: Array.from({ length: 5 }, (_, index) => createProvider({ id: `provider-${index + 1}` })),
-      total: 5,
-    })
-    localStorage.setItem('aether-provider-card-view', 'true')
-    const root = await mountView()
-    const card = root.querySelector<HTMLElement>('[data-provider-sort-id="provider-1"]')!
-    const lastCard = root.querySelector<HTMLElement>('[data-provider-sort-id="provider-5"]')!
-    const header = card.firstElementChild!
-    const content = card.querySelector('.overflow-y-auto')!
-    const actions = card.lastElementChild!
-
-    expect(Array.from(card.classList)).toEqual(expect.arrayContaining(['max-h-96', 'w-full']))
-    expect(card.classList.contains('max-w-sm')).toBe(false)
-    expect(card.classList.contains('flex-1')).toBe(false)
-    expect(lastCard.className).toBe(card.className)
-    expect(lastCard.parentElement).toBe(card.parentElement)
-    expect(card.parentElement?.classList.contains('grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))]')).toBe(true)
-    expect(card.parentElement?.classList.contains('grid')).toBe(true)
-    expect(card.parentElement?.classList.contains('box-content')).toBe(false)
-    expect(card.parentElement?.classList.contains('items-start')).toBe(false)
-    expect(header.classList.contains('shrink-0')).toBe(true)
-    expect(Array.from(content.classList)).toEqual(expect.arrayContaining(['min-h-0', 'overflow-y-auto']))
-    expect(actions.classList.contains('shrink-0')).toBe(true)
-    expect(actions.contains(findButton(root, '查看详情'))).toBe(true)
-  })
-
-  it('remembers the chosen layout across remounts', async () => {
-    let root = await mountView()
-    findButton(root, '切换到卡片视图').click()
-    await settle()
-    expect(localStorage.getItem('aether-provider-card-view')).toBe('true')
-
-    unmountView()
-    root = await mountView()
-    expect(root.querySelector('table')).toBeNull()
-    expect(findButton(root, '切换到列表视图').getAttribute('aria-pressed')).toBe('true')
-
-    findButton(root, '切换到列表视图').click()
-    await settle()
-    expect(localStorage.getItem('aether-provider-card-view')).toBe('false')
-  })
-
-  it.each([
-    { name: 'cards', initial: false, selected: true, title: '切换到卡片视图' },
-    { name: 'table', initial: true, selected: false, title: '切换到列表视图' },
-  ])('immediately saves $name and restores it while reloading data', async ({ initial, selected, title }) => {
-    localStorage.setItem('aether-provider-card-view', String(initial))
-    let root = await mountView()
-    findButton(root, title).click()
-    expect(localStorage.getItem('aether-provider-card-view')).toBe(String(selected))
-
-    unmountView()
-    let finishLoading!: (value: { items: ProviderWithEndpointsSummary[]; total: number }) => void
-    apiMocks.getProvidersSummary.mockReturnValue(new Promise((resolve) => {
-      finishLoading = resolve
-    }))
-    root = await mountView()
-    const restoredTitle = selected ? '切换到列表视图' : '切换到卡片视图'
-    expect(findButton(root, restoredTitle).getAttribute('aria-pressed')).toBe(String(selected))
-    expect(findButton(root, '刷新').disabled).toBe(true)
-
-    finishLoading({ items: [createProvider()], total: 1 })
-    await settle()
-    expect(root.querySelector('table') === null).toBe(selected)
-    expect(root.querySelector('dl') !== null).toBe(selected)
-    expect(localStorage.getItem('aether-provider-card-view')).toBe(String(selected))
-  })
-
-  it('keeps the current search and page when switching layouts and filters locally', async () => {
+describe('ProviderManagement provider directory', () => {
+  it('filters and paginates the current search locally', async () => {
     apiMocks.getProvidersSummary.mockResolvedValue({ items: Array.from({ length: 30 }, (_, index) => createProvider({ id: `provider-${index + 1}` })), total: 30 })
     const root = await mountView()
     const search = root.querySelector<HTMLInputElement>('#provider-search')!
@@ -416,21 +310,19 @@ describe('ProviderManagement card view', () => {
     secondPage.click()
     await settle()
 
-    findButton(root, '切换到卡片视图').click()
-    await settle()
     expect(search.value).toBe('Provider')
     expect(root.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe('2')
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledWith({ page: 1, page_size: 10000 }, expect.any(Object))
   })
 
-  it('supports note editing, status actions, and details from cards', async () => {
-    localStorage.setItem('aether-provider-card-view', 'true')
+  it.each(['table', 'mobile'] as const)('supports note editing, status actions, and details from the %s list', async layout => {
     const root = await mountView()
-    findButton(root, 'Primary provider').click()
+    const row = providerElements(root, layout)[0]!
+    row.querySelector<HTMLElement>('[title="Primary provider"]')!.click()
     await settle()
 
-    const input = root.querySelector<HTMLInputElement>('[data-desc-editor] input')!
+    const input = row.querySelector<HTMLInputElement>('[data-desc-editor] input')!
     expect(input.value).toBe('Primary provider')
     input.value = 'Updated note'
     input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -441,57 +333,46 @@ describe('ProviderManagement card view', () => {
     expect(root.textContent).toContain('Updated note')
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
 
-    findButton(root, '全局停用提供商').click()
+    findButton(row, '全局停用提供商').click()
     await settle()
     expect(apiMocks.updateProvider).toHaveBeenCalledWith('provider-1', { is_active: false })
     expect(root.querySelector('[data-provider-detail]')).toBeNull()
 
-    findButton(root, 'Provider One').click()
+    findButton(row, '查看详情').click()
     await vi.waitFor(() => {
       expect(root.querySelector('[data-provider-detail="provider-1"]')).not.toBeNull()
     })
   })
 
   it('uses account labels and handles providers without endpoints', async () => {
-    localStorage.setItem('aether-provider-card-view', 'true')
     apiMocks.getProvidersSummary.mockResolvedValue({
       items: [createProvider({ provider_type: 'codex', is_active: false, endpoint_health_details: [] })],
       total: 1,
     })
     const root = await mountView()
 
-    expect(root.querySelector('dl')?.textContent).toContain('账号')
+    expect(providerElements(root)[0]?.textContent).toContain('账号')
     expect(root.textContent).toContain('暂无端点')
     expect(findButton(root, '全局启用提供商')).not.toBeNull()
   })
 
-  it('does not display cards during loading or with an empty result', async () => {
-    localStorage.setItem('aether-provider-card-view', 'true')
+  it('does not display provider rows during loading or with an empty result', async () => {
     let resolveRequest!: (value: { items: ProviderWithEndpointsSummary[]; total: number }) => void
     apiMocks.getProvidersSummary.mockReturnValue(new Promise((resolve) => {
       resolveRequest = resolve
     }))
     const root = await mountView()
-    expect(root.querySelector('dl')).toBeNull()
+    expect(root.querySelector('[data-provider-sort-id]')).toBeNull()
     expect(findButton(root, '刷新').disabled).toBe(true)
 
     resolveRequest({ items: [], total: 0 })
     await settle()
-    expect(root.querySelector('dl')).toBeNull()
+    expect(root.querySelector('[data-provider-sort-id]')).toBeNull()
     expect(root.textContent).toContain('暂无提供商，点击右上角添加')
     expect(findButton(root, '刷新').disabled).toBe(false)
   })
 
-  it('translates the view switch labels', async () => {
-    const root = await mountView()
-    setI18nLocale('en-US')
-    await settle()
-    expect(findButton(root, 'Switch to card view').getAttribute('aria-label')).toBe('Card view')
 
-    findButton(root, 'Switch to card view').click()
-    await settle()
-    expect(findButton(root, 'Switch to list view').getAttribute('aria-pressed')).toBe('true')
-  })
 })
 
 describe('ProviderManagement group directory', () => {
@@ -504,10 +385,9 @@ describe('ProviderManagement group directory', () => {
     expect(root.textContent).toContain('$125.00')
   })
 
-  it.each(['table', 'mobile card', 'grid card'] as const)('keeps the %s group action before details and isolated from global provider state', async layout => {
+  it.each(['table', 'mobile list'] as const)('keeps the %s group action before details and isolated from global provider state', async layout => {
     const providers = mockSortableProviders()
     providers[3]!.is_active = false
-    localStorage.setItem('aether-provider-card-view', String(layout === 'grid card'))
     workspace.groups['group-b'] = {
       ...setModelProviderPriorityOverrides(createEmptyRoutingGroupConfig(), '*', { 'provider-4': 0, 'provider-2': 1, 'provider-3': 2, 'provider-1': 3 }),
       disabled_providers: ['provider-4'],
@@ -811,9 +691,9 @@ function mockSortableProviders() {
   return providers
 }
 
-function providerElements(root: HTMLElement): HTMLElement[] {
-  const container = root.querySelector('table') ?? root
-  return [...container.querySelectorAll<HTMLElement>('[data-provider-sort-id]')]
+function providerElements(root: HTMLElement, layout: 'table' | 'mobile' = 'table'): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('[data-provider-sort-id]')]
+    .filter(element => layout === 'table' ? element.closest('table') : !element.closest('table'))
 }
 
 function providerOrder(root: HTMLElement): string[] {
@@ -830,8 +710,8 @@ function pointerEvent(type: string, clientX: number, clientY: number, options: {
   return event
 }
 
-function startProviderDrag(root: HTMLElement, sourceId: string, targetId: string, pointerType = 'mouse') {
-  const elements = providerElements(root)
+function startProviderDrag(root: HTMLElement, sourceId: string, targetId: string, pointerType = 'mouse', layout: 'table' | 'mobile' = 'table') {
+  const elements = providerElements(root, layout)
   const handle = elements.find(element => element.dataset.providerSortId === sourceId)!
     .querySelector<HTMLButtonElement>('[data-provider-drag-handle]')!
   const target = elements.find(element => element.dataset.providerSortId === targetId)!
@@ -849,7 +729,7 @@ async function dropProvider(handle: HTMLButtonElement) {
 }
 
 describe('ProviderManagement group priority ordering', () => {
-  it('drags table rows, synchronizes both card layouts, and updates only the current group draft', async () => {
+  it('drags table rows, synchronizes the mobile list, and updates only the current group draft', async () => {
     const providers = mockSortableProviders()
     const root = await mountView()
     const { handle, target } = startProviderDrag(root, 'provider-1', 'provider-3')
@@ -870,26 +750,20 @@ describe('ProviderManagement group priority ordering', () => {
     expect(getModelPolicy(workspace.groups['group-a']!, '*').provider_priority_overrides).toEqual({ 'provider-2': 0, 'provider-3': 1, 'provider-1': 2, 'provider-4': 3 })
     expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
 
-    findButton(root, '切换到卡片视图').click()
-    await settle()
     expect(providerOrder(root)).toEqual(expected)
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
   })
 
-  it('supports touch dragging and retains the group draft across resource refresh and layout changes', async () => {
+  it('supports mobile touch dragging and retains the group draft across resource refresh and remounts', async () => {
     mockSortableProviders()
-    localStorage.setItem('aether-provider-card-view', 'true')
     let root = await mountView()
-    const { handle } = startProviderDrag(root, 'provider-4', 'provider-1', 'touch')
+    const { handle } = startProviderDrag(root, 'provider-4', 'provider-1', 'touch', 'mobile')
     await dropProvider(handle)
     const expected = ['provider-4', 'provider-1', 'provider-2', 'provider-3']
     expect(providerOrder(root)).toEqual(expected)
     expect(JSON.parse(localStorage.getItem('aether-provider-display-order') ?? '[]')).toEqual([])
 
     findButton(root, '刷新').click()
-    await settle()
-    expect(providerOrder(root)).toEqual(expected)
-    findButton(root, '切换到列表视图').click()
     await settle()
     expect(providerOrder(root)).toEqual(expected)
 

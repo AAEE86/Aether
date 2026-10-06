@@ -154,7 +154,6 @@ describe('ProviderSchedulingView workspace navigation', () => {
       selector(root),
       element(root, '[aria-label="策略名称"]'),
       button(root, '启用策略'),
-      element(root, '[aria-label="策略描述"]'),
       button(root, '查看示例提供商'),
       button(root, '高级设置'),
       button(root, '故障转移'),

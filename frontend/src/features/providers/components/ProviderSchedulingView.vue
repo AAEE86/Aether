@@ -101,7 +101,7 @@
             <div
               v-if="draft"
               ref="groupMetadata"
-              class="min-w-0 space-y-2 border-b border-border/50 p-3"
+              class="min-w-0 border-b border-border/50 p-3"
               aria-label="分组信息"
               :inert="busy"
             >
@@ -126,16 +126,6 @@
                   />
                 </label>
               </div>
-              <label class="block min-w-0">
-                <span class="sr-only">描述</span>
-                <Input
-                  v-model="draft.description"
-                  size="sm"
-                  aria-label="策略描述"
-                  placeholder="描述这个分组的用途"
-                  :disabled="busy"
-                />
-              </label>
             </div>
             <RoutingSchedulingPolicyEditor
               v-if="draft"
@@ -380,11 +370,6 @@
           aria-label="新分组名称"
           placeholder="例如：日常使用"
         /></label>
-        <label class="block space-y-1.5 text-sm"><span>描述</span><Input
-          v-model="createForm.description"
-          aria-label="新分组描述"
-          placeholder="这个分组的用途"
-        /></label>
         <label class="flex items-center justify-between gap-3 text-sm"><span>启用分组</span><Switch
           v-model="createForm.enabled"
           aria-label="启用新分组"
@@ -470,7 +455,6 @@ interface RoutingGroupDraft {
   id?: string
   version: number
   name: string
-  description: string
   enabled: boolean
   is_system_default: boolean
   config_json: RoutingGroupConfig
@@ -503,7 +487,7 @@ const deleting = ref(false)
 const creating = ref(false)
 const busy = computed(() => loading.value || saving.value || deleting.value || creating.value)
 const createDialogOpen = ref(false)
-const createForm = ref({ name: '', description: '', enabled: true })
+const createForm = ref({ name: '', enabled: true })
 const draftGeneration = ref(0)
 const groupMetadata = ref<HTMLElement | null>(null)
 const advancedOpen = ref(false)
@@ -547,7 +531,7 @@ function cloneConfig(config: RoutingGroupConfig): RoutingGroupConfig {
 }
 
 function draftSnapshotValue(value: RoutingGroupDraft): string {
-  return JSON.stringify({ name: value.name.trim(), description: value.description.trim() || null, enabled: value.enabled, is_system_default: value.is_system_default, config_json: cloneConfig(value.config_json) })
+  return JSON.stringify({ name: value.name.trim(), enabled: value.enabled, is_system_default: value.is_system_default, config_json: cloneConfig(value.config_json) })
 }
 
 function resetEditors(): void {
@@ -566,13 +550,13 @@ function selectGroup(group: RoutingGroupRecord, preserveSelection = false): void
   initialSchedulingSelection.value = selection
     ? { id: selection.id, scope: selection.scope, modelNames: [...selection.modelNames] }
     : null
-  draft.value = { id: group.id, version: group.version, name: group.name, description: group.description ?? '', enabled: group.enabled, is_system_default: group.is_system_default, config_json: cloneConfig(group.config_json) }
+  draft.value = { id: group.id, version: group.version, name: group.name, enabled: group.enabled, is_system_default: group.is_system_default, config_json: cloneConfig(group.config_json) }
   savedDraftSnapshot.value = draftSnapshotValue(draft.value)
 }
 
 function openCreate(): void {
   if (busy.value) return
-  createForm.value = { name: '', description: '', enabled: true }
+  createForm.value = { name: '', enabled: true }
   createDialogOpen.value = true
 }
 function closeCreate(value: boolean): void { if (!busy.value) createDialogOpen.value = value }
@@ -731,7 +715,7 @@ async function saveDraft(): Promise<boolean> {
   const targetGroupId = draft.value.id
   const submittedGeneration = draftGeneration.value
   const submittedSnapshot = draftSnapshotValue(draft.value)
-  const payload = { name, description: draft.value.description.trim() || null, enabled: draft.value.enabled, is_system_default: draft.value.is_system_default, expected_version: draft.value.version, config_json: cloneConfig(draft.value.config_json) }
+  const payload = { name, enabled: draft.value.enabled, is_system_default: draft.value.is_system_default, expected_version: draft.value.version, config_json: cloneConfig(draft.value.config_json) }
   saving.value = true
   try {
     const saved = await updateRoutingGroup(targetGroupId, payload)
@@ -759,7 +743,7 @@ async function createGroup(): Promise<void> {
   if (draftDirty.value && !await ensureSaved()) return
   creating.value = true
   try {
-    const saved = await createRoutingGroup({ name: createForm.value.name.trim(), description: createForm.value.description.trim() || null, enabled: createForm.value.enabled, is_system_default: groups.value.length === 0, sort_order: groups.value.length, config_json: createEmptyRoutingGroupConfig() })
+    const saved = await createRoutingGroup({ name: createForm.value.name.trim(), enabled: createForm.value.enabled, is_system_default: groups.value.length === 0, sort_order: groups.value.length, config_json: createEmptyRoutingGroupConfig() })
     replaceGroup(saved, true)
     createDialogOpen.value = false
     internalNavigation = true
