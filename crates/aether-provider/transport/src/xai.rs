@@ -1,7 +1,10 @@
 pub mod video;
 
 use std::collections::BTreeMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
+
+use crate::client_identity::VersionedClientIdentity;
+use aether_ai_formats::client_profile::ClientProfileStore;
 
 use aether_ai_formats::normalize_api_format_alias;
 use serde_json::Value;
@@ -23,37 +26,31 @@ pub const XAI_CLIENT_IDENTIFIER_VALUE: &str = "grok-shell";
 pub const XAI_AUTHENTICATE_RESPONSE_HEADER: &str = "x-authenticateresponse";
 pub const XAI_AUTHENTICATE_RESPONSE_VALUE: &str = "authenticate-response";
 
-static ACTIVE_CLIENT_VERSION: OnceLock<RwLock<String>> = OnceLock::new();
+static ACTIVE_CLIENT_VERSION: OnceLock<ClientProfileStore<VersionedClientIdentity>> =
+    OnceLock::new();
 
-fn active_client_version() -> &'static RwLock<String> {
-    ACTIVE_CLIENT_VERSION.get_or_init(|| RwLock::new(XAI_DEFAULT_CLIENT_VERSION.to_owned()))
+fn active_client_version() -> &'static ClientProfileStore<VersionedClientIdentity> {
+    ACTIVE_CLIENT_VERSION.get_or_init(|| {
+        ClientProfileStore::new(
+            VersionedClientIdentity::new(XAI_DEFAULT_CLIENT_VERSION, "xai-grok-workspace", "")
+                .expect("valid built-in Grok identity"),
+        )
+    })
 }
 
 /// 返回当前发布的 Grok CLI 版本快照。
 pub fn xai_client_version() -> String {
-    active_client_version()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    active_client_version().snapshot().version.clone()
 }
 
-/// 原子替换当前 Grok CLI 版本，返回替换前的版本；版本校验由发布检查器负责，这里只拒绝明显非法值。
+/// 原子替换当前 Grok CLI 身份，返回替换前的版本。
 pub fn set_xai_client_version(version: &str) -> Result<String, &'static str> {
-    let version = version.trim();
-    if version.is_empty()
-        || version.len() > 64
-        || !version.bytes().all(|byte| (33..=126).contains(&byte))
-    {
-        return Err("invalid Grok CLI version");
-    }
-    let mut current = active_client_version()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Ok(std::mem::replace(&mut *current, version.to_owned()))
+    let profile = VersionedClientIdentity::new(version, "xai-grok-workspace", "")?;
+    Ok(active_client_version().publish(profile).version.clone())
 }
 
 pub fn xai_cli_user_agent() -> String {
-    format!("xai-grok-workspace/{}", xai_client_version())
+    active_client_version().snapshot().user_agent.clone()
 }
 
 pub fn is_xai_provider_transport(transport: &GatewayProviderTransportSnapshot) -> bool {
@@ -125,7 +122,7 @@ pub fn should_attach_cli_identity_headers(
 
 pub fn insert_cli_identity_headers(headers: &mut BTreeMap<String, String>) {
     let client_version = xai_client_version();
-    let user_agent = xai_cli_user_agent();
+    let user_agent = format!("xai-grok-workspace/{client_version}");
     for (name, value) in [
         (XAI_TOKEN_AUTH_HEADER, XAI_TOKEN_AUTH_VALUE),
         (XAI_CLIENT_VERSION_HEADER, client_version.as_str()),

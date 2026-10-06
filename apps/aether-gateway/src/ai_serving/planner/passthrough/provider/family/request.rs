@@ -21,8 +21,7 @@ use crate::ai_serving::transport::{
     build_same_format_provider_headers, resolve_local_gemini_cli_request_auth,
     GeminiCliRequestAuth, GeminiCliRequestAuthSupport, GeminiCliRequestEnvelopeSupport,
     GrokHeaderInput, SameFormatProviderCompatibilityEdit,
-    SameFormatProviderCompatibilityEditAction, SameFormatProviderHeadersInput,
-    GEMINI_CLI_USER_AGENT, GROK_CHAT_PATH,
+    SameFormatProviderCompatibilityEditAction, SameFormatProviderHeadersInput, GROK_CHAT_PATH,
 };
 use crate::ai_serving::{
     CandidateFailureDiagnostic, GatewayProviderTransportSnapshot, CODEX_RESPONSES_LITE_HEADER,
@@ -533,7 +532,10 @@ pub(crate) async fn resolve_local_same_format_provider_candidate_payload_parts(
         .map(build_antigravity_static_identity_headers)
         .unwrap_or_default();
     if prepared.behavior.is_gemini_cli {
-        extra_headers.insert("user-agent".to_string(), GEMINI_CLI_USER_AGENT.to_string());
+        extra_headers.insert(
+            "user-agent".to_string(),
+            crate::ai_serving::transport::gemini_cli::gemini_cli_client_user_agent(),
+        );
     }
     let Some(mut provider_request_headers) = (if is_grok {
         build_grok_browser_headers(GrokHeaderInput {

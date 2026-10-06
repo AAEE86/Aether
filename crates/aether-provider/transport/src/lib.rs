@@ -5,6 +5,7 @@ pub mod auth;
 mod auth_config;
 mod cache;
 pub mod claude_code;
+pub mod client_identity;
 mod codex_fingerprint;
 pub mod conversion;
 mod diagnostics;

@@ -1,4 +1,6 @@
-use std::sync::{LazyLock, OnceLock, RwLock};
+use std::sync::{LazyLock, OnceLock};
+
+use crate::client_profile::ClientProfileStore;
 
 static OS_INFO: LazyLock<os_info::Info> = LazyLock::new(os_info::get);
 
@@ -59,26 +61,20 @@ impl Default for CodexClientProfile {
     }
 }
 
-static ACTIVE_PROFILE: OnceLock<RwLock<CodexClientProfile>> = OnceLock::new();
+static ACTIVE_PROFILE: OnceLock<ClientProfileStore<CodexClientProfile>> = OnceLock::new();
 
-fn active_profile() -> &'static RwLock<CodexClientProfile> {
-    ACTIVE_PROFILE.get_or_init(|| RwLock::new(CodexClientProfile::default()))
+fn active_profile() -> &'static ClientProfileStore<CodexClientProfile> {
+    ACTIVE_PROFILE.get_or_init(|| ClientProfileStore::new(CodexClientProfile::default()))
 }
 
 /// 返回当前画像的独立快照，调用方不会持有全局锁。
 pub fn codex_client_profile() -> CodexClientProfile {
-    active_profile()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    (*active_profile().snapshot()).clone()
 }
 
 /// 原子替换当前画像，并返回替换前的画像。
 pub fn set_codex_client_profile(profile: CodexClientProfile) -> CodexClientProfile {
-    let mut current = active_profile()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    std::mem::replace(&mut *current, profile)
+    (*active_profile().publish(profile)).clone()
 }
 
 /// 发布一份新的 CLI 画像。
