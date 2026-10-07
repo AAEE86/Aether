@@ -901,6 +901,7 @@ CREATE TABLE IF NOT EXISTS public.stats_daily (
     cache_read_tokens bigint DEFAULT '0'::bigint NOT NULL,
     total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL,
     actual_total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL,
+    billing_cost numeric(20,8),
     input_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL,
     output_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL,
     cache_creation_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL,

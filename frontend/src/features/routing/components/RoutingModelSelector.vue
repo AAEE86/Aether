@@ -217,6 +217,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [models: string[]]
   reload: []
+  close: []
 }>()
 
 const trigger = ref<HTMLButtonElement | null>(null)
@@ -255,14 +256,23 @@ async function openModels(): Promise<void> {
   if (props.disabled) return
   open.value = true
   await nextTick()
-  searchInput.value?.inputRef?.focus({ preventScroll: true })
+  focusSearch()
 }
 
 function closeModels(): void {
-  if (props.inline) return
+  if (props.inline) {
+    emit('close')
+    return
+  }
   open.value = false
   trigger.value?.focus({ preventScroll: true })
 }
+
+function focusSearch(): void {
+  searchInput.value?.inputRef?.focus({ preventScroll: true })
+}
+
+defineExpose({ focusSearch })
 
 function modelLabel(name: string): string {
   return props.models.find(model => model.name === name)?.display_name || name

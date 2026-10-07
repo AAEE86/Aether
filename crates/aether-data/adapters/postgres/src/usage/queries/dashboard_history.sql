@@ -11,7 +11,7 @@ WITH daily AS (
       CASE WHEN effective_input_tokens=0 AND input_tokens>0 THEN input_tokens
         ELSE effective_input_tokens END + cache_creation_tokens + cache_read_tokens
       ELSE total_input_context END AS cache_input_tokens,
-    actual_total_cost::numeric AS billable_amount
+    COALESCE(billing_cost,actual_total_cost::numeric) AS billable_amount
   FROM stats_daily
 ), facts AS MATERIALIZED (
   SELECT (day AT TIME ZONE 'UTC')::date AS day, request_count,
@@ -22,7 +22,11 @@ WITH daily AS (
   SELECT (b.created_at AT TIME ZONE 'UTC')::date, 1::bigint,
     b.input_tokens, b.output_tokens, b.total_tokens, b.cache_creation_input_tokens,
     b.cache_read_input_tokens, b.total_input_context,
-    COALESCE(s.billing_actual_total_cost_usd::numeric,u.actual_total_cost_usd::numeric)
+    CASE WHEN COALESCE(u.request_metadata::jsonb->'usage_pricing_available','true'::jsonb)<>'false'::jsonb
+      AND (s.billing_actual_total_cost_usd IS NOT NULL OR COALESCE(s.billing_status,u.billing_status)='settled')
+      THEN public.usage_customer_billable_amount(u.request_metadata::jsonb,
+        COALESCE(s.billing_total_cost_usd::numeric,u.total_cost_usd::numeric),
+        COALESCE(s.billing_actual_total_cost_usd::numeric,u.actual_total_cost_usd::numeric)) END
   FROM usage_billing_facts b
   JOIN usage u USING (request_id)
   LEFT JOIN usage_settlement_snapshots s USING (request_id)

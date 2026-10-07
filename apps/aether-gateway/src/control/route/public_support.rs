@@ -637,6 +637,7 @@ pub(super) fn classify_public_support_route(
                 | "/api/users/me/usage/interval-timeline"
                 | "/api/users/me/usage/heatmap"
                 | "/api/users/me/providers"
+                | "/api/users/me/routing-groups"
                 | "/api/users/me/available-models"
                 | "/api/users/me/client-config"
                 | "/api/users/me/endpoint-status"
@@ -654,6 +655,7 @@ pub(super) fn classify_public_support_route(
             "/api/users/me/usage/interval-timeline" => "usage_interval_timeline",
             "/api/users/me/usage/heatmap" => "usage_heatmap",
             "/api/users/me/providers" => "providers",
+            "/api/users/me/routing-groups" => "routing_groups",
             "/api/users/me/available-models" => "available_models",
             "/api/users/me/client-config" => "client_config",
             "/api/users/me/endpoint-status" => "endpoint_status",

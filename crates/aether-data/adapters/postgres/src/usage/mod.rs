@@ -42,18 +42,21 @@ use crate::{
     PostgresTransactionRunner,
 };
 use aether_data_contracts::repository::usage::{
-    api_key_usage_contribution, model_usage_contribution, provider_api_key_usage_contribution,
-    sanitize_usage_capture_controls_for_persistence, sanitize_usage_for_persistence,
-    sanitize_usage_request_metadata, usage_can_recover_terminal_failure,
-    usage_error_category_for_status_code, usage_lifecycle_update_allowed, ApiKeyUsageDelta,
-    ModelUsageDelta, PendingUsageCleanupSummary, ProviderApiKeyUsageContribution,
-    ProviderApiKeyUsageDelta, ProviderApiKeyWindowUsageRequest, StoredProviderApiKeyUsageSummary,
-    StoredProviderApiKeyWindowUsageSummary, StoredProviderUsageSummary, StoredRequestUsageAudit,
-    StoredUsageDailySummary, UpsertUsageRecord, UsageAuditListQuery, UsageCounterFlushSummary,
-    UsageCounterHealthSnapshot, UsageCounterPendingHealthSnapshot, UsageDailyHeatmapQuery,
-    UsageReadRepository, UsageWriteRepository, PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY,
-    PROVIDER_REASONING_EFFORT_METADATA_KEY, PROVIDER_SERVICE_TIER_METADATA_KEY,
-    REQUESTED_REASONING_EFFORT_METADATA_KEY,
+    api_key_usage_contribution, model_usage_contribution, preserve_usage_routing_group_snapshot,
+    provider_api_key_usage_contribution, sanitize_usage_capture_controls_for_persistence,
+    sanitize_usage_for_persistence, sanitize_usage_request_metadata,
+    usage_can_recover_terminal_failure, usage_error_category_for_status_code,
+    usage_lifecycle_update_allowed, ApiKeyUsageDelta, ModelUsageDelta, PendingUsageCleanupSummary,
+    ProviderApiKeyUsageContribution, ProviderApiKeyUsageDelta, ProviderApiKeyWindowUsageRequest,
+    StoredProviderApiKeyUsageSummary, StoredProviderApiKeyWindowUsageSummary,
+    StoredProviderUsageSummary, StoredRequestUsageAudit, StoredUsageDailySummary,
+    UpsertUsageRecord, UsageAuditListQuery, UsageCounterFlushSummary, UsageCounterHealthSnapshot,
+    UsageCounterPendingHealthSnapshot, UsageDailyHeatmapQuery, UsageReadRepository,
+    UsageWriteRepository, BILLING_MULTIPLIER_SNAPSHOT_METADATA_KEY,
+    PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY, PROVIDER_REASONING_EFFORT_METADATA_KEY,
+    PROVIDER_SERVICE_TIER_METADATA_KEY, REQUESTED_REASONING_EFFORT_METADATA_KEY,
+    ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY, ROUTING_GROUP_ID_METADATA_KEY,
+    ROUTING_GROUP_NAME_METADATA_KEY,
 };
 use aether_data_contracts::DataLayerError;
 
@@ -8762,6 +8765,15 @@ ORDER BY "usage".user_id ASC
                         );
                         request_metadata_json = json_bind_text(request_metadata_value.as_ref())?;
                     }
+                    if capture_update_allowed {
+                        request_metadata_value = preserve_usage_routing_group_snapshot(
+                            request_metadata_value,
+                            previous_usage
+                                .as_ref()
+                                .and_then(|stored| stored.request_metadata.as_ref()),
+                        );
+                        request_metadata_json = json_bind_text(request_metadata_value.as_ref())?;
+                    }
                     let _row = sqlx::query(UPSERT_SQL)
                         .bind(Uuid::new_v4().to_string())
                         .bind(&usage.request_id)
@@ -12554,6 +12566,10 @@ fn retain_previous_request_audit_metadata(
         "request_path",
         "request_query_string",
         "request_path_and_query",
+        ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY,
+        BILLING_MULTIPLIER_SNAPSHOT_METADATA_KEY,
+        ROUTING_GROUP_ID_METADATA_KEY,
+        ROUTING_GROUP_NAME_METADATA_KEY,
     ] {
         if let Some(value) = previous_metadata.get(key) {
             retained.insert(key.to_string(), value.clone());

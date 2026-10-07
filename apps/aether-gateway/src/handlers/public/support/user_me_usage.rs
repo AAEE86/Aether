@@ -561,6 +561,8 @@ fn build_users_me_usage_record_payload(
     let cache_read_price_per_1m = item.settlement_cache_read_price_per_1m();
     let cache_creation_input_tokens = users_me_usage_cache_creation_tokens(item);
     let rate_multiplier = item.settlement_rate_multiplier();
+    let billing_multiplier = item.billing_multiplier();
+    let billing_cost = item.billing_cost().map(|cost| round_to(cost, 6));
     let client_is_stream = users_me_usage_client_is_stream(item);
     let upstream_is_stream = users_me_usage_upstream_is_stream(item);
     let mut payload = json!({
@@ -576,6 +578,8 @@ fn build_users_me_usage_record_payload(
         "output_tokens": item.output_tokens,
         "total_tokens": item.total_tokens,
         "cost": round_to(item.total_cost_usd, 6),
+        "billing_multiplier": billing_multiplier,
+        "billing_cost": billing_cost,
         "response_time_ms": item.response_time_ms,
         "first_byte_time_ms": item.first_byte_time_ms,
         "is_stream": item.is_stream,
@@ -614,6 +618,8 @@ fn build_users_me_usage_record_payload(
         ),
     });
     payload["end_to_end_time_ms"] = json!(users_me_usage_metadata_u64(item, "end_to_end_time_ms"));
+    payload["routing_group_id"] = json!(item.routing_group_id());
+    payload["routing_group_name"] = json!(item.routing_group_name());
     payload["end_to_end_first_byte_time_ms"] = json!(users_me_usage_metadata_u64(
         item,
         "end_to_end_first_byte_time_ms"
@@ -643,6 +649,8 @@ fn build_users_me_usage_record_payload(
 
 fn build_users_me_usage_active_payload(item: &StoredRequestUsageAudit) -> serde_json::Value {
     let cache_creation_input_tokens = users_me_usage_cache_creation_tokens(item);
+    let billing_multiplier = item.billing_multiplier();
+    let billing_cost = item.billing_cost().map(|cost| round_to(cost, 6));
     let client_is_stream = users_me_usage_client_is_stream(item);
     let upstream_is_stream = users_me_usage_upstream_is_stream(item);
     let mut payload = json!({
@@ -659,6 +667,8 @@ fn build_users_me_usage_active_payload(item: &StoredRequestUsageAudit) -> serde_
         "cost": round_to(item.total_cost_usd, 6),
         "actual_cost": round_to(item.actual_total_cost_usd, 6),
         "rate_multiplier": item.settlement_rate_multiplier(),
+        "billing_multiplier": billing_multiplier,
+        "billing_cost": billing_cost,
         "response_time_ms": item.response_time_ms,
         "first_byte_time_ms": item.first_byte_time_ms,
         "updated_at": unix_secs_to_rfc3339(item.updated_at_unix_secs),
@@ -685,6 +695,8 @@ fn build_users_me_usage_active_payload(item: &StoredRequestUsageAudit) -> serde_
         "response_model": item.provider_response_model(),
         "has_fallback": item.has_fallback(),
     });
+    payload["routing_group_id"] = json!(item.routing_group_id());
+    payload["routing_group_name"] = json!(item.routing_group_name());
     payload["end_to_end_time_ms"] = json!(users_me_usage_metadata_u64(item, "end_to_end_time_ms"));
     payload["end_to_end_first_byte_time_ms"] = json!(users_me_usage_metadata_u64(
         item,
@@ -1865,6 +1877,59 @@ mod tests {
         assert_eq!(payload["cache_creation_input_tokens"], 10);
         assert_eq!(payload["cache_creation_ephemeral_5m_input_tokens"], 4);
         assert_eq!(payload["cache_creation_ephemeral_1h_input_tokens"], 6);
+    }
+
+    #[test]
+    fn user_usage_payloads_preserve_routing_group_snapshot_and_precise_display_cost() {
+        for (metadata, multiplier, cost, group_name) in [
+            (None, 1.0, json!(0.0), serde_json::Value::Null),
+            (
+                Some(json!({"routing_group_billing_multiplier": 0.0})),
+                0.0,
+                json!(0.0),
+                serde_json::Value::Null,
+            ),
+            (
+                Some(json!({
+                    "routing_group_billing_multiplier": 2.5,
+                    "routing_group_id": "group-1",
+                    "routing_group_name": "请求时的分组",
+                    "rate_multiplier": 0.5
+                })),
+                2.5,
+                json!(0.000004),
+                json!("请求时的分组"),
+            ),
+            (
+                Some(json!({
+                    "billing_multiplier_snapshot": {"version": 1, "factors": {"routing_group": 2.5, "user_group": 2.0}, "multiplier": 5.0},
+                    "routing_group_billing_multiplier": 2.5,
+                    "routing_group_id": "group-1",
+                    "routing_group_name": "请求时的分组",
+                    "rate_multiplier": 0.5
+                })),
+                5.0,
+                json!(0.000007),
+                json!("请求时的分组"),
+            ),
+        ] {
+            let item = StoredRequestUsageAudit {
+                total_cost_usd: 0.00000149,
+                actual_total_cost_usd: 0.0000002,
+                request_metadata: metadata,
+                ..sample_usage("completed")
+            };
+            let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+            let active = build_users_me_usage_active_payload(&item);
+            for payload in [&record, &active] {
+                assert_eq!(payload["billing_multiplier"], multiplier);
+                assert_eq!(payload["billing_cost"], cost);
+                assert_eq!(payload["routing_group_name"], group_name);
+                assert_eq!(payload["cost"], 0.000001);
+            }
+            assert!(record.get("actual_cost").is_none());
+            assert!(record.get("rate_multiplier").is_none());
+        }
     }
 
     #[test]

@@ -170,6 +170,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { mergeUsageBillingSnapshot } from '@/features/usage/utils/usageBilling'
 import { useRoute, useRouter } from 'vue-router'
 import { useLocalStorage } from '@vueuse/core'
 import { useAuthStore } from '@/stores/auth'
@@ -620,9 +621,10 @@ async function pollActiveRequests() {
         record.cache_creation_ephemeral_1h_input_tokens =
           update.cache_creation_ephemeral_1h_input_tokens ?? undefined
         record.cache_read_input_tokens = update.cache_read_input_tokens ?? undefined
+        Object.assign(record, mergeUsageBillingSnapshot(record, update))
         record.cost = update.cost
         record.actual_cost = update.actual_cost ?? undefined
-        record.rate_multiplier = update.rate_multiplier ?? undefined
+        record.rate_multiplier = update.rate_multiplier ?? record.rate_multiplier
         const responseTiming = mergeUsageRecordResponseTiming(
           {
             response_time_ms: record.response_time_ms,
@@ -1277,6 +1279,10 @@ function handleDetailRequestState(update: {
   cacheReadInputTokens?: number | null
   cost?: number | null
   actualCost?: number | null
+  billingMultiplier?: number | null
+  billingCost?: number | null
+  routingGroupId?: string | null
+  routingGroupName?: string | null
   responseTimeMs?: number | null
   firstByteTimeMs?: number | null
   isStream?: boolean | null
@@ -1342,6 +1348,13 @@ function handleDetailRequestState(update: {
   if ('cacheReadInputTokens' in update && update.cacheReadInputTokens != null) {
     record.cache_read_input_tokens = update.cacheReadInputTokens
   }
+  Object.assign(record, mergeUsageBillingSnapshot(record, {
+    cost: update.cost,
+    billing_multiplier: update.billingMultiplier,
+    billing_cost: update.billingCost,
+    routing_group_id: update.routingGroupId,
+    routing_group_name: update.routingGroupName,
+  }))
   if ('cost' in update && update.cost != null) {
     record.cost = update.cost
   }

@@ -2,6 +2,7 @@ import {
   DEFAULT_ROUTING_POLICY_MODEL,
   SCHEDULING_POLICY_RULE_PREFIX,
   createEmptyModelPolicy,
+  getDefaultModelPolicy,
   getModelPolicy,
   getModelScheduling,
   isGeneratedModelSchedulingRule,
@@ -202,8 +203,16 @@ export function writeSchedulingPolicies(config: RoutingGroupConfig, entries: Sch
 }
 
 export function schedulingPolicyEditorConfig(config: RoutingGroupConfig, entry: SchedulingPolicy): RoutingGroupConfig {
+  // Project inherited membership for display without copying it into the editable policy.
+  const disabledProviders = new Set(config.disabled_providers)
+  for (const [providerId, enabled] of Object.entries(getDefaultModelPolicy(config).provider_enabled_overrides)) {
+    if (enabled) disabledProviders.delete(providerId)
+    else disabledProviders.add(providerId)
+  }
   return normalizeRoutingGroupConfig({
-    disabled_providers: config.disabled_providers,
+    billing_multiplier: config.billing_multiplier,
+    user_visible: config.user_visible,
+    disabled_providers: [...disabledProviders],
     default_policy: {
       ...config.default_policy,
       priority_mode: 'provider',

@@ -160,7 +160,7 @@
                     :priority="getGroupPriority(provider)"
                     :edit-context="priorityEditContext"
                     :enabled="isGroupEnabled(provider.id)"
-                    :disabled="schedulingBusy"
+                    :disabled="priorityEditingDisabled"
                     :priority-disabled="priorityEditingDisabled"
                     :show-priority="false"
                     @update:priority="setGroupPriority(provider.id, $event)"
@@ -170,7 +170,7 @@
                   <ProviderGroupToggleButton
                     :provider-name="provider.name"
                     :enabled="isGroupEnabled(provider.id)"
-                    :disabled="schedulingBusy"
+                    :disabled="priorityEditingDisabled"
                     @update:enabled="setGroupEnabled(provider.id, $event)"
                   />
                 </template>
@@ -213,7 +213,7 @@
                 :priority="getGroupPriority(provider)"
                 :edit-context="priorityEditContext"
                 :enabled="isGroupEnabled(provider.id)"
-                :disabled="schedulingBusy"
+                :disabled="priorityEditingDisabled"
                 :priority-disabled="priorityEditingDisabled"
                 @update:priority="setGroupPriority(provider.id, $event)"
               />
@@ -222,7 +222,7 @@
               <ProviderGroupToggleButton
                 :provider-name="provider.name"
                 :enabled="isGroupEnabled(provider.id)"
-                :disabled="schedulingBusy"
+                :disabled="priorityEditingDisabled"
                 @update:enabled="setGroupEnabled(provider.id, $event)"
               />
             </template>
@@ -325,7 +325,7 @@ import ProviderGroupControls from '@/features/providers/components/ProviderGroup
 import ProviderGroupToggleButton from '@/features/providers/components/ProviderGroupToggleButton.vue'
 import ProviderPriorityInput from '@/features/providers/components/ProviderPriorityInput.vue'
 import { providerGroupPriority, sortGroupProviders, moveGroupProvider } from '@/features/providers/utils/groupPriority'
-import { getDefaultModelPolicy, normalizeRoutingGroupConfig, type RoutingModelPolicy, type RoutingPriorityMode, type RoutingSchedulingMode, type RoutingGroupConfig } from '@/features/routing/utils/routingPolicy'
+import { getDefaultModelPolicy, isRoutingProviderEnabled, normalizeRoutingGroupConfig, type RoutingModelPolicy, type RoutingPriorityMode, type RoutingSchedulingMode, type RoutingGroupConfig } from '@/features/routing/utils/routingPolicy'
 import ProviderDragHandle from '@/features/providers/components/ProviderDragHandle.vue'
 import ProviderDeleteProgressCard from '@/features/providers/components/ProviderDeleteProgressCard.vue'
 import ProviderEmptyState from '@/features/providers/components/ProviderEmptyState.vue'
@@ -595,15 +595,16 @@ function getGroupPriority(provider: ProviderWithEndpointsSummary) {
   return providerGroupPriority(priorityConfig.value, provider)
 }
 function isGroupEnabled(providerId: string) {
-  return !schedulingContext.value.config?.disabled_providers?.includes(providerId)
+  const config = schedulingContext.value.config
+  return config ? isRoutingProviderEnabled(config, providerId, selectedPolicy.value?.policy) : true
 }
 function setGroupEnabled(providerId: string, enabled: boolean) {
-  const config = schedulingContext.value.config
-  if (!config || schedulingBusy.value) return
-  const disabled = new Set(config.disabled_providers ?? [])
-  if (enabled) disabled.delete(providerId)
-  else disabled.add(providerId)
-  schedulingWorkspace.value?.updateDraftConfig({ ...config, disabled_providers: [...disabled] })
+  const policy = selectedPolicy.value?.policy
+  if (!policy || priorityEditingDisabled.value) return
+  schedulingWorkspace.value?.updatePriorityPolicy({
+    ...policy,
+    provider_enabled_overrides: { ...policy.provider_enabled_overrides, [providerId]: enabled },
+  })
 }
 function setGroupPriority(providerId: string, priority: number) {
   const policy = selectedPolicy.value?.policy
@@ -748,9 +749,9 @@ function handleRowClick(event: MouseEvent, providerId: string) {
 
 // 打开添加提供商对话框
 function openAddProviderDialog() {
-  const { groupId, groupName } = schedulingContext.value
+  const { groupId, groupName, config } = schedulingContext.value
   if (!groupId || schedulingBusy.value) {
-    showInfo(legacyT('请先创建或选择策略分组'))
+    showInfo(legacyT(!groupId && config ? '请先保存新分组，再添加提供商' : '请先创建或选择策略分组'))
     return
   }
   providerCreationGroup.value = { id: groupId, name: groupName }

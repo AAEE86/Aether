@@ -17,10 +17,10 @@ SELECT u.created_at, u.api_key_id, u.model, u.provider_id, u.api_format, u.endpo
   u.request_type, u.status, u.is_stream, u.has_format_conversion, u.failure_origin,
   'request'::text AS record_kind,
   COALESCE(s.billing_status, u.billing_status) AS settlement_status,
-  COALESCE(availability.usage_available, 'true'::jsonb) <> 'false'::jsonb AS usage_available,
-  COALESCE(availability.usage_pricing_available, 'true'::jsonb) <> 'false'::jsonb
+  COALESCE(metadata.value->'usage_available', 'true'::jsonb) <> 'false'::jsonb AS usage_available,
+  COALESCE(metadata.value->'usage_pricing_available', 'true'::jsonb) <> 'false'::jsonb
     AND (s.billing_total_cost_usd IS NOT NULL OR COALESCE(s.billing_status, u.billing_status) = 'settled') AS pricing_available,
-  CASE WHEN COALESCE(availability.usage_available, 'true'::jsonb) <> 'false'::jsonb THEN
+  CASE WHEN COALESCE(metadata.value->'usage_available', 'true'::jsonb) <> 'false'::jsonb THEN
   GREATEST(
     COALESCE(
       CASE
@@ -89,15 +89,15 @@ SELECT u.created_at, u.api_key_id, u.model, u.provider_id, u.api_format, u.endpo
     ),
     0
   )::bigint END AS total_tokens,
-  CASE WHEN COALESCE(availability.usage_pricing_available, 'true'::jsonb) <> 'false'::jsonb
+  CASE WHEN COALESCE(metadata.value->'usage_pricing_available', 'true'::jsonb) <> 'false'::jsonb
     AND (s.billing_actual_total_cost_usd IS NOT NULL OR COALESCE(s.billing_status, u.billing_status) = 'settled')
-    THEN round(COALESCE(s.billing_actual_total_cost_usd::numeric, u.actual_total_cost_usd::numeric), 8) END AS billable_amount,
+    THEN public.usage_customer_billable_amount(metadata.value,
+      COALESCE(s.billing_total_cost_usd::numeric, u.total_cost_usd::numeric),
+      COALESCE(s.billing_actual_total_cost_usd::numeric, u.actual_total_cost_usd::numeric)) END AS billable_amount,
   s.allocation_status
 FROM public.usage u
 LEFT JOIN public.usage_settlement_snapshots s USING (request_id)
-CROSS JOIN LATERAL json_to_record(
-  CASE WHEN json_typeof(u.request_metadata)='object' THEN u.request_metadata ELSE '{}'::json END
-) AS availability(usage_available jsonb, usage_pricing_available jsonb)
+CROSS JOIN LATERAL (SELECT u.request_metadata::jsonb AS value OFFSET 0) metadata
 WHERE NOT EXISTS (SELECT 1 FROM public.usage_attribution_snapshots a
   WHERE a.request_id=u.request_id AND a.record_kind='session')
 ) AS usage_analytics_facts_v1"#;

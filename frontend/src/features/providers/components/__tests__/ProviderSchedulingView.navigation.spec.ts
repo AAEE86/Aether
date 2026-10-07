@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref, type App } from 'vue'
 import { createMemoryHistory, createRouter, RouterView, type LocationQueryRaw } from 'vue-router'
 import ProviderSchedulingView from '../ProviderSchedulingView.vue'
-import { createEmptyRoutingGroupConfig, type RoutingGroupConfig } from '@/features/routing/utils/routingPolicy'
+import { createEmptyRoutingGroupConfig, setDefaultProviderPriorityOverrides, type RoutingGroupConfig } from '@/features/routing/utils/routingPolicy'
 import type { RoutingGroupRecord, RoutingGroupUpdateRequest } from '@/api/routing-profiles'
 
 const routingApi = vi.hoisted(() => ({ listRoutingGroups: vi.fn(), updateRoutingGroup: vi.fn(), createRoutingGroup: vi.fn(), deleteRoutingGroup: vi.fn() }))
@@ -101,6 +101,12 @@ async function editName(root: HTMLElement, name: string) {
   input.dispatchEvent(new Event('input', { bubbles: true }))
   await nextTick()
 }
+async function editMultiplier(root: HTMLElement, value: string, label = '分组倍率') {
+  const input = element<HTMLInputElement>(root, `[aria-label="${label}"]`)
+  input.value = value
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -116,6 +122,116 @@ afterEach(() => {
 })
 
 describe('ProviderSchedulingView workspace navigation', () => {
+  it('defaults legacy groups to private and saves visibility without losing scheduling or rankings', async () => {
+    const legacyConfig = createEmptyRoutingGroupConfig()
+    Reflect.deleteProperty(legacyConfig, 'user_visible')
+    const { root, workspace } = await mountWorkspace({}, [group('default', { is_system_default: true, config_json: legacyConfig })])
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('false')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    button(root, '用户可见').click()
+    await nextTick()
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('true')
+    expect(button(root, '启用策略').getAttribute('aria-checked')).toBe('true')
+    expect(button(root, '保存调度').disabled).toBe(false)
+    expect(routingApi.updateRoutingGroup).not.toHaveBeenCalled()
+    const config = setDefaultProviderPriorityOverrides(
+      JSON.parse(JSON.stringify(contextChange.mock.lastCall?.[0].config)),
+      { 'provider-a': 4, 'provider-b': 1 },
+    )
+    config.default_policy.scheduling_mode = 'fixed_order'
+    config.disabled_providers = ['provider-c']
+    workspace.value?.updateDraftConfig(config)
+    await nextTick()
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('true')
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.updateRoutingGroup).toHaveBeenLastCalledWith('default', expect.objectContaining({
+      enabled: true,
+      config_json: { ...config, user_visible: true },
+    }))
+    expect(button(root, '保存调度').disabled).toBe(true)
+    button(root, '用户可见').click()
+    await nextTick()
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.updateRoutingGroup).toHaveBeenLastCalledWith('default', expect.objectContaining({
+      config_json: { ...config, user_visible: false },
+    }))
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('false')
+    expect(button(root, '保存调度').disabled).toBe(true)
+  })
+
+  it('defaults old groups to a multiplier of one and saves decimal or zero values with scheduling changes', async () => {
+    const legacyConfig = createEmptyRoutingGroupConfig()
+    Reflect.deleteProperty(legacyConfig, 'billing_multiplier')
+    const { root, workspace } = await mountWorkspace({}, [group('default', { is_system_default: true, config_json: legacyConfig })])
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1')
+    await editMultiplier(root, '1.25')
+    const config = JSON.parse(JSON.stringify(contextChange.mock.lastCall?.[0].config))
+    config.disabled_providers = ['provider-a']
+    workspace.value?.updateDraftConfig(config)
+    await nextTick()
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.updateRoutingGroup).toHaveBeenLastCalledWith('default', expect.objectContaining({ config_json: expect.objectContaining({ billing_multiplier: 1.25, disabled_providers: ['provider-a'] }) }))
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1.25')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    await editMultiplier(root, '0')
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.updateRoutingGroup).toHaveBeenLastCalledWith('default', expect.objectContaining({ config_json: expect.objectContaining({ billing_multiplier: 0 }) }))
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('0')
+  })
+
+  it('keeps invalid multiplier input unsaved across scheduling changes and cancelled navigation', async () => {
+    const { root, router, workspace } = await mountWorkspace()
+    await editMultiplier(root, '2')
+    await editMultiplier(root, '')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('')
+    expect(element(root, '[aria-label="分组倍率"]').getAttribute('aria-invalid')).toBe('true')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    const config = JSON.parse(JSON.stringify(contextChange.mock.lastCall?.[0].config))
+    config.disabled_providers = ['provider-a']
+    workspace.value?.updateDraftConfig(config)
+    await nextTick()
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('')
+    expect(contextChange.mock.lastCall?.[0].config.billing_multiplier).toBe(2)
+    confirm.mockResolvedValueOnce(true)
+    expect(await workspace.value?.ensureSaved()).toBe(false)
+    expect(routingApi.updateRoutingGroup).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('分组倍率必须是大于或等于 0 的有效数字')
+    await chooseGroup(root, 'last')
+    expect(router.currentRoute.value.query.group).toBeUndefined()
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('')
+    await editMultiplier(root, '-1')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    confirm.mockResolvedValue(true)
+    await chooseGroup(root, 'last')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1')
+    expect(button(root, '保存调度').disabled).toBe(true)
+  })
+
+  it('validates new group multipliers without replacing blank input and accepts zero', async () => {
+    const { root, router } = await mountWorkspace({ group: 'new' })
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(selector(root).textContent?.trim()).toBe('新建策略')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    await editName(root, '免费分组')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1')
+    await editMultiplier(root, '')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    button(root, '保存调度').click()
+    expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
+    await editMultiplier(root, '0')
+    expect(button(root, '保存调度').disabled).toBe(false)
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.createRoutingGroup).toHaveBeenCalledWith(expect.objectContaining({ name: '免费分组', config_json: expect.objectContaining({ billing_multiplier: 0 }) }))
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('0')
+    expect(router.currentRoute.value.query.group).toBe('created')
+  })
+
   it('opens the system default immediately and forwards provider inspection and refreshes', async () => {
     const { root, providerRevision } = await mountWorkspace()
     expect(selector(root).textContent?.trim()).toBe('default · 默认')
@@ -245,42 +361,151 @@ describe('ProviderSchedulingView workspace navigation', () => {
     expect(router.currentRoute.value.query.group).toBeUndefined()
   })
 
-  it('opens creation independently and cancellation preserves the selected group and draft', async () => {
+  it('asks before replacing existing edits with a new inline group draft', async () => {
     const { root, router } = await mountWorkspace()
     await editName(root, '保留的分组草稿')
     button(root, '新建策略').click()
-    await nextTick()
+    await flush()
     expect(selector(root).textContent?.trim()).toBe('default · 默认')
     expect(router.currentRoute.value.query.group).toBeUndefined()
-    expect(document.querySelector('[role="dialog"][aria-label="新建策略分组"]')).not.toBeNull()
-    button(root, '取消新建分组').click()
-    await nextTick()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
     expect(button(root, '保存调度').disabled).toBe(false)
     expect(contextChange.mock.lastCall?.[0].groupName).toBe('保留的分组草稿')
     expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
-    expect(confirm).not.toHaveBeenCalled()
+    expect(confirm).toHaveBeenCalledOnce()
+    confirm.mockResolvedValue(true)
+    button(root, '新建策略').click()
+    await flush()
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(selector(root).textContent?.trim()).toBe('新建策略')
+    expect(element<HTMLInputElement>(root, '[aria-label="策略名称"]').value).toBe('')
+    expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
+    expect(routingApi.updateRoutingGroup).not.toHaveBeenCalled()
   })
 
-  it('creates in a dialog and switches only after the request succeeds', async () => {
-    const { root, router } = await mountWorkspace({ group: 'new' })
-    expect(selector(root).textContent?.trim()).toBe('default · 默认')
-    expect(router.currentRoute.value.query.group).toBe('default')
-    const name = element<HTMLInputElement>(root, '[aria-label="新分组名称"]')
-    name.value = '新策略'
-    name.dispatchEvent(new Event('input', { bubbles: true }))
+  it('starts an inline draft and creates the complete edited configuration only on header save', async () => {
+    const { root, router, workspace } = await mountWorkspace()
+    button(root, '新建策略').click()
+    await flush()
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(selector(root).textContent?.trim()).toBe('新建策略')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(root.querySelector('button[aria-label="删除策略"]')).toBeNull()
+    expect(root.querySelector('[data-testid="provider-directory"]')).not.toBeNull()
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1')
+    expect(button(root, '启用策略').getAttribute('aria-checked')).toBe('true')
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('false')
+    expect(button(root, '设为系统默认').getAttribute('aria-pressed')).toBe('false')
+    expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
+    await editName(root, '新策略')
+    await editMultiplier(root, '1.25')
+    button(root, '启用策略').click()
+    button(root, '用户可见').click()
     await nextTick()
+    const config = JSON.parse(JSON.stringify(contextChange.mock.lastCall?.[0].config)) as RoutingGroupConfig
+    config.disabled_providers = ['provider-a']
+    config.default_policy.scheduling_mode = 'fixed_order'
+    config.default_policy.sticky_key_attempts = 3
+    workspace.value?.updateDraftConfig(config)
+    await nextTick()
+    button(root, '新建策略').click()
+    await flush()
+    expect(element<HTMLInputElement>(root, '[aria-label="策略名称"]').value).toBe('新策略')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1.25')
+    expect(button(root, '启用策略').getAttribute('aria-checked')).toBe('false')
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('true')
+    expect(config.user_visible).toBe(true)
+    expect(contextChange.mock.lastCall?.[0].config).toEqual(config)
+    expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
     let finish!: (group: RoutingGroupRecord) => void
     routingApi.createRoutingGroup.mockReturnValue(new Promise(resolve => { finish = resolve }))
-    button(root, '创建策略分组').click()
+    button(root, '保存调度').click()
     await nextTick()
-    expect(selector(root).textContent?.trim()).toBe('default · 默认')
-    finish(group('created', { name: '新策略' }))
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(selector(root).textContent?.trim()).toBe('新建策略')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    button(root, '保存调度').click()
+    expect(routingApi.createRoutingGroup).toHaveBeenCalledOnce()
+    expect(routingApi.createRoutingGroup).toHaveBeenCalledWith(expect.objectContaining({ name: '新策略', enabled: false, is_system_default: false, config_json: config }))
+    finish(group('created', { name: '新策略', enabled: false, config_json: config }))
     await flush()
-    expect(routingApi.createRoutingGroup).toHaveBeenCalledWith(expect.objectContaining({ name: '新策略', config_json: expect.objectContaining({ disabled_providers: [] }) }))
     expect(router.currentRoute.value.query.group).toBe('created')
-    expect(selector(root).textContent?.trim()).toBe('新策略')
+    expect(selector(root).textContent?.trim()).toBe('新策略 · 停用')
     expect(button(root, '保存调度').disabled).toBe(true)
     expect(confirm).not.toHaveBeenCalled()
+    expect(routingApi.updateRoutingGroup).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('opens a new draft from its deep link with first-group default=%s', async firstGroup => {
+    const { root, router } = await mountWorkspace({ group: 'new' }, firstGroup ? [] : [group('existing')])
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(selector(root).textContent?.trim()).toBe('新建策略')
+    expect(element<HTMLInputElement>(root, '[aria-label="策略名称"]').value).toBe('')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('1')
+    expect(button(root, '启用策略').getAttribute('aria-checked')).toBe('true')
+    expect(button(root, '用户可见').getAttribute('aria-checked')).toBe('false')
+    expect(button(root, '设为系统默认').getAttribute('aria-pressed')).toBe(String(firstGroup))
+    expect(root.querySelector('button[aria-label="删除策略"]')).toBeNull()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
+    await editName(root, '深链新建')
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.createRoutingGroup).toHaveBeenCalledWith(expect.objectContaining({
+      name: '深链新建',
+      enabled: true,
+      is_system_default: firstGroup,
+      config_json: expect.objectContaining({ billing_multiplier: 1, user_visible: false }),
+    }))
+    expect(router.currentRoute.value.query.group).toBe('created')
+  })
+
+  it.each([500, 409])('keeps a failed new draft intact and retries the same create payload after status %s', async status => {
+    const { root, router } = await mountWorkspace({ group: 'new' })
+    await editName(root, '重试创建')
+    await editMultiplier(root, '0.75')
+    routingApi.createRoutingGroup.mockRejectedValueOnce({ response: { status } })
+    button(root, '保存调度').click()
+    await flush()
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(element<HTMLInputElement>(root, '[aria-label="策略名称"]').value).toBe('重试创建')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('0.75')
+    expect(button(root, '保存调度').disabled).toBe(false)
+    expect(toast.error).toHaveBeenCalled()
+    expect(root.querySelector('button[aria-label="重新加载分组"]')).toBeNull()
+    const failedPayload = routingApi.createRoutingGroup.mock.calls[0][0]
+    button(root, '保存调度').click()
+    await flush()
+    expect(routingApi.createRoutingGroup).toHaveBeenCalledTimes(2)
+    expect(routingApi.createRoutingGroup).toHaveBeenLastCalledWith(failedPayload)
+    expect(router.currentRoute.value.query.group).toBe('created')
+    expect(button(root, '保存调度').disabled).toBe(true)
+    expect(routingApi.updateRoutingGroup).not.toHaveBeenCalled()
+  })
+
+  it.each(['switch', 'leave'] as const)('confirms discarding a new draft before %s navigation', async navigation => {
+    const { root, router } = await mountWorkspace({ group: 'new' })
+    await editName(root, '保留新建草稿')
+    await editMultiplier(root, '2')
+    const navigate = () => navigation === 'switch'
+      ? chooseGroup(root, 'last')
+      : router.push({ name: 'Other' })
+    await navigate()
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(router.currentRoute.value.name).toBe('ProviderManagement')
+    expect(router.currentRoute.value.query.group).toBe('new')
+    expect(selector(root).textContent?.trim()).toBe('新建策略')
+    expect(element<HTMLInputElement>(root, '[aria-label="策略名称"]').value).toBe('保留新建草稿')
+    expect(element<HTMLInputElement>(root, '[aria-label="分组倍率"]').value).toBe('2')
+    confirm.mockResolvedValue(true)
+    await navigate()
+    expect(router.currentRoute.value.name).toBe(navigation === 'switch' ? 'ProviderManagement' : 'Other')
+    if (navigation === 'switch') {
+      expect(router.currentRoute.value.query.group).toBe('last')
+      expect(element<HTMLInputElement>(root, '[aria-label="策略名称"]').value).toBe('last')
+    }
+    expect(routingApi.createRoutingGroup).not.toHaveBeenCalled()
+    expect(routingApi.updateRoutingGroup).not.toHaveBeenCalled()
   })
 
   it('saves strategy metadata with scheduling and updates the default marker', async () => {

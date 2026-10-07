@@ -23,6 +23,63 @@ use aether_data_contracts::repository::usage::{
 use serde_json::json;
 
 #[tokio::test]
+async fn customer_billing_statistics_use_frozen_factors_and_preserve_legacy_provider_cost() {
+    use aether_data_contracts::repository::usage::*;
+    let now = chrono::Utc::now();
+    let at = now - chrono::Duration::seconds(10);
+    let mut billed = sample_usage("customer-billed", at.timestamp());
+    billed.total_cost_usd = 2.0;
+    billed.actual_total_cost_usd = 0.5;
+    billed.request_metadata = Some(json!({
+        "billing_multiplier_snapshot": {
+            "version": 1,
+            "factors": {"routing_group": 2.0, "user_group": 0.75},
+            "multiplier": 1.5
+        },
+        "routing_group_billing_multiplier": 99.0,
+        "rate_multiplier": 0.25
+    }));
+    let mut legacy = sample_usage("customer-legacy", at.timestamp());
+    legacy.total_cost_usd = 2.0;
+    legacy.actual_total_cost_usd = 0.5;
+    let mut free = sample_usage("customer-free", at.timestamp());
+    free.total_cost_usd = 2.0;
+    free.actual_total_cost_usd = 0.5;
+    free.request_metadata = Some(json!({"routing_group_billing_multiplier": 0.0}));
+    let mut invalid = sample_usage("customer-invalid", at.timestamp());
+    invalid.total_cost_usd = 999.0;
+    invalid.actual_total_cost_usd = 999.0;
+    invalid.request_metadata = Some(json!({"billing_multiplier_snapshot": null}));
+    let repo = InMemoryUsageReadRepository::seed([billed, legacy, free, invalid])
+        .with_dashboard_stats_since(at - chrono::Duration::seconds(1));
+    let overview = repo
+        .query_usage_analytics(&UsageAnalyticsQuery {
+            from_unix_ms: (at - chrono::Duration::seconds(1)).timestamp_millis() as u64,
+            to_unix_ms: now.timestamp_millis() as u64,
+            timezone: "UTC".into(),
+            limit: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        overview.summary.billable_amount.as_deref(),
+        Some("3.50000000")
+    );
+    let query = UsageDashboardAnalyticsQuery {
+        timezone: "UTC".into(),
+    };
+    let analytics = repo.query_dashboard_analytics(&query).await.unwrap();
+    assert_eq!(
+        analytics.total.summary.billable_amount.as_deref(),
+        Some("3.50000000")
+    );
+    let summary = repo.query_dashboard_summary(&query).await.unwrap();
+    assert_eq!(summary.total.billable_amount.as_deref(), Some("3.50000000"));
+    assert_eq!(summary.total.pricing_available_count, 3);
+}
+
+#[tokio::test]
 async fn overview_model_performance_merges_provider_samples_without_pagination() {
     use aether_data_contracts::repository::usage::*;
     let at = chrono::DateTime::parse_from_rfc3339("2026-09-12T10:05:00Z").unwrap();
@@ -614,6 +671,58 @@ fn sample_upsert_usage_record(request_id: &str) -> UpsertUsageRecord {
         finalized_at_unix_secs: None,
         created_at_unix_ms: Some(1_700_000_000),
         updated_at_unix_secs: 1_700_000_000,
+    }
+}
+
+#[tokio::test]
+async fn upsert_preserves_routing_group_snapshot_across_terminal_metadata_replacement() {
+    for terminal_metadata in [
+        None,
+        Some(json!({"rate_multiplier": 0.5, "billing_snapshot": {"status": "complete"}})),
+        Some(json!({
+            "routing_group_billing_multiplier": 99.0,
+            "billing_multiplier_snapshot": {"version": 1, "factors": {"routing_group": 3.0}, "multiplier": 3.0},
+            "routing_group_id": "changed-group",
+            "routing_group_name": "changed-group-name",
+            "plan_usage_reservation_token": "550e8400-e29b-41d4-a716-446655440002",
+            "rate_multiplier": 0.5
+        })),
+    ] {
+        let repository = InMemoryUsageReadRepository::default();
+        let mut pending = sample_upsert_usage_record("req-group-snapshot");
+        pending.request_metadata = Some(json!({
+            "routing_group_billing_multiplier": 0.25,
+            "billing_multiplier_snapshot": {"version": 1, "factors": {"routing_group": 0.25, "user_group": 2.0}, "multiplier": 0.5},
+            "routing_group_id": "group-original",
+            "routing_group_name": "请求时的分组",
+            "plan_usage_reservation_token": "550e8400-e29b-41d4-a716-446655440001"
+        }));
+        repository
+            .upsert(pending)
+            .await
+            .expect("pending usage should persist");
+        let mut terminal = sample_upsert_usage_record("req-group-snapshot");
+        terminal.status = "completed".to_string();
+        terminal.request_metadata = terminal_metadata;
+        terminal.updated_at_unix_secs += 1;
+        let stored = repository
+            .upsert(terminal)
+            .await
+            .expect("terminal usage should persist");
+        assert_eq!(stored.routing_group_billing_multiplier(), 0.25);
+        assert_eq!(stored.billing_multiplier(), 0.5);
+        assert_eq!(
+            stored.request_metadata.as_ref().unwrap()["billing_multiplier_snapshot"],
+            json!({
+                "version": 1, "factors": {"routing_group": 0.25, "user_group": 2.0}, "multiplier": 0.5
+            })
+        );
+        assert_eq!(stored.routing_group_id(), Some("group-original"));
+        assert_eq!(stored.routing_group_name(), Some("请求时的分组"));
+        assert_eq!(
+            stored.request_metadata.as_ref().unwrap()["plan_usage_reservation_token"],
+            "550e8400-e29b-41d4-a716-446655440001"
+        );
     }
 }
 

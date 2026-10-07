@@ -4,9 +4,9 @@ use std::sync::RwLock;
 
 use aether_ai_formats::UPSTREAM_IS_STREAM_KEY;
 use aether_data_contracts::repository::usage::{
-    canonical_usage_body_ref_for, parse_usage_body_ref, sanitize_usage_request_metadata,
-    usage_body_ref, StoredUsageAuditAggregation, StoredUsageAuditSummary,
-    StoredUsageBreakdownSummaryRow, StoredUsageCacheAffinityHitSummary,
+    canonical_usage_body_ref_for, parse_usage_body_ref, preserve_usage_routing_group_snapshot,
+    sanitize_usage_request_metadata, usage_body_ref, StoredUsageAuditAggregation,
+    StoredUsageAuditSummary, StoredUsageBreakdownSummaryRow, StoredUsageCacheAffinityHitSummary,
     StoredUsageCacheAffinityIntervalRow, StoredUsageCacheHitSummary, StoredUsageCostSavingsSummary,
     StoredUsageDashboardDailyBreakdownRow, StoredUsageDashboardProviderCount,
     StoredUsageDashboardSummary, StoredUsageErrorDistributionRow, StoredUsageLeaderboardSummary,
@@ -22,9 +22,11 @@ use aether_data_contracts::repository::usage::{
     UsageDashboardSummaryQuery, UsageErrorDistributionQuery, UsageLeaderboardGroupBy,
     UsageLeaderboardQuery, UsageMonitoringErrorCountQuery, UsageMonitoringErrorListQuery,
     UsagePerformancePercentilesQuery, UsageProviderPerformanceQuery, UsageSettledCostSummaryQuery,
-    UsageTimeSeriesGranularity, UsageTimeSeriesQuery, PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY,
-    PROVIDER_REASONING_EFFORT_METADATA_KEY, PROVIDER_SERVICE_TIER_METADATA_KEY,
-    REQUESTED_REASONING_EFFORT_METADATA_KEY,
+    UsageTimeSeriesGranularity, UsageTimeSeriesQuery, BILLING_MULTIPLIER_SNAPSHOT_METADATA_KEY,
+    PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY, PROVIDER_REASONING_EFFORT_METADATA_KEY,
+    PROVIDER_SERVICE_TIER_METADATA_KEY, REQUESTED_REASONING_EFFORT_METADATA_KEY,
+    ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY, ROUTING_GROUP_ID_METADATA_KEY,
+    ROUTING_GROUP_NAME_METADATA_KEY,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -3035,6 +3037,10 @@ fn retain_previous_request_audit_metadata(
         "request_path",
         "request_query_string",
         "request_path_and_query",
+        ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY,
+        BILLING_MULTIPLIER_SNAPSHOT_METADATA_KEY,
+        ROUTING_GROUP_ID_METADATA_KEY,
+        ROUTING_GROUP_NAME_METADATA_KEY,
     ] {
         if let Some(value) = metadata.get(key) {
             retained.insert(key.to_string(), value.clone());
@@ -3213,7 +3219,13 @@ impl UsageWriteRepository for InMemoryUsageReadRepository {
                     .and_then(|existing| existing.request_metadata.clone())
             }
         });
-        let request_metadata = sanitize_memory_request_metadata(request_metadata);
+        let request_metadata =
+            sanitize_memory_request_metadata(preserve_usage_routing_group_snapshot(
+                request_metadata,
+                existing
+                    .as_ref()
+                    .and_then(|stored| stored.request_metadata.as_ref()),
+            ));
         let (request_body, request_body_ref, request_body_state) = merge_usage_body_capture(
             capture_usage.request_body.take(),
             capture_usage.request_body_ref.take(),

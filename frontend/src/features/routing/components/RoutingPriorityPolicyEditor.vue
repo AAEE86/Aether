@@ -167,7 +167,7 @@
                   class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
                 >停用</span>
                 <span
-                  v-if="config.disabled_providers.includes(row.id)"
+                  v-if="!isRoutingProviderEnabled(config, row.id, targetModelPolicy)"
                   class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
                 >本组禁用</span>
               </div>
@@ -214,6 +214,7 @@ import {
   DEFAULT_ROUTING_POLICY_MODEL,
   getDefaultModelPolicy,
   getModelPolicy,
+  isRoutingProviderEnabled,
   setModelProviderPriorityOverrides,
   type RoutingDefaultPolicy,
   type RoutingGroupConfig,

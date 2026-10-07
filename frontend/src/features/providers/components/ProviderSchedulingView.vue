@@ -29,6 +29,12 @@
               </SelectTrigger>
               <SelectContent>
                 <SelectItem
+                  v-if="isNewDraft"
+                  value="new"
+                >
+                  新建策略
+                </SelectItem>
+                <SelectItem
                   v-for="group in groups"
                   :key="group.id"
                   :value="group.id"
@@ -42,7 +48,7 @@
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8"
-                :disabled="busy"
+                :disabled="busy || isNewDraft"
                 title="新建分组"
                 aria-label="新建策略"
                 @click="openCreate"
@@ -85,7 +91,7 @@
                 class="h-8 w-8"
                 :class="{ 'text-primary': draftDirty }"
                 :disabled="!canSaveDraft"
-                :title="saving ? '正在保存…' : !routingSchedulingValid ? '请先选择适用模型' : draftDirty ? '保存修改' : '已保存'"
+                :title="saving ? '正在保存…' : billingMultiplierError ?? (!routingSchedulingValid ? '请先选择适用模型' : draftDirty ? '保存修改' : '已保存')"
                 aria-label="保存调度"
                 :aria-busy="saving"
                 @click="saveDraft"
@@ -101,12 +107,12 @@
             <div
               v-if="draft"
               ref="groupMetadata"
-              class="min-w-0 border-b border-border/50 p-3"
+              class="min-w-0 space-y-2 border-b border-border/50 p-3"
               aria-label="分组信息"
               :inert="busy"
             >
               <div class="flex min-w-0 items-center gap-2">
-                <label class="min-w-0 flex-1">
+                <label class="block min-w-0 flex-1">
                   <span class="sr-only">策略名称</span>
                   <Input
                     v-model="draft.name"
@@ -126,6 +132,40 @@
                   />
                 </label>
               </div>
+              <div class="flex min-w-0 items-center justify-between gap-3">
+                <label class="flex min-w-0 items-center gap-2 text-xs">
+                  <span class="shrink-0">分组倍率</span>
+                  <Input
+                    :model-value="billingMultiplierInput"
+                    type="number"
+                    min="0"
+                    step="any"
+                    size="sm"
+                    class="w-24 min-w-0"
+                    aria-label="分组倍率"
+                    :aria-invalid="Boolean(billingMultiplierError)"
+                    :aria-describedby="billingMultiplierError ? 'group-billing-multiplier-error' : undefined"
+                    :disabled="busy"
+                    @update:model-value="updateBillingMultiplier"
+                  />
+                  <span class="shrink-0 text-muted-foreground">倍</span>
+                </label>
+                <label class="flex shrink-0 items-center gap-1 text-xs">
+                  <span>用户可见</span>
+                  <Switch
+                    v-model="draft.config_json.user_visible"
+                    :disabled="busy"
+                    aria-label="用户可见"
+                  />
+                </label>
+              </div>
+              <p
+                v-if="billingMultiplierError"
+                id="group-billing-multiplier-error"
+                class="text-xs text-destructive"
+              >
+                {{ billingMultiplierError }}
+              </p>
             </div>
             <RoutingSchedulingPolicyEditor
               v-if="draft"
@@ -353,49 +393,6 @@
         <slot />
       </div>
     </div>
-    <Dialog
-      :model-value="createDialogOpen"
-      title="新建策略分组"
-      description="创建独立分组，创建成功后切换到新分组。"
-      size="md"
-      :persistent="busy"
-      @update:model-value="closeCreate"
-    >
-      <div
-        class="space-y-4"
-        :inert="busy"
-      >
-        <label class="block space-y-1.5 text-sm"><span>分组名称</span><Input
-          v-model="createForm.name"
-          aria-label="新分组名称"
-          placeholder="例如：日常使用"
-        /></label>
-        <label class="flex items-center justify-between gap-3 text-sm"><span>启用分组</span><Switch
-          v-model="createForm.enabled"
-          aria-label="启用新分组"
-        /></label>
-        <p class="text-xs text-muted-foreground">
-          使用默认调度配置；创建后可在提供商目录中调整成员和顺序。
-        </p>
-      </div>
-      <template #footer>
-        <Button
-          :disabled="busy || !createForm.name.trim()"
-          aria-label="创建策略分组"
-          @click="createGroup"
-        >
-          {{ creating ? '创建中…' : '创建分组' }}
-        </Button>
-        <Button
-          variant="outline"
-          :disabled="busy"
-          aria-label="取消新建分组"
-          @click="closeCreate(false)"
-        >
-          取消
-        </Button>
-      </template>
-    </Dialog>
     <AlertDialog
       v-model="deleteDialogOpen"
       type="destructive"
@@ -409,16 +406,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter, type RouteLocationNormalized } from 'vue-router'
 import { ChevronRight, Plus, Save, Star, Trash2 } from 'lucide-vue-next'
-import { Button, Card, Dialog, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Switch } from '@/components/ui'
+import { Button, Card, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Switch } from '@/components/ui'
 import { AlertDialog } from '@/components/common'
 import HelpHint from '@/components/common/HelpHint.vue'
 import {
   DEFAULT_STICKY_KEY_ATTEMPTS,
   createEmptyRoutingGroupConfig,
   normalizeStickyKeyAttempts,
+  parseBillingMultiplier,
   type RoutingModelPolicy,
   type RoutingPriorityMode,
   type RoutingSchedulingMode,
@@ -484,10 +482,8 @@ const loadingError = ref<string | null>(null)
 const saving = ref(false)
 const saveConflict = ref(false)
 const deleting = ref(false)
-const creating = ref(false)
-const busy = computed(() => loading.value || saving.value || deleting.value || creating.value)
-const createDialogOpen = ref(false)
-const createForm = ref({ name: '', enabled: true })
+const busy = computed(() => loading.value || saving.value || deleting.value)
+const billingMultiplierInput = ref('1')
 const draftGeneration = ref(0)
 const groupMetadata = ref<HTMLElement | null>(null)
 const advancedOpen = ref(false)
@@ -498,7 +494,8 @@ let discardConfirmation: Promise<boolean> | null = null
 
 const routeGroupId = computed(() => queryToString(route.query.group))
 const defaultGroupId = computed(() => groups.value.find(group => group.is_system_default)?.id ?? groups.value[0]?.id ?? null)
-const selectedValue = computed(() => draft.value?.id ?? '')
+const isNewDraft = computed(() => draft.value != null && !draft.value.id)
+const selectedValue = computed(() => isNewDraft.value ? 'new' : draft.value?.id ?? '')
 const priorityMode = 'provider' as const
 const schedulingMode = computed(() => activePolicy.value?.schedulingMode ?? draft.value?.config_json.default_policy.scheduling_mode ?? 'cache_affinity')
 const emptyMessage = computed(() => loading.value ? '正在加载调度策略' : loadingError.value ?? (groups.value.length ? '未找到调度策略' : '还没有调度策略'))
@@ -507,8 +504,9 @@ const stickyKeyAttempts = computed(() => draft.value?.config_json.default_policy
 const cfHeartbeat = computed(() => draft.value?.config_json.default_policy.enable_cf_heartbeat ?? false)
 const cyberContinueFailover = computed(() => draft.value?.config_json.default_policy.cyber_continue_failover ?? false)
 const cancelOnClientDisconnect = computed(() => draft.value?.config_json.default_policy.cancel_on_client_disconnect ?? false)
-const draftDirty = computed(() => draft.value != null && (routingFailoverPending.value || savedDraftSnapshot.value !== draftSnapshotValue(draft.value)))
-const canSaveDraft = computed(() => Boolean(draft.value) && !busy.value && draftDirty.value && routingSchedulingValid.value)
+const billingMultiplierError = computed(() => parseBillingMultiplier(billingMultiplierInput.value) == null ? '分组倍率必须是大于或等于 0 的有效数字' : null)
+const draftDirty = computed(() => draft.value != null && (Boolean(billingMultiplierError.value) || routingFailoverPending.value || savedDraftSnapshot.value !== draftSnapshotValue(draft.value)))
+const canSaveDraft = computed(() => Boolean(draft.value) && !busy.value && draftDirty.value && routingSchedulingValid.value && !billingMultiplierError.value)
 
 function queryToString(value: unknown): string | null {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : null
@@ -545,22 +543,31 @@ function resetEditors(): void {
 }
 
 function selectGroup(group: RoutingGroupRecord, preserveSelection = false): void {
-  const selection = preserveSelection && draft.value?.id === group.id ? activePolicy.value : null
+  const selection = preserveSelection ? activePolicy.value : null
   resetEditors()
   initialSchedulingSelection.value = selection
     ? { id: selection.id, scope: selection.scope, modelNames: [...selection.modelNames] }
     : null
   draft.value = { id: group.id, version: group.version, name: group.name, enabled: group.enabled, is_system_default: group.is_system_default, config_json: cloneConfig(group.config_json) }
+  billingMultiplierInput.value = String(draft.value.config_json.billing_multiplier)
   savedDraftSnapshot.value = draftSnapshotValue(draft.value)
 }
 
 function openCreate(): void {
-  if (busy.value) return
-  createForm.value = { name: '', enabled: true }
-  createDialogOpen.value = true
+  if (busy.value || isNewDraft.value) return
+  openGroup('new')
 }
-function closeCreate(value: boolean): void { if (!busy.value) createDialogOpen.value = value }
 
+function startNewDraft(): void {
+  resetEditors()
+  draft.value = { version: 0, name: '', enabled: true, is_system_default: groups.value.length === 0, config_json: createEmptyRoutingGroupConfig() }
+  billingMultiplierInput.value = '1'
+  savedDraftSnapshot.value = null
+  void nextTick(() => {
+    groupMetadata.value?.scrollIntoView?.({ block: 'nearest' })
+    groupMetadata.value?.querySelector<HTMLInputElement>('[aria-label="策略名称"]')?.focus()
+  })
+}
 
 function clearDraft(): void {
   resetEditors()
@@ -571,10 +578,7 @@ function clearDraft(): void {
 function syncRouteState(): void {
   if (loading.value) return
   if (routeGroupId.value === 'new') {
-    if (!draft.value) { const group = groups.value.find(item => item.id === defaultGroupId.value); if (group) selectGroup(group) }
-    openCreate()
-    internalNavigation = true
-    void router.replace({ name: 'ProviderManagement', query: { ...route.query, view: undefined, group: draft.value?.id } }).finally(() => { internalNavigation = false })
+    if (!isNewDraft.value) startNewDraft()
     return
   }
   const group = groups.value.find(item => item.id === (routeGroupId.value ?? defaultGroupId.value))
@@ -603,7 +607,7 @@ async function confirmDiscard(): Promise<boolean> {
 async function guardNavigation(to: RouteLocationNormalized): Promise<boolean> {
   if (internalNavigation) return true
   const targetGroup = queryToString(to.query.group) ?? defaultGroupId.value
-  const staysOnDraft = to.name === 'ProviderManagement' && (targetGroup === selectedValue.value || targetGroup === 'new')
+  const staysOnDraft = to.name === 'ProviderManagement' && targetGroup === selectedValue.value
   if (staysOnDraft) return true
   if (busy.value) {
     showError('正在保存调度设置，请稍候再切换')
@@ -623,6 +627,13 @@ function preventUnload(event: BeforeUnloadEvent): void {
 
 function updateDraftConfig(value: RoutingGroupConfig): void {
   if (draft.value) draft.value.config_json = normalizeProviderSchedulingConfig(value)
+}
+
+function updateBillingMultiplier(value: string | number): void {
+  if (!draft.value || busy.value) return
+  billingMultiplierInput.value = String(value)
+  const parsed = parseBillingMultiplier(value)
+  if (parsed != null) draft.value.config_json.billing_multiplier = parsed
 }
 
 function updatePriorityPolicy(policy: RoutingModelPolicy): void {
@@ -700,12 +711,18 @@ async function loadGlobalModels(options: { cacheTtlMs?: number } = {}): Promise<
 }
 
 async function saveDraft(): Promise<boolean> {
-  if (!draft.value?.id || busy.value) return false
+  if (!draft.value || busy.value) return false
   const name = draft.value.name.trim()
   if (!name) {
     groupMetadata.value?.scrollIntoView?.({ block: 'nearest' })
     groupMetadata.value?.querySelector<HTMLInputElement>('[aria-label="策略名称"]')?.focus()
     showError('策略名称不能为空')
+    return false
+  }
+  if (billingMultiplierError.value) {
+    groupMetadata.value?.scrollIntoView?.({ block: 'nearest' })
+    groupMetadata.value?.querySelector<HTMLInputElement>('[aria-label="分组倍率"]')?.focus()
+    showError(billingMultiplierError.value)
     return false
   }
   if (routingFailoverPolicyEditor.value && !routingFailoverPolicyEditor.value.commitJsonDrafts()) { failoverOpen.value = true; return false }
@@ -715,19 +732,33 @@ async function saveDraft(): Promise<boolean> {
   const targetGroupId = draft.value.id
   const submittedGeneration = draftGeneration.value
   const submittedSnapshot = draftSnapshotValue(draft.value)
-  const payload = { name, enabled: draft.value.enabled, is_system_default: draft.value.is_system_default, expected_version: draft.value.version, config_json: cloneConfig(draft.value.config_json) }
+  const payload = { name, enabled: draft.value.enabled, is_system_default: draft.value.is_system_default, config_json: cloneConfig(draft.value.config_json) }
+  const expectedVersion = draft.value.version
   saving.value = true
   try {
-    const saved = await updateRoutingGroup(targetGroupId, payload)
+    const saved = targetGroupId
+      ? await updateRoutingGroup(targetGroupId, { ...payload, expected_version: expectedVersion })
+      : await createRoutingGroup({ ...payload, sort_order: groups.value.length })
     const unchanged = draftGeneration.value === submittedGeneration && draft.value?.id === targetGroupId && draftSnapshotValue(draft.value) === submittedSnapshot
     replaceGroup(saved, unchanged, true)
-    success('调度策略已保存')
+    if (!targetGroupId) {
+      // Retain any newer edits while attaching the server ID, so retries update the created group.
+      if (!unchanged && draft.value && draftGeneration.value === submittedGeneration && !draft.value.id) {
+        draft.value.id = saved.id
+        draft.value.version = saved.version
+        savedDraftSnapshot.value = draftSnapshotValue({ ...saved, config_json: cloneConfig(saved.config_json) })
+      }
+      internalNavigation = true
+      try { await router.replace({ name: 'ProviderManagement', query: { ...route.query, view: undefined, group: saved.id } }) }
+      finally { internalNavigation = false }
+    }
+    success(targetGroupId ? '调度策略已保存' : '策略分组已创建')
     emit('saved')
     return unchanged
   } catch (err) {
     const status = (err as { response?: { status?: number } })?.response?.status
-    saveConflict.value = status === 409
-    showError(status === 409 ? '此分组已在其他操作中更新。当前修改已保留，请重新加载最新分组后再编辑。' : parseApiError(err, '保存调度策略失败'))
+    saveConflict.value = Boolean(targetGroupId) && status === 409
+    showError(saveConflict.value ? '此分组已在其他操作中更新。当前修改已保留，请重新加载最新分组后再编辑。' : parseApiError(err, targetGroupId ? '保存调度策略失败' : '创建策略分组失败'))
     log.error('保存调度策略失败:', err)
     return false
   } finally { saving.value = false }
@@ -737,22 +768,6 @@ async function ensureSaved(): Promise<boolean> {
   if (!draftDirty.value) return true
   const approved = await confirm({ title: '先保存当前分组', message: '当前分组有未保存的修改。保存后继续？', confirmText: '保存并继续', cancelText: '继续编辑', variant: 'question' })
   return approved && await saveDraft()
-}
-async function createGroup(): Promise<void> {
-  if (busy.value || !createForm.value.name.trim()) return
-  if (draftDirty.value && !await ensureSaved()) return
-  creating.value = true
-  try {
-    const saved = await createRoutingGroup({ name: createForm.value.name.trim(), enabled: createForm.value.enabled, is_system_default: groups.value.length === 0, sort_order: groups.value.length, config_json: createEmptyRoutingGroupConfig() })
-    replaceGroup(saved, true)
-    createDialogOpen.value = false
-    internalNavigation = true
-    try { await router.replace({ name: 'ProviderManagement', query: { ...route.query, view: undefined, group: saved.id } }) }
-    finally { internalNavigation = false }
-    success('策略分组已创建')
-    emit('saved')
-  } catch (err) { showError(parseApiError(err, '创建策略分组失败')); log.error('创建策略分组失败:', err) }
-  finally { creating.value = false }
 }
 
 async function confirmDeleteDraft(): Promise<void> {

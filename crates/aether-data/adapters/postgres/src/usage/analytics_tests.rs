@@ -682,6 +682,7 @@ async fn live_overview_settlement_allocations_preserve_unlimited_and_finite_wall
             billing_status: "pending".into(),
             total_cost_usd: cost,
             actual_total_cost_usd: cost,
+            billing_cost_usd: None,
             finalized_at_unix_secs: None,
         };
         assert_eq!(
@@ -1267,6 +1268,19 @@ async fn live_overview_dashboard_total_matches_canonical_settlement_and_legacy_t
             1002,
         ),
         (
+            "billing-snapshot",
+            "openai:chat",
+            120,
+            serde_json::json!({
+                "billing_multiplier_snapshot": {
+                    "version": 1,
+                    "factors": {"routing_group": 2.0, "user_group": 0.75},
+                    "multiplier": 1.5
+                }
+            }),
+            120,
+        ),
+        (
             "unavailable",
             "openai:chat",
             120,
@@ -1340,7 +1354,114 @@ async fn live_overview_dashboard_total_matches_canonical_settlement_and_legacy_t
             .await
             .unwrap();
         assert_eq!(total.total_tokens, expected_tokens, "{case}");
+        if case == "billing-snapshot" {
+            assert_eq!(total.billable_amount.as_deref(), Some("0.37500000"));
+        }
         assert_dashboard_total_matches_canonical(&total, &canonical);
+    }
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires migrated isolated AETHER_TEST_DATABASE_URL"]
+async fn live_customer_billing_amount_matches_canonical_and_dashboard_facts() {
+    let pool = sqlx::PgPool::connect(&std::env::var("AETHER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let start = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let composite = serde_json::json!({
+        "billing_multiplier_snapshot": {
+            "version": 1, "factors": {"routing_group": 2.0, "user_group": 0.75}, "multiplier": 1.5
+        },
+        "routing_group_billing_multiplier": 99.0,
+        "rate_multiplier": 0.25
+    });
+    for (case, metadata, expected) in [
+        ("legacy", serde_json::json!({}), Some("0.50000000")),
+        ("composite", composite.clone(), Some("3.00000000")),
+        ("settlement-base", composite, Some("6.00000000")),
+        (
+            "free",
+            serde_json::json!({"routing_group_billing_multiplier": 0}),
+            Some("0.00000000"),
+        ),
+        (
+            "null",
+            serde_json::json!({"billing_multiplier_snapshot": null, "routing_group_billing_multiplier": 1}),
+            None,
+        ),
+        (
+            "negative-factor",
+            serde_json::json!({"billing_multiplier_snapshot": {"version": 1, "factors": {"routing_group": -1}, "multiplier": 1}}),
+            None,
+        ),
+        (
+            "mismatch",
+            serde_json::json!({"billing_multiplier_snapshot": {"version": 1, "factors": {"routing_group": 2}, "multiplier": 1}}),
+            None,
+        ),
+        (
+            "negative-legacy",
+            serde_json::json!({"routing_group_billing_multiplier": -1}),
+            None,
+        ),
+        (
+            "string-legacy",
+            serde_json::json!({"routing_group_billing_multiplier": "1"}),
+            None,
+        ),
+        (
+            "zero-before-overflow",
+            serde_json::json!({"billing_multiplier_snapshot": {"version": 1, "factors": {"a": 1e308, "b": 1e308, "z": 0}, "multiplier": 0}}),
+            Some("0.00000000"),
+        ),
+        (
+            "overflow",
+            serde_json::json!({"billing_multiplier_snapshot": {"version": 1, "factors": {"a": 1e308, "b": 1e308}, "multiplier": 1}}),
+            None,
+        ),
+        (
+            "bad-key",
+            serde_json::json!({"billing_multiplier_snapshot": {"version": 1, "factors": {"routing-group": 2}, "multiplier": 2}}),
+            None,
+        ),
+    ] {
+        let request = uuid::Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO usage(id,request_id,model,provider_name,status,billing_status,total_cost_usd,actual_total_cost_usd,created_at,request_metadata) VALUES($1,$1,$1,'billing-test','completed','settled',2,0.5,$2,$3)")
+            .bind(&request).bind(start).bind(metadata).execute(&mut *tx).await.unwrap();
+        if case == "settlement-base" {
+            sqlx::query("INSERT INTO usage_settlement_snapshots(request_id,billing_status,billing_total_cost_usd,billing_actual_total_cost_usd) VALUES($1,'settled',4,0.25)")
+                .bind(&request).execute(&mut *tx).await.unwrap();
+        }
+        let amount: Option<String> = sqlx::query_scalar(
+            "SELECT billable_amount::text FROM usage_analytics_facts_v1 WHERE request_id=$1",
+        )
+        .bind(&request)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(amount.as_deref(), expected, "{case}");
+        let query = UsageAnalyticsQuery {
+            from_unix_ms: start.timestamp_millis() as u64,
+            to_unix_ms: (start + chrono::Duration::hours(1)).timestamp_millis() as u64,
+            model: Some(request),
+            ..Default::default()
+        };
+        let canonical = super::analytics::read_analytics_metrics(&mut tx, &query, false)
+            .await
+            .unwrap();
+        let inline = super::dashboard::read_dashboard_total_metrics(&mut tx, &query, false)
+            .await
+            .unwrap();
+        assert_dashboard_total_matches_canonical(&inline, &canonical);
+        if let Some(expected) = expected {
+            assert_eq!(
+                canonical.billable_amount.as_deref(),
+                Some(expected),
+                "{case}"
+            );
+        }
     }
     tx.rollback().await.unwrap();
 }

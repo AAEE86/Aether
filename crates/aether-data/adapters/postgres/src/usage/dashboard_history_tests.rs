@@ -134,6 +134,29 @@ async fn live_dashboard_restores_legacy_history_without_replaying_or_double_coun
         assert_eq!(advanced.activity_days, restored.activity_days);
         assert_eq!(advanced.active_days, restored.active_days);
 
+        // New daily rollups retain customer charges independently after detail
+        // expires; older NULL daily charges retain their original legacy cost.
+        sqlx::query("UPDATE stats_daily SET billing_cost=1.5 WHERE id='recent'")
+            .execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM usage WHERE request_id='overlap'")
+            .execute(&pool).await.unwrap();
+        let billed_history = repo.query_dashboard_summary(&query).await.unwrap();
+        assert_eq!(billed_history.total.billable_amount.as_deref(), Some("123456791.59691357"));
+        assert_eq!(billed_history.total.request_count, restored.total.request_count);
+        assert_eq!(billed_history.today, restored.today);
+        let provider_cost: String = sqlx::query_scalar("SELECT actual_total_cost::text FROM stats_daily WHERE id='recent'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(provider_cost, "0.30000003");
+
+        // The pre-activation live prefix applies the same composite snapshot
+        // to its finalized base amount, independently of procurement cost.
+        sqlx::query("UPDATE usage SET request_metadata=$1 WHERE request_id='before-shared'")
+            .bind(serde_json::json!({"billing_multiplier_snapshot": {"version": 1, "factors": {"routing_group": 2, "user_group": 0.75}, "multiplier": 1.5}}))
+            .execute(&pool).await.unwrap();
+        let billed_prefix = repo.query_dashboard_summary(&query).await.unwrap();
+        assert_eq!(billed_prefix.total.billable_amount.as_deref(), Some("123456791.65864196"));
+        assert_eq!(billed_prefix.today.billable_amount.as_deref(), Some("0.93518517"));
+
         // A summary cutoff without legacy daily history must leave the normal
         // future-only projection and its requested calendar unchanged.
         sqlx::query("DELETE FROM stats_daily").execute(&pool).await.unwrap();

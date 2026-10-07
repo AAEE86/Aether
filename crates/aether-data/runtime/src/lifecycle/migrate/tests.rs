@@ -27,6 +27,7 @@ use crate::lifecycle::bootstrap::postgres::{
     EMPTY_DATABASE_SNAPSHOT_CUTOFF_VERSION, EMPTY_DATABASE_SNAPSHOT_SQL,
 };
 
+mod customer_billing_upgrade;
 mod dashboard_user_anonymization;
 mod legacy_overview_upgrade;
 mod migration_deadlines;
@@ -1597,6 +1598,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260923000000,
             20261001000000,
             20261004000000,
+            20261007000000,
         ]
     );
 }

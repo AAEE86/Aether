@@ -33,6 +33,7 @@ export interface RoutingModelPolicy {
   model: string
   allowed_providers: string[]
   allowed_keys: string[]
+  provider_enabled_overrides: Record<string, boolean>
   provider_priority_overrides: Record<string, number>
   key_priority_overrides: Record<string, number>
   /** api_format -> key_id -> priority；同一 Key 在不同 API 格式下可独立排序 */
@@ -65,6 +66,8 @@ export interface RoutingSetSchedulingAction {
 }
 
 export interface RoutingGroupConfig {
+  billing_multiplier: number
+  user_visible: boolean
   disabled_providers: string[]
   default_policy: RoutingDefaultPolicy
   model_policies: RoutingModelPolicy[]
@@ -77,6 +80,8 @@ export const SCHEDULING_POLICY_RULE_PREFIX = 'ui_scheduling_policy:'
 
 export function createEmptyRoutingGroupConfig(): RoutingGroupConfig {
   return {
+    billing_multiplier: 1,
+    user_visible: false,
     default_policy: {
       ...normalizeRoutingFailoverPolicy(),
       priority_mode: 'provider',
@@ -93,6 +98,13 @@ export function createEmptyRoutingGroupConfig(): RoutingGroupConfig {
   }
 }
 
+export function parseBillingMultiplier(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && !value.trim()) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
 export function normalizeStickyKeyAttempts(value: unknown): number {
   const parsed = Math.trunc(Number(value))
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_STICKY_KEY_ATTEMPTS
@@ -104,6 +116,7 @@ export function createEmptyModelPolicy(model = ''): RoutingModelPolicy {
     model,
     allowed_providers: [],
     allowed_keys: [],
+    provider_enabled_overrides: {},
     provider_priority_overrides: {},
     key_priority_overrides: {},
     key_priority_overrides_by_format: {},
@@ -125,6 +138,8 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
   } = rawDefaultPolicy
 
   return {
+    billing_multiplier: parseBillingMultiplier(value?.billing_multiplier) ?? base.billing_multiplier,
+    user_visible: value?.user_visible === true,
     default_policy: {
       ...base.default_policy,
       ...defaultPolicyWithoutLegacyHeartbeat,
@@ -145,6 +160,8 @@ export function normalizeRoutingGroupConfig(value: Partial<RoutingGroupConfig> |
           ...policy,
           allowed_providers: Array.isArray(policy.allowed_providers) ? [...policy.allowed_providers] : [],
           allowed_keys: Array.isArray(policy.allowed_keys) ? [...policy.allowed_keys] : [],
+          provider_enabled_overrides: Object.fromEntries(Object.entries(policy.provider_enabled_overrides ?? {})
+            .filter(([id, enabled]) => id.length > 0 && typeof enabled === 'boolean')),
           provider_priority_overrides: { ...(policy.provider_priority_overrides ?? {}) },
           key_priority_overrides: { ...(policy.key_priority_overrides ?? {}) },
           key_priority_overrides_by_format: normalizeKeyPriorityOverridesByFormat(
@@ -197,6 +214,16 @@ export function getModelPolicy(config: RoutingGroupConfig, model: string): Routi
   const normalized = normalizeRoutingGroupConfig(config)
   return normalized.model_policies.find(policy => policy.model === normalizedModel)
     ?? createEmptyModelPolicy(normalizedModel)
+}
+
+export function isRoutingProviderEnabled(
+  config: RoutingGroupConfig,
+  providerId: string,
+  policy?: RoutingModelPolicy | null,
+): boolean {
+  return policy?.provider_enabled_overrides?.[providerId]
+    ?? getDefaultModelPolicy(config).provider_enabled_overrides[providerId]
+    ?? !config.disabled_providers.includes(providerId)
 }
 
 export function upsertDefaultModelPolicy(

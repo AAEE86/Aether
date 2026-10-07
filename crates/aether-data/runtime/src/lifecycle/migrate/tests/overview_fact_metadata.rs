@@ -168,7 +168,7 @@ VALUES('employee-key','owner',repeat('e',64),false),
     let bootstrap =
         include_str!("../../../../schema/bootstrap/postgres/190_overview_analytics.sql");
     let view_start = bootstrap
-        .find("CREATE OR REPLACE VIEW public.usage_analytics_facts_v1 AS")
+        .find("CREATE OR REPLACE FUNCTION public.usage_customer_billable_amount(")
         .unwrap();
     sqlx::raw_sql(&bootstrap[view_start..])
         .execute(&pool)

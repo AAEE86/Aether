@@ -52,8 +52,10 @@ impl DashboardProjection {
                 != Some(false)
         };
         let usage = available(USAGE_AVAILABLE_METADATA_KEY);
-        let priced =
-            available(USAGE_PRICING_AVAILABLE_METADATA_KEY) && row.billing_status == "settled";
+        let billing_cost = row.billing_cost();
+        let priced = available(USAGE_PRICING_AVAILABLE_METADATA_KEY)
+            && row.billing_status == "settled"
+            && billing_cost.is_some();
         let stream = row
             .request_metadata
             .as_ref()
@@ -105,7 +107,9 @@ impl DashboardProjection {
                 actor: analytics::actor(row, keys).map(str::to_owned),
                 metrics,
                 billable_units: priced
-                    .then(|| (row.actual_total_cost_usd * 100_000_000.0).round() as i128),
+                    .then_some(billing_cost)
+                    .flatten()
+                    .map(|cost| (cost * 100_000_000.0).round() as i128),
             },
         );
     }

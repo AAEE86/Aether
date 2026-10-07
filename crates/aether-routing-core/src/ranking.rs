@@ -13,7 +13,8 @@ pub enum CandidateKind {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RankingOverlay {
-    /// Group-wide exclusions take precedence over every provider allowlist.
+    /// Effective provider exclusions after model overrides. These take
+    /// precedence over every provider allowlist.
     #[serde(default)]
     pub disabled_providers: Vec<String>,
     #[serde(default)]

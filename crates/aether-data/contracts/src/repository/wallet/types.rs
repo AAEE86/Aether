@@ -3286,6 +3286,7 @@ mod tests {
             billing_status: "pending".to_string(),
             total_cost_usd: 0.1,
             actual_total_cost_usd: 0.1,
+            billing_cost_usd: None,
             finalized_at_unix_secs: None,
         };
         assert!(input.validate().is_err());

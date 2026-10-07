@@ -29,7 +29,7 @@ function mountEditor(options: { modelIds?: string[], keyMode?: boolean } = {}) {
   initial.model_policies = [{
     ...getDefaultModelPolicy(initial),
     provider_priority_overrides: { outside: 99 },
-    key_priority_overrides_by_format: { 'openai:chat': { outside: 99 }, 'claude:chat': { 'claude-key': 45 } },
+    key_priority_overrides_by_format: { 'openai:chat': { outside: 99 }, 'claude:messages': { 'claude-key': 45 } },
     pool_priority_overrides: { 'other-pool': 88 },
   }]
   const config = ref(initial)
@@ -181,6 +181,20 @@ describe('RoutingPriorityPolicyEditor ordering', () => {
     expect(rows.find(row => row.textContent?.includes('提供商 C'))?.textContent).toContain('本组禁用')
     expect(rows.find(row => row.textContent?.includes('提供商 B'))?.textContent).not.toContain('本组禁用')
     expect(rows.every(row => !row.textContent?.includes('停用'))).toBe(true)
+  })
+
+  it('shows the selected model policy membership while retaining legacy exclusions as defaults', async () => {
+    const { root, config } = mountEditor()
+    config.value.disabled_providers = ['A', 'C']
+    config.value.model_policies[0].provider_enabled_overrides = { A: true, B: false }
+    await vi.waitFor(() => expect(rowNames(root)).toHaveLength(4))
+    const rows = [...root.querySelectorAll<HTMLElement>('[draggable="true"]')]
+    expect(rows.find(row => row.textContent?.includes('提供商 A'))?.textContent).not.toContain('本组禁用')
+    expect(rows.find(row => row.textContent?.includes('提供商 B'))?.textContent).toContain('本组禁用')
+    expect(rows.find(row => row.textContent?.includes('提供商 C'))?.textContent).toContain('本组禁用')
+    await click(root, '置顶 提供商 C')
+    expect(getDefaultModelPolicy(config.value).provider_enabled_overrides).toEqual({ A: true, B: false })
+    expect(config.value.disabled_providers).toEqual(['A', 'C'])
   })
 
   it('emits provider inspection and refreshes health and keys without altering the draft', async () => {

@@ -136,14 +136,16 @@ fn apply_allocations(
 }
 fn decimal_sum(
     rows: &[&StoredRequestUsageAudit],
-    value: impl Fn(&StoredRequestUsageAudit) -> f64,
+    value: impl Fn(&StoredRequestUsageAudit) -> Option<f64>,
 ) -> Option<String> {
     let amounts = rows
         .iter()
         .filter(|row| {
             available(row, USAGE_PRICING_AVAILABLE_METADATA_KEY) && row.billing_status == "settled"
         })
-        .map(|row| (value(row) * 100_000_000.0).round() as i128)
+        .filter_map(|row| value(row))
+        .filter(|amount| amount.is_finite())
+        .map(|amount| (amount * 100_000_000.0).round() as i128)
         .collect::<Vec<_>>();
     if amounts.is_empty() {
         None
@@ -270,8 +272,8 @@ fn metrics(
     metrics.first_byte_p90_ms = first_percentile(0.9);
     metrics.first_byte_p99_ms = first_percentile(0.99);
     metrics.usage_active_users = users.len() as u64;
-    metrics.rated_amount = decimal_sum(rows, |row| row.total_cost_usd);
-    metrics.billable_amount = decimal_sum(rows, |row| row.actual_total_cost_usd);
+    metrics.rated_amount = decimal_sum(rows, |row| Some(row.total_cost_usd));
+    metrics.billable_amount = decimal_sum(rows, |row| row.billing_cost());
     metrics
 }
 
@@ -281,7 +283,7 @@ fn dashboard_total_metrics(
 ) -> UsageAnalyticsMetrics {
     let mut metrics = UsageAnalyticsMetrics {
         request_count: rows.len() as u64,
-        billable_amount: decimal_sum(rows, |row| row.actual_total_cost_usd),
+        billable_amount: decimal_sum(rows, |row| row.billing_cost()),
         ..Default::default()
     };
     for row in rows {

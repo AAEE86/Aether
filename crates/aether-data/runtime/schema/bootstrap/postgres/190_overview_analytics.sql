@@ -201,6 +201,77 @@ DROP TRIGGER IF EXISTS overview_usage_delete_attribution ON public.usage;
 CREATE TRIGGER overview_usage_delete_attribution BEFORE DELETE ON public.usage
   FOR EACH ROW EXECUTE FUNCTION public.overview_delete_attribution();
 
+-- Customer charges use the immutable request-time factor snapshot. Provider
+-- procurement cost remains in actual_total_cost_usd for legacy reporting.
+CREATE OR REPLACE FUNCTION public.usage_customer_billable_amount(
+  metadata jsonb, base_cost numeric, legacy_cost numeric
+) RETURNS numeric LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE factor jsonb; multiplier numeric; amount numeric;
+  factor_name text; factor_value jsonb; factor_number double precision;
+  expected_multiplier double precision := 1.0; factor_count integer := 0;
+  has_zero boolean := false;
+BEGIN
+  IF metadata ? 'billing_multiplier_snapshot' THEN
+    IF jsonb_typeof(metadata->'billing_multiplier_snapshot') <> 'object'
+      OR metadata #> '{billing_multiplier_snapshot,version}' IS DISTINCT FROM '1'::jsonb
+      OR jsonb_typeof(metadata #> '{billing_multiplier_snapshot,factors}') IS DISTINCT FROM 'object'
+    THEN RETURN NULL; END IF;
+    factor := metadata #> '{billing_multiplier_snapshot,multiplier}';
+    FOR factor_name, factor_value IN
+      SELECT key, value FROM jsonb_each(metadata #> '{billing_multiplier_snapshot,factors}') ORDER BY key COLLATE "C"
+    LOOP
+      factor_count := factor_count + 1;
+      IF factor_count > 16 OR factor_name = '' OR length(factor_name) > 64
+        OR factor_name !~ '^[A-Za-z0-9_]+$'
+        OR jsonb_typeof(factor_value) IS DISTINCT FROM 'number'
+      THEN RETURN NULL; END IF;
+      factor_number := factor_value::text::double precision;
+      IF factor_number < 0 OR factor_number > 1.7976931348623157e308::double precision
+      THEN RETURN NULL; END IF;
+      has_zero := has_zero OR factor_number = 0;
+    END LOOP;
+    -- Rust short-circuits zero before multiplying any of the other factors.
+    IF has_zero THEN expected_multiplier := 0;
+    ELSE
+      FOR factor_name, factor_value IN
+        SELECT key, value FROM jsonb_each(metadata #> '{billing_multiplier_snapshot,factors}') ORDER BY key COLLATE "C"
+      LOOP
+        factor_number := factor_value::text::double precision;
+        BEGIN
+          expected_multiplier := expected_multiplier * factor_number;
+        EXCEPTION WHEN numeric_value_out_of_range THEN
+          -- PostgreSQL raises on float underflow; Rust rounds that product to 0.
+          IF expected_multiplier::numeric * factor_number::numeric > 1.7976931348623157e308::numeric
+          THEN RETURN NULL; END IF;
+          expected_multiplier := 0;
+        END;
+      END LOOP;
+    END IF;
+  ELSIF metadata ? 'routing_group_billing_multiplier' THEN
+    factor := metadata->'routing_group_billing_multiplier';
+    expected_multiplier := NULL;
+  ELSE
+    RETURN CASE WHEN legacy_cost NOT IN ('NaN'::numeric,'Infinity'::numeric,'-Infinity'::numeric)
+      THEN round(legacy_cost,8) END;
+  END IF;
+  IF jsonb_typeof(factor) IS DISTINCT FROM 'number' THEN RETURN NULL; END IF;
+  multiplier := factor::text::numeric;
+  factor_number := factor::text::double precision;
+  IF factor_number < 0
+    OR factor_number > 1.7976931348623157e308::double precision
+    OR (expected_multiplier IS NOT NULL AND factor_number <> expected_multiplier)
+    OR multiplier < 0 OR multiplier > 1.7976931348623157e308::numeric
+    OR base_cost IS NULL OR base_cost < 0
+    OR base_cost IN ('NaN'::numeric,'Infinity'::numeric,'-Infinity'::numeric)
+  THEN RETURN NULL; END IF;
+  amount := base_cost * multiplier;
+  IF amount > 1.7976931348623157e308::numeric THEN RETURN NULL; END IF;
+  RETURN round(amount,8);
+EXCEPTION WHEN numeric_value_out_of_range OR invalid_text_representation THEN
+  -- Corrupt captured pricing must not abort an entire analytics query.
+  RETURN NULL;
+END $$;
+
 CREATE OR REPLACE VIEW public.usage_analytics_facts_v1 AS
 SELECT u.request_id, COALESCE(u.id, u.request_id) AS id, u.created_at,
   CASE WHEN identity.owner_id IS NOT NULL AND identity.is_standalone=false THEN identity.owner_id END AS actor_user_id,
@@ -233,7 +304,9 @@ SELECT u.request_id, COALESCE(u.id, u.request_id) AS id, u.created_at,
     THEN round(COALESCE(s.billing_total_cost_usd::numeric, u.total_cost_usd::numeric), 8) END AS rated_amount,
   CASE WHEN COALESCE(metadata.value->'usage_pricing_available', 'true'::jsonb) <> 'false'::jsonb
     AND (s.billing_actual_total_cost_usd IS NOT NULL OR COALESCE(s.billing_status, u.billing_status) = 'settled')
-    THEN round(COALESCE(s.billing_actual_total_cost_usd::numeric, u.actual_total_cost_usd::numeric), 8) END AS billable_amount,
+    THEN public.usage_customer_billable_amount(metadata.value,
+      COALESCE(s.billing_total_cost_usd::numeric, u.total_cost_usd::numeric),
+      COALESCE(s.billing_actual_total_cost_usd::numeric, u.actual_total_cost_usd::numeric)) END AS billable_amount,
   s.quota_covered_amount_usd AS quota_covered_amount,
   s.wallet_consumed_amount_usd AS wallet_consumed_amount,
   s.wallet_debit_amount_usd AS wallet_debit_amount,

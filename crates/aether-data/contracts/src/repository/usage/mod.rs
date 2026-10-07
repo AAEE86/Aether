@@ -2,6 +2,7 @@ mod analytics;
 #[cfg(test)]
 mod analytics_tests;
 mod attribution;
+mod billing_multiplier;
 mod capture_memory;
 mod compression;
 mod dashboard_summary;
@@ -12,6 +13,7 @@ mod types;
 
 pub use analytics::*;
 pub use attribution::*;
+pub use billing_multiplier::*;
 #[doc(hidden)]
 pub use capture_memory::{
     mark_usage_capture_memory_omitted, usage_json_heap_estimate, UsageCaptureMemoryBudget,
@@ -60,6 +62,8 @@ pub use types::{
     PROVIDER_RESPONSE_MODEL_METADATA_KEY, PROVIDER_SERVICE_TIER_METADATA_KEY,
     REALTIME_SESSION_METADATA_KEY, REQUESTED_REASONING_EFFORT_METADATA_KEY,
     ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY, ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY,
-    USAGE_AVAILABLE_METADATA_KEY, USAGE_PRICING_AVAILABLE_METADATA_KEY,
-    WEBSOCKET_MODE_METADATA_KEY, WEBSOCKET_TRANSPORT_METADATA_KEY,
+    ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY, ROUTING_GROUP_ID_METADATA_KEY,
+    ROUTING_GROUP_NAME_METADATA_KEY, USAGE_AVAILABLE_METADATA_KEY,
+    USAGE_PRICING_AVAILABLE_METADATA_KEY, WEBSOCKET_MODE_METADATA_KEY,
+    WEBSOCKET_TRANSPORT_METADATA_KEY,
 };

@@ -132,19 +132,19 @@
       <div
         role="group"
         aria-label="模型调度配置"
-        class="space-y-1.5"
+        class="divide-y divide-border/60 border-b border-border/60"
       >
         <section
           v-for="(entry, index) in entries"
           :key="entry.id"
-          class="min-w-0 overflow-hidden rounded-md border transition-colors"
-          :class="selectedEntryId === entry.id ? 'border-primary/40 bg-primary/5' : 'border-border/60 bg-background'"
+          class="min-w-0"
           :aria-label="`调度配置 ${index + 1}`"
         >
           <div class="flex min-w-0 items-center">
             <button
               type="button"
-              class="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
+              class="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left text-xs hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
+              :class="selectedEntryId === entry.id ? 'text-primary' : 'text-foreground'"
               :aria-label="`选择调度配置 ${index + 1}`"
               :aria-pressed="selectedEntryId === entry.id"
               :aria-expanded="expandedId === entry.id"
@@ -152,7 +152,7 @@
               @click="toggleEntry(entry.id)"
             >
               <ChevronRight
-                class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
+                class="h-3.5 w-3.5 shrink-0 transition-transform"
                 :class="expandedId === entry.id ? 'rotate-90' : ''"
               />
               <span
@@ -161,6 +161,19 @@
               >{{ scopeSummary(entry) }}</span>
               <span class="shrink-0 text-muted-foreground">{{ schedulingModeLabel(entry.schedulingMode) }}</span>
             </button>
+            <RoutingModelSelectionPopover
+              v-if="entry.scope === 'selected'"
+              :open="editingModelsId === entry.id"
+              :model-value="entry.models"
+              :models="globalModels"
+              :assigned-models="otherModelOwners(entry.id)"
+              :loading="loadingModels"
+              :error="modelsError"
+              :disabled="disabled"
+              @update:open="open => setModelEditorOpen(entry.id, open)"
+              @update:model-value="models => updateEntry(entry.id, { models })"
+              @reload="emit('reload-models')"
+            />
             <Button
               v-if="entries.length > 1"
               type="button"
@@ -178,32 +191,40 @@
             v-if="selectedEntryId === entry.id && expandedId === entry.id"
             role="region"
             aria-label="当前配置的适用模型"
-            class="min-w-0 border-t border-border/50"
+            class="min-w-0 px-1 pb-2"
           >
-            <RoutingModelSelector
+            <span
               v-if="entry.scope === 'selected'"
-              compact
-              inline
-              :narrow="sidebar"
-              :model-value="entry.models"
-              :models="globalModels"
-              :assigned-models="otherModelOwners(entry.id)"
-              :loading="loadingModels"
-              :error="modelsError"
-              :disabled="disabled"
-              @update:model-value="models => updateEntry(entry.id, { models })"
-              @reload="emit('reload-models')"
-            />
+              class="mb-1.5 block text-xs font-medium text-muted-foreground"
+            >适用模型</span>
+            <div
+              v-if="entry.models.length"
+              class="flex min-w-0 flex-wrap gap-1.5 py-1"
+              aria-label="已配置模型"
+            >
+              <span
+                v-for="name in entry.models"
+                :key="name"
+                class="max-w-full break-words rounded-md bg-muted/70 px-2 py-1 text-xs text-foreground [overflow-wrap:anywhere]"
+                :title="name"
+              >{{ modelDisplayName(name) }}</span>
+            </div>
+            <p
+              v-else-if="entry.scope === 'selected'"
+              class="py-2 text-xs leading-5 text-muted-foreground"
+            >
+              请选择适用模型
+            </p>
             <p
               v-else
-              class="px-2 py-2 text-xs leading-5 text-muted-foreground"
+              class="py-2 text-xs leading-5 text-muted-foreground"
             >
               此默认配置适用于未单独指定的模型，新增模型也会自动使用。
             </p>
           </div>
           <div
             v-if="selectedEntryId === entry.id && expandedId === entry.id"
-            class="min-w-0 space-y-1.5 border-t border-border/50 p-2"
+            class="min-w-0 space-y-1.5 px-1 pb-3 pt-1"
           >
             <div class="flex h-6 items-center gap-1 text-xs font-medium text-muted-foreground">
               <span>调度策略</span>
@@ -421,6 +442,7 @@ import HelpHint from '@/components/common/HelpHint.vue'
 import type { GlobalModelResponse } from '@/api/global-models'
 import RoutingPriorityPolicyEditor from './RoutingPriorityPolicyEditor.vue'
 import RoutingModelSelector from './RoutingModelSelector.vue'
+import RoutingModelSelectionPopover from './RoutingModelSelectionPopover.vue'
 import { getDefaultModelPolicy, normalizeRoutingGroupConfig, type RoutingGroupConfig, type RoutingModelPolicy, type RoutingPriorityMode, type RoutingSchedulingMode } from '../utils/routingPolicy'
 import {
   createSchedulingPolicy,
@@ -490,6 +512,7 @@ const fallbackScheduling = {
   scheduling_mode: props.config.default_policy.scheduling_mode,
 }
 const expandedId = ref<string | null>(initialSelectedEntry?.id ?? null)
+const editingModelsId = ref<string | null>(null)
 const validationError = computed(() => validateSchedulingPolicies(entries.value))
 const hasAllModels = computed(() => entries.value.some(entry => entry.scope === 'all'))
 const assignedModels = computed(() => new Set(entries.value.filter(entry => entry.scope === 'selected').flatMap(entry => entry.models)))
@@ -535,6 +558,7 @@ function emitSelection(): void {
 
 function toggleEntry(id: string): void {
   if (props.disabled) return
+  editingModelsId.value = null
   if (layout.value === 'config-only') {
     if (selectedEntryId.value === id) expandedId.value = expandedId.value === id ? null : id
     else selectEntry(id)
@@ -548,9 +572,20 @@ function toggleEntry(id: string): void {
 
 function selectEntry(id: string): void {
   if (props.disabled) return
+  editingModelsId.value = null
   selectedEntryId.value = id
   expandedId.value = id
   emitSelection()
+}
+
+function setModelEditorOpen(id: string, open: boolean): void {
+  if (!open) {
+    if (editingModelsId.value === id) editingModelsId.value = null
+    return
+  }
+  if (props.disabled) return
+  selectEntry(id)
+  editingModelsId.value = id
 }
 
 function updateSelectedPolicy(policy: RoutingModelPolicy): void {
@@ -571,8 +606,17 @@ function schedulingModeLabel(mode: RoutingSchedulingMode): string {
 function scopeSummary(entry: SchedulingPolicy): string {
   if (entry.scope === 'all') return '默认配置'
   if (entry.models.length === 0) return '请选择适用模型'
+  if (layout.value === 'config-only') {
+    const first = entry.models[0] ?? ''
+    const label = props.globalModels.find(model => model.name === first)?.display_name || first
+    return label + (entry.models.length > 1 ? ` +${entry.models.length - 1}` : '')
+  }
   const labels = entry.models.slice(0, 2).map(name => props.globalModels.find(model => model.name === name)?.display_name || name)
   return labels.join('、') + (entry.models.length > 2 ? ` 等 ${entry.models.length} 个模型` : '')
+}
+
+function modelDisplayName(name: string): string {
+  return props.globalModels.find(model => model.name === name)?.display_name || name
 }
 
 function otherModelOwners(entryId: string): Record<string, number> {
@@ -595,6 +639,7 @@ function publish(): void {
 
 function setScopeMode(scope: SchedulingPolicy['scope']): void {
   if (props.disabled || scopeMode.value === scope) return
+  editingModelsId.value = null
   if (scopeMode.value === 'all') allModelsDraft = entries.value
   else selectedModelsDraft = entries.value
 
@@ -636,6 +681,7 @@ function updateEntry(id: string, patch: Partial<SchedulingPolicy>): void {
 
 function addEntry(): void {
   if (!canAddEntry.value) return
+  editingModelsId.value = null
   const entry = createSchedulingPolicy(props.config)
   entries.value.push(entry)
   selectedEntryId.value = entry.id
@@ -645,6 +691,7 @@ function addEntry(): void {
 
 function removeEntry(id: string): void {
   if (props.disabled || entries.value.length === 1) return
+  editingModelsId.value = null
   entries.value = entries.value.filter(entry => entry.id !== id)
   if (entries.value.every(entry => entry.scope === 'all')) {
     scopeMode.value = 'all'

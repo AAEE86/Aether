@@ -109,7 +109,10 @@ mod tests {
         assert_eq!(profile.originator, "codex_cli_rs");
         assert!(profile.user_agent.starts_with("codex_cli_rs/0.200.1 ("));
         assert!(profile.user_agent.ends_with(") unknown"));
-        assert!(profile.user_agent.contains(std::env::consts::ARCH));
+        let architecture = super::OS_INFO
+            .architecture()
+            .unwrap_or(std::env::consts::ARCH);
+        assert!(profile.user_agent.contains(&format!("; {architecture})")));
     }
 
     #[test]

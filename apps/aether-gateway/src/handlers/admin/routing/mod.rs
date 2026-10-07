@@ -411,7 +411,7 @@ async fn dry_run_routing_group(
     let headers_json = payload.headers.unwrap_or_else(|| json!({}));
     let mut header_map = header_map_from_value(&headers_json)?;
     let mut body = payload.body.unwrap_or_else(|| json!({}));
-    let policy = resolve_gateway_routing_policy(GatewayRoutingPolicyInput {
+    let mut policy = resolve_gateway_routing_policy(GatewayRoutingPolicyInput {
         group_id: Some(group.id.as_str()),
         group_version: Some(group.version),
         group_config_json: &group.config_json,
@@ -425,6 +425,7 @@ async fn dry_run_routing_group(
         body: &body,
         phase: payload.phase.unwrap_or(RoutingRulePhase::ClientRequest),
     })?;
+    policy.group_name = Some(group.name.clone());
     let patch_summary = patch_summary(&policy.mutation_plan);
     apply_routing_mutation_plan(&mut body, &mut header_map, &policy.mutation_plan)?;
     let mut trace = build_routing_trace_seed(&policy, api_format);

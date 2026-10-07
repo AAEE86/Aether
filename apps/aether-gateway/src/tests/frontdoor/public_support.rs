@@ -52,10 +52,13 @@ const TEST_EMAIL_VERIFICATION_TOKEN: &str =
 
 #[path = "public_support/announcement_user_list.rs"]
 mod announcement_user_list;
+mod api_key_routing;
 #[path = "public_support/auth_cookie.rs"]
 mod auth_cookie;
 #[path = "public_support/dashboard.rs"]
 mod dashboard;
+#[path = "public_support/routing_groups.rs"]
+mod routing_groups;
 #[path = "public_support/vscodex.rs"]
 mod vscodex;
 

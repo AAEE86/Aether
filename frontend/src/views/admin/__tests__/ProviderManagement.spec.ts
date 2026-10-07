@@ -24,6 +24,8 @@ const apiMocks = vi.hoisted(() => ({
   updateProvider: vi.fn(),
 }))
 
+const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }))
+
 vi.mock('@/api/endpoints', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/endpoints')>(),
   ...apiMocks,
@@ -34,7 +36,7 @@ vi.mock('@/composables/useConfirm', () => ({
 }))
 
 vi.mock('@/composables/useToast', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+  useToast: () => toastMocks,
 }))
 
 vi.mock('@/features/providers/composables/useProviderBalance', () => ({
@@ -417,10 +419,11 @@ describe('ProviderManagement group directory', () => {
     expect(row.textContent).toContain('本组启用')
     expect(row.textContent).not.toContain('本组禁用')
     expect(row.textContent).toContain('全局停用')
-    expect(workspace.groups['group-b']!.disabled_providers).toEqual([])
+    expect(workspace.groups['group-b']!.disabled_providers).toEqual(['provider-4'])
+    expect(getDefaultModelPolicy(workspace.groups['group-b']!).provider_enabled_overrides).toEqual({ 'provider-4': true })
     expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
-    expect(workspace.updateDraftConfig).toHaveBeenCalledExactlyOnceWith(workspace.groups['group-b'])
-    expect(workspace.updatePriorityPolicy).not.toHaveBeenCalled()
+    expect(workspace.updateDraftConfig).not.toHaveBeenCalled()
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
     expect(providers[3]!.is_active).toBe(false)
     expect(apiMocks.updateProvider).not.toHaveBeenCalled()
     expect(apiMocks.getProvidersSummary).toHaveBeenCalledTimes(1)
@@ -476,7 +479,8 @@ describe('ProviderManagement group directory', () => {
     await settle()
     expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
     expect(groupDisabled.textContent).toContain('本组启用')
-    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual(['provider-2'])
+    expect(getDefaultModelPolicy(workspace.groups['group-a']!).provider_enabled_overrides).toEqual({ 'provider-2': true })
 
     globallyDisabled.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!.click()
     await settle()
@@ -525,6 +529,46 @@ describe('ProviderManagement group directory', () => {
     root.querySelector<HTMLButtonElement>('[data-select-policy="0"]')!.click()
     await settle()
     expect(providerOrder(root)).toEqual(['provider-3', 'provider-1', 'provider-2', 'provider-4'])
+  })
+
+  it.each(['table', 'mobile list'] as const)('keeps model configuration membership independent in the %s', async layout => {
+    const providers = mockSortableProviders()
+    const config = createEmptyRoutingGroupConfig()
+    workspace.groups['group-a'] = writeSchedulingPolicies(config, [
+      { ...createSchedulingPolicy(config), models: ['Model One', 'Model Two'] },
+      { ...createSchedulingPolicy(config), models: ['Model Three'] },
+      createSchedulingPolicy(config, 'all'),
+    ])
+    const root = await mountView()
+    const row = [...root.querySelectorAll<HTMLElement>('[data-provider-sort-id="provider-1"]')]
+      .find(element => layout === 'table' ? element.closest('table') : !element.closest('table'))!
+    const toggle = row.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!
+    toggle.click()
+    await settle()
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(row.textContent).toContain('本组禁用')
+    for (const model of ['Model One', 'Model Two']) {
+      expect(getModelPolicy(workspace.groups['group-a']!, model).provider_enabled_overrides).toEqual({ 'provider-1': false })
+    }
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model Three').provider_enabled_overrides).toEqual({})
+    expect(getDefaultModelPolicy(workspace.groups['group-a']!).provider_enabled_overrides).toEqual({})
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
+
+    root.querySelector<HTMLButtonElement>('[data-select-policy="1"]')!.click()
+    await settle()
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(row.textContent).toContain('本组启用')
+    expect(row.textContent).not.toContain('本组禁用')
+    root.querySelector<HTMLButtonElement>('[data-select-policy="0"]')!.click()
+    await settle()
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    toggle.click()
+    await settle()
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model One').provider_enabled_overrides).toEqual({ 'provider-1': true })
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Model Three').provider_enabled_overrides).toEqual({})
+    expect(workspace.updateDraftConfig).not.toHaveBeenCalled()
+    expect(providers[0]!.is_active).toBe(true)
+    expect(apiMocks.updateProvider).not.toHaveBeenCalled()
   })
 
   it('drags the shared model configuration without splitting its models', async () => {
@@ -585,11 +629,12 @@ describe('ProviderManagement group directory', () => {
     expect(toggle.disabled).toBe(false)
     toggle.click()
     await settle()
-    expect(workspace.groups['group-a']!.disabled_providers).toContain('provider-1')
+    expect(getDefaultModelPolicy(workspace.groups['group-a']!).provider_enabled_overrides['provider-1']).toBe(false)
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
     expect(workspace.updatePriorityPolicy).toHaveBeenCalled()
   })
 
-  it('disables ranking before a configuration is selected without blocking provider creation', async () => {
+  it('disables ranking and membership before a configuration is selected without blocking provider creation', async () => {
     mockSortableProviders()
     workspace.selectionReady = false
     const root = await mountView()
@@ -599,10 +644,10 @@ describe('ProviderManagement group directory', () => {
     const handle = root.querySelector<HTMLButtonElement>('[data-provider-drag-handle]')
     expect(handle == null || handle.disabled).toBe(true)
     const toggle = providerElements(root)[0]!.querySelector<HTMLButtonElement>('[aria-label="Provider 1 本组启用"]')!
-    expect(toggle.disabled).toBe(false)
+    expect(toggle.disabled).toBe(true)
     toggle.click()
     await settle()
-    expect(workspace.groups['group-a']!.disabled_providers).toContain('provider-1')
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
     findButton(root, '新增提供商').click()
     await settle()
     expect(root.querySelector('[data-routing-group-id="group-a"]')).not.toBeNull()
@@ -631,9 +676,10 @@ describe('ProviderManagement group directory', () => {
     expect(toggle.disabled).toBe(false)
     toggle.click()
     await settle()
-    expect(workspace.groups['group-a']!.disabled_providers).toContain('provider-1')
+    expect(getModelPolicy(workspace.groups['group-a']!, 'Missing Model').provider_enabled_overrides).toEqual({ 'provider-1': false })
+    expect(workspace.groups['group-a']!.disabled_providers).toEqual([])
     expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
-    expect(workspace.updatePriorityPolicy).toHaveBeenCalledOnce()
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledTimes(2)
   })
 
   it('collects every API page before applying group priority', async () => {
@@ -663,6 +709,54 @@ describe('ProviderManagement group directory', () => {
     findButton(root, '新增提供商').click()
     await settle()
     expect(root.querySelector('[data-save-edited-provider]')).toBeNull()
+    expect(toastMocks.info).toHaveBeenCalledWith('请先保存新分组，再添加提供商')
+    expect(workspace.ensureSaved).not.toHaveBeenCalled()
+  })
+
+  it('edits provider priority and membership in an unsaved group without saving it', async () => {
+    const providers = mockSortableProviders()
+    workspace.groups.new = {
+      ...createEmptyRoutingGroupConfig(),
+      disabled_providers: ['provider-4'],
+    }
+    const savedGroups = {
+      'group-a': structuredClone(workspace.groups['group-a']),
+      'group-b': structuredClone(workspace.groups['group-b']),
+    }
+    const root = await mountView('/admin/providers?group=new')
+    expect(root.querySelector('[data-scheduling-group="new"]')).not.toBeNull()
+    expect(providerOrder(root)).toEqual(['provider-1', 'provider-2', 'provider-3', 'provider-4'])
+
+    const input = await openPriorityInput(root, 'Provider 4')
+    expect(input.disabled).toBe(false)
+    input.value = '0'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+
+    expect(getDefaultModelPolicy(workspace.groups.new!).provider_priority_overrides['provider-4']).toBe(0)
+    expect(providerOrder(root)).toEqual(['provider-4', 'provider-1', 'provider-2', 'provider-3'])
+    const row = providerElements(root)[0]!
+    const toggle = row.querySelector<HTMLButtonElement>('[aria-label="Provider 4 本组启用"]')!
+    expect(toggle.disabled).toBe(false)
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    toggle.click()
+    await settle()
+
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(workspace.groups.new!.disabled_providers).toEqual(['provider-4'])
+    expect(getDefaultModelPolicy(workspace.groups.new!).provider_enabled_overrides).toEqual({ 'provider-4': true })
+    expect(getDefaultModelPolicy(workspace.groups.new!).provider_priority_overrides['provider-4']).toBe(0)
+    expect(workspace.updatePriorityPolicy).toHaveBeenCalledTimes(2)
+    expect(workspace.updateDraftConfig).not.toHaveBeenCalled()
+    expect(workspace.groups['group-a']).toEqual(savedGroups['group-a'])
+    expect(workspace.groups['group-b']).toEqual(savedGroups['group-b'])
+    expect(workspace.ensureSaved).not.toHaveBeenCalled()
+    expect(workspace.refreshGroups).not.toHaveBeenCalled()
+    expect(apiMocks.updateProvider).not.toHaveBeenCalled()
+    expect(providers.map(provider => provider.provider_priority)).toEqual([10, 20, 30, 40])
+    expect(mountedRouter!.currentRoute.value.query.group).toBe('new')
+    expect(root.querySelector('[data-provider-detail]')).toBeNull()
   })
 
   it('opens details and applies edited snapshots for providers outside the loaded directory', async () => {

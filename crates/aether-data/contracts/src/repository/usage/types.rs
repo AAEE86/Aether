@@ -11,6 +11,10 @@ pub const PROVIDER_RESPONSE_MODEL_METADATA_KEY: &str = "provider_response_model"
 pub const PROVIDER_CACHE_TTL_MINUTES_METADATA_KEY: &str = "provider_cache_ttl_minutes";
 pub const ROUTING_CANDIDATE_SKIP_REASON_METADATA_KEY: &str = "routing_candidate_skip_reason";
 pub const ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY: &str = "routing_failure_diagnostic";
+/// Immutable routing-group multiplier captured when the request is planned.
+pub const ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY: &str = "routing_group_billing_multiplier";
+pub const ROUTING_GROUP_ID_METADATA_KEY: &str = "routing_group_id";
+pub const ROUTING_GROUP_NAME_METADATA_KEY: &str = "routing_group_name";
 pub const WEBSOCKET_MODE_METADATA_KEY: &str = "websocket_mode";
 pub const WEBSOCKET_TRANSPORT_METADATA_KEY: &str = "websocket_transport";
 pub const PLAN_USAGE_RESERVATION_DEFERRED_METADATA_KEY: &str = "plan_usage_reservation_deferred";
@@ -826,6 +830,47 @@ impl StoredRequestUsageAudit {
 
     pub fn settlement_rate_multiplier(&self) -> Option<f64> {
         self.request_metadata_number("rate_multiplier")
+    }
+
+    /// Historical requests without a captured multiplier retain the original 1x rate.
+    pub fn routing_group_billing_multiplier(&self) -> f64 {
+        self.request_metadata_number(ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(1.0)
+    }
+
+    /// Routing factor projection retained for callers inspecting this individual factor.
+    pub fn routing_group_billing_cost(&self) -> Option<f64> {
+        let cost = self.total_cost_usd * self.routing_group_billing_multiplier();
+        cost.is_finite().then_some(cost)
+    }
+
+    pub fn billing_multiplier(&self) -> f64 {
+        super::billing_multiplier_snapshot(self.request_metadata.as_ref())
+            .ok()
+            .flatten()
+            .map(|snapshot| snapshot.multiplier())
+            .unwrap_or(1.0)
+    }
+
+    /// Customer charge is independent of upstream Key cost. Legacy rows keep their
+    /// original charge; no current configuration is consulted for historical usage.
+    pub fn billing_cost(&self) -> Option<f64> {
+        match super::billing_multiplier_snapshot(self.request_metadata.as_ref()).ok()? {
+            Some(snapshot) => snapshot.cost(self.total_cost_usd).ok(),
+            None => self
+                .actual_total_cost_usd
+                .is_finite()
+                .then_some(self.actual_total_cost_usd.max(0.0)),
+        }
+    }
+
+    pub fn routing_group_id(&self) -> Option<&str> {
+        self.request_metadata_string(ROUTING_GROUP_ID_METADATA_KEY)
+    }
+
+    pub fn routing_group_name(&self) -> Option<&str> {
+        self.request_metadata_string(ROUTING_GROUP_NAME_METADATA_KEY)
     }
 
     pub fn settlement_is_free_tier(&self) -> Option<bool> {
@@ -3405,6 +3450,40 @@ mod tests {
         record.cache_read_cost_usd = None;
         record.output_price_per_1m = Some(-0.01);
         assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn routing_group_snapshot_defaults_legacy_multiplier_without_inventing_a_group() {
+        let mut usage = sample_usage();
+        usage.total_cost_usd = 4.0;
+        assert_eq!(usage.routing_group_billing_multiplier(), 1.0);
+        assert_eq!(usage.routing_group_billing_cost(), Some(4.0));
+        assert_eq!(usage.routing_group_id(), None);
+        assert_eq!(usage.routing_group_name(), None);
+        for (value, multiplier, cost) in [
+            (json!(0), 0.0, 0.0),
+            (json!(0.25), 0.25, 1.0),
+            (json!(2.5), 2.5, 10.0),
+            (json!(-2), 1.0, 4.0),
+            (json!("Infinity"), 1.0, 4.0),
+            (json!(f64::INFINITY), 1.0, 4.0),
+            (json!(f64::NAN), 1.0, 4.0),
+        ] {
+            usage.request_metadata = Some(json!({
+                "routing_group_billing_multiplier": value,
+                "routing_group_id": "group-recorded",
+                "routing_group_name": "请求时的分组",
+                "rate_multiplier": 0.75
+            }));
+            assert_eq!(usage.routing_group_billing_multiplier(), multiplier);
+            assert_eq!(usage.routing_group_billing_cost(), Some(cost));
+            assert_eq!(usage.routing_group_id(), Some("group-recorded"));
+            assert_eq!(usage.routing_group_name(), Some("请求时的分组"));
+            assert_eq!(usage.settlement_rate_multiplier(), Some(0.75));
+        }
+        usage.request_metadata = Some(json!({"routing_group_billing_multiplier": 2.0}));
+        usage.total_cost_usd = f64::MAX;
+        assert_eq!(usage.routing_group_billing_cost(), None);
     }
 
     #[test]

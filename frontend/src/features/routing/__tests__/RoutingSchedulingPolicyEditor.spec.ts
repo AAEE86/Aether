@@ -83,8 +83,8 @@ async function clickText(root: HTMLElement, text: string) {
 }
 
 async function select(root: HTMLElement, model: string) {
-  await openModels(root)
-  control<HTMLInputElement>(root, `选择模型 ${model}`).click()
+  const picker = await openModels(root)
+  control<HTMLInputElement>(picker, `选择模型 ${model}`).click()
   await flush()
 }
 
@@ -98,9 +98,19 @@ async function openModels(root: HTMLElement) {
   if (control(root, '全部模型').getAttribute('aria-pressed') === 'true') {
     await clickText(root, '区分模型')
   }
-  if (root.querySelector('[aria-label="全局模型选择列表"]')) return
+  const activeCard = root.querySelector('[aria-label^="选择调度配置 "][aria-pressed="true"]')?.closest('section')
+  const edit = activeCard?.querySelector<HTMLButtonElement>('[aria-label="编辑模型"]')
+  if (edit) {
+    if (!document.querySelector('[aria-label="编辑适用模型"]')) {
+      edit.click()
+      await flush()
+    }
+    return control(document.body, '编辑适用模型')
+  }
+  if (root.querySelector('[aria-label="全局模型选择列表"]')) return root
   control<HTMLButtonElement>(root, '选择适用模型').click()
   await flush()
+  return root
 }
 
 beforeEach(() => {
@@ -208,7 +218,7 @@ describe('RoutingSchedulingPolicyEditor', () => {
     const { root, config, selection } = mountEditor(writeSchedulingPolicies(initial, [selected, fallback]), 'config-only')
     control<HTMLButtonElement>(root, '选择调度配置 2').click()
     await flush()
-    expect(root.querySelector('[aria-label="选择适用模型"]')).toBeNull()
+    expect(control(root, '调度配置 2').querySelector('[aria-label="编辑模型"]')).toBeNull()
     expect(control(root, '当前配置的适用模型').textContent).toContain('未单独指定的模型')
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ scope: 'all', modelNames: [], schedulingMode: 'cache_affinity' }))
     await clickText(root, '负载均衡')
@@ -216,8 +226,8 @@ describe('RoutingSchedulingPolicyEditor', () => {
     expect(getModelScheduling(config.value, 'model-b').scheduling_mode).toBe('load_balance')
     control<HTMLButtonElement>(root, '选择调度配置 1').click()
     await flush()
-    expect(root.querySelectorAll('[aria-label="选择适用模型"]')).toHaveLength(1)
-    expect(control(root, '选择适用模型').textContent).toContain('模型 A')
+    expect(root.querySelectorAll('[aria-label="编辑模型"]')).toHaveLength(1)
+    expect(control(root, '已配置模型').textContent).toContain('模型 A')
   })
 
   it('expands only the selected model editor and keeps every shared ranking attached to its configuration', async () => {
@@ -225,17 +235,33 @@ describe('RoutingSchedulingPolicyEditor', () => {
     const first = { ...createSchedulingPolicy(initial), models: ['model-a', 'model-c'], schedulingMode: 'fixed_order' as const }
     const second = { ...createSchedulingPolicy(initial), models: ['model-b'], schedulingMode: 'load_balance' as const }
     const { root, config, selection, editor } = mountEditor(writeSchedulingPolicies(initial, [first, second]), 'config-only')
-    expect(root.querySelectorAll('[aria-label="选择适用模型"]')).toHaveLength(1)
-    expect(root.querySelector('button[aria-label="选择适用模型"]')).toBeNull()
-    expect(control(root, '调度配置 1').contains(control(root, '全局模型选择列表'))).toBe(true)
-    expect(control(root, '调度配置 2').querySelector('[aria-label="全局模型选择列表"]')).toBeNull()
+    expect(root.querySelectorAll('[aria-label="编辑模型"]')).toHaveLength(2)
+    for (const index of [1, 2]) {
+      const card = control(root, `调度配置 ${index}`)
+      const edit = control<HTMLButtonElement>(card, '编辑模型')
+      expect(edit.textContent?.trim()).toBe('')
+      expect(edit.querySelector('svg')).not.toBeNull()
+      expect(edit.compareDocumentPosition(control(card, `删除调度配置 ${index}`)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    expect(control(root, '调度配置 2').querySelector('[aria-label="当前配置的适用模型"]')).toBeNull()
+    expect(document.querySelector('[aria-label="全局模型选择列表"]')).toBeNull()
+    expect(control(root, '已配置模型').querySelector('[title="model-a"]')?.textContent).toBe('模型 A')
+    expect(control(root, '已配置模型').querySelector('[title="model-c"]')?.textContent).toBe('模型 C')
+    expect(control(root, '选择调度配置 1').textContent).toContain('模型 A +1')
     expect(root.querySelector('[aria-label="调整排序"]')).toBeNull()
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: first.id, modelNames: ['model-a', 'model-c'], schedulingMode: 'fixed_order' }))
-    control<HTMLButtonElement>(root, '选择调度配置 2').click()
+    const secondEdit = control<HTMLButtonElement>(control(root, '调度配置 2'), '编辑模型')
+    secondEdit.click()
     await flush()
-    expect(control(root, '调度配置 2').contains(control(root, '全局模型选择列表'))).toBe(true)
-    expect(control(root, '调度配置 1').querySelector('[aria-label="全局模型选择列表"]')).toBeNull()
+    expect(control(root, '选择调度配置 2').getAttribute('aria-expanded')).toBe('true')
+    expect(control(root, '选择调度配置 2').getAttribute('aria-pressed')).toBe('true')
+    expect(control(root, '调度配置 1').querySelector('[aria-label="当前配置的适用模型"]')).toBeNull()
+    expect(control<HTMLInputElement>(control(document.body, '编辑适用模型'), '选择模型 model-b').checked).toBe(true)
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: second.id, modelNames: ['model-b'], schedulingMode: 'load_balance' }))
+    control<HTMLButtonElement>(control(document.body, '编辑适用模型'), '完成选择').click()
+    await flush()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    await vi.waitFor(() => expect(document.activeElement).toBe(secondEdit))
     const policy = { ...getDefaultModelPolicy(initial), provider_priority_overrides: { provider: 6 } }
     editor.value!.updateSelectedPolicy(policy)
     await flush()
@@ -247,7 +273,7 @@ describe('RoutingSchedulingPolicyEditor', () => {
     await flush()
     expect(getModelPolicy(config.value, 'model-a').provider_priority_overrides).toEqual({ shared: 3 })
     expect(getModelPolicy(config.value, 'model-c').provider_priority_overrides).toEqual({ shared: 3 })
-    expect(root.querySelectorAll('[aria-label="选择适用模型"]')).toHaveLength(1)
+    expect(root.querySelectorAll('[aria-label="编辑模型"]')).toHaveLength(2)
     control<HTMLButtonElement>(root, '删除调度配置 1').click()
     await flush()
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: second.id, modelNames: ['model-b'] }))
@@ -271,12 +297,14 @@ describe('RoutingSchedulingPolicyEditor', () => {
     const { root, selection, config, editor } = mountEditor(writeSchedulingPolicies(initial, [first, second]), 'config-only')
     const firstButton = control<HTMLButtonElement>(root, '选择调度配置 1')
     expect(firstButton.getAttribute('aria-expanded')).toBe('true')
+    await openModels(root)
     selection.mockClear()
     firstButton.click()
     await flush()
     expect(firstButton.getAttribute('aria-expanded')).toBe('false')
     expect(firstButton.getAttribute('aria-pressed')).toBe('true')
-    expect(root.querySelector('[aria-label="全局模型选择列表"]')).toBeNull()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    expect(root.querySelectorAll('[aria-label="编辑模型"]')).toHaveLength(2)
     expect(root.querySelector('[aria-label="调度策略"]')).toBeNull()
     expect(selection).not.toHaveBeenCalled()
     editor.value!.updateSelectedPolicy({ ...getDefaultModelPolicy(initial), provider_priority_overrides: { provider: 8 } })
@@ -289,7 +317,7 @@ describe('RoutingSchedulingPolicyEditor', () => {
     firstButton.click()
     await flush()
     expect(firstButton.getAttribute('aria-expanded')).toBe('true')
-    expect(control(root, '调度配置 1').contains(control(root, '全局模型选择列表'))).toBe(true)
+    expect(control(root, '调度配置 1').contains(control(root, '编辑模型'))).toBe(true)
     expect(control(root, '调度配置 1').contains(control(root, '调度策略'))).toBe(true)
     firstButton.click()
     await flush()
@@ -302,8 +330,9 @@ describe('RoutingSchedulingPolicyEditor', () => {
     await flush()
     expect(control(root, '选择调度配置 3').getAttribute('aria-expanded')).toBe('true')
     expect(control(root, '选择调度配置 3').getAttribute('aria-pressed')).toBe('true')
-    expect(control(root, '调度配置 3').contains(control(root, '搜索全局模型'))).toBe(true)
-    expect(root.querySelectorAll('[aria-label="全局模型选择列表"]')).toHaveLength(1)
+    expect(control(control(root, '调度配置 3'), '编辑模型')).toBeTruthy()
+    expect(control(root, '当前配置的适用模型').textContent).toContain('请选择适用模型')
+    expect(document.querySelector('[aria-label="全局模型选择列表"]')).toBeNull()
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ policy: null, modelNames: [] }))
   })
 
@@ -316,7 +345,7 @@ describe('RoutingSchedulingPolicyEditor', () => {
       id: 'previous-generated-id', scope: 'selected', modelNames: ['model-c', 'model-b'],
     })
     expect(control(root, '选择调度配置 2').getAttribute('aria-pressed')).toBe('true')
-    expect(control(root, '调度配置 2').contains(control(root, '全局模型选择列表'))).toBe(true)
+    expect(control(control(root, '调度配置 2'), '编辑模型')).toBeTruthy()
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ modelNames: ['model-b', 'model-c'] }))
 
     const legacy = writeSchedulingPolicies(initial, [first, createSchedulingPolicy(initial, 'all')])
@@ -335,12 +364,12 @@ describe('RoutingSchedulingPolicyEditor', () => {
     const secondCard = control<HTMLElement>(root, '调度配置 2')
     expect(firstCard.contains(control(root, '调度策略'))).toBe(true)
     expect(secondCard.querySelector('[aria-label="调度策略"]')).toBeNull()
-    expect(control(firstCard, '全局模型选择列表').compareDocumentPosition(control(firstCard, '调度策略')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(control(firstCard, '当前配置的适用模型').compareDocumentPosition(control(firstCard, '调度策略')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     control<HTMLButtonElement>(secondCard, '选择调度配置 2').click()
     await flush()
     expect(firstCard.querySelector('[aria-label="调度策略"]')).toBeNull()
     const secondStrategy = control(secondCard, '调度策略')
-    expect(control(secondCard, '全局模型选择列表').compareDocumentPosition(secondStrategy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(control(secondCard, '当前配置的适用模型').compareDocumentPosition(secondStrategy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect([...secondStrategy.querySelectorAll('button')].find(button => button.textContent?.trim() === '负载均衡')?.getAttribute('aria-pressed')).toBe('true')
     await clickText(secondStrategy, '缓存亲和')
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: second.id, modelNames: ['model-b'], priorityMode: 'provider' }))
@@ -352,44 +381,86 @@ describe('RoutingSchedulingPolicyEditor', () => {
     expect(getModelScheduling(config.value, 'model-b').scheduling_mode).toBe('cache_affinity')
     control<HTMLButtonElement>(secondCard, '选择调度配置 2').click()
     await flush()
-    control<HTMLInputElement>(root, '选择模型 model-c').click()
-    await flush()
+    await select(root, 'model-c')
     expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: second.id, modelNames: ['model-b', 'model-c'] }))
   })
 
-  it('searches and adds models inside the active card without carrying its search or edits to another configuration', async () => {
+  it('keeps live model edits when finishing or escaping and isolates the next configuration picker', async () => {
     const initial = createEmptyRoutingGroupConfig()
     const first = { ...createSchedulingPolicy(initial), models: ['model-a'], schedulingMode: 'fixed_order' as const }
     const second = { ...createSchedulingPolicy(initial), models: ['model-b'], schedulingMode: 'load_balance' as const }
-    const { root, config } = mountEditor(writeSchedulingPolicies(initial, [first, second]), 'config-only', {}, true)
-    const firstCard = control(root, '调度配置 1')
-    const search = control<HTMLInputElement>(firstCard, '搜索全局模型')
+    const { root, config, selection } = mountEditor(writeSchedulingPolicies(initial, [first, second]), 'config-only', {}, true)
+    const picker = await openModels(root)
+    expect(picker.querySelector('[aria-label="清空已选"]')).toBeNull()
+    expect(picker.textContent).not.toMatch(/已选\s*\d/)
+    const search = control<HTMLInputElement>(picker, '搜索全局模型')
     search.value = '模型 C'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await flush()
-    control<HTMLInputElement>(firstCard, '选择模型 model-c').click()
+    control<HTMLInputElement>(picker, '选择模型 model-c').click()
     await flush()
     expect(getModelScheduling(config.value, 'model-c').scheduling_mode).toBe('fixed_order')
     expect(getModelScheduling(config.value, 'model-b').scheduling_mode).toBe('load_balance')
+    expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: first.id, modelNames: ['model-a', 'model-c'] }))
+    control<HTMLButtonElement>(picker, '完成选择').click()
+    await flush()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    expect(readSchedulingPolicies(config.value)[0].models).toEqual(['model-a', 'model-c'])
+    expect(control(root, '已配置模型').textContent).toContain('模型 C')
+    const reopened = await openModels(root)
+    expect(control<HTMLInputElement>(reopened, '选择模型 model-c').checked).toBe(true)
     control<HTMLButtonElement>(root, '选择调度配置 2').click()
     await flush()
-    expect(root.querySelectorAll('[aria-label="搜索全局模型"]')).toHaveLength(1)
-    const nextSearch = control<HTMLInputElement>(root, '搜索全局模型')
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({ id: second.id, modelNames: ['model-b'] }))
+    const nextPicker = await openModels(root)
+    expect(document.querySelectorAll('[aria-label="搜索全局模型"]')).toHaveLength(1)
+    const nextSearch = control<HTMLInputElement>(nextPicker, '搜索全局模型')
     expect(nextSearch.value).toBe('')
-    expect(control<HTMLInputElement>(root, '选择模型 model-b').checked).toBe(true)
+    expect(control<HTMLInputElement>(nextPicker, '选择模型 model-b').checked).toBe(true)
     nextSearch.value = 'model-c'
     nextSearch.dispatchEvent(new Event('input', { bubbles: true }))
     await flush()
-    expect(control<HTMLInputElement>(root, '选择模型 model-c').disabled).toBe(true)
-    expect(control(root, '全局模型选择列表').textContent).toContain('已用于配置 1')
+    expect(control<HTMLInputElement>(nextPicker, '选择模型 model-c').disabled).toBe(true)
+    expect(control(nextPicker, '全局模型选择列表').textContent).toContain('已用于配置 1')
     nextSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flush()
-    expect(root.querySelector('[aria-label="全局模型选择列表"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    expect(readSchedulingPolicies(config.value).map(entry => entry.models)).toEqual([['model-a', 'model-c'], ['model-b']])
+    expect(control(root, '选择调度配置 2').getAttribute('aria-pressed')).toBe('true')
+    await vi.waitFor(() => expect(document.activeElement).toBe(control(control(root, '调度配置 2'), '编辑模型')))
     const add = control<HTMLButtonElement>(root, '添加调度配置')
     for (const card of root.querySelectorAll('section[aria-label^="调度配置 "]')) {
       expect(card.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
-    expect(root.querySelector('[aria-label="完成选择"]')).toBeNull()
+    expect(document.querySelector('[aria-label="完成选择"]')).toBeNull()
+  })
+
+  it('keeps live model edits when Escape or saving closes the popover', async () => {
+    const initial = createEmptyRoutingGroupConfig()
+    const first = { ...createSchedulingPolicy(initial), models: ['model-a'] }
+    const { root, config, disabled, selection } = mountEditor(writeSchedulingPolicies(initial, [first]), 'config-only', {}, true)
+    await select(root, 'model-c')
+    const saved = JSON.stringify(config.value)
+    control(document.body, '搜索全局模型').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flush()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    expect(JSON.stringify(config.value)).toBe(saved)
+    await openModels(root)
+    selection.mockClear()
+    disabled.value = true
+    await flush()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    expect(control<HTMLButtonElement>(root, '编辑模型').disabled).toBe(true)
+    expect(control(root, '选择调度配置 1').getAttribute('aria-pressed')).toBe('true')
+    expect(JSON.stringify(config.value)).toBe(saved)
+    expect(selection).not.toHaveBeenCalled()
+    disabled.value = false
+    await flush()
+    expect(document.querySelector('[aria-label="编辑适用模型"]')).toBeNull()
+    const reopened = await openModels(root)
+    expect(control<HTMLInputElement>(reopened, '选择模型 model-a').checked).toBe(true)
+    expect(control<HTMLInputElement>(reopened, '选择模型 model-c').checked).toBe(true)
   })
 
   it('keeps a strategy chosen before model selection and lets unfinished configurations choose their strategy', async () => {
@@ -402,8 +473,7 @@ describe('RoutingSchedulingPolicyEditor', () => {
     control<HTMLButtonElement>(root, '添加调度配置').click()
     await flush()
     await clickText(root, '负载均衡')
-    control<HTMLInputElement>(root, '选择模型 model-b').click()
-    await flush()
+    await select(root, 'model-b')
     expect(getModelScheduling(config.value, 'model-b').scheduling_mode).toBe('load_balance')
     expect(getModelScheduling(config.value, 'model-a').scheduling_mode).toBe('fixed_order')
     expect(root.querySelectorAll('[aria-label="调度策略"]')).toHaveLength(1)

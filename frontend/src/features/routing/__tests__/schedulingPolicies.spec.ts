@@ -5,6 +5,7 @@ import {
   getDefaultModelPolicy,
   getModelPolicy,
   getModelScheduling,
+  isRoutingProviderEnabled,
   modelSchedulingRuleId,
   setDefaultProviderPriorityOverrides,
   setModelKeyPriorityOverridesForFormat,
@@ -22,6 +23,23 @@ import {
 } from '../utils/schedulingPolicies'
 
 describe('strategy-scoped scheduling policies', () => {
+  it.each([false, true])('preserves user visibility %s and billing multipliers through scheduling changes and provider editor projections', userVisible => {
+    for (const multiplier of [0, 1.25]) {
+      const config = { ...createEmptyRoutingGroupConfig(), billing_multiplier: multiplier, user_visible: userVisible }
+      const entry = createSchedulingPolicy(config, 'selected')
+      entry.models = ['gpt-5']
+      entry.schedulingMode = 'fixed_order'
+      entry.policy.provider_priority_overrides = { provider: 2 }
+      const updated = writeSchedulingPolicies(config, [entry])
+      expect(updated.billing_multiplier).toBe(multiplier)
+      expect(updated.user_visible).toBe(userVisible)
+      expect(normalizeProviderSchedulingConfig(updated).billing_multiplier).toBe(multiplier)
+      expect(normalizeProviderSchedulingConfig(updated).user_visible).toBe(userVisible)
+      expect(schedulingPolicyEditorConfig(updated, readSchedulingPolicies(updated)[0]).billing_multiplier).toBe(multiplier)
+      expect(schedulingPolicyEditorConfig(updated, readSchedulingPolicies(updated)[0]).user_visible).toBe(userVisible)
+    }
+  })
+
   it('normalizes legacy Key scheduling without mutating unrelated rules, scopes, or historical priorities', () => {
     const config = createEmptyRoutingGroupConfig()
     config.default_policy.priority_mode = 'global_key'
@@ -94,6 +112,7 @@ describe('strategy-scoped scheduling policies', () => {
     entry.policy = {
       ...entry.policy,
       allowed_providers: ['provider-a'],
+      provider_enabled_overrides: { 'provider-a': false, 'provider-b': true },
       provider_priority_overrides: { 'provider-a': 2 },
       key_priority_overrides_by_format: { 'openai:chat': { 'key-a': 1 } },
       pool_priority_overrides: { 'pool-a': 3 },
@@ -124,6 +143,45 @@ describe('strategy-scoped scheduling policies', () => {
     expect(editorConfig.disabled_providers).toEqual(['disabled-provider'])
     editorConfig.disabled_providers.push('local-only')
     expect(config.disabled_providers).toEqual(['disabled-provider'])
+  })
+
+  it('preserves independent model membership through serialization without changing group defaults', () => {
+    const config = createEmptyRoutingGroupConfig()
+    config.disabled_providers = ['legacy-disabled']
+    const first = { ...createSchedulingPolicy(config), models: ['model-a', 'model-b'] }
+    first.policy.provider_enabled_overrides = { provider: false, 'legacy-disabled': true }
+    const second = { ...createSchedulingPolicy(config), models: ['model-c'] }
+    const fallback = createSchedulingPolicy(config, 'all')
+    fallback.policy.provider_enabled_overrides = { 'default-disabled': false }
+    const saved = writeSchedulingPolicies(config, [first, second, fallback])
+    const reloaded = readSchedulingPolicies(JSON.parse(JSON.stringify(saved)))
+    expect(reloaded).toHaveLength(3)
+    expect(reloaded[0].policy.provider_enabled_overrides).toEqual(first.policy.provider_enabled_overrides)
+    expect(reloaded[1].policy.provider_enabled_overrides).toEqual({})
+    expect(saved.disabled_providers).toEqual(['legacy-disabled'])
+    expect(getDefaultModelPolicy(saved).provider_enabled_overrides).toEqual({ 'default-disabled': false })
+    for (const model of ['model-a', 'model-b']) {
+      expect(getModelPolicy(saved, model).provider_enabled_overrides).toEqual(first.policy.provider_enabled_overrides)
+    }
+    const firstEditor = schedulingPolicyEditorConfig(saved, reloaded[0])
+    const secondEditor = schedulingPolicyEditorConfig(saved, reloaded[1])
+    expect(isRoutingProviderEnabled(firstEditor, 'provider')).toBe(false)
+    expect(isRoutingProviderEnabled(secondEditor, 'provider')).toBe(true)
+    expect(isRoutingProviderEnabled(firstEditor, 'legacy-disabled')).toBe(true)
+    expect(isRoutingProviderEnabled(secondEditor, 'legacy-disabled')).toBe(false)
+    expect(isRoutingProviderEnabled(firstEditor, 'default-disabled')).toBe(false)
+    expect(getDefaultModelPolicy(firstEditor).provider_enabled_overrides).toEqual(first.policy.provider_enabled_overrides)
+    getDefaultModelPolicy(firstEditor).provider_enabled_overrides.provider = true
+    expect(getModelPolicy(saved, 'model-a').provider_enabled_overrides.provider).toBe(false)
+  })
+
+  it('does not merge legacy models with different membership into one configuration', () => {
+    const config = createEmptyRoutingGroupConfig()
+    config.model_policies = [
+      { ...createEmptyModelPolicy('model-a'), provider_enabled_overrides: { provider: false } },
+      { ...createEmptyModelPolicy('model-b'), provider_enabled_overrides: { provider: true } },
+    ]
+    expect(readSchedulingPolicies(config).map(entry => entry.models)).toEqual([['model-a'], ['model-b']])
   })
 
   it('retains separate strategies even when their settings are identical', () => {
