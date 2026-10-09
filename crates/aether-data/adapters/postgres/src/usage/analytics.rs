@@ -40,6 +40,20 @@ count(*) FILTER (WHERE actor_user_id IS NOT NULL)::bigint AS trusted_attribution
 count(*) FILTER (WHERE status = 'failed' AND failure_origin IS NOT NULL AND failure_origin <> 'unknown')::bigint AS classified_failure_count
 "#;
 
+// 提供商分组的展示标签：分组键仍然是 provider_id，但页面上要展示“提供商名称”。
+// 解析顺序与用量审计聚合保持一致：提供商目录中的当前名称 → 使用记录里的名称快照 → 原始 provider_id。
+// 'unknown' / 'unknow' / 'pending' 是历史占位值，不能当成名称展示；
+// provider_id 为空说明这条记录本身无法归属，保持空标签让前端显示“未归属提供商”。
+pub(super) const ANALYTICS_PROVIDER_LABEL_SQL: &str = r#"COALESCE(
+        NULLIF(BTRIM(provider_catalog.name), ''),
+        CASE
+          WHEN page.group_id IS NULL THEN NULL
+          WHEN lower(BTRIM(COALESCE(page.provider_name, ''))) IN ('', 'unknown', 'unknow', 'pending') THEN NULL
+          ELSE BTRIM(page.provider_name)
+        END,
+        page.group_id::text
+      )"#;
+
 pub(super) fn dashboard_total_metrics_sql() -> &'static str {
     r#"count(*)::bigint AS request_count,
 COALESCE(sum(total_tokens),0)::bigint AS total_tokens,
@@ -359,6 +373,10 @@ impl SqlxUsageReadRepository {
                 | UsageAnalyticsView::DashboardCharts
                 | UsageAnalyticsView::Breakdown => {
                     let timeseries = query.view != UsageAnalyticsView::Breakdown;
+                    // 提供商分组的行需要额外带出名称快照，并在最外层关联提供商目录解析展示名。
+                    // 只有明细分组（Breakdown）才需要，时间序列仍然直接用 provider_id 作为标签。
+                    let provider_labels =
+                        !timeseries && query.group_by == UsageAnalyticsGroupBy::Provider;
                     let group = if timeseries {
                         let granularity = match query.granularity {
                             UsageAnalyticsGranularity::Hour => "hour",
@@ -393,6 +411,11 @@ impl SqlxUsageReadRepository {
                         .push(", grouped AS (SELECT ")
                         .push(group)
                         .push(" AS group_id, ")
+                        .push(if provider_labels {
+                            "max(provider_name) AS provider_name, "
+                        } else {
+                            ""
+                        })
                         .push(&metrics_sql)
                         .push(if timeseries {
                             " FROM dated GROUP BY "
@@ -414,9 +437,22 @@ impl SqlxUsageReadRepository {
                             .push(", group_id ASC NULLS LAST");
                     }
                     builder.push(" LIMIT ").push_bind(if timeseries { 10_001 } else { i64::from(query.limit) }).push(" OFFSET ").push_bind(if timeseries { 0 } else { query.offset as i64 })
-                        .push(") SELECT (SELECT count(*) FROM grouped) AS total, COALESCE(jsonb_agg(jsonb_build_object('id', group_id::text, 'label', group_id::text, 'bucket_start', ")
+                        .push(") SELECT (SELECT count(*) FROM grouped) AS total, COALESCE(jsonb_agg(jsonb_build_object('id', page.group_id::text, 'label', ")
+                        .push(if provider_labels { ANALYTICS_PROVIDER_LABEL_SQL } else { "page.group_id::text" })
+                        .push(", 'bucket_start', ")
                         .push(if timeseries { "to_char(group_id AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')" } else { "NULL" })
-                        .push(", 'metrics', to_jsonb(page) - 'group_id')), '[]'::jsonb) AS items FROM page");
+                        .push(", 'metrics', to_jsonb(page) - 'group_id'")
+                        .push(if provider_labels {
+                            " - 'provider_name'"
+                        } else {
+                            ""
+                        })
+                        .push(")), '[]'::jsonb) AS items FROM page")
+                        .push(if provider_labels {
+                            " LEFT JOIN public.providers AS provider_catalog ON provider_catalog.id = page.group_id"
+                        } else {
+                            ""
+                        });
                     let row = builder
                         .build()
                         .fetch_one(&mut *tx)
