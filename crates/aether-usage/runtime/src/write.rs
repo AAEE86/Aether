@@ -2246,6 +2246,12 @@ fn build_runtime_request_metadata_seed_from_parts(
             Value::Bool(api_key_is_standalone),
         );
     }
+    if let Some(wallet_fallback) = context_bool(context, "plan_wallet_fallback") {
+        metadata.insert(
+            "plan_wallet_fallback".to_string(),
+            Value::Bool(wallet_fallback),
+        );
+    }
     if let Some(websocket_mode) = context_bool(context, WEBSOCKET_MODE_METADATA_KEY) {
         metadata.insert(
             WEBSOCKET_MODE_METADATA_KEY.to_string(),

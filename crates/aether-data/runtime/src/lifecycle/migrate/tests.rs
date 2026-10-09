@@ -37,6 +37,7 @@ mod overview_migration_safety;
 mod policy_nulls;
 mod provider_expenses;
 mod scoped_provider_creation;
+mod user_preferences;
 
 /// A clean PostgreSQL database is bootstrapped from the schema snapshot first;
 /// migrations after the privacy/security frontier are intentionally left
@@ -1599,6 +1600,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20261001000000,
             20261004000000,
             20261007000000,
+            20261009000000,
         ]
     );
 }
