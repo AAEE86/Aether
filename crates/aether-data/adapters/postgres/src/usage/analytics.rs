@@ -312,6 +312,9 @@ impl SqlxUsageReadRepository {
         query: &UsageAnalyticsQuery,
     ) -> Result<StoredUsageAnalytics, DataLayerError> {
         query.validate()?;
+        if query.view == UsageAnalyticsView::DashboardCharts {
+            return self.query_dashboard_charts(query).await;
+        }
         let mut tx = self.pool.begin().await.map_postgres_err()?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
@@ -370,7 +373,6 @@ impl SqlxUsageReadRepository {
             match query.view {
                 UsageAnalyticsView::Timeseries
                 | UsageAnalyticsView::Performance
-                | UsageAnalyticsView::DashboardCharts
                 | UsageAnalyticsView::Breakdown => {
                     let timeseries = query.view != UsageAnalyticsView::Breakdown;
                     // 提供商分组的行需要额外带出名称快照，并在最外层关联提供商目录解析展示名。
@@ -531,29 +533,21 @@ impl SqlxUsageReadRepository {
                         .map_postgres_err()?;
                     result.consumption = decode(row.try_get("items").map_postgres_err()?)?;
                 }
-                UsageAnalyticsView::Summary => unreachable!(),
+                UsageAnalyticsView::Summary | UsageAnalyticsView::DashboardCharts => unreachable!(),
             }
         }
         if matches!(
             query.view,
-            UsageAnalyticsView::Timeseries
-                | UsageAnalyticsView::Performance
-                | UsageAnalyticsView::DashboardCharts
+            UsageAnalyticsView::Timeseries | UsageAnalyticsView::Performance
         ) {
             fill_usage_analytics_timeseries(query, &mut result.rows);
             result.total = result.rows.len() as u64;
         }
-        if matches!(
-            query.view,
-            UsageAnalyticsView::Performance | UsageAnalyticsView::DashboardCharts
-        ) {
+        if query.view == UsageAnalyticsView::Performance {
             let mut providers = QueryBuilder::<Postgres>::new("SELECT COALESCE(jsonb_agg(jsonb_build_object('id',provider_id,'label',provider_label,'bucket_start',NULL,'metrics',to_jsonb(m)-'provider_id'-'provider_label')), '[]'::jsonb) AS items FROM (SELECT provider_id, max(provider_name) AS provider_label, ");
             providers.push(&metrics_sql);
             push_analytics_filter(&mut providers, query);
             providers.push(" GROUP BY provider_id ORDER BY count(*) DESC,provider_id");
-            if query.view == UsageAnalyticsView::DashboardCharts {
-                providers.push(" LIMIT 10001");
-            }
             providers.push(") m");
             let row = providers
                 .build()
@@ -561,38 +555,6 @@ impl SqlxUsageReadRepository {
                 .await
                 .map_postgres_err()?;
             result.provider_rows = decode(row.try_get("items").map_postgres_err()?)?;
-            if result.provider_rows.len() > USAGE_DASHBOARD_CHART_ROW_LIMIT
-                && query.view == UsageAnalyticsView::DashboardCharts
-            {
-                return Err(DataLayerError::InvalidInput(
-                    "dashboard provider chart exceeds 10000 groups".into(),
-                ));
-            }
-        }
-        if query.view == UsageAnalyticsView::DashboardCharts {
-            let timezone = if query.granularity == UsageAnalyticsGranularity::Hour {
-                "UTC".into()
-            } else {
-                query.timezone.clone()
-            };
-            let mut models = QueryBuilder::<Postgres>::new("WITH filtered AS (SELECT *");
-            push_analytics_filter(&mut models, query);
-            models.push("), dated AS (SELECT *,date_trunc(")
-                .push_bind(if query.granularity==UsageAnalyticsGranularity::Hour {"hour"}else{"day"})
-                .push(",created_at AT TIME ZONE ").push_bind(timezone.clone())
-                .push(") AT TIME ZONE ").push_bind(timezone).push(" AS bucket FROM filtered) SELECT COALESCE(jsonb_agg(jsonb_build_object('id',model,'label',model,'bucket_start',to_char(bucket AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),'metrics',to_jsonb(m)-'model'-'bucket')),'[]'::jsonb) AS items FROM (SELECT model,bucket,")
-                .push(&metrics_sql).push(" FROM dated GROUP BY model,bucket ORDER BY bucket,model LIMIT 10001) m");
-            let row = models
-                .build()
-                .fetch_one(&mut *tx)
-                .await
-                .map_postgres_err()?;
-            result.model_rows = decode(row.try_get("items").map_postgres_err()?)?;
-            if result.model_rows.len() > USAGE_DASHBOARD_CHART_ROW_LIMIT {
-                return Err(DataLayerError::InvalidInput(
-                    "dashboard model chart exceeds 10000 groups; narrow the range".into(),
-                ));
-            }
         }
         if query.view == UsageAnalyticsView::Performance {
             // Aggregate requested models across providers in the same read snapshot.

@@ -435,6 +435,20 @@ impl InMemoryUsageReadRepository {
         let metrics = |rows: &[&StoredRequestUsageAudit], slow| {
             let mut result = metrics(rows, slow, &keys);
             apply_allocations(&mut result, rows, &allocations);
+            if query.view == UsageAnalyticsView::DashboardCharts {
+                result.pricing_available_count = rows
+                    .iter()
+                    .filter(|row| {
+                        row.billing_status == "settled"
+                            && available(row, USAGE_PRICING_AVAILABLE_METADATA_KEY)
+                            && row.billing_cost().is_some()
+                    })
+                    .count() as u64;
+                if rows.is_empty() {
+                    result.billable_amount = Some("0.00000000".into());
+                    result.rated_amount = Some("0.00000000".into());
+                }
+            }
             result
         };
         let mut summary = metrics(&filtered, query.slow_threshold_ms.unwrap_or(5000));
@@ -682,17 +696,39 @@ impl InMemoryUsageReadRepository {
                     && query.group_by == UsageAnalyticsGroupBy::Provider;
                 let mut grouped = groups
                     .into_iter()
-                    .map(|(id, rows)| UsageAnalyticsRow {
-                        label: if provider_breakdown {
-                            provider_display_label(&rows, id.as_deref())
-                        } else {
-                            id.clone()
-                        },
-                        bucket_start: (query.view != UsageAnalyticsView::Breakdown)
-                            .then(|| id.clone())
-                            .flatten(),
-                        id,
-                        metrics: metrics(&rows, query.slow_threshold_ms.unwrap_or(5000)),
+                    .map(|(id, rows)| {
+                        let mut metrics = metrics(&rows, query.slow_threshold_ms.unwrap_or(5000));
+                        if query.view == UsageAnalyticsView::DashboardCharts {
+                            metrics.unique_providers = Some(
+                                rows.iter()
+                                    .filter_map(|row| {
+                                        row.provider_id
+                                            .as_deref()
+                                            .filter(|id| !id.is_empty())
+                                            .or_else(|| {
+                                                (!matches!(
+                                                    row.provider_name.as_str(),
+                                                    "" | "unknown" | "pending"
+                                                ))
+                                                .then_some(row.provider_name.as_str())
+                                            })
+                                    })
+                                    .collect::<BTreeSet<_>>()
+                                    .len() as u64,
+                            );
+                        }
+                        UsageAnalyticsRow {
+                            label: if provider_breakdown {
+                                provider_display_label(&rows, id.as_deref())
+                            } else {
+                                id.clone()
+                            },
+                            bucket_start: (query.view != UsageAnalyticsView::Breakdown)
+                                .then(|| id.clone())
+                                .flatten(),
+                            id,
+                            metrics,
+                        }
                     })
                     .collect::<Vec<_>>();
                 if query.view == UsageAnalyticsView::Breakdown {
@@ -754,7 +790,14 @@ impl InMemoryUsageReadRepository {
                     .today_start(at)?
                 };
                 providers
-                    .entry(row.provider_id.clone())
+                    .entry(
+                        row.provider_id
+                            .clone()
+                            .filter(|id| !id.is_empty())
+                            .or_else(|| {
+                                (!row.provider_name.is_empty()).then(|| row.provider_name.clone())
+                            }),
+                    )
                     .or_default()
                     .push(row);
                 models
