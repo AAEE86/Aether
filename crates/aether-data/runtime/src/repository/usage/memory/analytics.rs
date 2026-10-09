@@ -59,6 +59,27 @@ fn available(row: &StoredRequestUsageAudit, key: &str) -> bool {
         .and_then(serde_json::Value::as_bool)
         != Some(false)
 }
+/// 提供商明细分组的展示名：分组键依旧是 provider_id（保证与 PostgreSQL 实现一致），
+/// 只是把展示标签换成使用记录里的提供商名称快照，名称缺失或为历史占位值时回退到 provider_id。
+/// provider_id 为空说明无法归属，保持 None 让前端显示“未归属提供商”。
+fn provider_display_label(
+    rows: &[&StoredRequestUsageAudit],
+    group_id: Option<&str>,
+) -> Option<String> {
+    let id = group_id?;
+    rows.iter()
+        .map(|row| row.provider_name.trim())
+        .filter(|name| {
+            !name.is_empty()
+                && !matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "unknown" | "unknow" | "pending"
+                )
+        })
+        .max()
+        .map(str::to_owned)
+        .or_else(|| Some(id.to_owned()))
+}
 // The legacy audit contract stores epoch seconds despite its historical field name.
 fn usage_started_ms(row: &StoredRequestUsageAudit) -> u64 {
     row.created_at_unix_ms.saturating_mul(1000)
@@ -656,10 +677,17 @@ impl InMemoryUsageReadRepository {
                     };
                     groups.entry(group).or_default().push(row);
                 }
+                // 提供商明细分组需要单独解析展示名，其余分组仍然用分组键本身作为标签。
+                let provider_breakdown = query.view == UsageAnalyticsView::Breakdown
+                    && query.group_by == UsageAnalyticsGroupBy::Provider;
                 let mut grouped = groups
                     .into_iter()
                     .map(|(id, rows)| UsageAnalyticsRow {
-                        label: id.clone(),
+                        label: if provider_breakdown {
+                            provider_display_label(&rows, id.as_deref())
+                        } else {
+                            id.clone()
+                        },
                         bucket_start: (query.view != UsageAnalyticsView::Breakdown)
                             .then(|| id.clone())
                             .flatten(),
