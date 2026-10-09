@@ -5589,6 +5589,8 @@ async fn live_usage_health_timeline_buckets_by_window_offset() {
 
     // 事件构造：窗口 [from, until)，宽度 600 秒。
     // 前 5 条用于验证分段归属，后面几条验证窗口与状态过滤。
+    // 测试用的事件表，位置含义由下面的解构语句给出；拆成结构体会让这张表更难横向对比。
+    #[allow(clippy::type_complexity)]
     let events: Vec<(
         i64,
         &str,
