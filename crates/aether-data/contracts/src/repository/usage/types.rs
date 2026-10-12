@@ -15,6 +15,12 @@ pub const ROUTING_FAILURE_DIAGNOSTIC_METADATA_KEY: &str = "routing_failure_diagn
 pub const ROUTING_GROUP_BILLING_MULTIPLIER_METADATA_KEY: &str = "routing_group_billing_multiplier";
 pub const ROUTING_GROUP_ID_METADATA_KEY: &str = "routing_group_id";
 pub const ROUTING_GROUP_NAME_METADATA_KEY: &str = "routing_group_name";
+/// 请求体确实发生过敏感信息脱敏（内容已替换为占位符后才发往上游）。
+///
+/// 只在命中替换时写入；开启保护但未命中不标记，避免把"功能可用"和
+/// "这次真的脱敏了"混为一谈。
+pub const CHAT_PII_REDACTION_METADATA_KEY: &str = "chat_pii_redaction";
+// Note: 标记口径与三条写入路径 — 见 .agents/notes/implemented/feature/2026-10-12-chat-pii-redaction-usage-marker.md
 pub const WEBSOCKET_MODE_METADATA_KEY: &str = "websocket_mode";
 pub const WEBSOCKET_TRANSPORT_METADATA_KEY: &str = "websocket_transport";
 pub const PLAN_USAGE_RESERVATION_DEFERRED_METADATA_KEY: &str = "plan_usage_reservation_deferred";
