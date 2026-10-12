@@ -239,7 +239,7 @@
                       class="mt-3 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400"
                     >
                       <ShieldCheck class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      <span>此请求触发了敏感信息保护：发送给上游供应商的内容已将敏感信息替换为占位符，返回给客户端前已还原。</span>
+                      <span>此请求触发了敏感信息保护：发送给上游供应商的内容已将敏感信息替换为占位符。</span>
                     </div>
                   </div>
 
@@ -1023,6 +1023,7 @@ const emit = defineEmits<{
     apiFormat?: string | null
     endpointApiFormat?: string | null
     hasFormatConversion?: boolean | null
+    chatPiiRedaction?: boolean | null
     targetModel?: string | null
     requestedReasoningEffort?: string | null
     reasoningEffort?: string | null
@@ -1350,6 +1351,7 @@ function emitDetailRequestState(nextDetail: RequestDetail) {
     apiFormat: nextDetail.api_format ?? null,
     endpointApiFormat: nextDetail.endpoint_api_format ?? null,
     hasFormatConversion: nextDetail.has_format_conversion ?? null,
+    chatPiiRedaction: nextDetail.chat_pii_redaction ?? null,
     ...(targetModel ? { targetModel } : {}),
     ...(requestedReasoningEffort ? { requestedReasoningEffort } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),

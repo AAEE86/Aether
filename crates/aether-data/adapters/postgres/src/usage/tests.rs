@@ -3668,6 +3668,118 @@ fn usage_sql_list_queries_project_bounded_live_and_realtime_metadata() {
 }
 
 #[test]
+fn usage_sql_list_queries_project_boolean_chat_pii_redaction() {
+    for sql in [
+        super::LIST_USAGE_AUDITS_PREFIX,
+        super::LIST_RECENT_USAGE_AUDITS_PREFIX,
+    ] {
+        assert!(sql.contains(
+            "OR json_typeof(\"usage\".request_metadata->'chat_pii_redaction') = 'boolean'"
+        ));
+        assert!(sql.contains(
+            "WHEN json_typeof(\"usage\".request_metadata->'chat_pii_redaction') = 'boolean'"
+        ));
+        assert!(sql.contains("THEN \"usage\".request_metadata->'chat_pii_redaction'"));
+        assert!(
+            !sql.contains("request_metadata->>'chat_pii_redaction'"),
+            "list queries must not coerce a string redaction marker into a boolean"
+        );
+    }
+}
+
+/// Execute the metadata projection from both production list queries. A temporary table
+/// keeps this independent of migrations and avoids writing any business records.
+#[tokio::test]
+#[ignore = "requires AETHER_TEST_DATABASE_URL"]
+async fn live_usage_list_metadata_preserves_boolean_chat_pii_redaction() {
+    let factory = PostgresPoolFactory::new(PostgresPoolConfig {
+        database_url: std::env::var("AETHER_TEST_DATABASE_URL")
+            .expect("AETHER_TEST_DATABASE_URL must point at the test database"),
+        min_connections: 1,
+        max_connections: 1,
+        acquire_timeout_ms: 10_000,
+        idle_timeout_ms: 30_000,
+        max_lifetime_ms: 60_000,
+        statement_cache_capacity: 64,
+        require_ssl: false,
+    })
+    .expect("pool factory should build");
+    let pool = factory.connect_lazy().expect("lazy pool should build");
+    let mut conn = pool.acquire().await.expect("connection should acquire");
+    sqlx::query("CREATE TEMP TABLE usage_list_metadata_probe (request_metadata json)")
+        .execute(&mut *conn)
+        .await
+        .expect("metadata probe table should build");
+
+    for (path, prefix) in [
+        ("list", super::LIST_USAGE_AUDITS_PREFIX),
+        ("recent", super::LIST_RECENT_USAGE_AUDITS_PREFIX),
+    ] {
+        // Extract the entire outer CASE, including its gate, instead of duplicating the
+        // production expression. Omitting the marker from either branch must fail.
+        let projection = prefix
+            .split_once("NULL::bytea AS client_response_body_compressed,\n")
+            .and_then(|(_, tail)| tail.split_once("  END AS request_metadata,"))
+            .map(|(projection, _)| projection)
+            .expect("list metadata projection should be present");
+        let sql = format!(
+            "SELECT {projection} END AS request_metadata \
+             FROM usage_list_metadata_probe AS \"usage\""
+        );
+
+        // Test the marker alone (the outer CASE gate), and alongside another retained
+        // key (the inner value check). A missing marker must not become an explicit false.
+        for user_agent in [None, Some("metadata-probe")] {
+            for (label, marker, expected_marker) in [
+                ("true", Some(json!(true)), Some(true)),
+                ("false", Some(json!(false)), Some(false)),
+                ("string true", Some(json!("true")), None),
+                ("string false", Some(json!("false")), None),
+                ("number", Some(json!(1)), None),
+                ("null", Some(json!(null)), None),
+                ("object", Some(json!({})), None),
+                ("array", Some(json!([true])), None),
+                ("missing", None, None),
+            ] {
+                let mut metadata = json!({"private_probe": "must not appear in list metadata"});
+                let mut expected = serde_json::Map::new();
+                if let Some(marker) = marker {
+                    metadata["chat_pii_redaction"] = marker;
+                }
+                if let Some(marker) = expected_marker {
+                    expected.insert("chat_pii_redaction".into(), json!(marker));
+                }
+                if let Some(user_agent) = user_agent {
+                    metadata["user_agent"] = json!(user_agent);
+                    expected.insert("user_agent".into(), json!(user_agent));
+                }
+                sqlx::query("TRUNCATE usage_list_metadata_probe")
+                    .execute(&mut *conn)
+                    .await
+                    .expect("probe table should reset");
+                sqlx::query("INSERT INTO usage_list_metadata_probe VALUES ($1)")
+                    .bind(metadata)
+                    .execute(&mut *conn)
+                    .await
+                    .expect("metadata probe should insert");
+                let projected: Option<serde_json::Value> = sqlx::query_scalar(&sql)
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("production list metadata projection should execute");
+                let expected = (!expected.is_empty()).then(|| json!(expected));
+                assert_eq!(
+                    projected, expected,
+                    "{path} projection changed {label} marker with user_agent={user_agent:?}"
+                );
+            }
+        }
+    }
+
+    drop(conn);
+    pool.close().await;
+}
+
+#[test]
 fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
     let source = include_str!("mod.rs");
     assert!(source.contains("push_postgres_usage_client_family_filter"));
