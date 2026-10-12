@@ -1566,21 +1566,27 @@ pub(super) async fn handle_users_me_usage_interval_timeline_get(
         }
     };
 
-    let mut points = Vec::new();
-    for row in intervals {
-        points.push(json!({
-            "x": unix_secs_to_rfc3339(row.created_at_unix_secs),
-            "y": round_to(row.interval_minutes, 2),
-            "model": row.model,
-        }));
-        if points.len() >= limit {
-            break;
-        }
-    }
+    // 数据按时间正序返回。超过 limit 时按时间轴均匀抽样，让散点覆盖整个窗口，
+    // 而不是取满 limit 就把最新的请求截掉。
+    let total_points = intervals.len();
+    let stride = total_points.div_ceil(limit).max(1);
+    let points = intervals
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % stride == 0)
+        .map(|(_, row)| {
+            json!({
+                "x": unix_secs_to_rfc3339(row.created_at_unix_secs),
+                "y": round_to(row.interval_minutes, 2),
+                "model": row.model,
+            })
+        })
+        .collect::<Vec<_>>();
 
     Json(json!({
         "analysis_period_hours": hours,
-        "total_points": points.len(),
+        "total_points": total_points,
+        "truncated": points.len() < total_points,
         "points": points,
     }))
     .into_response()

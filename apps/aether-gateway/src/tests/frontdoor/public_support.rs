@@ -6915,6 +6915,105 @@ async fn gateway_handles_users_me_usage_interval_timeline_and_heatmap_locally_wi
 }
 
 #[tokio::test]
+async fn gateway_samples_users_me_usage_interval_timeline_across_full_window_when_over_limit() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-users-me-usage-timeline-sampling"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let mut seeded = Vec::new();
+    for index in 0..250_i64 {
+        seeded.push(sample_user_usage_audit(
+            &format!("usage-users-me-timeline-sampling-{index}"),
+            &format!("req-users-me-timeline-sampling-{index}"),
+            "user-auth-1",
+            "gpt-4.1",
+            "OpenAI",
+            "completed",
+            now - chrono::Duration::minutes(249 - index),
+        ));
+    }
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(seeded));
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_usage_state(
+            user,
+            sample_auth_wallet("user-auth-1", now),
+            [sample_auth_session(
+                "user-auth-1",
+                "session-users-me-usage-timeline-sampling",
+                "device-users-me-usage-timeline-sampling",
+                "refresh-token-placeholder",
+                now,
+            )],
+            usage_repository,
+        )
+        .await;
+
+    let client = reqwest::Client::new();
+    let timeline_response = client
+        .get(format!(
+            "{gateway_url}/api/users/me/usage/interval-timeline?hours=24&limit=100"
+        ))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header(
+            "x-client-device-id",
+            "device-users-me-usage-timeline-sampling",
+        )
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("timeline request should succeed");
+    assert_eq!(timeline_response.status(), StatusCode::OK);
+    let payload: serde_json::Value = timeline_response
+        .json()
+        .await
+        .expect("timeline json should parse");
+
+    // 250 条 completed 记录产生 249 个间隔点，limit=100 时应均匀抽样并标记 truncated
+    assert_eq!(payload["truncated"], json!(true));
+    assert_eq!(payload["total_points"], 249);
+    let points = payload["points"].as_array().expect("points array");
+    assert!(
+        points.len() > 80 && points.len() <= 100,
+        "sampled points should stay within the limit budget, got {}",
+        points.len()
+    );
+    let parse_x = |point: &serde_json::Value| {
+        chrono::DateTime::parse_from_rfc3339(point["x"].as_str().expect("x should be a string"))
+            .expect("x should be rfc3339")
+            .with_timezone(&Utc)
+    };
+    let newest = parse_x(points.last().expect("points should not be empty"));
+    let oldest = parse_x(&points[0]);
+    assert!(
+        newest > now - chrono::Duration::minutes(5),
+        "sampling should keep the most recent interval, got {newest}"
+    );
+    assert!(
+        oldest < now - chrono::Duration::minutes(240),
+        "sampling should cover the beginning of the window, got {oldest}"
+    );
+
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_returns_service_unavailable_for_users_me_usage_routes_without_reader() {
     let now = Utc::now();
     let user = sample_auth_user(now);

@@ -107,31 +107,48 @@ pub(super) async fn build_admin_usage_cache_affinity_interval_timeline_response(
     }
 
     let total_points_before_limit: usize = grouped.values().map(Vec::len).sum();
+    // 数据按时间正序返回。超过 limit 时在时间轴上均匀抽样（多用户视图按配比在各用户区间内抽样），
+    // 保证散点覆盖整个窗口，而不是取满 limit 就把最新的请求截掉。
     let points: Vec<serde_json::Value> = if include_user_info && user_id.is_none() {
         let user_limits =
             admin_usage_proportional_limits(&grouped, limit, total_points_before_limit);
         let mut selected = Vec::new();
-        for (group_user_id, mut items) in grouped {
+        for (group_user_id, items) in grouped {
             let take = user_limits
                 .get(&group_user_id)
                 .copied()
-                .unwrap_or(items.len());
-            selected.extend(items.drain(..std::cmp::min(take, items.len())));
+                .unwrap_or(items.len())
+                .min(items.len());
+            let stride = items.len().div_ceil(take);
+            selected.extend(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| index % stride == 0)
+                    .map(|(_, point)| point),
+            );
         }
         selected.sort_by(admin_usage_point_sort_key);
         selected
     } else {
         let mut selected = grouped.into_values().flatten().collect::<Vec<_>>();
         selected.sort_by(admin_usage_point_sort_key);
-        if selected.len() > limit {
-            selected.truncate(limit);
+        let stride = selected.len().div_ceil(limit).max(1);
+        if stride > 1 {
+            selected = selected
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| index % stride == 0)
+                .map(|(_, point)| point)
+                .collect();
         }
         selected
     };
 
     let mut response = json!({
         "analysis_period_hours": hours,
-        "total_points": points.len(),
+        "total_points": total_points_before_limit,
+        "truncated": points.len() < total_points_before_limit,
         "points": points,
     });
     if include_user_info && user_id.is_none() {

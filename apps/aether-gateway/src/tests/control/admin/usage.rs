@@ -3518,6 +3518,86 @@ async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_locally_wi
 }
 
 #[tokio::test]
+async fn gateway_samples_admin_usage_cache_affinity_interval_timeline_across_full_window() {
+    let (upstream_url, upstream_hits, upstream_handle) =
+        start_usage_upstream("/api/admin/usage/cache-affinity/interval-timeline").await;
+    let mut seeded = Vec::new();
+    for index in 0..120_i64 {
+        for user_index in 1..=2_i64 {
+            seeded.push(sample_usage_row(
+                &format!("usage-{user_index}-{index}"),
+                &format!("req-{user_index}-{index}"),
+                Some(&format!("user-{user_index}")),
+                Some(&format!("key-{user_index}")),
+                Some("primary"),
+                "OpenAI",
+                "gpt-5",
+                "completed",
+                10,
+                2,
+                0.01,
+                0.012,
+                recent_unix_secs((120 - index) as u64),
+            ));
+        }
+    }
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(seeded));
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed(vec![
+        sample_user_summary("user-1", "alice"),
+        sample_user_summary("user-2", "bob"),
+    ]));
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_usage_reader_for_tests(usage_repository)
+                    .with_user_reader(user_repository),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = admin_request(reqwest::Client::new().get(format!(
+        "{gateway_url}/api/admin/usage/cache-affinity/interval-timeline?hours=24&limit=100&include_user_info=true"
+    )))
+    .send()
+    .await
+    .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+
+    // 两个用户各 120 条记录产生 238 个间隔点，limit=100 时应按用户配比均匀抽样并标记 truncated
+    assert_eq!(payload["truncated"], json!(true));
+    assert_eq!(payload["total_points"], 238);
+    let points = payload["points"].as_array().expect("points array");
+    assert!(
+        points.len() <= 100 && points.len() >= 60,
+        "sampled points should stay within the limit budget, got {}",
+        points.len()
+    );
+    let mut users_in_points = std::collections::BTreeSet::new();
+    for point in points {
+        users_in_points.insert(
+            point["user_id"]
+                .as_str()
+                .expect("user_id should exist")
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        users_in_points,
+        std::collections::BTreeSet::from(["user-1".to_string(), "user-2".to_string()]),
+        "sampling should keep points for every user"
+    );
+    assert_eq!(payload["users"]["user-1"], "alice");
+    assert_eq!(payload["users"]["user-2"], "bob");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_with_auth_user_fallback() {
     let (_upstream_url, upstream_hits, upstream_handle) =
         start_usage_upstream("/api/admin/usage/cache-affinity/interval-timeline").await;
