@@ -6934,8 +6934,16 @@ async fn gateway_samples_users_me_usage_interval_timeline_across_full_window_whe
         ]),
         now + chrono::Duration::hours(1),
     );
+    let first_request_at = now - chrono::Duration::hours(4);
+    let latest_request_at = now - chrono::Duration::minutes(1);
     let mut seeded = Vec::new();
     for index in 0..250_i64 {
+        // The latest request is isolated from the early burst so losing it is visible.
+        let created_at = if index == 249 {
+            latest_request_at
+        } else {
+            first_request_at + chrono::Duration::seconds(index)
+        };
         seeded.push(sample_user_usage_audit(
             &format!("usage-users-me-timeline-sampling-{index}"),
             &format!("req-users-me-timeline-sampling-{index}"),
@@ -6943,7 +6951,7 @@ async fn gateway_samples_users_me_usage_interval_timeline_across_full_window_whe
             "gpt-4.1",
             "OpenAI",
             "completed",
-            now - chrono::Duration::minutes(249 - index),
+            created_at,
         ));
     }
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(seeded));
@@ -6986,26 +6994,27 @@ async fn gateway_samples_users_me_usage_interval_timeline_across_full_window_whe
     assert_eq!(payload["truncated"], json!(true));
     assert_eq!(payload["total_points"], 249);
     let points = payload["points"].as_array().expect("points array");
-    assert!(
-        points.len() > 80 && points.len() <= 100,
-        "sampled points should stay within the limit budget, got {}",
-        points.len()
-    );
     let parse_x = |point: &serde_json::Value| {
         chrono::DateTime::parse_from_rfc3339(point["x"].as_str().expect("x should be a string"))
             .expect("x should be rfc3339")
-            .with_timezone(&Utc)
+            .timestamp()
     };
     let newest = parse_x(points.last().expect("points should not be empty"));
     let oldest = parse_x(&points[0]);
-    assert!(
-        newest > now - chrono::Duration::minutes(5),
-        "sampling should keep the most recent interval, got {newest}"
+    assert_eq!(
+        newest,
+        latest_request_at.timestamp(),
+        "sampling should keep the most recent interval"
     );
-    assert!(
-        oldest < now - chrono::Duration::minutes(240),
-        "sampling should cover the beginning of the window, got {oldest}"
+    assert_eq!(
+        oldest,
+        first_request_at.timestamp() + 1,
+        "sampling should keep the first interval"
     );
+    assert_eq!(points.len(), 100, "sampling should fill the point budget");
+    assert!(points
+        .windows(2)
+        .all(|pair| parse_x(&pair[0]) <= parse_x(&pair[1])));
 
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 

@@ -22,6 +22,7 @@ use axum::{
 use chrono::Utc;
 use serde_json::{json, Value};
 
+use crate::handlers::shared::sample_interval_timeline;
 use crate::GatewayError;
 
 use super::{
@@ -1566,15 +1567,11 @@ pub(super) async fn handle_users_me_usage_interval_timeline_get(
         }
     };
 
-    // 数据按时间正序返回。超过 limit 时按时间轴均匀抽样，让散点覆盖整个窗口，
-    // 而不是取满 limit 就把最新的请求截掉。
+    // 按请求顺序抽样并保留首尾点，避免窗口末尾的稀疏请求被截掉。
     let total_points = intervals.len();
-    let stride = total_points.div_ceil(limit).max(1);
-    let points = intervals
+    let points = sample_interval_timeline(intervals, limit)
         .into_iter()
-        .enumerate()
-        .filter(|(index, _)| index % stride == 0)
-        .map(|(_, row)| {
+        .map(|row| {
             json!({
                 "x": unix_secs_to_rfc3339(row.created_at_unix_secs),
                 "y": round_to(row.interval_minutes, 2),
