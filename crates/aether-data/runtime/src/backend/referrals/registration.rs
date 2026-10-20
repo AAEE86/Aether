@@ -136,19 +136,21 @@ mod postgres_tests {
         let order = uuid::Uuid::new_v4().to_string();
         let relationship = uuid::Uuid::new_v4().to_string();
         for (id, name) in [(&inviter, "Inviter%Literal"), (&invitee, "Invitee")] {
-            sqlx::query("INSERT INTO users(id,username) VALUES($1,$2)")
+            sqlx::query("INSERT INTO users(id,username,email_verified) VALUES($1,$2,FALSE)")
                 .bind(id)
                 .bind(name)
                 .execute(&pool)
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO wallets(id,user_id) VALUES($1,$2)")
-            .bind(&wallet)
-            .bind(&inviter)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO wallets(id,user_id,created_at,updated_at) VALUES($1,$2,NOW(),NOW())",
+        )
+        .bind(&wallet)
+        .bind(&inviter)
+        .execute(&pool)
+        .await
+        .unwrap();
         let config = ReferralRewardConfig {
             percent_enabled: true,
             percent_rate: 5.0,
@@ -159,7 +161,7 @@ mod postgres_tests {
         let snapshot =
             serde_json::json!({(REFERRAL_SNAPSHOT_KEY):{"config":config},"secret":"gateway-key"});
         sqlx::query("INSERT INTO payment_orders(id,order_no,wallet_id,user_id,amount_usd,payment_method,status,gateway_response,refunded_amount_usd,refundable_amount_usd,created_at,credited_at) VALUES($1,'READ-ORDER',$2,$3,100,'stripe','credited',$4,40,60,NOW(),NOW())").bind(&order).bind(&wallet).bind(&invitee).bind(snapshot).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO user_referrals(id,inviter_user_id,invitee_user_id,invite_code_snapshot,source_json) VALUES($1,$2,$3,'AE-READ',$4)").bind(&relationship).bind(&inviter).bind(&invitee).bind("{\"secret\":\"private-source\"}").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO user_referrals(id,inviter_user_id,invitee_user_id,invite_code_snapshot,source_json) VALUES($1,$2,$3,'AE-READ',$4)").bind(&relationship).bind(&inviter).bind(&invitee).bind(serde_json::json!({"secret":"private-source"})).execute(&pool).await.unwrap();
         let mut ids = Vec::new();
         for index in 0..24 {
             let id = uuid::Uuid::new_v4().to_string();
@@ -258,13 +260,13 @@ mod postgres_tests {
         let relationship = uuid::Uuid::new_v4().to_string();
         let reward = uuid::Uuid::new_v4().to_string();
         for user in [&inviter, &invitee] {
-            sqlx::query("INSERT INTO users(id,username) VALUES($1,$1)")
+            sqlx::query("INSERT INTO users(id,username,email_verified) VALUES($1,$1,FALSE)")
                 .bind(user)
                 .execute(&pool)
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO wallets(id,user_id,gift_balance) VALUES($1,$2,0.00000002)")
+        sqlx::query("INSERT INTO wallets(id,user_id,gift_balance,created_at,updated_at) VALUES($1,$2,0.00000002,NOW(),NOW())")
             .bind(&wallet)
             .bind(&inviter)
             .execute(&pool)
@@ -317,7 +319,7 @@ mod postgres_tests {
             let relationship = uuid::Uuid::new_v4().to_string();
             let reward = uuid::Uuid::new_v4().to_string();
             for user in [&inviter, &invitee] {
-                sqlx::query("INSERT INTO users(id,username) VALUES($1,$1)")
+                sqlx::query("INSERT INTO users(id,username,email_verified) VALUES($1,$1,FALSE)")
                     .bind(user)
                     .execute(&pool)
                     .await
@@ -327,7 +329,7 @@ mod postgres_tests {
                 (&inviter_wallet, &inviter, 1.0),
                 (&invitee_wallet, &invitee, 0.0),
             ] {
-                sqlx::query("INSERT INTO wallets(id,user_id,gift_balance,total_adjusted) VALUES($1,$2,$3,$3)").bind(wallet).bind(user).bind(gift).execute(&pool).await.unwrap();
+                sqlx::query("INSERT INTO wallets(id,user_id,gift_balance,total_adjusted,created_at,updated_at) VALUES($1,$2,$3,$3,NOW(),NOW())").bind(wallet).bind(user).bind(gift).execute(&pool).await.unwrap();
             }
             sqlx::query("INSERT INTO payment_orders(id,order_no,wallet_id,user_id,amount_usd,payment_method,status,refunded_amount_usd,refundable_amount_usd,created_at,credited_at) VALUES($1,$1,$2,$3,100,'stripe','credited',$4,100-$4,NOW(),NOW())")
                 .bind(&order).bind(&invitee_wallet).bind(&invitee).bind(succeeded+processing).execute(&pool).await.unwrap();
@@ -410,7 +412,7 @@ mod postgres_tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO wallets(id,user_id,gift_balance) VALUES($1,$2,0)")
+        sqlx::query("INSERT INTO wallets(id,user_id,gift_balance,created_at,updated_at) VALUES($1,$2,0,NOW(),NOW())")
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(&inviter)
             .execute(&pool)
@@ -481,7 +483,7 @@ mod postgres_tests {
         let backends = isolated_backend().await;
         let pool = backends.postgres().unwrap().pool_clone();
         let state = ReferralDataState::new(Some(&backends));
-        assert!(state
+        let error = state
             .register_local_auth_user_with_referral(
                 None,
                 false,
@@ -493,10 +495,14 @@ mod postgres_tests {
                 None,
                 None,
                 Some("v1"),
-                None
+                None,
             )
             .await
-            .is_err());
+            .unwrap_err();
+        assert!(
+            matches!(&error, DataLayerError::InvalidInput(message) if message == "邀请码无效"),
+            "expected invalid invite error, got {error:?}"
+        );
         for table in [
             "users",
             "wallets",
