@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getAllSystemConfigsMock, updateSystemConfigMock } = vi.hoisted(() => ({
+const { getAllSystemConfigsMock, updateSystemConfigMock, updateReferralSettingsMock } = vi.hoisted(() => ({
   getAllSystemConfigsMock: vi.fn(),
   updateSystemConfigMock: vi.fn(),
+  updateReferralSettingsMock: vi.fn(),
 }))
 
 vi.mock('@/api/admin', () => ({
   adminApi: {
     getAllSystemConfigs: getAllSystemConfigsMock,
     updateSystemConfig: updateSystemConfigMock,
+    updateReferralSettings: updateReferralSettingsMock,
     getSystemVersion: vi.fn(),
   },
 }))
@@ -38,6 +40,7 @@ describe('useSystemConfig', () => {
   beforeEach(() => {
     getAllSystemConfigsMock.mockReset()
     updateSystemConfigMock.mockReset()
+    updateReferralSettingsMock.mockReset()
   })
 
   it('loads config keys in one request and keeps change detection disabled until the baseline is ready', async () => {
@@ -77,6 +80,8 @@ describe('useSystemConfig', () => {
     await state.loadSystemConfig()
 
     expect(state.systemConfig.value.request_record_level).toBe('basic')
+    expect(state.systemConfig.value.request_record_compact_base64_images).toBe(false)
+    expect(state.systemConfig.value.request_record_max_body_size_kb).toBe(0)
     expect(state.systemConfig.value).not.toHaveProperty('max_request_body_size')
     expect(state.systemConfig.value).not.toHaveProperty('max_response_body_size')
   })
@@ -98,5 +103,64 @@ describe('useSystemConfig', () => {
       'system_proxy_node_id', 'node-2', '系统默认代理节点 ID'
     )
     expect(state.hasProxyConfigChanges.value).toBe(false)
+  })
+
+  it('saves referral rules together without overwriting email verification or issuing individual referral writes', async () => {
+    getAllSystemConfigsMock.mockResolvedValue([])
+    updateReferralSettingsMock.mockResolvedValue(undefined)
+    updateSystemConfigMock.mockResolvedValue(undefined)
+    const state = useSystemConfig()
+    await state.loadSystemConfig()
+    state.systemConfig.value.referral_enabled = true
+    state.systemConfig.value.referral_reward_mode = 'headcount'
+    state.systemConfig.value.referral_headcount_trigger = 'email_verified'
+    await state.saveBasicConfig()
+    expect(updateReferralSettingsMock).toHaveBeenCalledExactlyOnceWith({
+      referral_enabled: true, referral_reward_mode: 'headcount', referral_headcount_trigger: 'email_verified',
+      referral_recharge_percent: 5, referral_headcount_amount_usd: 0,
+    })
+    expect(updateSystemConfigMock.mock.calls.map(([key]) => key).some(key => key.startsWith('referral_'))).toBe(false)
+    expect(state.hasBasicConfigChanges.value).toBe(false)
+  })
+
+  it('retains unsaved changes and avoids other writes when combined referral validation fails', async () => {
+    getAllSystemConfigsMock.mockResolvedValue([])
+    updateReferralSettingsMock.mockRejectedValue(new Error('email verification required'))
+    const state = useSystemConfig()
+    await state.loadSystemConfig()
+    state.systemConfig.value.referral_enabled = true
+    await state.saveBasicConfig()
+    expect(updateSystemConfigMock).not.toHaveBeenCalled()
+    expect(state.hasBasicConfigChanges.value).toBe(true)
+  })
+
+  it('loads and saves request-record body storage controls', async () => {
+    getAllSystemConfigsMock.mockResolvedValue([
+      { key: 'request_record_compact_base64_images', value: true },
+      { key: 'request_record_max_body_size_kb', value: 512 },
+    ])
+    updateSystemConfigMock.mockResolvedValue({})
+
+    const state = useSystemConfig()
+    await state.loadSystemConfig()
+
+    expect(state.systemConfig.value.request_record_compact_base64_images).toBe(true)
+    expect(state.systemConfig.value.request_record_max_body_size_kb).toBe(512)
+    state.systemConfig.value.request_record_max_body_size_kb = 256
+    expect(state.hasLogConfigChanges.value).toBe(true)
+
+    await state.saveLogConfig()
+
+    expect(updateSystemConfigMock).toHaveBeenCalledWith(
+      'request_record_compact_base64_images',
+      true,
+      '请求记录 Base64 图片精简开关'
+    )
+    expect(updateSystemConfigMock).toHaveBeenCalledWith(
+      'request_record_max_body_size_kb',
+      256,
+      '请求记录单个 Body 大小上限（KB），0 表示不限制'
+    )
+    expect(state.hasLogConfigChanges.value).toBe(false)
   })
 })

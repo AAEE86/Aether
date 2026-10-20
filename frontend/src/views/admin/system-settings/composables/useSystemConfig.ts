@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { adminApi } from '@/api/admin'
+import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 
@@ -36,6 +37,8 @@ export interface SystemConfig {
   // 请求记录
   request_record_level: string
   sensitive_headers: string[]
+  request_record_compact_base64_images: boolean
+  request_record_max_body_size_kb: number
   // 请求记录清理
   enable_auto_cleanup: boolean
   detail_log_retention_days: number
@@ -86,6 +89,8 @@ const CONFIG_KEYS = [
   // 请求记录
   'request_record_level',
   'sensitive_headers',
+  'request_record_compact_base64_images',
+  'request_record_max_body_size_kb',
   // 请求记录清理
   'enable_auto_cleanup',
   'detail_log_retention_days',
@@ -138,6 +143,8 @@ function createDefaultConfig(): SystemConfig {
     // 请求记录
     request_record_level: 'basic',
     sensitive_headers: ['authorization', 'x-api-key', 'api-key', 'cookie', 'set-cookie'],
+    request_record_compact_base64_images: false,
+    request_record_max_body_size_kb: 0,
     // 请求记录清理
     enable_auto_cleanup: true,
     detail_log_retention_days: 7,
@@ -226,6 +233,10 @@ export function useSystemConfig() {
     if (!originalConfig.value) return false
     return (
       systemConfig.value.request_record_level !== originalConfig.value.request_record_level ||
+      systemConfig.value.request_record_compact_base64_images !==
+        originalConfig.value.request_record_compact_base64_images ||
+      systemConfig.value.request_record_max_body_size_kb !==
+        originalConfig.value.request_record_max_body_size_kb ||
       JSON.stringify(systemConfig.value.sensitive_headers) !==
         JSON.stringify(originalConfig.value.sensitive_headers)
     )
@@ -412,31 +423,6 @@ export function useSystemConfig() {
           description: 'Cloudflare Turnstile 允许的 hostname 列表',
         },
         {
-          key: 'referral_enabled',
-          value: systemConfig.value.referral_enabled,
-          description: '邀请返利开关',
-        },
-        {
-          key: 'referral_reward_mode',
-          value: systemConfig.value.referral_reward_mode,
-          description: '邀请返利方式',
-        },
-        {
-          key: 'referral_recharge_percent',
-          value: systemConfig.value.referral_recharge_percent,
-          description: '邀请充值比例返利百分比',
-        },
-        {
-          key: 'referral_headcount_amount_usd',
-          value: systemConfig.value.referral_headcount_amount_usd,
-          description: '邀请人头返利金额（美元）',
-        },
-        {
-          key: 'referral_headcount_trigger',
-          value: systemConfig.value.referral_headcount_trigger,
-          description: '邀请人头返利触发时机',
-        },
-        {
           key: 'registration_privacy_policy_enabled',
           value: systemConfig.value.registration_privacy_policy_enabled,
           description: '注册隐私政策确认开关',
@@ -476,6 +462,14 @@ export function useSystemConfig() {
         })
       }
 
+      // 相关规则一次保存，避免并行单项写入产生中间态或错误覆盖邮箱配置。
+      await adminApi.updateReferralSettings({
+        referral_enabled: systemConfig.value.referral_enabled,
+        referral_reward_mode: systemConfig.value.referral_reward_mode,
+        referral_recharge_percent: systemConfig.value.referral_recharge_percent,
+        referral_headcount_amount_usd: systemConfig.value.referral_headcount_amount_usd,
+        referral_headcount_trigger: systemConfig.value.referral_headcount_trigger,
+      })
       await Promise.all(
         configItems.map((item) =>
           adminApi.updateSystemConfig(item.key, item.value, item.description)
@@ -519,7 +513,7 @@ export function useSystemConfig() {
       }
       success('基础配置已保存')
     } catch (err) {
-      error('保存配置失败')
+      error(parseApiError(err, '保存配置失败'))
       log.error('保存基础配置失败:', err)
     } finally {
       basicConfigLoading.value = false
@@ -563,6 +557,16 @@ export function useSystemConfig() {
           value: systemConfig.value.sensitive_headers,
           description: '敏感请求头列表',
         },
+        {
+          key: 'request_record_compact_base64_images',
+          value: systemConfig.value.request_record_compact_base64_images,
+          description: '请求记录 Base64 图片精简开关',
+        },
+        {
+          key: 'request_record_max_body_size_kb',
+          value: systemConfig.value.request_record_max_body_size_kb,
+          description: '请求记录单个 Body 大小上限（KB），0 表示不限制',
+        },
       ]
 
       await Promise.all(
@@ -573,6 +577,10 @@ export function useSystemConfig() {
       if (originalConfig.value) {
         originalConfig.value.request_record_level = systemConfig.value.request_record_level
         originalConfig.value.sensitive_headers = [...systemConfig.value.sensitive_headers]
+        originalConfig.value.request_record_compact_base64_images =
+          systemConfig.value.request_record_compact_base64_images
+        originalConfig.value.request_record_max_body_size_kb =
+          systemConfig.value.request_record_max_body_size_kb
       }
       success('请求记录配置已保存')
     } catch (err) {

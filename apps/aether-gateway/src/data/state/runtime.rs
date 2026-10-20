@@ -790,6 +790,21 @@ impl GatewayDataState {
         }
     }
 
+    pub(crate) async fn find_admin_wallet_transaction(
+        &self,
+        wallet_id: &str,
+        transaction_id: &str,
+    ) -> Result<Option<StoredAdminWalletTransaction>, DataLayerError> {
+        match &self.wallet_reader {
+            Some(repository) => {
+                repository
+                    .find_admin_wallet_transaction(wallet_id, transaction_id)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
     pub(crate) async fn list_admin_wallet_transactions(
         &self,
         wallet_id: &str,
@@ -1986,6 +2001,21 @@ impl GatewayDataState {
     > {
         match &self.usage_reader {
             Some(repository) => repository.summarize_usage_breakdown(query).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// 健康监控时间线条：数据库侧全窗口分桶聚合。
+    /// 仓储不可用时返回空结果，调用方降级为"无请求"时间线而不是报错。
+    pub(crate) async fn aggregate_usage_health_timeline(
+        &self,
+        query: &aether_data_contracts::repository::usage::UsageHealthTimelineQuery,
+    ) -> Result<
+        Vec<aether_data_contracts::repository::usage::StoredUsageHealthTimelineRow>,
+        DataLayerError,
+    > {
+        match &self.usage_reader {
+            Some(repository) => repository.aggregate_usage_health_timeline(query).await,
             None => Ok(Vec::new()),
         }
     }
