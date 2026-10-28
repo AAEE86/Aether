@@ -102,6 +102,7 @@ import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
+import { useClientPagination } from '@/composables/useClientPagination'
 import { useI18n } from '@/i18n'
 import { clearModelsDevCache } from '@/api/models-dev'
 import {
@@ -140,9 +141,6 @@ const proxyNodeStatusFilterOptions = [
   { value: 'online', label: '在线' },
   { value: 'offline', label: '离线' },
 ]
-const currentPage = ref(1)
-const pageSize = ref(20)
-
 // 手动添加/编辑对话框
 const showAddDialog = ref(false)
 const showPoolProxyDistributionDialog = ref(false)
@@ -242,14 +240,9 @@ const filteredNodes = computed(() => {
   return filtered
 })
 
-const paginatedNodes = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredNodes.value.slice(start, start + pageSize.value)
-})
+const { currentPage, pageSize, pageItems: paginatedNodes, resetPage } = useClientPagination(filteredNodes)
 
-watch([searchQuery, filterStatus], () => {
-  currentPage.value = 1
-})
+watch([searchQuery, filterStatus], resetPage)
 
 watch(() => installForm.value.node_name, () => {
   resetProxyInstallState()

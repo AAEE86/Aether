@@ -1029,6 +1029,7 @@ import {
   type CcSwitchTargetApp,
 } from '@/features/api-keys/utils/ccswitchImport'
 import { useClipboard } from '@/composables/useClipboard'
+import { useClientPagination } from '@/composables/useClientPagination'
 
 const { success, error: showError } = useToast()
 const { copyToClipboard } = useClipboard()
@@ -1059,13 +1060,7 @@ const creating = ref(false)
 const deleting = ref(false)
 
 // 分页相关
-const currentPage = ref(1)
-const pageSize = ref(10)
-
-const paginatedApiKeys = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return apiKeys.value.slice(start, start + pageSize.value)
-})
+const { currentPage, pageSize, pageItems: paginatedApiKeys } = useClientPagination(apiKeys, { pageSize: 10 })
 
 const showCreateDialog = ref(false)
 const showKeyDialog = ref(false)

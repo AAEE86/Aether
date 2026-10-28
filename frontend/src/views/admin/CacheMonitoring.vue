@@ -21,6 +21,7 @@ import ScatterChart from '@/components/charts/ScatterChart.vue'
 import { Trash2, Eraser, Search, X, BarChart3, ChevronDown, ChevronRight, Database, ArrowRight, HardDrive } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useClientPagination } from '@/composables/useClientPagination'
 import { cacheApi, modelMappingCacheApi, redisCacheApi, type CacheStats, type CacheConfig, type UserAffinity, type ModelMappingCacheStats, type RedisCacheCategoriesResponse } from '@/api/cache'
 import type { TTLAnalysisUser } from '@/api/cache'
 import { formatNumber, formatTokens, formatCost, formatRemainingTime } from '@/utils/format'
@@ -47,8 +48,6 @@ const tableKeyword = ref('')
 const matchedUserId = ref<string | null>(null)
 const clearingRowAffinityKey = ref<string | null>(null)
 const clearingAllAffinity = ref(false)
-const currentPage = ref(1)
-const pageSize = ref(20)
 const currentTime = ref(Math.floor(Date.now() / 1000))
 const isPageVisible = ref(typeof document === 'undefined' ? true : !document.hidden)
 const nextExpireAt = ref<number | null>(null)
@@ -96,11 +95,7 @@ const {
 
 // ==================== 计算属性 ====================
 
-const paginatedAffinityList = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  const end = start + pageSize.value
-  return affinityList.value.slice(start, end)
-})
+const { currentPage, pageSize, pageItems: paginatedAffinityList, resetPage } = useClientPagination(affinityList)
 
 // ==================== 缓存统计方法 ====================
 
@@ -151,14 +146,14 @@ async function resetAffinitySearch() {
   }
 
   if (!tableKeyword.value) {
-    currentPage.value = 1
+    resetPage()
     await fetchAffinityList()
     return
   }
 
   skipNextKeywordWatch = true
   tableKeyword.value = ''
-  currentPage.value = 1
+  resetPage()
   await fetchAffinityList()
 }
 

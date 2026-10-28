@@ -1026,332 +1026,324 @@
       </div>
     </Card>
 
-    <Teleport to="body">
-      <Transition name="drawer">
-        <div
-          v-if="showLedgerDrawer && currentLedger"
-          class="fixed inset-0 z-[80] flex justify-end"
-        >
-          <div
-            class="absolute inset-0 bg-black/35 backdrop-blur-sm"
-            @click="closeLedgerDrawer"
-          />
-          <div class="drawer-panel relative h-full w-full sm:w-[760px] lg:w-[860px] sm:max-w-[95vw] border-l border-border bg-background shadow-2xl overflow-y-auto">
-            <div class="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <h3 class="text-lg font-semibold text-foreground leading-tight">
-                    流水详情
-                  </h3>
-                  <p class="text-xs text-muted-foreground">
-                    资金动作审计信息
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-9 w-9 shrink-0"
-                  title="关闭"
-                  @click="closeLedgerDrawer"
+    <Drawer
+      :open="showLedgerDrawer && !!currentLedger"
+      width="sm:w-[760px] lg:w-[860px] sm:max-w-[95vw]"
+      panel-class="bg-background text-foreground"
+      backdrop-class="bg-black/35 backdrop-blur-sm"
+      :z-index="80"
+      @close="closeLedgerDrawer"
+    >
+      <template v-if="currentLedger">
+        <div class="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold text-foreground leading-tight">
+                流水详情
+              </h3>
+              <p class="text-xs text-muted-foreground">
+                资金动作审计信息
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              class="h-9 w-9 shrink-0"
+              title="关闭"
+              @click="closeLedgerDrawer"
+            >
+              <X class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div class="p-4 sm:p-6 space-y-5">
+          <div class="rounded-2xl border border-border/60 bg-muted/30 p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <Badge variant="outline">
+                  {{ walletTransactionCategoryLabel(currentLedger.category) }}
+                </Badge>
+                <Badge variant="secondary">
+                  {{ walletTransactionReasonLabel(currentLedger.reason_code) }}
+                </Badge>
+              </div>
+              <span
+                class="text-sm font-semibold tabular-nums"
+                :class="currentLedger.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'"
+              >
+                {{ currentLedger.amount >= 0 ? '+' : '' }}{{ currentLedger.amount.toFixed(4) }}
+              </span>
+            </div>
+            <div class="text-xs text-muted-foreground">
+              {{ formatDateTime(currentLedger.created_at) }}
+            </div>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="rounded-xl border border-border/60 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                归属
+              </div>
+              <div class="mt-1 text-sm font-medium">
+                {{ ownerDisplayName(currentLedger.owner_name, currentLedger.owner_type) }}
+              </div>
+              <div class="mt-1 text-xs text-muted-foreground flex items-center gap-2">
+                <span>{{ ownerTypeLabel(currentLedger.owner_type) }}</span>
+                <Badge
+                  v-if="currentLedger.wallet_status"
+                  variant="outline"
+                  class="text-[10px]"
                 >
-                  <X class="h-4 w-4" />
-                </Button>
+                  {{ walletStatusLabel(currentLedger.wallet_status) }}
+                </Badge>
               </div>
             </div>
-
-            <div class="p-4 sm:p-6 space-y-5">
-              <div class="rounded-2xl border border-border/60 bg-muted/30 p-4 space-y-3">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <div class="flex items-center gap-2">
-                    <Badge variant="outline">
-                      {{ walletTransactionCategoryLabel(currentLedger.category) }}
-                    </Badge>
-                    <Badge variant="secondary">
-                      {{ walletTransactionReasonLabel(currentLedger.reason_code) }}
-                    </Badge>
-                  </div>
-                  <span
-                    class="text-sm font-semibold tabular-nums"
-                    :class="currentLedger.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'"
-                  >
-                    {{ currentLedger.amount >= 0 ? '+' : '' }}{{ currentLedger.amount.toFixed(4) }}
-                  </span>
-                </div>
-                <div class="text-xs text-muted-foreground">
-                  {{ formatDateTime(currentLedger.created_at) }}
-                </div>
+            <div class="rounded-xl border border-border/60 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                余额变化
               </div>
-
-              <div class="grid gap-3 sm:grid-cols-2">
-                <div class="rounded-xl border border-border/60 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    归属
-                  </div>
-                  <div class="mt-1 text-sm font-medium">
-                    {{ ownerDisplayName(currentLedger.owner_name, currentLedger.owner_type) }}
-                  </div>
-                  <div class="mt-1 text-xs text-muted-foreground flex items-center gap-2">
-                    <span>{{ ownerTypeLabel(currentLedger.owner_type) }}</span>
-                    <Badge
-                      v-if="currentLedger.wallet_status"
-                      variant="outline"
-                      class="text-[10px]"
-                    >
-                      {{ walletStatusLabel(currentLedger.wallet_status) }}
-                    </Badge>
-                  </div>
-                </div>
-                <div class="rounded-xl border border-border/60 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    余额变化
-                  </div>
-                  <div class="mt-1 text-sm font-medium tabular-nums">
-                    {{ currentLedger.balance_before.toFixed(4) }} → {{ currentLedger.balance_after.toFixed(4) }}
-                  </div>
-                  <div
-                    v-if="currentLedger.recharge_balance_before !== null && currentLedger.recharge_balance_before !== undefined && currentLedger.gift_balance_before !== null && currentLedger.gift_balance_before !== undefined"
-                    class="mt-1 text-xs text-muted-foreground tabular-nums"
-                  >
-                    充 {{ Number(currentLedger.recharge_balance_before).toFixed(4) }}→{{ Number(currentLedger.recharge_balance_after ?? 0).toFixed(4) }}
-                    · 赠 {{ Number(currentLedger.gift_balance_before).toFixed(4) }}→{{ Number(currentLedger.gift_balance_after ?? 0).toFixed(4) }}
-                  </div>
-                </div>
+              <div class="mt-1 text-sm font-medium tabular-nums">
+                {{ currentLedger.balance_before.toFixed(4) }} → {{ currentLedger.balance_after.toFixed(4) }}
               </div>
-
-              <div class="grid gap-3 sm:grid-cols-2">
-                <div class="rounded-xl border border-border/60 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    关联类型
-                  </div>
-                  <div class="mt-1 text-sm font-medium break-all">
-                    {{ walletLinkTypeLabel(currentLedger.link_type) }}
-                  </div>
-                </div>
-                <div class="rounded-xl border border-border/60 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    交易ID
-                  </div>
-                  <div class="mt-1 text-sm font-mono break-all">
-                    {{ currentLedger.id }}
-                  </div>
-                </div>
-              </div>
-
               <div
-                v-if="currentLedger.link_type === 'payment_order'"
-                class="grid gap-3 sm:grid-cols-2"
+                v-if="currentLedger.recharge_balance_before !== null && currentLedger.recharge_balance_before !== undefined && currentLedger.gift_balance_before !== null && currentLedger.gift_balance_before !== undefined"
+                class="mt-1 text-xs text-muted-foreground tabular-nums"
               >
-                <div class="rounded-xl border border-border/60 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    支付方式
-                  </div>
-                  <div class="mt-1 text-sm font-medium">
-                    <span v-if="loadingLedgerOrderNo">加载中...</span>
-                    <span v-else>{{ ledgerPaymentMethod ? paymentMethodLabel(ledgerPaymentMethod) : '-' }}</span>
-                  </div>
-                </div>
-                <div class="rounded-xl border border-border/60 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    充值订单号
-                  </div>
-                  <div class="mt-1 text-sm font-mono break-all">
-                    <span v-if="loadingLedgerOrderNo">加载中...</span>
-                    <span v-else>{{ ledgerPaymentOrderNo || '-' }}</span>
-                  </div>
-                </div>
+                充 {{ Number(currentLedger.recharge_balance_before).toFixed(4) }}→{{ Number(currentLedger.recharge_balance_after ?? 0).toFixed(4) }}
+                · 赠 {{ Number(currentLedger.gift_balance_before).toFixed(4) }}→{{ Number(currentLedger.gift_balance_after ?? 0).toFixed(4) }}
               </div>
+            </div>
+          </div>
 
-              <div class="rounded-xl border border-border/60 p-3">
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="rounded-xl border border-border/60 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                关联类型
+              </div>
+              <div class="mt-1 text-sm font-medium break-all">
+                {{ walletLinkTypeLabel(currentLedger.link_type) }}
+              </div>
+            </div>
+            <div class="rounded-xl border border-border/60 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                交易ID
+              </div>
+              <div class="mt-1 text-sm font-mono break-all">
+                {{ currentLedger.id }}
+              </div>
+            </div>
+          </div>
+
+          <div
+            v-if="currentLedger.link_type === 'payment_order'"
+            class="grid gap-3 sm:grid-cols-2"
+          >
+            <div class="rounded-xl border border-border/60 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                支付方式
+              </div>
+              <div class="mt-1 text-sm font-medium">
+                <span v-if="loadingLedgerOrderNo">加载中...</span>
+                <span v-else>{{ ledgerPaymentMethod ? paymentMethodLabel(ledgerPaymentMethod) : '-' }}</span>
+              </div>
+            </div>
+            <div class="rounded-xl border border-border/60 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                充值订单号
+              </div>
+              <div class="mt-1 text-sm font-mono break-all">
+                <span v-if="loadingLedgerOrderNo">加载中...</span>
+                <span v-else>{{ ledgerPaymentOrderNo || '-' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-border/60 p-3">
+            <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+              操作用户
+            </div>
+            <div class="mt-1 text-sm font-medium">
+              {{ currentLedger.operator_name || (currentLedger.operator_id ? '已删除用户' : '系统自动') }}
+            </div>
+            <div class="mt-1 text-xs text-muted-foreground">
+              ID: {{ currentLedger.operator_id || '-' }}
+            </div>
+            <div
+              v-if="currentLedger.operator_email"
+              class="mt-1 text-xs text-muted-foreground"
+            >
+              邮箱: {{ currentLedger.operator_email }}
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-border/60 p-3">
+            <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+              说明
+            </div>
+            <div class="mt-1 text-sm text-foreground whitespace-pre-wrap break-words">
+              {{ currentLedger.description || '-' }}
+            </div>
+          </div>
+        </div>
+      </template>
+    </Drawer>
+
+    <Drawer
+      :open="showRefundDrawer && !!currentRefund"
+      width="sm:w-[760px] lg:w-[860px] sm:max-w-[95vw]"
+      panel-class="bg-background text-foreground"
+      backdrop-class="bg-black/35 backdrop-blur-sm"
+      :z-index="80"
+      @close="closeRefundDrawer"
+    >
+      <template v-if="currentRefund">
+        <div class="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold text-foreground leading-tight">
+                退款审批
+              </h3>
+              <p class="text-xs text-muted-foreground">
+                退款单: {{ currentRefund.refund_no }}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              class="h-9 w-9 shrink-0"
+              title="关闭"
+              @click="closeRefundDrawer"
+            >
+              <X class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div class="p-4 sm:p-6 space-y-5">
+          <div class="rounded-2xl border border-border/60 bg-muted/30 p-4">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
                 <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                  操作用户
+                  归属
                 </div>
                 <div class="mt-1 text-sm font-medium">
-                  {{ currentLedger.operator_name || (currentLedger.operator_id ? '已删除用户' : '系统自动') }}
+                  {{ ownerDisplayName(currentRefund.owner_name, currentRefund.owner_type) }}
                 </div>
                 <div class="mt-1 text-xs text-muted-foreground">
-                  ID: {{ currentLedger.operator_id || '-' }}
-                </div>
-                <div
-                  v-if="currentLedger.operator_email"
-                  class="mt-1 text-xs text-muted-foreground"
-                >
-                  邮箱: {{ currentLedger.operator_email }}
+                  {{ ownerTypeLabel(currentRefund.owner_type) }}
                 </div>
               </div>
-
-              <div class="rounded-xl border border-border/60 p-3">
+              <div>
                 <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                  说明
+                  金额
+                </div>
+                <div class="mt-1 text-sm font-semibold tabular-nums">
+                  {{ formatCurrency(currentRefund.amount_usd) }}
+                </div>
+              </div>
+              <div>
+                <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  退款模式
+                </div>
+                <div class="mt-1 text-sm">
+                  {{ refundModeLabel(currentRefund.refund_mode) }}
+                </div>
+              </div>
+              <div>
+                <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  状态
+                </div>
+                <div class="mt-1">
+                  <Badge :variant="refundStatusBadge(currentRefund.status)">
+                    {{ refundStatusLabel(currentRefund.status) }}
+                  </Badge>
+                </div>
+              </div>
+              <div class="sm:col-span-2">
+                <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  申请原因
                 </div>
                 <div class="mt-1 text-sm text-foreground whitespace-pre-wrap break-words">
-                  {{ currentLedger.description || '-' }}
+                  {{ currentRefund.reason || '-' }}
+                </div>
+              </div>
+              <div
+                v-if="currentRefund.failure_reason"
+                class="sm:col-span-2"
+              >
+                <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  失败原因
+                </div>
+                <div class="mt-1 text-sm text-rose-600 whitespace-pre-wrap break-words">
+                  {{ currentRefund.failure_reason }}
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      </Transition>
-    </Teleport>
 
-    <Teleport to="body">
-      <Transition name="drawer">
-        <div
-          v-if="showRefundDrawer && currentRefund"
-          class="fixed inset-0 z-[80] flex justify-end"
-        >
           <div
-            class="absolute inset-0 bg-black/35 backdrop-blur-sm"
-            @click="closeRefundDrawer"
-          />
-          <div class="drawer-panel relative h-full w-full sm:w-[760px] lg:w-[860px] sm:max-w-[95vw] border-l border-border bg-background shadow-2xl overflow-y-auto">
-            <div class="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <h3 class="text-lg font-semibold text-foreground leading-tight">
-                    退款审批
-                  </h3>
-                  <p class="text-xs text-muted-foreground">
-                    退款单: {{ currentRefund.refund_no }}
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-9 w-9 shrink-0"
-                  title="关闭"
-                  @click="closeRefundDrawer"
-                >
-                  <X class="h-4 w-4" />
-                </Button>
-              </div>
+            v-if="canFailRefund(currentRefund)"
+            class="rounded-xl border border-border/60 p-4 space-y-2"
+          >
+            <Label>驳回原因</Label>
+            <Input
+              id="refund-fail-reason"
+              v-model="failRefundForm.reason"
+              placeholder="请填写驳回原因"
+            />
+          </div>
+
+          <div
+            v-if="canCompleteRefund(currentRefund.status)"
+            class="rounded-xl border border-border/60 p-4 space-y-3"
+          >
+            <div class="space-y-1.5">
+              <Label>网关退款号（可选）</Label>
+              <Input v-model="completeRefundForm.gateway_refund_id" />
             </div>
-
-            <div class="p-4 sm:p-6 space-y-5">
-              <div class="rounded-2xl border border-border/60 bg-muted/30 p-4">
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                      归属
-                    </div>
-                    <div class="mt-1 text-sm font-medium">
-                      {{ ownerDisplayName(currentRefund.owner_name, currentRefund.owner_type) }}
-                    </div>
-                    <div class="mt-1 text-xs text-muted-foreground">
-                      {{ ownerTypeLabel(currentRefund.owner_type) }}
-                    </div>
-                  </div>
-                  <div>
-                    <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                      金额
-                    </div>
-                    <div class="mt-1 text-sm font-semibold tabular-nums">
-                      {{ formatCurrency(currentRefund.amount_usd) }}
-                    </div>
-                  </div>
-                  <div>
-                    <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                      退款模式
-                    </div>
-                    <div class="mt-1 text-sm">
-                      {{ refundModeLabel(currentRefund.refund_mode) }}
-                    </div>
-                  </div>
-                  <div>
-                    <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                      状态
-                    </div>
-                    <div class="mt-1">
-                      <Badge :variant="refundStatusBadge(currentRefund.status)">
-                        {{ refundStatusLabel(currentRefund.status) }}
-                      </Badge>
-                    </div>
-                  </div>
-                  <div class="sm:col-span-2">
-                    <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                      申请原因
-                    </div>
-                    <div class="mt-1 text-sm text-foreground whitespace-pre-wrap break-words">
-                      {{ currentRefund.reason || '-' }}
-                    </div>
-                  </div>
-                  <div
-                    v-if="currentRefund.failure_reason"
-                    class="sm:col-span-2"
-                  >
-                    <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                      失败原因
-                    </div>
-                    <div class="mt-1 text-sm text-rose-600 whitespace-pre-wrap break-words">
-                      {{ currentRefund.failure_reason }}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                v-if="canFailRefund(currentRefund)"
-                class="rounded-xl border border-border/60 p-4 space-y-2"
-              >
-                <Label>驳回原因</Label>
-                <Input
-                  id="refund-fail-reason"
-                  v-model="failRefundForm.reason"
-                  placeholder="请填写驳回原因"
-                />
-              </div>
-
-              <div
-                v-if="canCompleteRefund(currentRefund.status)"
-                class="rounded-xl border border-border/60 p-4 space-y-3"
-              >
-                <div class="space-y-1.5">
-                  <Label>网关退款号（可选）</Label>
-                  <Input v-model="completeRefundForm.gateway_refund_id" />
-                </div>
-                <div class="space-y-1.5">
-                  <Label>打款凭证 / 参考号（可选）</Label>
-                  <Input v-model="completeRefundForm.payout_reference" />
-                </div>
-              </div>
-            </div>
-
-            <div class="sticky bottom-0 border-t border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
-              <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <Button
-                  variant="outline"
-                  @click="closeRefundDrawer"
-                >
-                  关闭
-                </Button>
-                <Button
-                  v-if="canProcessRefund(currentRefund.status)"
-                  variant="outline"
-                  :disabled="submittingRefundAction"
-                  @click="processRefund(currentRefund)"
-                >
-                  {{ submittingRefundAction ? '处理中...' : '处理退款' }}
-                </Button>
-                <Button
-                  v-if="canCompleteRefund(currentRefund.status)"
-                  :disabled="submittingRefundAction"
-                  @click="submitCompleteRefund"
-                >
-                  {{ submittingRefundAction ? '提交中...' : '确认完成' }}
-                </Button>
-                <Button
-                  v-if="canFailRefund(currentRefund)"
-                  variant="destructive"
-                  :disabled="submittingRefundAction"
-                  @click="submitFailRefund"
-                >
-                  {{ submittingRefundAction ? '提交中...' : '驳回退款' }}
-                </Button>
-              </div>
+            <div class="space-y-1.5">
+              <Label>打款凭证 / 参考号（可选）</Label>
+              <Input v-model="completeRefundForm.payout_reference" />
             </div>
           </div>
         </div>
-      </Transition>
-    </Teleport>
+
+        <div class="sticky bottom-0 border-t border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
+          <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              @click="closeRefundDrawer"
+            >
+              关闭
+            </Button>
+            <Button
+              v-if="canProcessRefund(currentRefund.status)"
+              variant="outline"
+              :disabled="submittingRefundAction"
+              @click="processRefund(currentRefund)"
+            >
+              {{ submittingRefundAction ? '处理中...' : '处理退款' }}
+            </Button>
+            <Button
+              v-if="canCompleteRefund(currentRefund.status)"
+              :disabled="submittingRefundAction"
+              @click="submitCompleteRefund"
+            >
+              {{ submittingRefundAction ? '提交中...' : '确认完成' }}
+            </Button>
+            <Button
+              v-if="canFailRefund(currentRefund)"
+              variant="destructive"
+              :disabled="submittingRefundAction"
+              @click="submitFailRefund"
+            >
+              {{ submittingRefundAction ? '提交中...' : '驳回退款' }}
+            </Button>
+          </div>
+        </div>
+      </template>
+    </Drawer>
 
     <Dialog v-model="showCreditDialog">
       <template #header>
@@ -1465,6 +1457,7 @@ import {
 import type { PaymentOrder, RefundRequest } from '@/api/wallet'
 import { parseApiError } from '@/utils/errorParser'
 import { useToast } from '@/composables/useToast'
+import Drawer from '@/components/ui/drawer/Drawer.vue'
 import { getI18nLocale } from '@/i18n'
 import { log } from '@/utils/logger'
 import {
@@ -2390,24 +2383,3 @@ function redeemCodeStatusBadge(status: string) {
 }
 </script>
 
-<style scoped>
-.drawer-enter-active,
-.drawer-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.drawer-enter-active .drawer-panel,
-.drawer-leave-active .drawer-panel {
-  transition: transform 0.3s ease;
-}
-
-.drawer-enter-from,
-.drawer-leave-to {
-  opacity: 0;
-}
-
-.drawer-enter-from .drawer-panel,
-.drawer-leave-to .drawer-panel {
-  transform: translateX(100%);
-}
-</style>

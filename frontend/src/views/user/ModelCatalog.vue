@@ -226,6 +226,7 @@ import {
 } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
+import { useClientPagination } from '@/composables/useClientPagination'
 import {
   Card,
   Table,
@@ -269,10 +270,6 @@ function openModelDetail(model: PublicGlobalModel, event: MouseEvent) {
   drawerOpen.value = true
 }
 
-// 分页
-const currentPage = ref(1)
-const pageSize = ref(20)
-
 // 筛选后的模型列表
 const filteredModels = computed(() => {
   let result = models.value
@@ -289,17 +286,11 @@ const filteredModels = computed(() => {
   return result
 })
 
-// 分页计算
-const paginatedModels = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  const end = start + pageSize.value
-  return filteredModels.value.slice(start, end)
-})
+// 分页
+const { currentPage, pageSize, pageItems: paginatedModels, resetPage } = useClientPagination(filteredModels)
 
 // 搜索变化时重置到第一页
-watch(searchQuery, () => {
-  currentPage.value = 1
-})
+watch(searchQuery, resetPage)
 
 async function loadModels() {
   loading.value = true

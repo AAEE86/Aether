@@ -2094,33 +2094,3 @@ onBeforeUnmount(() => {
 })
 </script>
 
-<style scoped>
-/* 抽屉过渡动画 */
-.drawer-enter-active,
-.drawer-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.drawer-enter-active .relative,
-.drawer-leave-active .relative {
-  transition: transform 0.3s ease;
-}
-
-.drawer-enter-from,
-.drawer-leave-to {
-  opacity: 0;
-}
-
-.drawer-enter-from .relative {
-  transform: translateX(100%);
-}
-
-.drawer-leave-to .relative {
-  transform: translateX(100%);
-}
-
-.drawer-enter-to .relative,
-.drawer-leave-from .relative {
-  transform: translateX(0);
-}
-</style>

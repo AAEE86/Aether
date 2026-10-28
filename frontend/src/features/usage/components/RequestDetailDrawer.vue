@@ -1,902 +1,890 @@
 <template>
   <!-- 请求详情抽屉 -->
-  <Teleport to="body">
-    <Transition name="drawer">
-      <div
-        v-if="isOpen"
-        class="fixed inset-0 z-50 flex justify-end"
-        @click.self="handleClose"
-      >
-        <!-- 背景遮罩 -->
-        <div
-          class="absolute inset-0 bg-black/30 backdrop-blur-sm"
-          @click="handleClose"
-        />
-
-        <!-- 抽屉内容 -->
-        <Card class="relative h-full w-full sm:w-[800px] sm:max-w-[90vw] rounded-none shadow-2xl flex flex-col">
-          <!-- 固定头部 - 整合基本信息 -->
-          <div class="sticky top-0 z-10 bg-background border-b px-3 sm:px-6 py-3 sm:py-4 flex-shrink-0">
-            <!-- 第一行：标题、模型、状态、操作按钮 -->
-            <div class="flex items-center justify-between gap-2 sm:gap-4 mb-3">
-              <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 flex-wrap">
-                <h3 class="text-lg font-semibold">
-                  请求详情
-                </h3>
-                <UsageModelDisplay
-                  v-if="headerModelRecord"
-                  :record="headerModelRecord"
-                  :cyber="detailCyberPolicyError"
-                  context="detail"
-                  data-request-detail-model-display
-                  class="min-w-0 max-w-[18rem] text-sm font-mono text-muted-foreground sm:max-w-none"
-                  model-row-class="rounded bg-muted px-2 py-0.5"
-                />
-                <div
-                  v-else
-                  data-request-detail-model-display
-                  class="rounded bg-muted px-2 py-0.5 text-sm font-mono text-muted-foreground"
-                >
-                  -
-                </div>
-                <Badge
-                  v-if="detail?.status_code === 200"
-                  variant="success"
-                  data-request-lifecycle-status
-                >
-                  {{ detail.status_code }}
-                </Badge>
-                <Badge
-                  v-else-if="detail"
-                  variant="destructive"
-                  data-request-lifecycle-status
-                >
-                  {{ detail.status_code }}
-                </Badge>
-                <Badge
-                  v-if="detail && isUsageWebSocket(detail)"
-                  variant="outline"
-                  data-usage-transport="websocket"
-                  :title="formatUsageWebSocketTransportTitle(detail)"
-                  class="border-sky-500/50 text-xs text-sky-600 dark:text-sky-400"
-                >
-                  WS
-                </Badge>
-                <Badge
-                  v-else-if="detail && resolveUsageStreamLabelSegments(detail).hasConversion"
-                  data-usage-transport="http"
-                  :variant="streamBadgeVariant(resolveUsageStreamLabelSegments(detail).client === '流式')"
-                  :class="streamBadgeVariant(resolveUsageStreamLabelSegments(detail).client === '流式') === 'secondary'
-                    ? 'text-xs inline-flex items-center gap-1'
-                    : 'text-xs inline-flex items-center gap-1 border-border/60 text-muted-foreground'"
-                >
-                  <span>HTTP {{ resolveUsageStreamLabelSegments(detail).client }}</span>
-                  <span class="opacity-60">→</span>
-                  <span>HTTP {{ resolveUsageStreamLabelSegments(detail).upstream }}</span>
-                </Badge>
-                <Badge
-                  v-else-if="detail"
-                  data-usage-transport="http"
-                  :variant="streamBadgeVariant(isUsageUpstreamStream(detail))"
-                  :class="streamBadgeVariant(isUsageUpstreamStream(detail)) === 'secondary'
-                    ? 'text-xs'
-                    : 'text-xs border-border/60 text-muted-foreground'"
-                >
-                  HTTP {{ formatUsageStreamLabel(detail) }}
-                </Badge>
-              </div>
-              <div class="flex items-center gap-1 shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-8 w-8"
-                  title="回放请求"
-                  :disabled="loading"
-                  @click="openReplayDialog"
-                >
-                  <Play class="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-8 w-8"
-                  :disabled="loading && !autoRefreshing"
-                  :title="refreshButtonTitle"
-                  @click="refreshDetail"
-                >
-                  <RefreshCw
-                    class="w-4 h-4"
-                    :class="{ 'animate-spin': loading || autoRefreshing, 'text-primary': autoRefreshing }"
-                  />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-8 w-8"
-                  title="关闭"
-                  @click="handleClose"
-                >
-                  <X class="w-4 h-4" />
-                </Button>
-              </div>
-            </div>
-            <!-- 第二行：关键元信息 -->
-            <div
-              v-if="detail"
-              class="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground sm:gap-x-4"
-            >
-              <span class="flex min-w-0 items-center gap-1">
-                <span class="font-medium text-foreground">ID:</span>
-                <span
-                  class="font-mono"
-                  :title="fullRequestId"
-                >{{ displayRequestId }}</span>
-              </span>
-              <span class="hidden opacity-40 sm:inline">|</span>
-              <span>{{ formatDateTime(detail.created_at) }}</span>
-              <span class="hidden opacity-40 sm:inline">|</span>
-              <span>{{ formatApiFormat(detail.api_format) }}</span>
-              <span class="hidden opacity-40 sm:inline">|</span>
-              <span>用户: {{ detail.user?.username || 'Unknown' }}</span>
-            </div>
+  <Drawer
+    :open="isOpen"
+    width="sm:w-[800px] sm:max-w-[90vw]"
+    layout="column"
+    @close="handleClose"
+  >
+    <!-- 固定头部 - 整合基本信息 -->
+    <div class="sticky top-0 z-10 bg-background border-b px-3 sm:px-6 py-3 sm:py-4 flex-shrink-0">
+      <!-- 第一行：标题、模型、状态、操作按钮 -->
+      <div class="flex items-center justify-between gap-2 sm:gap-4 mb-3">
+        <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 flex-wrap">
+          <h3 class="text-lg font-semibold">
+            请求详情
+          </h3>
+          <UsageModelDisplay
+            v-if="headerModelRecord"
+            :record="headerModelRecord"
+            :cyber="detailCyberPolicyError"
+            context="detail"
+            data-request-detail-model-display
+            class="min-w-0 max-w-[18rem] text-sm font-mono text-muted-foreground sm:max-w-none"
+            model-row-class="rounded bg-muted px-2 py-0.5"
+          />
+          <div
+            v-else
+            data-request-detail-model-display
+            class="rounded bg-muted px-2 py-0.5 text-sm font-mono text-muted-foreground"
+          >
+            -
           </div>
+          <Badge
+            v-if="detail?.status_code === 200"
+            variant="success"
+            data-request-lifecycle-status
+          >
+            {{ detail.status_code }}
+          </Badge>
+          <Badge
+            v-else-if="detail"
+            variant="destructive"
+            data-request-lifecycle-status
+          >
+            {{ detail.status_code }}
+          </Badge>
+          <Badge
+            v-if="detail && isUsageWebSocket(detail)"
+            variant="outline"
+            data-usage-transport="websocket"
+            :title="formatUsageWebSocketTransportTitle(detail)"
+            class="border-sky-500/50 text-xs text-sky-600 dark:text-sky-400"
+          >
+            WS
+          </Badge>
+          <Badge
+            v-else-if="detail && resolveUsageStreamLabelSegments(detail).hasConversion"
+            data-usage-transport="http"
+            :variant="streamBadgeVariant(resolveUsageStreamLabelSegments(detail).client === '流式')"
+            :class="streamBadgeVariant(resolveUsageStreamLabelSegments(detail).client === '流式') === 'secondary'
+              ? 'text-xs inline-flex items-center gap-1'
+              : 'text-xs inline-flex items-center gap-1 border-border/60 text-muted-foreground'"
+          >
+            <span>HTTP {{ resolveUsageStreamLabelSegments(detail).client }}</span>
+            <span class="opacity-60">→</span>
+            <span>HTTP {{ resolveUsageStreamLabelSegments(detail).upstream }}</span>
+          </Badge>
+          <Badge
+            v-else-if="detail"
+            data-usage-transport="http"
+            :variant="streamBadgeVariant(isUsageUpstreamStream(detail))"
+            :class="streamBadgeVariant(isUsageUpstreamStream(detail)) === 'secondary'
+              ? 'text-xs'
+              : 'text-xs border-border/60 text-muted-foreground'"
+          >
+            HTTP {{ formatUsageStreamLabel(detail) }}
+          </Badge>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-8 w-8"
+            title="回放请求"
+            :disabled="loading"
+            @click="openReplayDialog"
+          >
+            <Play class="w-4 h-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-8 w-8"
+            :disabled="loading && !autoRefreshing"
+            :title="refreshButtonTitle"
+            @click="refreshDetail"
+          >
+            <RefreshCw
+              class="w-4 h-4"
+              :class="{ 'animate-spin': loading || autoRefreshing, 'text-primary': autoRefreshing }"
+            />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-8 w-8"
+            title="关闭"
+            @click="handleClose"
+          >
+            <X class="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+      <!-- 第二行：关键元信息 -->
+      <div
+        v-if="detail"
+        class="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground sm:gap-x-4"
+      >
+        <span class="flex min-w-0 items-center gap-1">
+          <span class="font-medium text-foreground">ID:</span>
+          <span
+            class="font-mono"
+            :title="fullRequestId"
+          >{{ displayRequestId }}</span>
+        </span>
+        <span class="hidden opacity-40 sm:inline">|</span>
+        <span>{{ formatDateTime(detail.created_at) }}</span>
+        <span class="hidden opacity-40 sm:inline">|</span>
+        <span>{{ formatApiFormat(detail.api_format) }}</span>
+        <span class="hidden opacity-40 sm:inline">|</span>
+        <span>用户: {{ detail.user?.username || 'Unknown' }}</span>
+      </div>
+    </div>
 
-          <!-- 可滚动内容区域 -->
-          <div class="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 scrollbar-stable">
-            <!-- Loading State -->
-            <div
-              v-if="loading"
-              class="py-8 space-y-4"
-            >
-              <Skeleton class="h-8 w-full" />
-              <Skeleton class="h-32 w-full" />
-              <Skeleton class="h-64 w-full" />
+    <!-- 可滚动内容区域 -->
+    <div class="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 scrollbar-stable">
+      <!-- Loading State -->
+      <div
+        v-if="loading"
+        class="py-8 space-y-4"
+      >
+        <Skeleton class="h-8 w-full" />
+        <Skeleton class="h-32 w-full" />
+        <Skeleton class="h-64 w-full" />
+      </div>
+
+      <!-- Error State -->
+      <Card
+        v-else-if="error"
+        class="border-red-200 dark:border-red-800"
+      >
+        <div class="p-4">
+          <p class="text-sm text-red-600 dark:text-red-400">
+            {{ error }}
+          </p>
+        </div>
+      </Card>
+
+      <!-- Detail Content -->
+      <div
+        v-else-if="detail"
+        class="space-y-4"
+      >
+        <!-- 费用与性能概览 -->
+        <Card>
+          <div class="p-3 sm:p-4">
+            <div class="mb-4 text-sm">
+              <div class="sm:hidden">
+                <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground/70">{{ detailPricingLabel }}</span>
+              </div>
+              <div class="mt-2 grid grid-cols-[max-content_max-content_max-content_max-content_max-content] items-center gap-x-2 overflow-x-auto whitespace-nowrap text-xs sm:hidden">
+                <span>
+                  <span class="text-muted-foreground">总费用</span>
+                  <span
+                    class="ml-1 font-bold"
+                    :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
+                    data-request-detail-total-cost
+                  >
+                    {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
+                  </span>
+                </span>
+                <span class="text-muted-foreground">|</span>
+                <span>
+                  <span class="text-muted-foreground">耗时</span>
+                  <span class="ml-1 font-bold">
+                    {{ formatDurationMs(detail.end_to_end_first_byte_time_ms ?? detail.first_byte_time_ms) }} / {{ formatDurationMs(detail.end_to_end_time_ms ?? detail.response_time_ms) }}
+                  </span>
+                </span>
+                <span class="text-muted-foreground">|</span>
+                <span>
+                  <span class="text-muted-foreground">输出速度</span>
+                  <span class="ml-1 font-bold text-primary">{{ formatOutputRateValue(detailOutputRate) }}tps</span>
+                </span>
+              </div>
+              <div class="hidden flex-wrap items-center gap-x-2 gap-y-1 sm:flex">
+                <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground/70">{{ detailPricingLabel }}</span>
+                <span class="text-muted-foreground">|</span>
+                <span class="whitespace-nowrap">
+                  <span class="text-muted-foreground">总费用</span>
+                  <span
+                    class="ml-1 font-bold"
+                    :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
+                    data-request-detail-total-cost
+                  >
+                    {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
+                  </span>
+                </span>
+                <span class="text-muted-foreground">|</span>
+                <span class="whitespace-nowrap">
+                  <span class="text-muted-foreground">耗时</span>
+                  <span class="ml-1 font-bold">
+                    {{ formatDurationMs(detail.end_to_end_first_byte_time_ms ?? detail.first_byte_time_ms) }} / {{ formatDurationMs(detail.end_to_end_time_ms ?? detail.response_time_ms) }}
+                  </span>
+                </span>
+                <span class="text-muted-foreground">|</span>
+                <span class="whitespace-nowrap">
+                  <span class="text-muted-foreground">输出速度</span>
+                  <span class="ml-1 font-bold text-primary">{{ formatOutputRateValue(detailOutputRate) }}tps</span>
+                </span>
+              </div>
+              <ServiceTierFacts
+                v-if="hasServiceTierFacts && processingTierPriceMultiplier === null"
+                class="mt-3"
+                :requested="serviceTierFacts.requested"
+                :price-multiplier="processingTierPriceMultiplier"
+              />
+              <div
+                v-if="detail.chat_pii_redaction"
+                data-request-detail-pii-redaction
+                class="mt-3 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400"
+              >
+                <ShieldCheck class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>此请求触发了敏感信息保护：发送给上游供应商的内容已将敏感信息替换为占位符。</span>
+              </div>
             </div>
 
-            <!-- Error State -->
-            <Card
-              v-else-if="error"
-              class="border-red-200 dark:border-red-800"
-            >
-              <div class="p-4">
-                <p class="text-sm text-red-600 dark:text-red-400">
-                  {{ error }}
-                </p>
-              </div>
-            </Card>
+            <!-- 分隔线 -->
+            <Separator class="mb-4" />
 
-            <!-- Detail Content -->
             <div
-              v-else-if="detail"
-              class="space-y-4"
+              v-if="!detailUsageAvailable"
+              data-request-detail-usage-unavailable
+              class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground"
             >
-              <!-- 费用与性能概览 -->
-              <Card>
-                <div class="p-3 sm:p-4">
-                  <div class="mb-4 text-sm">
-                    <div class="sm:hidden">
-                      <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground/70">{{ detailPricingLabel }}</span>
-                    </div>
-                    <div class="mt-2 grid grid-cols-[max-content_max-content_max-content_max-content_max-content] items-center gap-x-2 overflow-x-auto whitespace-nowrap text-xs sm:hidden">
-                      <span>
-                        <span class="text-muted-foreground">总费用</span>
-                        <span
-                          class="ml-1 font-bold"
-                          :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
-                          data-request-detail-total-cost
-                        >
-                          {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
-                        </span>
-                      </span>
-                      <span class="text-muted-foreground">|</span>
-                      <span>
-                        <span class="text-muted-foreground">耗时</span>
-                        <span class="ml-1 font-bold">
-                          {{ formatDurationMs(detail.end_to_end_first_byte_time_ms ?? detail.first_byte_time_ms) }} / {{ formatDurationMs(detail.end_to_end_time_ms ?? detail.response_time_ms) }}
-                        </span>
-                      </span>
-                      <span class="text-muted-foreground">|</span>
-                      <span>
-                        <span class="text-muted-foreground">输出速度</span>
-                        <span class="ml-1 font-bold text-primary">{{ formatOutputRateValue(detailOutputRate) }}tps</span>
-                      </span>
-                    </div>
-                    <div class="hidden flex-wrap items-center gap-x-2 gap-y-1 sm:flex">
-                      <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground/70">{{ detailPricingLabel }}</span>
-                      <span class="text-muted-foreground">|</span>
-                      <span class="whitespace-nowrap">
-                        <span class="text-muted-foreground">总费用</span>
-                        <span
-                          class="ml-1 font-bold"
-                          :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
-                          data-request-detail-total-cost
-                        >
-                          {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
-                        </span>
-                      </span>
-                      <span class="text-muted-foreground">|</span>
-                      <span class="whitespace-nowrap">
-                        <span class="text-muted-foreground">耗时</span>
-                        <span class="ml-1 font-bold">
-                          {{ formatDurationMs(detail.end_to_end_first_byte_time_ms ?? detail.first_byte_time_ms) }} / {{ formatDurationMs(detail.end_to_end_time_ms ?? detail.response_time_ms) }}
-                        </span>
-                      </span>
-                      <span class="text-muted-foreground">|</span>
-                      <span class="whitespace-nowrap">
-                        <span class="text-muted-foreground">输出速度</span>
-                        <span class="ml-1 font-bold text-primary">{{ formatOutputRateValue(detailOutputRate) }}tps</span>
-                      </span>
-                    </div>
-                    <ServiceTierFacts
-                      v-if="hasServiceTierFacts && processingTierPriceMultiplier === null"
-                      class="mt-3"
-                      :requested="serviceTierFacts.requested"
-                      :price-multiplier="processingTierPriceMultiplier"
-                    />
-                    <div
-                      v-if="detail.chat_pii_redaction"
-                      data-request-detail-pii-redaction
-                      class="mt-3 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400"
+              上游未提供可验证的 token/费用用量，本会话不显示伪造的 0 token 或 0 费用。
+            </div>
+            <div
+              v-else-if="!detailPricingAvailable"
+              data-request-detail-usage-unpriced
+              class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground"
+            >
+              上游提供了权威 token 用量，但包含 Aether 当前计价规则无法安全拆分的音频 token；保留 token 统计并将本会话标记为未计价。
+              <span v-if="(detail.input_audio_tokens || 0) > 0 || (detail.output_audio_tokens || 0) > 0">
+                音频输入/输出：{{ detail.input_audio_tokens || 0 }} / {{ detail.output_audio_tokens || 0 }}。
+              </span>
+            </div>
+
+            <!-- ========== 1. Token分阶段成本 ========== -->
+            <div
+              v-if="detailPricingAvailable && hasTokenCost"
+              class="space-y-2 mb-3"
+            >
+              <!-- 阶梯标题 -->
+              <div class="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+                <span class="font-medium text-foreground">Token 计费</span>
+                <span class="font-mono font-medium text-foreground">
+                  <template v-if="processingTierPriceMultiplier !== null">
+                    ${{ tokenCostBaseTotal.toFixed(6) }} × {{ processingTierPriceMultiplier }} ({{ processingTierLabel }} 层级)
+                  </template>
+                  <template v-else>
+                    ${{ tokenCostTotal.toFixed(6) }}
+                  </template>
+                </span>
+                <span class="text-muted-foreground/60">(输入 {{ formatTokens(displayInputTokens) }} + 缓存创建 {{ cacheCreationSummaryText }} + 缓存读取 {{ formatTokens(detail.cache_read_input_tokens || 0) }})</span>
+                <Badge
+                  v-if="displayTiers.length > 1"
+                  variant="outline"
+                  class="text-[10px] px-1.5 py-0 h-4"
+                >
+                  命中第 {{ currentTierIndex + 1 }} 阶
+                </Badge>
+              </div>
+
+              <!-- 阶梯展示 -->
+              <div
+                v-for="(tier, index) in displayTiers"
+                :key="index"
+                class="rounded-lg p-3 space-y-2"
+                :class="index === currentTierIndex
+                  ? 'bg-primary/5 border border-primary/30'
+                  : 'bg-muted/20 border border-border/50 opacity-60'"
+              >
+                <!-- 阶梯标题行 -->
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="font-medium"
+                      :class="index === currentTierIndex ? 'text-primary' : 'text-muted-foreground'"
                     >
-                      <ShieldCheck class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      <span>此请求触发了敏感信息保护：发送给上游供应商的内容已将敏感信息替换为占位符。</span>
+                      第 {{ index + 1 }} 阶
+                    </span>
+                    <span class="text-muted-foreground">
+                      {{ getTierRangeText(tier, index, displayTiers) }}
+                    </span>
+                    <Badge
+                      v-if="index === currentTierIndex"
+                      variant="default"
+                      class="text-[10px] px-1.5 py-0 h-4"
+                    >
+                      当前
+                    </Badge>
+                  </div>
+                  <!-- 单价信息 -->
+                  <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground sm:hidden">
+                    <div class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1">
+                      <span>输入</span>
+                      <span class="text-right">{{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
                     </div>
+                    <div
+                      class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
+                    >
+                      <span>输出</span>
+                      <span class="text-right">{{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
+                    </div>
+                    <template v-if="getTierActiveCacheCreationDisplay(tier) || shouldShowCacheReadPrice(tier)">
+                      <div
+                        v-if="getTierActiveCacheCreationDisplay(tier)"
+                        class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
+                      >
+                        <span>{{ getTierActiveCacheCreationDisplay(tier)?.label }}</span>
+                        <span class="text-right">${{ formatPrice(getTierActiveCacheCreationDisplay(tier)?.price || 0) }}/M</span>
+                      </div>
+                      <div v-else />
+                      <div
+                        v-if="shouldShowCacheReadPrice(tier)"
+                        class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
+                      >
+                        <span>缓存读取</span>
+                        <span class="text-right">${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M</span>
+                      </div>
+                      <div v-else />
+                    </template>
                   </div>
-
-                  <!-- 分隔线 -->
-                  <Separator class="mb-4" />
-
-                  <div
-                    v-if="!detailUsageAvailable"
-                    data-request-detail-usage-unavailable
-                    class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground"
-                  >
-                    上游未提供可验证的 token/费用用量，本会话不显示伪造的 0 token 或 0 费用。
-                  </div>
-                  <div
-                    v-else-if="!detailPricingAvailable"
-                    data-request-detail-usage-unpriced
-                    class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground"
-                  >
-                    上游提供了权威 token 用量，但包含 Aether 当前计价规则无法安全拆分的音频 token；保留 token 统计并将本会话标记为未计价。
-                    <span v-if="(detail.input_audio_tokens || 0) > 0 || (detail.output_audio_tokens || 0) > 0">
-                      音频输入/输出：{{ detail.input_audio_tokens || 0 }} / {{ detail.output_audio_tokens || 0 }}。
+                  <div class="text-muted-foreground hidden items-center gap-2 flex-wrap sm:flex">
+                    <span>输入 {{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
+                    <span>输出 {{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
+                    <span v-if="getTierActiveCacheCreationDisplay(tier)">
+                      {{ getTierActiveCacheCreationDisplay(tier)?.label }}
+                      ${{ formatPrice(getTierActiveCacheCreationDisplay(tier)?.price || 0) }}/M
+                    </span>
+                    <span v-if="shouldShowCacheReadPrice(tier)">
+                      缓存读取 ${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M
                     </span>
                   </div>
+                </div>
 
-                  <!-- ========== 1. Token分阶段成本 ========== -->
-                  <div
-                    v-if="detailPricingAvailable && hasTokenCost"
-                    class="space-y-2 mb-3"
-                  >
-                    <!-- 阶梯标题 -->
-                    <div class="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-                      <span class="font-medium text-foreground">Token 计费</span>
-                      <span class="font-mono font-medium text-foreground">
-                        <template v-if="processingTierPriceMultiplier !== null">
-                          ${{ tokenCostBaseTotal.toFixed(6) }} × {{ processingTierPriceMultiplier }} ({{ processingTierLabel }} 层级)
-                        </template>
-                        <template v-else>
-                          ${{ tokenCostTotal.toFixed(6) }}
-                        </template>
-                      </span>
-                      <span class="text-muted-foreground/60">(输入 {{ formatTokens(displayInputTokens) }} + 缓存创建 {{ cacheCreationSummaryText }} + 缓存读取 {{ formatTokens(detail.cache_read_input_tokens || 0) }})</span>
-                      <Badge
-                        v-if="displayTiers.length > 1"
-                        variant="outline"
-                        class="text-[10px] px-1.5 py-0 h-4"
-                      >
-                        命中第 {{ currentTierIndex + 1 }} 阶
-                      </Badge>
+                <!-- 当前阶梯的详细计算 -->
+                <template v-if="index === currentTierIndex">
+                  <div class="grid gap-y-2 sm:hidden">
+                    <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
+                      <span class="text-xs text-muted-foreground">输入</span>
+                      <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ displayInputTokens }}</span>
+                      <span class="text-xs font-mono text-right tabular-nums">${{ displayInputCost.toFixed(6) }}</span>
                     </div>
-
-                    <!-- 阶梯展示 -->
+                    <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
+                      <span class="text-xs text-muted-foreground">输出</span>
+                      <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
+                      <span class="text-xs font-mono text-right tabular-nums">${{ displayOutputCost.toFixed(6) }}</span>
+                    </div>
+                    <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
+                      <span class="text-xs text-muted-foreground">缓存创建</span>
+                      <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ totalCacheCreationTokens }}</span>
+                      <span class="text-xs font-mono text-right tabular-nums">${{ displayCacheCreationCost.toFixed(6) }}</span>
+                    </div>
+                    <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
+                      <span class="text-xs text-muted-foreground">缓存读取</span>
+                      <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ detail.cache_read_input_tokens || 0 }}</span>
+                      <span class="text-xs font-mono text-right tabular-nums">${{ displayCacheReadCost.toFixed(6) }}</span>
+                    </div>
+                  </div>
+                  <!-- 输入 输出 -->
+                  <div class="hidden items-center sm:flex">
+                    <div class="flex items-center flex-1">
+                      <span class="text-xs text-muted-foreground w-[56px]">输入</span>
+                      <span class="text-sm font-semibold font-mono flex-1 text-center">{{ displayInputTokens }}</span>
+                      <span class="text-xs font-mono">${{ displayInputCost.toFixed(6) }}</span>
+                    </div>
+                    <Separator
+                      orientation="vertical"
+                      class="h-4 mx-4"
+                    />
+                    <div class="flex items-center flex-1">
+                      <span class="text-xs text-muted-foreground w-[56px]">输出</span>
+                      <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
+                      <span class="text-xs font-mono">${{ displayOutputCost.toFixed(6) }}</span>
+                    </div>
+                  </div>
+                  <!-- 缓存创建 缓存读取 -->
+                  <div class="hidden items-center sm:flex">
+                    <div class="flex items-center flex-1">
+                      <span class="text-xs text-muted-foreground w-[56px]">{{ cacheCreationSplitRows.length > 0 ? '创建合计' : '缓存创建' }}</span>
+                      <span class="text-sm font-semibold font-mono flex-1 text-center">{{ totalCacheCreationTokens }}</span>
+                      <span class="text-xs font-mono">${{ displayCacheCreationCost.toFixed(6) }}</span>
+                    </div>
+                    <Separator
+                      orientation="vertical"
+                      class="h-4 mx-4"
+                    />
+                    <div class="flex items-center flex-1">
+                      <span class="text-xs text-muted-foreground w-[56px]">缓存读取</span>
+                      <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.cache_read_input_tokens || 0 }}</span>
+                      <span class="text-xs font-mono">${{ displayCacheReadCost.toFixed(6) }}</span>
+                    </div>
+                  </div>
+                  <!-- 缓存创建 5m/1h 细分 -->
+                  <div
+                    v-if="cacheCreationSplitRows.length > 0"
+                    class="grid gap-y-1 sm:hidden"
+                  >
                     <div
-                      v-for="(tier, index) in displayTiers"
-                      :key="index"
-                      class="rounded-lg p-3 space-y-2"
-                      :class="index === currentTierIndex
-                        ? 'bg-primary/5 border border-primary/30'
-                        : 'bg-muted/20 border border-border/50 opacity-60'"
+                      v-for="row in cacheCreationSplitRows"
+                      :key="row.key"
+                      class="grid grid-cols-[64px_minmax(0,1fr)_68px_92px] items-center gap-x-2 text-xs text-muted-foreground/70"
                     >
-                      <!-- 阶梯标题行 -->
-                      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
-                        <div class="flex items-center gap-2">
-                          <span
-                            class="font-medium"
-                            :class="index === currentTierIndex ? 'text-primary' : 'text-muted-foreground'"
-                          >
-                            第 {{ index + 1 }} 阶
-                          </span>
-                          <span class="text-muted-foreground">
-                            {{ getTierRangeText(tier, index, displayTiers) }}
-                          </span>
-                          <Badge
-                            v-if="index === currentTierIndex"
-                            variant="default"
-                            class="text-[10px] px-1.5 py-0 h-4"
-                          >
-                            当前
-                          </Badge>
-                        </div>
-                        <!-- 单价信息 -->
-                        <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground sm:hidden">
-                          <div class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1">
-                            <span>输入</span>
-                            <span class="text-right">{{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
-                          </div>
-                          <div
-                            class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
-                          >
-                            <span>输出</span>
-                            <span class="text-right">{{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
-                          </div>
-                          <template v-if="getTierActiveCacheCreationDisplay(tier) || shouldShowCacheReadPrice(tier)">
-                            <div
-                              v-if="getTierActiveCacheCreationDisplay(tier)"
-                              class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
-                            >
-                              <span>{{ getTierActiveCacheCreationDisplay(tier)?.label }}</span>
-                              <span class="text-right">${{ formatPrice(getTierActiveCacheCreationDisplay(tier)?.price || 0) }}/M</span>
-                            </div>
-                            <div v-else />
-                            <div
-                              v-if="shouldShowCacheReadPrice(tier)"
-                              class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
-                            >
-                              <span>缓存读取</span>
-                              <span class="text-right">${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M</span>
-                            </div>
-                            <div v-else />
-                          </template>
-                        </div>
-                        <div class="text-muted-foreground hidden items-center gap-2 flex-wrap sm:flex">
-                          <span>输入 {{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
-                          <span>输出 {{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
-                          <span v-if="getTierActiveCacheCreationDisplay(tier)">
-                            {{ getTierActiveCacheCreationDisplay(tier)?.label }}
-                            ${{ formatPrice(getTierActiveCacheCreationDisplay(tier)?.price || 0) }}/M
-                          </span>
-                          <span v-if="shouldShowCacheReadPrice(tier)">
-                            缓存读取 ${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M
-                          </span>
-                        </div>
-                      </div>
-
-                      <!-- 当前阶梯的详细计算 -->
-                      <template v-if="index === currentTierIndex">
-                        <div class="grid gap-y-2 sm:hidden">
-                          <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                            <span class="text-xs text-muted-foreground">输入</span>
-                            <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ displayInputTokens }}</span>
-                            <span class="text-xs font-mono text-right tabular-nums">${{ displayInputCost.toFixed(6) }}</span>
-                          </div>
-                          <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                            <span class="text-xs text-muted-foreground">输出</span>
-                            <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
-                            <span class="text-xs font-mono text-right tabular-nums">${{ displayOutputCost.toFixed(6) }}</span>
-                          </div>
-                          <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                            <span class="text-xs text-muted-foreground">缓存创建</span>
-                            <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ totalCacheCreationTokens }}</span>
-                            <span class="text-xs font-mono text-right tabular-nums">${{ displayCacheCreationCost.toFixed(6) }}</span>
-                          </div>
-                          <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                            <span class="text-xs text-muted-foreground">缓存读取</span>
-                            <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ detail.cache_read_input_tokens || 0 }}</span>
-                            <span class="text-xs font-mono text-right tabular-nums">${{ displayCacheReadCost.toFixed(6) }}</span>
-                          </div>
-                        </div>
-                        <!-- 输入 输出 -->
-                        <div class="hidden items-center sm:flex">
-                          <div class="flex items-center flex-1">
-                            <span class="text-xs text-muted-foreground w-[56px]">输入</span>
-                            <span class="text-sm font-semibold font-mono flex-1 text-center">{{ displayInputTokens }}</span>
-                            <span class="text-xs font-mono">${{ displayInputCost.toFixed(6) }}</span>
-                          </div>
-                          <Separator
-                            orientation="vertical"
-                            class="h-4 mx-4"
-                          />
-                          <div class="flex items-center flex-1">
-                            <span class="text-xs text-muted-foreground w-[56px]">输出</span>
-                            <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
-                            <span class="text-xs font-mono">${{ displayOutputCost.toFixed(6) }}</span>
-                          </div>
-                        </div>
-                        <!-- 缓存创建 缓存读取 -->
-                        <div class="hidden items-center sm:flex">
-                          <div class="flex items-center flex-1">
-                            <span class="text-xs text-muted-foreground w-[56px]">{{ cacheCreationSplitRows.length > 0 ? '创建合计' : '缓存创建' }}</span>
-                            <span class="text-sm font-semibold font-mono flex-1 text-center">{{ totalCacheCreationTokens }}</span>
-                            <span class="text-xs font-mono">${{ displayCacheCreationCost.toFixed(6) }}</span>
-                          </div>
-                          <Separator
-                            orientation="vertical"
-                            class="h-4 mx-4"
-                          />
-                          <div class="flex items-center flex-1">
-                            <span class="text-xs text-muted-foreground w-[56px]">缓存读取</span>
-                            <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.cache_read_input_tokens || 0 }}</span>
-                            <span class="text-xs font-mono">${{ displayCacheReadCost.toFixed(6) }}</span>
-                          </div>
-                        </div>
-                        <!-- 缓存创建 5m/1h 细分 -->
-                        <div
-                          v-if="cacheCreationSplitRows.length > 0"
-                          class="grid gap-y-1 sm:hidden"
-                        >
-                          <div
-                            v-for="row in cacheCreationSplitRows"
-                            :key="row.key"
-                            class="grid grid-cols-[64px_minmax(0,1fr)_68px_92px] items-center gap-x-2 text-xs text-muted-foreground/70"
-                          >
-                            <span>{{ row.label }}</span>
-                            <span class="font-mono text-right tabular-nums text-foreground/90">{{ formatTokens(row.tokens) }}</span>
-                            <span
-                              class="text-right"
-                              :class="row.pricePer1M === null ? 'invisible' : ''"
-                            >
-                              {{ row.pricePer1M !== null ? `$${formatPrice(row.pricePer1M)}/M` : '-' }}
-                            </span>
-                            <span
-                              class="font-mono text-right tabular-nums"
-                              :class="row.cost === null ? 'invisible' : ''"
-                            >
-                              {{ row.cost !== null ? `$${row.cost.toFixed(6)}` : '-' }}
-                            </span>
-                          </div>
-                        </div>
-                        <div
-                          v-if="cacheCreationSplitRows.length > 0"
-                          class="hidden space-y-1 pl-[56px] sm:block"
-                        >
-                          <div
-                            v-for="row in cacheCreationSplitRows"
-                            :key="row.key"
-                            class="flex items-center gap-4 text-xs text-muted-foreground/70"
-                          >
-                            <span class="w-[72px]">{{ row.label }}</span>
-                            <span class="font-mono text-foreground/90">{{ formatTokens(row.tokens) }}</span>
-                            <span v-if="row.pricePer1M !== null">${{ formatPrice(row.pricePer1M) }}/M</span>
-                            <span
-                              v-if="row.cost !== null"
-                              class="font-mono"
-                            >${{ row.cost.toFixed(6) }}</span>
-                          </div>
-                        </div>
-                      </template>
-                    </div>
-                  </div>
-
-                  <!-- ========== 3. 按次计费 ========== -->
-                  <div
-                    v-if="detailPricingAvailable && perRequestCost > 0 && !detail.video_billing"
-                    class="space-y-2 mb-3"
-                  >
-                    <div class="flex items-center gap-2 text-xs">
-                      <span class="font-medium text-foreground">按次计费</span>
-                      <span class="font-mono font-medium text-foreground">${{ perRequestCost.toFixed(6) }}</span>
-                    </div>
-                    <div class="rounded-lg p-3 bg-primary/5 border border-primary/30 space-y-2">
-                      <div
-                        v-if="effectivePricePerRequest > 0"
-                        class="flex items-center justify-end text-xs"
+                      <span>{{ row.label }}</span>
+                      <span class="font-mono text-right tabular-nums text-foreground/90">{{ formatTokens(row.tokens) }}</span>
+                      <span
+                        class="text-right"
+                        :class="row.pricePer1M === null ? 'invisible' : ''"
                       >
-                        <span class="text-muted-foreground">${{ effectivePricePerRequest.toFixed(6) }}/次</span>
-                      </div>
-                      <div class="flex items-center">
-                        <div class="flex items-center flex-1">
-                          <span class="text-xs text-muted-foreground w-[56px]">请求次数</span>
-                          <span class="text-sm font-semibold font-mono flex-1 text-center">1</span>
-                          <span class="text-xs font-mono font-medium">${{ perRequestCost.toFixed(6) }}</span>
-                        </div>
-                      </div>
+                        {{ row.pricePer1M !== null ? `$${formatPrice(row.pricePer1M)}/M` : '-' }}
+                      </span>
+                      <span
+                        class="font-mono text-right tabular-nums"
+                        :class="row.cost === null ? 'invisible' : ''"
+                      >
+                        {{ row.cost !== null ? `$${row.cost.toFixed(6)}` : '-' }}
+                      </span>
                     </div>
                   </div>
-
-                  <!-- ========== 4. 图片输出计费 ========== -->
                   <div
-                    v-if="detailPricingAvailable && hasImageBillingDetail"
-                    class="rounded-lg p-3 space-y-2 bg-primary/5 border border-primary/30 mb-3"
+                    v-if="cacheCreationSplitRows.length > 0"
+                    class="hidden space-y-1 pl-[56px] sm:block"
                   >
-                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
-                      <div class="flex items-center gap-2 flex-wrap">
-                        <span class="font-medium text-primary">图片输出</span>
-                        <Badge
-                          variant="outline"
-                          class="text-[10px] px-1.5 py-0 h-4"
-                        >
-                          {{ imageOutputBillingLabel }}
-                        </Badge>
-                        <span
-                          v-if="imageOutputPricingDescriptor"
-                          class="text-muted-foreground font-mono"
-                        >{{ imageOutputPricingDescriptor }}</span>
-                      </div>
-                      <div class="text-muted-foreground flex items-center gap-2 flex-wrap">
-                        <span
-                          v-if="imageOutputPricePerImage !== null"
-                          class="font-mono"
-                        >{{ formatTokens(imageOutputCount) }} 张 × ${{ imageOutputPricePerImage.toFixed(6) }}/张 = ${{ imageOutputCostTotal.toFixed(6) }}</span>
-                      </div>
-                    </div>
-
-                    <div class="flex items-center">
-                      <div class="flex items-center flex-1">
-                        <span class="text-xs text-muted-foreground w-[56px]">数量</span>
-                        <span class="text-sm font-semibold font-mono flex-1 text-center">{{ formatTokens(imageOutputCount) }}</span>
-                        <span class="text-xs font-mono">${{ imageOutputCostTotal.toFixed(6) }}</span>
-                      </div>
-                      <Separator
-                        orientation="vertical"
-                        class="h-4 mx-4"
-                      />
-                      <div class="flex items-center flex-1">
-                        <span class="text-xs text-muted-foreground w-[56px]">格式</span>
-                        <span class="text-sm font-semibold font-mono flex-1 text-center">{{ imageOutputFormat || '-' }}</span>
-                        <span class="text-xs font-mono text-muted-foreground">{{ imageOutputBillingLabel }}</span>
-                      </div>
+                    <div
+                      v-for="row in cacheCreationSplitRows"
+                      :key="row.key"
+                      class="flex items-center gap-4 text-xs text-muted-foreground/70"
+                    >
+                      <span class="w-[72px]">{{ row.label }}</span>
+                      <span class="font-mono text-foreground/90">{{ formatTokens(row.tokens) }}</span>
+                      <span v-if="row.pricePer1M !== null">${{ formatPrice(row.pricePer1M) }}/M</span>
+                      <span
+                        v-if="row.cost !== null"
+                        class="font-mono"
+                      >${{ row.cost.toFixed(6) }}</span>
                     </div>
                   </div>
+                </template>
+              </div>
+            </div>
 
-                  <!-- ========== 5. 视频/图像/音频计费（独立隔离，与Token计费风格一致） ========== -->
-                  <div
-                    v-if="detailPricingAvailable && detail.video_billing"
-                    class="rounded-lg p-3 space-y-2 bg-primary/5 border border-primary/30"
-                  >
-                    <!-- 标题行（与阶梯标题行风格一致） -->
-                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
-                      <div class="flex items-center gap-2">
-                        <span class="font-medium text-primary">
-                          {{ getTaskTypeLabel(detail.video_billing.task_type) }}
-                        </span>
-                        <span
-                          v-if="detail.video_billing.resolution"
-                          class="text-muted-foreground"
-                        >
-                          {{ detail.video_billing.resolution }}
-                        </span>
-                      </div>
-                      <!-- 费用计算公式 -->
-                      <div class="text-muted-foreground flex items-center gap-2 flex-wrap">
-                        <span
-                          v-if="detail.video_billing.duration_seconds && detail.video_billing.video_price_per_second"
-                          class="font-mono"
-                        >
-                          {{ detail.video_billing.duration_seconds.toFixed(1) }}s × ${{ detail.video_billing.video_price_per_second.toFixed(4) }}/s = ${{ videoCostTotal.toFixed(6) }}
-                        </span>
-                        <span
-                          v-else-if="detail.video_billing.video_price_per_second"
-                          class="font-mono"
-                        >
-                          ${{ detail.video_billing.video_price_per_second.toFixed(4) }}/秒
-                        </span>
-                      </div>
-                    </div>
-
-                    <!-- 费用详情（与Token详情行风格一致） -->
-                    <div class="flex items-center">
-                      <div class="flex items-center flex-1">
-                        <span class="text-xs text-muted-foreground w-[56px]">
-                          {{ detail.video_billing.task_type === 'video' ? '时长' : detail.video_billing.task_type === 'audio' ? '时长' : '数量' }}
-                        </span>
-                        <span class="text-sm font-semibold font-mono flex-1 text-center">
-                          {{ detail.video_billing.duration_seconds ? formatDuration(detail.video_billing.duration_seconds) : '1' }}
-                        </span>
-                        <span class="text-xs font-mono">${{ videoCostTotal.toFixed(6) }}</span>
-                      </div>
-                      <Separator
-                        orientation="vertical"
-                        class="h-4 mx-4 invisible"
-                      />
-                      <div class="flex items-center flex-1 invisible">
-                        <span class="text-xs text-muted-foreground w-[56px]">占位</span>
-                        <span class="text-sm font-semibold font-mono flex-1 text-center">0</span>
-                        <span class="text-xs font-mono">$0.000000</span>
-                      </div>
-                    </div>
+            <!-- ========== 3. 按次计费 ========== -->
+            <div
+              v-if="detailPricingAvailable && perRequestCost > 0 && !detail.video_billing"
+              class="space-y-2 mb-3"
+            >
+              <div class="flex items-center gap-2 text-xs">
+                <span class="font-medium text-foreground">按次计费</span>
+                <span class="font-mono font-medium text-foreground">${{ perRequestCost.toFixed(6) }}</span>
+              </div>
+              <div class="rounded-lg p-3 bg-primary/5 border border-primary/30 space-y-2">
+                <div
+                  v-if="effectivePricePerRequest > 0"
+                  class="flex items-center justify-end text-xs"
+                >
+                  <span class="text-muted-foreground">${{ effectivePricePerRequest.toFixed(6) }}/次</span>
+                </div>
+                <div class="flex items-center">
+                  <div class="flex items-center flex-1">
+                    <span class="text-xs text-muted-foreground w-[56px]">请求次数</span>
+                    <span class="text-sm font-semibold font-mono flex-1 text-center">1</span>
+                    <span class="text-xs font-mono font-medium">${{ perRequestCost.toFixed(6) }}</span>
                   </div>
                 </div>
-              </Card>
+              </div>
+            </div>
 
-              <!-- 请求链路追踪卡片 -->
-              <div>
-                <HorizontalRequestTimeline
-                  v-if="showTimeline && traceTimelineRequestId"
-                  ref="timelineRef"
-                  :request-id="traceTimelineRequestId"
-                  :override-status-code="detail.status_code"
-                  :request-status="detail.status"
-                  :request-api-format="detail.api_format || null"
-                  :request-metadata="traceRequestMetadata"
-                  @trace-state="handleTraceState"
-                />
+            <!-- ========== 4. 图片输出计费 ========== -->
+            <div
+              v-if="detailPricingAvailable && hasImageBillingDetail"
+              class="rounded-lg p-3 space-y-2 bg-primary/5 border border-primary/30 mb-3"
+            >
+              <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-medium text-primary">图片输出</span>
+                  <Badge
+                    variant="outline"
+                    class="text-[10px] px-1.5 py-0 h-4"
+                  >
+                    {{ imageOutputBillingLabel }}
+                  </Badge>
+                  <span
+                    v-if="imageOutputPricingDescriptor"
+                    class="text-muted-foreground font-mono"
+                  >{{ imageOutputPricingDescriptor }}</span>
+                </div>
+                <div class="text-muted-foreground flex items-center gap-2 flex-wrap">
+                  <span
+                    v-if="imageOutputPricePerImage !== null"
+                    class="font-mono"
+                  >{{ formatTokens(imageOutputCount) }} 张 × ${{ imageOutputPricePerImage.toFixed(6) }}/张 = ${{ imageOutputCostTotal.toFixed(6) }}</span>
+                </div>
               </div>
 
-              <!-- Tabs 区域 -->
-              <Card>
-                <div class="p-3 sm:p-4">
-                  <Tabs
-                    v-model="activeTab"
-                    :default-value="activeTab"
-                  >
-                    <!-- Tab 行 -->
-                    <div class="flex items-center border-b pb-2 mb-3">
-                      <button
-                        v-for="tab in visibleTabs"
-                        :key="tab.name"
-                        class="px-2 sm:px-3 py-1.5 text-sm transition-colors border-b-2 -mb-[9px] whitespace-nowrap"
-                        :class="activeTab === tab.name
-                          ? 'border-primary text-foreground font-medium'
-                          : 'border-transparent text-muted-foreground hover:text-foreground'"
-                        @click="activeTab = tab.name"
-                      >
-                        {{ tab.label }}
-                      </button>
-                    </div>
-
-                    <!-- Tab 内容（统一容器） -->
-                    <JsonContentPanel
-                      class="content-block"
-                      :title="activeJsonPanelTitle"
-                      :data="activeJsonPanelData"
-                      :is-dark="isDark"
-                      :expand-depth="currentExpandDepth"
-                      :copied="Boolean(copiedStates[activeTab])"
-                      :custom-copy="true"
-                      :expand-disabled="viewMode === 'compare' || (supportsConversationView && contentViewMode === 'conversation')"
-                      :copy-disabled="viewMode === 'compare' || bodyCopying || (supportsConversationView && !hasValidConversation)"
-                      max-height="500px"
-                      @update:expand-depth="currentExpandDepth = $event"
-                      @copy="copyContent(activeTab)"
-                    >
-                      <template #toolbar-actions-before>
-                        <!-- 区域1：条件性按钮（cURL、视图切换、对比） -->
-                        <!-- cURL 复制（仅在请求头/请求体 Tab） -->
-                        <template v-if="['request-headers', 'request-body'].includes(activeTab)">
-                          <button
-                            :title="curlCopied ? '已复制 cURL' : '复制 cURL'"
-                            class="p-1 rounded transition-colors text-muted-foreground hover:bg-muted"
-                            :disabled="curlCopying"
-                            @click="copyCurlCommand"
-                          >
-                            <Check
-                              v-if="curlCopied"
-                              class="w-3.5 h-3.5 text-green-500"
-                            />
-                            <Terminal
-                              v-else
-                              class="w-3.5 h-3.5"
-                              :class="{ 'animate-pulse': curlCopying }"
-                            />
-                          </button>
-                        </template>
-
-                        <!-- 请求体/响应体专用：JSON/对话 视图切换 -->
-                        <template v-if="supportsConversationView">
-                          <button
-                            :title="contentViewMode === 'json' ? '切换到对话视图' : '切换到 JSON 视图'"
-                            class="p-1 rounded transition-colors"
-                            :class="hasValidConversation || contentViewMode === 'conversation'
-                              ? 'text-muted-foreground hover:bg-muted'
-                              : 'text-muted-foreground/40 cursor-not-allowed'"
-                            :disabled="!hasValidConversation && contentViewMode === 'json'"
-                            @click="toggleContentView"
-                          >
-                            <Code2
-                              v-if="contentViewMode === 'conversation'"
-                              class="w-3.5 h-3.5"
-                            />
-                            <MessageSquareText
-                              v-else
-                              class="w-3.5 h-3.5"
-                            />
-                          </button>
-                        </template>
-
-                        <!-- 请求头/响应头：对比模式 -->
-                        <template v-if="canCompare">
-                          <button
-                            title="对比"
-                            class="p-1 rounded transition-colors"
-                            :class="viewMode === 'compare' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
-                            @click="viewMode = 'compare'"
-                          >
-                            <Columns2 class="w-3.5 h-3.5" />
-                          </button>
-                        </template>
-
-                        <!-- 区域2：客户端/提供商切换 -->
-                        <template v-if="showDataSourceToggle">
-                          <div class="w-px h-3.5 bg-border mx-0.5" />
-                          <button
-                            title="客户端"
-                            class="p-1 rounded transition-colors"
-                            :class="activeDataSource === 'client' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
-                            @click="setDataSource('client')"
-                          >
-                            <Monitor class="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            title="提供商"
-                            class="p-1 rounded transition-colors"
-                            :class="activeDataSource === 'provider' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
-                            @click="setDataSource('provider')"
-                          >
-                            <Server class="w-3.5 h-3.5" />
-                          </button>
-                        </template>
-
-                        <!-- 区域3：常驻按钮（展开/收缩、复制） -->
-                        <div class="w-px h-3.5 bg-border mx-0.5" />
-                      </template>
-                      <TabsContent
-                        v-if="activeTab === 'request-headers'"
-                        value="request-headers"
-                      >
-                        <RequestHeadersContent
-                          :detail="detail"
-                          :view-mode="viewMode"
-                          :data-source="dataSource"
-                          :current-header-data="currentHeaderData ?? null"
-                          :current-expand-depth="currentExpandDepth"
-                          :has-provider-headers="hasProviderHeaders"
-                          :header-stats="headerStats"
-                          :is-dark="isDark"
-                        />
-                      </TabsContent>
-
-                      <TabsContent
-                        v-if="activeTab === 'request-body'"
-                        value="request-body"
-                      >
-                        <div
-                          v-if="isRequestBodyLoading"
-                          class="p-4"
-                        >
-                          <Skeleton class="h-32 w-full" />
-                        </div>
-                        <div
-                          v-else-if="requestBodyLoadErrorVisible"
-                          class="m-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
-                        >
-                          <div class="flex items-start gap-2">
-                            <AlertTriangle class="mt-0.5 h-4 w-4 flex-shrink-0" />
-                            <span>{{ bodyLoadErrorMessage }}</span>
-                          </div>
-                          <Button
-                            v-if="canRetryBodyContentLoad"
-                            variant="outline"
-                            size="sm"
-                            class="mt-3 h-8 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            @click="retryBodyContentLoad"
-                          >
-                            <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
-                            重试
-                          </Button>
-                        </div>
-                        <BodyConversationContent
-                          v-else-if="contentViewMode === 'conversation'"
-                          :body-document="currentRequestBody"
-                          kind="request"
-                          :api-format="currentRequestBodyApiFormat"
-                          empty-message="无请求体信息"
-                          @load-error="handleBodyDocumentError"
-                        />
-                        <JsonContent
-                          v-else
-                          :data="null"
-                          :body-document="currentRequestBody"
-                          :view-mode="viewMode"
-                          :expand-depth="currentExpandDepth"
-                          :is-dark="isDark"
-                          empty-message="无请求体信息"
-                          @load-error="handleBodyDocumentError"
-                        />
-                      </TabsContent>
-
-                      <TabsContent
-                        v-if="activeTab === 'response-headers'"
-                        value="response-headers"
-                      >
-                        <RequestHeadersContent
-                          v-if="viewMode === 'compare'"
-                          :detail="detail"
-                          :view-mode="viewMode"
-                          :data-source="dataSource"
-                          :current-header-data="currentResponseHeaderData ?? null"
-                          :current-expand-depth="currentExpandDepth"
-                          :has-provider-headers="hasProviderResponseHeaders"
-                          :header-stats="responseHeaderStats"
-                          :is-dark="isDark"
-                          :client-headers="detail.client_response_headers"
-                          :provider-headers="detail.response_headers"
-                          client-label="客户端响应头"
-                          provider-label="提供商响应头"
-                          empty-message="无响应头信息"
-                        />
-                        <JsonContent
-                          v-else
-                          :data="currentResponseHeaderData"
-                          :view-mode="viewMode"
-                          :expand-depth="currentExpandDepth"
-                          :is-dark="isDark"
-                          empty-message="无响应头信息"
-                        />
-                      </TabsContent>
-
-                      <TabsContent
-                        v-if="activeTab === 'response-body'"
-                        value="response-body"
-                      >
-                        <div
-                          v-if="isResponseBodyLoading"
-                          class="p-4"
-                        >
-                          <Skeleton class="h-32 w-full" />
-                        </div>
-                        <div
-                          v-else-if="responseBodyLoadErrorVisible"
-                          class="m-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
-                        >
-                          <div class="flex items-start gap-2">
-                            <AlertTriangle class="mt-0.5 h-4 w-4 flex-shrink-0" />
-                            <span>{{ bodyLoadErrorMessage }}</span>
-                          </div>
-                          <Button
-                            v-if="canRetryBodyContentLoad"
-                            variant="outline"
-                            size="sm"
-                            class="mt-3 h-8 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            @click="retryBodyContentLoad"
-                          >
-                            <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
-                            重试
-                          </Button>
-                        </div>
-                        <BodyConversationContent
-                          v-else-if="contentViewMode === 'conversation'"
-                          :body-document="currentResponseBody"
-                          kind="response"
-                          :api-format="currentResponseBodyApiFormat"
-                          empty-message="无响应体信息"
-                          @load-error="handleBodyDocumentError"
-                        />
-                        <JsonContent
-                          v-else
-                          :data="null"
-                          :body-document="currentResponseBody"
-                          :view-mode="viewMode"
-                          :expand-depth="currentExpandDepth"
-                          :is-dark="isDark"
-                          empty-message="无响应体信息"
-                          @load-error="handleBodyDocumentError"
-                        />
-                      </TabsContent>
-
-                      <TabsContent
-                        v-if="activeTab === 'metadata'"
-                        value="metadata"
-                      >
-                        <JsonContent
-                          :data="metadataPanelData"
-                          :view-mode="viewMode"
-                          :expand-depth="currentExpandDepth"
-                          :is-dark="isDark"
-                          empty-message="无元数据信息"
-                        />
-                      </TabsContent>
-                    </JsonContentPanel>
-                  </Tabs>
+              <div class="flex items-center">
+                <div class="flex items-center flex-1">
+                  <span class="text-xs text-muted-foreground w-[56px]">数量</span>
+                  <span class="text-sm font-semibold font-mono flex-1 text-center">{{ formatTokens(imageOutputCount) }}</span>
+                  <span class="text-xs font-mono">${{ imageOutputCostTotal.toFixed(6) }}</span>
                 </div>
-              </Card>
+                <Separator
+                  orientation="vertical"
+                  class="h-4 mx-4"
+                />
+                <div class="flex items-center flex-1">
+                  <span class="text-xs text-muted-foreground w-[56px]">格式</span>
+                  <span class="text-sm font-semibold font-mono flex-1 text-center">{{ imageOutputFormat || '-' }}</span>
+                  <span class="text-xs font-mono text-muted-foreground">{{ imageOutputBillingLabel }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ========== 5. 视频/图像/音频计费（独立隔离，与Token计费风格一致） ========== -->
+            <div
+              v-if="detailPricingAvailable && detail.video_billing"
+              class="rounded-lg p-3 space-y-2 bg-primary/5 border border-primary/30"
+            >
+              <!-- 标题行（与阶梯标题行风格一致） -->
+              <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium text-primary">
+                    {{ getTaskTypeLabel(detail.video_billing.task_type) }}
+                  </span>
+                  <span
+                    v-if="detail.video_billing.resolution"
+                    class="text-muted-foreground"
+                  >
+                    {{ detail.video_billing.resolution }}
+                  </span>
+                </div>
+                <!-- 费用计算公式 -->
+                <div class="text-muted-foreground flex items-center gap-2 flex-wrap">
+                  <span
+                    v-if="detail.video_billing.duration_seconds && detail.video_billing.video_price_per_second"
+                    class="font-mono"
+                  >
+                    {{ detail.video_billing.duration_seconds.toFixed(1) }}s × ${{ detail.video_billing.video_price_per_second.toFixed(4) }}/s = ${{ videoCostTotal.toFixed(6) }}
+                  </span>
+                  <span
+                    v-else-if="detail.video_billing.video_price_per_second"
+                    class="font-mono"
+                  >
+                    ${{ detail.video_billing.video_price_per_second.toFixed(4) }}/秒
+                  </span>
+                </div>
+              </div>
+
+              <!-- 费用详情（与Token详情行风格一致） -->
+              <div class="flex items-center">
+                <div class="flex items-center flex-1">
+                  <span class="text-xs text-muted-foreground w-[56px]">
+                    {{ detail.video_billing.task_type === 'video' ? '时长' : detail.video_billing.task_type === 'audio' ? '时长' : '数量' }}
+                  </span>
+                  <span class="text-sm font-semibold font-mono flex-1 text-center">
+                    {{ detail.video_billing.duration_seconds ? formatDuration(detail.video_billing.duration_seconds) : '1' }}
+                  </span>
+                  <span class="text-xs font-mono">${{ videoCostTotal.toFixed(6) }}</span>
+                </div>
+                <Separator
+                  orientation="vertical"
+                  class="h-4 mx-4 invisible"
+                />
+                <div class="flex items-center flex-1 invisible">
+                  <span class="text-xs text-muted-foreground w-[56px]">占位</span>
+                  <span class="text-sm font-semibold font-mono flex-1 text-center">0</span>
+                  <span class="text-xs font-mono">$0.000000</span>
+                </div>
+              </div>
             </div>
           </div>
         </Card>
+
+        <!-- 请求链路追踪卡片 -->
+        <div>
+          <HorizontalRequestTimeline
+            v-if="showTimeline && traceTimelineRequestId"
+            ref="timelineRef"
+            :request-id="traceTimelineRequestId"
+            :override-status-code="detail.status_code"
+            :request-status="detail.status"
+            :request-api-format="detail.api_format || null"
+            :request-metadata="traceRequestMetadata"
+            @trace-state="handleTraceState"
+          />
+        </div>
+
+        <!-- Tabs 区域 -->
+        <Card>
+          <div class="p-3 sm:p-4">
+            <Tabs
+              v-model="activeTab"
+              :default-value="activeTab"
+            >
+              <!-- Tab 行 -->
+              <div class="flex items-center border-b pb-2 mb-3">
+                <button
+                  v-for="tab in visibleTabs"
+                  :key="tab.name"
+                  class="px-2 sm:px-3 py-1.5 text-sm transition-colors border-b-2 -mb-[9px] whitespace-nowrap"
+                  :class="activeTab === tab.name
+                    ? 'border-primary text-foreground font-medium'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'"
+                  @click="activeTab = tab.name"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+
+              <!-- Tab 内容（统一容器） -->
+              <JsonContentPanel
+                class="content-block"
+                :title="activeJsonPanelTitle"
+                :data="activeJsonPanelData"
+                :is-dark="isDark"
+                :expand-depth="currentExpandDepth"
+                :copied="Boolean(copiedStates[activeTab])"
+                :custom-copy="true"
+                :expand-disabled="viewMode === 'compare' || (supportsConversationView && contentViewMode === 'conversation')"
+                :copy-disabled="viewMode === 'compare' || bodyCopying || (supportsConversationView && !hasValidConversation)"
+                max-height="500px"
+                @update:expand-depth="currentExpandDepth = $event"
+                @copy="copyContent(activeTab)"
+              >
+                <template #toolbar-actions-before>
+                  <!-- 区域1：条件性按钮（cURL、视图切换、对比） -->
+                  <!-- cURL 复制（仅在请求头/请求体 Tab） -->
+                  <template v-if="['request-headers', 'request-body'].includes(activeTab)">
+                    <button
+                      :title="curlCopied ? '已复制 cURL' : '复制 cURL'"
+                      class="p-1 rounded transition-colors text-muted-foreground hover:bg-muted"
+                      :disabled="curlCopying"
+                      @click="copyCurlCommand"
+                    >
+                      <Check
+                        v-if="curlCopied"
+                        class="w-3.5 h-3.5 text-green-500"
+                      />
+                      <Terminal
+                        v-else
+                        class="w-3.5 h-3.5"
+                        :class="{ 'animate-pulse': curlCopying }"
+                      />
+                    </button>
+                  </template>
+
+                  <!-- 请求体/响应体专用：JSON/对话 视图切换 -->
+                  <template v-if="supportsConversationView">
+                    <button
+                      :title="contentViewMode === 'json' ? '切换到对话视图' : '切换到 JSON 视图'"
+                      class="p-1 rounded transition-colors"
+                      :class="hasValidConversation || contentViewMode === 'conversation'
+                        ? 'text-muted-foreground hover:bg-muted'
+                        : 'text-muted-foreground/40 cursor-not-allowed'"
+                      :disabled="!hasValidConversation && contentViewMode === 'json'"
+                      @click="toggleContentView"
+                    >
+                      <Code2
+                        v-if="contentViewMode === 'conversation'"
+                        class="w-3.5 h-3.5"
+                      />
+                      <MessageSquareText
+                        v-else
+                        class="w-3.5 h-3.5"
+                      />
+                    </button>
+                  </template>
+
+                  <!-- 请求头/响应头：对比模式 -->
+                  <template v-if="canCompare">
+                    <button
+                      title="对比"
+                      class="p-1 rounded transition-colors"
+                      :class="viewMode === 'compare' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
+                      @click="viewMode = 'compare'"
+                    >
+                      <Columns2 class="w-3.5 h-3.5" />
+                    </button>
+                  </template>
+
+                  <!-- 区域2：客户端/提供商切换 -->
+                  <template v-if="showDataSourceToggle">
+                    <div class="w-px h-3.5 bg-border mx-0.5" />
+                    <button
+                      title="客户端"
+                      class="p-1 rounded transition-colors"
+                      :class="activeDataSource === 'client' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
+                      @click="setDataSource('client')"
+                    >
+                      <Monitor class="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      title="提供商"
+                      class="p-1 rounded transition-colors"
+                      :class="activeDataSource === 'provider' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
+                      @click="setDataSource('provider')"
+                    >
+                      <Server class="w-3.5 h-3.5" />
+                    </button>
+                  </template>
+
+                  <!-- 区域3：常驻按钮（展开/收缩、复制） -->
+                  <div class="w-px h-3.5 bg-border mx-0.5" />
+                </template>
+                <TabsContent
+                  v-if="activeTab === 'request-headers'"
+                  value="request-headers"
+                >
+                  <RequestHeadersContent
+                    :detail="detail"
+                    :view-mode="viewMode"
+                    :data-source="dataSource"
+                    :current-header-data="currentHeaderData ?? null"
+                    :current-expand-depth="currentExpandDepth"
+                    :has-provider-headers="hasProviderHeaders"
+                    :header-stats="headerStats"
+                    :is-dark="isDark"
+                  />
+                </TabsContent>
+
+                <TabsContent
+                  v-if="activeTab === 'request-body'"
+                  value="request-body"
+                >
+                  <div
+                    v-if="isRequestBodyLoading"
+                    class="p-4"
+                  >
+                    <Skeleton class="h-32 w-full" />
+                  </div>
+                  <div
+                    v-else-if="requestBodyLoadErrorVisible"
+                    class="m-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+                  >
+                    <div class="flex items-start gap-2">
+                      <AlertTriangle class="mt-0.5 h-4 w-4 flex-shrink-0" />
+                      <span>{{ bodyLoadErrorMessage }}</span>
+                    </div>
+                    <Button
+                      v-if="canRetryBodyContentLoad"
+                      variant="outline"
+                      size="sm"
+                      class="mt-3 h-8 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      @click="retryBodyContentLoad"
+                    >
+                      <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
+                      重试
+                    </Button>
+                  </div>
+                  <BodyConversationContent
+                    v-else-if="contentViewMode === 'conversation'"
+                    :body-document="currentRequestBody"
+                    kind="request"
+                    :api-format="currentRequestBodyApiFormat"
+                    empty-message="无请求体信息"
+                    @load-error="handleBodyDocumentError"
+                  />
+                  <JsonContent
+                    v-else
+                    :data="null"
+                    :body-document="currentRequestBody"
+                    :view-mode="viewMode"
+                    :expand-depth="currentExpandDepth"
+                    :is-dark="isDark"
+                    empty-message="无请求体信息"
+                    @load-error="handleBodyDocumentError"
+                  />
+                </TabsContent>
+
+                <TabsContent
+                  v-if="activeTab === 'response-headers'"
+                  value="response-headers"
+                >
+                  <RequestHeadersContent
+                    v-if="viewMode === 'compare'"
+                    :detail="detail"
+                    :view-mode="viewMode"
+                    :data-source="dataSource"
+                    :current-header-data="currentResponseHeaderData ?? null"
+                    :current-expand-depth="currentExpandDepth"
+                    :has-provider-headers="hasProviderResponseHeaders"
+                    :header-stats="responseHeaderStats"
+                    :is-dark="isDark"
+                    :client-headers="detail.client_response_headers"
+                    :provider-headers="detail.response_headers"
+                    client-label="客户端响应头"
+                    provider-label="提供商响应头"
+                    empty-message="无响应头信息"
+                  />
+                  <JsonContent
+                    v-else
+                    :data="currentResponseHeaderData"
+                    :view-mode="viewMode"
+                    :expand-depth="currentExpandDepth"
+                    :is-dark="isDark"
+                    empty-message="无响应头信息"
+                  />
+                </TabsContent>
+
+                <TabsContent
+                  v-if="activeTab === 'response-body'"
+                  value="response-body"
+                >
+                  <div
+                    v-if="isResponseBodyLoading"
+                    class="p-4"
+                  >
+                    <Skeleton class="h-32 w-full" />
+                  </div>
+                  <div
+                    v-else-if="responseBodyLoadErrorVisible"
+                    class="m-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+                  >
+                    <div class="flex items-start gap-2">
+                      <AlertTriangle class="mt-0.5 h-4 w-4 flex-shrink-0" />
+                      <span>{{ bodyLoadErrorMessage }}</span>
+                    </div>
+                    <Button
+                      v-if="canRetryBodyContentLoad"
+                      variant="outline"
+                      size="sm"
+                      class="mt-3 h-8 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      @click="retryBodyContentLoad"
+                    >
+                      <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
+                      重试
+                    </Button>
+                  </div>
+                  <BodyConversationContent
+                    v-else-if="contentViewMode === 'conversation'"
+                    :body-document="currentResponseBody"
+                    kind="response"
+                    :api-format="currentResponseBodyApiFormat"
+                    empty-message="无响应体信息"
+                    @load-error="handleBodyDocumentError"
+                  />
+                  <JsonContent
+                    v-else
+                    :data="null"
+                    :body-document="currentResponseBody"
+                    :view-mode="viewMode"
+                    :expand-depth="currentExpandDepth"
+                    :is-dark="isDark"
+                    empty-message="无响应体信息"
+                    @load-error="handleBodyDocumentError"
+                  />
+                </TabsContent>
+
+                <TabsContent
+                  v-if="activeTab === 'metadata'"
+                  value="metadata"
+                >
+                  <JsonContent
+                    :data="metadataPanelData"
+                    :view-mode="viewMode"
+                    :expand-depth="currentExpandDepth"
+                    :is-dark="isDark"
+                    empty-message="无元数据信息"
+                  />
+                </TabsContent>
+              </JsonContentPanel>
+            </Tabs>
+          </div>
+        </Card>
       </div>
-    </Transition>
-  </Teleport>
+    </div>
+  </Drawer>
 
   <!-- 请求回放对话框 -->
   <ReplayDialog
@@ -912,7 +900,7 @@ import { getI18nLocale } from '@/i18n'
 import { ref, shallowRef, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import Button from '@/components/ui/button.vue'
-import { useEscapeKey } from '@/composables/useEscapeKey'
+import Drawer from '@/components/ui/drawer/Drawer.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { useDarkMode } from '@/composables/useDarkMode'
 import Card from '@/components/ui/card.vue'
@@ -3154,47 +3142,9 @@ const headerStats = computed(() => {
   return counts
 })
 
-// 添加 ESC 键监听
-useEscapeKey(() => {
-  if (props.isOpen) {
-    handleClose()
-  }
-}, {
-  disableOnInput: true,
-  once: false
-})
 </script>
 
 <style scoped>
-/* 抽屉过渡动画 */
-.drawer-enter-active,
-.drawer-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.drawer-enter-active .relative,
-.drawer-leave-active .relative {
-  transition: transform 0.3s ease;
-}
-
-.drawer-enter-from,
-.drawer-leave-to {
-  opacity: 0;
-}
-
-.drawer-enter-from .relative {
-  transform: translateX(100%);
-}
-
-.drawer-leave-to .relative {
-  transform: translateX(100%);
-}
-
-.drawer-enter-to .relative,
-.drawer-leave-from .relative {
-  transform: translateX(0);
-}
-
 /* 内容区融合：子组件的 Card 不再需要自己的边框和圆角，与表头栏融为一体 */
 .content-block :deep(.rounded-2xl) {
   border: none !important;

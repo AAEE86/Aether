@@ -1,447 +1,442 @@
 <template>
-  <Teleport to="body">
-    <Transition name="drawer">
-      <div
-        v-if="open && localWallet"
-        class="fixed inset-0 z-[80] flex justify-end"
-      >
-        <div
-          class="absolute inset-0 bg-black/35 backdrop-blur-sm"
-          @click="handleClose"
-        />
-
-        <div class="drawer-panel relative h-full w-full sm:w-[760px] lg:w-[860px] sm:max-w-[95vw] border-l border-border bg-background shadow-2xl overflow-y-auto">
-          <div class="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
-            <div class="flex items-start justify-between gap-3">
-              <div class="flex items-center gap-3 min-w-0">
-                <div
-                  class="flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
-                  :class="accentClasses"
+  <Drawer
+    :open="open && !!localWallet"
+    width="sm:w-[760px] lg:w-[860px] sm:max-w-[95vw]"
+    panel-class="bg-background text-foreground"
+    backdrop-class="bg-black/35 backdrop-blur-sm"
+    :z-index="80"
+    @close="handleClose"
+  >
+    <template v-if="localWallet">
+      <div class="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sm:px-6 sm:py-4">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <div
+              class="flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
+              :class="accentClasses"
+            >
+              <Wallet class="h-5 w-5" />
+            </div>
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5">
+                <h3 class="text-lg font-semibold text-foreground leading-tight">
+                  {{ contextLabel || '钱包详情' }}
+                </h3>
+                <Badge
+                  :variant="walletStatusBadge(localWallet.status)"
+                  class="w-fit px-2 py-0.5 text-[11px] leading-none"
                 >
-                  <Wallet class="h-5 w-5" />
-                </div>
-                <div class="min-w-0">
-                  <div class="flex items-center gap-1.5">
-                    <h3 class="text-lg font-semibold text-foreground leading-tight">
-                      {{ contextLabel || '钱包详情' }}
-                    </h3>
-                    <Badge
-                      :variant="walletStatusBadge(localWallet.status)"
-                      class="w-fit px-2 py-0.5 text-[11px] leading-none"
-                    >
-                      {{ walletStatusLabel(localWallet.status) }}
-                    </Badge>
-                  </div>
-                  <p class="text-xs text-muted-foreground">
-                    {{ ownerName || '-' }} <span v-if="ownerSubtitle">· {{ ownerSubtitle }}</span>
-                  </p>
-                </div>
+                  {{ walletStatusLabel(localWallet.status) }}
+                </Badge>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-9 w-9 shrink-0"
-                title="关闭"
-                @click="handleClose"
-              >
-                <X class="h-4 w-4" />
-              </Button>
+              <p class="text-xs text-muted-foreground">
+                {{ ownerName || '-' }} <span v-if="ownerSubtitle">· {{ ownerSubtitle }}</span>
+              </p>
             </div>
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-9 w-9 shrink-0"
+            title="关闭"
+            @click="handleClose"
+          >
+            <X class="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
 
-          <div class="p-4 sm:p-6 space-y-5">
-            <div class="rounded-2xl border border-border/60 bg-muted/30 p-4">
-              <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <div class="rounded-xl bg-background/80 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    总可用额度
-                  </div>
-                  <div
-                    class="mt-1 text-lg font-semibold"
-                    :class="totalAvailableAmount !== null && totalAvailableAmount < 0 ? 'text-rose-600' : 'text-foreground'"
-                  >
-                    {{ totalAvailableAmount === null ? '不限额' : `$${formatFixed(totalAvailableAmount, 2)}` }}
-                  </div>
-                </div>
-                <div class="rounded-xl bg-background/80 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    套餐今日额度
-                  </div>
-                  <div class="mt-1 text-lg font-semibold text-foreground">
-                    {{ isApiKeyWallet ? '不适用' : `$${formatFixed(packageBalanceAmount, 2)}` }}
-                  </div>
-                  <div
-                    v-if="dailyQuota?.has_active"
-                    class="mt-1 text-[11px] text-muted-foreground"
-                  >
-                    已用 ${{ formatFixed(dailyQuota.used_usd, 2) }} / ${{ formatFixed(dailyQuota.total_usd, 2) }}
-                  </div>
-                </div>
-                <div class="rounded-xl bg-background/80 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    钱包余额
-                  </div>
-                  <div
-                    class="mt-1 text-lg font-semibold"
-                    :class="walletBalanceAmount < 0 ? 'text-rose-600' : 'text-foreground'"
-                  >
-                    ${{ formatFixed(walletBalanceAmount, 2) }}
-                  </div>
-                </div>
-                <div class="rounded-xl bg-background/80 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    充值余额
-                  </div>
-                  <div class="mt-1 text-lg font-semibold text-foreground">
-                    ${{ formatFixed(localWallet.recharge_balance, 2) }}
-                  </div>
-                </div>
-                <div class="rounded-xl bg-background/80 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    赠款余额
-                  </div>
-                  <div class="mt-1 text-lg font-semibold text-foreground">
-                    {{ isApiKeyWallet ? '不支持' : `$${formatFixed(localWallet.gift_balance, 2)}` }}
-                  </div>
-                </div>
-                <div class="rounded-xl bg-background/80 p-3">
-                  <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                    累计消费
-                  </div>
-                  <div class="mt-1 text-lg font-semibold text-foreground">
-                    ${{ formatFixed(localWallet.total_consumed, 2) }}
-                  </div>
-                </div>
+      <div class="p-4 sm:p-6 space-y-5">
+        <div class="rounded-2xl border border-border/60 bg-muted/30 p-4">
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="rounded-xl bg-background/80 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                总可用额度
               </div>
-              <p
-                v-if="!isApiKeyWallet"
-                class="mt-3 text-xs text-muted-foreground"
+              <div
+                class="mt-1 text-lg font-semibold"
+                :class="totalAvailableAmount !== null && totalAvailableAmount < 0 ? 'text-rose-600' : 'text-foreground'"
               >
-                实际扣费顺序为套餐每日额度、充值余额、赠款余额；套餐额度不通过资金操作调整，请在用户套餐中发放或替换。
+                {{ totalAvailableAmount === null ? '不限额' : `$${formatFixed(totalAvailableAmount, 2)}` }}
+              </div>
+            </div>
+            <div class="rounded-xl bg-background/80 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                套餐今日额度
+              </div>
+              <div class="mt-1 text-lg font-semibold text-foreground">
+                {{ isApiKeyWallet ? '不适用' : `$${formatFixed(packageBalanceAmount, 2)}` }}
+              </div>
+              <div
+                v-if="dailyQuota?.has_active"
+                class="mt-1 text-[11px] text-muted-foreground"
+              >
+                已用 ${{ formatFixed(dailyQuota.used_usd, 2) }} / ${{ formatFixed(dailyQuota.total_usd, 2) }}
+              </div>
+            </div>
+            <div class="rounded-xl bg-background/80 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                钱包余额
+              </div>
+              <div
+                class="mt-1 text-lg font-semibold"
+                :class="walletBalanceAmount < 0 ? 'text-rose-600' : 'text-foreground'"
+              >
+                ${{ formatFixed(walletBalanceAmount, 2) }}
+              </div>
+            </div>
+            <div class="rounded-xl bg-background/80 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                充值余额
+              </div>
+              <div class="mt-1 text-lg font-semibold text-foreground">
+                ${{ formatFixed(localWallet.recharge_balance, 2) }}
+              </div>
+            </div>
+            <div class="rounded-xl bg-background/80 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                赠款余额
+              </div>
+              <div class="mt-1 text-lg font-semibold text-foreground">
+                {{ isApiKeyWallet ? '不支持' : `$${formatFixed(localWallet.gift_balance, 2)}` }}
+              </div>
+            </div>
+            <div class="rounded-xl bg-background/80 p-3">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                累计消费
+              </div>
+              <div class="mt-1 text-lg font-semibold text-foreground">
+                ${{ formatFixed(localWallet.total_consumed, 2) }}
+              </div>
+            </div>
+          </div>
+          <p
+            v-if="!isApiKeyWallet"
+            class="mt-3 text-xs text-muted-foreground"
+          >
+            实际扣费顺序为套餐每日额度、充值余额、赠款余额；套餐额度不通过资金操作调整，请在用户套餐中发放或替换。
+          </p>
+        </div>
+
+        <Tabs v-model="activeTab">
+          <TabsList :class="tabsListClass">
+            <TabsTrigger value="actions">
+              资金操作
+            </TabsTrigger>
+            <TabsTrigger value="transactions">
+              资金流水
+            </TabsTrigger>
+            <TabsTrigger
+              v-if="showRefunds"
+              value="refunds"
+            >
+              退款审批
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent
+            value="actions"
+            class="mt-4 space-y-4"
+          >
+            <div
+              v-if="!isApiKeyWallet"
+              class="space-y-2"
+            >
+              <Label class="text-sm font-medium">
+                操作类型
+              </Label>
+              <Select v-model="moneyActionType">
+                <SelectTrigger class="h-11">
+                  <SelectValue placeholder="选择操作类型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="recharge">
+                    人工充值
+                  </SelectItem>
+                  <SelectItem value="adjust">
+                    人工调账
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div class="space-y-2">
+              <Label
+                for="wallet-action-amount"
+                class="text-sm font-medium"
+              >金额 (USD)</Label>
+              <Input
+                id="wallet-action-amount"
+                :model-value="actionAmount ?? ''"
+                type="number"
+                step="0.01"
+                :placeholder="isApiKeyWallet || moneyActionType === 'adjust' ? '正数为入账，负数为调账扣减' : '输入正数金额'"
+                class="h-11"
+                @update:model-value="(value) => actionAmount = parseNumberInput(value, { allowFloat: true })"
+              />
+              <p class="text-xs text-muted-foreground">
+                {{
+                  isApiKeyWallet || moneyActionType === 'adjust'
+                    ? '调账扣减会先扣所选账户，不足自动扣另一账户，剩余计入充值余额。'
+                    : '人工充值仅接受正数。'
+                }}
               </p>
             </div>
 
-            <Tabs v-model="activeTab">
-              <TabsList :class="tabsListClass">
-                <TabsTrigger value="actions">
-                  资金操作
-                </TabsTrigger>
-                <TabsTrigger value="transactions">
-                  资金流水
-                </TabsTrigger>
-                <TabsTrigger
-                  v-if="showRefunds"
-                  value="refunds"
-                >
-                  退款审批
-                </TabsTrigger>
-              </TabsList>
+            <div class="space-y-2">
+              <Label
+                for="wallet-action-description"
+                class="text-sm font-medium"
+              >说明</Label>
+              <Input
+                id="wallet-action-description"
+                v-model="actionDescription"
+                type="text"
+                placeholder="填写备注，便于财务追溯"
+                class="h-11"
+              />
+            </div>
 
-              <TabsContent
-                value="actions"
-                class="mt-4 space-y-4"
-              >
-                <div
-                  v-if="!isApiKeyWallet"
-                  class="space-y-2"
-                >
-                  <Label class="text-sm font-medium">
-                    操作类型
-                  </Label>
-                  <Select v-model="moneyActionType">
-                    <SelectTrigger class="h-11">
-                      <SelectValue placeholder="选择操作类型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="recharge">
-                        人工充值
-                      </SelectItem>
-                      <SelectItem value="adjust">
-                        人工调账
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div class="space-y-2">
-                  <Label
-                    for="wallet-action-amount"
-                    class="text-sm font-medium"
-                  >金额 (USD)</Label>
-                  <Input
-                    id="wallet-action-amount"
-                    :model-value="actionAmount ?? ''"
-                    type="number"
-                    step="0.01"
-                    :placeholder="isApiKeyWallet || moneyActionType === 'adjust' ? '正数为入账，负数为调账扣减' : '输入正数金额'"
-                    class="h-11"
-                    @update:model-value="(value) => actionAmount = parseNumberInput(value, { allowFloat: true })"
-                  />
-                  <p class="text-xs text-muted-foreground">
-                    {{
-                      isApiKeyWallet || moneyActionType === 'adjust'
-                        ? '调账扣减会先扣所选账户，不足自动扣另一账户，剩余计入充值余额。'
-                        : '人工充值仅接受正数。'
-                    }}
-                  </p>
-                </div>
-
-                <div class="space-y-2">
-                  <Label
-                    for="wallet-action-description"
-                    class="text-sm font-medium"
-                  >说明</Label>
-                  <Input
-                    id="wallet-action-description"
-                    v-model="actionDescription"
-                    type="text"
-                    placeholder="填写备注，便于财务追溯"
-                    class="h-11"
-                  />
-                </div>
-
-                <div
-                  v-if="moneyActionType === 'adjust' && !isApiKeyWallet"
-                  class="space-y-2"
-                >
-                  <Label class="text-sm font-medium">
-                    调账账户
-                  </Label>
-                  <Select v-model="adjustBalanceType">
-                    <SelectTrigger class="h-11">
-                      <SelectValue placeholder="选择调账账户" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="recharge">
-                        充值余额（可退款）
-                      </SelectItem>
-                      <SelectItem
-                        v-if="!isApiKeyWallet"
-                        value="gift"
-                      >
-                        赠款余额（不可退款）
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div
-                  v-if="!isApiKeyWallet"
-                  class="rounded-xl border border-border/60 p-3 text-xs text-muted-foreground"
-                >
-                  人工充值等同于用户充值余额，会产生充值订单和记录；调帐为后台调整，无充值订单。赠款余额不可退款。
-                </div>
-
-                <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                  <Button
-                    variant="outline"
-                    class="h-10 px-5"
-                    @click="handleClose"
+            <div
+              v-if="moneyActionType === 'adjust' && !isApiKeyWallet"
+              class="space-y-2"
+            >
+              <Label class="text-sm font-medium">
+                调账账户
+              </Label>
+              <Select v-model="adjustBalanceType">
+                <SelectTrigger class="h-11">
+                  <SelectValue placeholder="选择调账账户" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="recharge">
+                    充值余额（可退款）
+                  </SelectItem>
+                  <SelectItem
+                    v-if="!isApiKeyWallet"
+                    value="gift"
                   >
-                    关闭
-                  </Button>
-                  <Button
-                    class="h-10 px-5"
-                    :disabled="submitMoneyDisabled"
-                    @click="submitMoneyAction"
-                  >
-                    {{ submittingMoneyAction ? '处理中...' : submitMoneyLabel }}
-                  </Button>
-                </div>
-              </TabsContent>
+                    赠款余额（不可退款）
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-              <TabsContent
-                value="transactions"
-                class="mt-4 space-y-3"
+            <div
+              v-if="!isApiKeyWallet"
+              class="rounded-xl border border-border/60 p-3 text-xs text-muted-foreground"
+            >
+              人工充值等同于用户充值余额，会产生充值订单和记录；调帐为后台调整，无充值订单。赠款余额不可退款。
+            </div>
+
+            <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                variant="outline"
+                class="h-10 px-5"
+                @click="handleClose"
               >
-                <div class="flex items-center justify-between gap-3">
-                  <div class="text-sm text-muted-foreground">
-                    共 {{ txTotal }} 条
-                  </div>
-                  <RefreshButton
-                    :loading="loadingTx"
-                    @click="loadTransactions"
+                关闭
+              </Button>
+              <Button
+                class="h-10 px-5"
+                :disabled="submitMoneyDisabled"
+                @click="submitMoneyAction"
+              >
+                {{ submittingMoneyAction ? '处理中...' : submitMoneyLabel }}
+              </Button>
+            </div>
+          </TabsContent>
+
+          <TabsContent
+            value="transactions"
+            class="mt-4 space-y-3"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-sm text-muted-foreground">
+                共 {{ txTotal }} 条
+              </div>
+              <RefreshButton
+                :loading="loadingTx"
+                @click="loadTransactions"
+              />
+            </div>
+
+            <WalletTransactionsTable
+              :items="txItems"
+              :loading="loadingTx"
+            />
+
+            <Pagination
+              :current="txPage"
+              :total="txTotal"
+              :page-size="txPageSize"
+              @update:current="handleTxPageChange"
+              @update:page-size="handleTxPageSizeChange"
+            />
+          </TabsContent>
+
+          <TabsContent
+            v-if="showRefunds"
+            value="refunds"
+            class="mt-4 space-y-3"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-sm text-muted-foreground">
+                共 {{ refundTotal }} 条
+              </div>
+              <RefreshButton
+                :loading="loadingRefunds"
+                @click="loadRefunds"
+              />
+            </div>
+
+            <div
+              v-if="refundActionType && actionRefund"
+              class="rounded-xl border border-border/60 p-4 space-y-3"
+            >
+              <div class="text-sm font-semibold">
+                {{ refundActionType === 'fail' ? '驳回退款' : '完成退款' }} - {{ actionRefund.refund_no }}
+              </div>
+              <template v-if="refundActionType === 'fail'">
+                <div class="space-y-1.5">
+                  <Label>驳回原因</Label>
+                  <Input
+                    v-model="refundFailReason"
+                    placeholder="请填写驳回原因"
                   />
                 </div>
-
-                <WalletTransactionsTable
-                  :items="txItems"
-                  :loading="loadingTx"
-                />
-
-                <Pagination
-                  :current="txPage"
-                  :total="txTotal"
-                  :page-size="txPageSize"
-                  @update:current="handleTxPageChange"
-                  @update:page-size="handleTxPageSizeChange"
-                />
-              </TabsContent>
-
-              <TabsContent
-                v-if="showRefunds"
-                value="refunds"
-                class="mt-4 space-y-3"
-              >
-                <div class="flex items-center justify-between gap-3">
-                  <div class="text-sm text-muted-foreground">
-                    共 {{ refundTotal }} 条
-                  </div>
-                  <RefreshButton
-                    :loading="loadingRefunds"
-                    @click="loadRefunds"
-                  />
+              </template>
+              <template v-else>
+                <div class="space-y-1.5">
+                  <Label>网关退款号（可选）</Label>
+                  <Input v-model="refundGatewayRefundId" />
                 </div>
-
-                <div
-                  v-if="refundActionType && actionRefund"
-                  class="rounded-xl border border-border/60 p-4 space-y-3"
+                <div class="space-y-1.5">
+                  <Label>打款凭证 / 参考号（可选）</Label>
+                  <Input v-model="refundPayoutReference" />
+                </div>
+              </template>
+              <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  variant="outline"
+                  @click="resetRefundActionForm"
                 >
-                  <div class="text-sm font-semibold">
-                    {{ refundActionType === 'fail' ? '驳回退款' : '完成退款' }} - {{ actionRefund.refund_no }}
-                  </div>
-                  <template v-if="refundActionType === 'fail'">
-                    <div class="space-y-1.5">
-                      <Label>驳回原因</Label>
-                      <Input
-                        v-model="refundFailReason"
-                        placeholder="请填写驳回原因"
-                      />
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="space-y-1.5">
-                      <Label>网关退款号（可选）</Label>
-                      <Input v-model="refundGatewayRefundId" />
-                    </div>
-                    <div class="space-y-1.5">
-                      <Label>打款凭证 / 参考号（可选）</Label>
-                      <Input v-model="refundPayoutReference" />
-                    </div>
-                  </template>
-                  <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                    <Button
-                      variant="outline"
-                      @click="resetRefundActionForm"
-                    >
-                      取消
-                    </Button>
-                    <Button
-                      v-if="refundActionType === 'fail'"
-                      variant="destructive"
-                      :disabled="submittingRefundAction"
-                      @click="submitFailRefund"
-                    >
-                      {{ submittingRefundAction ? '提交中...' : '确认驳回' }}
-                    </Button>
-                    <Button
-                      v-else
-                      :disabled="submittingRefundAction"
-                      @click="submitCompleteRefund"
-                    >
-                      {{ submittingRefundAction ? '提交中...' : '确认完成' }}
-                    </Button>
-                  </div>
-                </div>
+                  取消
+                </Button>
+                <Button
+                  v-if="refundActionType === 'fail'"
+                  variant="destructive"
+                  :disabled="submittingRefundAction"
+                  @click="submitFailRefund"
+                >
+                  {{ submittingRefundAction ? '提交中...' : '确认驳回' }}
+                </Button>
+                <Button
+                  v-else
+                  :disabled="submittingRefundAction"
+                  @click="submitCompleteRefund"
+                >
+                  {{ submittingRefundAction ? '提交中...' : '确认完成' }}
+                </Button>
+              </div>
+            </div>
 
-                <div class="rounded-2xl border border-border/60 overflow-hidden bg-background">
-                  <div class="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>退款单号</TableHead>
-                          <TableHead>金额</TableHead>
-                          <TableHead>模式</TableHead>
-                          <TableHead>状态</TableHead>
-                          <TableHead>原因</TableHead>
-                          <TableHead class="text-right">
-                            操作
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        <TableRow
-                          v-for="refund in refundItems"
-                          :key="refund.id"
-                        >
-                          <TableCell class="font-mono text-xs whitespace-nowrap">
-                            {{ refund.refund_no }}
-                          </TableCell>
-                          <TableCell class="tabular-nums whitespace-nowrap">
-                            ${{ formatFixed(refund.amount_usd, 4) }}
-                          </TableCell>
-                          <TableCell>
-                            {{ refundModeLabel(refund.refund_mode) }}
-                          </TableCell>
-                          <TableCell>
-                            <Badge :variant="refundStatusBadge(refund.status)">
-                              {{ refundStatusLabel(refund.status) }}
-                            </Badge>
-                          </TableCell>
-                          <TableCell class="text-xs text-muted-foreground max-w-[220px] truncate">
-                            {{ refund.reason || refund.failure_reason || '-' }}
-                          </TableCell>
-                          <TableCell class="text-right">
-                            <div class="flex justify-end gap-2">
-                              <Button
-                                v-if="canProcessRefund(refund.status)"
-                                size="sm"
-                                variant="outline"
-                                :disabled="submittingRefundAction"
-                                @click="processRefund(refund)"
-                              >
-                                处理
-                              </Button>
-                              <Button
-                                v-if="canCompleteRefund(refund.status)"
-                                size="sm"
-                                :disabled="submittingRefundAction"
-                                @click="openCompleteRefund(refund)"
-                              >
-                                完成
-                              </Button>
-                              <Button
-                                v-if="canFailRefund(refund)"
-                                size="sm"
-                                variant="destructive"
-                                :disabled="submittingRefundAction"
-                                @click="openFailRefund(refund)"
-                              >
-                                驳回
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                        <TableRow v-if="!loadingRefunds && refundItems.length === 0">
-                          <TableCell
-                            colspan="6"
-                            class="py-10"
+            <div class="rounded-2xl border border-border/60 overflow-hidden bg-background">
+              <div class="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>退款单号</TableHead>
+                      <TableHead>金额</TableHead>
+                      <TableHead>模式</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>原因</TableHead>
+                      <TableHead class="text-right">
+                        操作
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow
+                      v-for="refund in refundItems"
+                      :key="refund.id"
+                    >
+                      <TableCell class="font-mono text-xs whitespace-nowrap">
+                        {{ refund.refund_no }}
+                      </TableCell>
+                      <TableCell class="tabular-nums whitespace-nowrap">
+                        ${{ formatFixed(refund.amount_usd, 4) }}
+                      </TableCell>
+                      <TableCell>
+                        {{ refundModeLabel(refund.refund_mode) }}
+                      </TableCell>
+                      <TableCell>
+                        <Badge :variant="refundStatusBadge(refund.status)">
+                          {{ refundStatusLabel(refund.status) }}
+                        </Badge>
+                      </TableCell>
+                      <TableCell class="text-xs text-muted-foreground max-w-[220px] truncate">
+                        {{ refund.reason || refund.failure_reason || '-' }}
+                      </TableCell>
+                      <TableCell class="text-right">
+                        <div class="flex justify-end gap-2">
+                          <Button
+                            v-if="canProcessRefund(refund.status)"
+                            size="sm"
+                            variant="outline"
+                            :disabled="submittingRefundAction"
+                            @click="processRefund(refund)"
                           >
-                            <EmptyState
-                              title="暂无退款申请"
-                              description="当前钱包没有退款单"
-                            />
-                          </TableCell>
-                        </TableRow>
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
+                            处理
+                          </Button>
+                          <Button
+                            v-if="canCompleteRefund(refund.status)"
+                            size="sm"
+                            :disabled="submittingRefundAction"
+                            @click="openCompleteRefund(refund)"
+                          >
+                            完成
+                          </Button>
+                          <Button
+                            v-if="canFailRefund(refund)"
+                            size="sm"
+                            variant="destructive"
+                            :disabled="submittingRefundAction"
+                            @click="openFailRefund(refund)"
+                          >
+                            驳回
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow v-if="!loadingRefunds && refundItems.length === 0">
+                      <TableCell
+                        colspan="6"
+                        class="py-10"
+                      >
+                        <EmptyState
+                          title="暂无退款申请"
+                          description="当前钱包没有退款单"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
 
-                <Pagination
-                  :current="refundPage"
-                  :total="refundTotal"
-                  :page-size="refundPageSize"
-                  @update:current="handleRefundPageChange"
-                  @update:page-size="handleRefundPageSizeChange"
-                />
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
+            <Pagination
+              :current="refundPage"
+              :total="refundTotal"
+              :page-size="refundPageSize"
+              @update:current="handleRefundPageChange"
+              @update:page-size="handleRefundPageSizeChange"
+            />
+          </TabsContent>
+        </Tabs>
       </div>
-    </Transition>
-  </Teleport>
+    </template>
+  </Drawer>
   <RefundReferralReview
     ref="referralReview"
     :active="open"
@@ -492,6 +487,7 @@ import {
   walletStatusLabel,
 } from '@/utils/walletDisplay'
 import { useToast } from '@/composables/useToast'
+import Drawer from '@/components/ui/drawer/Drawer.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { Wallet, X } from 'lucide-vue-next'
 import { log } from '@/utils/logger'
@@ -997,24 +993,3 @@ function formatFixed(value: unknown, digits: number): string {
 }
 </script>
 
-<style scoped>
-.drawer-enter-active,
-.drawer-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.drawer-enter-active .drawer-panel,
-.drawer-leave-active .drawer-panel {
-  transition: transform 0.3s ease;
-}
-
-.drawer-enter-from,
-.drawer-leave-to {
-  opacity: 0;
-}
-
-.drawer-enter-from .drawer-panel,
-.drawer-leave-to .drawer-panel {
-  transform: translateX(100%);
-}
-</style>
