@@ -225,10 +225,10 @@
               <!-- 时间 -->
               <TableCell class="py-4 text-sm text-muted-foreground">
                 <div class="text-xs">
-                  创建于 {{ formatDate(token.created_at) }}
+                  创建于 {{ formatDateOnly(token.created_at) }}
                 </div>
                 <div class="text-xs mt-1">
-                  {{ token.last_used_at ? `最后使用 ${formatRelativeTime(token.last_used_at)}` : '从未使用' }}
+                  {{ token.last_used_at ? `最后使用 ${formatTimeAgo(token.last_used_at)}` : '从未使用' }}
                 </div>
               </TableCell>
 
@@ -352,7 +352,7 @@
               <span>·</span>
               <span>{{ token.permission_summary || permissionModeText(token.permission_mode) }}</span>
               <span>·</span>
-              <span>{{ token.last_used_at ? formatRelativeTime(token.last_used_at) : '从未使用' }}</span>
+              <span>{{ token.last_used_at ? formatTimeAgo(token.last_used_at) : '从未使用' }}</span>
             </div>
           </div>
         </Card>
@@ -619,7 +619,7 @@
             />
             <Button
               class="h-11"
-              @click="copyToken(newTokenValue)"
+              @click="copyToClipboard(newTokenValue)"
             >
               复制
             </Button>
@@ -672,7 +672,6 @@
 </template>
 
 <script setup lang="ts">
-import { getI18nLocale } from '@/i18n'
 import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -713,8 +712,11 @@ import {
 import { useToast } from '@/composables/useToast'
 import { log } from '@/utils/logger'
 import { parseApiError } from '@/utils/errorParser'
+import { useClipboard } from '@/composables/useClipboard'
+import { formatDateOnly, formatNumber, formatTimeAgo } from '@/utils/format'
 
 const { success, error: showError } = useToast()
+const { copyToClipboard } = useClipboard()
 const route = useRoute()
 const authStore = useAuthStore()
 
@@ -1153,34 +1155,6 @@ async function regenerateToken() {
   }
 }
 
-// 复制 Token
-async function copyToken(text: string) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text)
-      success('已复制到剪贴板')
-    } else {
-      const textArea = document.createElement('textarea')
-      textArea.value = text
-      textArea.style.position = 'fixed'
-      textArea.style.left = '-999999px'
-      document.body.appendChild(textArea)
-      textArea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textArea)
-      success('已复制到剪贴板')
-    }
-  } catch (err) {
-    log.error('复制失败:', err)
-    showError('复制失败')
-  }
-}
-
-// 格式化
-function formatNumber(num: number): string {
-  return num.toLocaleString(getI18nLocale())
-}
-
 function toLocalDatetimeString(date: Date): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -1190,28 +1164,4 @@ function toLocalDatetimeString(date: Date): string {
   return `${year}-${month}-${day}T${hours}:${minutes}`
 }
 
-function formatDate(dateString: string): string {
-  const date = new Date(dateString)
-  return date.toLocaleDateString(getI18nLocale(), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  })
-}
-
-function formatRelativeTime(dateString: string): string {
-  const date = new Date(dateString)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMins = Math.floor(diffMs / (1000 * 60))
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-
-  if (diffMins < 1) return '刚刚'
-  if (diffMins < 60) return `${diffMins}分钟前`
-  if (diffHours < 24) return `${diffHours}小时前`
-  if (diffDays < 7) return `${diffDays}天前`
-
-  return formatDate(dateString)
-}
 </script>

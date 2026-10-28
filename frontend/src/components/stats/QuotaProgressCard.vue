@@ -49,7 +49,7 @@
         <div class="flex items-center justify-between text-[11px] text-muted-foreground">
           <span>剩余 {{ formatCurrency(provider.remaining_usd) }}</span>
           <span v-if="provider.estimated_exhaust_at">
-            预计耗尽 {{ formatDate(provider.estimated_exhaust_at) }}
+            预计耗尽 {{ formatDateShort(provider.estimated_exhaust_at) }}
           </span>
         </div>
       </div>
@@ -59,9 +59,8 @@
 
 <script setup lang="ts">
 import { Card } from '@/components/ui'
-import { getI18nLocale } from '@/i18n'
 import { EmptyState, LoadingState } from '@/components/common'
-import { formatCurrency } from '@/utils/format'
+import { formatCurrency, formatDateShort } from '@/utils/format'
 import type { QuotaUsageProvider } from '@/api/admin'
 
 interface Props {
@@ -76,7 +75,4 @@ withDefaults(defineProps<Props>(), {
   loading: false
 })
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleDateString(getI18nLocale())
-}
 </script>

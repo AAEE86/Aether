@@ -381,7 +381,7 @@
             :key="item.channel"
             class="flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 text-sm"
           >
-            <span>{{ formatChannel(item.channel) }}</span>
+            <span>{{ formatNotificationChannel(item.channel) }}</span>
             <span :class="item.success ? 'text-green-600 dark:text-green-400' : 'text-destructive'">
               {{ item.message }}
             </span>
@@ -415,6 +415,7 @@ import { modulesApi, type ModuleStatus } from '@/api/modules'
 import { useToast } from '@/composables/useToast'
 import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
+import { formatNotificationChannel } from './notificationChannel'
 
 type DeliveryChannel = 'global' | 'all' | 'email' | 'server_chan' | 'bark'
 
@@ -727,14 +728,4 @@ function normalizeRecipients(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-function formatChannel(channel: string): string {
-  if (channel === 'email') return '邮件'
-  if (channel === 'server_chan') return 'Server 酱'
-  if (channel === 'bark') return 'Bark'
-  if (channel === 'user_email') return '用户邮件'
-  if (channel === 'module') return '模块'
-  if (channel === 'item') return '通知项'
-  if (channel === 'none') return '无可用服务'
-  return channel
-}
 </script>

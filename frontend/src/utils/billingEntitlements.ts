@@ -1,6 +1,7 @@
 import { getI18nLocale } from '@/i18n'
 
 import type {
+  BillingDurationUnit,
   BillingEntitlement,
   UsagePolicyEntitlement,
   UsagePolicyRule,
@@ -127,4 +128,25 @@ function formatWindowDuration(seconds: number): string {
 
 function formatLimit(limit: number): string {
   return Number(limit || 0).toLocaleString(getI18nLocale())
+}
+
+export function formatBillingPlanDuration(unit: BillingDurationUnit, value: number): string {
+  if (getI18nLocale() === 'en-US') {
+    const plural = value === 1 ? '' : 's'
+    const labels: Record<BillingDurationUnit, string> = {
+      day: ` day${plural}`,
+      month: ` month${plural}`,
+      year: ` year${plural}`,
+      custom: ` day${plural}`,
+    }
+    return `${value}${labels[unit] ?? labels.month}`
+  }
+
+  const labels: Record<BillingDurationUnit, string> = {
+    day: '天',
+    month: '个月',
+    year: '年',
+    custom: '天',
+  }
+  return `${value}${labels[unit] ?? labels.month}`
 }

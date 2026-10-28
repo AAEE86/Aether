@@ -262,7 +262,7 @@
                 </TableCell>
                 <TableCell class="py-4">
                   <div class="text-xs">
-                    <span class="text-foreground">{{ formatDate(apiKey.created_at) }}</span>
+                    <span class="text-foreground">{{ formatDateTime(apiKey.created_at) }}</span>
                   </div>
                 </TableCell>
                 <TableCell class="py-4">
@@ -272,7 +272,7 @@
                       class="space-y-1"
                     >
                       <div class="text-foreground">
-                        {{ formatDate(apiKey.expires_at) }}
+                        {{ formatDateTime(apiKey.expires_at) }}
                       </div>
                       <div class="text-muted-foreground">
                         {{ getRelativeTime(apiKey.expires_at) }}
@@ -291,7 +291,7 @@
                     <span
                       v-if="apiKey.last_used_at"
                       class="text-foreground"
-                    >{{ formatDate(apiKey.last_used_at) }}</span>
+                    >{{ formatDateTime(apiKey.last_used_at) }}</span>
                     <span
                       v-else
                       class="text-muted-foreground"
@@ -508,7 +508,7 @@
                       有效期
                     </div>
                     <div class="font-medium text-foreground">
-                      {{ apiKey.expires_at ? formatDate(apiKey.expires_at) : '永不过期' }}
+                      {{ apiKey.expires_at ? formatDateTime(apiKey.expires_at) : '永不过期' }}
                     </div>
                     <div
                       v-if="apiKey.expires_at"
@@ -522,14 +522,14 @@
                 <div class="rounded-lg bg-muted/35 p-2.5 text-[11px] text-muted-foreground">
                   <div class="flex items-center justify-between gap-2">
                     <span>创建</span>
-                    <span class="font-medium text-foreground">{{ formatDate(apiKey.created_at) }}</span>
+                    <span class="font-medium text-foreground">{{ formatDateTime(apiKey.created_at) }}</span>
                   </div>
                   <div class="mt-1 flex items-center justify-between gap-2">
                     <span>最近使用</span>
                     <span
                       v-if="apiKey.last_used_at"
                       class="font-medium text-foreground"
-                    >{{ formatDate(apiKey.last_used_at) }}</span>
+                    >{{ formatDateTime(apiKey.last_used_at) }}</span>
                     <span v-else>暂无记录</span>
                   </div>
                   <div
@@ -802,7 +802,6 @@
 </template>
 
 <script setup lang="ts">
-import { getI18nLocale } from '@/i18n'
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -853,7 +852,7 @@ import {
 
 import { StandaloneKeyFormDialog, type StandaloneKeyFormData } from '@/features/api-keys'
 import { parseApiError } from '@/utils/errorParser'
-import { formatTokens, formatRateLimitInheritable, isRateLimitInherited, isRateLimitUnlimited } from '@/utils/format'
+import { formatTokens, formatRateLimitInheritable, isRateLimitInherited, isRateLimitUnlimited, formatDateTime } from '@/utils/format'
 import { log } from '@/utils/logger'
 
 const { success, error } = useToast()
@@ -1348,16 +1347,6 @@ function isExpiringSoon(apiKey: AdminApiKey): boolean {
   const now = Date.now()
   const diffDays = (expiresAt - now) / (1000 * 60 * 60 * 24)
   return diffDays > 0 && diffDays <= EXPIRY_SOON_DAYS
-}
-
-function formatDate(dateString: string): string {
-  return new Date(dateString).toLocaleString(getI18nLocale(), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
 }
 
 function getRelativeTime(dateString: string): string {

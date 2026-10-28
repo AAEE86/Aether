@@ -200,7 +200,6 @@ import { ref, computed, watch } from 'vue'
 import { Dialog, Button, Input, Label, Switch } from '@/components/ui'
 import { SquarePen } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
-import { useConfirm } from '@/composables/useConfirm'
 import { useFormDialog } from '@/composables/useFormDialog'
 import { parseApiError } from '@/utils/errorParser'
 import { parseNumberInput, parseNullableNumberInput } from '@/utils/form'
@@ -221,7 +220,6 @@ const emit = defineEmits<{
 }>()
 
 const { success, error: showError } = useToast()
-const { confirmWarning } = useConfirm()
 
 // 显示自动获取模型警告：编辑模式下，原本未启用但现在启用，且已有 allowed_models
 const showAutoFetchWarning = computed(() => {
@@ -328,34 +326,15 @@ function loadKeyData() {
 }
 
 // 使用 useFormDialog 统一处理对话框逻辑
-const {
-  handleDialogUpdate: _baseHandleDialogUpdate,
-  handleCancel: _baseHandleCancel,
-} = useFormDialog({
+const { handleDialogUpdate, handleCancel } = useFormDialog({
   isOpen: () => props.open,
   entity: () => props.editingKey,
   isLoading: saving,
+  isDirty: () => isDirty.value,
   onClose: () => emit('close'),
   loadData: loadKeyData,
   resetForm,
 })
-
-// 包装关闭逻辑：有未保存更改时弹出确认
-async function handleDialogUpdate(value: boolean) {
-  if (!value && isDirty.value) {
-    const confirmed = await confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
-    if (!confirmed) return
-  }
-  _baseHandleDialogUpdate(value)
-}
-
-async function handleCancel() {
-  if (isDirty.value) {
-    const confirmed = await confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
-    if (!confirmed) return
-  }
-  _baseHandleCancel()
-}
 
 // 将逗号分隔的文本解析为数组（去空、去重）
 function parsePatternText(text: string): string[] {

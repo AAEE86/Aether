@@ -12,6 +12,7 @@ import {
   Zap,
 } from 'lucide-vue-next'
 import { panelClasses } from './guide-config'
+import { useClipboard } from '@/composables/useClipboard'
 
 // 部署步骤数据
 const activeDeployTab = ref(0)
@@ -65,8 +66,10 @@ const developmentSteps = [
   }
 ]
 
-function copyStep(stepId: string, code: string) {
-  navigator.clipboard.writeText(code)
+const { copyToClipboard } = useClipboard()
+
+async function copyStep(stepId: string, code: string) {
+  if (!(await copyToClipboard(code, false))) return
   copiedStep.value = stepId
   setTimeout(() => {
     copiedStep.value = null

@@ -322,9 +322,9 @@
                         v-if="currentAttempt.extra_data.pool_selection.cost_window_usage"
                         class="text-xs text-muted-foreground"
                       >
-                        {{ formatNumber(currentAttempt.extra_data.pool_selection.cost_window_usage) }}
+                        {{ formatTokens(currentAttempt.extra_data.pool_selection.cost_window_usage) }}
                         <template v-if="currentAttempt.extra_data.pool_selection.cost_limit">
-                          / {{ formatNumber(currentAttempt.extra_data.pool_selection.cost_limit) }}
+                          / {{ formatTokens(currentAttempt.extra_data.pool_selection.cost_limit) }}
                         </template>
                         tokens
                       </span>
@@ -352,7 +352,7 @@
                         v-if="currentAttempt.extra_data.pool_skip.cost_window_usage"
                         class="text-xs text-muted-foreground"
                       >
-                        {{ formatNumber(currentAttempt.extra_data.pool_skip.cost_window_usage) }} tokens
+                        {{ formatTokens(currentAttempt.extra_data.pool_skip.cost_window_usage) }} tokens
                       </span>
                     </span>
                   </div>
@@ -429,13 +429,13 @@
                     <div class="usage-row">
                       <div class="usage-item">
                         <span class="usage-label">输入</span>
-                        <span class="usage-tokens">{{ formatNumber(usageData.tokens.input) }}</span>
+                        <span class="usage-tokens">{{ formatTokens(usageData.tokens.input) }}</span>
                         <span class="usage-cost">${{ usageData.cost.input.toFixed(6) }}</span>
                       </div>
                       <div class="usage-divider" />
                       <div class="usage-item">
                         <span class="usage-label">输出</span>
-                        <span class="usage-tokens">{{ formatNumber(usageData.tokens.output) }}</span>
+                        <span class="usage-tokens">{{ formatTokens(usageData.tokens.output) }}</span>
                         <span class="usage-cost">${{ usageData.cost.output.toFixed(6) }}</span>
                       </div>
                     </div>
@@ -446,13 +446,13 @@
                     >
                       <div class="usage-item">
                         <span class="usage-label">缓存创建</span>
-                        <span class="usage-tokens">{{ formatNumber(usageData.tokens.cache_creation || 0) }}</span>
+                        <span class="usage-tokens">{{ formatTokens(usageData.tokens.cache_creation || 0) }}</span>
                         <span class="usage-cost">${{ (usageData.cost.cache_creation || 0).toFixed(6) }}</span>
                       </div>
                       <div class="usage-divider" />
                       <div class="usage-item">
                         <span class="usage-label">缓存读取</span>
-                        <span class="usage-tokens">{{ formatNumber(usageData.tokens.cache_read || 0) }}</span>
+                        <span class="usage-tokens">{{ formatTokens(usageData.tokens.cache_read || 0) }}</span>
                         <span class="usage-cost">${{ (usageData.cost.cache_read || 0).toFixed(6) }}</span>
                       </div>
                     </div>
@@ -689,11 +689,6 @@ const emit = defineEmits<{
 
 // 用量数据（从 props 获取）
 const usageData = computed(() => props.usageData)
-
-// 格式化数字
-const formatNumber = (num: number): string => {
-  return formatTokens(num)
-}
 
 // 获取最终状态标签
 const getFinalStatusLabel = (status: string) => {

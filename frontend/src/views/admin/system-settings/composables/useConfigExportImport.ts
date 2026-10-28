@@ -13,8 +13,7 @@ import {
 import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
 import type { SystemConfig } from './useSystemConfig'
-
-const BYTES_PER_MB = 1024 * 1024
+import { formatByteSize } from '@/utils/format'
 
 type JsonObject = Record<string, unknown>
 
@@ -53,16 +52,6 @@ function looksLikeAggregateExport(value: JsonObject): boolean {
     && asJsonObject(value.user_data) != null
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes >= BYTES_PER_MB) {
-    return `${(bytes / BYTES_PER_MB).toFixed(1)}MB`
-  }
-  if (bytes >= 1024) {
-    return `${Math.round(bytes / 1024)}KB`
-  }
-  return `${bytes}B`
-}
-
 function setImportProgress(
   target: { value: ImportProgressState | null },
   percent: number,
@@ -80,13 +69,13 @@ function buildUploadProgressHandler(
 ) {
   return (event: AxiosProgressEvent) => {
     if (!event.total) {
-      setImportProgress(target, 15, `${label}上传中：${formatBytes(event.loaded)}`)
+      setImportProgress(target, 15, `${label}上传中：${formatByteSize(event.loaded)}`)
       return
     }
 
     const uploadPercent = Math.min(85, 10 + (event.loaded / event.total) * 75)
-    const loaded = formatBytes(event.loaded)
-    const total = formatBytes(event.total)
+    const loaded = formatByteSize(event.loaded)
+    const total = formatByteSize(event.total)
     const message = event.loaded >= event.total
       ? `${label}已上传，服务端正在校验并写入数据`
       : `${label}上传中：${loaded} / ${total}`

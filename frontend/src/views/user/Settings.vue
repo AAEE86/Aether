@@ -687,7 +687,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { getI18nLocale, normalizeLocale, useI18n } from '@/i18n'
+import { normalizeLocale, useI18n } from '@/i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { meApi, type Profile } from '@/api/me'
@@ -716,7 +716,7 @@ import SelectContent from '@/components/ui/select-content.vue'
 import SelectItem from '@/components/ui/select-item.vue'
 import Switch from '@/components/ui/switch.vue'
 import { useToast } from '@/composables/useToast'
-import { formatCurrency } from '@/utils/format'
+import { formatCurrency, formatDate } from '@/utils/format'
 import { log } from '@/utils/logger'
 import { safeExternalHttpsUrl } from '@/utils/navigationSecurity'
 import { getErrorMessage, getErrorStatus } from '@/types/api-error'
@@ -1254,16 +1254,6 @@ function isUnlimitedBilling(): boolean {
   return profile.value?.billing?.unlimited === true
 }
 
-function formatDate(dateString?: string): string {
-  if (!dateString) return '未知'
-  return new Date(dateString).toLocaleDateString(getI18nLocale(), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
 </script>
 
 <style scoped>

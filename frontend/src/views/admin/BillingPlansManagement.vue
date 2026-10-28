@@ -1203,6 +1203,7 @@ import { useToast } from '@/composables/useToast'
 import { useI18n } from '@/i18n'
 import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
+import { formatBillingPlanDuration } from '@/utils/billingEntitlements'
 
 type TemplateKey = 'daily' | 'membership' | 'mixed' | 'traffic'
 type PlanMode = 'empty' | 'wallet' | 'daily' | 'membership' | 'usage' | 'mixed'
@@ -1477,7 +1478,7 @@ const purchaseLimitSummaryText = computed(() => {
   if (form.purchase_limit_scope === 'lifetime') {
     return `同一用户历史成功购买本套餐达到 ${form.max_active_per_user || 1} 次后不能再买；适合首购特惠或一次性礼包。`
   }
-  return `同一用户最多同时生效 ${form.max_active_per_user || 1} 份本套餐；每份权益在 ${formatDuration(form.duration_unit, form.duration_value || 1)} 后到期并释放名额。`
+  return `同一用户最多同时生效 ${form.max_active_per_user || 1} 份本套餐；每份权益在 ${formatBillingPlanDuration(form.duration_unit, form.duration_value || 1)} 后到期并释放名额。`
 })
 
 const weekStartOptions = [
@@ -2178,22 +2179,8 @@ function formatPlanPriceAmount(plan: BillingPlan): string {
   return Number(plan.price_amount || 0).toFixed(2)
 }
 
-function durationUnitLabel(unit: BillingDurationUnit): string {
-  const labels: Record<BillingDurationUnit, string> = {
-    day: '天',
-    month: '个月',
-    year: '年',
-    custom: '天',
-  }
-  return labels[unit] || labels.month
-}
-
-function formatDuration(unit: BillingDurationUnit, value: number): string {
-  return `${value}${durationUnitLabel(unit)}`
-}
-
 function formatPlanPeriod(plan: BillingPlan): string {
-  return formatDuration(plan.duration_unit, plan.duration_value)
+  return formatBillingPlanDuration(plan.duration_unit, plan.duration_value)
 }
 
 function planPurchaseLimitHint(plan: BillingPlan): string {

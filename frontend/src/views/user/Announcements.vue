@@ -159,7 +159,7 @@
                 {{ announcement.author.username }}
               </TableCell>
               <TableCell class="py-4 text-xs text-muted-foreground">
-                {{ formatDate(announcement.created_at) }}
+                {{ formatTimeAgo(announcement.created_at) }}
               </TableCell>
               <TableCell class="py-4 text-center">
                 <Badge
@@ -284,7 +284,7 @@
             <div class="flex items-center gap-2 text-xs text-muted-foreground">
               <span>{{ announcement.author.username }}</span>
               <span>·</span>
-              <span>{{ formatDate(announcement.created_at) }}</span>
+              <span>{{ formatTimeAgo(announcement.created_at) }}</span>
             </div>
             <div
               v-if="isAdmin"
@@ -534,7 +534,7 @@
 
 <script setup lang="ts">
 import { getI18nLocale } from '@/i18n'
-import { formatRelativeTime } from '@/utils/format'
+import { formatTimeAgo } from '@/utils/format'
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { announcementApi, type Announcement } from '@/api/announcements'
@@ -837,28 +837,6 @@ function getPlainText(content: string): string {
     .substring(0, 200)
 }
 
-function formatDate(dateString: string): string {
-  const date = new Date(dateString)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
-  const hours = Math.floor(diff / (1000 * 60 * 60))
-  const minutes = Math.floor(diff / (1000 * 60))
-
-  if (minutes < 60) {
-    return minutes < 1 ? formatRelativeTime(0, 'second') : formatRelativeTime(-minutes, 'minute')
-  } else if (hours < 24) {
-    return formatRelativeTime(-hours, 'hour')
-  } else if (days < 7) {
-    return formatRelativeTime(-days, 'day')
-  } else {
-    return date.toLocaleDateString(getI18nLocale(), {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    })
-  }
-}
 </script>
 
 <style scoped>

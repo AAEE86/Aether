@@ -115,7 +115,7 @@
                     策略分组：{{ apiKeyRoutingGroupName(apiKey) }}
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5">
-                    创建于 {{ formatDate(apiKey.created_at) }}
+                    创建于 {{ formatDateOnly(apiKey.created_at) }}
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5 truncate">
                     IP 限制：{{ formatIpRules(apiKey.ip_rules) }}
@@ -191,7 +191,7 @@
 
               <!-- 最后使用时间 -->
               <TableCell class="py-4 text-sm text-muted-foreground">
-                {{ apiKey.last_used_at ? formatRelativeTime(apiKey.last_used_at) : '从未使用' }}
+                {{ apiKey.last_used_at ? formatTimeAgo(apiKey.last_used_at) : '从未使用' }}
               </TableCell>
 
               <!-- 操作按钮 -->
@@ -368,7 +368,7 @@
                 <code class="font-mono text-muted-foreground">{{ apiKey.key_display || 'sk-••••••••' }}</code>
                 <span class="text-muted-foreground">•</span>
                 <span class="text-muted-foreground">
-                  {{ apiKey.last_used_at ? formatRelativeTime(apiKey.last_used_at) : '从未使用' }}
+                  {{ apiKey.last_used_at ? formatTimeAgo(apiKey.last_used_at) : '从未使用' }}
                 </span>
               </div>
               <div class="flex items-center gap-3 text-xs">
@@ -674,7 +674,7 @@
             />
             <Button
               class="h-11"
-              @click="copyTextToClipboard(newKeyValue)"
+              @click="copyToClipboard(newKeyValue)"
             >
               复制
             </Button>
@@ -982,7 +982,6 @@
 </template>
 
 <script setup lang="ts">
-import { getI18nLocale } from '@/i18n'
 import { ref, onMounted, onBeforeUnmount, computed, watch, reactive } from 'vue'
 import { meApi, type ApiKey, type UserRoutingGroup, type InstallSessionTargetSystem, type InstallTargetCli, type ApiKeyInstallSession } from '@/api/me'
 import Card from '@/components/ui/card.vue'
@@ -1014,7 +1013,7 @@ import { Plus, Key, Copy, Trash2, Loader2, Activity, CheckCircle, Power, SquareP
 import { useToast } from '@/composables/useToast'
 import { log } from '@/utils/logger'
 import { parseApiError } from '@/utils/errorParser'
-import { formatRateLimitSimple } from '@/utils/format'
+import { formatRateLimitSimple, formatDateOnly, formatNumber, formatTimeAgo } from '@/utils/format'
 import { parseNumberInput } from '@/utils/form'
 import { getErrorStatus } from '@/types/api-error'
 import {
@@ -1029,8 +1028,10 @@ import {
   type CcSwitchModelIds,
   type CcSwitchTargetApp,
 } from '@/features/api-keys/utils/ccswitchImport'
+import { useClipboard } from '@/composables/useClipboard'
 
 const { success, error: showError } = useToast()
+const { copyToClipboard } = useClipboard()
 
 const installCliOptions: Array<{ value: InstallTargetCli; label: string }> = [
   { value: 'claude_code', label: 'Claude Code' },
@@ -1325,7 +1326,7 @@ async function refreshInstallCommand() {
 
 async function copyInstallCommand() {
   if (!installCommand.value) return
-  const copied = await copyTextToClipboard(installCommand.value, false)
+  const copied = await copyToClipboard(installCommand.value, false)
   if (!copied) return
 
   installCopied.value = true
@@ -1672,7 +1673,7 @@ async function copyApiKey(apiKey: ApiKey) {
   try {
     // 调用后端 API 获取完整密钥
     const response = await meApi.getFullApiKey(apiKey.id)
-    const copied = await copyTextToClipboard(response.key, false) // 不显示内部提示
+    const copied = await copyToClipboard(response.key, false) // 不显示内部提示
     if (copied) {
       success('完整密钥已复制到剪贴板')
     }
@@ -1680,51 +1681,6 @@ async function copyApiKey(apiKey: ApiKey) {
     log.error('复制密钥失败:', error)
     showError('复制失败，请重试')
   }
-}
-
-async function copyTextToClipboard(text: string, showToast: boolean = true): Promise<boolean> {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text)
-      if (showToast) success('已复制到剪贴板')
-      return true
-    } else {
-      const textArea = document.createElement('textarea')
-      textArea.value = text
-      textArea.style.position = 'fixed'
-      textArea.style.left = '-999999px'
-      textArea.style.top = '-999999px'
-      document.body.appendChild(textArea)
-      textArea.focus()
-      textArea.select()
-
-      try {
-        const successful = document.execCommand('copy')
-        if (successful && showToast) {
-          success('已复制到剪贴板')
-        }
-        if (successful) {
-          return true
-        } else {
-          showError('复制失败，请手动复制')
-          return false
-        }
-      } finally {
-        document.body.removeChild(textArea)
-      }
-    }
-  } catch (error) {
-    log.error('复制失败:', error)
-    showError('复制失败，请手动选择文本进行复制')
-    return false
-  }
-}
-
-function formatNumber(num: number | undefined | null): string {
-  if (num === undefined || num === null) {
-    return '0'
-  }
-  return num.toLocaleString(getI18nLocale())
 }
 
 function formatConcurrentLimitSimple(concurrentLimit?: number | null): string {
@@ -1744,34 +1700,6 @@ function parseIpRulesInput(value: string): string[] | null {
     .map((item) => item.trim())
     .filter(Boolean)
   return items.length > 0 ? items : null
-}
-
-function formatDate(dateString?: string | null): string {
-  if (!dateString) return '未知'
-  const date = new Date(dateString)
-  if (Number.isNaN(date.getTime())) return '未知'
-  return date.toLocaleDateString(getI18nLocale(), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  })
-}
-
-function formatRelativeTime(dateString: string): string {
-  const date = new Date(dateString)
-  if (Number.isNaN(date.getTime())) return '未知'
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMins = Math.floor(diffMs / (1000 * 60))
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-
-  if (diffMins < 1) return '刚刚'
-  if (diffMins < 60) return `${diffMins}分钟前`
-  if (diffHours < 24) return `${diffHours}小时前`
-  if (diffDays < 7) return `${diffDays}天前`
-
-  return formatDate(dateString)
 }
 
 </script>

@@ -235,7 +235,7 @@ import { computed } from 'vue'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-vue-next'
 import { Badge, Button } from '@/components/ui'
 import { useI18n } from '@/i18n'
-import { formatCompactNumber } from '@/utils/format'
+import { formatCompactNumber, formatByteSize } from '@/utils/format'
 import type {
   ProxyNode,
   ProxyNodeEvent,
@@ -317,7 +317,7 @@ const summaryStats = computed(() => {
     },
     {
       label: 'WS 流量',
-      value: formatBytes(totalBytes),
+      value: formatByteSize(totalBytes),
       hint: `${formatNumber((summary?.ws_in_frames_delta ?? 0) + (summary?.ws_out_frames_delta ?? 0))} 帧`,
       tone: '',
     },
@@ -365,7 +365,7 @@ const resourceItems = computed(() => {
       value: formatUsagePercent(memoryUsedPercent),
       hint: memoryUsedBytes == null || memoryTotalBytes == null
         ? ''
-        : `${formatBytes(memoryUsedBytes)} / ${formatBytes(memoryTotalBytes)}`,
+        : `${formatByteSize(memoryUsedBytes)} / ${formatByteSize(memoryTotalBytes)}`,
       tone: usageTone(memoryUsedPercent, 75, 90),
     },
     {
@@ -376,7 +376,7 @@ const resourceItems = computed(() => {
     },
     {
       label: 'Proxy 内存',
-      value: processMemoryBytes == null ? '-' : formatBytes(processMemoryBytes),
+      value: processMemoryBytes == null ? '-' : formatByteSize(processMemoryBytes),
       hint: processMemoryPercent == null ? '' : formatUsagePercent(processMemoryPercent),
       tone: usageTone(processMemoryPercent, 5, 15),
     },
@@ -400,7 +400,7 @@ const resourceItems = computed(() => {
     },
     {
       label: '物理内存',
-      value: memoryTotalBytes == null ? '-' : formatBytes(memoryTotalBytes),
+      value: memoryTotalBytes == null ? '-' : formatByteSize(memoryTotalBytes),
       hint: '启动采集',
       tone: '',
     },
@@ -428,8 +428,8 @@ const tunnelCounterItems = computed(() => [
   { label: '心跳确认', value: formatTunnelNumber('heartbeat_ack') },
   { label: '最近 RTT', value: formatMs(numberField(tunnelMetrics.value, 'heartbeat_rtt_last_ms')) },
   { label: '平均 RTT', value: formatMs(numberField(tunnelMetrics.value, 'heartbeat_rtt_avg_ms')) },
-  { label: 'WS 入站', value: formatBytes(numberField(tunnelMetrics.value, 'ws_in_bytes') ?? 0) },
-  { label: 'WS 出站', value: formatBytes(numberField(tunnelMetrics.value, 'ws_out_bytes') ?? 0) },
+  { label: 'WS 入站', value: formatByteSize(numberField(tunnelMetrics.value, 'ws_in_bytes') ?? 0) },
+  { label: 'WS 出站', value: formatByteSize(numberField(tunnelMetrics.value, 'ws_out_bytes') ?? 0) },
   { label: '入站帧', value: formatTunnelNumber('ws_in_frames') },
   { label: '出站帧', value: formatTunnelNumber('ws_out_frames') },
 ])
@@ -514,18 +514,6 @@ function formatDurationMs(value: number | null) {
 function formatUnixSecs(value: number | null) {
   if (value == null || !Number.isFinite(value) || value <= 0) return '-'
   return formatTime(new Date(value * 1000).toISOString())
-}
-
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let size = value
-  let unit = 0
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024
-    unit += 1
-  }
-  return `${unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`
 }
 
 function formatLoadAverage(one: number | null, five: number | null, fifteen: number | null) {

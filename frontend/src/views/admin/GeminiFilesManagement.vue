@@ -351,14 +351,14 @@
                 </span>
                 <span class="flex items-center gap-1">
                   <Clock class="w-3 h-3" />
-                  {{ formatDate(mapping.created_at) }}
+                  {{ formatDateTimeCompact(mapping.created_at) }}
                 </span>
                 <span
                   class="flex items-center gap-1"
                   :class="{ 'text-red-500': mapping.is_expired }"
                 >
                   <Timer class="w-3 h-3" />
-                  过期: {{ formatDate(mapping.expires_at) }}
+                  过期: {{ formatDateTimeCompact(mapping.expires_at) }}
                 </span>
               </div>
             </div>
@@ -415,7 +415,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
-import { getI18nLocale, useI18n } from '@/i18n'
 import Card from '@/components/ui/card.vue'
 import Badge from '@/components/ui/badge.vue'
 import Button from '@/components/ui/button.vue'
@@ -440,9 +439,11 @@ import {
 import { geminiFilesApi, type FileMappingStatsResponse, type FileMappingResponse, type CapableKeyResponse } from '@/api/gemini-files'
 import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
+import { formatDateTimeCompact } from '@/utils/format'
+import { useConfirm } from '@/composables/useConfirm'
 
 const { toast } = useToast()
-const { legacyT } = useI18n()
+const { confirmDanger } = useConfirm()
 
 // 状态
 const loading = ref(false)
@@ -545,7 +546,7 @@ async function fetchMappings() {
 }
 
 async function deleteMapping(mapping: FileMappingResponse) {
-  if (!confirm(legacyT(`确定要删除映射 "${mapping.file_name}" 吗？\n\n注意：这只会删除映射记录，不会删除 Google 上的实际文件。`))) {
+  if (!(await confirmDanger(`确定要删除映射 "${mapping.file_name}" 吗？\n\n注意：这只会删除映射记录，不会删除 Google 上的实际文件。`, '删除映射'))) {
     return
   }
 
@@ -566,7 +567,7 @@ async function deleteMapping(mapping: FileMappingResponse) {
 }
 
 async function cleanupExpired() {
-  if (!confirm(legacyT('确定要清理所有过期的文件映射吗？'))) {
+  if (!(await confirmDanger('确定要清理所有过期的文件映射吗？', '清理过期映射', '清理'))) {
     return
   }
 
@@ -652,18 +653,6 @@ function handleFileSelect(e: Event) {
     uploadFile(input.files[0])
     input.value = '' // 清空以便重复选择同一文件
   }
-}
-
-// 工具函数
-function formatDate(dateStr: string) {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString(getI18nLocale(), {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
 }
 
 function getFileIcon(mimeType: string | null) {

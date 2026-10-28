@@ -287,14 +287,14 @@
               <div class="text-xs space-y-0.5">
                 <div class="flex items-center gap-1.5 text-muted-foreground">
                   <Clock class="w-3 h-3" />
-                  <span>{{ formatDate(task.created_at) }}</span>
+                  <span>{{ formatDateTimeCompact(task.created_at) }}</span>
                 </div>
                 <div
                   v-if="finishTime(task)"
                   class="flex items-center gap-1.5 text-green-600 dark:text-green-400"
                 >
                   <CheckCircle class="w-3 h-3" />
-                  <span>{{ formatDate(finishTime(task)) }}</span>
+                  <span>{{ formatDateTimeCompact(finishTime(task)) }}</span>
                 </div>
               </div>
             </TableCell>
@@ -390,7 +390,7 @@
             </div>
             <div class="flex items-center gap-1.5 text-muted-foreground">
               <Clock class="w-3 h-3" />
-              <span>{{ formatDate(task.created_at) }}</span>
+              <span>{{ formatDateTimeCompact(task.created_at) }}</span>
             </div>
             <div
               v-if="task.duration_seconds || task.attempt"
@@ -505,7 +505,7 @@
                   <span class="font-mono">{{ selectedTask.id.slice(0, 8) }}...</span>
                 </span>
                 <span class="opacity-40">|</span>
-                <span>{{ formatDateFull(selectedTask.created_at) }}</span>
+                <span>{{ formatDateTimeFull(selectedTask.created_at) }}</span>
                 <template v-if="isAdmin">
                   <span class="opacity-40">|</span>
                   <span>用户: {{ selectedTask.username }}</span>
@@ -603,7 +603,7 @@
                         v-if="selectedTask.video_expires_at"
                         class="text-amber-600 dark:text-amber-400"
                       >
-                        过期: {{ formatDate(selectedTask.video_expires_at) }}
+                        过期: {{ formatDateTimeCompact(selectedTask.video_expires_at) }}
                       </span>
                     </div>
                   </div>
@@ -773,7 +773,7 @@
                       下次轮询
                     </p>
                     <p class="text-sm font-medium">
-                      {{ formatDate(selectedTask.next_poll_at) }}
+                      {{ formatDateTimeCompact(selectedTask.next_poll_at) }}
                     </p>
                   </div>
                 </div>
@@ -862,7 +862,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { asyncTasksApi, type AsyncTaskItem, type AsyncTaskDetail, type AsyncTaskStatsResponse, type AsyncTaskStatus } from '@/api/async-tasks'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
-import { getI18nLocale, useI18n } from '@/i18n'
+import { useI18n } from '@/i18n'
 import Card from '@/components/ui/card.vue'
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
@@ -901,6 +901,7 @@ import {
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { log } from '@/utils/logger'
+import { formatDateTimeCompact, formatDateTimeFull } from '@/utils/format'
 
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.canAccessAdmin)
@@ -1170,32 +1171,6 @@ function getStatusLabel(status: string): string {
 
 function canCancel(status: string): boolean {
   return ['pending', 'submitted', 'queued', 'processing', 'running', 'retrying'].includes(status)
-}
-
-// 格式化日期（简短格式，用于表格列表）
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString(getI18nLocale(), {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-// 格式化日期（完整格式，用于详情）
-function formatDateFull(dateStr: string | null): string {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString(getI18nLocale(), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
 }
 
 // 格式化时间（带毫秒，用于时间范围）

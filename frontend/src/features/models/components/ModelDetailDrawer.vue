@@ -133,7 +133,7 @@
                   <div>
                     <Label class="text-xs text-muted-foreground">创建时间</Label>
                     <p class="text-sm mt-1">
-                      {{ formatDate(model.created_at) }}
+                      {{ formatDateOnly(model.created_at) }}
                     </p>
                   </div>
                 </div>
@@ -533,7 +533,6 @@
 </template>
 
 <script setup lang="ts">
-import { getI18nLocale } from '@/i18n'
 import { ref, watch, computed } from 'vue'
 import {
   X,
@@ -562,7 +561,7 @@ import ModelMappingsTab from './ModelMappingsTab.vue'
 import ProcessingTierPricingSummary from './ProcessingTierPricingSummary.vue'
 import { sortResolutionEntries } from '@/utils/form'
 import { parseApiError } from '@/utils/errorParser'
-import { formatCompactNumber, formatTokens } from '@/utils/format'
+import { formatCompactNumber, formatTokens, formatDateOnly } from '@/utils/format'
 import { getGlobalModelRoutingPreview } from '@/api/global-models'
 
 // 使用外部类型定义
@@ -755,17 +754,6 @@ function handleClose() {
   if (!props.hasBlockingDialogOpen) {
     emit('update:open', false)
   }
-}
-
-// 格式化日期
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleDateString(getI18nLocale(), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  })
 }
 
 // 从 tiered_pricing 获取第一阶梯的价格

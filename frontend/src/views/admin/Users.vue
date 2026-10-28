@@ -163,7 +163,7 @@
       :sessions="userSessions"
       :loading="loadingUserSessions"
       :action-loading="sessionDialogActionLoading"
-      :format-date="formatDate"
+      :format-date="formatDateShort"
       :format-session-meta="formatSessionMeta"
       @close="showUserSessionsDialog = false"
       @revoke-session="revokeSelectedUserSession"
@@ -252,7 +252,16 @@ import {
   isPlanEntitlementReplacementCandidate,
   billingEntitlementLabels,
 } from '@/utils/billingEntitlements'
-import { formatTokens, formatRateLimitInheritable, formatRateLimitSimple, isRateLimitInherited, isRateLimitUnlimited } from '@/utils/format'
+import {
+  formatTokens,
+  formatRateLimitInheritable,
+  formatRateLimitSimple,
+  isRateLimitInherited,
+  isRateLimitUnlimited,
+  formatDateShort,
+  formatDateTime,
+  formatNumber,
+} from '@/utils/format'
 import { log } from '@/utils/logger'
 import { useBatchSelection } from '@/composables/useBatchSelection'
 import { useI18n } from '@/i18n'
@@ -410,7 +419,7 @@ const userRows = computed<UserManagementRow[]>(() =>
       rateLimitLabel: formatRateLimitInheritable(user.rate_limit),
       rateLimitSource: formatUserEffectiveRateLimitSource(user),
       rateLimitAsBadge: isRateLimitInherited(user.rate_limit) || isRateLimitUnlimited(user.rate_limit),
-      createdAtLabel: formatDate(user.created_at),
+      createdAtLabel: formatDateShort(user.created_at),
       statusLabel: legacyT(user.is_active ? '活跃' : '禁用'),
       statusVariant: user.is_active ? 'success' : 'destructive',
     }
@@ -532,21 +541,6 @@ function invalidateUserOptions(): void {
   userOptionsVersion.value += 1
 }
 
-function formatDate(dateString: string) {
-  return new Date(dateString).toLocaleDateString(locale.value)
-}
-
-function formatDateTime(value?: string | null): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString(locale.value, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 function formatPlanPrice(plan: BillingPlan): string {
   return `${Number(plan.price_amount || 0).toFixed(2)} ${plan.price_currency || 'CNY'}`
 }
@@ -592,11 +586,6 @@ async function loadUserWallets(options: { cacheTtlMs?: number } = {}) {
     if (requestId !== userWalletsRequestId) return
     log.error('加载用户钱包失败:', err)
   }
-}
-
-function formatNumber(value?: number | null): string {
-  const numericValue = typeof value === 'number' && Number.isFinite(value) ? value : 0
-  return numericValue.toLocaleString()
 }
 
 function getUserWallet(userId: string): AdminWallet | null {

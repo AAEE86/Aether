@@ -171,7 +171,7 @@
       @query="queryRelationships"
       @reset="resetRelationships"
       @rewards="showRelationshipRewards"
-      @copy="copy"
+      @copy="copyToClipboard"
     />
     <ReferralDetailDrawer
       :id="detailId"
@@ -181,7 +181,7 @@
       :mutating="mutating"
       @close="closeDetail"
       @reload="loadDetail"
-      @copy="copy"
+      @copy="copyToClipboard"
       @operate="openOperation"
     />
     <ReferralOperationDialog
@@ -211,7 +211,9 @@ import ReferralDetailDrawer from './referrals/ReferralDetailDrawer.vue'
 import ReferralOperationDialog, { type RewardOperation } from './referrals/ReferralOperationDialog.vue'
 import { useReferralList } from './referrals/useReferralLists'
 import { usd } from './referrals/presentation'
+import { useClipboard } from '@/composables/useClipboard'
 const toast = useToast()
+const { copyToClipboard } = useClipboard()
 const tab = ref('pending')
 const queueTab = ref<'failed' | 'debt'>('failed')
 let queueSelected = false
@@ -319,7 +321,6 @@ async function confirmOperation(note: string) {
   } catch { toast.error(action === 'void' ? '作废失败，记录可能已发放，请核对最新状态' : '重试失败，请核对最新状态') }
   finally { mutating.value = null; closeOperation(); await refresh(); if (detailId.value === id) await loadDetail() }
 }
-async function copy(value: string) { try { await navigator.clipboard.writeText(value); toast.success('已复制') } catch { toast.error('复制失败，请手动复制') } }
 onMounted(() => { void refresh() })
 onScopeDispose(() => { overviewSequence++; detailSequence++; operationSequence++ })
 </script>

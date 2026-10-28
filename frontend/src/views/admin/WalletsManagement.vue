@@ -1465,7 +1465,7 @@ import {
 import type { PaymentOrder, RefundRequest } from '@/api/wallet'
 import { parseApiError } from '@/utils/errorParser'
 import { useToast } from '@/composables/useToast'
-import { getI18nLocale, useI18n } from '@/i18n'
+import { getI18nLocale } from '@/i18n'
 import { log } from '@/utils/logger'
 import {
   callbackStatusBadge,
@@ -1482,6 +1482,8 @@ import {
   walletTransactionCategoryLabel,
   walletTransactionReasonLabel,
 } from '@/utils/walletDisplay'
+import { useConfirm } from '@/composables/useConfirm'
+import { useClipboard } from '@/composables/useClipboard'
 
 type WalletManagementTab = 'ledger' | 'refunds' | 'orders' | 'callbacks' | 'redeem_codes'
 type LedgerCategory = 'recharge' | 'gift' | 'adjust' | 'refund'
@@ -1507,7 +1509,8 @@ const LEDGER_REASON_OPTIONS: LedgerReasonOption[] = [
 ]
 
 const { success, error: showError } = useToast()
-const { legacyT } = useI18n()
+const { confirmDanger } = useConfirm()
+const { copyToClipboard } = useClipboard()
 const route = useRoute()
 
 const activeTab = ref<WalletManagementTab>('ledger')
@@ -1636,13 +1639,8 @@ const {
   if (target.kind === 'ledger') openLedgerDrawer(target.item)
 })
 
-async function copyLocationId() {
-  try {
-    await navigator.clipboard.writeText(locationId.value)
-    success('ID 已复制')
-  } catch {
-    showError('复制失败，请手动复制上方 ID')
-  }
+function copyLocationId() {
+  void copyToClipboard(locationId.value)
 }
 
 watch([ledgerCategoryFilter, ledgerReasonFilter, ledgerOwnerFilter], () => {
@@ -2004,7 +2002,7 @@ async function deleteRedeemBatch(batch: RedeemCodeBatch) {
     showError('已有兑换记录的批次不能删除')
     return
   }
-  if (!window.confirm(legacyT(`确认删除批次「${batch.name}」吗？删除后无法恢复。`))) {
+  if (!(await confirmDanger(`确认删除批次「${batch.name}」吗？删除后无法恢复。`, '删除批次'))) {
     return
   }
 

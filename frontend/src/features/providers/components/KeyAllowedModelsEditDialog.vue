@@ -366,7 +366,7 @@ import {
 } from 'lucide-vue-next'
 import { Dialog, Button, Input } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
-import { useConfirm } from '@/composables/useConfirm'
+import { useDiscardConfirm } from '@/composables/useDiscardConfirm'
 import { parseApiError } from '@/utils/errorParser'
 import {
   getProviderModels,
@@ -396,7 +396,7 @@ const emit = defineEmits<{
 }>()
 
 const { success, error: showError, warning: showWarning } = useToast()
-const { confirmWarning } = useConfirm()
+const { confirmDiscard } = useDiscardConfirm(() => hasChanges.value)
 const { fetchModels: fetchCachedModels } = useUpstreamModelsCache()
 
 const isOpen = computed(() => props.open)
@@ -769,18 +769,12 @@ onUnmounted(() => {
 })
 
 async function handleDialogUpdate(value: boolean) {
-  if (!value && hasChanges.value) {
-    const confirmed = await confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
-    if (!confirmed) return
-  }
+  if (!value && !(await confirmDiscard())) return
   if (!value) emit('close')
 }
 
 async function handleCancel() {
-  if (hasChanges.value) {
-    const confirmed = await confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
-    if (!confirmed) return
-  }
+  if (!(await confirmDiscard())) return
   emit('close')
 }
 

@@ -280,7 +280,7 @@
                           ${{ tokenCostTotal.toFixed(6) }}
                         </template>
                       </span>
-                      <span class="text-muted-foreground/60">(输入 {{ formatNumber(displayInputTokens) }} + 缓存创建 {{ cacheCreationSummaryText }} + 缓存读取 {{ formatNumber(detail.cache_read_input_tokens || 0) }})</span>
+                      <span class="text-muted-foreground/60">(输入 {{ formatTokens(displayInputTokens) }} + 缓存创建 {{ cacheCreationSummaryText }} + 缓存读取 {{ formatTokens(detail.cache_read_input_tokens || 0) }})</span>
                       <Badge
                         v-if="displayTiers.length > 1"
                         variant="outline"
@@ -432,7 +432,7 @@
                             class="grid grid-cols-[64px_minmax(0,1fr)_68px_92px] items-center gap-x-2 text-xs text-muted-foreground/70"
                           >
                             <span>{{ row.label }}</span>
-                            <span class="font-mono text-right tabular-nums text-foreground/90">{{ formatNumber(row.tokens) }}</span>
+                            <span class="font-mono text-right tabular-nums text-foreground/90">{{ formatTokens(row.tokens) }}</span>
                             <span
                               class="text-right"
                               :class="row.pricePer1M === null ? 'invisible' : ''"
@@ -457,7 +457,7 @@
                             class="flex items-center gap-4 text-xs text-muted-foreground/70"
                           >
                             <span class="w-[72px]">{{ row.label }}</span>
-                            <span class="font-mono text-foreground/90">{{ formatNumber(row.tokens) }}</span>
+                            <span class="font-mono text-foreground/90">{{ formatTokens(row.tokens) }}</span>
                             <span v-if="row.pricePer1M !== null">${{ formatPrice(row.pricePer1M) }}/M</span>
                             <span
                               v-if="row.cost !== null"
@@ -518,14 +518,14 @@
                         <span
                           v-if="imageOutputPricePerImage !== null"
                           class="font-mono"
-                        >{{ formatNumber(imageOutputCount) }} 张 × ${{ imageOutputPricePerImage.toFixed(6) }}/张 = ${{ imageOutputCostTotal.toFixed(6) }}</span>
+                        >{{ formatTokens(imageOutputCount) }} 张 × ${{ imageOutputPricePerImage.toFixed(6) }}/张 = ${{ imageOutputCostTotal.toFixed(6) }}</span>
                       </div>
                     </div>
 
                     <div class="flex items-center">
                       <div class="flex items-center flex-1">
                         <span class="text-xs text-muted-foreground w-[56px]">数量</span>
-                        <span class="text-sm font-semibold font-mono flex-1 text-center">{{ formatNumber(imageOutputCount) }}</span>
+                        <span class="text-sm font-semibold font-mono flex-1 text-center">{{ formatTokens(imageOutputCount) }}</span>
                         <span class="text-xs font-mono">${{ imageOutputCostTotal.toFixed(6) }}</span>
                       </div>
                       <Separator
@@ -2300,14 +2300,14 @@ const cacheCreationSummaryText = computed(() => {
   const cache1h = cacheCreationInputTokens1h.value
 
   if (cache5m <= 0 && cache1h <= 0) {
-    return formatNumber(total)
+    return formatTokens(total)
   }
 
   const parts: string[] = []
-  if (cache5m > 0) parts.push(`5min ${formatNumber(cache5m)}`)
-  if (cache1h > 0) parts.push(`1h ${formatNumber(cache1h)}`)
+  if (cache5m > 0) parts.push(`5min ${formatTokens(cache5m)}`)
+  if (cache1h > 0) parts.push(`1h ${formatTokens(cache1h)}`)
   const remaining = Math.max(0, total - cache5m - cache1h)
-  if (remaining > 0) parts.push(`其他 ${formatNumber(remaining)}`)
+  if (remaining > 0) parts.push(`其他 ${formatTokens(remaining)}`)
   return parts.join(' + ')
 })
 
@@ -2979,10 +2979,6 @@ function getTaskTypeLabel(taskType: string): string {
   }
 }
 
-function formatNumber(num: number): string {
-  return formatTokens(num)
-}
-
 function parseImageSizePixels(size: string | null): number | null {
   if (!size) return null
   const normalized = size.trim().toLowerCase().replace(/\s+/g, '').replace(/×/g, 'x')
@@ -3019,12 +3015,12 @@ function getTierRangeText(tier: { up_to?: number | null }, index: number, tiers:
 
   if (tier.up_to) {
     if (start === 0) {
-      return `0 ~ ${formatNumber(tier.up_to)} tokens`
+      return `0 ~ ${formatTokens(tier.up_to)} tokens`
     }
-    return `${formatNumber(start)} ~ ${formatNumber(tier.up_to)} tokens`
+    return `${formatTokens(start)} ~ ${formatTokens(tier.up_to)} tokens`
   }
   // 无上限的情况
-  return `> ${formatNumber(start)} tokens`
+  return `> ${formatTokens(start)} tokens`
 }
 
 async function copyContent(tabName: string) {

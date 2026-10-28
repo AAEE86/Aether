@@ -33,7 +33,7 @@
                     {{ planTitle(item.plan_id) }}
                   </div>
                   <div class="mt-1 text-xs text-muted-foreground">
-                    {{ formatDate(item.starts_at) }} - {{ formatDate(item.expires_at) }}
+                    {{ formatDateShort(item.starts_at) }} - {{ formatDateShort(item.expires_at) }}
                   </div>
                 </div>
                 <Badge variant="success">
@@ -78,7 +78,7 @@
                   </p>
                 </div>
                 <Badge variant="outline">
-                  {{ formatDuration(plan.duration_unit, plan.duration_value) }}
+                  {{ formatBillingPlanDuration(plan.duration_unit, plan.duration_value) }}
                 </Badge>
               </div>
 
@@ -195,7 +195,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { CreditCard } from 'lucide-vue-next'
 import {
   billingApi,
-  type BillingDurationUnit,
   type BillingEntitlement,
   type BillingCheckoutResponse,
   type BillingPlan,
@@ -215,13 +214,14 @@ import {
 import { EmptyState, LoadingState, StripePaymentDialog } from '@/components/common'
 import { CardSection, PageContainer, PageHeader } from '@/components/layout'
 import { useToast } from '@/composables/useToast'
-import { getI18nLocale, useI18n } from '@/i18n'
+import { useI18n } from '@/i18n'
 import { parseApiError } from '@/utils/errorParser'
 import {
   entitlementReplacementGroups,
   entitlementsWillReplaceExisting,
   isPlanEntitlementReplacementCandidate,
   usagePolicyEntitlementLabels,
+  formatBillingPlanDuration,
 } from '@/utils/billingEntitlements'
 import { log } from '@/utils/logger'
 import { safePaymentTargetUrl } from '@/utils/paymentUrl'
@@ -230,6 +230,7 @@ import {
   getStripePaymentInstructions,
   type PaymentInstructionMap,
 } from '@/utils/paymentInstructions'
+import { formatDateShort } from '@/utils/format'
 
 const { success, error: showError } = useToast()
 const { legacyT } = useI18n()
@@ -509,18 +510,4 @@ function replacementClassLabels(items: BillingEntitlement[] | undefined): string
   return labels
 }
 
-function formatDuration(unit: BillingDurationUnit, value: number): string {
-  const labels: Record<BillingDurationUnit, string> = {
-    day: '天',
-    month: '个月',
-    year: '年',
-    custom: '天',
-  }
-  return `${value}${labels[unit]}`
-}
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleDateString(getI18nLocale())
-}
 </script>

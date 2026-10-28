@@ -201,7 +201,7 @@ import {
   DropdownMenuItem,
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
-import { useConfirm } from '@/composables/useConfirm'
+import { useDiscardConfirm } from '@/composables/useDiscardConfirm'
 import { parseApiError } from '@/utils/errorParser'
 import { useUpstreamModelsCache } from '../composables/useUpstreamModelsCache'
 import {
@@ -239,7 +239,7 @@ interface AutoMatchKeyLike {
 }
 
 const { error: showError, success, warning: showWarning } = useToast()
-const { confirmWarning } = useConfirm()
+const { confirmDiscard } = useDiscardConfirm(() => hasChanges.value)
 const { fetchModels: fetchCachedModels } = useUpstreamModelsCache()
 
 // 状态
@@ -459,19 +459,13 @@ async function handleGlobalModelCreated() {
 
 // 处理关闭
 async function handleClose() {
-  if (hasChanges.value) {
-    const confirmed = await confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
-    if (!confirmed) return
-  }
+  if (!(await confirmDiscard())) return
   emit('update:open', false)
 }
 
 // 处理对话框状态变更
 async function handleDialogUpdate(value: boolean) {
-  if (!value && hasChanges.value) {
-    const confirmed = await confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
-    if (!confirmed) return
-  }
+  if (!value && !(await confirmDiscard())) return
   emit('update:open', value)
 }
 
