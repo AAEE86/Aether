@@ -337,7 +337,7 @@ import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import {
   canExportOAuthCredential,
   canRefreshOAuthCredential,
-} from '@/utils/providerKeyAuth'
+} from '@/features/providers/utils/providerKeyAuth'
 import { runChunkedBatchAction } from '@/utils/batchAction'
 import { parseNullableNumberInput, parseNumberInput } from '@/utils/form'
 import {

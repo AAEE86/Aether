@@ -87,7 +87,7 @@ import { computed } from 'vue'
 import { Badge, Button, Card } from '@/components/ui'
 import { Wallet, Clock3, RotateCcw, Users, Settings2 } from 'lucide-vue-next'
 import type { AdminReferralOverview } from '@/api/referrals'
-import { trigger, usd } from './presentation'
+import { trigger, usd } from '../presentation'
 const props = defineProps<{ overview: AdminReferralOverview | null; loading: boolean; error: boolean; summary?: boolean }>()
 defineEmits<{ reload: [] }>()
 function display(value: string | number | undefined) { return props.loading ? '…' : props.error || !props.overview ? '—' : value }

@@ -13,7 +13,7 @@
 </template>
 
 <script setup lang="ts">
-import AlertDialog from './common/AlertDialog.vue'
+import AlertDialog from './AlertDialog.vue'
 import { useConfirm } from '@/composables/useConfirm'
 
 const { state, handleConfirm, handleCancel } = useConfirm()

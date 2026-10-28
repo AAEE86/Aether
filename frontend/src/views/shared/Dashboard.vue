@@ -785,7 +785,7 @@ import DashboardAnnouncements from "@/features/overview/dashboard/DashboardAnnou
 import MetricValue from "@/features/overview/components/MetricValue.vue";
 import type { ActivityHeatmap } from "@/types/activity";
 import { useOverviewI18n } from "@/features/overview/i18n";
-import { getDateRangeFromPeriod } from "@/features/usage/composables";
+import { getDateRangeFromPeriod } from "@/features/usage/composables/useDateRange";
 import type { DateRangeParams } from "@/features/usage/types";
 import {
   Card,

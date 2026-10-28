@@ -374,7 +374,7 @@ import { AlertCircle, ArrowUpRight, Copy, History, ListOrdered, LoaderCircle, Re
 import { RouterLink } from 'vue-router'
 import type { ReferralRewardDetail, ReferralRewardRecord } from '@/api/referrals'
 import { Badge, Button, Dialog } from '@/components/ui'
-import { date, orderStatus, refundStatus, reversalStatus, rewardStatus, rewardType, source, statusVariant, trigger, usd } from './presentation'
+import { date, orderStatus, refundStatus, reversalStatus, rewardStatus, rewardType, source, statusVariant, trigger, usd } from '../presentation'
 
 defineProps<{ id: string | null; detail: ReferralRewardDetail | null; loading: boolean; error: boolean; mutating: string | null }>()
 defineEmits<{ close: []; reload: []; copy: [value: string]; operate: [action: 'retry' | 'void', reward: ReferralRewardRecord] }>()

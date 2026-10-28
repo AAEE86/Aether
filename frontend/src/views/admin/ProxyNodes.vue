@@ -118,14 +118,14 @@ import {
 
 import { Card } from '@/components/ui'
 import { parseApiError } from '@/utils/errorParser'
-import { parseBatchProxyNodeInput } from './proxy-node-batch'
-import { proxyNodeDeleteSuccessMessage } from './proxy-node-delete-feedback'
-import ProxyNodeBatchUpgradeDialog from './components/ProxyNodeBatchUpgradeDialog.vue'
-import ProxyNodeEventsDialog from './components/ProxyNodeEventsDialog.vue'
-import ProxyNodeFormDialog from './components/ProxyNodeFormDialog.vue'
-import ProxyNodeHeader from './components/ProxyNodeHeader.vue'
-import ProxyNodeList from './components/ProxyNodeList.vue'
-import ProxyNodeRemoteConfigDialog from './components/ProxyNodeRemoteConfigDialog.vue'
+import { parseBatchProxyNodeInput } from '@/features/proxy-nodes/utils/proxy-node-batch'
+import { proxyNodeDeleteSuccessMessage } from '@/features/proxy-nodes/utils/proxy-node-delete-feedback'
+import ProxyNodeBatchUpgradeDialog from '@/features/proxy-nodes/components/ProxyNodeBatchUpgradeDialog.vue'
+import ProxyNodeEventsDialog from '@/features/proxy-nodes/components/ProxyNodeEventsDialog.vue'
+import ProxyNodeFormDialog from '@/features/proxy-nodes/components/ProxyNodeFormDialog.vue'
+import ProxyNodeHeader from '@/features/proxy-nodes/components/ProxyNodeHeader.vue'
+import ProxyNodeList from '@/features/proxy-nodes/components/ProxyNodeList.vue'
+import ProxyNodeRemoteConfigDialog from '@/features/proxy-nodes/components/ProxyNodeRemoteConfigDialog.vue'
 import PoolProxyDistributionDialog from '@/features/pool/components/PoolProxyDistributionDialog.vue'
 
 const { success, error: toastError } = useToast()

@@ -809,7 +809,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { adminApi, type AdminApiKey, type CreateStandaloneApiKeyRequest } from '@/api/admin'
 import type { ApiKeyInstallSession, InstallSessionTargetSystem, InstallTargetCli } from '@/api/me'
 import type { AdminWallet } from '@/api/admin-wallets'
-import { walletStatusBadge, walletStatusLabel } from '@/utils/walletDisplay'
+import { walletStatusBadge, walletStatusLabel } from '@/features/wallet/utils/walletDisplay'
 import WalletOpsDrawer from '@/features/wallet/components/WalletOpsDrawer.vue'
 import { EmptyState, LoadingState } from '@/components/common'
 
@@ -850,7 +850,7 @@ import {
   Terminal
 } from 'lucide-vue-next'
 
-import { StandaloneKeyFormDialog, type StandaloneKeyFormData } from '@/features/api-keys'
+import StandaloneKeyFormDialog, { type StandaloneKeyFormData } from '@/features/api-keys/components/StandaloneKeyFormDialog.vue'
 import { parseApiError } from '@/utils/errorParser'
 import { formatTokens, formatRateLimitInheritable, isRateLimitInherited, isRateLimitUnlimited, formatDateTime } from '@/utils/format'
 import { log } from '@/utils/logger'

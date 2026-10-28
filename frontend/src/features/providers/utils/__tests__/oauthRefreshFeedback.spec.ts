@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   getOAuthRefreshFeedback,
   resolveOAuthAccountBlockDisplay,
-} from '@/utils/oauthRefreshFeedback'
+} from '@/features/providers/utils/oauthRefreshFeedback'
 
 describe('oauthRefreshFeedback', () => {
   it('prefers explicit blocked account status from pool data', () => {

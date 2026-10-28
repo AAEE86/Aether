@@ -250,7 +250,7 @@
 import { AlertCircle, ChevronRight, CornerDownRight, Inbox, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import type { ReferralRewardRecord } from '@/api/referrals'
 import { Badge, Button, Card, Pagination, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui'
-import { date, reversalStatus, rewardStatus, rewardType, source, statusVariant, trigger, usd } from './presentation'
+import { date, reversalStatus, rewardStatus, rewardType, source, statusVariant, trigger, usd } from '../presentation'
 
 defineProps<{ title: string; kind: string; items: ReferralRewardRecord[]; total: number; page: number; pageSize: number; loading: boolean; error: string; mutating: string | null }>()
 defineEmits<{ reload: []; page: [value: number]; size: [value: number]; detail: [id: string]; operate: [action: 'retry' | 'void', reward: ReferralRewardRecord] }>()

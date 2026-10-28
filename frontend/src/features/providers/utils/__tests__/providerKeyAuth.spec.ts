@@ -5,7 +5,7 @@ import {
   getProviderAuthLabel,
   getProviderMaskedSecretLabel,
   shouldShowOAuthRefreshControl,
-} from '@/utils/providerKeyAuth'
+} from '@/features/providers/utils/providerKeyAuth'
 
 describe('providerKeyAuth', () => {
   it('renders Grok OAuth-managed cookies as sessions without OAuth refresh controls', () => {

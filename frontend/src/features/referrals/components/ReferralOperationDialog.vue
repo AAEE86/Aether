@@ -80,7 +80,7 @@
 import { computed, ref, watch } from 'vue'
 import type { ReferralRewardDetail, ReferralRewardRecord } from '@/api/referrals'
 import { Button, Dialog, Textarea } from '@/components/ui'
-import { rewardStatus, trigger, usd } from './presentation'
+import { rewardStatus, trigger, usd } from '../presentation'
 export interface RewardOperation { action: 'retry' | 'void'; reward: ReferralRewardRecord }
 const props = defineProps<{ operation: RewardOperation | null; detail: ReferralRewardDetail | null; loading: boolean; error: boolean; busy: boolean }>()
 defineEmits<{ close: []; confirm: [note: string] }>()

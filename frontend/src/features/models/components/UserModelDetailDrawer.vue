@@ -325,7 +325,7 @@ import TableRow from '@/components/ui/table-row.vue'
 import TableHead from '@/components/ui/table-head.vue'
 import TableCell from '@/components/ui/table-cell.vue'
 import { formatTokens } from '@/utils/format'
-import ProcessingTierPricingSummary from '@/features/models/components/ProcessingTierPricingSummary.vue'
+import ProcessingTierPricingSummary from './ProcessingTierPricingSummary.vue'
 
 import type { PublicGlobalModel } from '@/api/public-models'
 import type { TieredPricingConfig, PricingTier } from '@/api/endpoints/types'

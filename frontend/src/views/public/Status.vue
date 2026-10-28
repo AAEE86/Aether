@@ -24,7 +24,7 @@
 
 <script setup lang="ts">
 import { ArrowLeft } from 'lucide-vue-next'
-import HeaderLogo from '@/components/HeaderLogo.vue'
+import HeaderLogo from '@/components/brand/HeaderLogo.vue'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 import HealthMonitorView from '@/features/health-monitor/HealthMonitorView.vue'
 

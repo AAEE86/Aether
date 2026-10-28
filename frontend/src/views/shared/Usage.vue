@@ -180,19 +180,15 @@ import { usersApi } from '@/api/users'
 import { meApi } from '@/api/me'
 import { dashboardApi } from '@/api/dashboard'
 import { PanelTopClose, PanelTopOpen, X } from 'lucide-vue-next'
-import {
-  UsageModelTable,
-  UsageProviderTable,
-  UsageApiFormatTable,
-  UsageRecordsTable,
-  ActivityHeatmapCard,
-  RequestDetailDrawer,
-  IntervalTimelineCard
-} from '@/features/usage/components'
-import {
-  useUsageData,
-  getDateRangeFromPeriod
-} from '@/features/usage/composables'
+import UsageModelTable from '@/features/usage/components/UsageModelTable.vue'
+import UsageProviderTable from '@/features/usage/components/UsageProviderTable.vue'
+import UsageApiFormatTable from '@/features/usage/components/UsageApiFormatTable.vue'
+import UsageRecordsTable from '@/features/usage/components/UsageRecordsTable.vue'
+import ActivityHeatmapCard from '@/features/usage/components/ActivityHeatmapCard.vue'
+import RequestDetailDrawer from '@/features/usage/components/RequestDetailDrawer.vue'
+import IntervalTimelineCard from '@/features/usage/components/IntervalTimelineCard.vue'
+import { useUsageData } from '@/features/usage/composables/useUsageData'
+import { getDateRangeFromPeriod } from '@/features/usage/composables/useDateRange'
 import { reconcileActiveRequestDiscovery } from '@/features/usage/utils/activeRequestDiscovery'
 import {
   mergeUsageRecordErrorMessage,

@@ -211,7 +211,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui'
-import { EmptyState, LoadingState, StripePaymentDialog } from '@/components/common'
+import { EmptyState, LoadingState } from '@/components/common'
+import StripePaymentDialog from '@/features/wallet/components/StripePaymentDialog.vue'
 import { CardSection, PageContainer, PageHeader } from '@/components/layout'
 import { useToast } from '@/composables/useToast'
 import { useI18n } from '@/i18n'
@@ -224,12 +225,12 @@ import {
   formatBillingPlanDuration,
 } from '@/utils/billingEntitlements'
 import { log } from '@/utils/logger'
-import { safePaymentTargetUrl } from '@/utils/paymentUrl'
+import { safePaymentTargetUrl } from '@/features/wallet/utils/paymentUrl'
 import {
   getPaymentInstructionString,
   getStripePaymentInstructions,
   type PaymentInstructionMap,
-} from '@/utils/paymentInstructions'
+} from '@/features/wallet/utils/paymentInstructions'
 import { formatDateShort } from '@/utils/format'
 
 const { success, error: showError } = useToast()

@@ -85,7 +85,7 @@ import { useI18n, getI18nLocale } from '@/i18n'
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui'
 import { EmptyState } from '@/components/common'
 import type { WalletTransaction } from '@/api/wallet'
-import { walletTransactionCategoryLabel, walletTransactionReasonLabel } from '@/utils/walletDisplay'
+import { walletTransactionCategoryLabel, walletTransactionReasonLabel } from '@/features/wallet/utils/walletDisplay'
 
 const props = defineProps<{ items: WalletTransaction[]; loading?: boolean; timezone?: string }>()
 const { legacyT } = useI18n()

@@ -243,11 +243,11 @@ import {
 import { type PublicGlobalModel } from '@/api/public-models'
 import { formatUsageCount } from '@/utils/format'
 import { meApi } from '@/api/me'
-import UserModelDetailDrawer from './components/UserModelDetailDrawer.vue'
+import UserModelDetailDrawer from '@/features/models/components/UserModelDetailDrawer.vue'
 import { useRowClick } from '@/composables/useRowClick'
 import { log } from '@/utils/logger'
 import { parseApiError } from '@/utils/errorParser'
-import { getModelCapabilityLabels } from './model-catalog-helpers'
+import { getModelCapabilityLabels } from '@/features/models/utils/model-catalog-helpers'
 
 const { error: showError } = useToast()
 const { copyToClipboard } = useClipboard()

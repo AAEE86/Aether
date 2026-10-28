@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ProviderKeyStatusCarrier } from '@/utils/providerKeyStatus'
+import type { ProviderKeyStatusCarrier } from '@/features/providers/utils/providerKeyStatus'
 
 import {
   getAccountStatusDisplay,
@@ -7,7 +7,7 @@ import {
   getOAuthStatusDisplay,
   getOAuthStatusDisplayWithFallback,
   getOAuthStatusTitle,
-} from '@/utils/providerKeyStatus'
+} from '@/features/providers/utils/providerKeyStatus'
 
 describe('providerKeyStatus', () => {
   it('uses status_snapshot account state as the primary source', () => {

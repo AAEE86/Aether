@@ -1474,7 +1474,7 @@ import {
   walletStatusLabel,
   walletTransactionCategoryLabel,
   walletTransactionReasonLabel,
-} from '@/utils/walletDisplay'
+} from '@/features/wallet/utils/walletDisplay'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
 

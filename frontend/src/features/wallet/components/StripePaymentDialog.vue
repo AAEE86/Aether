@@ -129,8 +129,8 @@ import { Badge, Button, Dialog, DialogDescription, DialogHeader, DialogTitle } f
 import {
   getStripePaymentInstructions,
   type PaymentInstructionMap,
-} from '@/utils/paymentInstructions'
-import { paymentMethodLabel } from '@/utils/walletDisplay'
+} from '@/features/wallet/utils/paymentInstructions'
+import { paymentMethodLabel } from '@/features/wallet/utils/walletDisplay'
 import { useI18n } from '@/i18n'
 
 interface Props {

@@ -871,7 +871,7 @@ import TableRow from '@/components/ui/table-row.vue'
 import TableHead from '@/components/ui/table-head.vue'
 import TableCell from '@/components/ui/table-cell.vue'
 import Pagination from '@/components/ui/pagination.vue'
-import { RequestDetailDrawer } from '@/features/usage/components'
+import RequestDetailDrawer from '@/features/usage/components/RequestDetailDrawer.vue'
 import {
   Zap,
   Video,

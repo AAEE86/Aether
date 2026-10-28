@@ -213,7 +213,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
 import { adminApi } from '@/api/admin'
-import { walletStatusBadge, walletStatusLabel } from '@/utils/walletDisplay'
+import { walletStatusBadge, walletStatusLabel } from '@/features/wallet/utils/walletDisplay'
 
 // UI 组件
 import {

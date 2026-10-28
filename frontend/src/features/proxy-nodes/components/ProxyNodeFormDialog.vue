@@ -296,7 +296,7 @@ import { CheckCircle, Copy, ListPlus, Plus, SquarePen, Terminal } from 'lucide-v
 import { Button, Dialog, Input, Label, Textarea } from '@/components/ui'
 import type { ProxyNode } from '@/api/proxy-nodes'
 import { useI18n } from '@/i18n'
-import type { BatchProxyNodeParseResult } from '../proxy-node-batch'
+import type { BatchProxyNodeParseResult } from '../utils/proxy-node-batch'
 import type {
   ProxyNodeAddMode,
   ProxyNodeBatchForm,

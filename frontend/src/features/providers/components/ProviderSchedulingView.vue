@@ -447,7 +447,8 @@ import {
   type RoutingSchedulingMode,
   type RoutingGroupConfig,
 } from '@/features/routing/utils/routingPolicy'
-import { RoutingFailoverPolicyEditor, RoutingSchedulingPolicyEditor } from '@/features/routing/components'
+import RoutingFailoverPolicyEditor from '@/features/routing/components/RoutingFailoverPolicyEditor.vue'
+import RoutingSchedulingPolicyEditor from '@/features/routing/components/RoutingSchedulingPolicyEditor.vue'
 import { normalizeProviderSchedulingConfig } from '@/features/routing/utils/schedulingPolicies'
 import { normalizeRoutingFailoverPolicy, validateRoutingFailoverPolicy, type RoutingFailoverPolicy } from '@/features/routing/utils/routingFailover'
 import { createRoutingGroup, deleteRoutingGroup, listRoutingGroups, updateRoutingGroup, type RoutingGroupRecord } from '@/api/routing-profiles'

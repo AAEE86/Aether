@@ -189,7 +189,7 @@
 import { ref, watch, computed } from 'vue'
 import { Dialog } from '@/components/ui'
 import Button from '@/components/ui/button.vue'
-import HeaderLogo from '@/components/HeaderLogo.vue'
+import HeaderLogo from '@/components/brand/HeaderLogo.vue'
 import { formatDisplayVersion } from '@/utils/version'
 import { normalizeReleaseNotesForDisplay } from '@/utils/releaseNotes'
 import { sanitizeMarkdown } from '@/utils/sanitize'

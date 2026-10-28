@@ -5,7 +5,7 @@ import {
   cleanAccountBlockReason,
   isAccountLevelBlockReason,
   isRefreshFailedReason,
-} from '@/utils/accountBlock'
+} from '@/features/providers/utils/accountBlock'
 
 describe('accountBlock helpers', () => {
   it('detects refresh failure markers even when account block is also present', () => {

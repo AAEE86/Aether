@@ -258,24 +258,24 @@ import { PageHeader, PageContainer } from '@/components/layout'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 
 // Composables
-import { useSystemConfig } from './system-settings/composables/useSystemConfig'
-import { useConfigExportImport } from './system-settings/composables/useConfigExportImport'
-import { useScheduledTasks } from './system-settings/composables/useScheduledTasks'
+import { useSystemConfig } from '@/features/system-settings/composables/useSystemConfig'
+import { useConfigExportImport } from '@/features/system-settings/composables/useConfigExportImport'
+import { useScheduledTasks } from '@/features/system-settings/composables/useScheduledTasks'
 
 // Section components
-import SiteInfoSection from './system-settings/SiteInfoSection.vue'
-import DataManagementSection from './system-settings/DataManagementSection.vue'
-import ProxyConfigSection from './system-settings/ProxyConfigSection.vue'
-import BasicConfigSection from './system-settings/BasicConfigSection.vue'
-import RequestLogSection from './system-settings/RequestLogSection.vue'
-import CleanupPolicySection from './system-settings/CleanupPolicySection.vue'
-import ScheduledTasksSection from './system-settings/ScheduledTasksSection.vue'
-import SystemInfoSection from './system-settings/SystemInfoSection.vue'
+import SiteInfoSection from '@/features/system-settings/SiteInfoSection.vue'
+import DataManagementSection from '@/features/system-settings/DataManagementSection.vue'
+import ProxyConfigSection from '@/features/system-settings/ProxyConfigSection.vue'
+import BasicConfigSection from '@/features/system-settings/BasicConfigSection.vue'
+import RequestLogSection from '@/features/system-settings/RequestLogSection.vue'
+import CleanupPolicySection from '@/features/system-settings/CleanupPolicySection.vue'
+import ScheduledTasksSection from '@/features/system-settings/ScheduledTasksSection.vue'
+import SystemInfoSection from '@/features/system-settings/SystemInfoSection.vue'
 
 // Dialog components
-import ConfigImportDialog from './system-settings/ConfigImportDialog.vue'
-import UsersImportDialog from './system-settings/UsersImportDialog.vue'
-import AggregateImportDialog from './system-settings/AggregateImportDialog.vue'
+import ConfigImportDialog from '@/features/system-settings/ConfigImportDialog.vue'
+import UsersImportDialog from '@/features/system-settings/UsersImportDialog.vue'
+import AggregateImportDialog from '@/features/system-settings/AggregateImportDialog.vue'
 
 const proxyNodesStore = useProxyNodesStore()
 

@@ -287,7 +287,7 @@
 import { ChevronRight, Copy, CornerDownRight, LoaderCircle, Search, Users } from 'lucide-vue-next'
 import type { ReferralRelationshipRecord } from '@/api/referrals'
 import { Badge, Button, Card, Input, Pagination, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui'
-import { date } from './presentation'
+import { date } from '../presentation'
 import ReferralUserSelect from './ReferralUserSelect.vue'
 
 defineProps<{ items: ReferralRelationshipRecord[]; total: number; page: number; pageSize: number; loading: boolean; error: string }>()

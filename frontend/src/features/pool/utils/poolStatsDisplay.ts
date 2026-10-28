@@ -1,6 +1,6 @@
 import type { QuotaWindowUsageSnapshot } from '@/api/endpoints/types/statusSnapshot'
 import type { PoolManagementStatsMode } from '@/features/pool/utils/poolManagementState'
-import { getCodexQuotaWindowPresentation } from '@/utils/codexQuotaWindow'
+import { getCodexQuotaWindowPresentation } from '@/features/providers/utils/codexQuotaWindow'
 import { formatCompactNumber } from '@/utils/format'
 
 export type PoolStatsMetricKey = 'request_count' | 'total_tokens' | 'total_cost_usd'

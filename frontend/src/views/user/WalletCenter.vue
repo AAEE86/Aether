@@ -709,7 +709,8 @@ import {
   TabsTrigger,
   Textarea,
 } from '@/components/ui'
-import { EmptyState, LoadingState, StripePaymentDialog } from '@/components/common'
+import { EmptyState, LoadingState } from '@/components/common'
+import StripePaymentDialog from '@/features/wallet/components/StripePaymentDialog.vue'
 import {
   walletApi,
   type DailyUsageRecord,
@@ -723,12 +724,12 @@ import {
 import { useToast } from '@/composables/useToast'
 import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
-import { safePaymentTargetUrl } from '@/utils/paymentUrl'
+import { safePaymentTargetUrl } from '@/features/wallet/utils/paymentUrl'
 import {
   getPaymentInstructionString,
   getStripePaymentInstructions,
   type PaymentInstructionMap,
-} from '@/utils/paymentInstructions'
+} from '@/features/wallet/utils/paymentInstructions'
 import {
   dailyUsageCategoryLabel,
   formatTokenCount,
@@ -743,7 +744,7 @@ import {
   walletStatusLabel,
   walletTransactionCategoryLabel,
   walletTransactionReasonLabel,
-} from '@/utils/walletDisplay'
+} from '@/features/wallet/utils/walletDisplay'
 
 const { success, info, error: showError } = useToast()
 

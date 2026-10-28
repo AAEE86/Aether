@@ -1067,14 +1067,12 @@ import {
   type ProviderWithEndpointsSummary,
 } from '@/api/endpoints'
 import { adminApi } from '@/api/admin'
-import {
-  KeyFormDialog,
-  KeyAllowedModelsEditDialog,
-  ModelsTab,
-  BatchAssignModelsDialog,
-  OAuthAccountDialog,
-  OAuthKeyEditDialog
-} from '@/features/providers/components'
+import KeyFormDialog from './KeyFormDialog.vue'
+import KeyAllowedModelsEditDialog from './KeyAllowedModelsEditDialog.vue'
+import ModelsTab from './provider-tabs/ModelsTab.vue'
+import BatchAssignModelsDialog from './BatchAssignModelsDialog.vue'
+import OAuthAccountDialog from './OAuthAccountDialog.vue'
+import OAuthKeyEditDialog from './OAuthKeyEditDialog.vue'
 import ModelMappingTab from '@/features/providers/components/provider-tabs/ModelMappingTab.vue'
 import EndpointFormDialog from '@/features/providers/components/EndpointFormDialog.vue'
 import ProviderModelFormDialog from '@/features/providers/components/ProviderModelFormDialog.vue'
@@ -1122,12 +1120,12 @@ import type {
 } from '@/api/endpoints/types'
 import { formatApiFormatShort } from '@/api/endpoints/types/api-format'
 import { isOAuthAccountProviderType, isKeyManagedProviderType } from '../utils/providerTypeUtils'
-import { getOAuthOrgBadge } from '@/utils/oauthIdentity'
-import { getOAuthRefreshFeedback } from '@/utils/oauthRefreshFeedback'
+import { getOAuthOrgBadge } from '@/features/providers/utils/oauthIdentity'
+import { getOAuthRefreshFeedback } from '@/features/providers/utils/oauthRefreshFeedback'
 import {
   getCodexPrimaryQuotaWindow,
   getCodexQuotaWindowLimitLabel,
-} from '@/utils/codexQuotaWindow'
+} from '@/features/providers/utils/codexQuotaWindow'
 import { formatCompactNumber } from '@/utils/format'
 import {
   canEditOAuthCredential,
@@ -1136,7 +1134,7 @@ import {
   isOAuthManagedCredential,
   getProviderMaskedSecretLabel,
   shouldShowOAuthRefreshControl,
-} from '@/utils/providerKeyAuth'
+} from '@/features/providers/utils/providerKeyAuth'
 import {
   getAccountStatusDisplay,
   getAccountStatusTitle,
@@ -1144,8 +1142,8 @@ import {
   getOAuthStatusDisplay,
   getOAuthStatusDisplayWithFallback,
   getOAuthStatusTitle as resolveOAuthStatusTitle,
-} from '@/utils/providerKeyStatus'
-import { getGeminiCliAccountCreditsText } from '@/utils/providerKeyQuota'
+} from '@/features/providers/utils/providerKeyStatus'
+import { getGeminiCliAccountCreditsText } from '@/features/providers/utils/providerKeyQuota'
 import {
   clearPendingCodexResetCreditIdempotencyKey,
   clearPendingCodexResetCreditIdempotencyKeyForOutcome,

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 
 import type { PublicGlobalModel } from '@/api/public-models'
-import UserModelDetailDrawer from '../components/UserModelDetailDrawer.vue'
+import UserModelDetailDrawer from '../UserModelDetailDrawer.vue'
 
 vi.mock('@/composables/useClipboard', () => ({
   useClipboard: () => ({

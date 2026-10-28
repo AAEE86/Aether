@@ -4,7 +4,7 @@ import type {
   QuotaWindowSnapshot,
 } from '@/api/endpoints/types/statusSnapshot'
 import type { UpstreamMetadata } from '@/api/endpoints/types/provider'
-import { getCodexQuotaWindowPresentation } from '@/utils/codexQuotaWindow'
+import { getCodexQuotaWindowPresentation } from '@/features/providers/utils/codexQuotaWindow'
 
 export interface ProviderKeyQuotaCarrier {
   account_quota?: string | null

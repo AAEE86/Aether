@@ -485,7 +485,7 @@ import {
   refundStatusLabel,
   walletStatusBadge,
   walletStatusLabel,
-} from '@/utils/walletDisplay'
+} from '@/features/wallet/utils/walletDisplay'
 import { useToast } from '@/composables/useToast'
 import Drawer from '@/components/ui/drawer/Drawer.vue'
 import { useConfirm } from '@/composables/useConfirm'

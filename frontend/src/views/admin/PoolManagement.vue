@@ -1159,10 +1159,10 @@ import {
   readPendingCodexResetCreditIdempotencyKey,
   rememberPendingCodexResetCreditIdempotencyKey,
 } from '@/features/providers/components/codex-reset-credit-display'
-import { getCodexQuotaWindowPresentation } from '@/utils/codexQuotaWindow'
-import { getOAuthOrgBadge } from '@/utils/oauthIdentity'
-import { formatOAuthPlanType, getOAuthPlanTypeClass } from '@/utils/oauthPlanType'
-import { getOAuthRefreshFeedback } from '@/utils/oauthRefreshFeedback'
+import { getCodexQuotaWindowPresentation } from '@/features/providers/utils/codexQuotaWindow'
+import { getOAuthOrgBadge } from '@/features/providers/utils/oauthIdentity'
+import { formatOAuthPlanType, getOAuthPlanTypeClass } from '@/features/providers/utils/oauthPlanType'
+import { getOAuthRefreshFeedback } from '@/features/providers/utils/oauthRefreshFeedback'
 import {
   canEditOAuthCredential,
   canExportOAuthCredential,
@@ -1172,19 +1172,19 @@ import {
   isOAuthManagedCredential,
   isServiceAccountCredential,
   shouldShowOAuthRefreshControl,
-} from '@/utils/providerKeyAuth'
+} from '@/features/providers/utils/providerKeyAuth'
 import {
   getAccountStatusDisplay,
   getAccountStatusTitle,
   getOAuthRefreshButtonTitle as resolveOAuthRefreshButtonTitle,
   getOAuthStatusDisplayWithFallback,
   getOAuthStatusTitle as resolveOAuthStatusTitle,
-} from '@/utils/providerKeyStatus'
+} from '@/features/providers/utils/providerKeyStatus'
 import {
   getGeminiCliAccountCreditsText,
   getLegacyAccountQuotaText,
   getQuotaDisplayText,
-} from '@/utils/providerKeyQuota'
+} from '@/features/providers/utils/providerKeyQuota'
 
 const loadProviderDetailDrawer = () => import('@/features/providers/components/ProviderDetailDrawer.vue')
 const ProviderDetailDrawer = defineAsyncComponent(loadProviderDetailDrawer)

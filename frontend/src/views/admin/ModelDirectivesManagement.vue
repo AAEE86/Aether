@@ -57,12 +57,12 @@ import { useModuleStore } from '@/stores/modules'
 import { useToast } from '@/composables/useToast'
 import { log } from '@/utils/logger'
 import { getErrorMessage } from '@/types/api-error'
-import ModelDirectivesPanel from './module-management/ModelDirectivesPanel.vue'
+import ModelDirectivesPanel from '@/features/model-directives/ModelDirectivesPanel.vue'
 import {
   createDefaultModelDirectivesConfig,
   normalizeModelDirectivesConfig,
   type ModelDirectivesConfig,
-} from './module-management/modelDirectivesConfig'
+} from '@/features/model-directives/modelDirectivesConfig'
 
 const { success, error } = useToast()
 const moduleStore = useModuleStore()
