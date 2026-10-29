@@ -18,6 +18,9 @@ export interface EditableRule {
 // 编辑用的请求体规则类型
 export type BodyRuleAction = 'set' | 'drop' | 'rename' | 'append' | 'insert' | 'regex_replace'
 
+// 请求体规则行里可直接编辑的文本字段
+export type BodyRuleEditableField = 'path' | 'value' | 'from' | 'to' | 'index' | 'pattern' | 'replacement' | 'flags' | 'count'
+
 export interface EditableBodyRule {
   action: BodyRuleAction
   enabled: boolean
