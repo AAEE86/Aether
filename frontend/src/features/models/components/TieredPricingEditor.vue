@@ -576,7 +576,6 @@ import { Button, Checkbox, Input, Label } from '@/components/ui'
 import { formatTokens } from '@/utils/format'
 import type {
   ImageOutputQualityPricing,
-  ImageOutputPriceRange,
   PricingTier,
   ProcessingTierPricingConfig,
   TieredPricingConfig,
@@ -585,60 +584,49 @@ import {
   cacheMultiplierFromPrice,
   cachePriceFromInputMultiplier,
 } from '@/features/models/utils/tiered-pricing-multipliers'
-import { comparePricingUpperBounds } from '@/features/models/utils/tiered-pricing'
-
-type ImageOutputQuality = 'low' | 'medium' | 'high'
-type ImageOutputPriceRow = {
-  id: string
-  size: string
-  prices: Partial<Record<ImageOutputQuality, number>>
-  rawPrices: ImageOutputQualityPricing
-}
-type ImageOutputPriceRangeRow = {
-  id: string
-  upToPixels: string
-  prices: Partial<Record<ImageOutputQuality, number>>
-  rawRange: Record<string, unknown>
-}
-type ImagePricingConfig = Pick<
-  TieredPricingConfig,
-  'image_output_prices' | 'image_output_price_default' | 'image_output_price_ranges'
->
-type ImagePricingState = {
-  rows: ImageOutputPriceRow[]
-  rangeRows: ImageOutputPriceRangeRow[]
-  defaultPrice: string
-}
-type CacheManualState = { creation: boolean; read: boolean; cache1h: boolean }
-type CachePriceMode = 'multiplier' | 'price'
-type CacheMultiplierDraft = { creation: string; read: string }
-type ProcessingTierOption = {
-  scope: string
-  key: string
-  label: string
-  configured: boolean
-}
-type ProcessingTierMultiplierDraft = {
-  enabled: boolean
-  mode: 'multiplier' | 'custom'
-  value: string
-}
-type CompactProcessingTierOption = ProcessingTierMultiplierDraft & {
-  key: string
-  label: string
-  detail?: string
-  group?: string
-  accessibleLabel: string
-}
-type CompactProcessingTierGroup = {
-  key: string
-  label: string | null
-  options: CompactProcessingTierOption[]
-}
-type PricingScopePolicy = {
-  allowEmptyTiers: boolean
-  terminalUpperBound: 'require-unbounded' | 'finite-or-unbounded'
-}
+import {
+  DEFAULT_IMAGE_OUTPUT_SIZES,
+  DEFAULT_IMAGE_OUTPUT_PIXEL_LIMITS,
+  IMAGE_OUTPUT_QUALITIES,
+  STANDARD_PRICING_SCOPE,
+  UNBOUNDED_THRESHOLD_VALUE,
+  KNOWN_PROCESSING_TIERS,
+  COMPACT_PROCESSING_TIERS,
+  processingTierScope,
+  processingTierKeyFromScope,
+  pricingScopePolicy,
+  hasOwn,
+  isRecord,
+  cloneJson,
+  processingTierHasExplicitPricingData,
+  parseProcessingTierMultiplier,
+  automaticCachePrice,
+  replaceCacheTtlPrice,
+  processingTierDisplayLabel,
+  validatePricingTiers,
+  normalizedImageOutputPrices,
+  normalizedImageOutputPriceRanges,
+  parseOptionalFloat,
+  parseOptionalInteger,
+  normalizeImageOutputSize,
+  getImageOutputPrice,
+  getImageOutputRangePrice,
+  parseFloatInput,
+} from '@/features/models/utils/tiered-pricing-editor'
+import type {
+  ImageOutputQuality,
+  ImageOutputPriceRow,
+  ImageOutputPriceRangeRow,
+  ImagePricingConfig,
+  ImagePricingState,
+  CacheManualState,
+  CachePriceMode,
+  CacheMultiplierDraft,
+  ProcessingTierOption,
+  ProcessingTierMultiplierDraft,
+  CompactProcessingTierOption,
+  CompactProcessingTierGroup,
+} from '@/features/models/utils/tiered-pricing-editor'
 
 const props = withDefaults(defineProps<{
   modelValue?: TieredPricingConfig | null
@@ -660,24 +648,6 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: TieredPricingConfig | null]
 }>()
-const DEFAULT_IMAGE_OUTPUT_SIZES = ['1024x1024', '1536x1024', '1024x1536']
-const DEFAULT_IMAGE_OUTPUT_PIXEL_LIMITS = [1_048_576, 1_572_864, 2_097_152]
-const IMAGE_OUTPUT_QUALITIES: ImageOutputQuality[] = ['low', 'medium', 'high']
-const STANDARD_PRICING_SCOPE = 'standard'
-const PROCESSING_PRICING_SCOPE_PREFIX = 'processing:'
-const UNBOUNDED_THRESHOLD_VALUE = -2
-const KNOWN_PROCESSING_TIERS = [
-  { key: 'priority', label: 'Fast（OpenAI）' },
-  { key: 'fast', label: 'Fast（Claude）' },
-  { key: 'flex', label: 'Flex' },
-  { key: 'batch', label: 'Batch' },
-] as const
-const COMPACT_PROCESSING_TIERS = [
-  { key: 'priority', label: 'OpenAI', detail: 'Chat / Responses', group: 'Fast' },
-  { key: 'fast', label: 'Claude', detail: 'Messages', group: 'Fast' },
-  { key: 'flex', label: 'Flex' },
-  { key: 'batch', label: 'Batch' },
-] as const
 
 // 本地状态
 const basePricingConfig = ref<Record<string, unknown>>({})
@@ -898,55 +868,9 @@ watch(
   { immediate: true },
 )
 
-function processingTierScope(key: string): string {
-  return `${PROCESSING_PRICING_SCOPE_PREFIX}${key}`
-}
-
-function processingTierKeyFromScope(scope: string): string | null {
-  return scope.startsWith(PROCESSING_PRICING_SCOPE_PREFIX)
-    ? scope.slice(PROCESSING_PRICING_SCOPE_PREFIX.length)
-    : null
-}
-
-function pricingScopePolicy(scope: string): PricingScopePolicy {
-  return processingTierKeyFromScope(scope) === null
-    ? { allowEmptyTiers: false, terminalUpperBound: 'require-unbounded' }
-    : { allowEmptyTiers: true, terminalUpperBound: 'finite-or-unbounded' }
-}
-
 function isTierUpperBoundEditable(index: number): boolean {
   return index < localTiers.value.length - 1
     || pricingScopePolicy(activePricingScope.value).terminalUpperBound === 'finite-or-unbounded'
-}
-
-function hasOwn(object: object, key: PropertyKey): boolean {
-  return Object.prototype.hasOwnProperty.call(object, key)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function cloneJson<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
-}
-
-function processingTierHasExplicitPricingData(config: ProcessingTierPricingConfig): boolean {
-  return (Array.isArray(config.tiers) && config.tiers.length > 0)
-    || (typeof config.image_output_price_default === 'number'
-      && Number.isFinite(config.image_output_price_default))
-    || [
-      'image_output_prices',
-      'image_output_price_ranges',
-      'image_output_price_per_image',
-      'image_output_price_matrix',
-      'image_prices',
-    ].some(key => valueHasEntries(config[key]))
-}
-
-function valueHasEntries(value: unknown): boolean {
-  return (Array.isArray(value) && value.length > 0)
-    || (isRecord(value) && Object.keys(value).length > 0)
 }
 
 function initializeProcessingTierMultiplierDrafts() {
@@ -1164,13 +1088,6 @@ function requireProcessingTierMultiplierDraft(key: string): ProcessingTierMultip
   return processingTierMultiplierDrafts[key]
 }
 
-function parseProcessingTierMultiplier(value: string | number): number | null {
-  const raw = String(value ?? '').trim()
-  if (!raw) return null
-  const multiplier = Number(raw)
-  return Number.isFinite(multiplier) && multiplier >= 0 ? multiplier : null
-}
-
 function startProcessingTierMultiplier(key: string) {
   const draft = requireProcessingTierMultiplierDraft(key)
   draft.enabled = true
@@ -1285,32 +1202,6 @@ function tiersForScope(scope: string): PricingTier[] {
   return processingTierConfigs.value[key]?.tiers ?? []
 }
 
-function automaticCachePrice(tier: PricingTier | undefined, multiplier: number): number {
-  const inputPrice = tier?.input_price_per_1m
-  if (typeof inputPrice !== 'number' || !Number.isFinite(inputPrice)) return 0
-  return parseFloat((inputPrice * multiplier).toFixed(4))
-}
-
-function replaceCacheTtlPrice(
-  prices: PricingTier['cache_ttl_pricing'],
-  ttlMinutes: number,
-  price: number | null,
-): NonNullable<PricingTier['cache_ttl_pricing']> {
-  const next = prices ? cloneJson(prices) : []
-  const index = next.findIndex(item => item.ttl_minutes === ttlMinutes)
-  if (price === null) {
-    return index === -1 ? next : next.filter((_, itemIndex) => itemIndex !== index)
-  }
-  const value = {
-    ...(index >= 0 ? next[index] : {}),
-    ttl_minutes: ttlMinutes,
-    cache_creation_price_per_1m: price,
-  }
-  if (index >= 0) next[index] = value
-  else next.push(value)
-  return next
-}
-
 const validationError = computed(() => {
   const multiplierError = validateProcessingTierMultipliers()
   if (multiplierError) return multiplierError
@@ -1327,18 +1218,6 @@ const validationError = computed(() => {
   }
   return null
 })
-
-function processingTierDisplayLabel(key: string): string {
-  const compactTier = COMPACT_PROCESSING_TIERS.find(tier => tier.key === key)
-  if (compactTier) {
-    return [
-      'group' in compactTier ? compactTier.group : null,
-      compactTier.label,
-      'detail' in compactTier ? compactTier.detail : null,
-    ].filter((part) => Boolean(part)).join(' · ')
-  }
-  return KNOWN_PROCESSING_TIERS.find(tier => tier.key === key)?.label ?? key
-}
 
 function validateProcessingTierMultipliers(): string | null {
   const keys = new Set<string>([
@@ -1408,59 +1287,6 @@ function validateImagePricingScope(scope: string): string | null {
     }
     if (limits.has(limit)) return '图像像素区间上限不能重复'
     limits.add(limit)
-  }
-  return null
-}
-
-function validatePricingTiers(tiers: PricingTier[], policy: PricingScopePolicy): string | null {
-  if (tiers.length === 0) {
-    return policy.allowEmptyTiers ? null : '至少需要一个价格阶梯'
-  }
-  if (
-    policy.terminalUpperBound === 'require-unbounded'
-    && tiers[tiers.length - 1].up_to !== null
-  ) {
-    return '最后一个阶梯必须是无上限的'
-  }
-
-  let previousUpperBound = 0
-  for (let index = 0; index < tiers.length; index += 1) {
-    const upperBound = tiers[index].up_to
-    if (upperBound === null) {
-      if (index < tiers.length - 1) return `阶梯 ${index + 1} 的上限必须是有限值`
-      continue
-    }
-    if (
-      typeof upperBound !== 'number'
-      || !Number.isFinite(upperBound)
-      || !Number.isInteger(upperBound)
-      || upperBound <= previousUpperBound
-    ) {
-      return `阶梯 ${index + 1} 的上限必须大于前一个阶梯`
-    }
-    previousUpperBound = upperBound
-  }
-
-  const priceFields: Array<[keyof PricingTier, string]> = [
-    ['input_price_per_1m', '输入价格'],
-    ['output_price_per_1m', '输出价格'],
-    ['cache_creation_price_per_1m', '缓存创建价格'],
-    ['cache_read_price_per_1m', '缓存读取价格'],
-  ]
-  for (const [index, tier] of tiers.entries()) {
-    for (const [field, label] of priceFields) {
-      const price = tier[field]
-      if (price == null) continue
-      if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) {
-        return `阶梯 ${index + 1} 的${label}必须是非负有限数值`
-      }
-    }
-    for (const ttlPrice of tier.cache_ttl_pricing ?? []) {
-      const price = ttlPrice.cache_creation_price_per_1m
-      if (!Number.isFinite(price) || price < 0) {
-        return `阶梯 ${index + 1} 的缓存 TTL 价格必须是非负有限数值`
-      }
-    }
   }
   return null
 }
@@ -1753,74 +1579,6 @@ function createImageOutputPriceRangeRow(
   }
 }
 
-function normalizedImageOutputPrices(state: ImagePricingState): Record<string, ImageOutputQualityPricing> {
-  const out: Record<string, ImageOutputQualityPricing> = {}
-  for (const row of state.rows) {
-    const size = normalizeImageOutputSize(row.size)
-    if (!size) continue
-    const prices = cloneJson(row.rawPrices)
-    for (const quality of IMAGE_OUTPUT_QUALITIES) {
-      const price = row.prices[quality]
-      if (price != null && Number.isFinite(price)) {
-        prices[quality] = price
-      } else {
-        delete prices[quality]
-      }
-    }
-    if (Object.keys(prices).length > 0) {
-      out[size] = { ...out[size], ...prices }
-    }
-  }
-  return out
-}
-
-function normalizedImageOutputPriceRanges(state: ImagePricingState): ImageOutputPriceRange[] {
-  const ranges: ImageOutputPriceRange[] = []
-  for (const row of state.rangeRows) {
-    const range = cloneJson(row.rawRange)
-    const prices = isRecord(range.prices)
-      ? cloneJson(range.prices) as ImageOutputQualityPricing
-      : {}
-    for (const quality of IMAGE_OUTPUT_QUALITIES) {
-      const price = row.prices[quality]
-      if (price != null && Number.isFinite(price)) {
-        prices[quality] = price
-      } else {
-        delete prices[quality]
-      }
-    }
-    if (Object.keys(prices).length === 0) continue
-    range.up_to_pixels = parseOptionalInteger(row.upToPixels)
-    range.prices = prices
-    ranges.push(range as ImageOutputPriceRange)
-  }
-  return ranges.sort((a, b) => comparePricingUpperBounds(a.up_to_pixels, b.up_to_pixels))
-}
-
-function parseOptionalFloat(value: string | number): number | null {
-  if (value === '' || value === null || value === undefined) return null
-  const number = typeof value === 'string' ? parseFloat(value) : value
-  return Number.isFinite(number) ? number : null
-}
-
-function parseOptionalInteger(value: string | number): number | null {
-  if (value === '' || value === null || value === undefined) return null
-  const number = typeof value === 'string' ? Number(value) : value
-  return Number.isInteger(number) && number > 0 ? number : null
-}
-
-function normalizeImageOutputSize(size: string): string {
-  return String(size || '').trim().replace(/\s*[xX×]\s*/g, 'x')
-}
-
-function getImageOutputPrice(row: ImageOutputPriceRow, quality: ImageOutputQuality): string | number {
-  return row.prices[quality] ?? ''
-}
-
-function getImageOutputRangePrice(row: ImageOutputPriceRangeRow, quality: ImageOutputQuality): string | number {
-  return row.prices[quality] ?? ''
-}
-
 function updateImageOutputSize(rowId: string, value: string | number) {
   const row = imageOutputPriceRows.value.find(item => item.id === rowId)
   if (!row) return
@@ -1890,11 +1648,6 @@ function removeImageOutputRangeRow(rowId: string) {
 function updateImageOutputPriceDefault(value: string | number) {
   imageOutputPriceDefault.value = String(value ?? '')
   syncToParent()
-}
-
-function parseFloatInput(value: string | number): number {
-  const num = typeof value === 'string' ? parseFloat(value) : value
-  return isNaN(num) ? 0 : num
 }
 
 // 更新输入价格（会触发缓存价格自动更新）

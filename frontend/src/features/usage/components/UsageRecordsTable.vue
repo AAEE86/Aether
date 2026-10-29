@@ -216,208 +216,15 @@
       >
         暂无请求记录
       </div>
-      <div
+      <UsageRecordMobileCard
         v-for="record in records"
         v-else
         :key="record.id"
-        class="border-b border-border/40 px-3 py-2.5"
-        :class="isAdmin ? 'cursor-pointer active:bg-muted/30 transition-colors' : ''"
-        @click="isAdmin && emit('showDetail', record.id)"
-      >
-        <!-- 第一行：模型 + 费用 -->
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0 flex-1">
-            <div class="flex min-w-0 flex-wrap items-center gap-1.5">
-              <UsageModelDisplay
-                :record="record"
-                model-class="text-[15px] font-semibold leading-5"
-                stack-full-width
-              />
-              <ShieldCheck
-                v-if="record.chat_pii_redaction"
-                data-usage-attempt-marker="pii-redaction"
-                class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 flex-shrink-0"
-                title="此请求触发了敏感信息保护：发送给上游的内容已替换为占位符"
-                aria-label="触发敏感信息保护"
-              />
-              <!-- 状态 Badge -->
-              <Badge
-                v-if="isUsageRecordFailed(record)"
-                variant="destructive"
-                class="whitespace-nowrap text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
-              >
-                失败
-              </Badge>
-              <Badge
-                v-else-if="getDisplayStatus(record) === 'pending'"
-                variant="outline"
-                class="whitespace-nowrap animate-pulse border-muted-foreground/30 text-muted-foreground text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
-              >
-                等待
-              </Badge>
-              <Badge
-                v-else-if="getDisplayStatus(record) === 'streaming'"
-                variant="outline"
-                class="whitespace-nowrap animate-pulse border-primary/50 text-primary text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
-              >
-                传输
-              </Badge>
-              <Badge
-                v-else-if="record.status === 'cancelled'"
-                variant="outline"
-                class="whitespace-nowrap border-amber-500/50 text-amber-600 dark:text-amber-400 text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
-              >
-                取消
-              </Badge>
-              <Badge
-                v-else-if="isUsageWebSocket(record)"
-                variant="outline"
-                data-usage-transport="websocket"
-                :title="getWebSocketTransportTitle(record)"
-                class="whitespace-nowrap border-sky-500/50 text-sky-600 dark:text-sky-400 text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
-              >
-                WS
-              </Badge>
-              <Badge
-                v-else-if="getStreamModeSegments(record).hasConversion"
-                :variant="streamBadgeVariant(getStreamModeSegments(record).client === '流式')"
-                :class="(streamBadgeVariant(getStreamModeSegments(record).client === '流式') === 'secondary')
-                  ? 'whitespace-nowrap text-[10px] px-1.5 h-4 leading-4 inline-flex items-center gap-0.5 flex-shrink-0'
-                  : 'whitespace-nowrap border-border/60 text-muted-foreground text-[10px] px-1.5 h-4 leading-4 inline-flex items-center gap-0.5 flex-shrink-0'"
-              >
-                <span>{{ getStreamModeSegments(record).client }}</span>
-                <span class="opacity-60">→</span>
-                <span>{{ getStreamModeSegments(record).upstream }}</span>
-              </Badge>
-              <Badge
-                v-else
-                :variant="streamBadgeVariant(getUpstreamStream(record))"
-                :class="(streamBadgeVariant(getUpstreamStream(record)) === 'secondary')
-                  ? 'whitespace-nowrap text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0'
-                  : 'whitespace-nowrap border-border/60 text-muted-foreground text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0'"
-              >
-                {{ getStreamModeLabel(record) }}
-              </Badge>
-            </div>
-          </div>
-          <UsageCostDisplay
-            :record="record"
-            :show-actual-cost="showActualCost"
-            compact
-            class="shrink-0"
-          />
-        </div>
-
-        <!-- 第二行：时间 + API格式 -->
-        <div class="mt-1.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3.5 text-muted-foreground">
-          <span class="shrink-0 tabular-nums text-foreground whitespace-nowrap">
-            {{ formatRecordTime(record.created_at) }}
-          </span>
-          <span class="shrink-0 tabular-nums whitespace-nowrap">
-            {{ formatRecordShortDate(record.created_at) }}
-          </span>
-          <template v-if="record.api_format">
-            <span class="text-muted-foreground/40">·</span>
-            <span class="min-w-0 truncate">{{ formatApiFormat(record.api_format) }}</span>
-          </template>
-        </div>
-
-        <!-- 用户与上游提供商信息 -->
-        <div
-          v-if="isAdmin"
-          class="mt-1 min-w-0 truncate text-[10px] leading-3.5 text-muted-foreground"
-          :title="formatRecordUserSegment(record)"
-        >
-          {{ formatRecordUserSegment(record) }}
-        </div>
-        <div
-          v-if="isAdmin"
-          class="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] leading-3.5"
-        >
-          <UsageProviderDisplay
-            :record="record"
-            class="flex-1"
-          />
-          <!-- 手机与桌面保持相同的标记优先级：发生故障转移时优先显示转移标记。 -->
-          <Shuffle
-            v-if="record.has_fallback"
-            data-usage-attempt-marker="fallback"
-            class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0"
-            title="此请求发生了 Provider 故障转移"
-            aria-label="发生 Provider 故障转移"
-          />
-          <Ban
-            v-if="record.has_skipped_candidate && !record.has_fallback"
-            data-usage-attempt-marker="skipped-candidate"
-            class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 flex-shrink-0"
-            :title="skippedCandidateTooltip(record)"
-            :aria-label="skippedCandidateAriaLabel(record)"
-          />
-          <RefreshCcw
-            v-if="record.has_retry"
-            data-usage-attempt-marker="retry"
-            class="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0"
-            title="此请求发生了重试"
-            aria-label="发生重试"
-          />
-        </div>
-
-        <!-- 第四行：性能指标 -->
-        <div class="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] leading-3.5 text-muted-foreground">
-          <span
-            class="min-w-0 truncate whitespace-nowrap tabular-nums text-foreground"
-            :title="getRecordPerformanceTitle(record)"
-          >
-            <span class="text-muted-foreground">耗时&amp;速度</span>
-            <template v-if="getDisplayStatus(record) === 'pending' || getDisplayStatus(record) === 'streaming'">
-              <span class="ml-1">{{ formatRecordDurationSeconds(record.first_byte_time_ms) }}</span>
-              <span class="text-muted-foreground"> / </span>
-              <ElapsedTimeText
-                class="text-primary"
-                :created-at="record.created_at"
-                :response-time-updated-at="record.response_time_updated_at ?? null"
-                :status="getDisplayStatus(record)"
-                :response-time-ms="record.response_time_ms ?? null"
-              />
-              <span class="text-muted-foreground"> / </span>
-              <span>{{ formatOutputRate(getRecordDisplayOutputRate(record)) }}</span>
-            </template>
-            <span
-              v-else-if="hasRecordDisplayLatency(record)"
-              class="ml-1"
-            >{{ formatRecordLatencyPair(record) }} / {{ formatOutputRate(getRecordDisplayOutputRate(record)) }}</span>
-            <span
-              v-else
-              class="ml-1"
-            >- / {{ formatOutputRate(getRecordDisplayOutputRate(record)) }}</span>
-          </span>
-          <span class="text-muted-foreground/40">·</span>
-          <span
-            class="min-w-0 truncate whitespace-nowrap tabular-nums text-foreground"
-            :title="hasRecordCacheTokens(record) ? getRecordCacheTokensTitle(record) : undefined"
-          >
-            <span class="text-muted-foreground">Tokens</span>
-            <span
-              v-if="record.usage_available !== false"
-              class="ml-1"
-            >{{ formatTokens(getRecordEffectiveInputTokens(record)) }} / {{ formatTokens(record.output_tokens || 0) }}</span>
-            <span
-              v-else
-              data-usage-unavailable="tokens"
-              class="ml-1 text-muted-foreground"
-              title="上游未提供可验证的 token/费用用量"
-            >不可用</span>
-            <template v-if="record.usage_available !== false && hasRecordCacheTokens(record)">
-              <span class="text-muted-foreground"> | </span>
-              <span>{{ formatOptionalTokens(getRecordCacheReadTokens(record)) }} / {{ formatOptionalTokens(getRecordCacheCreationTokens(record)) }}</span>
-            </template>
-            <template v-if="record.usage_available !== false && ((record.input_audio_tokens || 0) > 0 || (record.output_audio_tokens || 0) > 0)">
-              <span class="text-muted-foreground"> | 音频 </span>
-              <span>{{ formatOptionalTokens(record.input_audio_tokens) }} / {{ formatOptionalTokens(record.output_audio_tokens) }}</span>
-            </template>
-          </span>
-        </div>
-      </div>
+        :record="record"
+        :is-admin="isAdmin"
+        :show-actual-cost="showActualCost"
+        @show-detail="emit('showDetail', $event)"
+      />
     </div>
 
     <!-- 桌面端表格视图 -->
@@ -1080,29 +887,42 @@ import {
 } from '@/components/ui'
 import { Ban, EyeOff, RefreshCcw, Search, ShieldCheck, Shuffle } from 'lucide-vue-next'
 import { formatTokens } from '@/utils/format'
-import { getCacheCreationTokens, getCacheReadTokens, getEffectiveInputTokens } from '../token-normalization'
 import {
   formatOutputRate,
-  formatOutputRateValue,
-  getDisplayOutputRate,
-  getGenerationTimeMs,
 } from '../performance'
 import {
-  formatUsageStreamLabel,
   isUsageRecordFailed,
-  isUsageUpstreamStream,
   isUsageWebSocket,
-  resolveDisplayRequestStatus,
-  resolveUsageStreamLabelSegments
 } from '../utils/status'
 import { useRowClick } from '@/composables/useRowClick'
 import { useDarkMode } from '@/composables/useDarkMode'
 import { API_FORMAT_ORDER, formatApiFormat } from '@/api/endpoints/types/api-format'
 import { formatClientFamily } from '@/features/usage/utils/clientFamily'
-import { formatServiceTierFact } from '../utils/service-tier'
-import { formatCandidateSkipReason } from '../utils/skipReason'
-import { isCyberPolicyError } from '../utils/cyberError'
 import { formatUsageWebSocketTransportTitle as getWebSocketTransportTitle } from '../utils/websocketTransport'
+import {
+  getDisplayStatus,
+  getStreamModeLabel,
+  getStreamModeSegments,
+  getUpstreamStream,
+  formatRecordDate,
+  formatRecordTime,
+  getRecordEffectiveInputTokens,
+  getRecordCacheReadTokens,
+  getRecordCacheCreationTokens,
+  hasPositiveTokens,
+  formatOptionalTokens,
+  formatRecordLatencyPair,
+  formatRecordDurationSeconds,
+  hasRecordDisplayLatency,
+  getRecordDisplayOutputRate,
+  getRecordPerformanceTitle,
+  formatUserAgent,
+  shouldShowFormatConversion,
+  skippedCandidateTooltip,
+  skippedCandidateAriaLabel,
+  getApiFormatTooltip,
+  getModelTooltip,
+} from '../utils/usageRecordDisplay'
 import type { DateRangeParams, UsageRecord } from '../types'
 import { MultiSelect, TimeRangePicker } from '@/components/common'
 import type { MultiSelectOption } from '@/components/common/MultiSelect.vue'
@@ -1111,6 +931,7 @@ import ServerUserSelector from './ServerUserSelector.vue'
 import UsageModelDisplay from './UsageModelDisplay.vue'
 import UsageCostDisplay from './UsageCostDisplay.vue'
 import UsageProviderDisplay from './UsageProviderDisplay.vue'
+import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 
 export interface UserOption {
   id: string
@@ -1389,58 +1210,6 @@ function scheduleSearchEmit(value: string) {
   }, SEARCH_EMIT_DEBOUNCE_MS)
 }
 
-function getDisplayStatus(record: UsageRecord) {
-  return resolveDisplayRequestStatus(record)
-}
-
-function getStreamModeLabel(record: UsageRecord): string {
-  return formatUsageStreamLabel(record)
-}
-
-function getStreamModeSegments(record: UsageRecord) {
-  return resolveUsageStreamLabelSegments(record)
-}
-
-function getUpstreamStream(record: UsageRecord): boolean {
-  return isUsageUpstreamStream(record)
-}
-
-function parseRecordDateTime(dateStr: string): Date {
-  const utcDateStr = dateStr.includes('Z') || dateStr.includes('+') ? dateStr : `${dateStr}Z`
-  return new Date(utcDateStr)
-}
-
-function formatRecordDate(dateStr: string): string {
-  const date = parseRecordDateTime(dateStr)
-  const year = String(date.getFullYear())
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function formatRecordShortDate(dateStr: string): string {
-  const date = parseRecordDateTime(dateStr)
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${month}-${day}`
-}
-
-function formatRecordTime(dateStr: string): string {
-  const date = parseRecordDateTime(dateStr)
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-  return `${hours}:${minutes}:${seconds}`
-}
-
-function getRecordUserName(record: UsageRecord): string {
-  return record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : '已删除用户')
-}
-
-function formatRecordUserSegment(record: UsageRecord): string {
-  return `${getRecordUserName(record)} / ${record.api_key?.name || '-'}`
-}
-
 watch(() => props.filterSearch, (value) => {
   if (value !== localSearch.value) {
     cancelPendingSearchEmit()
@@ -1483,228 +1252,6 @@ function handleRowClick(event: MouseEvent, id: string) {
   emit('showDetail', id)
 }
 
-function getRecordEffectiveInputTokens(record: UsageRecord): number {
-  return getEffectiveInputTokens(record)
-}
-
-function getRecordCacheReadTokens(record: UsageRecord): number {
-  return getCacheReadTokens(record)
-}
-
-function getRecordCacheCreationTokens(record: UsageRecord): number {
-  return getCacheCreationTokens(record)
-}
-
-function hasPositiveTokens(value: number | null | undefined): boolean {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-}
-
-function formatOptionalTokens(value: number | null | undefined): string {
-  return hasPositiveTokens(value) ? formatTokens(value) : '-'
-}
-
-function hasRecordCacheTokens(record: UsageRecord): boolean {
-  return hasPositiveTokens(getRecordCacheReadTokens(record)) || hasPositiveTokens(getRecordCacheCreationTokens(record))
-}
-
-function getRecordCacheTokensTitle(record: UsageRecord): string {
-  return [
-    `缓存读取: ${formatOptionalTokens(getRecordCacheReadTokens(record))}`,
-    `缓存写入: ${formatOptionalTokens(getRecordCacheCreationTokens(record))}`,
-  ].join('\n')
-}
-
-function formatRecordLatencyPair(record: UsageRecord): string {
-  const firstByte = formatRecordDurationSeconds(
-    record.end_to_end_first_byte_time_ms ?? record.first_byte_time_ms,
-  )
-  const total = formatRecordDurationSeconds(record.end_to_end_time_ms ?? record.response_time_ms)
-  return `${firstByte} / ${total}`
-}
-
-function formatRecordDurationSeconds(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms)) return '-'
-  return `${(ms / 1000).toFixed(2)}s`
-}
-
-function hasRecordDisplayLatency(record: UsageRecord): boolean {
-  return record.end_to_end_time_ms != null
-    || record.end_to_end_first_byte_time_ms != null
-    || record.response_time_ms != null
-    || record.first_byte_time_ms != null
-}
-
-function getRecordDisplayOutputRate(record: UsageRecord): number | null {
-  return getDisplayOutputRate({
-    output_tokens: record.output_tokens,
-    response_time_ms: record.response_time_ms,
-    first_byte_time_ms: record.first_byte_time_ms,
-    is_stream: record.is_stream,
-    upstream_is_stream: record.upstream_is_stream,
-  })
-}
-
-function getRecordPerformanceTitle(record: UsageRecord): string {
-  const outputRate = getRecordDisplayOutputRate(record)
-  return [
-    `端到端首字: ${formatRecordDurationSeconds(record.end_to_end_first_byte_time_ms ?? record.first_byte_time_ms)}`,
-    `端到端总耗时: ${formatRecordDurationSeconds(record.end_to_end_time_ms ?? record.response_time_ms)}`,
-    `成功候选首字: ${formatRecordDurationSeconds(record.first_byte_time_ms)}`,
-    `成功候选耗时: ${formatRecordDurationSeconds(record.response_time_ms)}`,
-    `生成耗时: ${formatRecordDurationSeconds(getGenerationTimeMs(record))}`,
-    `输出速度: ${formatOutputRateTokensPerSecond(outputRate)}`,
-  ].join('\n')
-}
-
-function formatOutputRateTokensPerSecond(outputRate: number | null | undefined): string {
-  const value = formatOutputRateValue(outputRate)
-  if (value === '-') return value
-  return `${value} tokens/s`
-}
-
-function formatUserAgent(value: string | null | undefined): string {
-  const userAgent = value?.trim()
-  if (!userAgent) return '-'
-  return userAgent.length > 48 ? `${userAgent.slice(0, 45)}...` : userAgent
-}
-
 // useDebounceFn 自动处理清理，无需 onUnmounted
 
-// 判断是否应该显示格式转换信息
-// 包括：1. 跨格式转换（has_format_conversion=true）2. 同族格式差异
-function shouldShowFormatConversion(record: UsageRecord): boolean {
-  if (!record.api_format || !record.endpoint_api_format) {
-    return false
-  }
-  // 跨格式转换
-  if (record.has_format_conversion) {
-    return true
-  }
-  // 同族格式差异（精确字符串比较，不区分大小写）
-  return record.api_format.trim().toLowerCase() !== record.endpoint_api_format.trim().toLowerCase()
-}
-
-// 被跳过候选的提示文案：把"调度阶段排除"和"上游失败"讲清楚，
-// 避免用户把"无报错换提供商"误判成调度 bug 或提供商静默出错。
-function skippedCandidateTooltip(record: UsageRecord): string {
-  const reasons = (record.skipped_candidate_reasons ?? [])
-    .map(formatCandidateSkipReason)
-    .filter((reason, index, all) => reason && all.indexOf(reason) === index)
-
-  const header = '本次有候选在调度阶段被跳过，请求未发往该候选（因此不会有上游报错）'
-  if (!reasons.length) return header
-  return `${header}\n跳过原因：${reasons.join('；')}`
-}
-
-function skippedCandidateAriaLabel(record: UsageRecord): string {
-  const reasons = (record.skipped_candidate_reasons ?? []).map(formatCandidateSkipReason)
-  return reasons.length ? `有候选被调度跳过：${reasons.join('；')}` : '有候选被调度跳过'
-}
-
-// 获取 API 格式的 tooltip（包含转换信息）
-function getApiFormatTooltip(record: UsageRecord): string {
-  if (!record.api_format) {
-    return ''
-  }
-  const displayFormat = formatApiFormat(record.api_format)
-
-  // 如果发生了格式转换或同族格式差异，显示详细信息
-  if (shouldShowFormatConversion(record)) {
-    const endpointApiFormat = record.endpoint_api_format ?? record.api_format
-    const endpointDisplayFormat = formatApiFormat(endpointApiFormat)
-    const conversionType = record.has_format_conversion ? '格式转换' : '格式兼容（无需转换）'
-    return `用户请求格式: ${displayFormat}\n端点原生格式: ${endpointDisplayFormat}\n${conversionType}`
-  }
-
-  return displayFormat
-}
-
-function getReasoningEffort(record: UsageRecord): string | null {
-  const requested = record.requested_reasoning_effort?.trim()
-  const actual = record.reasoning_effort?.trim()
-  if (requested && actual && requested.toLowerCase() !== actual.toLowerCase()) {
-    return `${requested} -> ${actual}`
-  }
-  return actual || requested || null
-}
-
-function hasCyberPolicyError(record: UsageRecord): boolean {
-  return isCyberPolicyError(record.error_message)
-}
-
-interface ServiceTierBadgePresentation {
-  label: string
-  className: string
-  title: string
-  ariaLabel: string
-}
-
-function normalizeServiceTier(value: string | null | undefined): string | null {
-  const serviceTier = value?.trim().toLowerCase()
-  return serviceTier || null
-}
-
-function canonicalServiceTier(value: string | null): string | null {
-  if (value === 'auto' || value === 'default' || value === 'standard') {
-    return 'standard'
-  }
-  if (value === 'fast') {
-    return 'priority'
-  }
-  return value
-}
-
-function buildServiceTierBadgePresentation(
-  requestedRaw: string | null,
-): ServiceTierBadgePresentation {
-  const titleLines: string[] = []
-  const requestedLabel = formatServiceTierFact(requestedRaw)
-  if (requestedLabel) titleLines.push(`上游请求档位：${requestedLabel}`)
-  // Billing is resolved from the same final provider request tier. Keep it
-  // explicit in the tooltip without consulting a response-side tier.
-  if (requestedLabel) titleLines.push(`计费档位：${requestedLabel}`)
-  const title = titleLines.join('\n')
-  return {
-    label: 'Fast',
-    className: '!bg-transparent text-blue-500 dark:text-blue-300',
-    title,
-    ariaLabel: titleLines.join('，'),
-  }
-}
-
-function getServiceTierBadge(record: UsageRecord): ServiceTierBadgePresentation | null {
-  const requestedRaw = normalizeServiceTier(record.service_tier)
-  const requested = canonicalServiceTier(requestedRaw)
-  const requestedFast = requested === 'priority'
-  if (!requestedFast) return null
-  return buildServiceTierBadgePresentation(requestedRaw)
-}
-
-function getServiceTierTitle(record: UsageRecord): string {
-  const badge = getServiceTierBadge(record)
-  if (badge) return badge.title
-
-  const requested = formatServiceTierFact(record.service_tier)
-  return [
-    requested ? `上游请求档位：${requested}` : null,
-    requested ? `计费档位：${requested}` : null,
-  ].filter((line): line is string => Boolean(line)).join('\n')
-}
-
-// 获取模型列的 tooltip
-function getModelTooltip(record: UsageRecord): string {
-  const reasoningEffort = getReasoningEffort(record)
-  const serviceTierTitle = getServiceTierTitle(record)
-  const tierSuffix = serviceTierTitle ? `\n${serviceTierTitle}` : ''
-  const cyberSuffix = hasCyberPolicyError(record) ? '\nCyber Policy: blocked' : ''
-  const suffix = `${reasoningEffort ? `\nReasoning: ${reasoningEffort}` : ''}${tierSuffix}${cyberSuffix}`
-  const requestModel = record.model.trim()
-  const mappingModel = record.target_model?.trim()
-  const responseModel = record.response_model?.trim()
-  return [
-    requestModel,
-    mappingModel && mappingModel !== requestModel ? `映射模型: ${mappingModel}` : null,
-    responseModel && responseModel !== requestModel ? `响应模型: ${responseModel}` : null,
-  ].filter((line): line is string => Boolean(line)).join('\n') + suffix
-}
 </script>
