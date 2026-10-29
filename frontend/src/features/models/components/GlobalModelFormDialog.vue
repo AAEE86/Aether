@@ -13,272 +13,20 @@
       :class="isEditMode ? '' : 'h-[600px] flex-col'"
     >
       <!-- 上方：搜索和加载预设（仅创建模式） -->
-      <section
+      <ModelCatalogPresetPanel
         v-if="!isEditMode && !presetPanelCollapsed"
-        class="h-full flex flex-col space-y-3"
-      >
-        <!-- 搜索框 -->
-        <div class="relative">
-          <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            v-model="searchQuery"
-            type="text"
-            placeholder="搜索模型、提供商..."
-            class="pl-8 h-8 text-sm"
-          />
-        </div>
-
-        <!-- 横向提供商 Logo 与模型列表 -->
-        <div class="flex-1 min-h-0 overflow-hidden border rounded-lg flex flex-col">
-          <div
-            v-if="loading"
-            class="flex flex-col items-center justify-center gap-3 flex-1"
-          >
-            <Loader2 class="w-5 h-5 animate-spin text-muted-foreground" />
-            <p class="text-xs text-muted-foreground">
-              正在加载在线目录；也可以先手动填写模型
-            </p>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              class="h-8"
-              data-testid="models-catalog-manual-entry-loading"
-              @click="enterManualEntryMode"
-            >
-              手动填写
-            </Button>
-          </div>
-          <div
-            v-else-if="catalogLoadError"
-            class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
-            role="alert"
-            data-testid="models-catalog-load-error"
-          >
-            <div class="flex h-9 w-9 items-center justify-center rounded-md border bg-muted/40 text-destructive">
-              <TriangleAlert class="h-4 w-4" />
-            </div>
-            <div class="max-w-md space-y-1">
-              <p class="text-sm font-medium">
-                外部模型目录加载失败
-              </p>
-              <p class="break-words text-xs text-muted-foreground">
-                {{ catalogLoadError }}
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              class="h-8 gap-1.5"
-              data-testid="models-catalog-retry"
-              @click="retryModelsCatalog"
-            >
-              <RefreshCw class="h-3.5 w-3.5" />
-              重试
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              class="h-8"
-              data-testid="models-catalog-manual-entry"
-              @click="enterManualEntryMode"
-            >
-              直接手动填写
-            </Button>
-          </div>
-          <template v-else>
-            <!-- 提供商 Logo 横向选择 -->
-            <div
-              v-if="groupedModels.length > 0"
-              class="relative shrink-0 border-b"
-            >
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                class="absolute left-1 top-1/2 z-10 h-8 w-8 -translate-y-1/2 bg-background/95 shadow-sm"
-                title="向左滚动"
-                aria-label="向左滚动提供商"
-                @click="scrollProviderLogos(-1)"
-              >
-                <ChevronLeft class="h-4 w-4" />
-              </Button>
-              <div
-                ref="providerLogoScroller"
-                class="mx-11 flex gap-2 overflow-x-auto p-2 scrollbar-hide"
-              >
-                <button
-                  v-for="group in groupedModels"
-                  :key="group.providerId"
-                  type="button"
-                  class="w-[76px] shrink-0 rounded-md border px-2 py-1.5 flex flex-col items-center gap-1 transition-colors"
-                  :class="expandedProvider === group.providerId
-                    ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-transparent hover:border-border hover:bg-muted'"
-                  :title="`${group.providerName}（${group.models.length}）`"
-                  @click="toggleProvider(group.providerId)"
-                >
-                  <img
-                    :src="getProviderLogoUrl(group.providerId)"
-                    :alt="group.providerName"
-                    class="w-7 h-7 rounded object-contain dark:invert dark:brightness-90"
-                    @error="handleLogoError"
-                  >
-                  <span class="w-full truncate text-[10px] font-medium text-center">{{ group.providerName }}</span>
-                </button>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                class="absolute right-1 top-1/2 z-10 h-8 w-8 -translate-y-1/2 bg-background/95 shadow-sm"
-                title="向右滚动"
-                aria-label="向右滚动提供商"
-                @click="scrollProviderLogos(1)"
-              >
-                <ChevronRight class="h-4 w-4" />
-              </Button>
-            </div>
-
-            <!-- 当前提供商模型 -->
-            <div
-              v-if="expandedProviderGroup"
-              class="flex-1 min-h-0 overflow-y-auto p-2 scrollbar-thin"
-            >
-              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div
-                  v-for="item in expandedProviderGroup.models"
-                  :key="item.modelId"
-                  class="relative min-w-0"
-                >
-                  <button
-                    type="button"
-                    class="group relative flex h-full min-h-[152px] w-full min-w-0 flex-col rounded-lg border bg-card p-4 text-left shadow-sm transition-[border-color,box-shadow,transform,background-color] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-                    :class="getExistingModel(item)
-                      ? 'cursor-default border-border/70'
-                      : selectedModel?.modelId === item.modelId && selectedModel?.providerId === item.providerId
-                        ? 'cursor-pointer border-primary bg-primary/5 ring-1 ring-primary hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-md active:scale-[0.96]'
-                        : 'cursor-pointer border-border/70 hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-md active:scale-[0.96]'"
-                    :disabled="!!getExistingModel(item)"
-                    @click="selectModel(item)"
-                  >
-                    <span
-                      v-if="selectedModel?.modelId === item.modelId && selectedModel?.providerId === item.providerId"
-                      class="absolute right-2.5 top-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm"
-                    >
-                      <Check class="h-3 w-3" />
-                    </span>
-
-                    <span
-                      class="flex w-full items-start gap-2"
-                      :class="getExistingModel(item)
-                        ? 'pr-24'
-                        : selectedModel?.modelId === item.modelId && selectedModel?.providerId === item.providerId
-                          ? 'pr-7'
-                          : ''"
-                    >
-                      <span class="min-w-0 flex-1">
-                        <span class="block truncate text-sm font-semibold leading-5">{{ item.modelName }}</span>
-                        <span class="block truncate font-mono text-[10px] text-muted-foreground">{{ item.modelId }}</span>
-                      </span>
-                    </span>
-
-                    <span class="mt-2 flex min-h-5 flex-wrap gap-1">
-                      <span
-                        v-if="item.supportsReasoning"
-                        class="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-700 dark:text-violet-300"
-                      >
-                        <BrainCircuit class="h-2.5 w-2.5" />推理
-                      </span>
-                      <span
-                        v-if="item.supportsVision"
-                        class="inline-flex items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-700 dark:text-sky-300"
-                      >
-                        <Eye class="h-2.5 w-2.5" />视觉
-                      </span>
-                      <span
-                        v-if="item.supportsToolCall"
-                        class="inline-flex items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:text-amber-300"
-                      >
-                        <Wrench class="h-2.5 w-2.5" />工具
-                      </span>
-                      <span
-                        v-if="item.supportsStructuredOutput"
-                        class="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 dark:text-emerald-300"
-                      >
-                        <Braces class="h-2.5 w-2.5" />结构化
-                      </span>
-                      <span
-                        v-if="item.supportsEmbedding"
-                        class="inline-flex items-center gap-1 rounded-md border border-fuchsia-500/20 bg-fuchsia-500/10 px-1.5 py-0.5 text-[9px] font-medium text-fuchsia-700 dark:text-fuchsia-300"
-                      >
-                        <Database class="h-2.5 w-2.5" />Embedding
-                      </span>
-                      <span
-                        v-if="item.openWeights"
-                        class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/70 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
-                      >
-                        <PackageOpen class="h-2.5 w-2.5" />开放权重
-                      </span>
-                    </span>
-
-                    <span class="mt-auto flex w-full items-end justify-between gap-2 border-t border-border/60 pt-2 text-[9px] text-muted-foreground">
-                      <span class="flex min-w-0 flex-col">
-                        <span v-if="item.contextLimit">上下文 {{ formatTokenLimit(item.contextLimit) }}</span>
-                        <span v-else>上下文未知</span>
-                        <span v-if="item.outputLimit">输出 {{ formatTokenLimit(item.outputLimit) }}</span>
-                      </span>
-                      <span
-                        v-if="item.inputPrice !== undefined || item.outputPrice !== undefined"
-                        class="shrink-0 text-right font-medium tabular-nums text-foreground/70"
-                      >
-                        <span class="block">输入 ${{ formatModelPrice(item.inputPrice) }}/M</span>
-                        <span class="block">输出 ${{ formatModelPrice(item.outputPrice) }}/M</span>
-                      </span>
-                      <span
-                        v-else-if="item.releaseDate"
-                        class="shrink-0"
-                      >{{ item.releaseDate }}</span>
-                    </span>
-                  </button>
-                  <div
-                    v-if="getExistingModel(item)"
-                    class="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"
-                  >
-                    <span class="inline-flex h-6 items-center rounded-md bg-muted px-2 text-[10px] font-medium text-muted-foreground">已添加</span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      class="h-7 w-7 bg-background/90 text-muted-foreground shadow-sm hover:text-foreground"
-                      title="去编辑"
-                      :aria-label="`编辑 ${item.modelName}`"
-                      :data-testid="`edit-existing-model-${item.modelId}`"
-                      @click="editExistingModel(item)"
-                    >
-                      <SquarePen class="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div
-              v-else-if="groupedModels.length > 0"
-              class="flex flex-1 items-center justify-center text-xs text-muted-foreground"
-            >
-              点击提供商 Logo 展开模型
-            </div>
-            <div
-              v-else
-              class="flex flex-1 items-center justify-center text-sm text-muted-foreground"
-            >
-              {{ searchQuery ? '未找到模型' : '暂无可用模型' }}
-            </div>
-          </template>
-        </div>
-      </section>
+        v-model:search-query="searchQuery"
+        v-model:expanded-provider="expandedProvider"
+        :models="allModelsCache"
+        :existing-models="existingModelsCache"
+        :selected-model="selectedModel"
+        :loading="loading"
+        :catalog-load-error="catalogLoadError"
+        @select="selectModel"
+        @edit-existing="editExistingModel"
+        @retry="retryModelsCatalog"
+        @manual-entry="enterManualEntryMode"
+      />
 
       <!-- 第二步：详细信息表单 -->
       <div
@@ -298,7 +46,7 @@
               :src="getProviderLogoUrl(selectedModel.providerId)"
               :alt="selectedModel.providerName"
               class="h-7 w-7 rounded object-contain dark:invert dark:brightness-90"
-              @error="handleLogoError"
+              @error="hideBrokenImage"
             >
           </div>
           <div
@@ -545,7 +293,7 @@
                             :src="getProviderLogoUrl(candidate.providerId)"
                             :alt="candidate.providerName"
                             class="h-5 w-5 rounded object-contain dark:invert dark:brightness-90"
-                            @error="handleLogoError"
+                            @error="hideBrokenImage"
                           >
                         </span>
                         <span class="min-w-0 flex-1">
@@ -822,9 +570,13 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from 'vue'
 import {
-  Loader2, Layers, SquarePen,
-  Search, ChevronLeft, ChevronRight, Plus, Trash2, Check,
-  BrainCircuit, Eye, Wrench, Braces, Database, PackageOpen, RefreshCw, TriangleAlert
+  Loader2,
+  Layers,
+  SquarePen,
+  Plus,
+  Trash2,
+  Check,
+  RefreshCw,
 } from 'lucide-vue-next'
 import {
   Dialog, Button, Input, Label, Checkbox,
@@ -838,6 +590,8 @@ import { parseNumberInput, sortResolutionEntries } from '@/utils/form'
 import { log } from '@/utils/logger'
 import { parseApiError } from '@/utils/errorParser'
 import TieredPricingEditor from './TieredPricingEditor.vue'
+import ModelCatalogPresetPanel from './ModelCatalogPresetPanel.vue'
+import { formatModelPrice, hideBrokenImage } from '../utils/modelsDevCatalog'
 import {
   getModelsDevList,
   getProviderLogoUrl,
@@ -893,11 +647,10 @@ const basicInfoSection = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const catalogLoadError = ref<string | null>(null)
 const searchQuery = ref('')
+const expandedProvider = ref<string | null>(null)
 const allModelsCache = ref<ModelsDevModelItem[]>([]) // 全部模型（缓存）
 const existingModelsCache = ref<GlobalModelResponse[]>([])
 const selectedModel = ref<ModelsDevModelItem | null>(null)
-const expandedProvider = ref<string | null>(null)
-const providerLogoScroller = ref<HTMLElement | null>(null)
 const presetPanelCollapsed = ref(false)
 const billingMode = ref('token')
 const editingOnlinePricingSource = ref<{
@@ -932,133 +685,6 @@ watch([onlinePricingSourcePopoverOpen, syncingOnlinePricing], ([open, syncing]) 
 
 function getExistingModel(model: ModelsDevModelItem): GlobalModelResponse | undefined {
   return findGlobalModelByName(existingModelsCache.value, model.modelId)
-}
-
-function formatTokenLimit(value: number): string {
-  if (value >= 1_000_000) {
-    return `${Number((value / 1_000_000).toFixed(1))}M`
-  }
-  if (value >= 1_000) {
-    return `${Number((value / 1_000).toFixed(1))}K`
-  }
-  return String(value)
-}
-
-function formatModelPrice(value?: number): string {
-  if (value === undefined) return '-'
-  if (value === 0) return '0'
-  const precision = value < 0.01 ? 4 : value < 1 ? 3 : 2
-  return value.toFixed(precision).replace(/\.?0+$/, '')
-}
-
-// 当前显示的模型列表：有搜索词时用全部，否则只用官方
-const allModels = computed(() => {
-  if (searchQuery.value) {
-    return allModelsCache.value
-  }
-  return allModelsCache.value.filter(m => m.official)
-})
-
-// 按提供商分组的模型
-interface ProviderGroup {
-  providerId: string
-  providerName: string
-  models: ModelsDevModelItem[]
-}
-
-const PROVIDER_PRIORITY_KEYWORDS = [
-  ['anthropic', 'claude'],
-  ['openai'],
-  ['google', 'gemini'],
-]
-
-function getProviderPriority(group: ProviderGroup): number {
-  const searchableText = `${group.providerId} ${group.providerName}`.toLowerCase()
-  const priority = PROVIDER_PRIORITY_KEYWORDS.findIndex(keywords => (
-    keywords.some(keyword => searchableText.includes(keyword))
-  ))
-  return priority === -1 ? PROVIDER_PRIORITY_KEYWORDS.length : priority
-}
-
-function getDefaultProviderId(groups: ProviderGroup[]): string | null {
-  const claudeProvider = groups.find(group => getProviderPriority(group) === 0)
-  return claudeProvider?.providerId ?? groups[0]?.providerId ?? null
-}
-
-const groupedModels = computed(() => {
-  let models = allModels.value.filter(m => !m.deprecated)
-  // 搜索（支持空格分隔的多关键词 AND 搜索）
-  if (searchQuery.value) {
-    const keywords = searchQuery.value.toLowerCase().split(/\s+/).filter(k => k.length > 0)
-    models = models.filter(model => {
-      const searchableText = `${model.providerId} ${model.providerName} ${model.modelId} ${model.modelName} ${model.family || ''}`.toLowerCase()
-      return keywords.every(keyword => searchableText.includes(keyword))
-    })
-  }
-
-  // 按提供商分组
-  const groups = new Map<string, ProviderGroup>()
-  for (const model of models) {
-    if (!groups.has(model.providerId)) {
-      groups.set(model.providerId, {
-        providerId: model.providerId,
-        providerName: model.providerName,
-        models: []
-      })
-    }
-    groups.get(model.providerId)?.models.push(model)
-  }
-
-  // 转换为数组并排序
-  const result = Array.from(groups.values())
-
-  const searchKeywords = searchQuery.value.toLowerCase().split(/\s+/).filter(k => k.length > 0)
-  result.sort((a, b) => {
-    // 搜索时，优先展示提供商名称或 ID 直接匹配的结果
-    if (searchKeywords.length > 0) {
-      const aText = `${a.providerId} ${a.providerName}`.toLowerCase()
-      const bText = `${b.providerId} ${b.providerName}`.toLowerCase()
-      const aProviderMatch = searchKeywords.some(keyword => aText.includes(keyword))
-      const bProviderMatch = searchKeywords.some(keyword => bText.includes(keyword))
-      if (aProviderMatch && !bProviderMatch) return -1
-      if (!aProviderMatch && bProviderMatch) return 1
-    }
-
-    // Claude（Anthropic）、OpenAI、Google 固定排在最前
-    const priorityDifference = getProviderPriority(a) - getProviderPriority(b)
-    if (priorityDifference !== 0) return priorityDifference
-    return a.providerName.localeCompare(b.providerName)
-  })
-
-  return result
-})
-
-const expandedProviderGroup = computed(() => (
-  groupedModels.value.find(group => group.providerId === expandedProvider.value) ?? null
-))
-
-// 搜索时如果只有一个提供商，自动展开
-watch(groupedModels, (groups) => {
-  if (expandedProvider.value && !groups.some(group => group.providerId === expandedProvider.value)) {
-    expandedProvider.value = null
-  }
-  if (searchQuery.value && groups.length === 1) {
-    expandedProvider.value = groups[0].providerId
-  } else if (!searchQuery.value && !expandedProvider.value) {
-    expandedProvider.value = getDefaultProviderId(groups)
-  }
-})
-
-// 切换提供商展开状态
-function toggleProvider(providerId: string) {
-  expandedProvider.value = expandedProvider.value === providerId ? null : providerId
-}
-
-function scrollProviderLogos(direction: -1 | 1) {
-  providerLogoScroller.value?.scrollBy({
-    left: direction * 280,
-    behavior: 'smooth',
-  })
 }
 
 function handleBillingModeChange(mode: string) {
@@ -1372,9 +998,6 @@ async function retryModelsCatalog() {
   loading.value = true
   try {
     await loadModelsCatalog()
-    if (!expandedProvider.value) {
-      expandedProvider.value = getDefaultProviderId(groupedModels.value)
-    }
   } finally {
     loading.value = false
   }
@@ -1405,9 +1028,6 @@ watch(() => props.open, async (isOpen) => {
   }
   if (isOpen && !props.model) {
     await loadModels()
-    if (!expandedProvider.value) {
-      expandedProvider.value = getDefaultProviderId(groupedModels.value)
-    }
   }
 })
 
@@ -1467,9 +1087,7 @@ function selectModel(model: ModelsDevModelItem) {
   scrollToBasicInformation()
 }
 
-function editExistingModel(model: ModelsDevModelItem) {
-  const existingModel = getExistingModel(model)
-  if (!existingModel) return
+function editExistingModel(model: ModelsDevModelItem, existingModel: GlobalModelResponse) {
   editingOnlinePricingSource.value = {
     model_id: model.modelId,
     provider_id: model.providerId,
@@ -1724,12 +1342,6 @@ function clearSelection() {
   tieredPricing.value = null
   videoResolutionPrices.value = []
   billingMode.value = 'token'
-}
-
-// Logo 加载失败处理
-function handleLogoError(event: Event) {
-  const img = event.target as HTMLImageElement
-  img.style.display = 'none'
 }
 
 // 重置表单
