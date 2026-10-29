@@ -487,6 +487,7 @@ import {
   walletStatusLabel,
 } from '@/features/wallet/utils/walletDisplay'
 import { useToast } from '@/composables/useToast'
+import { canCompleteRefund, canFailRefund, canProcessRefund } from '../utils/refundActions'
 import Drawer from '@/components/ui/drawer/Drawer.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { Wallet, X } from 'lucide-vue-next'
@@ -870,22 +871,6 @@ async function submitMoneyAction() {
     return
   }
   await submitAdjust()
-}
-
-function canProcessRefund(status: string) {
-  return status === 'pending_approval' || status === 'approved'
-}
-
-function canFailRefund(refund: Pick<RefundRequest, 'status' | 'refund_mode' | 'gateway_refund_id' | 'payout_proof'>) {
-  if (refund.status === 'pending_approval' || refund.status === 'approved') return true
-  return refund.status === 'processing'
-    && refund.refund_mode === 'offline_payout'
-    && !refund.gateway_refund_id?.trim()
-    && !refund.payout_proof
-}
-
-function canCompleteRefund(status: string) {
-  return status === 'processing'
 }
 
 async function processRefund(refund: RefundRequest) {

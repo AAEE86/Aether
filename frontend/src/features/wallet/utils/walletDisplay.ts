@@ -279,3 +279,26 @@ export function callbackStatusBadge(status: string | null | undefined) {
   if (status === 'invalid_signature' || status === 'error') return 'destructive'
   return 'outline'
 }
+
+export function ownerTypeLabel(ownerType: 'user' | 'api_key') {
+  return ownerType === 'user' ? '用户钱包' : '独立密钥'
+}
+
+export function ownerDisplayName(name: string | null | undefined, ownerType: 'user' | 'api_key') {
+  if (name) return name
+  return ownerType === 'user' ? '未命名用户' : '未命名密钥'
+}
+
+export function redeemCodeStatusLabel(status: string) {
+  if (status === 'active') return '可用'
+  if (status === 'disabled') return '已停用'
+  if (status === 'redeemed') return '已兑换'
+  return status
+}
+
+export function redeemCodeStatusBadge(status: string) {
+  if (status === 'active') return 'success'
+  if (status === 'disabled') return 'secondary'
+  if (status === 'redeemed') return 'outline'
+  return 'secondary'
+}
