@@ -378,82 +378,32 @@
                   </Badge>
                 </TableCell>
                 <TableCell class="py-3 px-2 align-top">
-                  <div class="flex justify-center gap-0.5">
-                    <Button
-                      v-if="key.cooldown_reason"
-                      variant="ghost"
-                      size="icon"
-                      class="h-7 w-7 text-muted-foreground hover:text-green-600"
-                      title="清除冷却"
-                      @click="clearCooldown(key.key_id)"
-                    >
-                      <RefreshCw class="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      v-if="canResetCycleStats(key)"
-                      variant="ghost"
-                      size="icon"
-                      class="h-7 w-7 text-muted-foreground hover:text-foreground"
-                      :disabled="resettingCycleKeyId === key.key_id"
-                      title="重置周期统计"
-                      data-testid="pool-reset-cycle-stats"
-                      @click="handleResetCycleStats(key)"
-                    >
-                      <RotateCcw
-                        class="w-3.5 h-3.5"
-                        :class="{ 'animate-spin': resettingCycleKeyId === key.key_id }"
-                      />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="h-7 w-7"
-                      title="模型权限"
-                      @click="handleKeyPermissions(key)"
-                    >
-                      <Shield class="w-3.5 h-3.5" />
-                    </Button>
-                    <PoolKeyProxyPopover
-                      :node-id="key.proxy?.node_id || ''"
-                      :node-name="getKeyProxyNodeName(key)"
-                      :open="proxyDesktopPopoverOpenKeyId === key.key_id"
-                      :saving="savingProxyKeyId === key.key_id"
-                      @update:open="(v: boolean) => handleProxyDesktopPopoverToggle(key.key_id, v)"
-                      @select="(v: string) => setKeyProxy(key, v)"
-                      @clear="clearKeyProxy(key)"
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="h-7 w-7"
-                      title="编辑账号"
-                      @click="handleEditKey(key)"
-                    >
-                      <SquarePen class="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="h-7 w-7 text-foreground hover:text-foreground"
-                      :disabled="togglingKeyId === key.key_id"
-                      :title="key.is_active ? '禁用' : '启用'"
-                      :aria-label="key.is_active ? '禁用账号' : '启用账号'"
-                      :data-testid="`pool-toggle-active-desktop-${key.key_id}`"
-                      @click="toggleKeyActive(key)"
-                    >
-                      <Power class="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="h-7 w-7 text-destructive hover:text-destructive"
-                      :disabled="deletingKeyId === key.key_id"
-                      title="删除账号"
-                      @click="handleDeleteKey(key)"
-                    >
-                      <Trash2 class="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
+                  <PoolKeyActionButtons
+                    :pool-key="key"
+                    layout="desktop"
+                    :action-ids="keyUiStateMap[key.key_id]?.desktopActionIds || []"
+                    :can-refresh-token="keyUiStateMap[key.key_id]?.canRefreshToken ?? false"
+                    :refresh-button-title="keyUiStateMap[key.key_id]?.oauthRefreshButtonTitle || ''"
+                    :refreshing-oauth="refreshingOAuthKeyId === key.key_id"
+                    :resetting-cycle="resettingCycleKeyId === key.key_id"
+                    :toggling="togglingKeyId === key.key_id"
+                    :deleting="deletingKeyId === key.key_id"
+                    :saving-proxy="savingProxyKeyId === key.key_id"
+                    :proxy-node-name="getKeyProxyNodeName(key)"
+                    :proxy-popover-open="proxyDesktopPopoverOpenKeyId === key.key_id"
+                    @update:proxy-popover-open="(v: boolean) => handleProxyDesktopPopoverToggle(key.key_id, v)"
+                    @select-proxy="(v: string) => setKeyProxy(key, v)"
+                    @clear-proxy="clearKeyProxy(key)"
+                    @download="downloadRefreshToken(key)"
+                    @copy="copyFullKey(key)"
+                    @refresh-oauth="handleRefreshOAuth(key)"
+                    @clear-cooldown="clearCooldown(key.key_id)"
+                    @permissions="handleKeyPermissions(key)"
+                    @reset-cycle-stats="handleResetCycleStats(key)"
+                    @edit="handleEditKey(key)"
+                    @toggle-active="toggleKeyActive(key)"
+                    @delete="handleDeleteKey(key)"
+                  />
                 </TableCell>
               </TableRow>
             </TableBody>
@@ -588,127 +538,32 @@
                 @consume-reset-credit="handleConsumeCodexResetCredit(key)"
               />
 
-              <div class="flex items-center gap-0.5">
-                <div
-                  v-for="actionId in keyUiStateMap[key.key_id]?.mobileActionIds || []"
-                  :key="`${key.key_id}-${actionId}`"
-                  class="min-w-0 flex-1 flex justify-center"
-                >
-                  <Button
-                    v-if="actionId === 'copy_or_download' && canExportOAuthCredential(key)"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0"
-                    title="下载 OAuth 授权文件"
-                    @click.stop="downloadRefreshToken(key)"
-                  >
-                    <Download class="w-3.5 h-3.5" />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'copy_or_download' && key.agent_identity !== true"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0"
-                    title="复制密钥"
-                    @click.stop="copyFullKey(key)"
-                  >
-                    <Copy class="w-3.5 h-3.5" />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'refresh_token'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0"
-                    :disabled="refreshingOAuthKeyId === key.key_id || !keyUiStateMap[key.key_id]?.canRefreshToken"
-                    :title="keyUiStateMap[key.key_id]?.oauthRefreshButtonTitle || ''"
-                    @click.stop="handleRefreshOAuth(key)"
-                  >
-                    <RefreshCw
-                      class="w-3.5 h-3.5"
-                      :class="{ 'animate-spin': refreshingOAuthKeyId === key.key_id }"
-                    />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'clear_cooldown'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0 text-muted-foreground hover:text-green-600"
-                    title="清除冷却"
-                    @click="clearCooldown(key.key_id)"
-                  >
-                    <RefreshCw class="w-3.5 h-3.5" />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'permissions'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0"
-                    title="模型权限"
-                    @click="handleKeyPermissions(key)"
-                  >
-                    <Shield class="w-3.5 h-3.5" />
-                  </Button>
-                  <PoolKeyProxyPopover
-                    v-else-if="actionId === 'proxy'"
-                    :node-id="key.proxy?.node_id || ''"
-                    :node-name="getKeyProxyNodeName(key)"
-                    :open="proxyMobilePopoverOpenKeyId === key.key_id"
-                    :saving="savingProxyKeyId === key.key_id"
-                    trigger-class="shrink-0"
-                    @update:open="(v: boolean) => handleProxyMobilePopoverToggle(key.key_id, v)"
-                    @select="(v: string) => setKeyProxy(key, v)"
-                    @clear="clearKeyProxy(key)"
-                  />
-                  <Button
-                    v-else-if="actionId === 'reset_cycle_stats'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-                    :disabled="resettingCycleKeyId === key.key_id"
-                    title="重置周期统计"
-                    @click="handleResetCycleStats(key)"
-                  >
-                    <RotateCcw
-                      class="w-3.5 h-3.5"
-                      :class="{ 'animate-spin': resettingCycleKeyId === key.key_id }"
-                    />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'edit'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0"
-                    title="编辑账号"
-                    @click="handleEditKey(key)"
-                  >
-                    <SquarePen class="w-3.5 h-3.5" />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'toggle'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0 text-foreground hover:text-foreground"
-                    :disabled="togglingKeyId === key.key_id"
-                    :title="key.is_active ? '禁用' : '启用'"
-                    :aria-label="key.is_active ? '禁用账号' : '启用账号'"
-                    :data-testid="`pool-toggle-active-mobile-${key.key_id}`"
-                    @click="toggleKeyActive(key)"
-                  >
-                    <Power class="w-3.5 h-3.5" />
-                  </Button>
-                  <Button
-                    v-else-if="actionId === 'delete'"
-                    variant="ghost"
-                    size="icon"
-                    class="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
-                    :disabled="deletingKeyId === key.key_id"
-                    title="删除账号"
-                    @click="handleDeleteKey(key)"
-                  >
-                    <Trash2 class="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-              </div>
+              <PoolKeyActionButtons
+                :pool-key="key"
+                layout="mobile"
+                :action-ids="keyUiStateMap[key.key_id]?.mobileActionIds || []"
+                :can-refresh-token="keyUiStateMap[key.key_id]?.canRefreshToken ?? false"
+                :refresh-button-title="keyUiStateMap[key.key_id]?.oauthRefreshButtonTitle || ''"
+                :refreshing-oauth="refreshingOAuthKeyId === key.key_id"
+                :resetting-cycle="resettingCycleKeyId === key.key_id"
+                :toggling="togglingKeyId === key.key_id"
+                :deleting="deletingKeyId === key.key_id"
+                :saving-proxy="savingProxyKeyId === key.key_id"
+                :proxy-node-name="getKeyProxyNodeName(key)"
+                :proxy-popover-open="proxyMobilePopoverOpenKeyId === key.key_id"
+                @update:proxy-popover-open="(v: boolean) => handleProxyMobilePopoverToggle(key.key_id, v)"
+                @select-proxy="(v: string) => setKeyProxy(key, v)"
+                @clear-proxy="clearKeyProxy(key)"
+                @download="downloadRefreshToken(key)"
+                @copy="copyFullKey(key)"
+                @refresh-oauth="handleRefreshOAuth(key)"
+                @clear-cooldown="clearCooldown(key.key_id)"
+                @permissions="handleKeyPermissions(key)"
+                @reset-cycle-stats="handleResetCycleStats(key)"
+                @edit="handleEditKey(key)"
+                @toggle-active="toggleKeyActive(key)"
+                @delete="handleDeleteKey(key)"
+              />
             </div>
           </div>
         </div>
@@ -862,15 +717,10 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent 
 import {
   Upload,
   RefreshCw,
-  Power,
   Database,
   KeyRound,
   Download,
   Copy,
-  Shield,
-  RotateCcw,
-  SquarePen,
-  Trash2,
 } from 'lucide-vue-next'
 
 import {
@@ -936,7 +786,7 @@ import PoolManagementHeader from '@/features/pool/components/PoolManagementHeade
 import PoolKeyQuotaPanel from '@/features/pool/components/PoolKeyQuotaPanel.vue'
 import PoolKeyStatsPanel from '@/features/pool/components/PoolKeyStatsPanel.vue'
 import PoolKeyScorePopover from '@/features/pool/components/PoolKeyScorePopover.vue'
-import PoolKeyProxyPopover from '@/features/pool/components/PoolKeyProxyPopover.vue'
+import PoolKeyActionButtons from '@/features/pool/components/PoolKeyActionButtons.vue'
 import KeyAllowedModelsEditDialog from '@/features/providers/components/KeyAllowedModelsEditDialog.vue'
 import KeyFormDialog from '@/features/providers/components/KeyFormDialog.vue'
 import OAuthKeyEditDialog from '@/features/providers/components/OAuthKeyEditDialog.vue'
@@ -1852,6 +1702,7 @@ type PoolKeyUiState = {
   statsDisplay: PoolStatsDisplay
   mobileTagItems: PoolMobileTagItem[]
   mobileActionIds: PoolMobileActionId[]
+  desktopActionIds: PoolMobileActionId[]
 }
 
 const quotaProgressMap = computed<Record<string, QuotaProgressItem[]>>(() => {
@@ -1929,6 +1780,15 @@ const keyUiStateMap = computed<Record<string, PoolKeyUiState>>(() => {
         canClearCooldown: Boolean(key.cooldown_reason),
         hasProxy: true,
       }).primary,
+      desktopActionIds: [
+        ...(key.cooldown_reason ? ['clear_cooldown' as const] : []),
+        ...(canResetCycleStats(key) ? ['reset_cycle_stats' as const] : []),
+        'permissions',
+        'proxy',
+        'edit',
+        'toggle',
+        'delete',
+      ],
     }
   }
 
