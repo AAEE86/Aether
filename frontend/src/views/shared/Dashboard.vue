@@ -1558,7 +1558,7 @@ watch(() => dailyTimeRange.value.timezone, () => {
   if (isAdmin.value) void loadDashboardData();
 });
 
-function formatDate(dateString: string): string {
+function formatDayLabel(dateString: string): string {
   const date = parseDateLike(dateString);
   const today = new Date();
   const yesterday = new Date(today);
@@ -1596,7 +1596,7 @@ function formatDailyDate(value: string): string {
     if (date === yesterday) return formatRelativeTime(-1, 'day');
     return parseDateLike(date).toLocaleDateString(getI18nLocale(), { month: '2-digit', day: '2-digit', weekday: 'short' });
   }
-  return formatDate(value);
+  return formatDayLabel(value);
 }
 
 function formatResponseTime(seconds: number | null): string {

@@ -223,7 +223,7 @@
                     v-if="release.published_at"
                     class="mt-0.5 text-[10px] text-muted-foreground"
                   >
-                    {{ formatDate(release.published_at) }}
+                    {{ formatReleaseDate(release.published_at) }}
                   </div>
                   <div
                     v-if="release.update_blocker"
@@ -474,7 +474,7 @@ const selectedReleaseTitle = computed(() => {
 })
 const selectedReleaseDescription = computed(() => {
   return selectedRelease.value?.published_at
-    ? `${legacyT('发布于')} ${formatDate(selectedRelease.value.published_at)}`
+    ? `${legacyT('发布于')} ${formatReleaseDate(selectedRelease.value.published_at)}`
     : legacyT('查看该版本的发布说明')
 })
 const canUseSelectedRelease = computed(() => {
@@ -518,7 +518,7 @@ const selectedReleaseNotesHtml = computed(() => {
   }
 })
 
-function formatDate(dateStr: string): string {
+function formatReleaseDate(dateStr: string): string {
   try {
     const date = new Date(dateStr)
     return date.toLocaleDateString(locale.value, {

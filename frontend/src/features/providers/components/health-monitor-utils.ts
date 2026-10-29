@@ -51,6 +51,28 @@ export interface HealthTimelineTooltipMetrics {
   avg_tps?: number | null
 }
 
+/** 健康卡片共用的指标与时间线字段，端点/模型/提供商/关联监控对象都满足 */
+export interface HealthMonitorItemMetrics extends HealthMonitorAvailability {
+  avg_latency_ms?: number | null
+  avg_first_byte_ms?: number | null
+  avg_tps?: number | null
+  timeline?: string[] | null
+  timeline_details?: HealthTimelineTooltipMetrics[] | null
+  time_range_start?: string | null
+  time_range_end?: string | null
+}
+
+/** 健康监控分区中的一项：已经整理好标题、说明与详情来源 */
+export interface HealthMonitorSectionItem<T = unknown> {
+  key: string
+  title: string
+  metaText: string
+  entityName: string
+  monitor: HealthMonitorItemMetrics
+  detail: HealthMonitorDetailSource
+  raw: T
+}
+
 export interface HealthMonitorSectionSummary {
   total: number
   healthy: number
