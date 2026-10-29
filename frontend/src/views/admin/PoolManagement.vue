@@ -360,60 +360,12 @@
                     <span class="font-mono text-xs tabular-nums text-foreground/90">
                       {{ formatPoolScore(key.pool_score?.score) }}
                     </span>
-                    <Popover
+                    <PoolKeyScorePopover
                       v-if="key.pool_score"
+                      :score="key.pool_score"
                       :open="scoreDesktopPopoverOpenKeyId === key.key_id"
                       @update:open="(open: boolean) => handleScoreDesktopPopoverToggle(key.key_id, open)"
-                    >
-                      <PopoverTrigger as-child>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-5 w-5 rounded-full border border-transparent text-muted-foreground/80 hover:border-border/60 hover:bg-muted/60 hover:text-foreground"
-                          title="查看评分计算结果"
-                          aria-label="查看评分计算结果"
-                          @click.stop
-                        >
-                          <CircleHelp class="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent
-                        v-if="scoreDesktopPopoverOpenKeyId === key.key_id"
-                        class="w-[22rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border-border/60 bg-card/95 p-0 text-card-foreground shadow-xl shadow-black/5 backdrop-blur supports-[backdrop-filter]:bg-card/90"
-                        side="bottom"
-                        align="end"
-                        :side-offset="8"
-                      >
-                        <div class="text-left">
-                          <div class="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3 py-2.5">
-                            <span class="text-xs font-semibold text-foreground">评分计算结果</span>
-                            <span class="font-mono text-xs tabular-nums text-foreground/90">
-                              {{ formatPoolScore(key.pool_score?.score) }}
-                            </span>
-                          </div>
-                          <div class="space-y-2 px-3 py-2.5">
-                            <div class="flex flex-wrap items-center gap-1.5">
-                              <Badge
-                                variant="outline"
-                                class="h-5 rounded-md border-border/60 bg-background/60 px-2 text-[10px] font-normal"
-                              >
-                                {{ getPoolScoreHardStateLabel(key.pool_score?.hard_state) }}
-                              </Badge>
-                              <Badge
-                                variant="secondary"
-                                class="h-5 rounded-md px-2 text-[10px] font-normal"
-                              >
-                                {{ getPoolScoreProbeStatusLabel(key.pool_score?.probe_status) }}
-                              </Badge>
-                              <span class="text-[10px] text-muted-foreground">
-                                更新 {{ formatUnixSeconds(key.pool_score?.updated_at) }}
-                              </span>
-                            </div>
-                            <pre class="max-h-56 overflow-auto rounded-md border border-border/50 bg-muted/30 px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">{{ formatPoolScoreReason(key.pool_score?.score_reason) }}</pre>
-                          </div>
-                        </div>
-                      </PopoverContent>
-                    </Popover>
+                    />
                   </div>
                 </TableCell>
                 <TableCell class="py-3 text-center align-top">
@@ -461,53 +413,15 @@
                     >
                       <Shield class="w-3.5 h-3.5" />
                     </Button>
-                    <Popover
+                    <PoolKeyProxyPopover
+                      :node-id="key.proxy?.node_id || ''"
+                      :node-name="getKeyProxyNodeName(key)"
                       :open="proxyDesktopPopoverOpenKeyId === key.key_id"
+                      :saving="savingProxyKeyId === key.key_id"
                       @update:open="(v: boolean) => handleProxyDesktopPopoverToggle(key.key_id, v)"
-                    >
-                      <PopoverTrigger as-child>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7"
-                          :class="key.proxy?.node_id ? 'text-blue-500' : ''"
-                          :disabled="savingProxyKeyId === key.key_id"
-                          :title="key.proxy?.node_id ? `代理: ${getKeyProxyNodeName(key)}` : '设置代理节点'"
-                          @click.stop
-                        >
-                          <Globe class="w-3.5 h-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent
-                        class="w-72 p-3"
-                        side="bottom"
-                        align="end"
-                      >
-                        <div class="space-y-2">
-                          <div class="flex items-center justify-between">
-                            <span class="text-xs font-medium">代理节点</span>
-                            <Button
-                              v-if="key.proxy?.node_id"
-                              variant="ghost"
-                              size="sm"
-                              class="h-6 px-2 text-[10px] text-muted-foreground"
-                              :disabled="savingProxyKeyId === key.key_id"
-                              @click="clearKeyProxy(key)"
-                            >
-                              清除
-                            </Button>
-                          </div>
-                          <ProxyNodeSelect
-                            :model-value="key.proxy?.node_id || ''"
-                            trigger-class="h-8"
-                            @update:model-value="(v: string) => setKeyProxy(key, v)"
-                          />
-                          <p class="text-[10px] text-muted-foreground">
-                            {{ key.proxy?.node_id ? '当前使用独立代理' : '未设置，使用提供商级别代理' }}
-                          </p>
-                        </div>
-                      </PopoverContent>
-                    </Popover>
+                      @select="(v: string) => setKeyProxy(key, v)"
+                      @clear="clearKeyProxy(key)"
+                    />
                     <Button
                       variant="ghost"
                       size="icon"
@@ -649,60 +563,12 @@
                       <span class="font-mono font-medium text-foreground/90 tabular-nums">
                         {{ formatPoolScore(key.pool_score?.score) }}
                       </span>
-                      <Popover
+                      <PoolKeyScorePopover
                         v-if="key.pool_score"
+                        :score="key.pool_score"
                         :open="scoreMobilePopoverOpenKeyId === key.key_id"
                         @update:open="(open: boolean) => handleScoreMobilePopoverToggle(key.key_id, open)"
-                      >
-                        <PopoverTrigger as-child>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            class="h-5 w-5 rounded-full border border-transparent text-muted-foreground/80 hover:border-border/60 hover:bg-muted/60 hover:text-foreground"
-                            title="查看评分计算结果"
-                            aria-label="查看评分计算结果"
-                            @click.stop
-                          >
-                            <CircleHelp class="h-3.5 w-3.5" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                          v-if="scoreMobilePopoverOpenKeyId === key.key_id"
-                          class="w-[22rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border-border/60 bg-card/95 p-0 text-card-foreground shadow-xl shadow-black/5 backdrop-blur supports-[backdrop-filter]:bg-card/90"
-                          side="bottom"
-                          align="end"
-                          :side-offset="8"
-                        >
-                          <div class="text-left">
-                            <div class="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3 py-2.5">
-                              <span class="text-xs font-semibold text-foreground">评分计算结果</span>
-                              <span class="font-mono text-xs tabular-nums text-foreground/90">
-                                {{ formatPoolScore(key.pool_score?.score) }}
-                              </span>
-                            </div>
-                            <div class="space-y-2 px-3 py-2.5">
-                              <div class="flex flex-wrap items-center gap-1.5">
-                                <Badge
-                                  variant="outline"
-                                  class="h-5 rounded-md border-border/60 bg-background/60 px-2 text-[10px] font-normal"
-                                >
-                                  {{ getPoolScoreHardStateLabel(key.pool_score?.hard_state) }}
-                                </Badge>
-                                <Badge
-                                  variant="secondary"
-                                  class="h-5 rounded-md px-2 text-[10px] font-normal"
-                                >
-                                  {{ getPoolScoreProbeStatusLabel(key.pool_score?.probe_status) }}
-                                </Badge>
-                                <span class="text-[10px] text-muted-foreground">
-                                  更新 {{ formatUnixSeconds(key.pool_score?.updated_at) }}
-                                </span>
-                              </div>
-                              <pre class="max-h-56 overflow-auto rounded-md border border-border/50 bg-muted/30 px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">{{ formatPoolScoreReason(key.pool_score?.score_reason) }}</pre>
-                            </div>
-                          </div>
-                        </PopoverContent>
-                      </Popover>
+                      />
                     </div>
                   </div>
                 </div>
@@ -782,54 +648,17 @@
                   >
                     <Shield class="w-3.5 h-3.5" />
                   </Button>
-                  <Popover
+                  <PoolKeyProxyPopover
                     v-else-if="actionId === 'proxy'"
+                    :node-id="key.proxy?.node_id || ''"
+                    :node-name="getKeyProxyNodeName(key)"
                     :open="proxyMobilePopoverOpenKeyId === key.key_id"
+                    :saving="savingProxyKeyId === key.key_id"
+                    trigger-class="shrink-0"
                     @update:open="(v: boolean) => handleProxyMobilePopoverToggle(key.key_id, v)"
-                  >
-                    <PopoverTrigger as-child>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        class="h-7 w-7 shrink-0"
-                        :class="key.proxy?.node_id ? 'text-blue-500' : ''"
-                        :disabled="savingProxyKeyId === key.key_id"
-                        :title="key.proxy?.node_id ? `代理: ${getKeyProxyNodeName(key)}` : '设置代理节点'"
-                        @click.stop
-                      >
-                        <Globe class="w-3.5 h-3.5" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      class="w-72 p-3"
-                      side="bottom"
-                      align="end"
-                    >
-                      <div class="space-y-2">
-                        <div class="flex items-center justify-between">
-                          <span class="text-xs font-medium">代理节点</span>
-                          <Button
-                            v-if="key.proxy?.node_id"
-                            variant="ghost"
-                            size="sm"
-                            class="h-6 px-2 text-[10px] text-muted-foreground"
-                            :disabled="savingProxyKeyId === key.key_id"
-                            @click="clearKeyProxy(key)"
-                          >
-                            清除
-                          </Button>
-                        </div>
-                        <ProxyNodeSelect
-                          :model-value="key.proxy?.node_id || ''"
-                          trigger-class="h-8"
-                          @update:model-value="(v: string) => setKeyProxy(key, v)"
-                        />
-                        <p class="text-[10px] text-muted-foreground">
-                          {{ key.proxy?.node_id ? '当前使用独立代理' : '未设置，使用提供商级别代理' }}
-                        </p>
-                      </div>
-                    </PopoverContent>
-                  </Popover>
+                    @select="(v: string) => setKeyProxy(key, v)"
+                    @clear="clearKeyProxy(key)"
+                  />
                   <Button
                     v-else-if="actionId === 'reset_cycle_stats'"
                     variant="ghost"
@@ -1039,11 +868,9 @@ import {
   Download,
   Copy,
   Shield,
-  Globe,
   RotateCcw,
   SquarePen,
   Trash2,
-  CircleHelp,
 } from 'lucide-vue-next'
 
 import {
@@ -1060,9 +887,6 @@ import {
   TableFilterMenu,
   TableCell,
   Pagination,
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
@@ -1111,12 +935,13 @@ import PoolKeyBatchEditDialog from '@/features/pool/components/PoolKeyBatchEditD
 import PoolManagementHeader from '@/features/pool/components/PoolManagementHeader.vue'
 import PoolKeyQuotaPanel from '@/features/pool/components/PoolKeyQuotaPanel.vue'
 import PoolKeyStatsPanel from '@/features/pool/components/PoolKeyStatsPanel.vue'
+import PoolKeyScorePopover from '@/features/pool/components/PoolKeyScorePopover.vue'
+import PoolKeyProxyPopover from '@/features/pool/components/PoolKeyProxyPopover.vue'
 import KeyAllowedModelsEditDialog from '@/features/providers/components/KeyAllowedModelsEditDialog.vue'
 import KeyFormDialog from '@/features/providers/components/KeyFormDialog.vue'
 import OAuthKeyEditDialog from '@/features/providers/components/OAuthKeyEditDialog.vue'
 import OAuthAccountDialog from '@/features/providers/components/OAuthAccountDialog.vue'
 import ProviderFormDialog from '@/features/providers/components/ProviderFormDialog.vue'
-import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
 import {
   splitPoolMobileActions,
   type PoolMobileActionId,
@@ -1167,10 +992,6 @@ import {
   getOAuthStatusTitle,
   getQuotaTextClass,
   formatPoolScore,
-  formatPoolScoreReason,
-  getPoolScoreHardStateLabel,
-  getPoolScoreProbeStatusLabel,
-  formatUnixSeconds,
   formatRelativeTime,
   formatPoolKeyImportedAt,
 } from '@/features/pool/utils/poolKeyStatus'

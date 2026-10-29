@@ -358,262 +358,52 @@
                       <span>拖拽左侧手柄可调整规则执行顺序</span>
                     </div>
                     <!-- 请求头规则列表 - 主题色边框 -->
-                    <template
+                    <EndpointHeaderRuleRow
                       v-for="(rule, index) in getEndpointEditRules(endpoint.id)"
                       :key="`header-${index}`"
-                    >
-                      <div
-                        class="flex items-center gap-1.5 px-2 py-1.5 rounded-md border-l-4 border-primary/60 bg-muted/30"
-                        :class="[
-                          !rule.enabled ? 'opacity-60 border-primary/25 bg-muted/20' : '',
-                          isHeaderRuleDragging(endpoint.id, index) ? 'opacity-60 border-primary bg-primary/5' : '',
-                          isHeaderRuleDragOver(endpoint.id, index) ? 'ring-1 ring-primary/40 bg-primary/10' : ''
-                        ]"
-                        @dragover.prevent="handleHeaderRuleDragOver(endpoint.id, index)"
-                        @dragleave="handleHeaderRuleDragLeave(endpoint.id, index)"
-                        @drop.prevent="handleHeaderRuleDrop(endpoint.id, index)"
-                      >
-                        <button
-                          type="button"
-                          class="h-7 w-6 shrink-0 inline-flex items-center justify-center rounded-sm text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted cursor-grab active:cursor-grabbing"
-                          title="拖拽排序"
-                          draggable="true"
-                          @dragstart="(e) => handleHeaderRuleDragStart(endpoint.id, index, e)"
-                          @dragend="() => handleHeaderRuleDragEnd(endpoint.id)"
-                        >
-                          <GripVertical class="w-3.5 h-3.5" />
-                        </button>
-                        <span
-                          class="text-[10px] font-semibold text-primary shrink-0"
-                          title="请求头"
-                        >H</span>
-                        <Switch
-                          :model-value="rule.enabled"
-                          class="shrink-0 scale-75 origin-center"
-                          :title="rule.enabled ? '已启用，点击禁用这条请求头规则' : '已禁用，点击启用这条请求头规则'"
-                          @update:model-value="(v: boolean) => updateEndpointRuleEnabled(endpoint.id, index, v)"
-                        />
-                        <Select
-                          :model-value="rule.action"
-                          :open="ruleSelectOpen[`${endpoint.id}-${index}`]"
-                          @update:model-value="(v) => updateEndpointRuleAction(endpoint.id, index, v as 'set' | 'drop' | 'rename')"
-                          @update:open="(v) => handleRuleSelectOpen(endpoint.id, index, v)"
-                        >
-                          <SelectTrigger class="w-[88px] h-7 text-xs shrink-0">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="set">
-                              覆写
-                            </SelectItem>
-                            <SelectItem value="drop">
-                              删除
-                            </SelectItem>
-                            <SelectItem value="rename">
-                              重命名
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 shrink-0"
-                          :class="rule.condition ? 'text-primary' : ''"
-                          title="条件触发"
-                          @click="toggleEndpointRuleCondition(endpoint.id, index)"
-                        >
-                          <Filter class="w-3 h-3" />
-                        </Button>
-                        <template v-if="rule.action === 'set'">
-                          <Input
-                            :model-value="rule.key"
-                            placeholder="名称"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointRuleField(endpoint.id, index, 'key', v)"
-                          />
-                          <span class="text-muted-foreground text-xs">=</span>
-                          <Input
-                            :model-value="rule.value"
-                            placeholder="值"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointRuleField(endpoint.id, index, 'value', v)"
-                          />
-                        </template>
-                        <template v-else-if="rule.action === 'drop'">
-                          <Input
-                            :model-value="rule.key"
-                            placeholder="要删除的名称"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointRuleField(endpoint.id, index, 'key', v)"
-                          />
-                        </template>
-                        <template v-else-if="rule.action === 'rename'">
-                          <Input
-                            :model-value="rule.from"
-                            placeholder="原名"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointRuleField(endpoint.id, index, 'from', v)"
-                          />
-                          <span class="text-muted-foreground text-xs">→</span>
-                          <Input
-                            :model-value="rule.to"
-                            placeholder="新名"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointRuleField(endpoint.id, index, 'to', v)"
-                          />
-                        </template>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 shrink-0"
-                          @click="removeEndpointRule(endpoint.id, index)"
-                        >
-                          <X class="w-3 h-3" />
-                        </Button>
-                      </div>
-                      <EndpointConditionEditor
-                        v-if="rule.condition"
-                        :model-value="rule.condition"
-                        path-hint="请求体字段路径"
-                        removable
-                        @update:model-value="(condition) => updateEndpointRuleCondition(endpoint.id, index, condition)"
-                        @remove="clearEndpointRuleCondition(endpoint.id, index)"
-                      />
-                    </template>
+                      :rule="rule"
+                      kind="request"
+                      :select-open="ruleSelectOpen[`${endpoint.id}-${index}`]"
+                      :dragging="isHeaderRuleDragging(endpoint.id, index)"
+                      :drag-over="isHeaderRuleDragOver(endpoint.id, index)"
+                      @dragover="handleHeaderRuleDragOver(endpoint.id, index)"
+                      @dragleave="handleHeaderRuleDragLeave(endpoint.id, index)"
+                      @drop="handleHeaderRuleDrop(endpoint.id, index)"
+                      @dragstart="(e: DragEvent) => handleHeaderRuleDragStart(endpoint.id, index, e)"
+                      @dragend="handleHeaderRuleDragEnd(endpoint.id)"
+                      @update:enabled="(v: boolean) => updateEndpointRuleEnabled(endpoint.id, index, v)"
+                      @update:action="(v: 'set' | 'drop' | 'rename') => updateEndpointRuleAction(endpoint.id, index, v)"
+                      @update:select-open="(v: boolean) => handleRuleSelectOpen(endpoint.id, index, v)"
+                      @update:field="(field: 'key' | 'value' | 'from' | 'to', v: string) => updateEndpointRuleField(endpoint.id, index, field, v)"
+                      @update:condition="(condition: EditableConditionNode) => updateEndpointRuleCondition(endpoint.id, index, condition)"
+                      @toggle-condition="toggleEndpointRuleCondition(endpoint.id, index)"
+                      @clear-condition="clearEndpointRuleCondition(endpoint.id, index)"
+                      @remove="removeEndpointRule(endpoint.id, index)"
+                    />
 
                     <!-- 响应头规则列表 -->
-                    <template
+                    <EndpointHeaderRuleRow
                       v-for="(rule, index) in getEndpointEditResponseRules(endpoint.id)"
                       :key="`response-header-${index}`"
-                    >
-                      <div
-                        class="flex items-center gap-1.5 px-2 py-1.5 rounded-md border-l-4 border-sky-500/60 bg-muted/30"
-                        :class="[
-                          !rule.enabled ? 'opacity-60 border-sky-500/25 bg-muted/20' : '',
-                          isResponseRuleDragging(endpoint.id, index) ? 'opacity-60 border-sky-500 bg-sky-500/5' : '',
-                          isResponseRuleDragOver(endpoint.id, index) ? 'ring-1 ring-sky-500/40 bg-sky-500/10' : ''
-                        ]"
-                        @dragover.prevent="handleResponseRuleDragOver(endpoint.id, index)"
-                        @dragleave="handleResponseRuleDragLeave(endpoint.id, index)"
-                        @drop.prevent="handleResponseRuleDrop(endpoint.id, index)"
-                      >
-                        <button
-                          type="button"
-                          class="h-7 w-6 shrink-0 inline-flex items-center justify-center rounded-sm text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted cursor-grab active:cursor-grabbing"
-                          title="拖拽排序"
-                          draggable="true"
-                          @dragstart="(e) => handleResponseRuleDragStart(endpoint.id, index, e)"
-                          @dragend="() => handleResponseRuleDragEnd(endpoint.id)"
-                        >
-                          <GripVertical class="w-3.5 h-3.5" />
-                        </button>
-                        <span
-                          class="text-[10px] font-semibold text-sky-600 dark:text-sky-400 shrink-0"
-                          title="响应头"
-                        >R</span>
-                        <Switch
-                          :model-value="rule.enabled"
-                          class="shrink-0 scale-75 origin-center"
-                          :title="rule.enabled ? '已启用，点击禁用这条响应头规则' : '已禁用，点击启用这条响应头规则'"
-                          @update:model-value="(v: boolean) => updateEndpointResponseRuleEnabled(endpoint.id, index, v)"
-                        />
-                        <Select
-                          :model-value="rule.action"
-                          :open="responseRuleSelectOpen[`${endpoint.id}-${index}`]"
-                          @update:model-value="(v) => updateEndpointResponseRuleAction(endpoint.id, index, v as 'set' | 'drop' | 'rename')"
-                          @update:open="(v) => handleResponseRuleSelectOpen(endpoint.id, index, v)"
-                        >
-                          <SelectTrigger class="w-[88px] h-7 text-xs shrink-0">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="set">
-                              覆写
-                            </SelectItem>
-                            <SelectItem value="drop">
-                              删除
-                            </SelectItem>
-                            <SelectItem value="rename">
-                              重命名
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 shrink-0"
-                          :class="rule.condition ? 'text-primary' : ''"
-                          title="条件触发"
-                          @click="toggleEndpointResponseRuleCondition(endpoint.id, index)"
-                        >
-                          <Filter class="w-3 h-3" />
-                        </Button>
-                        <template v-if="rule.action === 'set'">
-                          <Input
-                            :model-value="rule.key"
-                            placeholder="响应头名称"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointResponseRuleField(endpoint.id, index, 'key', v)"
-                          />
-                          <span class="text-muted-foreground text-xs">=</span>
-                          <Input
-                            :model-value="rule.value"
-                            placeholder="值"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointResponseRuleField(endpoint.id, index, 'value', v)"
-                          />
-                        </template>
-                        <template v-else-if="rule.action === 'drop'">
-                          <Input
-                            :model-value="rule.key"
-                            placeholder="要删除的响应头"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointResponseRuleField(endpoint.id, index, 'key', v)"
-                          />
-                        </template>
-                        <template v-else-if="rule.action === 'rename'">
-                          <Input
-                            :model-value="rule.from"
-                            placeholder="原名"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointResponseRuleField(endpoint.id, index, 'from', v)"
-                          />
-                          <span class="text-muted-foreground text-xs">→</span>
-                          <Input
-                            :model-value="rule.to"
-                            placeholder="新名"
-                            size="sm"
-                            class="flex-1 min-w-0 h-7 text-xs"
-                            @update:model-value="(v) => updateEndpointResponseRuleField(endpoint.id, index, 'to', v)"
-                          />
-                        </template>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 shrink-0"
-                          @click="removeEndpointResponseRule(endpoint.id, index)"
-                        >
-                          <X class="w-3 h-3" />
-                        </Button>
-                      </div>
-                      <EndpointConditionEditor
-                        v-if="rule.condition"
-                        :model-value="rule.condition"
-                        path-hint="响应体字段路径"
-                        removable
-                        @update:model-value="(condition) => updateEndpointResponseRuleCondition(endpoint.id, index, condition)"
-                        @remove="clearEndpointResponseRuleCondition(endpoint.id, index)"
-                      />
-                    </template>
+                      :rule="rule"
+                      kind="response"
+                      :select-open="responseRuleSelectOpen[`${endpoint.id}-${index}`]"
+                      :dragging="isResponseRuleDragging(endpoint.id, index)"
+                      :drag-over="isResponseRuleDragOver(endpoint.id, index)"
+                      @dragover="handleResponseRuleDragOver(endpoint.id, index)"
+                      @dragleave="handleResponseRuleDragLeave(endpoint.id, index)"
+                      @drop="handleResponseRuleDrop(endpoint.id, index)"
+                      @dragstart="(e: DragEvent) => handleResponseRuleDragStart(endpoint.id, index, e)"
+                      @dragend="handleResponseRuleDragEnd(endpoint.id)"
+                      @update:enabled="(v: boolean) => updateEndpointResponseRuleEnabled(endpoint.id, index, v)"
+                      @update:action="(v: 'set' | 'drop' | 'rename') => updateEndpointResponseRuleAction(endpoint.id, index, v)"
+                      @update:select-open="(v: boolean) => handleResponseRuleSelectOpen(endpoint.id, index, v)"
+                      @update:field="(field: 'key' | 'value' | 'from' | 'to', v: string) => updateEndpointResponseRuleField(endpoint.id, index, field, v)"
+                      @update:condition="(condition: EditableConditionNode) => updateEndpointResponseRuleCondition(endpoint.id, index, condition)"
+                      @toggle-condition="toggleEndpointResponseRuleCondition(endpoint.id, index)"
+                      @clear-condition="clearEndpointResponseRuleCondition(endpoint.id, index)"
+                      @remove="removeEndpointResponseRule(endpoint.id, index)"
+                    />
 
                     <div
                       v-if="getEndpointEditBodyRules(endpoint.id).length > 0"
@@ -1076,6 +866,7 @@ import { log } from '@/utils/logger'
 import { useI18n } from '@/i18n'
 import AlertDialog from '@/components/common/AlertDialog.vue'
 import EndpointConditionEditor from './EndpointConditionEditor.vue'
+import EndpointHeaderRuleRow from './EndpointHeaderRuleRow.vue'
 import EndpointRulesRevealDialog from './EndpointRulesRevealDialog.vue'
 import ProxyNodeSelect from './ProxyNodeSelect.vue'
 import { getDefaultEndpointBaseUrl, getDefaultEndpointPath } from './endpoint-default-paths'

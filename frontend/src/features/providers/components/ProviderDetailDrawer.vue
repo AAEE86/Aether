@@ -165,601 +165,15 @@
                   @delete="handleDeleteKey(key)"
                 />
               </div>
-              <!-- Codex 上游额度信息（仅当有元数据时显示） -->
-              <div
-                v-if="hasCodexQuotaDisplayData(key)"
-                class="mt-2 p-2 bg-muted/30 rounded-md"
-              >
-                <ProviderQuotaSectionHeader
-                  :title="legacyT('账号配额')"
-                  :loading="refreshingQuota"
-                  :updated-text="getCodexQuotaDisplay(key)?.updated_at ? formatCodexUpdatedAt(getCodexQuotaDisplay(key)?.updated_at || 0) : null"
-                />
-                <!-- 普通 Codex 限额并排显示：Team/Plus/Enterprise 账号 2列, Free 账号 1列 -->
-                <div
-                  class="grid gap-3"
-                  :class="isCodexTeamPlan(key) ? 'grid-cols-2' : 'grid-cols-1'"
-                >
-                  <!-- 主限额 -->
-                  <ProviderQuotaProgressRow
-                    v-if="getCodexQuotaDisplay(key)?.primary_used_percent !== undefined"
-                    :label="legacyT(getCodexPrimaryQuotaLabel(key))"
-                    :used-percent="getCodexQuotaDisplay(key)?.primary_used_percent || 0"
-                    :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.primary_used_percent)"
-                    :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.primary_used_percent || 0)"
-                    :bar-class="getQuotaRemainingBarColor(getCodexQuotaDisplay(key)?.primary_used_percent || 0)"
-                    :reset-text="(getCodexQuotaDisplay(key)?.primary_reset_at || getCodexQuotaDisplay(key)?.primary_reset_seconds) && shouldStartCodexResetCountdown(getCodexQuotaDisplay(key)?.primary_used_percent || 0)
-                      ? getResetCountdownText(
-                        getCodexQuotaDisplay(key)?.primary_reset_at,
-                        getCodexQuotaDisplay(key)?.primary_reset_seconds,
-                        getCodexQuotaDisplay(key)?.updated_at,
-                        getCodexQuotaDisplay(key)?.primary_used_percent
-                      )
-                      : null"
-                    :footer-class="getResetCountdownClass(
-                      getCodexQuotaDisplay(key)?.primary_reset_at,
-                      getCodexQuotaDisplay(key)?.primary_reset_seconds,
-                      getCodexQuotaDisplay(key)?.updated_at,
-                      getCodexQuotaDisplay(key)?.primary_used_percent
-                    )"
-                  />
-                  <!-- 5H限额（仅 Team/Plus/Enterprise 显示） -->
-                  <ProviderQuotaProgressRow
-                    v-if="isCodexTeamPlan(key) && getCodexQuotaDisplay(key)?.secondary_used_percent !== undefined"
-                    :label="legacyT('5H限额')"
-                    :used-percent="getCodexQuotaDisplay(key)?.secondary_used_percent || 0"
-                    :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.secondary_used_percent)"
-                    :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.secondary_used_percent || 0)"
-                    :bar-class="getQuotaRemainingBarColor(getCodexQuotaDisplay(key)?.secondary_used_percent || 0)"
-                    :reset-text="shouldStartCodexResetCountdown(getCodexQuotaDisplay(key)?.secondary_used_percent || 0)
-                      ? getCodexQuotaResetText(
-                        getCodexQuotaDisplay(key)?.secondary_reset_at,
-                        getCodexQuotaDisplay(key)?.secondary_reset_seconds,
-                        getCodexQuotaDisplay(key)?.updated_at,
-                        getCodexQuotaDisplay(key)?.secondary_used_percent
-                      )
-                      : null"
-                    :footer-class="getResetCountdownClass(
-                      getCodexQuotaDisplay(key)?.secondary_reset_at,
-                      getCodexQuotaDisplay(key)?.secondary_reset_seconds,
-                      getCodexQuotaDisplay(key)?.updated_at,
-                      getCodexQuotaDisplay(key)?.secondary_used_percent
-                    )"
-                  />
-                </div>
-                <!-- Spark 限额独立一行展示，避免与普通 Codex 周/5H 混淆 -->
-                <div
-                  v-if="hasCodexSparkQuotaDisplayData(key)"
-                  class="mt-3 border-t border-border/60 pt-2"
-                >
-                  <div class="mb-1 text-[10px] text-muted-foreground">
-                    GPT-5.3 Codex Spark
-                  </div>
-                  <div class="grid gap-3 grid-cols-2">
-                    <ProviderQuotaProgressRow
-                      v-if="getCodexQuotaDisplay(key)?.spark_secondary_used_percent !== undefined"
-                      :label="legacyT('Spark 周')"
-                      :used-percent="getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0"
-                      :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.spark_secondary_used_percent)"
-                      :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0)"
-                      :bar-class="getQuotaRemainingBarColor(getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0)"
-                      :reset-text="shouldStartCodexResetCountdown(getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0)
-                        ? getCodexQuotaResetText(
-                          getCodexQuotaDisplay(key)?.spark_secondary_reset_at,
-                          getCodexQuotaDisplay(key)?.spark_secondary_reset_seconds,
-                          getCodexQuotaDisplay(key)?.updated_at,
-                          getCodexQuotaDisplay(key)?.spark_secondary_used_percent
-                        )
-                        : null"
-                      :footer-class="getResetCountdownClass(
-                        getCodexQuotaDisplay(key)?.spark_secondary_reset_at,
-                        getCodexQuotaDisplay(key)?.spark_secondary_reset_seconds,
-                        getCodexQuotaDisplay(key)?.updated_at,
-                        getCodexQuotaDisplay(key)?.spark_secondary_used_percent
-                      )"
-                    />
-                    <ProviderQuotaProgressRow
-                      v-if="getCodexQuotaDisplay(key)?.spark_primary_used_percent !== undefined"
-                      :label="legacyT('Spark 5H')"
-                      :used-percent="getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0"
-                      :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.spark_primary_used_percent)"
-                      :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0)"
-                      :bar-class="getQuotaRemainingBarColor(getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0)"
-                      :reset-text="shouldStartCodexResetCountdown(getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0)
-                        ? getCodexQuotaResetText(
-                          getCodexQuotaDisplay(key)?.spark_primary_reset_at,
-                          getCodexQuotaDisplay(key)?.spark_primary_reset_seconds,
-                          getCodexQuotaDisplay(key)?.updated_at,
-                          getCodexQuotaDisplay(key)?.spark_primary_used_percent
-                        )
-                        : null"
-                      :footer-class="getResetCountdownClass(
-                        getCodexQuotaDisplay(key)?.spark_primary_reset_at,
-                        getCodexQuotaDisplay(key)?.spark_primary_reset_seconds,
-                        getCodexQuotaDisplay(key)?.updated_at,
-                        getCodexQuotaDisplay(key)?.spark_primary_used_percent
-                      )"
-                    />
-                  </div>
-                </div>
-                <div
-                  v-if="getCodexResetCreditAvailableCount(key) !== null || hasPendingCodexResetCredit(key)"
-                  class="mt-3 border-t border-border/60 pt-2"
-                >
-                  <div class="flex flex-wrap items-center gap-x-1 gap-y-1 text-[10px] leading-4 text-muted-foreground">
-                    <button
-                      v-if="canConsumeCodexResetCredit(key)"
-                      type="button"
-                      class="font-medium text-primary underline-offset-2 transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-60"
-                      :disabled="consumingCodexResetCreditKeyId === key.id"
-                      @click="handleConsumeCodexResetCredit(key)"
-                    >
-                      {{ consumingCodexResetCreditKeyId === key.id
-                        ? legacyT('重置中...')
-                        : legacyT(hasPendingCodexResetCredit(key) ? '继续确认重置' : '点击以进行重置') }}
-                    </button>
-                    <span
-                      v-else
-                      class="font-medium"
-                    >
-                      {{ legacyT('点击以进行重置') }}
-                    </span>
-                    <span>{{ formatCodexResetCreditCount(key) }}</span>
-                    <template v-if="getVisibleCodexResetCreditItems(key).length > 0">
-                      <span aria-hidden="true">|</span>
-                      <span>{{ legacyT('临近过期') }}</span>
-                      <template
-                        v-for="(item, itemIndex) in getVisibleCodexResetCreditItems(key)"
-                        :key="item.id || `${item.displayKey}-${item.expiresAt}`"
-                      >
-                        <span
-                          :title="item.title"
-                          class="tabular-nums"
-                        >
-                          {{ item.displayKey }} {{ formatCodexResetCreditExpiresAt(item.expiresAt) }}
-                        </span>
-                        <span
-                          v-if="itemIndex < getVisibleCodexResetCreditItems(key).length - 1"
-                          aria-hidden="true"
-                        >·</span>
-                      </template>
-                    </template>
-                  </div>
-                </div>
-              </div>
-              <!-- Antigravity 上游额度摘要（按家族分组展示关键配额） -->
-              <div
-                v-if="provider.provider_type === 'antigravity' && (hasAntigravityQuotaDisplayData(key) || isAntigravityForbiddenKey(key))"
-                class="mt-2 p-2 rounded-md"
-                :class="isAntigravityForbiddenKey(key) ? 'bg-destructive/10 border border-destructive/30' : 'bg-muted/30'"
-              >
-                <!-- 封禁状态显示 -->
-                <div
-                  v-if="isAntigravityForbiddenKey(key)"
-                  class="flex items-center gap-2 text-destructive"
-                >
-                  <ShieldX class="w-4 h-4 shrink-0" />
-                  <div class="flex-1 min-w-0">
-                    <div class="text-[11px] font-medium">
-                      {{ legacyT('账户访问被禁止') }}
-                    </div>
-                    <div
-                      v-if="getAntigravityForbiddenReason(key)"
-                      class="text-[10px] text-destructive/80 truncate"
-                      :title="getAntigravityForbiddenReason(key)"
-                    >
-                      {{ getAntigravityForbiddenReason(key) }}
-                    </div>
-                  </div>
-                  <span
-                    v-if="getAntigravityForbiddenAt(key)"
-                    class="text-[9px] text-destructive/60 shrink-0"
-                  >
-                    {{ formatBanTimestamp(getAntigravityForbiddenAt(key)) }}
-                  </span>
-                </div>
-                <!-- 正常配额显示 -->
-                <template v-else>
-                  <ProviderQuotaSectionHeader
-                    :title="legacyT('模型配额')"
-                    :loading="refreshingQuota"
-                    :updated-text="getAntigravityQuotaUpdatedAt(key) ? formatAntigravityUpdatedAt(getAntigravityQuotaUpdatedAt(key) || 0) : null"
-                  />
-                  <div class="grid grid-cols-2 gap-3">
-                    <ProviderQuotaProgressRow
-                      v-for="item in getAntigravityQuotaGroupItems(key)"
-                      :key="item.model"
-                      :label="item.label"
-                      :title="item.label"
-                      :used-percent="item.usedPercent"
-                      :remaining-percent="item.remainingPercent"
-                      :meter-text="item.detail"
-                      :meter-class="getQuotaRemainingClass(item.usedPercent)"
-                      :bar-class="getQuotaRemainingBarColor(item.usedPercent)"
-                    >
-                      <template #footer>
-                        <div class="mt-0.5 space-y-0.5">
-                          <div
-                            v-if="item.resetSeconds !== null"
-                            class="text-[9px] text-muted-foreground/70"
-                          >
-                            <template v-if="item.resetSeconds !== null && item.resetSeconds > 0">
-                              {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
-                            </template>
-                            <template v-else-if="item.resetSeconds !== null && item.resetSeconds <= 0">
-                              {{ legacyT('已重置') }}
-                            </template>
-                          </div>
-                        </div>
-                      </template>
-                    </ProviderQuotaProgressRow>
-                  </div>
-                </template>
-              </div>
-              <!-- Claude Code 账号额度（5H / 周窗口） -->
-              <div
-                v-if="provider.provider_type === 'claude_code' && hasClaudeCodeQuotaDisplayData(key)"
-                class="mt-2 p-2 rounded-md bg-muted/30"
-              >
-                <ProviderQuotaSectionHeader
-                  :title="legacyT('账号配额')"
-                  :loading="refreshingQuota"
-                  :updated-text="getClaudeCodeQuotaUpdatedAt(key) ? formatUpdatedAt(getClaudeCodeQuotaUpdatedAt(key) || 0) : null"
-                />
-                <div class="grid grid-cols-2 gap-3">
-                  <ProviderQuotaProgressRow
-                    v-for="item in getClaudeCodeQuotaItems(key)"
-                    :key="item.code"
-                    :label="item.label"
-                    :used-percent="item.usedPercent"
-                    :remaining-percent="item.remainingPercent"
-                    :meter-class="getQuotaRemainingClass(item.usedPercent)"
-                    :bar-class="getQuotaRemainingBarColor(item.usedPercent)"
-                  >
-                    <template #footer>
-                      <div
-                        v-if="item.resetSeconds !== null && item.remainingPercent < 100"
-                        class="text-[9px] text-muted-foreground/70 mt-0.5"
-                      >
-                        <template v-if="item.resetSeconds > 0">
-                          {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
-                        </template>
-                        <template v-else>
-                          {{ legacyT('已重置') }}
-                        </template>
-                      </div>
-                    </template>
-                  </ProviderQuotaProgressRow>
-                </div>
-                <div
-                  v-if="getClaudeCodeResetCreditAvailableCount(key) !== null"
-                  class="mt-3 border-t border-border/60 pt-2"
-                >
-                  <div class="flex flex-wrap items-center gap-x-1 gap-y-1 text-[10px] leading-4 text-muted-foreground">
-                    <span>{{ formatCodexResetCreditCountLabel(getClaudeCodeResetCreditAvailableCount(key)) }}</span>
-                    <template v-if="getVisibleClaudeCodeResetCreditItems(key).length > 0">
-                      <span aria-hidden="true">|</span>
-                      <span>{{ legacyT('临近过期') }}</span>
-                      <template
-                        v-for="(item, itemIndex) in getVisibleClaudeCodeResetCreditItems(key)"
-                        :key="`${item.displayKey}-${item.expiresAt}`"
-                      >
-                        <span
-                          :title="item.title"
-                          class="tabular-nums"
-                        >
-                          {{ item.displayKey }} {{ formatCodexResetCreditExpiresAt(item.expiresAt) }}
-                        </span>
-                        <span
-                          v-if="itemIndex < getVisibleClaudeCodeResetCreditItems(key).length - 1"
-                          aria-hidden="true"
-                        >·</span>
-                      </template>
-                    </template>
-                  </div>
-                </div>
-              </div>
-              <!-- Gemini CLI 上游模型配额 -->
-              <div
-                v-if="provider.provider_type === 'gemini_cli' && hasGeminiCliQuotaDisplayData(key)"
-                class="mt-2 p-2 rounded-md bg-muted/30"
-              >
-                <ProviderQuotaSectionHeader
-                  :title="legacyT('模型配额')"
-                  :loading="refreshingQuota"
-                  :updated-text="getGeminiCliQuotaUpdatedAt(key) ? formatUpdatedAt(getGeminiCliQuotaUpdatedAt(key) || 0) : null"
-                />
-                <div
-                  v-if="getGeminiCliAccountCreditsText(key, 'gemini_cli')"
-                  class="mb-2 text-[10px] font-medium text-foreground/90"
-                >
-                  {{ getGeminiCliAccountCreditsText(key, 'gemini_cli') }}
-                </div>
-                <div
-                  v-if="getGeminiCliQuotaItems(key).length > 0"
-                  class="grid grid-cols-2 gap-3"
-                >
-                  <ProviderQuotaProgressRow
-                    v-for="item in getGeminiCliQuotaItems(key)"
-                    :key="item.model"
-                    :label="item.label"
-                    :title="item.model"
-                    :used-percent="item.usedPercent"
-                    :remaining-percent="item.remainingPercent"
-                    :meter-class="getQuotaRemainingClass(item.usedPercent)"
-                    :bar-class="getQuotaRemainingBarColor(item.usedPercent)"
-                  >
-                    <template #footer>
-                      <div
-                        v-if="item.resetSeconds !== null && item.remainingPercent < 100"
-                        class="text-[9px] text-muted-foreground/70 mt-0.5"
-                      >
-                        <template v-if="item.resetSeconds > 0">
-                          {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
-                        </template>
-                        <template v-else>
-                          {{ legacyT('已重置') }}
-                        </template>
-                      </div>
-                    </template>
-                  </ProviderQuotaProgressRow>
-                </div>
-              </div>
-              <!-- Kiro 上游额度信息（仅当有元数据时显示） -->
-              <div
-                v-if="provider.provider_type === 'kiro' && (hasKiroQuotaDisplayData(key) || isKiroBannedKey(key))"
-                class="mt-2 p-2 rounded-md"
-                :class="isKiroBannedKey(key) ? 'bg-destructive/10 border border-destructive/30' : 'bg-muted/30'"
-              >
-                <!-- 封禁状态显示 -->
-                <div
-                  v-if="isKiroBannedKey(key)"
-                  class="flex items-center gap-2 text-destructive"
-                >
-                  <ShieldX class="w-4 h-4 shrink-0" />
-                  <div class="flex-1 min-w-0">
-                    <div class="text-[11px] font-medium">
-                      {{ legacyT('账户已封禁') }}
-                    </div>
-                    <div
-                      v-if="getKiroQuotaDisplay(key)?.ban_reason"
-                      class="text-[10px] text-destructive/80 truncate"
-                      :title="getKiroQuotaDisplay(key)?.ban_reason"
-                    >
-                      {{ getKiroQuotaDisplay(key)?.ban_reason }}
-                    </div>
-                  </div>
-                  <span
-                    v-if="getKiroQuotaDisplay(key)?.banned_at"
-                    class="text-[9px] text-destructive/60 shrink-0"
-                  >
-                    {{ formatBanTimestamp(getKiroQuotaDisplay(key)?.banned_at) }}
-                  </span>
-                </div>
-                <!-- 正常配额显示 -->
-                <template v-else>
-                  <ProviderQuotaSectionHeader
-                    :title="legacyT('账号配额')"
-                    :loading="refreshingQuota"
-                    :updated-text="getKiroQuotaDisplay(key)?.updated_at ? formatKiroUpdatedAt(getKiroQuotaDisplay(key)?.updated_at || 0) : null"
-                  />
-                  <!-- Kiro 额度显示：使用进度 -->
-                  <div>
-                    <!-- 使用额度进度条 -->
-                    <ProviderQuotaProgressRow
-                      :label="legacyT('使用额度')"
-                      :used-percent="getKiroQuotaDisplay(key)?.usage_percentage || 0"
-                      :meter-class="getQuotaRemainingClass(getKiroQuotaDisplay(key)?.usage_percentage || 0)"
-                      :bar-class="getQuotaRemainingBarColor(getKiroQuotaDisplay(key)?.usage_percentage || 0)"
-                    >
-                      <template #footer>
-                        <div class="flex items-center justify-between text-[9px] text-muted-foreground/70 mt-0.5">
-                          <span>
-                            {{ formatKiroUsage(getKiroQuotaDisplay(key)?.current_usage) }} /
-                            {{ formatKiroUsage(getKiroQuotaDisplay(key)?.usage_limit) }}
-                          </span>
-                          <span v-if="getKiroQuotaDisplay(key)?.next_reset_at">
-                            {{ formatKiroResetTime(getKiroQuotaDisplay(key)?.next_reset_at) }}{{ legacyT('重置') }}
-                          </span>
-                        </div>
-                      </template>
-                    </ProviderQuotaProgressRow>
-                  </div>
-                </template>
-              </div>
-              <!-- xAI / Grok Build 订阅额度 -->
-              <div
-                v-if="provider.provider_type === 'xai' && hasXaiQuotaDisplayData(key)"
-                class="mt-2 p-2 rounded-md bg-muted/30"
-              >
-                <ProviderQuotaSectionHeader
-                  :title="legacyT('账号配额')"
-                  :loading="refreshingQuota"
-                  :updated-text="getXaiQuotaDisplay(key)?.updated_at ? formatKiroUpdatedAt(getXaiQuotaDisplay(key)?.updated_at || 0) : null"
-                />
-                <div class="space-y-2">
-                  <ProviderQuotaProgressRow
-                    v-if="getXaiQuotaDisplay(key)?.usage_percentage !== undefined || getXaiQuotaDisplay(key)?.remaining_percentage !== undefined"
-                    :label="legacyT(getXaiUsageLabel(key))"
-                    :used-percent="getXaiUsedPercent(key)"
-                    :remaining-percent="getXaiRemainingPercent(key)"
-                    :meter-class="getQuotaRemainingClass(getXaiUsedPercent(key))"
-                    :bar-class="getQuotaRemainingBarColor(getXaiUsedPercent(key))"
-                    :reset-text="getXaiQuotaDisplay(key)?.next_reset_at
-                      ? `${formatKiroResetTime(getXaiQuotaDisplay(key)?.next_reset_at)}${legacyT('重置')}`
-                      : null"
-                  >
-                    <template
-                      v-if="getXaiQuotaDisplay(key)?.usage_limit != null"
-                      #footer
-                    >
-                      <div class="flex items-center justify-between text-[9px] text-muted-foreground/70 mt-0.5">
-                        <span>
-                          {{ formatKiroUsage(getXaiQuotaDisplay(key)?.current_usage) }} /
-                          {{ formatKiroUsage(getXaiQuotaDisplay(key)?.usage_limit) }}
-                        </span>
-                        <span v-if="getXaiQuotaDisplay(key)?.next_reset_at">
-                          {{ formatKiroResetTime(getXaiQuotaDisplay(key)?.next_reset_at) }}{{ legacyT('重置') }}
-                        </span>
-                      </div>
-                    </template>
-                  </ProviderQuotaProgressRow>
-                  <div
-                    v-if="getXaiQuotaDisplay(key)?.prepaid_balance != null"
-                    class="text-[10px] text-muted-foreground"
-                  >
-                    {{ legacyT('预付额度') }}: {{ formatKiroUsage(getXaiQuotaDisplay(key)?.prepaid_balance) }}
-                  </div>
-                  <ProviderQuotaProgressRow
-                    v-if="getXaiQuotaDisplay(key)?.on_demand_cap"
-                    :label="legacyT('按需额度')"
-                    :used-percent="getXaiOnDemandUsedPercent(key)"
-                    :meter-class="getQuotaRemainingClass(getXaiOnDemandUsedPercent(key))"
-                    :bar-class="getQuotaRemainingBarColor(getXaiOnDemandUsedPercent(key))"
-                  >
-                    <template #footer>
-                      <div class="text-[9px] text-muted-foreground/70 mt-0.5">
-                        {{ formatKiroUsage(getXaiQuotaDisplay(key)?.on_demand_used) }} /
-                        {{ formatKiroUsage(getXaiQuotaDisplay(key)?.on_demand_cap) }}
-                      </div>
-                    </template>
-                  </ProviderQuotaProgressRow>
-                </div>
-              </div>
-              <!-- Windsurf 上游额度信息 -->
-              <div
-                v-if="provider.provider_type === 'windsurf' && (hasWindsurfQuotaDisplayData(key) || isWindsurfUnavailableKey(key) || isWindsurfExhaustedKey(key))"
-                class="mt-2 p-2 rounded-md"
-                :class="isWindsurfUnavailableKey(key) ? 'bg-destructive/10 border border-destructive/30' : (isWindsurfExhaustedKey(key) ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50' : 'bg-muted/30')"
-              >
-                <div
-                  v-if="isWindsurfUnavailableKey(key)"
-                  class="flex items-center gap-2 text-destructive"
-                >
-                  <ShieldX class="w-4 h-4 shrink-0" />
-                  <div class="flex-1 min-w-0">
-                    <div class="text-[11px] font-medium">
-                      {{ legacyT('账号不可用') }}
-                    </div>
-                    <div
-                      v-if="getWindsurfQuotaDisplay(key)?.last_error"
-                      class="text-[10px] text-destructive/80 truncate"
-                      :title="getWindsurfQuotaDisplay(key)?.last_error || ''"
-                    >
-                      {{ getWindsurfQuotaDisplay(key)?.last_error }}
-                    </div>
-                  </div>
-                </div>
-                <template v-else>
-                  <div
-                    v-if="isWindsurfExhaustedKey(key)"
-                    class="mb-2 flex items-center gap-2 text-amber-700 dark:text-amber-300"
-                  >
-                    <ShieldX class="w-4 h-4 shrink-0" />
-                    <div class="flex-1 min-w-0">
-                      <div class="text-[11px] font-medium">
-                        {{ getWindsurfQuotaStatusLabel(key) }}
-                      </div>
-                      <div
-                        v-if="getWindsurfQuotaDisplay(key)?.last_error"
-                        class="text-[10px] text-amber-700/80 dark:text-amber-300/80 truncate"
-                        :title="getWindsurfQuotaDisplay(key)?.last_error || ''"
-                      >
-                        {{ getWindsurfQuotaDisplay(key)?.last_error }}
-                      </div>
-                    </div>
-                  </div>
-                  <ProviderQuotaSectionHeader
-                    :title="legacyT('账号配额')"
-                    :loading="refreshingQuota"
-                    :updated-text="getWindsurfQuotaDisplay(key)?.updated_at ? formatKiroUpdatedAt(getWindsurfQuotaDisplay(key)?.updated_at || 0) : null"
-                  />
-                  <div class="grid grid-cols-2 gap-3">
-                    <ProviderQuotaProgressRow
-                      v-if="getWindsurfQuotaDisplay(key)?.daily_remaining_percent !== undefined"
-                      :label="legacyT('日额度')"
-                      :used-percent="getWindsurfQuotaDisplay(key)?.daily_used_percent || 0"
-                      :remaining-percent="getWindsurfQuotaDisplay(key)?.daily_remaining_percent || 0"
-                      :meter-class="getQuotaRemainingClass(getWindsurfQuotaDisplay(key)?.daily_used_percent || 0)"
-                      :bar-class="getQuotaRemainingBarColor(getWindsurfQuotaDisplay(key)?.daily_used_percent || 0)"
-                      :reset-text="getWindsurfQuotaDisplay(key)?.daily_reset_at
-                        ? `${formatKiroResetTime(getWindsurfQuotaDisplay(key)?.daily_reset_at || 0)}${legacyT('重置')}`
-                        : null"
-                    />
-                    <ProviderQuotaProgressRow
-                      v-if="getWindsurfQuotaDisplay(key)?.weekly_remaining_percent !== undefined"
-                      :label="legacyT('周额度')"
-                      :used-percent="getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0"
-                      :remaining-percent="getWindsurfQuotaDisplay(key)?.weekly_remaining_percent || 0"
-                      :meter-class="getQuotaRemainingClass(getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0)"
-                      :bar-class="getQuotaRemainingBarColor(getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0)"
-                      :reset-text="getWindsurfQuotaDisplay(key)?.weekly_reset_at
-                        ? `${formatKiroResetTime(getWindsurfQuotaDisplay(key)?.weekly_reset_at || 0)}${legacyT('重置')}`
-                        : null"
-                    />
-                  </div>
-                  <div
-                    v-if="hasWindsurfPromptQuota(key) || hasWindsurfFlexQuota(key)"
-                    class="mt-2 flex items-center gap-3 text-[9px] text-muted-foreground/70"
-                  >
-                    <span v-if="hasWindsurfPromptQuota(key)">
-                      Prompt {{ formatKiroUsage(getWindsurfQuotaDisplay(key)?.prompt_used || 0) }} /
-                      {{ formatKiroUsage(getWindsurfQuotaDisplay(key)?.prompt_limit || 0) }}
-                    </span>
-                    <span v-if="hasWindsurfFlexQuota(key)">
-                      Flex {{ formatKiroUsage(getWindsurfQuotaDisplay(key)?.flex_used || 0) }} /
-                      {{ formatKiroUsage(getWindsurfQuotaDisplay(key)?.flex_limit || 0) }}
-                    </span>
-                  </div>
-                  <div
-                    v-if="hasWindsurfModelCount(key) || hasWindsurfModelPreview(key)"
-                    class="mt-2 flex items-center justify-between gap-2 text-[9px] text-muted-foreground/70"
-                  >
-                    <span>
-                      {{ legacyT('模型') }} {{ getWindsurfQuotaDisplay(key)?.allowed_models_count ?? getWindsurfQuotaDisplay(key)?.models?.length }} {{ legacyT('个') }}
-                    </span>
-                    <span
-                      v-if="getWindsurfModelPreview(key)"
-                      class="truncate"
-                      :title="getWindsurfModelPreview(key) || ''"
-                    >
-                      {{ getWindsurfModelPreview(key) }}
-                    </span>
-                  </div>
-                </template>
-              </div>
-              <!-- ChatGPT Web 上游额度信息（生图配额） -->
-              <div
-                v-if="provider.provider_type === 'chatgpt_web' && hasChatGPTWebQuotaDisplayData(key)"
-                class="mt-2 p-2 rounded-md bg-muted/30"
-              >
-                <ProviderQuotaSectionHeader
-                  :title="legacyT('账号配额')"
-                  :loading="refreshingQuota"
-                  :updated-text="getChatGPTWebQuotaDisplay(key)?.updated_at ? formatKiroUpdatedAt(getChatGPTWebQuotaDisplay(key)?.updated_at || 0) : null"
-                />
-                <div>
-                  <ProviderQuotaProgressRow
-                    :label="legacyT('剩余额度')"
-                    :used-percent="getChatGPTWebQuotaUsedPercent(key)"
-                    :remaining-percent="getChatGPTWebQuotaRemainingPercent(key)"
-                    :meter-class="getQuotaRemainingClass(getChatGPTWebQuotaUsedPercent(key))"
-                    :bar-class="getQuotaRemainingBarColor(getChatGPTWebQuotaUsedPercent(key))"
-                  >
-                    <template #footer>
-                      <div class="flex items-center justify-between text-[9px] text-muted-foreground/70 mt-0.5">
-                        <span>
-                          {{ formatChatGPTWebUsage(getChatGPTWebQuotaDisplay(key)?.image_quota_remaining) }} /
-                          {{ formatChatGPTWebUsage(getChatGPTWebQuotaDisplay(key)?.image_quota_total) }}
-                        </span>
-                        <span v-if="getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at">
-                          {{ formatKiroResetTime(getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at) }}{{ legacyT('重置') }}
-                        </span>
-                      </div>
-                    </template>
-                  </ProviderQuotaProgressRow>
-                </div>
-              </div>
+              <ProviderKeyQuotaSummary
+                :provider-key="key"
+                :provider-type="provider.provider_type"
+                :refreshing="refreshingQuota"
+                :consuming-reset-credit="consumingCodexResetCreditKeyId === key.id"
+                :can-consume-reset-credit="canConsumeCodexResetCredit(key)"
+                :countdown-tick="countdownTick"
+                @consume-reset-credit="handleConsumeCodexResetCredit(key)"
+              />
               <!-- 第二行：优先级 + API 格式（展开显示） + 统计信息 -->
               <div class="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground">
                 <!-- 优先级放最前面，支持点击编辑 -->
@@ -1045,18 +459,16 @@ import {
   ListPlus,
   Loader2,
   GripVertical,
-  ShieldX,
 } from 'lucide-vue-next'
 import { parseApiError } from '@/utils/errorParser'
 import Drawer from '@/components/ui/drawer/Drawer.vue'
 import { useI18n } from '@/i18n'
-import type { MessageKey } from '@/i18n/messages'
 import Button from '@/components/ui/button.vue'
 import Card from '@/components/ui/card.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
-import { useCountdownTimer, formatCountdown, getCodexResetCountdown } from '@/composables/useCountdownTimer'
+import { useCountdownTimer, formatCountdown } from '@/composables/useCountdownTimer'
 import {
   getProvider,
   getProviderEndpoints,
@@ -1084,24 +496,19 @@ import ProviderKeyBatchImportDialog from '@/features/providers/components/Provid
 import ProviderKeyActionCluster from '@/features/providers/components/ProviderKeyActionCluster.vue'
 import ProviderKeyIdentityBlock from '@/features/providers/components/ProviderKeyIdentityBlock.vue'
 import ProviderMonthlyQuotaCard from '@/features/providers/components/ProviderMonthlyQuotaCard.vue'
-import ProviderQuotaProgressRow from '@/features/providers/components/ProviderQuotaProgressRow.vue'
-import ProviderQuotaSectionHeader from '@/features/providers/components/ProviderQuotaSectionHeader.vue'
+import ProviderKeyQuotaSummary from '@/features/providers/components/ProviderKeyQuotaSummary.vue'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
-import { resolveAntigravityQuotaGroupLabel } from '@/features/providers/utils/antigravityQuota'
 import { refreshQuotaInBackground } from '@/features/providers/utils/refreshQuotaInBackground'
+import { useProviderKeyQuotaPresentation } from '../composables/useProviderKeyQuotaPresentation'
 import {
-  getQuotaSnapshotForProvider,
-  getQuotaSnapshotUpdatedAt,
-  getQuotaWindowUsedPercent,
-  getQuotaWindowRemainingPercent,
-  getQuotaWindowByScope,
-  getQuotaWindowLiveResetSeconds,
+  getClaudeCodeQuotaUpdatedAt,
+  getGeminiCliQuotaUpdatedAt,
+  hasGeminiCliQuotaDisplayData,
+} from '../composables/useProviderKeyQuotaPresentation'
+import {
   getCodexQuotaDisplay,
-  getCodexPrimaryQuotaLabel,
   hasCodexQuotaDisplayData,
-  hasCodexSparkQuotaDisplayData,
   getCodexResetCreditAvailableCount,
-  formatCodexResetCreditCount,
   getVisibleCodexResetCreditItems,
   getPendingCodexResetCreditIdempotencyKey,
   getCodexCredentialGeneration,
@@ -1110,33 +517,13 @@ import {
   hasKiroQuotaDisplayData,
   getXaiQuotaDisplay,
   hasXaiQuotaDisplayData,
-  getXaiUsageLabel,
-  getXaiUsedPercent,
-  getXaiRemainingPercent,
-  getXaiOnDemandUsedPercent,
   getGrokQuotaDisplay,
   getWindsurfQuotaDisplay,
   hasGrokQuotaDisplayData,
   hasWindsurfQuotaDisplayData,
-  isWindsurfUnavailableKey,
-  isWindsurfExhaustedKey,
-  getWindsurfModelPreview,
-  hasWindsurfPromptQuota,
-  hasWindsurfFlexQuota,
-  hasWindsurfModelCount,
-  hasWindsurfModelPreview,
   getChatGPTWebQuotaDisplay,
   hasChatGPTWebQuotaDisplayData,
-  getChatGPTWebQuotaUsedPercent,
-  getChatGPTWebQuotaRemainingPercent,
-  formatChatGPTWebUsage,
-  isKiroBannedKey,
-  formatBanTimestamp,
-  isAntigravityForbiddenKey,
-  getAntigravityForbiddenReason,
-  getAntigravityForbiddenAt,
   getAntigravityQuotaUpdatedAt,
-  formatKiroUsage,
   getKiroSubscriptionBadgeLabel,
 } from '@/features/providers/utils/providerKeyQuotaDisplay'
 import {
@@ -1158,7 +545,6 @@ import {
 } from '@/api/endpoints'
 import type {
   UpstreamMetadata,
-  QuotaResetCreditsSnapshot,
   QuotaStatusSnapshot,
 } from '@/api/endpoints/types'
 import { formatApiFormatShort } from '@/api/endpoints/types/api-format'
@@ -1181,15 +567,11 @@ import {
   getOAuthStatusDisplayWithFallback,
   getOAuthStatusTitle as resolveOAuthStatusTitle,
 } from '@/features/providers/utils/providerKeyStatus'
-import { getGeminiCliAccountCreditsText } from '@/features/providers/utils/providerKeyQuota'
 import {
   clearPendingCodexResetCreditIdempotencyKey,
   clearPendingCodexResetCreditIdempotencyKeyForOutcome,
   createCodexResetCreditIdempotencyKey,
-  formatCodexResetCreditCount as formatCodexResetCreditCountLabel,
   formatCodexResetCreditExpiresAt,
-  getCodexResetCreditAvailableCount as getCodexResetCreditAvailableCountFromSnapshot,
-  getVisibleCodexResetCreditItems as getVisibleCodexResetCreditItemsFromSnapshot,
   readPendingCodexResetCreditIdempotencyKey,
   rememberPendingCodexResetCreditIdempotencyKey,
 } from './codex-reset-credit-display'
@@ -1218,7 +600,11 @@ const { error: showError, success: showSuccess, warning: showWarning } = useToas
 const { confirm } = useConfirm()
 const { copyToClipboard } = useClipboard()
 const { tick: countdownTick, start: startCountdownTimer, stop: stopCountdownTimer } = useCountdownTimer()
-const { legacyT, locale, t } = useI18n()
+const {
+  hasAntigravityQuotaDisplayData,
+  hasClaudeCodeQuotaDisplayData,
+} = useProviderKeyQuotaPresentation(countdownTick)
+const { legacyT, locale } = useI18n()
 
 function localizedApiError(err: unknown, fallback: string): string {
   return legacyT(parseApiError(err, fallback))
@@ -1996,45 +1382,6 @@ function canConsumeCodexResetCredit(key: EndpointAPIKey): boolean {
     && getCodexCredentialGeneration(key) !== undefined
     && (hasPendingCodexResetCredit(key) || (getCodexResetCreditAvailableCount(key) ?? 0) > 0)
     && !consumingCodexResetCreditKeyId.value
-}
-
-function getWindsurfQuotaStatusLabel(key: EndpointAPIKey): string {
-  const quota = getQuotaSnapshotForProvider(key, 'windsurf')
-  const label = quota?.label?.trim()
-  if (label) return label
-  const code = String(quota?.code || '').trim().toLowerCase()
-  if (code === 'cooldown') return legacyT('冷却中')
-  return code === 'rate_limited' || code === 'rate_limit' ? legacyT('速率受限') : legacyT('额度耗尽')
-}
-
-// 格式化 Kiro 更新时间
-const formatKiroUpdatedAt = formatUpdatedAt
-
-// 格式化 Kiro 重置时间
-function formatKiroResetTime(timestamp: number | null | undefined): string {
-  if (!timestamp) return ''
-  // timestamp 可能是毫秒或秒，需要判断
-  const ts = timestamp > 1e12 ? timestamp : timestamp * 1000
-  const now = Date.now()
-  const diff = ts - now
-
-  if (diff <= 0) {
-    return legacyT('已重置')
-  }
-
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
-  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-
-  if (days > 0) {
-    return locale.value === 'en-US' ? `${days}d ${hours}h later` : `${days}天${hours}小时后`
-  }
-
-  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
-  if (hours > 0) {
-    return locale.value === 'en-US' ? `${hours}h ${minutes}m later` : `${hours}小时${minutes}分钟后`
-  }
-
-  return locale.value === 'en-US' ? `${minutes}m later` : `${minutes}分钟后`
 }
 
 function shouldShowKiroSubscriptionBadge(key: EndpointAPIKey): boolean {
@@ -2883,315 +2230,6 @@ function formatOAuthPlanType(planType: string): string {
     heavy: 'Heavy',
   }
   return labels[planType.toLowerCase()] || planType
-}
-
-// Codex 剩余额度样式（基于已用百分比计算剩余）
-function getQuotaRemainingClass(usedPercent: number): string {
-  const remaining = 100 - usedPercent
-  if (remaining <= 10) return 'text-red-600 dark:text-red-400'
-  if (remaining <= 30) return 'text-yellow-600 dark:text-yellow-400'
-  return 'text-green-600 dark:text-green-400'
-}
-
-// Codex 剩余额度进度条颜色
-function getQuotaRemainingBarColor(usedPercent: number): string {
-  const remaining = 100 - usedPercent
-  if (remaining <= 10) return 'bg-red-500 dark:bg-red-400'
-  if (remaining <= 30) return 'bg-yellow-500 dark:bg-yellow-400'
-  return 'bg-green-500 dark:bg-green-400'
-}
-
-// 判断是否为 Codex Team/Plus/Enterprise 账号（有 5H 限额，显示 3 列）
-function isCodexTeamPlan(key: EndpointAPIKey): boolean {
-  const planType = key.oauth_plan_type?.toLowerCase() || getCodexQuotaDisplay(key)?.plan_type?.toLowerCase()
-  // Free 账号返回 false（2 列），其他所有账号返回 true（3 列）
-  return planType !== undefined && planType !== 'free'
-}
-
-interface AntigravityQuotaItem {
-  model: string
-  label: string
-  usedPercent: number
-  remainingPercent: number
-  resetSeconds: number | null
-  detail?: string
-}
-
-interface ClaudeCodeQuotaItem {
-  code: string
-  label: string
-  usedPercent: number
-  remainingPercent: number
-  resetSeconds: number | null
-}
-
-const CLAUDE_CODE_QUOTA_WINDOWS: Record<string, { labelKey: MessageKey, sortOrder: number }> = {
-  '5h': { labelKey: 'poolQuota.claudeCode.window5h', sortOrder: 0 },
-  weekly: { labelKey: 'poolQuota.claudeCode.weekly', sortOrder: 1 },
-  weekly_sonnet: { labelKey: 'poolQuota.claudeCode.weeklySonnet', sortOrder: 2 },
-  weekly_fable: { labelKey: 'poolQuota.claudeCode.weeklyFable', sortOrder: 3 },
-}
-
-function getClaudeCodeQuotaUpdatedAt(key: EndpointAPIKey): number | undefined {
-  const quota = getQuotaSnapshotForProvider(key, 'claude_code')
-  const quotaUpdatedAt = getQuotaSnapshotUpdatedAt(quota)
-  if (typeof quotaUpdatedAt === 'number') return quotaUpdatedAt
-  const updatedAt = Number(key.upstream_metadata?.claude_code?.updated_at ?? NaN)
-  return Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : undefined
-}
-
-function getClaudeCodeResetCreditsDisplay(key: EndpointAPIKey): QuotaResetCreditsSnapshot | null {
-  return getQuotaSnapshotForProvider(key, 'claude_code')?.reset_credits
-    ?? key.upstream_metadata?.claude_code?.reset_credits
-    ?? null
-}
-
-function getClaudeCodeResetCreditAvailableCount(key: EndpointAPIKey): number | null {
-  return getCodexResetCreditAvailableCountFromSnapshot(getClaudeCodeResetCreditsDisplay(key))
-}
-
-function getVisibleClaudeCodeResetCreditItems(key: EndpointAPIKey) {
-  return getVisibleCodexResetCreditItemsFromSnapshot(
-    getClaudeCodeResetCreditsDisplay(key),
-    undefined,
-    5,
-    legacyT('Claude 重置机会'),
-  )
-}
-
-function hasClaudeCodeQuotaDisplayData(key: EndpointAPIKey): boolean {
-  return getClaudeCodeQuotaItems(key).length > 0
-}
-
-function getClaudeCodeQuotaItems(key: EndpointAPIKey): ClaudeCodeQuotaItem[] {
-  const quota = getQuotaSnapshotForProvider(key, 'claude_code')
-  const windows = quota?.windows
-  if (!quota || !Array.isArray(windows)) return []
-
-  return windows
-    .map((window) => {
-      const code = String(window?.code || '').trim().toLowerCase()
-      if (!code) return null
-
-      const usedPercent = getQuotaWindowUsedPercent(window)
-      const remainingPercent = getQuotaWindowRemainingPercent(window)
-      if (usedPercent === undefined && remainingPercent === undefined) return null
-
-      const normalizedUsedPercent = usedPercent !== undefined
-        ? usedPercent
-        : Math.max(100 - (remainingPercent ?? 0), 0)
-      const normalizedRemainingPercent = remainingPercent !== undefined
-        ? remainingPercent
-        : Math.max(100 - normalizedUsedPercent, 0)
-      const presentation = CLAUDE_CODE_QUOTA_WINDOWS[code]
-
-      return {
-        item: {
-          code,
-          label: t(presentation?.labelKey ?? 'poolQuota.claudeCode.unknownWindow'),
-          usedPercent: normalizedUsedPercent,
-          remainingPercent: normalizedRemainingPercent,
-          resetSeconds: getQuotaWindowLiveResetSeconds(quota, window),
-        } satisfies ClaudeCodeQuotaItem,
-        sortOrder: presentation?.sortOrder ?? 9,
-      }
-    })
-    .filter((entry): entry is { item: ClaudeCodeQuotaItem, sortOrder: number } => entry !== null)
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map(entry => entry.item)
-}
-
-interface GeminiCliQuotaItem {
-  model: string
-  label: string
-  usedPercent: number
-  remainingPercent: number
-  resetSeconds: number | null
-}
-
-function hasAntigravityQuotaDisplayData(key: EndpointAPIKey): boolean {
-  return getAntigravityQuotaGroupItems(key).length > 0
-}
-
-function getGeminiCliQuotaUpdatedAt(key: EndpointAPIKey): number | undefined {
-  const quota = getQuotaSnapshotForProvider(key, 'gemini_cli')
-  const quotaUpdatedAt = getQuotaSnapshotUpdatedAt(quota)
-  if (typeof quotaUpdatedAt === 'number') return quotaUpdatedAt
-  const updatedAt = Number(key.upstream_metadata?.gemini_cli?.updated_at ?? NaN)
-  return Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : undefined
-}
-
-function hasGeminiCliQuotaDisplayData(key: EndpointAPIKey): boolean {
-  if (getGeminiCliAccountCreditsText(key, 'gemini_cli')) return true
-  return getGeminiCliQuotaItems(key).length > 0
-}
-
-function getGeminiCliQuotaItems(key: EndpointAPIKey): GeminiCliQuotaItem[] {
-  const quota = getQuotaSnapshotForProvider(key, 'gemini_cli')
-  const windows = getQuotaWindowByScope(quota, 'model')
-  if (!quota || windows.length === 0) return []
-
-  const items = windows
-    .map((window) => {
-      const model = String(window.model || window.label || window.code || '').trim()
-      if (!model) return null
-
-      const usedPercent = getQuotaWindowUsedPercent(window)
-      const remainingPercent = getQuotaWindowRemainingPercent(window)
-      if (usedPercent === undefined && remainingPercent === undefined) {
-        return null
-      }
-
-      const normalizedUsedPercent =
-        usedPercent !== undefined
-          ? usedPercent
-          : Math.max(100 - (remainingPercent ?? 0), 0)
-      const normalizedRemainingPercent =
-        remainingPercent !== undefined
-          ? remainingPercent
-          : Math.max(100 - normalizedUsedPercent, 0)
-
-      return {
-        model,
-        label: String(window.label || window.model || model),
-        usedPercent: normalizedUsedPercent,
-        remainingPercent: normalizedRemainingPercent,
-        resetSeconds: getQuotaWindowLiveResetSeconds(quota, window),
-      } satisfies GeminiCliQuotaItem
-    })
-    .filter((item): item is GeminiCliQuotaItem => item !== null)
-
-  items.sort((a, b) => (b.usedPercent - a.usedPercent) || a.model.localeCompare(b.model))
-  return items
-}
-
-function formatUpdatedAt(updatedAt: number): string {
-  if (!updatedAt || typeof updatedAt !== 'number') return ''
-  const now = Math.floor(Date.now() / 1000)
-  const diff = now - updatedAt
-  if (diff <= 60) return legacyT('刚刚更新')
-  const minutes = Math.floor(diff / 60)
-  if (minutes < 60) return locale.value === 'en-US' ? `${minutes}m ago` : `${minutes}分钟前更新`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return locale.value === 'en-US' ? `${hours}h ago` : `${hours}小时前更新`
-  const days = Math.floor(hours / 24)
-  return locale.value === 'en-US' ? `${days}d ago` : `${days}天前更新`
-}
-
-// 兼容旧函数名
-const formatCodexUpdatedAt = formatUpdatedAt
-const formatAntigravityUpdatedAt = formatUpdatedAt
-
-function getAntigravityQuotaGroupItems(key: EndpointAPIKey): AntigravityQuotaItem[] {
-  const quota = getQuotaSnapshotForProvider(key, 'antigravity')
-  const windows = getQuotaWindowByScope(quota, 'quota_group')
-  if (!quota || windows.length === 0) return []
-
-  return windows
-    .map((window) => {
-      const model = String(window.code || window.bucket_id || window.label || '').trim()
-      if (!model) return null
-
-      const usedPercent = getQuotaWindowUsedPercent(window)
-      const remainingPercent = getQuotaWindowRemainingPercent(window)
-      if (usedPercent === undefined && remainingPercent === undefined) {
-        return null
-      }
-
-      const normalizedUsedPercent =
-        usedPercent !== undefined
-          ? usedPercent
-          : Math.max(100 - (remainingPercent ?? 0), 0)
-      const normalizedRemainingPercent =
-        remainingPercent !== undefined
-          ? remainingPercent
-          : Math.max(100 - normalizedUsedPercent, 0)
-
-      return {
-        model,
-        label: resolveAntigravityQuotaGroupLabel(window, t),
-        usedPercent: normalizedUsedPercent,
-        remainingPercent: normalizedRemainingPercent,
-        resetSeconds: getQuotaWindowLiveResetSeconds(quota, window),
-      } satisfies AntigravityQuotaItem
-    })
-    .filter((item): item is AntigravityQuotaItem => item !== null)
-}
-
-function getResetCountdownText(
-  resetAt: number | null | undefined,
-  resetSecs: number | null | undefined,
-  updatedAt: number | null | undefined,
-  usedPercent: number | null | undefined
-): string {
-  const status = getCodexResetCountdown(
-    resetAt,
-    resetSecs,
-    updatedAt,
-    countdownTick.value,
-    toCodexRemainingPercent(usedPercent)
-  )
-  if (!status) return ''
-  return status.isExpired ? legacyT(status.text) : `${legacyT(status.text)} ${legacyT('后重置')}`
-}
-
-function getCodexQuotaResetText(
-  resetAt: number | null | undefined,
-  resetSecs: number | null | undefined,
-  updatedAt: number | null | undefined,
-  usedPercent: number | null | undefined
-): string {
-  if (resetAt || resetSecs) {
-    return getResetCountdownText(resetAt, resetSecs, updatedAt, usedPercent)
-  }
-  return legacyT('已重置')
-}
-
-function getResetCountdownClass(
-  resetAt: number | null | undefined,
-  resetSecs: number | null | undefined,
-  updatedAt: number | null | undefined,
-  usedPercent: number | null | undefined
-): string {
-  const status = getCodexResetCountdown(
-    resetAt,
-    resetSecs,
-    updatedAt,
-    countdownTick.value,
-    toCodexRemainingPercent(usedPercent)
-  )
-  if (!status || status.isExpired) return 'text-muted-foreground/70'
-  if (status.isCritical) return 'text-destructive font-medium animate-pulse'
-  if (status.isUrgent) return 'text-amber-500 dark:text-amber-400'
-  return 'text-muted-foreground/70'
-}
-
-function toCodexRemainingPercent(usedPercent: number | null | undefined): number | null {
-  const normalizedUsed = Number(usedPercent)
-  if (!Number.isFinite(normalizedUsed)) return null
-  const clampedUsed = Math.min(Math.max(normalizedUsed, 0), 100)
-  return Math.max(100 - clampedUsed, 0)
-}
-
-function shouldStartCodexResetCountdown(usedPercent: number | null | undefined): boolean {
-  const remainingPercent = toCodexRemainingPercent(usedPercent)
-  if (remainingPercent == null) return true
-  return remainingPercent < 100
-}
-
-// 格式化重置时间
-function formatResetTime(seconds: number): string {
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-
-  if (days > 0) {
-    return locale.value === 'en-US' ? `${days}d ${hours}h` : `${days}天 ${hours}小时`
-  }
-  if (hours > 0) {
-    return locale.value === 'en-US' ? `${hours}h ${minutes}m` : `${hours}小时 ${minutes}分钟`
-  }
-  return locale.value === 'en-US' ? `${minutes}m` : `${minutes}分钟`
 }
 
 // OAuth 订阅类型样式
