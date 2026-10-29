@@ -202,15 +202,25 @@ import {
   isUsageRecordFailed,
   isUsageUpstreamStream,
   isUsageWebSocket,
-  normalizeRequestStatus,
   resolveDisplayRequestStatus,
 } from '@/features/usage/utils/status'
 import { matchesUsageRecordSearch } from '@/features/usage/utils/recordSearch'
 import {
+  sameImageProgress,
+  resolveDetailUpdateStatus,
+} from '@/features/usage/utils/detailRequestState'
+import {
+  hasUnknownModelOrProvider,
+} from '@/features/usage/utils/recordFilterPolicy'
+import {
+  getIntervalTimelineHours,
+  formatIntervalTimelineWindow,
+} from '@/features/usage/utils/intervalTimeline'
+import {
   isUserLocalOnlyRecordStatus,
   shouldUseServerUserRecordFilters,
 } from '@/features/usage/utils/recordFilterPolicy'
-import type { DateRangeParams, FilterStatusValue, RequestStatus, UsageRecord } from '@/features/usage/types'
+import type { DateRangeParams, FilterStatusValue, RequestStatus } from '@/features/usage/types'
 import type { UserOption } from '@/features/usage/components/UsageRecordsTable.vue'
 import { log } from '@/utils/logger'
 import type { ActivityHeatmap } from '@/types/activity'
@@ -242,44 +252,6 @@ const timeRange = ref<DateRangeParams>(
 const currentPage = ref(1)
 const pageSize = ref(20)
 const pageSizeOptions = [10, 20, 50, 100]
-
-function clampIntervalTimelineHours(hours: number): number {
-  return Math.min(720, Math.max(1, Math.ceil(hours)))
-}
-
-function getIntervalTimelineHours(dateRange: DateRangeParams): number {
-  switch (dateRange.preset) {
-    case 'yesterday':
-      return 48
-    case 'last7days':
-      return 24 * 7
-    case 'last30days':
-      return 24 * 30
-    case 'last90days':
-      return 24 * 30
-    case 'today':
-      return 24
-    default:
-      break
-  }
-
-  if (dateRange.start_date && dateRange.end_date) {
-    const start = new Date(`${dateRange.start_date}T00:00:00`)
-    const end = new Date(`${dateRange.end_date}T23:59:59`)
-    const diffMs = end.getTime() - start.getTime()
-    if (!Number.isNaN(diffMs) && diffMs >= 0) {
-      return clampIntervalTimelineHours(diffMs / (1000 * 60 * 60))
-    }
-  }
-
-  return 24
-}
-
-function formatIntervalTimelineWindow(hours: number): string {
-  if (hours === 24) return '最近24小时'
-  if (hours % 24 === 0) return `最近${hours / 24}天`
-  return `最近${hours}小时`
-}
 
 // 筛选状态
 const filterSearch = ref('')
@@ -441,18 +413,6 @@ function getCurrentStatsFilters() {
 async function refreshAdminAnalyticsForSelectionChange() {
   if (!isAdminPage.value) return
   await refreshAdminAnalytics({ force: true, preserveOnFailure: false })
-}
-
-function isUnknownUsageLabel(value: unknown): boolean {
-  if (typeof value !== 'string') return false
-  const normalized = value.trim().toLowerCase()
-  return normalized === 'unknown' || normalized === 'unknow'
-}
-
-function hasUnknownModelOrProvider(record: UsageRecord): boolean {
-  if (isUnknownUsageLabel(record.model)) return true
-  if (isUnknownUsageLabel(record.provider)) return true
-  return false
 }
 
 // 用户页面需要前端筛选；隐藏 unknown 的开关对管理员当前页也生效。
@@ -1249,21 +1209,6 @@ function closeRequestDetail() {
   void router.replace({ query: { ...route.query, detail_id: undefined } })
 }
 
-function sameImageProgress(left?: ImageProgress | null, right?: ImageProgress | null): boolean {
-  if (!left && !right) return true
-  if (!left || !right) return false
-  return left.phase === right.phase &&
-    left.upstream_ttfb_ms === right.upstream_ttfb_ms &&
-    left.upstream_sse_frame_count === right.upstream_sse_frame_count &&
-    left.last_upstream_event === right.last_upstream_event &&
-    left.last_upstream_frame_at_unix_ms === right.last_upstream_frame_at_unix_ms &&
-    left.partial_image_count === right.partial_image_count &&
-    left.last_client_visible_event === right.last_client_visible_event &&
-    left.downstream_heartbeat_count === right.downstream_heartbeat_count &&
-    left.last_downstream_heartbeat_at_unix_ms === right.last_downstream_heartbeat_at_unix_ms &&
-    left.downstream_heartbeat_interval_ms === right.downstream_heartbeat_interval_ms
-}
-
 function handleDetailRequestState(update: {
   id: string
   status?: RequestStatus
@@ -1467,24 +1412,6 @@ function handleDetailRequestState(update: {
       record.image_progress = nextProgress
     }
   }
-}
-
-function resolveDetailUpdateStatus(update: {
-  status?: RequestStatus
-  statusCode?: number | null
-  imageProgress?: ImageProgress | null
-  errorMessage?: string | null
-}): RequestStatus | undefined {
-  const status = normalizeRequestStatus(update.status)
-  const hasFailureSignal =
-    (typeof update.statusCode === 'number' && update.statusCode >= 400) ||
-    (typeof update.errorMessage === 'string' && update.errorMessage.trim().length > 0) ||
-    update.imageProgress?.phase === 'failed'
-
-  if ((status == null || status === 'pending' || status === 'streaming') && hasFailureSignal) {
-    return 'failed'
-  }
-  return status
 }
 
 function prefetchRequestDetail(id: string) {

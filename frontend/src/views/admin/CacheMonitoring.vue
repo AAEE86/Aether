@@ -23,7 +23,6 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { cacheApi, modelMappingCacheApi, redisCacheApi, type CacheStats, type CacheConfig, type UserAffinity, type ModelMappingCacheStats, type RedisCacheCategoriesResponse } from '@/api/cache'
-import type { TTLAnalysisUser } from '@/api/cache'
 import { formatNumber, formatTokens, formatCost, formatRemainingTime } from '@/utils/format'
 import {
   useTTLAnalysis,
@@ -36,6 +35,21 @@ import { log } from '@/utils/logger'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
 import { formatClientFamily } from '@/features/usage/utils/clientFamily'
 import { observeNearViewportOnce } from '@/utils/nearViewport'
+import {
+  truncateMiddle,
+  affinityUserLabel,
+  affinityUserTitle,
+  affinityUserApiKeyLabel,
+  affinityModelLabel,
+  affinityModelSubtitle,
+  providerKeyLabel,
+  providerKeyTitle,
+  formatAffinityRequestCount,
+  formatAffinityRequestCountUnit,
+  formatIntervalDescription,
+  formatTTL,
+  getUnmappedStatusBadge,
+} from '@/features/cache/utils/cacheDisplay'
 
 // ==================== 缓存统计与亲和性列表 ====================
 
@@ -237,68 +251,6 @@ function getRemainingTime(expireAt?: number): string {
   return formatRemainingTime(expireAt, currentTime.value)
 }
 
-function truncateMiddle(value: string, head = 8, tail = 6): string {
-  const normalized = value.trim()
-  if (!normalized) return '---'
-  if (normalized.length <= head + tail + 3) return normalized
-  return `${normalized.slice(0, head)}...${normalized.slice(-tail)}`
-}
-
-function affinityUserLabel(item: UserAffinity): string {
-  return item.username || item.email || item.user_id || '未知'
-}
-
-function affinityUserTitle(item: UserAffinity): string | undefined {
-  return item.email || item.username || item.user_id || undefined
-}
-
-function affinityUserApiKeyLabel(item: UserAffinity): string {
-  return item.user_api_key_name || item.user_api_key_prefix || truncateMiddle(item.affinity_key)
-}
-
-function affinityModelLabel(item: UserAffinity): string {
-  return item.model_display_name || item.model_name || item.global_model_id || '---'
-}
-
-function affinityModelSubtitle(item: UserAffinity): string {
-  if (!item.model_display_name || !item.model_name || item.model_display_name === item.model_name) {
-    return ''
-  }
-  return item.model_name
-}
-
-function providerKeyLabel(item: UserAffinity): string {
-  if (item.key_name) return item.key_name
-  if (item.key_prefix === '[OAuth Token]') return 'OAuth 认证'
-  if (item.key_prefix === '[OAuth Header]') return 'OAuth Header'
-  return item.key_prefix || '---'
-}
-
-function providerKeyTitle(item: UserAffinity): string | undefined {
-  if (item.key_name && item.key_prefix) return `${item.key_name} · ${item.key_prefix}`
-  return item.key_name || item.key_prefix || undefined
-}
-
-function formatAffinityRequestCount(item: UserAffinity): string {
-  if (item.request_count_known === false) return '—'
-  return formatNumber(item.request_count || 0)
-}
-
-function formatAffinityRequestCountUnit(item: UserAffinity): string {
-  const count = formatAffinityRequestCount(item)
-  return count === '—' ? count : `${count}次`
-}
-
-function formatIntervalDescription(user: TTLAnalysisUser): string {
-  const p90 = user.percentiles.p90
-  if (p90 === null || p90 === undefined) return '-'
-  if (p90 < 1) {
-    const seconds = Math.round(p90 * 60)
-    return `90% 请求间隔 < ${seconds} 秒`
-  }
-  return `90% 请求间隔 < ${p90.toFixed(1)} 分钟`
-}
-
 function handlePageChange() {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -488,28 +440,6 @@ const redisCategoriesEmpty = computed(() => {
   if (!redisCacheData.value?.categories) return []
   return redisCacheData.value.categories.filter(c => c.count === 0)
 })
-
-function formatTTL(ttl: number | null): string {
-  if (ttl === null || ttl < 0) return '-'
-  if (ttl < 60) return `${ttl}s`
-  const minutes = Math.floor(ttl / 60)
-  const seconds = ttl % 60
-  if (seconds === 0) return `${minutes}m`
-  return `${minutes}m${seconds}s`
-}
-
-function getUnmappedStatusBadge(status: string): { variant: 'default' | 'secondary' | 'destructive' | 'outline', text: string } {
-  switch (status) {
-    case 'not_found':
-      return { variant: 'secondary', text: '未找到' }
-    case 'invalid':
-      return { variant: 'destructive', text: '无效' }
-    case 'error':
-      return { variant: 'destructive', text: '错误' }
-    default:
-      return { variant: 'outline', text: status }
-  }
-}
 
 // ==================== 刷新所有数据 ====================
 

@@ -801,18 +801,38 @@ import Button from '@/components/ui/button.vue'
 import Textarea from '@/components/ui/textarea.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
-import type { TestAttemptDetail, TestCandidateSummary, TestModelFailoverResponse } from '@/api/endpoints/providers'
-import type { CandidateRecord, RequestTrace } from '@/api/requestTrace'
+import type { TestAttemptDetail, TestModelFailoverResponse } from '@/api/endpoints/providers'
+import type { RequestTrace } from '@/api/requestTrace'
 import type { MultiSelectOption } from '@/components/common/MultiSelect.vue'
 import JsonContent from '@/features/usage/components/RequestDetailDrawer/JsonContent.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { useDarkMode } from '@/composables/useDarkMode'
 import {
-  extractModelTestImagePreviews,
-  extractModelTestResponsePreview,
   formatModelTestDiagnostic,
 } from './model-test-request'
 import type { ModelTestImagePreview } from './model-test-request'
+import {
+  deriveSummaryFromAttempts,
+  detailTabs,
+  statusVariant,
+  statusLabel,
+  statusDisplay,
+  attemptRowClass,
+  maskKey,
+  formatAuthType,
+  formatAttemptIndex,
+  formatTraceCandidateIndex,
+  formatTraceCandidateAccount,
+  extractAttemptRequestModel,
+  traceCandidateDetail,
+  attemptDetail,
+  attemptImagePreviews,
+  inspectionKey,
+  hasDebugData,
+  getInspectionTabData,
+  formatJsonDraft,
+} from './model-test-display'
+import type { SummaryView, SummaryBadgeItem } from './model-test-display'
 
 type TestEndpointOption = {
   id: string
@@ -976,122 +996,6 @@ const visibleAttempts = computed(() => {
   return resultAttempts.value.slice(0, 20)
 })
 
-type SummaryView = {
-  total_candidates: number
-  attempted: number
-  success: number
-  failed: number
-  skipped: number
-  unused: number
-  pending: number
-  available: number
-  completed: number
-  stop_reason?: string | null
-  winning_candidate_index?: number | null
-  winning_key_name?: string | null
-  winning_key_id?: string | null
-  winning_auth_type?: string | null
-  winning_effective_model?: string | null
-  winning_endpoint_api_format?: string | null
-  winning_endpoint_base_url?: string | null
-  winning_latency_ms?: number | null
-  winning_status_code?: number | null
-}
-
-type SummaryBadgeItem = {
-  key: string
-  label: string
-  value: number
-  variant: 'default' | 'secondary' | 'outline' | 'success' | 'destructive'
-}
-
-function toCount(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
-}
-
-function normalizeCandidateSummary(summary: TestCandidateSummary | null | undefined): SummaryView | null {
-  if (!summary) return null
-  const success = toCount(summary.success)
-  const failed = toCount(summary.failed)
-  const skipped = toCount(summary.skipped)
-  const unused = toCount(summary.unused)
-  const pending = toCount(summary.pending)
-  const available = toCount(summary.available)
-  return {
-    total_candidates: toCount(summary.total_candidates),
-    attempted: toCount(summary.attempted),
-    success,
-    failed,
-    skipped,
-    unused,
-    pending,
-    available,
-    completed: toCount(summary.completed) || success + failed + skipped + unused,
-    stop_reason: summary.stop_reason ?? null,
-    winning_candidate_index: summary.winning_candidate_index ?? null,
-    winning_key_name: summary.winning_key_name ?? null,
-    winning_key_id: summary.winning_key_id ?? null,
-    winning_auth_type: summary.winning_auth_type ?? null,
-    winning_effective_model: summary.winning_effective_model ?? null,
-    winning_endpoint_api_format: summary.winning_endpoint_api_format ?? null,
-    winning_endpoint_base_url: summary.winning_endpoint_base_url ?? null,
-    winning_latency_ms: summary.winning_latency_ms ?? null,
-    winning_status_code: summary.winning_status_code ?? null,
-  }
-}
-
-function deriveSummaryFromAttempts(result: TestModelFailoverResponse | null): SummaryView {
-  const normalized = normalizeCandidateSummary(result?.candidate_summary)
-  if (normalized) return normalized
-
-  const attempts = result?.attempts ?? []
-  const success = attempts.filter(attempt => attempt.status === 'success').length
-  const failed = attempts.filter(attempt => ['failed', 'cancelled', 'stream_interrupted'].includes(attempt.status)).length
-  const skipped = attempts.filter(attempt => attempt.status === 'skipped').length
-  const pending = attempts.filter(attempt => ['pending', 'streaming'].includes(attempt.status)).length
-  const available = attempts.filter(attempt => attempt.status === 'available').length
-  const totalCandidates = Math.max(result?.total_candidates ?? 0, attempts.length)
-  const explicitUnused = attempts.filter(attempt => attempt.status === 'unused').length
-  const winningAttempt = attempts.find(attempt => attempt.status === 'success') ?? null
-  const unused = explicitUnused > 0
-    ? explicitUnused
-    : success > 0 && winningAttempt
-      ? Math.max(0, totalCandidates - winningAttempt.candidate_index - 1)
-      : 0
-  const attempted = result?.total_attempts ?? attempts.filter(attempt => !['skipped', 'available', 'unused'].includes(attempt.status)).length
-  const stopReason = totalCandidates === 0
-    ? 'no_candidate'
-    : success > 0
-      ? 'first_success'
-      : attempted === 0 && skipped > 0
-        ? 'all_skipped'
-        : failed > 0 || skipped > 0
-          ? 'exhausted'
-          : 'pending'
-
-  return {
-    total_candidates: totalCandidates,
-    attempted,
-    success,
-    failed,
-    skipped,
-    unused,
-    pending,
-    available,
-    completed: success + failed + skipped + unused,
-    stop_reason: stopReason,
-    winning_candidate_index: winningAttempt?.candidate_index ?? null,
-    winning_key_name: winningAttempt?.key_name ?? null,
-    winning_key_id: winningAttempt?.key_id ?? null,
-    winning_auth_type: winningAttempt?.auth_type ?? null,
-    winning_effective_model: winningAttempt?.effective_model ?? null,
-    winning_endpoint_api_format: winningAttempt?.endpoint_api_format ?? null,
-    winning_endpoint_base_url: winningAttempt?.endpoint_base_url ?? null,
-    winning_latency_ms: winningAttempt?.latency_ms ?? null,
-    winning_status_code: winningAttempt?.status_code ?? null,
-  }
-}
-
 const liveTraceSummary = computed(() => {
   const summary: SummaryView = {
     total_candidates: traceCandidates.value.length,
@@ -1253,13 +1157,6 @@ const showDebugInspector = computed(() => {
   return inspectableAttempts.value.length > 0
 })
 
-const detailTabs = [
-  { name: 'request-headers', label: '请求头' },
-  { name: 'request-body', label: '请求体' },
-  { name: 'response-headers', label: '响应头' },
-  { name: 'response-body', label: '响应体' },
-] as const
-
 const selectedInspectionAttempt = computed(() => {
   const key = selectedInspectionKey.value
   if (key) {
@@ -1330,162 +1227,13 @@ const resultModelTitle = computed(() => {
     || '-'
 })
 
-function statusVariant(status: string) {
-  if (status === 'success') return 'success' as const
-  if (status === 'failed' || status === 'stream_interrupted') return 'destructive' as const
-  return 'secondary' as const
-}
-
-function statusLabel(status: string) {
-  if (status === 'success') return '成功'
-  if (status === 'failed') return '失败'
-  if (status === 'skipped') return '跳过'
-  if (status === 'pending') return '等待中'
-  if (status === 'streaming') return '测试中'
-  if (status === 'cancelled') return '已取消'
-  if (status === 'stream_interrupted') return '流中断'
-  if (status === 'available') return '待请求'
-  if (status === 'unused') return '未执行'
-  return status
-}
-
-function statusDisplay(item: { status: string; status_code?: number | null }): string {
-  const code = item.status_code
-  const status = item.status
-  if (!code) return statusLabel(status)
-  if (status === 'failed' && code >= 200 && code < 300) {
-    return `${code} 体内错误`
-  }
-  return String(code)
-}
-
-function attemptRowClass(status: string, selected = false) {
-  const statusClass = (() => {
-    if (status === 'success') return 'bg-green-500/5'
-    if (status === 'failed') return 'bg-red-500/5'
-    if (status === 'cancelled') return 'bg-amber-500/5'
-    if (status === 'skipped') return 'bg-muted/20'
-    return ''
-  })()
-  const interactionClass = 'cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70'
-  const selectedClass = selected ? 'ring-1 ring-primary/70 bg-primary/5' : ''
-  return [statusClass, interactionClass, selectedClass].filter(Boolean).join(' ')
-}
-
-function maskKey(key: string): string {
-  if (key.length <= 8) return key
-  return `${key.slice(0, 4)}...${key.slice(-4)}`
-}
-
-function formatAuthType(authType: string): string {
-  const lowered = authType.toLowerCase()
-  if (lowered === 'api_key') return 'API Key'
-  if (lowered === 'service_account') return 'Service Account'
-  if (lowered === 'oauth') return 'OAuth'
-  if (lowered === 'codex') return 'Codex OAuth'
-  if (lowered === 'antigravity') return 'Antigravity OAuth'
-  if (lowered === 'kiro') return 'Kiro OAuth'
-  if (lowered === 'grok') return 'Grok OAuth'
-  if (lowered === 'xai') return 'xAI OAuth'
-  return authType
-}
-
-function formatAttemptIndex(attempt: TestAttemptDetail): string {
-  const retryIndex = attempt.retry_index ?? 0
-  return retryIndex > 0 ? `#${attempt.candidate_index}.${retryIndex}` : `#${attempt.candidate_index}`
-}
-
-function formatTraceCandidateIndex(candidate: CandidateRecord): string {
-  return candidate.retry_index > 0 ? `#${candidate.candidate_index}.${candidate.retry_index}` : `#${candidate.candidate_index}`
-}
-
-function formatTraceCandidateAccount(candidate: CandidateRecord): string {
-  return candidate.key_account_label || candidate.key_name || candidate.key_preview || '-'
-}
-
-function extractAttemptRequestModel(attempt: TestAttemptDetail): string | null {
-  const body = attempt.request_body
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
-
-  const model = (body as Record<string, unknown>).model
-  if (typeof model === 'string' && model.trim()) return model.trim()
-
-  const conversationState = (body as Record<string, unknown>).conversationState
-  if (!conversationState || typeof conversationState !== 'object' || Array.isArray(conversationState)) return null
-
-  const currentMessage = (conversationState as Record<string, unknown>).currentMessage
-  if (!currentMessage || typeof currentMessage !== 'object' || Array.isArray(currentMessage)) return null
-
-  const userInputMessage = (currentMessage as Record<string, unknown>).userInputMessage
-  if (!userInputMessage || typeof userInputMessage !== 'object' || Array.isArray(userInputMessage)) return null
-
-  const modelId = (userInputMessage as Record<string, unknown>).modelId
-  return typeof modelId === 'string' && modelId.trim() ? modelId.trim() : null
-}
-
-function traceCandidateDetail(candidate: CandidateRecord): string {
-  if (candidate.skip_reason) return formatModelTestDiagnostic(candidate.skip_reason)
-  if (candidate.error_message) return formatModelTestDiagnostic(candidate.error_message)
-  if (candidate.status === 'unused') return '成功后未请求'
-  if (candidate.status === 'available') return '待请求'
-  if (candidate.endpoint_name) return `端点：${formatApiFormat(candidate.endpoint_name)}`
-  return ''
-}
-
-function attemptDetail(attempt: TestAttemptDetail): string {
-  if (attempt.status === 'cancelled') return '测试已取消'
-  if (attempt.status === 'unused') return '成功后未请求'
-  if (attempt.skip_reason) return formatModelTestDiagnostic(attempt.skip_reason)
-  if (attempt.error_message) return formatModelTestDiagnostic(attempt.error_message)
-  if (attempt.status === 'success') {
-    return extractModelTestResponsePreview(attempt.response_body)
-      ?? (attempt.effective_model ? `请求模型：${attempt.effective_model}` : attempt.endpoint_base_url)
-  }
-  return '-'
-}
-
-function attemptImagePreviews(attempt: TestAttemptDetail): ModelTestImagePreview[] {
-  return extractModelTestImagePreviews(attempt.response_body)
-}
-
 function openImagePreview(preview: ModelTestImagePreview) {
   activeImagePreview.value = preview
-}
-
-function inspectionKey(attempt: TestAttemptDetail): string {
-  return `${attempt.candidate_index}:${attempt.retry_index ?? 0}:${attempt.key_id}`
 }
 
 function selectInspectionAttempt(attempt: TestAttemptDetail) {
   selectedInspectionKey.value = inspectionKey(attempt)
   inspectionTab.value = attemptImagePreviews(attempt).length > 0 ? 'response-body' : 'request-body'
-}
-
-function hasDebugData(attempt: TestAttemptDetail): boolean {
-  return Boolean(
-    attempt.request_url
-    || attempt.request_headers
-    || attempt.request_body != null
-    || attempt.response_headers
-    || attempt.response_body != null,
-  )
-}
-
-function getInspectionTabData(
-  tabName: typeof detailTabs[number]['name'],
-  attempt: TestAttemptDetail | null,
-): unknown {
-  if (!attempt) return null
-  switch (tabName) {
-    case 'request-headers':
-      return attempt.request_headers
-    case 'request-body':
-      return attempt.request_body
-    case 'response-headers':
-      return attempt.response_headers
-    case 'response-body':
-      return attempt.response_body
-  }
 }
 
 function copyInspectionContent(tabName: typeof detailTabs[number]['name']) {
@@ -1524,27 +1272,6 @@ function resetRequestBodyDraft() {
   emit('update:requestBodyDraft', props.requestBodyResetValue ?? '')
 }
 
-function formatJsonDraft(
-  draft: string,
-  onFormatted: (value: string) => void,
-  emptyFallback?: string,
-) {
-  const normalized = draft.trim()
-  if (!normalized) {
-    if (emptyFallback !== undefined) {
-      onFormatted(emptyFallback)
-    }
-    return
-  }
-
-  try {
-    const parsed = JSON.parse(normalized)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
-    onFormatted(JSON.stringify(parsed, null, 2))
-  } catch {
-    // keep user input untouched when JSON is invalid
-  }
-}
 </script>
 
 <style scoped>
